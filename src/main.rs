@@ -149,14 +149,21 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
 /// generation. Residual: a previous generation's gh loop notices the dead
 /// sink only at its next poll send, so a restart can briefly double-poll.
 async fn supervise_planes(store: Store, repo_root: PathBuf, worktrees_root: PathBuf) {
-    let git_plane: Arc<dyn Plane> =
-        Arc::new(GitPlane::new(repo_root.clone(), worktrees_root.clone()));
-    let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
+        // Fresh plane instances per generation (re-review R1/R2): a re-armed
+        // GitPlane must boot with an EMPTY registry so the boot rescan
+        // re-emits every worktree fact into the new integrator's empty
+        // caches (a reused instance would diff against retained facts and
+        // emit nothing until the next real change), and the per-instance
+        // stopped flag must not couple generations (a lingering old
+        // watcher's sink failure must not kill the new watcher too).
+        let git_plane: Arc<dyn Plane> =
+            Arc::new(GitPlane::new(repo_root.clone(), worktrees_root.clone()));
+        let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
         let (sink, rx) = plane_channel();
-        git_plane.clone().start(sink.clone());
-        gh_plane.clone().start(sink.clone());
+        git_plane.start(sink.clone());
+        gh_plane.start(sink.clone());
         let integrator = Integrator::new(store.clone(), repo_root.clone(), worktrees_root.clone());
         let started = tokio::time::Instant::now();
         let generation = tokio::spawn(async move { integrator.run(rx).await });

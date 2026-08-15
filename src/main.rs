@@ -4,10 +4,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use corrald::adapters::gh_plane::GhPlane;
+use corrald::adapters::git_plane::GitPlane;
 use corrald::adapters::herdr::HerdrAdapter;
 use corrald::adapters::Adapter;
 use corrald::api::AppState;
+use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
+use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
 
 /// Loopback only — no auth in P1, so never bind a routable interface.
@@ -91,6 +95,32 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
 
     let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new(socket_path.clone()));
     adapter.start(store.clone());
+
+    // The two P2 data planes + the integrator that folds their facts onto
+    // the agent records. `CORRAL_REPO_ROOT`/`CORRAL_WORKTREES_ROOT` override
+    // the HOME-derived defaults. The planes keep their push-only contract;
+    // the integrator is a pure channel drain (no polling, no SSE receiver).
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let repo_root = std::env::var("CORRAL_REPO_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(&home).join("Projects/herdr-board"));
+    let worktrees_root = std::env::var("CORRAL_WORKTREES_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"));
+
+    let (sink, rx) = plane_channel();
+    let git_plane: Arc<dyn Plane> =
+        Arc::new(GitPlane::new(repo_root.clone(), worktrees_root.clone()));
+    git_plane.start(sink.clone());
+    let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
+    gh_plane.start(sink.clone());
+    let integrator = Integrator::new(store.clone(), repo_root.clone(), worktrees_root.clone());
+    tokio::spawn(async move { integrator.run(rx).await });
+    tracing::info!(
+        repo_root = %repo_root.display(),
+        worktrees_root = %worktrees_root.display(),
+        "planes live: git watcher + gh poller -> integrator -> store"
+    );
 
     let app = corrald::api::router(AppState { store });
     let listener = tokio::net::TcpListener::bind(addr)

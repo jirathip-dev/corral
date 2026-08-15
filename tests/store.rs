@@ -38,7 +38,7 @@ async fn snapshot_flushes_and_bumps_rev_once_per_batch() {
     let snap = store.snapshot().await;
     assert_eq!(snap.rev, 1, "coalesced batch bumps rev once");
     assert_eq!(snap.agents.len(), 3);
-    assert_eq!(snap.schema_version, 1);
+    assert_eq!(snap.schema_version, 2);
 }
 
 #[tokio::test]

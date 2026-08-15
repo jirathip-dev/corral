@@ -81,7 +81,7 @@ async fn snapshot_returns_json_with_rev_and_agents() {
 
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], 2);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }

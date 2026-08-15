@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
 
@@ -44,15 +44,21 @@ pub struct Store {
     inner: Arc<Mutex<Inner>>,
     tx: broadcast::Sender<Delta>,
     notify: Arc<Notify>,
+    /// Change-version signal: bumped once per applied change batch (WS3's
+    /// convergence trigger — a `watch`, NOT a broadcast receiver, so it
+    /// cannot pin `subscriber_count`/the gh plane's cadence).
+    version: watch::Sender<u64>,
 }
 
 impl Default for Store {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
+        let (version, _) = watch::channel(0);
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             tx,
             notify: Arc::new(Notify::new()),
+            version,
         }
     }
 }
@@ -86,6 +92,57 @@ impl Store {
         }
         inner.pending_any = true;
         self.notify.notify_one();
+        let next = self.version.borrow().wrapping_add(1);
+        let _ = self.version.send(next);
+    }
+
+    /// Atomically read-compare-apply a transformation to every record
+    /// satisfying `f`. Runs under ONE lock acquisition: the predicate, the
+    /// merge (`g` over a clone of the CURRENT record), the changed-check and
+    /// the pending-batch insert all happen before the lock is released, so a
+    /// concurrent writer cannot slip a newer record in between (WS3 F3 —
+    /// the integrator must never overwrite a fresher `ts`/`seq`).
+    ///
+    /// Returns how many records actually changed; unchanged records are not
+    /// re-published. The coalescer owns the rev exactly as with [`Store::apply`].
+    pub async fn update_where(
+        &self,
+        f: impl Fn(&Agent) -> bool,
+        g: impl Fn(&mut Agent),
+    ) -> usize {
+        let mut inner = self.inner.lock().await;
+        let mut changed_records: Vec<Agent> = Vec::new();
+        for agent in inner.agents.values_mut() {
+            if !f(agent) {
+                continue;
+            }
+            let mut next = agent.clone();
+            g(&mut next);
+            if next == *agent {
+                continue;
+            }
+            *agent = next.clone();
+            changed_records.push(next);
+        }
+        let changed = changed_records.len();
+        for next in changed_records {
+            inner.pending_upd.insert(next.agent_id.clone(), next);
+        }
+        if changed > 0 {
+            inner.pending_any = true;
+            self.notify.notify_one();
+            let next = self.version.borrow().wrapping_add(1);
+        let _ = self.version.send(next);
+        }
+        changed
+    }
+
+    /// Subscribe to the change-version signal (WS3 F1: the integrator
+    /// re-applies cached facts when the store changes, so an agent created
+    /// with zero subsequent plane events still converges). A `watch`, not a
+    /// broadcast receiver — it never counts toward `subscriber_count`.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.version.subscribe()
     }
 
     /// Number of live SSE subscribers (drives foreground/background tick).
@@ -142,6 +199,25 @@ impl Store {
     /// waiting_on, which depend on the current state).
     pub async fn get(&self, agent_id: &str) -> Option<Agent> {
         self.inner.lock().await.agents.get(agent_id).cloned()
+    }
+
+    /// Read-only lookup of every record satisfying `f`.
+    ///
+    /// Deliberately does NOT flush pending changes: the coalescer owns the
+    /// rev, so a flush here would turn the plane integrator's event handling
+    /// into a second tick. The integrator (WS3) uses this to map path/repo
+    /// facts onto agent records without holding a broadcast receiver — a
+    /// permanent receiver would pin `subscriber_count` and keep the gh plane
+    /// on its foreground cadence forever.
+    pub async fn matching(&self, f: impl Fn(&Agent) -> bool) -> Vec<Agent> {
+        self.inner
+            .lock()
+            .await
+            .agents
+            .values()
+            .filter(|agent| f(agent))
+            .cloned()
+            .collect()
     }
 
     /// Point-in-time snapshot. Flushes pending changes first so `rev` and the

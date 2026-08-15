@@ -9,7 +9,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Snapshot/delta schema version. Bump on breaking changes; keep additive.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v1: P1 canonical record.
+/// v2 (P2): `Workspace` gained the task-centric read-model fields `ci_status`,
+/// `dirty`, `ahead`, `behind` — all serde-defaulted, so P1-shaped payloads
+/// (and P1 clients reading v2 snapshots) still decode.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
@@ -60,14 +65,41 @@ pub struct WaitingOn {
     pub choices: Vec<String>,
 }
 
-/// Git topology. P1 only fills `worktree_path` (from the source's cwd);
-/// repo/branch/pr_number arrive in P2 (git watcher + gh poller).
+/// CI verdict for the agent's current PR (P2), normalized from the gh plane.
+/// `Option::None` means "no PR/CI data for this branch yet"; `Unknown` is the
+/// gh plane's explicit "cannot tell" verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CiStatus {
+    Success,
+    Failure,
+    Pending,
+    Unknown,
+}
+
+/// Git topology + task-centric read-model fields (P2). P1 fills only
+/// `worktree_path` (from the source's cwd); the git watcher fills
+/// `branch`/`repo` (derived from the worktree path pattern), `dirty`/
+/// `ahead`/`behind`; the gh poller fills `pr_number`/`ci_status`. Every field
+/// defaults so P1-shaped payloads and P1 sources still decode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     pub repo: Option<String>,
     pub branch: Option<String>,
     pub worktree_path: Option<String>,
     pub pr_number: Option<u64>,
+    /// CI verdict for the branch's PR. `None` until the gh plane reports one.
+    #[serde(default)]
+    pub ci_status: Option<CiStatus>,
+    /// Uncommitted changes in the worktree (staged or unstaged).
+    #[serde(default)]
+    pub dirty: bool,
+    /// Commits ahead of the upstream branch.
+    #[serde(default)]
+    pub ahead: u64,
+    /// Commits behind the upstream branch.
+    #[serde(default)]
+    pub behind: u64,
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).

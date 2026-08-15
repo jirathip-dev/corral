@@ -23,12 +23,16 @@ fn sample_agent() -> Agent {
         parent_id: None,
         host: None,
         workspace: Workspace {
-            repo: None,
-            branch: None,
+            repo: Some("project-hearthwild".to_string()),
+            branch: Some("feat-x".to_string()),
             worktree_path: Some(
                 "/Users/jirathip/.herdr/worktrees/project-hearthwild/feat-x".to_string(),
             ),
-            pr_number: None,
+            pr_number: Some(42),
+            ci_status: Some(CiStatus::Success),
+            dirty: true,
+            ahead: 3,
+            behind: 2,
         },
         attachment: Some(Attachment {
             kind: "herdr-pane".to_string(),
@@ -103,7 +107,8 @@ fn snapshot_is_versioned_flat_keyed_records() {
         agents,
     };
     let v = serde_json::to_value(&snap).unwrap();
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], SCHEMA_VERSION);
+    assert_eq!(v["schema_version"], 2);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
 }
@@ -138,4 +143,109 @@ fn herdr_status_mapping_covers_five_tools_states() {
     ] {
         assert_eq!(AgentState::from_herdr_status(herdr), expected);
     }
+}
+
+#[test]
+fn ci_status_serializes_snake_case() {
+    for (status, expected) in [
+        (CiStatus::Success, "success"),
+        (CiStatus::Failure, "failure"),
+        (CiStatus::Pending, "pending"),
+        (CiStatus::Unknown, "unknown"),
+    ] {
+        assert_eq!(serde_json::to_value(status).unwrap(), expected);
+        let back: CiStatus = serde_json::from_value(serde_json::json!(expected)).unwrap();
+        assert_eq!(back, status);
+    }
+}
+
+#[test]
+fn workspace_read_model_fields_serialize() {
+    // P2 task-centric read-model fields (D7) must be present on the wire with
+    // the canonical spellings, inside `workspace` where P1 clients look.
+    let agent = sample_agent();
+    let v = serde_json::to_value(&agent).unwrap();
+    let ws = &v["workspace"];
+    assert_eq!(ws["repo"], "project-hearthwild");
+    assert_eq!(ws["branch"], "feat-x");
+    assert_eq!(ws["pr_number"], 42);
+    assert_eq!(ws["ci_status"], "success");
+    assert_eq!(ws["dirty"], true);
+    assert_eq!(ws["ahead"], 3);
+    assert_eq!(ws["behind"], 2);
+}
+
+#[test]
+fn backwards_compat_p1_agent_decodes_without_read_model_fields() {
+    // AC2: the SCHEMA_VERSION bump is additive — a P1-shaped agent record
+    // with the v2 fields absent must still decode, with defaults.
+    let p1_agent = r#"{
+        "agent_id": "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "blocked",
+        "reason": "waiting_for_approval",
+        "seq": 7,
+        "ts": 1755273000000,
+        "capabilities": ["prompt", "interrupt", "approve", "read_tail", "kill", "attach"],
+        "waiting_on": {"kind": "approve_tool", "prompt": "Approve this change?", "prompt_hash": "sha256:abc", "choices": ["Approve", "Reject"]},
+        "cost": null,
+        "parent_id": null,
+        "host": null,
+        "workspace": {"repo": null, "branch": null, "worktree_path": "/Users/jirathip/.herdr/worktrees/project-hearthwild/feat-x", "pr_number": null},
+        "attachment": {"kind": "herdr-pane", "ref": "wQ:p1"},
+        "display_name": "fix-plush-50",
+        "title": "Fix Blender acceptance gate"
+    }"#;
+    let agent: Agent = serde_json::from_str(p1_agent).expect("P1 agent must decode under v2");
+    assert_eq!(agent.workspace.ci_status, None);
+    assert!(!agent.workspace.dirty);
+    assert_eq!(agent.workspace.ahead, 0);
+    assert_eq!(agent.workspace.behind, 0);
+    assert_eq!(
+        agent.workspace.worktree_path.as_deref(),
+        Some("/Users/jirathip/.herdr/worktrees/project-hearthwild/feat-x")
+    );
+}
+
+#[test]
+fn backwards_compat_p1_snapshot_decodes() {
+    // The full P1 wire shape (schema_version 1, no read-model fields) decodes
+    // under v2 with every agent record intact and the new fields defaulted.
+    let p1_snapshot = r#"{
+        "schema_version": 1,
+        "rev": 12,
+        "generated_at": 1755273000000,
+        "agents": {
+            "herdr:a": {
+                "agent_id": "herdr:a",
+                "source": "herdr",
+                "tool": "claude",
+                "state": "working",
+                "reason": null,
+                "seq": 1,
+                "ts": 1755273000000,
+                "capabilities": ["prompt"],
+                "waiting_on": null,
+                "cost": null,
+                "parent_id": null,
+                "host": null,
+                "workspace": {"repo": null, "branch": null, "worktree_path": "/wt/a", "pr_number": null},
+                "attachment": null,
+                "display_name": null,
+                "title": null
+            }
+        }
+    }"#;
+    let v: serde_json::Value = serde_json::from_str(p1_snapshot).unwrap();
+    assert_eq!(
+        v["schema_version"], 1,
+        "P1 snapshot keeps its own version tag"
+    );
+    let agents: std::collections::BTreeMap<String, Agent> =
+        serde_json::from_value(v["agents"].clone()).expect("P1 agents decode under v2");
+    let a = &agents["herdr:a"];
+    assert_eq!(a.workspace.ci_status, None);
+    assert!(!a.workspace.dirty);
+    assert_eq!((a.workspace.ahead, a.workspace.behind), (0, 0));
 }

@@ -144,6 +144,25 @@ impl Store {
         self.inner.lock().await.agents.get(agent_id).cloned()
     }
 
+    /// Read-only lookup of every record satisfying `f`.
+    ///
+    /// Deliberately does NOT flush pending changes: the coalescer owns the
+    /// rev, so a flush here would turn the plane integrator's event handling
+    /// into a second tick. The integrator (WS3) uses this to map path/repo
+    /// facts onto agent records without holding a broadcast receiver — a
+    /// permanent receiver would pin `subscriber_count` and keep the gh plane
+    /// on its foreground cadence forever.
+    pub async fn matching(&self, f: impl Fn(&Agent) -> bool) -> Vec<Agent> {
+        self.inner
+            .lock()
+            .await
+            .agents
+            .values()
+            .filter(|agent| f(agent))
+            .cloned()
+            .collect()
+    }
+
     /// Point-in-time snapshot. Flushes pending changes first so `rev` and the
     /// agent map are mutually consistent.
     pub async fn snapshot(&self) -> Snapshot {

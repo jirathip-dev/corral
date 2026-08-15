@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 /// v2 (P2): `Workspace` gained the task-centric read-model fields `ci_status`,
 /// `dirty`, `ahead`, `behind` — all serde-defaulted, so P1-shaped payloads
 /// (and P1 clients reading v2 snapshots) still decode.
-pub const SCHEMA_VERSION: u32 = 2;
+/// v3 (P3 D8): `WaitingOn` gained `approval_id` (the claim identity clients
+/// echo in `DrivePayload::Approve`) — serde-defaulted, additive-only.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
@@ -61,6 +63,13 @@ pub struct WaitingOn {
     pub kind: WaitingOnKind,
     pub prompt: String,
     pub prompt_hash: String,
+    /// Claim identity for the live approval (P3 D8): the client echoes it in
+    /// `DrivePayload::Approve`. Stable for one waiting approval
+    /// (`agent_id:prompt_hash`); the source adapter sets it when it emits
+    /// the record. The drive path re-derives it from `agent_id` +
+    /// `prompt_hash` and never trusts this stored copy for validation.
+    #[serde(default)]
+    pub approval_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
 }

@@ -6,6 +6,7 @@
 
 pub mod adapters;
 pub mod api;
+pub mod approve;
 pub mod core;
 pub mod drive;
 pub mod integrate;

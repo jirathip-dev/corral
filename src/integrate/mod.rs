@@ -267,6 +267,13 @@ impl Integrator {
                     if let Some(branch) = &facts.branch {
                         // F7: detached HEAD reports the literal "HEAD" —
                         // never a branch; normalize to None.
+                        //
+                        // TODO(F2, W4 review follow-up): branch is a git-plane
+                        // fact VALUE that serializes to /snapshot and SSE and
+                        // currently bypasses the D9 redactor (a branch label
+                        // like `test-ghp_…` would egress unredacted). Redact
+                        // here at the integrate boundary — facts are keyed by
+                        // path/repo, so matching is unaffected.
                         ws.branch = (branch != "HEAD").then(|| branch.clone());
                     }
                     if let Some(status) = &facts.status {

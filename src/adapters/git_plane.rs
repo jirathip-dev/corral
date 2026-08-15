@@ -118,6 +118,10 @@ struct PlaneState {
     commondir: Option<PathBuf>,
     /// Worktrees currently inside their debounce window.
     pending: HashSet<PathBuf>,
+    /// Worktree paths a rescan skip has already been warned about (once per
+    /// continuous skip period, so a legitimate out-of-scope worktree cannot
+    /// spam the log every sweep).
+    skip_warned: HashSet<PathBuf>,
 }
 
 /// Snapshot of one worktree, re-read on every reconcile.
@@ -295,7 +299,16 @@ impl GitPlane {
         }
         if need_rescan {
             let added = self.maybe_rescan(sink).await;
-            if !added && !self.retry_scheduled.swap(true, Ordering::Relaxed) {
+            // The triggering events were mapped against the pre-rescan
+            // state, so the new worktrees are not in `affected` — debounce
+            // them now or their first observation would wait for the next
+            // sweep (≤10s).
+            for wt in &added {
+                if !affected.contains(wt) {
+                    affected.push(wt.clone());
+                }
+            }
+            if added.is_empty() && !self.retry_scheduled.swap(true, Ordering::Relaxed) {
                 // The rescan found nothing: `git worktree add` registers the
                 // entry while its events are still arriving, so retry once
                 // after the registration settles.
@@ -380,17 +393,17 @@ impl GitPlane {
         }
     }
 
-    /// Throttled registry rescan triggered by an fs event. Returns true when
-    /// the rescan discovered previously-unknown worktrees.
-    async fn maybe_rescan(&self, sink: &PlaneSink) -> bool {
+    /// Throttled registry rescan triggered by an fs event. Returns the
+    /// paths of previously-unknown worktrees the rescan discovered (the
+    /// caller must debounce them).
+    async fn maybe_rescan(&self, sink: &PlaneSink) -> Vec<PathBuf> {
         let now = now_millis();
         let last = self.last_rescan.load(Ordering::Relaxed);
         if now.saturating_sub(last) < RESCAN_THROTTLE_MILLIS {
-            return false;
+            return Vec::new();
         }
         self.last_rescan.store(now, Ordering::Relaxed);
-        let added = self.rescan(sink).await;
-        !added.is_empty()
+        self.rescan(sink).await
     }
 
     /// Debounce one worktree: at most one reconcile per `DEBOUNCE` window,
@@ -410,8 +423,12 @@ impl GitPlane {
                 let mut state = plane.state.lock().unwrap();
                 state.pending.remove(&wt);
             }
+            // Budget clock starts after the debounce (the 300ms window is
+            // outside the 200ms per-event budget) but covers the probe —
+            // the dominant cost — through the emits.
+            let started = Instant::now();
             let probe = probe_worktree(&wt).await;
-            plane.apply_probe(&wt, probe, &sink).await;
+            plane.apply_probe(&wt, started, probe, &sink).await;
         });
     }
 
@@ -432,18 +449,21 @@ impl GitPlane {
                 let state = self.state.lock().unwrap();
                 state.worktrees.keys().cloned().collect()
             };
-            let started = Instant::now();
+            let sweep_started = Instant::now();
             let mut probes = futures::stream::iter(worktrees)
                 .map(|wt| async move {
+                    // Budget clock starts at probe start (the sweep has no
+                    // debounce) and measures through the emits.
+                    let started = Instant::now();
                     let probe = probe_worktree(&wt).await;
-                    (wt, probe)
+                    (wt, started, probe)
                 })
                 .buffer_unordered(MAX_CONCURRENT_PROBES);
-            while let Some((wt, probe)) = probes.next().await {
-                self.apply_probe(&wt, probe, &sink).await;
+            while let Some((wt, started, probe)) = probes.next().await {
+                self.apply_probe(&wt, started, probe, &sink).await;
             }
             debug!(
-                took_ms = started.elapsed().as_millis() as u64,
+                took_ms = sweep_started.elapsed().as_millis() as u64,
                 "git plane: safety-net sweep complete"
             );
         }
@@ -454,8 +474,16 @@ impl GitPlane {
     /// Diff a fresh probe against the cached facts for `wt` and emit only
     /// the events that actually changed. Runs for both the watcher's
     /// debounced batches and the sweep, so the emit surface is identical.
-    async fn apply_probe(&self, wt: &Path, probe: Result<Probe, ProbeError>, sink: &PlaneSink) {
-        let started = Instant::now();
+    /// `started` is the per-event budget clock (probe start for the sweep,
+    /// after the debounce for fs events) — the 200ms budget check covers
+    /// the probe through the emits.
+    async fn apply_probe(
+        &self,
+        wt: &Path,
+        started: Instant,
+        probe: Result<Probe, ProbeError>,
+        sink: &PlaneSink,
+    ) {
         let probe = match probe {
             Ok(p) => p,
             Err(ProbeError::Gone) => {
@@ -546,19 +574,36 @@ impl GitPlane {
         };
         let mut tracked: HashMap<PathBuf, WorktreeEntry> = HashMap::new();
         let mut by_branch: HashMap<String, PathBuf> = HashMap::new();
+        let mut skipped: HashSet<PathBuf> = HashSet::new();
         for entry in entries {
             if !self.watches(&entry.path) {
+                skipped.insert(entry.path.clone());
                 continue;
             }
             if !entry.path.is_dir() {
                 // Listed but the directory is gone (pre-prune state): the
                 // worktree is effectively removed.
+                skipped.insert(entry.path.clone());
                 continue;
             }
             if let Some(branch) = &entry.branch {
                 by_branch.insert(branch.clone(), entry.path.clone());
             }
             tracked.insert(entry.path.clone(), entry);
+        }
+        {
+            // A skipped entry means the plane will never emit facts for it —
+            // make the drop visible (once per continuous skip period).
+            let mut state = self.state.lock().unwrap();
+            state.skip_warned.retain(|p| skipped.contains(p));
+            for path in &skipped {
+                if state.skip_warned.insert(path.clone()) {
+                    warn!(
+                        worktree = %path.display(),
+                        "git plane: worktree listed but skipped (outside the watched set or directory missing)"
+                    );
+                }
+            }
         }
         let commondir = tracked
             .get(&self.repo_root)
@@ -632,31 +677,8 @@ impl GitPlane {
     async fn scan_worktrees(&self) -> Result<Vec<WorktreeEntry>, String> {
         let out = run_git(&self.repo_root, &["worktree", "list", "--porcelain"]).await?;
         let mut entries = Vec::new();
-        let mut cur: Option<(PathBuf, Option<String>)> = None;
-        for line in out.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                if let Some((path, branch)) = cur.take() {
-                    entries.push(WorktreeEntry {
-                        gitdir: resolve_gitdir(&path),
-                        path,
-                        branch,
-                    });
-                }
-                continue;
-            }
-            if let Some(p) = line.strip_prefix("worktree ") {
-                cur = Some((PathBuf::from(p.trim()), None));
-                continue;
-            }
-            let Some((_, branch)) = cur.as_mut() else {
-                continue;
-            };
-            if let Some(b) = line.strip_prefix("branch refs/heads/") {
-                *branch = Some(b.trim().to_string());
-            }
-        }
-        if let Some((path, branch)) = cur.take() {
+        for (path, branch) in parse_worktree_list(&out) {
+            let path = resolve_possibly_escaped(&path);
             entries.push(WorktreeEntry {
                 gitdir: resolve_gitdir(&path),
                 path,
@@ -670,6 +692,114 @@ impl GitPlane {
 // ---------------------------------------------------------------------------
 // git plumbing (read-only)
 // ---------------------------------------------------------------------------
+
+/// Parse `git worktree list --porcelain` into `(path, branch)` pairs. The
+/// path is kept RAW (`git` prints it verbatim — see `parse_worktree_path`);
+/// branch is `None` for detached worktrees.
+fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)> {
+    let mut entries = Vec::new();
+    let mut cur: Option<(PathBuf, Option<String>)> = None;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            if let Some(entry) = cur.take() {
+                entries.push(entry);
+            }
+            continue;
+        }
+        if let Some(p) = line.strip_prefix("worktree ") {
+            cur = Some((PathBuf::from(p.trim()), None));
+            continue;
+        }
+        let Some((_, branch)) = cur.as_mut() else {
+            continue;
+        };
+        if let Some(b) = line.strip_prefix("branch refs/heads/") {
+            *branch = Some(b.trim().to_string());
+        }
+    }
+    if let Some(entry) = cur.take() {
+        entries.push(entry);
+    }
+    entries
+}
+
+/// Resolve a porcelain worktree path to the path that actually exists.
+///
+/// `git worktree list --porcelain` prints paths RAW — verified against the
+/// git source (`printf("worktree %s%c", wt->path, ...)` in
+/// `builtin/worktree.c`, stable across versions; a space or tab in a path
+/// comes through as the literal byte, confirmed with `od -c`). So the raw
+/// path is used as-is whenever it exists on disk — a literal `\t` or `\f`
+/// sequence in a real path must never be rewritten.
+///
+/// The unescape below is a DEFENSIVE fallback for the (currently
+/// hypothetical) case where a git build starts C-escaping the path: the
+/// raw form then won't exist on disk, and the unescaped variant is tried.
+/// If the raw path exists, it always wins.
+fn resolve_possibly_escaped(raw: &Path) -> PathBuf {
+    if raw.is_dir() {
+        return raw.to_path_buf();
+    }
+    match unescape_worktree_path(raw.to_string_lossy().as_ref()) {
+        Some(unescaped) => {
+            let alt = PathBuf::from(unescaped);
+            if alt.is_dir() {
+                alt
+            } else {
+                raw.to_path_buf()
+            }
+        }
+        None => raw.to_path_buf(),
+    }
+}
+
+/// Decode git's C-style quoting (`\b \t \n \v \f \r \0 \" \\ \NNN` octal),
+/// used only as the fallback above. Octal escapes are raw UTF-8 BYTES (git
+/// quotes `café` as `caf\303\251`), so the output is decoded as UTF-8 at
+/// the end. Unknown escapes are kept literally — a path containing a real
+/// backslash must never be corrupted by this. Returns `None` when the
+/// string has no backslash, is malformed, or does not decode as UTF-8.
+fn unescape_worktree_path(s: &str) -> Option<String> {
+    if !s.contains('\\') {
+        return None;
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next()? {
+            '0' => out.push(0),
+            'b' => out.push(0x08),
+            't' => out.push(b'\t'),
+            'n' => out.push(b'\n'),
+            'v' => out.push(0x0b),
+            'f' => out.push(0x0c),
+            'r' => out.push(b'\r'),
+            '"' => out.push(b'"'),
+            '\\' => out.push(b'\\'),
+            ' ' => out.push(b' '),
+            d if d.is_ascii_digit() => {
+                let mut octal = d.to_digit(8)?;
+                for _ in 0..2 {
+                    octal = octal * 8 + chars.next()?.to_digit(8)?;
+                }
+                out.push(u8::try_from(octal).ok()?);
+            }
+            other => {
+                // Not a git escape sequence: keep the backslash literally.
+                out.push(b'\\');
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
 
 /// Resolve the gitdir of a worktree root. Handles both forms:
 /// - `.git` as a DIRECTORY (main checkout), and
@@ -720,6 +850,10 @@ async fn run_git(wt: &Path, args: &[&str]) -> Result<String, String> {
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // A timed-out `git` must not orphan the subprocess: `Child` is
+            // not killed on drop unless asked, and the timeout branch below
+            // drops the future (and with it the Child).
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -876,33 +1010,75 @@ mod tests {
                    worktree /tmp/detached-wt\n\
                    HEAD 3f3d7f9298773ba15d047e159691e7f072d970b4\n\
                    detached\n";
-        let mut entries = Vec::new();
-        let mut cur: Option<(PathBuf, Option<String>)> = None;
-        for line in out.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                if let Some((path, branch)) = cur.take() {
-                    entries.push((path, branch));
-                }
-                continue;
-            }
-            if let Some(p) = line.strip_prefix("worktree ") {
-                cur = Some((PathBuf::from(p.trim()), None));
-                continue;
-            }
-            let Some((_, branch)) = cur.as_mut() else { continue };
-            if let Some(b) = line.strip_prefix("branch refs/heads/") {
-                *branch = Some(b.trim().to_string());
-            }
-        }
-        if let Some((path, branch)) = cur.take() {
-            entries.push((path, branch));
-        }
+        let entries = parse_worktree_list(out);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].0, PathBuf::from("/Users/jirathip/Projects/herdr-board"));
         assert_eq!(entries[0].1.as_deref(), Some("main"));
         assert_eq!(entries[1].1.as_deref(), Some("ws1/git-plane"));
         assert_eq!(entries[2].1, None, "detached worktree has no branch");
+    }
+
+    #[test]
+    fn parses_porcelain_paths_with_special_characters() {
+        // git prints worktree paths RAW (no C-escaping) — a space or tab is
+        // the literal byte, verified against `od -c` on real output. The
+        // parser must round-trip them without mangling.
+        let out = "worktree /Users/jirathip/.herdr/worktrees/herdr-board/wt one\n\
+                   branch refs/heads/feat/space\n\
+                   \n\
+                   worktree /tmp/wt\twith\ttab\n\
+                   branch refs/heads/feat/tab\n\
+                   \n\
+                   worktree /tmp/wt\"quote\n\
+                   branch refs/heads/feat/quote\n";
+        let entries = parse_worktree_list(out);
+        assert_eq!(
+            entries[0].0,
+            PathBuf::from("/Users/jirathip/.herdr/worktrees/herdr-board/wt one"),
+            "space in path survives raw"
+        );
+        assert_eq!(entries[1].0, PathBuf::from("/tmp/wt\twith\ttab"), "tab in path survives raw");
+        assert_eq!(entries[2].0, PathBuf::from("/tmp/wt\"quote"));
+    }
+
+    #[test]
+    fn unescapes_c_style_paths_as_fallback_only() {
+        // Defensive fallback: decode git's C-style escapes only for paths
+        // that do not exist raw (git does not emit these today).
+        assert_eq!(
+            unescape_worktree_path(r"/tmp/wt\ one").as_deref(),
+            Some("/tmp/wt one"),
+            "escaped space decodes"
+        );
+        assert_eq!(
+            unescape_worktree_path(r"/tmp/wt\ttab").as_deref(),
+            Some("/tmp/wt\ttab"),
+            "escaped tab decodes"
+        );
+        assert_eq!(
+            unescape_worktree_path(r"/tmp/caf\303\251").as_deref(),
+            Some("/tmp/caf\u{e9}"),
+            "octal escape decodes"
+        );
+        // A REAL path containing a backslash sequence must never be
+        // rewritten: raw existence wins.
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-esc-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let raw = root.join("wt\\ttab"); // literal backslash + "ttab"
+        fs::create_dir_all(&raw).unwrap();
+        let real = fs::canonicalize(&raw).unwrap();
+        assert_eq!(
+            resolve_possibly_escaped(&real),
+            real,
+            "existing raw path is used as-is, never unescaped"
+        );
+        // Non-existent raw path with escape-like content → unescaped
+        // variant wins only when it exists.
+        assert_eq!(resolve_possibly_escaped(Path::new("/nonexistent/raw")), PathBuf::from("/nonexistent/raw"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

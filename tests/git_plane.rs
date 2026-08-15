@@ -177,6 +177,42 @@ async fn temp_repo_commit_emits_events_under_second() {
         "DirtyChanged(clean) for {wt1:?} after commit"
     );
 
+    // Special-character worktree paths (regression for S2-1): git prints
+    // porcelain paths raw (space literal, tab literal — verified with od -c
+    // and the git source), and the plane must track them, not drop them.
+    let wt2 = wts.join("wt 2 with space");
+    git(&repo, &["worktree", "add", &wt2.to_string_lossy(), "-b", "feat/space"]);
+    let wt2 = fs::canonicalize(&wt2).unwrap();
+    assert!(
+        wait_for(
+            &mut rx,
+            |e| matches!(
+                e,
+                PlaneEvent::Git(GitEvent::WorktreeAdded { worktree }) if worktree == &wt2
+            ),
+            Duration::from_secs(5),
+        )
+        .await
+        .is_some(),
+        "WorktreeAdded for space-path worktree {wt2:?}"
+    );
+    let wt3 = wts.join("wt with\ttab");
+    git(&repo, &["worktree", "add", &wt3.to_string_lossy(), "-b", "feat/tab"]);
+    let wt3 = fs::canonicalize(&wt3).unwrap();
+    assert!(
+        wait_for(
+            &mut rx,
+            |e| matches!(
+                e,
+                PlaneEvent::Git(GitEvent::WorktreeAdded { worktree }) if worktree == &wt3
+            ),
+            Duration::from_secs(5),
+        )
+        .await
+        .is_some(),
+        "WorktreeAdded for tab-path worktree {wt3:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&root);
 }
 

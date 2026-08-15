@@ -20,6 +20,25 @@
 //! a tail scrape): while herdr reports the agent `blocked`, a matched line
 //! becomes the canonical `waiting_on` record.
 //! Reconnects with backoff; identity maps and seqs survive reconnects.
+//!
+//! ## Secret redaction (D9) — at the boundary, before bytes leave the machine
+//!
+//! Every pane-derived text field (waiting_on prompt/choices, reason, title,
+//! display name) passes through [`crate::core::redact::redact`] BEFORE it
+//! becomes a canonical record. Everything downstream (snapshot, SSE, drive
+//! responses, audit entries) serializes the store, so the output is redacted
+//! by construction. Paths and pane ids are identity, never redacted. A
+//! future W1 `read_tail` result path must apply `redact` to the returned
+//! text before it leaves the machine.
+//!
+//! ## Drive policy for `unknown` state
+//!
+//! `AgentState::Unknown` is first-class in the read model (any herdr status
+//! outside idle/working/blocked/done maps to it). Drive gating keys off the
+//! pane mapping, NOT the state: an Unknown-state agent whose pane is still
+//! tracked is drivable (its pane exists — prompt/interrupt/read_tail work),
+//! and an agent with no mapping is refused with the typed
+//! [`DriveError::UnknownAgent`]. A command never panics on Unknown state.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -40,6 +59,7 @@ use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::core::model::{
     Agent, AgentState, Attachment, Change, WaitingOn, WaitingOnKind, Workspace, CAPABILITIES,
 };
+use crate::core::redact::redact;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 
@@ -666,8 +686,8 @@ impl HerdrAdapter {
                 kind: "herdr-pane".to_string(),
                 reference: pane_id.to_string(),
             }),
-            display_name,
-            title,
+            display_name: display_name.map(|name| redact(&name).into_owned()),
+            title: title.map(|t| redact(&t).into_owned()),
         }
     }
 
@@ -864,7 +884,7 @@ impl HerdrAdapter {
         };
         let agent_state =
             AgentState::from_herdr_status(ev.agent_status.as_deref().unwrap_or("unknown"));
-        let title = ev.title.clone();
+        let title = ev.title.clone().map(|t| redact(&t).into_owned());
         let labels = ev.state_labels.clone();
         self.update_record(store, &agent_id, move |agent| {
             agent.state = agent_state;
@@ -1027,23 +1047,29 @@ fn pane_subscriptions(pane_id: &str) -> Vec<Value> {
 
 /// Derive the human reason from herdr's state_labels. HashMap iteration
 /// order is arbitrary, so keys are sorted first — a multi-label reason must
-/// be deterministic for a given input.
+/// be deterministic for a given input. Pane-derived text is redacted before
+/// it enters the canonical record (D9).
 fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
     let mut keys: Vec<&String> = labels.keys().collect();
     keys.sort();
     keys.first().map(|k| {
         let v = &labels[*k];
-        if v.is_empty() {
+        let reason = if v.is_empty() {
             (*k).clone()
         } else {
             format!("{k}: {v}")
-        }
+        };
+        redact(&reason).into_owned()
     })
 }
 
 /// Classify a matched output line into the canonical waiting_on record.
+/// The prompt and the choice buffer are pane output: redacted at this
+/// boundary (D9) so the stored prompt, its hash, and the serialized output
+/// never carry secret-shaped text. The hash covers the redacted prompt —
+/// host and client hash the same bytes the client sees.
 fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
-    let prompt = matched_line.trim().to_string();
+    let prompt = redact(matched_line.trim()).into_owned();
     let lower = prompt.to_lowercase();
     let kind = if ["approve", "approval", "permission", "allow"]
         .iter()
@@ -1062,7 +1088,7 @@ fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
         kind,
         prompt,
         prompt_hash: hash,
-        choices: extract_choices(read_text),
+        choices: extract_choices(redact(read_text).as_ref()),
     }
 }
 
@@ -1357,6 +1383,112 @@ mod tests {
         let text = "1. Approve\n2. Reject and comment\n3. Edit files";
         assert_eq!(extract_choices(text), vec!["Approve", "Reject and comment", "Edit files"]);
         assert!(extract_choices("nothing here").is_empty());
+    }
+
+    #[test]
+    fn waiting_on_redacts_pane_text_at_the_boundary() {
+        // The matched line carries a fake secret: the stored prompt and the
+        // hash must cover the REDACTED form — the exact bytes a client sees.
+        let w = classify_waiting_on("Approve deploy with token ghp_yyy?", "");
+        assert_eq!(w.prompt, "Approve deploy with token [REDACTED]?");
+        assert_eq!(w.prompt_hash, classify_waiting_on("Approve deploy with token [REDACTED]?", "").prompt_hash);
+
+        // Choice buffer is pane output too.
+        let w = classify_waiting_on("Which env?", "1. prod: API_KEY=abc\n2. staging\n");
+        assert_eq!(w.choices, vec!["prod: API_KEY=[REDACTED]", "staging"]);
+
+        // Ordinary prose prompts are untouched by redaction.
+        let w = classify_waiting_on("Do you want to proceed?", "");
+        assert_eq!(w.prompt, "Do you want to proceed?");
+    }
+
+    #[test]
+    fn reason_and_title_redact_pane_derived_text() {
+        let mut labels = HashMap::new();
+        labels.insert("waiting_for_approval".to_string(), "run ghp_zzz now".to_string());
+        assert_eq!(
+            reason_from_labels(&labels).as_deref(),
+            Some("waiting_for_approval: run [REDACTED] now")
+        );
+        labels.insert("plain".to_string(), "nothing sensitive".to_string());
+        assert_eq!(
+            reason_from_labels(&labels).as_deref(),
+            Some("plain: nothing sensitive"),
+            "sorted first key wins; prose reasons pass through"
+        );
+    }
+
+    #[tokio::test]
+    async fn matched_output_with_secret_lands_redacted_in_the_store() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let agent: AgentInfoWire = serde_json::from_value(fixture_claude()).unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+
+        let pane_id = "wQ:p1";
+        let status = serde_json::from_value::<StatusChangedWire>(json!({
+            "pane_id": pane_id,
+            "agent_status": "blocked",
+            "agent": "claude",
+            "title": "Setup AWS key AKIA1234567890ABCDEF now",
+            "state_labels": {"waiting_for_input": ""}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&status, &store).await;
+
+        let matched = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": pane_id,
+            "matched_line": "  Approve with sk-ant-api03-AB12cdEF34ghIJ56klMN78op?",
+            "read": {"text": "1. Approve\n2. Reject\n"}
+        }))
+        .unwrap();
+        adapter.handle_output_matched(&matched, &store).await;
+
+        let record = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
+        assert_eq!(
+            record.title.as_deref(),
+            Some("Setup AWS key [REDACTED] now"),
+            "title redacted on ingest"
+        );
+        let w = record.waiting_on.expect("waiting_on set while blocked");
+        assert_eq!(w.prompt, "Approve with [REDACTED]?");
+        assert!(!w.prompt_hash.contains("sk-ant"), "hash covers the redacted prompt only");
+    }
+
+    #[tokio::test]
+    async fn unknown_state_flows_through_read_path() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        // pane.agent_detected registers the pane with Unknown state.
+        adapter
+            .register_agent_pane("uX:p1", "opencode", AgentState::Unknown, &store)
+            .await;
+        let snap = store.snapshot().await;
+        let agent = snap.agents.get("herdr:pane:uX:p1").expect("detected agent record");
+        assert_eq!(agent.state, AgentState::Unknown, "Unknown is a first-class state");
+        assert!(adapter.knows_agent(&agent.agent_id));
+    }
+
+    #[tokio::test]
+    async fn drive_against_unknown_state_agent_is_typed_not_a_crash() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter
+            .register_agent_pane("uX:p1", "opencode", AgentState::Unknown, &store)
+            .await;
+        let snap = store.snapshot().await;
+        let agent = snap.agents.get("herdr:pane:uX:p1").expect("detected agent record");
+        assert_eq!(agent.state, AgentState::Unknown);
+
+        // A tracked pane in Unknown state is drivable (drive gates on the
+        // pane mapping, not the state): Ok, never a crash. The spawned rpc
+        // task fails to connect to /nonexistent.sock and only logs.
+        let result = adapter.drive(&agent.agent_id, DriveCommand::Prompt { text: "hi".into() });
+        assert!(result.is_ok(), "drive on an unknown-state agent must be Ok: {result:?}");
+
+        // An agent with no pane mapping gets the typed error.
+        let err = adapter.drive("herdr:pane:absent", DriveCommand::Prompt { text: "hi".into() });
+        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "herdr:pane:absent"));
     }
 
     #[test]

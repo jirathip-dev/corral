@@ -1068,9 +1068,19 @@ fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
 /// boundary (D9) so the stored prompt, its hash, and the serialized output
 /// never carry secret-shaped text. The hash covers the redacted prompt —
 /// host and client hash the same bytes the client sees.
+///
+/// F4 (re-review): the kind is classified from the RAW matched line before
+/// redaction, so a secret span swallowing the keyword cannot degrade
+/// ApproveTool → AnswerQuestion.
+///
+/// TODO(F3, lands with W2's claim flow): pin the hash contract — add a
+/// `REDACT_VERSION` constant and state in drive/mod.rs that the client MUST
+/// hash the snapshot `prompt` string byte-for-byte (never the raw pane
+/// line), so a future redaction rule change cannot silently break in-flight
+/// approvals.
 fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
-    let prompt = redact(matched_line.trim()).into_owned();
-    let lower = prompt.to_lowercase();
+    let raw_prompt = matched_line.trim();
+    let lower = raw_prompt.to_lowercase();
     let kind = if ["approve", "approval", "permission", "allow"]
         .iter()
         .any(|k| lower.contains(k))
@@ -1081,6 +1091,7 @@ fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
     } else {
         WaitingOnKind::AnswerQuestion
     };
+    let prompt = redact(raw_prompt).into_owned();
     let mut hasher = Sha256::new();
     hasher.update(prompt.as_bytes());
     let hash = format!("sha256:{}", hex(&hasher.finalize()));
@@ -1400,6 +1411,16 @@ mod tests {
         // Ordinary prose prompts are untouched by redaction.
         let w = classify_waiting_on("Do you want to proceed?", "");
         assert_eq!(w.prompt, "Do you want to proceed?");
+
+        // F4 (re-review): kind classifies from the RAW line, so a secret
+        // span swallowing the keyword cannot degrade the kind.
+        let w = classify_waiting_on("ghp_yyy approve?", "");
+        assert_eq!(w.kind, WaitingOnKind::ApproveTool);
+        assert_eq!(w.prompt, "[REDACTED] approve?");
+        let w = classify_waiting_on("Proceed ghp_yyy? [y/n]", "");
+        assert_eq!(w.kind, WaitingOnKind::Menu);
+        let w = classify_waiting_on("sk-ant-xxx deploy? [y/n]", "");
+        assert_eq!(w.kind, WaitingOnKind::Menu);
     }
 
     #[test]

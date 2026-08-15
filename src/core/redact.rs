@@ -29,16 +29,25 @@
 //!    secret by this rule and passes through untouched.
 //! 5. `.env`-shaped assignments — `NAME=VALUE` where NAME (underscore-
 //!    separated segments, trailing digits ignored) contains a secret-ish
-//!    segment: TOKEN, SECRET, PASSWORD, PASSWD, KEY, CREDENTIAL, API, AUTH.
-//!    The VALUE (rest of the line) is redacted; the NAME stays visible so
-//!    the display says which setting was scrubbed. Empty values are kept.
+//!    segment: TOKEN, SECRET, PASSWORD, PASSWD, KEY, CREDENTIAL, API, AUTH
+//!    AND the name is conventionally env-shaped (ALL-CAPS with at least one
+//!    `_`), OR the value is a ≥ 8-char whitespace-free token. The VALUE
+//!    (rest of the line) is redacted; the NAME stays visible so the display
+//!    says which setting was scrubbed. Empty values are kept. The shape gate
+//!    keeps ordinary prose (`set debug key=false`, `?token=abc&a=1`)
+//!    untouched.
 //!
-//! Prefix rules (1-3) only fire at a word boundary — never mid-token — so
-//! prose like "mysk-ant-thing" is untouched.
+//! Prefix rules (1-3) fire at a word boundary — never mid-word — where
+//! "mid-word" means an alphanumeric predecessor (`mysk-ant-abc` passes).
+//! A token glued to a hyphen/underscore (`delete-ghp_yyy`) IS redacted: that
+//! is the realistic "inline the credential" shape, and the conservative
+//! direction over-redacts hyphenated words rather than leak a PAT.
 //!
 //! Not covered (by design): paths/identifiers (`worktree_path`, pane ids),
-//! which are identity, not display text; `github_pat_*` tokens are only
-//! caught when their body is long enough for rule 4.
+//! which are identity, not display text; git-plane-derived `branch`/`repo`
+//! values (F2 follow-up: redact at the integrate boundary or accept the
+//! pane-text scope); `github_pat_*` tokens are only caught when their body
+//! is long enough for rule 4.
 
 use std::borrow::Cow;
 
@@ -52,6 +61,11 @@ const AWS_KEY_PREFIX: &str = "AKIA";
 /// Conservative high-entropy threshold: runs shorter than this are kept even
 /// when mixed-case (short IDs are common in prose).
 const HIGH_ENTROPY_MIN_LEN: usize = 24;
+
+/// Rule 5's value-length fallback: a secret-named assignment with a
+/// whitespace-free value this long is redacted even when the name is not
+/// ALL-CAPS-with-underscore.
+const ENV_VALUE_MIN_LEN: usize = 8;
 
 /// Secret-ish `.env` name segments (compared case-insensitively, after
 /// trimming trailing digits and splitting on `_`).
@@ -127,10 +141,16 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
 /// one continuation character. Returns the full token span. `at_span_edge`
 /// marks a position where a previous rule already matched (the char before
 /// is the tail of that match, not a mid-word position).
+///
+/// Boundary rule (F1, re-review): only an alphanumeric predecessor counts as
+/// mid-word. A token glued to a hyphen/underscore (`delete-ghp_yyy`,
+/// `-AKIA…`, `x_ghp_…`) IS redacted — those are the realistic
+/// "inline the credential" shapes, and over-redacting a hyphenated word is
+/// the conservative direction. `mysk-ant-abc` (alnum glue) still passes.
 fn prefix_token_at(input: &str, i: usize, at_span_edge: bool) -> Option<(usize, usize)> {
     let bytes = input.as_bytes();
-    if !at_span_edge && i > 0 && is_token_char(bytes[i - 1]) {
-        return None; // mid-token: not a standalone secret
+    if !at_span_edge && i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
+        return None; // mid-word: not a standalone secret
     }
     let rest = &bytes[i..];
     let (prefix, kind) = if rest.starts_with(ANTHROPIC_PREFIX.as_bytes()) {
@@ -177,6 +197,13 @@ enum PrefixKind {
 /// Rule 5: a secret-named `NAME=VALUE` assignment — redact the VALUE (rest
 /// of the line after `=`), keep `NAME=` visible so the display says which
 /// setting was scrubbed.
+///
+/// Tightened (F5, re-review): to avoid swallowing ordinary prose
+/// (`set debug key=false`, `?token=abc&a=1`), the name must be secret-ish
+/// AND conventionally env-shaped — all-uppercase with at least one `_` — OR
+/// the value must be a ≥ 8-char token (no whitespace: real .env values are
+/// single tokens, while prose "values" run to end-of-line with spaces).
+/// Trade (accepted): lowercase `api_key=xyz` passes through.
 fn env_value_at(input: &str, i: usize) -> Option<(usize, usize)> {
     let bytes = input.as_bytes();
     if !is_ident_start(bytes[i]) || (i > 0 && is_ident_char(bytes[i - 1])) {
@@ -193,6 +220,12 @@ fn env_value_at(input: &str, i: usize) -> Option<(usize, usize)> {
     while k < bytes.len() && bytes[k] != b'\n' {
         k += 1;
     }
+    let value = &input[j + 1..k];
+    if !name_is_env_shaped(&input[i..j])
+        && !(value.len() >= ENV_VALUE_MIN_LEN && !value.bytes().any(|b| b.is_ascii_whitespace()))
+    {
+        return None;
+    }
     (k > j + 1).then_some((j + 1, k))
 }
 
@@ -203,6 +236,16 @@ fn name_is_secret(name: &str) -> bool {
         let segment = segment.trim_end_matches(|c: char| c.is_ascii_digit());
         SECRET_NAME_SEGMENTS.contains(&segment)
     })
+}
+
+/// Rule 5's shape test: conventionally env-shaped names are ALL-CAPS with at
+/// least one underscore (`API_KEY`, `AWS_SECRET_ACCESS_KEY`, `SHA256_KEY`).
+/// Bare all-caps names (`TOKEN`, `KEY`) qualify only via a long value.
+fn name_is_env_shaped(name: &str) -> bool {
+    name.contains('_')
+        && name
+            .bytes()
+            .all(|b| !b.is_ascii_alphabetic() || b.is_ascii_uppercase())
 }
 
 /// Rule 4: a maximal alphanumeric run of ≥ 24 chars containing lowercase AND
@@ -279,6 +322,22 @@ mod tests {
     }
 
     #[test]
+    fn tokens_glued_to_hyphen_or_underscore_are_redacted() {
+        // F1 (re-review): only an ALNUM predecessor counts as mid-word.
+        // Hyphen/underscore glue is the realistic "inline the credential"
+        // shape and must not escape.
+        assert_eq!(redacted("-ghp_yyy"), "-[REDACTED]");
+        assert_eq!(redacted("x_ghp_yyy"), "x_[REDACTED]");
+        assert_eq!(redacted(&format!("delete-{GHP}")), "delete-[REDACTED]");
+        assert_eq!(redacted("-AKIAZZZZ"), "-[REDACTED]");
+        assert_eq!(redacted("-sk-ant-xxx"), "-[REDACTED]");
+        // Alnum glue is still mid-word (documented trade): a real word
+        // cannot contain an inline credential.
+        assert_eq!(redacted("x9ghp_yyy"), "x9ghp_yyy");
+        assert_eq!(redacted("mysk-ant-abc"), "mysk-ant-abc");
+    }
+
+    #[test]
     fn aws_access_key_ids_are_redacted() {
         assert_eq!(redacted(AKIA), "[REDACTED]");
         assert_eq!(redacted("AKIAZZZZ"), "[REDACTED]", "short form still a key id");
@@ -336,9 +395,29 @@ mod tests {
             "AWS_SECRET_ACCESS_KEY=[REDACTED]"
         );
         assert_eq!(redacted("DB_PASSWORD=postgres"), "DB_PASSWORD=[REDACTED]");
-        assert_eq!(redacted("KEY1=abc"), "KEY1=[REDACTED]", "trailing digits trimmed");
+        assert_eq!(
+            redacted("SHA256_KEY=abc123"),
+            "SHA256_KEY=[REDACTED]",
+            "ALL-CAPS with underscore is env-shaped even when short"
+        );
         assert_eq!(redacted("run with API_KEY=abc123 now"), "run with API_KEY=[REDACTED]");
         assert_eq!(redacted("PASSWORD="), "PASSWORD=", "empty value has nothing to redact");
+        // F5 (re-review): the shape gate. Bare all-caps names and lowercase
+        // names qualify only via a long value; short ones pass through.
+        assert_eq!(redacted("KEY1=abc"), "KEY1=abc", "no underscore, short value");
+        assert_eq!(redacted("KEY1=abcdefgh"), "KEY1=[REDACTED]", "long value qualifies");
+        assert_eq!(redacted("TOKEN=abcdefgh"), "TOKEN=[REDACTED]", "long value qualifies");
+        assert_eq!(redacted("api_key=abc123"), "api_key=abc123", "lowercase name, short value (accepted trade)");
+        assert_eq!(redacted("key=abcdefgh"), "key=[REDACTED]", "long value qualifies");
+    }
+
+    #[test]
+    fn env_rule_does_not_swallow_ordinary_prose() {
+        // F5 (re-review): these are prose, not .env files.
+        assert_eq!(redacted("set debug key=false to continue"), "set debug key=false to continue");
+        assert_eq!(redacted("?token=abc&a=1"), "?token=abc&a=1");
+        assert_eq!(redacted("the key=value pair syntax is handy"), "the key=value pair syntax is handy");
+        assert_eq!(redacted("pass=1s the ball to the wing"), "pass=1s the ball to the wing");
     }
 
     #[test]

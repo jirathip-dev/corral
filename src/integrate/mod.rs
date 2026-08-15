@@ -18,26 +18,32 @@
 //!   identity is the branch identity here: branch and commit come from the
 //!   same git probe). `pr_number` + `ci_status` are set from that PR.
 //!   [`WorktreeAdded`](GitEvent::WorktreeAdded)/[`WorktreeRemoved`](GitEvent::WorktreeRemoved)
-//!   are topology facts: no agent mapping, no synthetic agents.
+//!   are topology facts: no synthetic agents; a removal RE-APPLIES EMPTY
+//!   facts (git-derived fields reset, PR binding dropped).
 //!
-//! ## Convergence ("unknown-path events")
+//! ## Convergence (WS3 F1: not event-gated)
 //!
 //! Facts are CACHED by path/repo. Every event re-applies the FULL cached
-//! fact set for that path/repo onto the currently-matching agents, so an
-//! agent that appears after its worktree's facts were cached converges on
-//! the next event touching that path/repo. The daemon never polls for this:
-//! the git plane's 10s sweep and the gh plane's polls are the only re-read
-//! sources, and the integrator itself is pure push (`channel.recv`).
+//! fact set for that path/repo onto the currently-matching agents — and the
+//! integrator also re-applies whenever the [`Store`] version signal advances
+//! (any herdr upsert, removal, or the integrator's own merges). An agent
+//! that appears after its worktree's facts were cached converges IMMEDIATELY,
+//! with zero subsequent plane events. The signal is a `watch` channel, not a
+//! broadcast receiver, so `subscriber_count` stays a true SSE measure and
+//! the daemon adds no polling anywhere.
 //!
 //! ## Guards (WS3 hard gates)
 //!
 //! - **No broadcast receiver**: the integrator never calls
-//!   [`Store::subscribe`]. [`Store::subscriber_count`] must stay a true
-//!   measure of live SSE connections or the gh plane's cadence rule breaks;
-//!   only `Store::matching`/`get`/`apply` are used.
-//! - **No second tick**: [`Store::matching`] is deliberately non-flushing,
-//!   so the existing 250ms/2s coalescer alone owns the rev. One monotonic
-//!   rev covers all planes.
+//!   [`Store::subscribe`]. Only [`Store::matching`]/[`Store::update_where`]/
+//!   [`Store::changes`]/[`Store::get`] are used.
+//! - **No second tick**: [`Store::matching`]/[`Store::update_where`] are
+//!   non-flushing, so the existing 250ms/2s coalescer alone owns the rev.
+//!   One monotonic rev covers all planes.
+//! - **Atomic read-compare-apply** (WS3 F3): merges run through
+//!   [`Store::update_where`] — predicate, merge, change-check and pending
+//!   insert under one lock, so the integrator can never overwrite a fresher
+//!   record (`ts`/`seq` never regress).
 //! - **ci_status fidelity (WS2 policy, G4)**: `ci_status` is WS2's collapse
 //!   verdict, mapped VERBATIM (`SUCCESS`→[`CiStatus::Success`] etc.). WS2
 //!   policy lets recognized check items decide over the GitHub aggregate, so
@@ -47,12 +53,16 @@
 //! ## Application rules
 //!
 //! - A record is upserted only when the merged candidate differs from the
-//!   current one (`ts`/`seq` are herdr-owned and left untouched), so
-//!   unchanged facts cannot fabricate deltas.
+//!   current one, so unchanged facts cannot fabricate deltas.
 //! - `pr_number`/`ci_status` reset to `None` only when the agent's bound PR
 //!   leaves the repo's OPEN set; a still-open bound PR survives head-SHA lag
 //!   (unpushed local commits, GitHub propagation) instead of flashing to
 //!   `None` for a poll cycle.
+//! - Detached HEAD (the git plane reports the literal `"HEAD"`) normalizes
+//!   to `branch: None` (F7).
+//! - Paths are compared in canonical form when the raw spellings differ
+//!   (F5), so a symlinked `HOME` cannot split the plane's canonical event
+//!   paths from herdr's raw cwd paths.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,7 +72,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::core::events::{GhRepoState, GitEvent, GitStatus, PlaneEvent};
-use crate::core::model::{Change, CiStatus, Workspace};
+use crate::core::model::{CiStatus, Workspace};
 use crate::core::store::Store;
 
 /// Last-known git facts for one worktree path (the re-apply unit).
@@ -82,13 +92,14 @@ impl GitFacts {
 
 /// Consumes [`PlaneEvent`]s and folds them onto agent records in the store.
 ///
-/// One task per daemon, draining the combined plane channel. Event-driven
-/// only: no timers, no polling, no broadcast subscription.
+/// One task per daemon generation, draining the combined plane channel and
+/// the store's change-version signal. Event-driven only: no timers, no
+/// polling, no broadcast subscription.
 pub struct Integrator {
     store: Store,
     /// Main checkout (repo root) — the path pattern's anchor.
     repo_root: PathBuf,
-    /// Root of the herdr-managed worktrees — `<root>/<repo>/<branch>`.
+    /// Root of the herdr-managed worktrees — `<root>/<repo>/<label>`.
     worktrees_root: PathBuf,
     /// worktree path -> last-known git facts (path-keyed re-apply).
     git: Mutex<HashMap<PathBuf, GitFacts>>,
@@ -107,14 +118,31 @@ impl Integrator {
         }
     }
 
-    /// Drain the plane channel until it closes. The daemon keeps it alive for
-    /// the process's lifetime; the function returns when every plane drops
-    /// its sink (shutdown).
+    /// Drain the plane channel AND the store change signal until the channel
+    /// closes. The daemon keeps the channel alive for the process's
+    /// lifetime; the function returns when every plane drops its sink
+    /// (shutdown) — the supervisor restarts it on any exit (F4).
     pub async fn run(self, mut rx: mpsc::Receiver<PlaneEvent>) {
-        while let Some(event) = rx.recv().await {
-            self.handle(event).await;
+        let mut changes = self.store.changes();
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Some(event) => self.handle(event).await,
+                        None => {
+                            warn!("integrator: plane channel closed — no more facts will merge");
+                            break;
+                        }
+                    }
+                }
+                // F1: any store change (e.g. a herdr agent upsert) triggers a
+                // re-apply, so a new agent converges even with zero plane
+                // events after its appearance.
+                _ = changes.changed() => {
+                    self.converge().await;
+                }
+            }
         }
-        warn!("integrator: plane channel closed — no more facts will merge");
     }
 
     async fn handle(&self, event: PlaneEvent) {
@@ -133,7 +161,7 @@ impl Integrator {
                     .entry(worktree.clone())
                     .or_default()
                     .head(branch, commit);
-                self.reapply_worktree(&worktree).await;
+                self.converge().await;
             }
             GitEvent::CommitOnBranch { worktree, branch, commit } => {
                 // Wire-level distinction only: the read-model impact equals
@@ -144,7 +172,7 @@ impl Integrator {
                     .entry(worktree.clone())
                     .or_default()
                     .head(branch, commit);
-                self.reapply_worktree(&worktree).await;
+                self.converge().await;
             }
             GitEvent::DirtyChanged { worktree, status } => {
                 self.git
@@ -153,7 +181,7 @@ impl Integrator {
                     .entry(worktree.clone())
                     .or_default()
                     .status = Some(status);
-                self.reapply_worktree(&worktree).await;
+                self.converge().await;
             }
             GitEvent::WorktreeAdded { worktree } => {
                 // Topology fact, no read-model payload. Ensure the path is
@@ -163,11 +191,13 @@ impl Integrator {
                 debug!(worktree = %worktree.display(), "integrator: worktree added (topology only)");
             }
             GitEvent::WorktreeRemoved { worktree } => {
-                // Drop the cached facts so a removed worktree can never feed
-                // stale PR matches; the agent records themselves are the
-                // herdr adapter's to clean up.
+                // Drop the cached facts AND reset the matching agents' git-
+                // derived fields + PR binding (F6): a removed worktree must
+                // not leave records claiming a branch/pr of a nonexistent
+                // worktree.
                 self.git.lock().unwrap().remove(&worktree);
-                debug!(worktree = %worktree.display(), "integrator: worktree removed (facts dropped)");
+                self.reset_worktree(&worktree).await;
+                debug!(worktree = %worktree.display(), "integrator: worktree removed (facts dropped, agents reset)");
             }
         }
     }
@@ -178,78 +208,134 @@ impl Integrator {
             let mut gh = self.gh.lock().unwrap();
             gh.insert(repo.clone(), state.clone());
         }
-        let agents = self
-            .store
-            .matching(|a| a.workspace.repo.as_deref() == Some(repo.as_str()))
-            .await;
-        for agent in agents {
-            let mut candidate = agent.clone();
-            let facts = agent
-                .workspace
-                .worktree_path
-                .as_deref()
-                .and_then(|p| self.git.lock().unwrap().get(Path::new(p)).cloned());
-            // No git facts for this agent's worktree yet: a PR cannot be
-            // matched by commit. Leave pr/ci untouched — the path-keyed
-            // re-apply on the next git event settles them.
-            if let Some(facts) = facts {
-                apply_pr_facts(&mut candidate.workspace, Some(&state), &facts);
-            }
-            if candidate != agent {
-                self.store.apply(Change::upsert(candidate)).await;
-            }
-        }
+        self.converge().await;
     }
 
-    /// Re-apply the FULL cached fact set for one worktree path onto every
-    /// agent whose `worktree_path` matches: branch/repo from the head,
-    /// dirty/ahead/behind from the status, then the gh PR facts for the
-    /// derived repo. This is the convergence path — an agent that appeared
-    /// after the facts were cached picks them up on the next event for the
-    /// path.
-    async fn reapply_worktree(&self, worktree: &Path) {
-        let repo = derive_repo(worktree, &self.repo_root, &self.worktrees_root);
-        let (facts, gh_state) = {
+    /// Re-apply every cached fact (git per path, gh per repo) plus the
+    /// path-derived repo fallback onto the current agent set. Idempotent:
+    /// records change only when the merged candidate differs.
+    async fn converge(&self) {
+        let (git, gh) = {
             let git = self.git.lock().unwrap();
-            let facts = git.get(worktree).cloned();
-            let gh_state = repo
-                .as_ref()
-                .and_then(|r| self.gh.lock().unwrap().get(r).cloned());
-            (facts, gh_state)
+            let gh = self.gh.lock().unwrap();
+            (git.clone(), gh.clone())
         };
-        let target = worktree.to_string_lossy().into_owned();
-        let agents = self
-            .store
-            .matching(|a| a.workspace.worktree_path.as_deref() == Some(target.as_str()))
-            .await;
-        for agent in agents {
-            let mut candidate = agent.clone();
-            let ws = &mut candidate.workspace;
-            if let Some(repo) = &repo {
-                ws.repo = Some(repo.clone());
-            }
-            if let Some(facts) = &facts {
-                if let Some(branch) = &facts.branch {
-                    ws.branch = Some(branch.clone());
-                }
-                if let Some(status) = &facts.status {
-                    ws.dirty = status.is_dirty();
-                    ws.ahead = status.ahead;
-                    ws.behind = status.behind;
-                }
-                apply_pr_facts(ws, gh_state.as_ref(), facts);
-            }
-            if candidate != agent {
-                self.store.apply(Change::upsert(candidate)).await;
-            }
+        for (path, facts) in &git {
+            self.reapply_path(path, facts).await;
         }
+        for (repo, state) in &gh {
+            self.reapply_repo(repo, state).await;
+        }
+        // F2 fallback: derive the repo from the path pattern even when the
+        // git plane has no facts for the path yet, so gh facts can still
+        // bind fleet-wide by repo.
+        let repo_root = self.repo_root.clone();
+        let worktrees_root = self.worktrees_root.clone();
+        self.store
+            .update_where(|_| true, move |agent| {
+                if let Some(path) = agent.workspace.worktree_path.as_deref()
+                    && let Some(repo) = derive_repo(Path::new(path), &repo_root, &worktrees_root)
+                {
+                    agent.workspace.repo = Some(repo);
+                }
+            })
+            .await;
+    }
+
+    /// Merge the FULL cached fact set for one worktree path into every agent
+    /// whose `worktree_path` matches: branch/repo from the head, dirty/ahead/
+    /// behind from the status, then the gh PR facts for the derived repo.
+    async fn reapply_path(&self, path: &Path, facts: &GitFacts) {
+        let repo = derive_repo(path, &self.repo_root, &self.worktrees_root);
+        let gh_state = repo
+            .as_ref()
+            .and_then(|r| self.gh.lock().unwrap().get(r).cloned());
+        let (path, facts, repo, gh_state) = (path.to_path_buf(), facts.clone(), repo, gh_state);
+        let match_path = path.clone();
+        self.store
+            .update_where(
+                |a| {
+                    a.workspace.worktree_path.as_deref().is_some_and(|p| {
+                        paths_match(Path::new(p), &match_path)
+                    })
+                },
+                move |agent| {
+                    let ws = &mut agent.workspace;
+                    if let Some(repo) = &repo {
+                        ws.repo = Some(repo.clone());
+                    }
+                    if let Some(branch) = &facts.branch {
+                        // F7: detached HEAD reports the literal "HEAD" —
+                        // never a branch; normalize to None.
+                        ws.branch = (branch != "HEAD").then(|| branch.clone());
+                    }
+                    if let Some(status) = &facts.status {
+                        ws.dirty = status.is_dirty();
+                        ws.ahead = status.ahead;
+                        ws.behind = status.behind;
+                    }
+                    apply_pr_facts(ws, gh_state.as_ref(), &facts);
+                },
+            )
+            .await;
+    }
+
+    /// Merge the gh PR facts for one repo into every agent whose `repo`
+    /// matches, using the agent's current commit from the cached git facts.
+    async fn reapply_repo(&self, repo: &str, state: &GhRepoState) {
+        let git = self.git.lock().unwrap().clone();
+        let (repo, state) = (repo.to_string(), state.clone());
+        let match_repo = repo.clone();
+        self.store
+            .update_where(
+                |a| a.workspace.repo.as_deref() == Some(match_repo.as_str()),
+                move |agent| {
+                    let facts = agent
+                        .workspace
+                        .worktree_path
+                        .as_deref()
+                        .and_then(|p| git.get(&canon_best_effort(Path::new(p))));
+                    // No git facts for this agent's worktree yet: a PR cannot
+                    // be matched by commit. Leave pr/ci untouched.
+                    if let Some(facts) = facts {
+                        apply_pr_facts(&mut agent.workspace, Some(&state), facts);
+                    }
+                },
+            )
+            .await;
+    }
+
+    /// F6: a removed worktree's agents lose their git-derived read-model
+    /// fields and their PR binding (branch/dirty/ahead/behind/pr/ci reset;
+    /// `repo` stays — it is path-derived and re-derived by the fallback).
+    async fn reset_worktree(&self, worktree: &Path) {
+        let path = worktree.to_path_buf();
+        self.store
+            .update_where(
+                |a| {
+                    a.workspace
+                        .worktree_path
+                        .as_deref()
+                        .is_some_and(|p| paths_match(Path::new(p), &path))
+                },
+                |agent| {
+                    let ws = &mut agent.workspace;
+                    ws.branch = None;
+                    ws.dirty = false;
+                    ws.ahead = 0;
+                    ws.behind = 0;
+                    ws.pr_number = None;
+                    ws.ci_status = None;
+                },
+            )
+            .await;
     }
 }
 
 /// Canonical repo name for a worktree path: the main checkout derives from
 /// the repo root directory name; a herdr worktree from the first component
 /// under the worktrees root (`<root>/<repo>/<label>`). Paths outside both
-/// roots yield `None` (the git plane never watches them).
+/// roots yield `None`.
 fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Option<String> {
     if worktree == repo_root {
         return repo_root
@@ -259,6 +345,20 @@ fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Opti
     let rel = worktree.strip_prefix(worktrees_root).ok()?;
     let first = rel.components().next()?;
     Some(first.as_os_str().to_string_lossy().into_owned())
+}
+
+/// Best-effort canonical form: real paths resolve symlinks (F5), synthetic
+/// test paths fall back to their raw spelling.
+fn canon_best_effort(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// F5 path comparison: raw equality first (cheap, and identity on
+/// non-symlinked installs), then canonical forms of both sides so a
+/// symlinked `HOME` cannot split the plane's canonical event paths from
+/// herdr's raw cwd paths.
+fn paths_match(a: &Path, b: &Path) -> bool {
+    a == b || canon_best_effort(a) == canon_best_effort(b)
 }
 
 /// Map the gh repo state onto the agent's PR fields.

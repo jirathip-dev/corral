@@ -196,6 +196,107 @@ async fn converges_when_agent_appears_after_facts_were_cached() {
 }
 
 #[tokio::test]
+async fn agent_appears_with_zero_subsequent_plane_events_still_converges() {
+    // WS3 F1: convergence must NOT be event-gated. Facts are cached while a
+    // sentinel agent observes them; a second agent is then created with NO
+    // plane events afterwards — the store change signal alone must apply the
+    // cached facts.
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("sentinel", Some(WT_A)))).await;
+    store.flush().await;
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
+        worktree: PathBuf::from(WT_A),
+        status: GitStatus {
+            dirty_worktree: true,
+            ahead: 1,
+            behind: 2,
+            ..Default::default()
+        },
+    }))
+    .await
+    .unwrap();
+    // The sentinel converging proves the facts were cached BEFORE the apply.
+    wait_for(&store, "sentinel", |a| a.workspace.dirty).await;
+
+    // The new agent appears; NOTHING is sent after this point.
+    store.apply(Change::upsert(agent("late", Some(WT_A)))).await;
+
+    let late = wait_for(&store, "late", |a| a.workspace.repo.is_some()).await;
+    assert_eq!(late.workspace.branch.as_deref(), Some("ws2/gh-plane"));
+    assert!(late.workspace.dirty, "cached dirty fact applied without any plane event");
+    assert_eq!((late.workspace.ahead, late.workspace.behind), (1, 2));
+}
+
+#[tokio::test]
+async fn other_repo_worktrees_merge_fleet_wide() {
+    // WS3 F2: an agent in a project-hearthwild worktree (a repo outside the
+    // main checkout) must get git facts + repo + PR/CI like any herdr-board
+    // agent.
+    let (store, sink) = setup().await;
+    let wt_ph = format!("{WTS_ROOT}/project-hearthwild/feat-plush-visual-fidelity");
+    store.apply(Change::upsert(agent("ph", Some(&wt_ph)))).await;
+    store.flush().await;
+
+    sink.send(head(&wt_ph, "feat/plush-visual-fidelity", "abc123")).await.unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
+        worktree: PathBuf::from(&wt_ph),
+        status: GitStatus {
+            dirty_index: true,
+            ..Default::default()
+        },
+    }))
+    .await
+    .unwrap();
+    wait_for(&store, "ph", |a| a.workspace.dirty).await;
+    sink.send(PlaneEvent::Gh(gh_state("project-hearthwild", vec![pr(9, "abc123", "SUCCESS")]))).await.unwrap();
+
+    let ph = wait_for(&store, "ph", |a| a.workspace.pr_number == Some(9)).await;
+    assert_eq!(ph.workspace.repo.as_deref(), Some("project-hearthwild"));
+    assert_eq!(ph.workspace.branch.as_deref(), Some("feat/plush-visual-fidelity"));
+    assert_eq!(ph.workspace.ci_status, Some(CiStatus::Success));
+}
+
+#[tokio::test]
+async fn worktree_removed_resets_git_derived_fields_and_pr_binding() {
+    // WS3 F6: removing a worktree must not leave the agent claiming a branch
+    // or PR of a nonexistent worktree.
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
+    store.flush().await;
+
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "PENDING")]))).await.unwrap();
+    wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
+
+    sink.send(PlaneEvent::Git(GitEvent::WorktreeRemoved { worktree: PathBuf::from(WT_A) })).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
+    assert_eq!(a.workspace.branch, None, "git-derived branch reset");
+    assert!(!a.workspace.dirty, "git-derived dirty reset");
+    assert_eq!((a.workspace.ahead, a.workspace.behind), (0, 0));
+    assert_eq!(a.workspace.ci_status, None, "PR binding dropped");
+    // repo is path-derived, not git-fact-derived: it survives the reset.
+    assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
+}
+
+#[tokio::test]
+async fn detached_head_normalizes_branch_to_none() {
+    // WS3 F7: the git plane reports detached HEAD as the literal "HEAD";
+    // the read model must show branch: null, never "HEAD".
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
+    store.flush().await;
+
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    wait_for(&store, "a", |a| a.workspace.branch.is_some()).await;
+
+    sink.send(head(WT_A, "HEAD", "def456")).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.branch.is_none()).await;
+    assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"), "repo unaffected");
+}
+
+#[tokio::test]
 async fn facts_fan_out_to_every_matching_agent() {
     let (store, sink) = setup().await;
     // Two agents share one worktree; two more share the derived repo via a

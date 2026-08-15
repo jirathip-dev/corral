@@ -1,0 +1,432 @@
+//! Host-side device registry: registered device keys with grants, expiry
+//! and revocation, persisted as `registry.json` (0600) in the config dir.
+//!
+//! Default deny: a freshly registered device has NO drive grants (the read
+//! plane `/snapshot` + `/events` is loopback-local and credential-free).
+//! Drive capabilities are promoted by the host via `POST /grants`
+//! (admin token). Registration is gated by the routing-only registration
+//! token (constant-time compare).
+//!
+//! Registry state is versioned (schema_version 1, additive-only) and
+//! persisted atomically on every mutation. Corrupt state fails fast at
+//! load — never silently reset (that would rotate the registration token
+//! under the host's feet).
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+
+use crate::drive::Capability;
+
+use super::{b64_decode_array_32, b64_encode, random_bytes, write_secret};
+
+/// File name of the device registry inside the config dir.
+pub const REGISTRY_FILE: &str = "registry.json";
+/// File name of the routing-only registration token.
+pub const REGISTRATION_TOKEN_FILE: &str = "registration-token";
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// One registered device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRecord {
+    pub key_id: String,
+    #[serde(with = "b64_bytes")]
+    pub public_key: [u8; 32],
+    pub created_ts: u64,
+    pub expiry_ts: u64,
+    pub grants: Vec<Capability>,
+    pub revoked: bool,
+}
+
+/// base64 (de)serialization of the raw Ed25519 public key.
+mod b64_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::b64_encode;
+
+    pub fn serialize<S>(key: &[u8; 32], s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_str(&b64_encode(key))
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        super::b64_decode_array_32(&s).ok_or_else(|| serde::de::Error::custom("bad base64 key"))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct RegistryFile {
+    schema_version: u32,
+    devices: BTreeMap<String, DeviceRecord>,
+}
+
+#[derive(Default)]
+struct RegistryData {
+    devices: BTreeMap<String, DeviceRecord>,
+}
+
+pub struct DeviceRegistry {
+    path: PathBuf,
+    token_path: PathBuf,
+    inner: Mutex<RegistryData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterError {
+    /// The registration token presented did not match (constant-time
+    /// compare). Routing-only credential — never authenticates writes.
+    BadToken,
+    /// The public key was not 32 bytes of valid base64, or is not a
+    /// canonical Ed25519 point.
+    BadPublicKey,
+}
+
+impl fmt::Display for RegisterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadToken => write!(f, "bad registration token"),
+            Self::BadPublicKey => write!(f, "malformed device public key"),
+        }
+    }
+}
+
+impl std::error::Error for RegisterError {}
+
+/// The registration token, refreshed once at first run. The client-facing
+/// side of the D13 "routing only" credential.
+pub fn registration_token_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(REGISTRATION_TOKEN_FILE)
+}
+
+impl DeviceRegistry {
+    pub fn load_or_create(config_dir: &Path) -> Result<Self, String> {
+        let path = config_dir.join(REGISTRY_FILE);
+        let token_path = registration_token_path(config_dir);
+        std::fs::create_dir_all(config_dir).map_err(|e| format!("mkdir: {e}"))?;
+
+        // Registration token: load or create (routing only).
+        let token = match std::fs::read_to_string(&token_path) {
+            Ok(content) => content.trim().to_string(),
+            Err(_) => {
+                let raw = random_bytes::<32>();
+                let encoded = b64_encode(&raw);
+                write_secret(&token_path, encoded.as_bytes())?;
+                encoded
+            }
+        };
+        if token.is_empty() {
+            return Err(format!(
+                "corrupt registration token {}",
+                token_path.display()
+            ));
+        }
+
+        let data = match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let file: RegistryFile = serde_json::from_str(&content)
+                    .map_err(|e| format!("corrupt registry {}: {e}", path.display()))?;
+                if file.schema_version != SCHEMA_VERSION {
+                    return Err(format!(
+                        "registry {} has schema_version {} (expected {SCHEMA_VERSION}); \
+                         refusing to migrate silently",
+                        path.display(),
+                        file.schema_version
+                    ));
+                }
+                RegistryData {
+                    devices: file.devices,
+                }
+            }
+            Err(_) => RegistryData::default(),
+        };
+        Ok(Self {
+            path,
+            token_path,
+            inner: Mutex::new(data),
+        })
+    }
+
+    /// The routing-only token (for the `POST /register` check and for
+    /// host-side provisioning).
+    pub fn registration_token(&self) -> String {
+        self.load_token()
+    }
+
+    fn load_token(&self) -> String {
+        std::fs::read_to_string(&self.token_path)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Register a device Ed25519 public key. Returns the (possibly
+    /// existing) record — registering the same key twice is idempotent and
+    /// never refreshes expiry or grants.
+    pub fn register(
+        &self,
+        token: &str,
+        public_key: [u8; 32],
+        ttl: std::time::Duration,
+    ) -> Result<DeviceRecord, RegisterError> {
+        if !super::constant_time_eq(token.as_bytes(), self.load_token().as_bytes()) {
+            return Err(RegisterError::BadToken);
+        }
+        // Reject non-canonical / weak Ed25519 points at the door so the
+        // registry only ever holds keys verify() can use. (A weak key —
+        // low order, e.g. all zeros — would be rejected by verify_strict
+        // anyway; failing at registration makes the failure typed.)
+        let pk = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+            .map_err(|_| RegisterError::BadPublicKey)?;
+        if pk.is_weak() {
+            return Err(RegisterError::BadPublicKey);
+        }
+
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        for rec in inner.devices.values() {
+            if rec.public_key == public_key {
+                return Ok(rec.clone());
+            }
+        }
+        let now = now_secs();
+        let key_id = key_id_for(&public_key);
+        let rec = DeviceRecord {
+            key_id: key_id.clone(),
+            public_key,
+            created_ts: now,
+            expiry_ts: now.saturating_add(ttl.as_secs()),
+            grants: Vec::new(),
+            revoked: false,
+        };
+        inner.devices.insert(key_id, rec.clone());
+        self.persist_locked(&inner);
+        Ok(rec)
+    }
+
+    /// Look up a device by key id (the authorizer's first check).
+    pub fn get(&self, key_id: &str) -> Option<DeviceRecord> {
+        self.inner
+            .lock()
+            .expect("registry lock poisoned")
+            .devices
+            .get(key_id)
+            .cloned()
+    }
+
+    /// Replace the grant set (host promotion/demotion). Empty = read-only.
+    pub fn set_grants(&self, key_id: &str, grants: Vec<Capability>) -> Result<(), String> {
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let rec = inner
+            .devices
+            .get_mut(key_id)
+            .ok_or_else(|| format!("unknown key: {key_id}"))?;
+        rec.grants = grants;
+        self.persist_locked(&inner);
+        Ok(())
+    }
+
+    /// Set or clear the revoked flag. Revocation is checked on every
+    /// verify — there are no authenticated sessions to cut short.
+    pub fn set_revoked(&self, key_id: &str, revoked: bool) -> Result<(), String> {
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let rec = inner
+            .devices
+            .get_mut(key_id)
+            .ok_or_else(|| format!("unknown key: {key_id}"))?;
+        rec.revoked = revoked;
+        self.persist_locked(&inner);
+        Ok(())
+    }
+
+    /// Snapshot of all records (tests, admin display).
+    pub fn records(&self) -> Vec<DeviceRecord> {
+        self.inner
+            .lock()
+            .expect("registry lock poisoned")
+            .devices
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn device_count(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("registry lock poisoned")
+            .devices
+            .len()
+    }
+
+    fn persist_locked(&self, inner: &RegistryData) {
+        let file = RegistryFile {
+            schema_version: SCHEMA_VERSION,
+            devices: inner.devices.clone(),
+        };
+        let json = serde_json::to_vec(&file).expect("registry serializes");
+        write_secret(&self.path, &json).expect("registry persist");
+    }
+}
+
+/// `dev_<hex(sha256(pubkey)[..16])>` — stable, collision-resistant at
+/// personal-fleet scale, and independent of registration order.
+pub fn key_id_for(public_key: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(public_key);
+    format!("dev_{}", super::hex(&digest[..16]))
+}
+
+pub fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+impl fmt::Debug for DeviceRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No secrets: registration token and key material never print.
+        f.debug_struct("DeviceRegistry")
+            .field("path", &self.path)
+            .field(
+                "devices",
+                &self
+                    .records()
+                    .iter()
+                    .map(|r| {
+                        (
+                            &r.key_id,
+                            format!(
+                                "grants={:?} revoked={} expiry={}",
+                                r.grants, r.revoked, r.expiry_ts
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    /// A valid Ed25519 public key (random bytes are canonical points only
+    /// ~1/8 of the time, so keys must come from a real keypair).
+    fn key() -> [u8; 32] {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&super::super::random_bytes::<32>());
+        signing.verifying_key().to_bytes()
+    }
+
+    #[test]
+    fn register_gates_on_token_constant_time() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        assert!(!token.is_empty());
+
+        let pk = key();
+        assert_eq!(
+            reg.register("wrong-token", pk, std::time::Duration::from_secs(60)),
+            Err(RegisterError::BadToken)
+        );
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert!(rec.key_id.starts_with("dev_"));
+        assert!(rec.grants.is_empty(), "default deny: no drive grants");
+        assert!(!rec.revoked);
+        assert!(rec.expiry_ts > rec.created_ts);
+    }
+
+    #[test]
+    fn bad_public_keys_rejected() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        // All-zero bytes are a weak (low-order) Ed25519 point.
+        assert_eq!(
+            reg.register(&token, [0u8; 32], std::time::Duration::ZERO),
+            Err(RegisterError::BadPublicKey)
+        );
+    }
+
+    #[test]
+    fn re_registration_is_idempotent_and_never_extends() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let first = reg
+            .register(&token, pk, std::time::Duration::from_secs(100))
+            .unwrap();
+        let second = reg
+            .register(&token, pk, std::time::Duration::from_secs(9999))
+            .unwrap();
+        assert_eq!(first, second, "same key -> same record, expiry untouched");
+        assert_eq!(reg.device_count(), 1);
+    }
+
+    #[test]
+    fn grants_and_revocation_persist_and_survive_reload() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+
+        reg.set_grants(&rec.key_id, vec![Capability::ReadTail])
+            .unwrap();
+        reg.set_revoked(&rec.key_id, true).unwrap();
+
+        let reloaded = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let got = reloaded.get(&rec.key_id).unwrap();
+        assert_eq!(got.grants, vec![Capability::ReadTail]);
+        assert!(got.revoked);
+
+        // Registry file is 0600.
+        let meta = std::fs::metadata(d.path().join(REGISTRY_FILE)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn corrupt_registry_fails_fast() {
+        let d = dir();
+        std::fs::write(d.path().join(REGISTRY_FILE), "{not json").unwrap();
+        assert!(DeviceRegistry::load_or_create(d.path()).is_err());
+    }
+
+    #[test]
+    fn debug_never_leaks_registration_token_or_keys() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let dbg = format!("{reg:?}");
+        assert!(!dbg.contains(&token), "registration token leaked in Debug");
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+        let dbg = format!("{reg:?}");
+        assert!(dbg.contains(&rec.key_id));
+        assert!(
+            !dbg.contains(&super::super::b64_encode(&pk)),
+            "public key must not print either — keys are not secret but Debug stays minimal"
+        );
+    }
+}

@@ -100,6 +100,19 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     let coalescer = store.clone();
     tokio::spawn(async move { coalescer.run_coalescer().await });
 
+    // W3 auth plane: host keypair (X25519), device registry, authorizer,
+    // step-up gate, hash-chained audit log, admin token. Config dir is
+    // $CORRAL_CONFIG_DIR or ~/.config/corral; all key material is 0600
+    // under a 0700 directory (see crate::auth for the rotation story).
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let config_dir = std::env::var("CORRAL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(&home).join(".config/corral"));
+    let auth = Arc::new(
+        corrald::auth::AuthPlane::load_or_create(config_dir.clone())
+            .unwrap_or_else(|e| panic!("auth plane init failed in {config_dir:?}: {e}")),
+    );
+
     let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new(socket_path.clone()));
     adapter.start(store.clone());
 
@@ -108,7 +121,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     // the HOME-derived defaults. The planes keep their push-only contract;
     // the integrator is a pure channel drain (no polling, no SSE receiver),
     // supervised so a panic cannot silently kill the data plane (WS3 F4).
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let repo_root = std::env::var("CORRAL_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&home).join("Projects/herdr-board"));
@@ -127,14 +139,15 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
 
-    let app = corrald::api::router(AppState { store });
+    let app = corrald::api::router(AppState { store, auth });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
     tracing::info!(
         %addr,
         socket = %socket_path.display(),
-        "corrald listening (loopback only)"
+        config_dir = %config_dir.display(),
+        "corrald listening (loopback only); auth plane live: GET /host-key, POST /register"
     );
     axum::serve(listener, app)
         .await

@@ -4,8 +4,14 @@
 //! - `GET /events`  — SSE; resumes from `Last-Event-ID` (full snapshot when
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
 //! - `GET /healthz` — liveness.
+//! - `GET /host-key`, `POST /register`, `POST /step-up`, `POST /grants`,
+//!   `GET /audit`, `POST /drive` — the P3 auth + audit plane (W3, see
+//!   `crate::auth`). `POST /drive` is the documented auth seam: W1's
+//!   review replaces the dispatch placeholder and keeps the
+//!   verify → step-up → dispatch → audit call order.
 //!
-//! Read path only. Drive commands (P3) are a separate module boundary.
+//! Read path only otherwise. Drive commands (P3) are a separate module
+//! boundary.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -20,6 +26,7 @@ use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use tracing::info;
 
+use crate::auth::AuthPlane;
 use crate::core::model::Resume;
 use crate::core::store::Store;
 
@@ -29,6 +36,10 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    /// W3 auth plane: host identity, device registry, authorizer, step-up
+    /// gate, audit log, admin credential. W1's `POST /drive` handler
+    /// consumes `auth.authorizer` (the contract trait object) + `auth.audit`.
+    pub auth: Arc<AuthPlane>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -36,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
+        .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
 }
 

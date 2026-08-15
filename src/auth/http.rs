@@ -1,0 +1,345 @@
+//! HTTP surface for the auth + audit plane.
+//!
+//! - `GET /host-key`   — the host's X25519 identity (NOT a hostname).
+//! - `POST /register`  — enroll a device Ed25519 public key; gated by the
+//!   routing-only registration token. Devices default to read-only.
+//! - `POST /step-up`   — mint a 5-min single-use token after the client
+//!   proves possession of its device key (signed [`StepUpRequest`]).
+//! - `POST /grants`    — host admin (admin token): promote/demote grants,
+//!   revoke a device. (W4 UI will surface this; endpoint is the v1 host
+//!   mechanism.)
+//! - `GET /audit`      — host admin (admin token): the hash-chained audit
+//!   log with integrity verdict.
+//! - `POST /drive`     — **the P3 auth seam**: runs the full W3 pipeline
+//!   (parse → `DriveAuthorizer::verify` → step-up gate → audit append) and
+//!   returns the typed outcome. Real dispatch to the adapter is W1's; this
+//!   handler documents the exact call order W1's review must keep, and the
+//!   `rev: 0` placeholder is W1's monotonic rev.
+//!
+//! ## Drive seam order (W1 must keep this)
+//!
+//! 1. Parse the [`SignedDrive`].
+//! 2. `authorizer.verify(&signed)` → typed [`AuthError`] (no audit append
+//!    on any auth failure — AC5).
+//! 3. If `step_up.required(&envelope)`: `step_up.spend(key_id,
+//!    X-Step-Up-Token header)` (also no append on failure — step-up is
+//!    part of auth, not dispatch).
+//! 4. Dispatch (W1) — on typed refusal, append `Refused(detail)`; on
+//!    execution, append `Executed`. GETs never append.
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Json;
+use axum::routing::{get, post};
+use axum::Router;
+
+use crate::api::AppState;
+use crate::drive::{AuditEntry, AuditLog, AuditOutcome, AuthError, SignedDrive};
+
+use super::step_up::{StepUpRequest, canonical_step_up_bytes};
+use super::{STEP_UP_TTL, b64_decode_array_32, decode_b64, now_secs};
+
+pub const STEP_UP_HEADER: &str = "X-Step-Up-Token";
+
+pub fn auth_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/host-key", get(host_key))
+        .route("/register", post(register))
+        .route("/step-up", post(step_up))
+        .route("/grants", post(grants))
+        .route("/audit", get(audit))
+        .route("/drive", post(drive_seam))
+}
+
+/// GET /host-key — host identity is a curve25519 key, not a hostname.
+async fn host_key(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "algorithm": state.auth.host.algorithm(),
+        "public_key": state.auth.host.public_key_b64(),
+        "key_file": state.auth.host.path().display().to_string(),
+        "note": "host identity is an X25519 key; device writes are signed with per-device Ed25519 keys",
+    }))
+}
+
+fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({ "error": error })))
+}
+
+/// POST /register {token, public_key} -> {key_id, grants, expiry_ts}.
+async fn register(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let token = body.get("token").and_then(|v| v.as_str());
+    let pubkey_b64 = body.get("public_key").and_then(|v| v.as_str());
+    let Some(token) = token else {
+        return json_err(StatusCode::BAD_REQUEST, "missing registration token");
+    };
+    let Some(pubkey_b64) = pubkey_b64 else {
+        return json_err(StatusCode::BAD_REQUEST, "missing public_key");
+    };
+    let Some(public_key) = b64_decode_array_32(pubkey_b64) else {
+        return json_err(StatusCode::BAD_REQUEST, "public_key must be base64 of 32 bytes");
+    };
+    match state
+        .auth
+        .registry
+        .register(token, public_key, super::REGISTRATION_TTL)
+    {
+        Ok(rec) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "key_id": rec.key_id,
+                "grants": rec.grants,
+                "expiry_ts": rec.expiry_ts,
+                "revoked": rec.revoked,
+                "algorithm": "Ed25519",
+                "note": "default grants are empty (read-only): drive capabilities are promoted by the host",
+            })),
+        ),
+        Err(e) => match e {
+            super::RegisterError::BadToken => {
+                json_err(StatusCode::UNAUTHORIZED, "bad registration token")
+            }
+            super::RegisterError::BadPublicKey => {
+                json_err(StatusCode::BAD_REQUEST, "public_key is not a valid Ed25519 point")
+            }
+        },
+    }
+}
+
+/// POST /step-up {key_id, signature, request} -> {token, expires_ts}.
+///
+/// The signature proves possession of the device key: it covers
+/// [`canonical_step_up_bytes`] of the request. The minted token is
+/// single-use, expires in 5 minutes, and is bound to `key_id`.
+async fn step_up(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let request: StepUpRequest = match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
+        Ok(r) => r,
+        Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed step-up request"),
+    };
+    if request.purpose != "destructive" {
+        return json_err(StatusCode::BAD_REQUEST, "unknown step-up purpose");
+    }
+    let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return json_err(StatusCode::BAD_REQUEST, "missing step-up signature"),
+    };
+    let rec = match state.auth.registry.get(&request.key_id) {
+        Some(r) => r,
+        None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
+    };
+    let sig = match decode_b64(signature_b64) {
+        Some(s) => match s.try_into() {
+            Ok(sig) => sig,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "signature must be 64 bytes"),
+        },
+        None => return json_err(StatusCode::BAD_REQUEST, "signature must be base64"),
+    };
+    let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&rec.public_key) {
+        Ok(pk) => pk,
+        Err(_) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "corrupt registry key"),
+    };
+    let message = canonical_step_up_bytes(&request);
+    if public_key
+        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
+        .is_err()
+    {
+        return json_err(StatusCode::UNAUTHORIZED, "bad step-up signature");
+    }
+    let token = state.auth.step_up.mint(&request.key_id, STEP_UP_TTL);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "token": token,
+            "key_id": request.key_id,
+            "ttl_secs": STEP_UP_TTL.as_secs(),
+            "expires_ts": now_secs().saturating_add(STEP_UP_TTL.as_secs()),
+        })),
+    )
+}
+
+/// POST /grants — host admin (admin token), the v1 host-side promotion /
+/// revocation mechanism.
+///
+/// Bodies:
+/// - `{"action":"set_grants","key_id":"...","grants":["prompt", ...]}`
+///   replaces the grant set (empty = read-only; default deny).
+/// - `{"action":"revoke","key_id":"...","revoked":true|false}` flips the
+///   revocation flag (checked on every verify).
+async fn grants(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !state.auth.check_admin(&headers) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin token required");
+    }
+    let action = body.get("action").and_then(|v| v.as_str());
+    let key_id = body.get("key_id").and_then(|v| v.as_str());
+    let Some(key_id) = key_id else {
+        return json_err(StatusCode::BAD_REQUEST, "missing key_id");
+    };
+    let result = match action {
+        Some("set_grants") => {
+            let Some(grants) = body
+                .get("grants")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|g| g.as_str())
+                        .filter_map(|s| s.parse().ok())
+                        .collect::<Vec<_>>()
+                })
+            else {
+                return json_err(StatusCode::BAD_REQUEST, "grants must be an array of capability strings");
+            };
+            state.auth.registry.set_grants(key_id, grants)
+        }
+        Some("revoke") => {
+            let revoked = body.get("revoked").and_then(|v| v.as_bool()).unwrap_or(true);
+            state.auth.registry.set_revoked(key_id, revoked)
+        }
+        other => Err(format!("unknown action: {other:?}")),
+    };
+    match result {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true, "key_id": key_id }))),
+        Err(e) => json_err(StatusCode::NOT_FOUND, &e),
+    }
+}
+
+/// GET /audit — host admin (admin token). Returns the hash-chained log
+/// with a live integrity verdict.
+async fn audit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !state.auth.check_admin(&headers) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin token required");
+    }
+    let (entries, head, valid) = state.auth.audit.chain();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "head": head,
+            "valid": valid,
+            "entries": entries,
+            "note": "grows only on drive writes (executions + dispatch refusals); auth failures and GETs are never logged",
+        })),
+    )
+}
+
+/// POST /drive — the P3 auth seam (see module docs for the exact order).
+/// W1's review keeps verify → step-up → dispatch(→audit) and replaces the
+/// dispatch placeholder; `rev` is W1's monotonic rev.
+async fn drive_seam(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let signed: SignedDrive = match serde_json::from_value(body.clone()) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "malformed signed drive", "ok": false })),
+            )
+        }
+    };
+    let request_id = signed.envelope.request_id.clone();
+
+    // 1+2. Signature + key validity + grants (default deny). Auth failures
+    // are NOT audited (AC5).
+    let authorized = match state.auth.authorizer.verify(&signed) {
+        Ok(a) => a,
+        Err(e) => {
+            let (status, label) = match &e {
+                AuthError::MissingSignature => (StatusCode::BAD_REQUEST, "missing_signature"),
+                AuthError::BadSignature => (StatusCode::UNAUTHORIZED, "bad_signature"),
+                AuthError::UnknownKey => (StatusCode::NOT_FOUND, "unknown_key"),
+                AuthError::Expired => (StatusCode::FORBIDDEN, "expired"),
+                AuthError::Revoked => (StatusCode::FORBIDDEN, "revoked"),
+                AuthError::NotGranted(_) => (StatusCode::FORBIDDEN, "not_granted"),
+            };
+            return (
+                status,
+                Json(serde_json::json!({
+                    "error": e.to_string(),
+                    "error_type": label,
+                    "request_id": request_id,
+                    "ok": false,
+                })),
+            );
+        }
+    };
+
+    // 3. Step-up gate for destructive payloads. Step-up is part of auth —
+    // failures are NOT audited.
+    if state.auth.step_up.required(&signed.envelope) {
+        let token = headers
+            .get(STEP_UP_HEADER)
+            .and_then(|v| v.to_str().ok());
+        let Some(token) = token else {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "step_up_required: destructive payload needs an X-Step-Up-Token",
+                    "error_type": "step_up_required",
+                    "request_id": request_id,
+                    "ok": false,
+                })),
+            );
+        };
+        if let Err(e) = state.auth.step_up.spend(&authorized.key_id, token) {
+            let status = match e {
+                super::StepUpError::Required => StatusCode::FORBIDDEN,
+                super::StepUpError::InvalidToken | super::StepUpError::TokenExpired => {
+                    StatusCode::UNAUTHORIZED
+                }
+                super::StepUpError::KeyMismatch => StatusCode::FORBIDDEN,
+            };
+            return (
+                status,
+                Json(serde_json::json!({
+                    "error": e.to_string(),
+                    "error_type": "step_up_failed",
+                    "request_id": request_id,
+                    "ok": false,
+                })),
+            );
+        }
+    }
+
+    // 4. Dispatch (W1 seam). This seam "executes" (no adapter yet) and
+    // appends Executed. W1 appends Refused(detail)/Failed(detail) for
+    // typed refusals at real dispatch.
+    let entry = AuditEntry {
+        ts: now_secs(),
+        key_id: authorized.key_id,
+        request_id: request_id.clone(),
+        capability: authorized.envelope.capability.to_string(),
+        target: authorized.envelope.target,
+        outcome: AuditOutcome::Executed,
+    };
+    if let Err(e) = state.auth.audit.append(&entry) {
+        tracing::error!(error = %e, "audit append failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "audit append failed", "ok": false })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "request_id": request_id,
+            "ok": true,
+            "rev": 0, // W1: the store's monotonic rev after the write
+            "note": "authorized by W3 auth seam; real dispatch lands with W1",
+        })),
+    )
+}

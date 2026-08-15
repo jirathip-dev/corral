@@ -1,6 +1,7 @@
 //! HTTP read path tests: /snapshot JSON shape, /healthz, SSE resume with
 //! Last-Event-ID (fresh cursor -> deltas; stale cursor -> full snapshot).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -37,7 +38,11 @@ async fn app() -> (Store, axum::Router) {
     let store = Store::new();
     let coalescer = store.clone();
     std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    let app = router(AppState { store: store.clone() });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = Arc::new(
+        corrald::auth::AuthPlane::load_or_create(dir.path().to_path_buf()).expect("auth plane"),
+    );
+    let app = router(AppState { store: store.clone(), auth });
     (store, app)
 }
 

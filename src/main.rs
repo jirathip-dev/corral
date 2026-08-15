@@ -9,9 +9,11 @@ use corrald::adapters::gh_plane::GhPlane;
 use corrald::adapters::git_plane::GitPlane;
 use corrald::adapters::herdr::HerdrAdapter;
 use corrald::adapters::Adapter;
+use corrald::api::drive::{ReplayTable, StubAudit, StubAuthorizer};
 use corrald::api::AppState;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
+use corrald::drive::{AuditLog, DriveAuthorizer};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
 
@@ -101,7 +103,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     tokio::spawn(async move { coalescer.run_coalescer().await });
 
     let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new(socket_path.clone()));
-    adapter.start(store.clone());
+    adapter.clone().start(store.clone());
 
     // The two P2 data planes + the integrator that folds their facts onto
     // the agent records. `CORRAL_REPO_ROOT`/`CORRAL_WORKTREES_ROOT` override
@@ -127,7 +129,26 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
 
-    let app = corrald::api::router(AppState { store });
+    // W1 drive-plane seams. The real device-key authorizer and signed
+    // append-only audit log are W3's; until they land, corrald runs with
+    // placeholder stubs (accept-any-signature + trace-log audit) on
+    // loopback. Loudly logged below: the stubs must be replaced before any
+    // non-loopback exposure.
+    let authorizer: Arc<dyn DriveAuthorizer> = Arc::new(StubAuthorizer);
+    let audit: Arc<dyn AuditLog> = Arc::new(StubAudit::default());
+
+    let app = corrald::api::router(AppState {
+        store,
+        adapter,
+        authorizer,
+        audit,
+        replay: Arc::new(ReplayTable::default()),
+    });
+    tracing::warn!(
+        "W1 stub authorizer active: POST /drive accepts any non-empty signature; \
+         audit log is in-memory. Replace with the W3 device-key verifier + signed \
+         audit before any non-loopback exposure."
+    );
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));

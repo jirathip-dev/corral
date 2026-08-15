@@ -4,6 +4,7 @@
 //! The [`Adapter`] trait is the seam P2/P3 add adapters behind (claude/codex/
 //! opencode/gemini direct APIs, git watcher, gh poller) without touching core.
 
+pub mod gh_plane;
 pub mod git_plane;
 pub mod herdr;
 

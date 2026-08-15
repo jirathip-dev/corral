@@ -587,6 +587,7 @@ impl HerdrAdapter {
         if let Some(old) = migrated {
             store.apply(Change::Remove(old)).await;
         }
+        let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
         store.apply(Change::upsert(canonical)).await;
         {
             let mut state = self.state.lock().unwrap();
@@ -680,6 +681,30 @@ impl HerdrAdapter {
         agent.seq = seq;
         agent.ts = now_millis();
         store.apply(Change::upsert(agent)).await;
+    }
+
+    /// WS3 F1: herdr owns `worktree_path` only. A full-record rebuild (agent
+    /// info, pane.updated, agent_detected) must PRESERVE the plane-merged
+    /// workspace read-model fields (repo/branch/dirty/ahead/behind/pr_number/
+    /// ci_status) when the worktree is unchanged, or every herdr upsert
+    /// clobbers the integrator's merged view. When the worktree changed, the
+    /// fresh workspace wins (the integrator re-derives facts for the new
+    /// path on its next pass).
+    async fn preserve_workspace(&self, store: &Store, agent_id: &str, mut agent: Agent) -> Agent {
+        let Some(existing) = store.get(agent_id).await else {
+            return agent;
+        };
+        if existing.workspace.worktree_path == agent.workspace.worktree_path {
+            let ws = &existing.workspace;
+            agent.workspace.repo = ws.repo.clone();
+            agent.workspace.branch = ws.branch.clone();
+            agent.workspace.dirty = ws.dirty;
+            agent.workspace.ahead = ws.ahead;
+            agent.workspace.behind = ws.behind;
+            agent.workspace.pr_number = ws.pr_number;
+            agent.workspace.ci_status = ws.ci_status;
+        }
+        agent
     }
 
     async fn handle_event(
@@ -784,7 +809,7 @@ impl HerdrAdapter {
         }
         let agent_state =
             AgentState::from_herdr_status(pane.agent_status.as_deref().unwrap_or("unknown"));
-        let (_agent_id, migrated, canonical) = {
+        let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&pane.pane_id, session_value);
             let migrated = self.register_pane(&mut state, &pane.pane_id, &agent_id);
@@ -807,6 +832,7 @@ impl HerdrAdapter {
         if let Some(old) = migrated {
             store.apply(Change::Remove(old)).await;
         }
+        let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
         store.apply(Change::upsert(canonical)).await;
         if self
             .state
@@ -889,11 +915,11 @@ impl HerdrAdapter {
         agent_state: AgentState,
         store: &Store,
     ) {
-        let canonical = {
+        let (agent_id, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(pane_id, None);
             self.register_pane(&mut state, pane_id, &agent_id);
-            self.build_agent(
+            let canonical = self.build_agent(
                 &mut state,
                 pane_id,
                 &agent_id,
@@ -903,8 +929,10 @@ impl HerdrAdapter {
                 None,
                 &HashMap::new(),
                 None,
-            )
+            );
+            (agent_id, canonical)
         };
+        let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
         store.apply(Change::upsert(canonical)).await;
         info!(pane = pane_id, tool, ?agent_state, "agent detected");
     }

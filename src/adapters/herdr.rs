@@ -659,6 +659,7 @@ impl HerdrAdapter {
                 branch: None,
                 worktree_path,
                 pr_number: None,
+                ..Default::default()
             },
             attachment: Some(Attachment {
                 kind: "herdr-pane".to_string(),

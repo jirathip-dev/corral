@@ -1,11 +1,14 @@
-//! Read path: HTTP API served on loopback.
+//! HTTP API served on loopback.
 //!
 //! - `GET /snapshot` — full current state with monotonic `rev`.
 //! - `GET /events`  — SSE; resumes from `Last-Event-ID` (full snapshot when
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
 //! - `GET /healthz` — liveness.
-//!
-//! Read path only. Drive commands (P3) are a separate module boundary.
+//! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
+//!   capability-gated, signed by the device authorizer (see
+//!   [`crate::api::drive`]).
+
+pub mod drive;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -15,13 +18,17 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Json;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use tracing::info;
 
+use crate::adapters::Adapter;
 use crate::core::model::Resume;
 use crate::core::store::Store;
+use crate::drive::{AuditLog, DriveAuthorizer};
+
+use self::drive::{drive, NoopAdapter, ReplayTable, StubAudit, StubAuthorizer};
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -29,6 +36,29 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    /// Drive-path dispatch target (W1 resolves agent_ids, never coordinates).
+    pub adapter: Arc<dyn Adapter>,
+    /// Signature/key/grant gate for every drive write (W3 provides the impl).
+    pub authorizer: Arc<dyn DriveAuthorizer>,
+    /// Append-only write log (W3 provides the impl; W1 calls it per write).
+    pub audit: Arc<dyn AuditLog>,
+    /// Idempotency table keyed by request_id (bounded, LRU-ish).
+    pub replay: Arc<ReplayTable>,
+}
+
+impl Default for AppState {
+    /// Read-path-only state: every drive dependency is a safe stub
+    /// ([`NoopAdapter`], [`StubAuthorizer`], [`StubAudit`]) so read-only
+    /// construction (tests, tooling) stays one struct away.
+    fn default() -> Self {
+        Self {
+            store: Store::new(),
+            adapter: Arc::new(NoopAdapter),
+            authorizer: Arc::new(StubAuthorizer),
+            audit: Arc::new(StubAudit::default()),
+            replay: Arc::new(ReplayTable::default()),
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -36,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
+        .route("/drive", post(drive))
         .with_state(Arc::new(state))
 }
 

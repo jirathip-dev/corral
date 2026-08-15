@@ -37,7 +37,10 @@ async fn app() -> (Store, axum::Router) {
     let store = Store::new();
     let coalescer = store.clone();
     std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    let app = router(AppState { store: store.clone() });
+    let app = router(AppState {
+        store: store.clone(),
+        ..Default::default()
+    });
     (store, app)
 }
 

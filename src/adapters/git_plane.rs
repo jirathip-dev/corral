@@ -95,8 +95,6 @@ struct WorktreeEntry {
     path: PathBuf,
     /// Resolved gitdir (`.git` dir, or the target of the `.git` file).
     gitdir: Option<PathBuf>,
-    /// Current branch (`None` when detached).
-    branch: Option<String>,
 }
 
 /// Per-worktree facts the plane tracks, keyed by the WORKTREE PATH.
@@ -112,10 +110,18 @@ struct WorktreeState {
 struct PlaneState {
     /// worktree root path -> state.
     worktrees: HashMap<PathBuf, WorktreeState>,
-    /// branch name (`ws1/git-plane`) -> worktree root path.
-    by_branch: HashMap<String, PathBuf>,
-    /// Shared object/refs directory (usually the main checkout's `.git`).
-    commondir: Option<PathBuf>,
+    /// (commondir, branch name) -> worktree root path. Keyed per repo so two
+    /// repos checked out on the same branch name cannot collide (WS3 F2).
+    by_branch: HashMap<(PathBuf, String), PathBuf>,
+    /// Shared object/refs dirs — one per scanned repo (usually the repo's
+    /// main-checkout `.git`). The watcher registers a recursive watch on
+    /// each (WS3 F2: the herdr worktrees root holds worktrees of many repos).
+    commondirs: Vec<PathBuf>,
+    /// commondir -> main checkout path (commondir root files like `HEAD`/
+    /// `index` belong to the main checkout).
+    main_checkouts: HashMap<PathBuf, PathBuf>,
+    /// Commondirs with an active fsevents watch (watches are added once).
+    watched: HashSet<PathBuf>,
     /// Worktrees currently inside their debounce window.
     pending: HashSet<PathBuf>,
     /// Worktree paths a rescan skip has already been warned about (once per
@@ -158,6 +164,10 @@ pub struct GitPlane {
     last_rescan: AtomicU64,
     /// One-shot retry of a registry rescan is scheduled (dedup).
     retry_scheduled: AtomicBool,
+    /// Sink-close signal (WS3 F4): set when a send fails, so the watcher and
+    /// sweep loops exit and a supervised restart can re-arm `start()` without
+    /// duplicating loops.
+    stopped: AtomicBool,
 }
 
 impl GitPlane {
@@ -172,13 +182,17 @@ impl GitPlane {
             state: Mutex::new(PlaneState::default()),
             last_rescan: AtomicU64::new(0),
             retry_scheduled: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         }
     }
 
     /// True for the main checkout itself and any worktree under the herdr
-    /// worktrees root.
+    /// worktrees root. The input is canonicalized best-effort so a symlinked
+    /// `HOME` (standard APFS firmlink setups) cannot split the raw porcelain
+    /// paths from the canonicalized roots (WS3 F5).
     fn watches(&self, path: &Path) -> bool {
-        path == self.repo_root || path.starts_with(&self.worktrees_root)
+        let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canon == self.repo_root || canon.starts_with(&self.worktrees_root)
     }
 
     // -- watcher (primary signal) -------------------------------------------
@@ -201,19 +215,24 @@ impl GitPlane {
                 return;
             }
         };
-        // Warm the registry (resolves the commondir), then register the ONE
-        // recursive watch. Registering more watches later would restart the
-        // fsevents stream and drop events, so this never happens again.
+        // Warm the registry (resolves the commondirs), then register the
+        // watches. Each commondir gets ONE recursive watch; registering more
+        // watches later would restart the fsevents stream and drop events,
+        // so per-commondir watches are added once, in one boot batch.
         self.rescan(&sink).await;
-        let mut watch_registered = self.register_commondir_watch(&mut watcher);
+        let mut watch_registered = self.register_commondir_watches(&mut watcher);
         if watch_registered {
             info!(
                 repo = %self.repo_root.display(),
                 root = %self.worktrees_root.display(),
-                "git plane: fsevents watcher live"
+                "git plane: fsevents watchers live"
             );
         }
         loop {
+            if self.stopped.load(Ordering::Relaxed) {
+                info!("git plane: fsevents watcher exiting (sink closed)");
+                break;
+            }
             tokio::select! {
                 res = rx.recv() => {
                     match res {
@@ -238,9 +257,9 @@ impl GitPlane {
                             // earlier rescan was in flight is caught here.
                             self.rescan(&sink).await;
                             if !watch_registered {
-                                watch_registered = self.register_commondir_watch(&mut watcher);
+                                watch_registered = self.register_commondir_watches(&mut watcher);
                                 if watch_registered {
-                                    info!("git plane: fsevents watcher live");
+                                    info!("git plane: fsevents watchers live");
                                 }
                             }
                         }
@@ -254,26 +273,37 @@ impl GitPlane {
         }
     }
 
-    /// Register the recursive watch on the commondir (if known). `true` when
-    /// the watch is live. A single watch is a deliberate constraint: notify's
-    /// fsevents backend restarts the whole stream — `kFSEventStreamEventId
-    /// SinceNow` — on every added path, dropping events that change during
-    /// the restart.
-    fn register_commondir_watch(&self, watcher: &mut RecommendedWatcher) -> bool {
-        let cd = {
+    /// Register one recursive watch per known commondir (each scanned repo
+    /// has its own; the herdr worktrees root holds worktrees of many repos —
+    /// WS3 F2). `true` when at least one watch is live. Watches are added
+    /// once per commondir, in a boot batch, because notify's fsevents
+    /// backend restarts the whole stream — `kFSEventStreamEventIdSinceNow` —
+    /// on every added path, dropping events that change during the restart.
+    fn register_commondir_watches(&self, watcher: &mut RecommendedWatcher) -> bool {
+        let mut any = false;
+        let commondirs: Vec<PathBuf> = {
             let state = self.state.lock().unwrap();
-            state.commondir.clone()
+            state.commondirs.clone()
         };
-        match cd {
-            None => false,
-            Some(cd) => match watcher.watch(&cd, RecursiveMode::Recursive) {
-                Ok(()) => true,
+        for cd in commondirs {
+            {
+                let state = self.state.lock().unwrap();
+                if state.watched.contains(&cd) {
+                    continue; // already watched
+                }
+            }
+            match watcher.watch(&cd, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    self.state.lock().unwrap().watched.insert(cd.clone());
+                    any = true;
+                    info!(gitdir = %cd.display(), "git plane: commondir watch live");
+                }
                 Err(e) => {
                     warn!(gitdir = %cd.display(), error = %e, "git plane: commondir watch registration failed");
-                    false
                 }
-            },
+            }
         }
+        any
     }
 
     /// Resolve an fs event to the worktrees it concerns (rescanning the
@@ -331,10 +361,10 @@ impl GitPlane {
         let mut best: Option<(usize, PathBuf)> = None;
         for (wt, st) in &state.worktrees {
             let Some(gd) = st.gitdir.as_ref() else { continue };
-            // The main checkout's gitdir is the commondir itself; its paths
+            // The main checkout's gitdir is its repo's commondir; its paths
             // are resolved below so `refs/heads/<b>` can reach the worktree
             // actually checked out on that branch.
-            if state.commondir.as_ref() == Some(gd) {
+            if state.commondirs.contains(gd) {
                 continue;
             }
             if !path.starts_with(gd) {
@@ -348,49 +378,54 @@ impl GitPlane {
         if let Some((_, wt)) = best {
             return (vec![wt], false);
         }
-        let Some(cd) = state.commondir.as_ref() else {
-            return (vec![], false);
-        };
-        let Ok(rel) = path.strip_prefix(cd) else {
-            return (vec![], false);
-        };
-        let rel = rel.to_string_lossy();
-        let all: Vec<PathBuf> = state.worktrees.keys().cloned().collect();
-        let mut parts = rel.split('/');
-        match parts.next() {
-            // refs/heads/<b> and logs/refs/heads/<b> → the worktree(s)
-            // checked out on that branch; other shared refs (remotes/tags/
-            // stash) → every worktree.
-            Some("refs") | Some("logs") => {
-                let rest: Vec<&str> = parts.collect();
-                let branch = match rest.as_slice() {
-                    ["heads", tail @ ..] => Some(tail.join("/")),
-                    ["refs", "heads", tail @ ..] => Some(tail.join("/")),
-                    _ => None,
-                };
-                if let Some(branch) = branch {
-                    if let Some(wt) = state.by_branch.get(&branch) {
-                        return (vec![wt.clone()], false);
+        // Commondir-root paths: try each repo's commondir. refs/heads/<b>
+        // map to the worktree checked out on that branch (per repo — two
+        // repos on the same branch name cannot collide); commondir root
+        // files (HEAD/index/config/...) belong to that repo's main checkout;
+        // a path under commondir/worktrees/ matching no known gitdir means a
+        // worktree may have appeared — rescan.
+        for (cd, main) in &state.main_checkouts {
+            let Ok(rel) = path.strip_prefix(cd) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy();
+            let mut parts = rel.split('/');
+            match parts.next() {
+                // refs/heads/<b> and logs/refs/heads/<b> → the worktree(s)
+                // checked out on that branch; other shared refs (remotes/
+                // tags/stash) → every worktree.
+                Some("refs") | Some("logs") => {
+                    let rest: Vec<&str> = parts.collect();
+                    let branch = match rest.as_slice() {
+                        ["heads", tail @ ..] => Some(tail.join("/")),
+                        ["refs", "heads", tail @ ..] => Some(tail.join("/")),
+                        _ => None,
+                    };
+                    if let Some(branch) = branch {
+                        if let Some(wt) = state.by_branch.get(&(cd.clone(), branch)) {
+                            return (vec![wt.clone()], false);
+                        }
+                        return (state.worktrees.keys().cloned().collect(), false); // branch not checked out anywhere watched
                     }
-                    return (all, false); // branch not checked out anywhere watched
+                    match rest.as_slice() {
+                        // logs/HEAD and the logs dir itself → the main checkout.
+                        ["HEAD"] | [] => return (vec![main.clone()], false),
+                        _ => return (state.worktrees.keys().cloned().collect(), false),
+                    }
                 }
-                match rest.as_slice() {
-                    // logs/HEAD and the logs dir itself → the main checkout.
-                    ["HEAD"] | [] => (vec![self.repo_root.clone()], false),
-                    _ => (all, false),
-                }
+                Some("packed-refs") => return (state.worktrees.keys().cloned().collect(), false),
+                // A dir under worktrees/ that no known gitdir covers: new (or
+                // just removed) linked worktree.
+                Some("worktrees") => return (vec![], true),
+                // commondir root files belong to the main checkout.
+                Some("index") | Some("HEAD") | Some("ORIG_HEAD") | Some("FETCH_HEAD")
+                | Some("MERGE_HEAD") | Some("CHERRY_PICK_HEAD") | Some("REVERT_HEAD")
+                | Some("config") => return (vec![main.clone()], false),
+                // objects/, hooks/, info/, ... — no worktree state to re-read.
+                _ => return (vec![], false),
             }
-            Some("packed-refs") => (all, false),
-            // A dir under worktrees/ that no known gitdir covers: new (or
-            // just removed) linked worktree.
-            Some("worktrees") => (vec![], true),
-            // commondir root files belong to the main checkout.
-            Some("index") | Some("HEAD") | Some("ORIG_HEAD") | Some("FETCH_HEAD")
-            | Some("MERGE_HEAD") | Some("CHERRY_PICK_HEAD") | Some("REVERT_HEAD")
-            | Some("config") => (vec![self.repo_root.clone()], false),
-            // objects/, hooks/, info/, ... — no worktree state to re-read.
-            _ => (vec![], false),
         }
+        (vec![], false)
     }
 
     /// Throttled registry rescan triggered by an fs event. Returns the
@@ -444,7 +479,14 @@ impl GitPlane {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            if self.stopped.load(Ordering::Relaxed) {
+                info!("git plane: safety-net sweep exiting (sink closed)");
+                break;
+            }
             self.rescan(&sink).await;
+            if self.stopped.load(Ordering::Relaxed) {
+                break;
+            }
             let worktrees: Vec<PathBuf> = {
                 let state = self.state.lock().unwrap();
                 state.worktrees.keys().cloned().collect()
@@ -493,11 +535,15 @@ impl GitPlane {
                 };
                 if removed {
                     info!(worktree = %wt.display(), "git plane: worktree removed (directory gone)");
-                    let _ = sink
+                    if sink
                         .send(PlaneEvent::Git(GitEvent::WorktreeRemoved {
                             worktree: wt.to_path_buf(),
                         }))
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        self.stopped.store(true, Ordering::Relaxed);
+                    }
                 }
                 return;
             }
@@ -546,7 +592,13 @@ impl GitPlane {
                 took_ms = took.as_millis() as u64,
                 "git plane event emitted"
             );
-            let _ = sink.send(PlaneEvent::Git(event)).await;
+            // WS3 F4: a dead sink means the integrator is gone — mark the
+            // plane stopped so the loops exit and a supervised restart can
+            // re-arm without duplicating them.
+            if sink.send(PlaneEvent::Git(event)).await.is_err() {
+                self.stopped.store(true, Ordering::Relaxed);
+                return;
+            }
         }
         if took > EVENT_BUDGET {
             warn!(
@@ -560,22 +612,16 @@ impl GitPlane {
 
     // -- registry -----------------------------------------------------------
 
-    /// Rescan `git worktree list --porcelain`, diff against the tracked
-    /// set, emit WorktreeAdded/WorktreeRemoved (the first scan reports the
-    /// current registry — path-keyed, idempotent for the consumer), and
-    /// refresh gitdirs + the branch map. Returns the added worktree paths.
+    /// Rescan every scanned repo, diff against the tracked set, emit
+    /// WorktreeAdded/WorktreeRemoved (the first scan reports the current
+    /// registry — path-keyed, idempotent for the consumer), and refresh
+    /// gitdirs, the branch map and the per-repo commondir topology. Returns
+    /// the added worktree paths.
     async fn rescan(&self, sink: &PlaneSink) -> Vec<PathBuf> {
-        let entries = match self.scan_worktrees().await {
-            Ok(entries) => entries,
-            Err(e) => {
-                warn!(error = %e, "git plane: worktree registry scan failed");
-                return Vec::new();
-            }
-        };
+        let scan = self.scan_all_worktrees().await;
         let mut tracked: HashMap<PathBuf, WorktreeEntry> = HashMap::new();
-        let mut by_branch: HashMap<String, PathBuf> = HashMap::new();
         let mut skipped: HashSet<PathBuf> = HashSet::new();
-        for entry in entries {
+        for entry in scan.entries {
             if !self.watches(&entry.path) {
                 skipped.insert(entry.path.clone());
                 continue;
@@ -585,9 +631,6 @@ impl GitPlane {
                 // worktree is effectively removed.
                 skipped.insert(entry.path.clone());
                 continue;
-            }
-            if let Some(branch) = &entry.branch {
-                by_branch.insert(branch.clone(), entry.path.clone());
             }
             tracked.insert(entry.path.clone(), entry);
         }
@@ -605,24 +648,6 @@ impl GitPlane {
                 }
             }
         }
-        let commondir = tracked
-            .get(&self.repo_root)
-            .and_then(|e| e.gitdir.as_ref())
-            .map(|gd| {
-                let marker = gd.join("commondir");
-                match fs::read_to_string(&marker) {
-                    Ok(content) => {
-                        let target = PathBuf::from(content.trim());
-                        if target.is_absolute() {
-                            target
-                        } else {
-                            gd.join(target)
-                        }
-                    }
-                    Err(_) => gd.clone(),
-                }
-            })
-            .and_then(|cd| fs::canonicalize(cd).ok());
         let (added, removed, added_paths) = {
             let mut state = self.state.lock().unwrap();
             let mut added: Vec<WorktreeEntry> = Vec::new();
@@ -648,44 +673,149 @@ impl GitPlane {
             for path in &removed {
                 state.worktrees.remove(path);
             }
-            if let Some(cd) = commondir {
-                state.commondir = Some(cd);
-            }
-            state.by_branch = by_branch;
+            // WS3 F2: per-repo commondir topology + branch map (keyed per
+            // repo so equal branch names cannot collide).
+            state.main_checkouts = scan.main_checkouts.clone();
+            state.commondirs = scan.main_checkouts.keys().cloned().collect();
+            state.by_branch = scan.by_branch.clone();
+            let tracked_paths: HashSet<PathBuf> = state.worktrees.keys().cloned().collect();
+            state
+                .by_branch
+                .retain(|_, path| tracked_paths.contains(path));
             let added_paths: Vec<PathBuf> = added.iter().map(|e| e.path.clone()).collect();
             (added, removed, added_paths)
         };
         for entry in &added {
             info!(worktree = %entry.path.display(), "git plane: worktree added");
-            let _ = sink
+            if sink
                 .send(PlaneEvent::Git(GitEvent::WorktreeAdded {
                     worktree: entry.path.clone(),
                 }))
-                .await;
+                .await
+                .is_err()
+            {
+                self.stopped.store(true, Ordering::Relaxed);
+                return added_paths;
+            }
         }
         for path in &removed {
             info!(worktree = %path.display(), "git plane: worktree removed");
-            let _ = sink
+            if sink
                 .send(PlaneEvent::Git(GitEvent::WorktreeRemoved {
                     worktree: path.clone(),
                 }))
-                .await;
+                .await
+                .is_err()
+            {
+                self.stopped.store(true, Ordering::Relaxed);
+                return added_paths;
+            }
         }
         added_paths
     }
+}
 
-    async fn scan_worktrees(&self) -> Result<Vec<WorktreeEntry>, String> {
-        let out = run_git(&self.repo_root, &["worktree", "list", "--porcelain"]).await?;
-        let mut entries = Vec::new();
-        for (path, branch) in parse_worktree_list(&out) {
-            let path = resolve_possibly_escaped(&path);
-            entries.push(WorktreeEntry {
-                gitdir: resolve_gitdir(&path),
-                path,
-                branch,
-            });
+/// Per-repo scan result: merged worktree entries plus the repo topology
+/// (commondir -> main checkout) for watcher registration and event mapping.
+#[derive(Debug, Default)]
+struct ScanResult {
+    entries: Vec<WorktreeEntry>,
+    /// commondir -> main checkout path, one per scanned repo.
+    main_checkouts: HashMap<PathBuf, PathBuf>,
+    /// (commondir, branch) -> worktree root path.
+    by_branch: HashMap<(PathBuf, String), PathBuf>,
+}
+
+impl GitPlane {
+    /// WS3 F2: enumerate worktrees PER REPO. `git worktree list` from the
+    /// main checkout covers only that repo; the herdr worktrees root holds
+    /// one container dir per repo (`<root>/<repo>/<label>`) and the
+    /// containers are NOT repos themselves — so each container is probed
+    /// with `git worktree list --porcelain`, falling back to its first
+    /// worktree child when the container is not a git repo. The first
+    /// porcelain entry of each probe is that repo's main checkout; its
+    /// gitdir resolves to the repo's commondir. Results are merged and
+    /// deduped by canonical path (WS3 F5: one spelling for registry keys,
+    /// emitted events and commondir lookups).
+    async fn scan_all_worktrees(&self) -> ScanResult {
+        let mut sources = vec![self.repo_root.clone()];
+        if let Ok(entries) = fs::read_dir(&self.worktrees_root) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    sources.push(entry.path());
+                }
+            }
         }
-        Ok(entries)
+        let mut result = ScanResult::default();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for source in sources {
+            let mut out = run_git(&source, &["worktree", "list", "--porcelain"]).await.ok();
+            if out.is_none() {
+                // herdr containers are not repos; probe their worktree
+                // children until one answers.
+                if let Ok(entries) = fs::read_dir(&source) {
+                    for entry in entries.flatten() {
+                        let child = entry.path();
+                        if child.is_dir() {
+                            out = run_git(&child, &["worktree", "list", "--porcelain"])
+                                .await
+                                .ok();
+                            if out.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let Some(out) = out else {
+                warn!(source = %source.display(), "git plane: worktree scan failed for repo source");
+                continue;
+            };
+            let parsed = parse_worktree_list(&out);
+            let commondir = parsed
+                .first()
+                .map(|(p, _)| resolve_possibly_escaped(p))
+                .and_then(|main| resolve_gitdir(&main))
+                .map(|gd| {
+                    let marker = gd.join("commondir");
+                    match fs::read_to_string(&marker) {
+                        Ok(content) => {
+                            let target = PathBuf::from(content.trim());
+                            if target.is_absolute() {
+                                target
+                            } else {
+                                gd.join(target)
+                            }
+                        }
+                        Err(_) => gd.clone(),
+                    }
+                })
+                .and_then(|cd| fs::canonicalize(cd).ok());
+            let main_path = parsed
+                .first()
+                .map(|(p, _)| resolve_possibly_escaped(p))
+                .map(|p| fs::canonicalize(&p).unwrap_or(p));
+            for (raw, branch) in parsed {
+                let resolved = resolve_possibly_escaped(&raw);
+                let path = fs::canonicalize(&resolved).unwrap_or(resolved);
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                if let (Some(branch), Some(cd)) = (&branch, &commondir) {
+                    result
+                        .by_branch
+                        .insert((cd.clone(), branch.clone()), path.clone());
+                }
+                result.entries.push(WorktreeEntry {
+                    gitdir: resolve_gitdir(&path),
+                    path,
+                });
+            }
+            if let (Some(cd), Some(main)) = (commondir, main_path) {
+                result.main_checkouts.insert(cd, main);
+            }
+        }
+        result
     }
 }
 
@@ -929,8 +1059,13 @@ impl Plane for GitPlane {
     }
 
     /// Spawn the fsevents watcher (primary) and the 10s sweep (safety net).
-    /// Never blocks: all work happens on background tasks.
+    /// Never blocks: all work happens on background tasks. Resets the
+    /// sink-close flag so a supervised restart can re-arm cleanly (WS3 F4).
     fn start(self: Arc<Self>, sink: PlaneSink) {
+        self.stopped.store(false, Ordering::Relaxed);
+        // The previous generation's watcher is gone; its watch registrations
+        // died with it, so the fresh watcher must re-register every commondir.
+        self.state.lock().unwrap().watched.clear();
         let watcher_sink = sink.clone();
         let watcher_plane = self.clone();
         tokio::spawn(async move {
@@ -1078,6 +1213,40 @@ mod tests {
         // Non-existent raw path with escape-like content → unescaped
         // variant wins only when it exists.
         assert_eq!(resolve_possibly_escaped(Path::new("/nonexistent/raw")), PathBuf::from("/nonexistent/raw"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn watches_accepts_symlinked_roots_and_canonical_spellings() {
+        // WS3 F5: a symlinked HOME must not split the canonicalized roots
+        // from the raw porcelain/cwd spellings of the same worktrees — every
+        // spelling of a watched worktree must match `watches()`.
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-watches-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let real = root.join("real");
+        let repo = real.join("repo");
+        let wts = real.join("wts");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wts).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let plane = GitPlane::new(link.join("repo"), link.join("wts"));
+
+        let worktree = wts.join("herdr-board/corral-p2-ws2");
+        fs::create_dir_all(&worktree).unwrap();
+        let canonical_wt = fs::canonicalize(&worktree).unwrap();
+        assert!(plane.watches(&canonical_wt), "canonical spelling matches");
+        assert!(plane.watches(&worktree), "raw spelling matches via canonicalization");
+        assert!(
+            plane.watches(&link.join("wts/herdr-board/corral-p2-ws2")),
+            "symlinked spelling matches"
+        );
+        assert!(plane.watches(&fs::canonicalize(&repo).unwrap()), "main checkout matches");
+        assert!(!plane.watches(&wts.join("elsewhere")), "out-of-scope path does not match");
         let _ = fs::remove_dir_all(&root);
     }
 

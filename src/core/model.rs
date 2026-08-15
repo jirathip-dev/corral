@@ -43,6 +43,8 @@ pub enum WaitingOnKind {
     ApproveTool,
     AnswerQuestion,
     Menu,
+    /// Reserved: crash detection needs exit-code signals (P2+, pane exit
+    /// with an active agent), so no P1 source produces it yet.
     Crash,
 }
 

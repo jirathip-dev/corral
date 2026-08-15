@@ -29,7 +29,9 @@ struct Inner {
     rev: u64,
     /// (rev, delta) history, oldest first. Bounded by HISTORY_CAP.
     history: VecDeque<(u64, Delta)>,
-    pending_upd: Vec<Agent>,
+    /// Pending upserts deduped by agent_id so an event storm within one
+    /// coalesce window cannot accumulate unbounded clones of the same agent.
+    pending_upd: BTreeMap<String, Agent>,
     pending_del: Vec<String>,
     /// Whether any change arrived while nobody was subscribed (drives the
     /// coalesce tick choice without touching the broadcast channel).
@@ -61,18 +63,24 @@ impl Store {
     }
 
     /// Apply one change. State updates immediately; publishing waits for the
-    /// coalesce tick.
+    /// coalesce tick. Upserts within one window dedupe by agent_id (the
+    /// latest record wins), so memory stays bounded by the agent count even
+    /// under a burst.
     pub async fn apply(&self, change: Change) {
         let mut inner = self.inner.lock().await;
         match change {
             Change::Upsert(agent) => {
                 let agent_id = agent.agent_id.clone();
-                inner.pending_upd.push((*agent).clone());
+                inner.pending_upd.insert(agent_id.clone(), (*agent).clone());
                 inner.agents.insert(agent_id, *agent);
             }
             Change::Remove(agent_id) => {
                 if inner.agents.remove(&agent_id).is_some() {
-                    inner.pending_del.push(agent_id);
+                    // A same-window upsert is subsumed by the removal.
+                    inner.pending_upd.remove(&agent_id);
+                    if !inner.pending_del.contains(&agent_id) {
+                        inner.pending_del.push(agent_id);
+                    }
                 }
             }
         }
@@ -117,7 +125,7 @@ impl Store {
         inner.pending_any = false;
         let delta = Delta {
             rev: inner.rev + 1,
-            upd: std::mem::take(&mut inner.pending_upd),
+            upd: std::mem::take(&mut inner.pending_upd).into_values().collect(),
             del: std::mem::take(&mut inner.pending_del),
         };
         inner.rev = delta.rev;
@@ -152,6 +160,12 @@ impl Store {
     /// Resolve a client cursor. `Some(rev)` from `Last-Event-ID`, `None` if
     /// the client has no cursor (always a full snapshot). Flushes pending
     /// changes first so the returned boundary matches the live stream.
+    ///
+    /// Cursor semantics: equal to current -> go live; older but covered by
+    /// the history ring -> replay deltas; older than the ring, or NEWER than
+    /// current (a daemon restart resets `rev` to 0, so a future cursor means
+    /// the client is on a dead epoch) -> full snapshot. A future cursor must
+    /// never silently go live, or the client keeps its stale epoch forever.
     pub async fn resume_from(&self, last_rev: Option<u64>) -> Resume {
         self.flush().await;
         let inner = self.inner.lock().await;
@@ -159,8 +173,13 @@ impl Store {
             return Resume::Snapshot(self.snapshot_locked(&inner));
         };
         let current = inner.rev;
-        if last_rev >= current {
+        if last_rev == current {
             return Resume::Live { rev: current };
+        }
+        if last_rev > current {
+            // Cursor from the future: dead epoch (daemon restart). Resnapshot
+            // so the client re-anchors instead of waiting forever.
+            return Resume::Snapshot(self.snapshot_locked(&inner));
         }
         let oldest = inner.history.front().map(|(rev, _)| *rev);
         let Some(oldest) = oldest else {

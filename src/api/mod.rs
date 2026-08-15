@@ -20,7 +20,7 @@ use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use tracing::info;
 
-use crate::core::model::{Delta, Resume};
+use crate::core::model::Resume;
 use crate::core::store::Store;
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
@@ -65,6 +65,8 @@ async fn events(
     // payload), so no window is ever missed.
     let rx = store.subscribe();
 
+    // Live: cursor is current — emit nothing (the SSE keep-alive suffices).
+    // A fabricated empty delta would look like a state change to clients.
     let (initial, live_from_rev) = match store.resume_from(last_rev).await {
         Resume::Snapshot(snap) => {
             info!(rev = snap.rev, "SSE client joined with full snapshot");
@@ -80,7 +82,7 @@ async fn events(
                 live_from_rev,
             )
         }
-        Resume::Live { rev } => (vec![delta_event("delta", rev, &empty_delta(rev))], rev),
+        Resume::Live { rev } => (Vec::new(), rev),
     };
 
     let live = stream::unfold(rx, move |mut rx| {
@@ -113,12 +115,4 @@ fn delta_event(kind: &str, rev: u64, data: &impl serde::Serialize) -> Event {
         .id(rev.to_string())
         .json_data(data)
         .expect("delta/snapshot serializes")
-}
-
-fn empty_delta(rev: u64) -> Delta {
-    Delta {
-        rev,
-        upd: Vec::new(),
-        del: Vec::new(),
-    }
 }

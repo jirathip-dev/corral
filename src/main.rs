@@ -55,6 +55,16 @@ fn parse_args() -> (PathBuf, SocketAddr) {
             .expect("invalid --bind address"),
         port.unwrap_or(DEFAULT_PORT),
     ));
+    // Security baseline: loopback only until P3 device signatures. Refuse
+    // anything routable rather than silently exposing unauthenticated agent
+    // state to the network.
+    if !addr.ip().is_loopback() {
+        eprintln!(
+            "refusing to bind {addr}: P1 corrald has no auth and must stay on \
+             loopback until P3 device signatures land"
+        );
+        std::process::exit(2);
+    }
     (socket_path, addr)
 }
 

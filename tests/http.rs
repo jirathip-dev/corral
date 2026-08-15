@@ -170,6 +170,30 @@ async fn sse_no_cursor_snapshot_then_live_delta() {
 }
 
 #[tokio::test]
+async fn sse_live_cursor_emits_no_fabricated_delta() {
+    // m9: a client whose cursor equals current rev must not receive a
+    // synthetic empty delta (it would look like a state change); the first
+    // frame on the wire must be a real delta.
+    let (store, app) = app().await;
+    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store.flush().await; // rev 1
+
+    let req = Request::builder()
+        .uri("/events")
+        .header("Last-Event-ID", "1")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let mut stream = res.into_body().into_data_stream();
+
+    store.apply(Change::upsert(agent("b", AgentState::Done))).await;
+    let first = read_frame(&mut stream, Duration::from_secs(3)).await;
+    assert!(first.contains("event: delta"));
+    assert!(!first.contains("\"upd\":[]"), "no fabricated empty delta");
+    assert!(first.contains("\"agent_id\":\"b\""));
+}
+
+#[tokio::test]
 async fn resume_semantics_are_exposed_by_store() {
     let store = Store::new();
     store.apply(Change::upsert(agent("a", AgentState::Working))).await;

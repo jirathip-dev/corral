@@ -128,8 +128,54 @@ async fn resume_current_rev_goes_live() {
     store.apply(Change::upsert(agent("a"))).await;
     store.flush().await;
     assert!(matches!(store.resume_from(Some(1)).await, Resume::Live { rev: 1 }));
-    // Cursor beyond current (client restarted elsewhere) — also live.
-    assert!(matches!(store.resume_from(Some(99)).await, Resume::Live { rev: 1 }));
+    // Cursor strictly ahead of current is a dead epoch (daemon restart):
+    // the client must re-anchor on a full snapshot, not go live.
+    assert!(matches!(store.resume_from(Some(99)).await, Resume::Snapshot(_)));
+}
+
+#[tokio::test]
+async fn resume_future_cursor_after_restart_resnapshots() {
+    // Simulate a daemon restart: the old process served revs 1..=5, then
+    // died; a fresh store starts at rev 0. A client still holding the old
+    // cursor must get a full snapshot, not a silent Live with no recovery.
+    let old = Store::new();
+    for i in 1..=5 {
+        old.apply(Change::upsert(agent(&format!("a{i}")))).await;
+        old.flush().await;
+    }
+    assert_eq!(old.snapshot().await.rev, 5);
+
+    let restarted = Store::new();
+    assert_eq!(restarted.snapshot().await.rev, 0);
+    assert!(matches!(
+        restarted.resume_from(Some(5)).await,
+        Resume::Snapshot(_)
+    ), "future cursor after restart must resnapshot");
+    // A client already at the fresh daemon's rev goes live.
+    assert!(matches!(restarted.resume_from(Some(0)).await, Resume::Live { rev: 0 }));
+}
+
+#[tokio::test]
+async fn pending_upserts_dedupe_within_one_window() {
+    let store = Store::new();
+    // Burst of updates to the same agent within one coalesce window.
+    for i in 0..1000 {
+        let mut a = agent("a");
+        a.seq = i;
+        store.apply(Change::upsert(a)).await;
+    }
+    let d = store.flush().await.expect("delta");
+    assert_eq!(d.upd.len(), 1, "deduped to a single record per agent");
+    assert_eq!(d.upd[0].seq, 999, "latest record wins");
+    // A removal in the same window subsumes the pending upsert entirely.
+    store.apply(Change::upsert(agent("b"))).await;
+    store.apply(Change::Remove("b".to_string())).await;
+    let d = store.flush().await.expect("delta");
+    assert!(d.upd.is_empty());
+    assert!(d.del.contains(&"b".to_string()));
+    let snap = store.snapshot().await;
+    assert!(!snap.agents.contains_key("b"), "removed agent must not linger");
+    assert_eq!(snap.agents.len(), 1, "only the earlier 'a' remains");
 }
 
 #[tokio::test]

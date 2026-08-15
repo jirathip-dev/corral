@@ -55,6 +55,16 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const RECONNECT_BASE: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const FRAME_CHANNEL_CAP: usize = 1024;
+/// A session that survived at least this long proves the server was
+/// reachable; the reconnect backoff resets afterwards so steady-state
+/// restarts recover quickly instead of staying at 30s forever.
+const RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
+/// Bounded retry for pane event streams: attempts with doubling backoff,
+/// then give up silently (a later pane.updated / next session reopens).
+const PANE_RETRY_ATTEMPTS: usize = 3;
+const PANE_RETRY_BASE: Duration = Duration::from_secs(2);
+/// Delay before a respawn triggered by a pane stream closing.
+const PANE_RESPAWN_DELAY: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Wire types (tolerant: herdr may add fields; missing fields default)
@@ -390,9 +400,17 @@ impl HerdrAdapter {
     async fn run_forever(&self, store: Store) {
         let mut backoff = RECONNECT_BASE;
         loop {
+            let started = std::time::Instant::now();
             match self.session(&store).await {
                 Ok(()) => info!("herdr connection ended cleanly"),
                 Err(e) => warn!(error = %e, "herdr adapter error"),
+            }
+            // A session that ran for a while (or bootstrapped successfully)
+            // proves the server was reachable; reset the backoff so a herdr
+            // restart after steady state is recovered at the base delay, not
+            // after a 30s crawl.
+            if started.elapsed() >= RECONNECT_RESET_AFTER {
+                backoff = RECONNECT_BASE;
             }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(RECONNECT_MAX);
@@ -409,14 +427,7 @@ impl HerdrAdapter {
             code: "decode".to_string(),
             message: e.to_string(),
         })?;
-        for agent in &list.agents {
-            self.apply_agent_info(agent, store).await;
-            self.state
-                .lock()
-                .unwrap()
-                .subscribed_panes
-                .insert(agent.pane_id.clone());
-        }
+        self.reconcile_against_list(&list, store).await;
         info!(agents = list.agents.len(), "herdr bootstrap complete");
 
         // Event sink: one mpsc channel per session; every stream forwarder
@@ -435,18 +446,18 @@ impl HerdrAdapter {
                     match key {
                         StreamKey::Global => {
                             // Server restarted or stream dropped: re-bootstrap
-                            // to reconcile, then reopen everything.
+                            // to reconcile (dropping ghost agents whose panes
+                            // closed while the stream was down), then reopen.
                             info!("main event stream closed, re-bootstrapping");
-                            let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
+                            let list =
+                                rpc_call(&self.socket_path, "agent.list", json!({})).await?;
                             let list: AgentListWire = serde_json::from_value(list).map_err(
                                 |e| RpcError::Server {
                                     code: "decode".to_string(),
                                     message: e.to_string(),
                                 },
                             )?;
-                            for agent in &list.agents {
-                                self.apply_agent_info(agent, store).await;
-                            }
+                            self.reconcile_against_list(&list, store).await;
                             self.spawn_event_stream(StreamKey::Global, sink_tx.clone());
                         }
                         StreamKey::Pane(pane) => {
@@ -457,7 +468,14 @@ impl HerdrAdapter {
                                 .subscribed_panes
                                 .contains(&pane)
                             {
-                                self.spawn_event_stream(StreamKey::Pane(pane), sink_tx.clone());
+                                // Respawn with a delay (not at full speed) so
+                                // a persistently rejecting pane cannot spin.
+                                let socket_path = self.socket_path.clone();
+                                let sink = sink_tx.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(PANE_RESPAWN_DELAY).await;
+                                    spawn_pane_event_stream(socket_path, pane, sink);
+                                });
                             }
                         }
                     }
@@ -467,57 +485,62 @@ impl HerdrAdapter {
         }
     }
 
-    /// Spawn a push-only event stream: one events.subscribe, then forward all
-    /// pushed events into the shared sink until the socket dies. Runs in its
-    /// own task so the session loop never stalls on connect/subscribe.
-    fn spawn_event_stream(&self, key: StreamKey, sink: mpsc::Sender<SinkFrame>) {
-        let socket_path = self.socket_path.clone();
-        let subs = match &key {
-            StreamKey::Global => self.global_subscriptions(),
-            StreamKey::Pane(pane) => pane_subscriptions(pane),
+    /// Reconcile tracked agents against a fresh `agent.list`. Upserts present
+    /// panes; removes every tracked agent whose pane is absent from the list.
+    /// Panes closed while a stream was down never emit pane.closed on the new
+    /// stream (subscription only replays current pane state), so without this
+    /// diff their agents would linger as ghosts forever.
+    async fn reconcile_against_list(&self, list: &AgentListWire, store: &Store) {
+        let removals: Vec<String> = {
+            let mut state = self.state.lock().unwrap();
+            let present: HashSet<String> =
+                list.agents.iter().map(|a| a.pane_id.clone()).collect();
+            let stale: Vec<String> = state
+                .pane_agents
+                .keys()
+                .filter(|pane| !present.contains(*pane))
+                .cloned()
+                .collect();
+            stale
+                .iter()
+                .filter_map(|pane| state.remove(pane))
+                .collect()
         };
-        tokio::spawn(async move {
-            let stream = match UnixStream::connect(&socket_path).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(error = %e, key = ?key, "event stream connect failed");
-                    let _ = sink.send(SinkFrame::Closed { key }).await;
-                    return;
-                }
-            };
-            let (client, mut rx) = RpcClient::new(stream);
-            let key2 = key.clone();
-            let forwarder_sink = sink.clone();
-            let forwarder = async move {
-                loop {
-                    match rx.recv().await {
-                        Some(EventFrame { kind, data }) => {
-                            if forwarder_sink
-                                .send(SinkFrame::Event { kind, data })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        None => {
-                            let _ = forwarder_sink
-                                .send(SinkFrame::Closed { key: key2 })
-                                .await;
-                            break;
-                        }
+        for agent_id in removals {
+            info!(agent_id, "agent removed: pane absent from fresh agent.list");
+            store.apply(Change::Remove(agent_id)).await;
+        }
+        for agent in &list.agents {
+            self.apply_agent_info(agent, store).await;
+            self.state
+                .lock()
+                .unwrap()
+                .subscribed_panes
+                .insert(agent.pane_id.clone());
+        }
+    }
+
+    /// Spawn a push-only event stream. Global streams run until they die and
+    /// report `Closed`; pane streams get bounded retry with backoff (a
+    /// persistently rejected pane must not spin connect+subscribe at full
+    /// speed) and give up silently — the next pane.updated / session
+    /// re-subscription reopens them.
+    fn spawn_event_stream(&self, key: StreamKey, sink: mpsc::Sender<SinkFrame>) {
+        match key {
+            StreamKey::Global => {
+                let socket_path = self.socket_path.clone();
+                let subs = self.global_subscriptions();
+                tokio::spawn(async move {
+                    if !run_event_stream(socket_path, subs, sink.clone(), StreamKey::Global).await
+                    {
+                        let _ = sink.send(SinkFrame::Closed { key: StreamKey::Global }).await;
                     }
-                }
-            };
-            tokio::spawn(forwarder);
-            if let Err(e) = client
-                .call("events.subscribe", json!({ "subscriptions": subs }))
-                .await
-            {
-                warn!(key = ?key, error = %e, "event stream subscription failed");
-                let _ = sink.send(SinkFrame::Closed { key }).await;
+                });
             }
-        });
+            StreamKey::Pane(pane) => {
+                spawn_pane_event_stream(self.socket_path.clone(), pane, sink);
+            }
+        }
     }
 
     fn global_subscriptions(&self) -> Vec<Value> {
@@ -664,8 +687,7 @@ impl HerdrAdapter {
         data: &Value,
         sink: mpsc::Sender<SinkFrame>,
         store: &Store,
-    ) {
-        match kind {
+    ) {        match kind {
             "pane_updated" => {
                 let pane: PaneInfoWire =
                     match serde_json::from_value(data.get("pane").cloned().unwrap_or(Value::Null)) {
@@ -713,9 +735,14 @@ impl HerdrAdapter {
                         .subscribed_panes
                         .insert(ev.pane_id.clone())
                     {
-                        self.spawn_event_stream(StreamKey::Pane(ev.pane_id.clone()), sink.clone());
+                        spawn_pane_event_stream(
+                            self.socket_path.clone(),
+                            ev.pane_id.clone(),
+                            sink.clone(),
+                        );
                     }
-                    self.register_agent_pane(&ev.pane_id, &tool, store).await;
+                    self.register_agent_pane(&ev.pane_id, &tool, AgentState::Unknown, store)
+                        .await;
                 } else {
                     let removed = self.state.lock().unwrap().remove(&ev.pane_id);
                     if let Some(agent_id) = removed {
@@ -787,7 +814,7 @@ impl HerdrAdapter {
             .subscribed_panes
             .insert(pane.pane_id.clone())
         {
-            self.spawn_event_stream(StreamKey::Pane(pane.pane_id.clone()), sink);
+            spawn_pane_event_stream(self.socket_path.clone(), pane.pane_id.clone(), sink);
         }
     }
 
@@ -797,10 +824,12 @@ impl HerdrAdapter {
             state.pane_agents.get(&ev.pane_id).cloned()
         };
         let Some(agent_id) = known_id else {
-            // Agent pane we never registered: create a record.
+            // Agent pane we never registered: create a record carrying the
+            // event's actual status (not Unknown).
             self.register_agent_pane(
                 &ev.pane_id,
                 ev.agent.as_deref().unwrap_or("unknown"),
+                AgentState::from_herdr_status(ev.agent_status.as_deref().unwrap_or("unknown")),
                 store,
             )
             .await;
@@ -849,7 +878,16 @@ impl HerdrAdapter {
     }
 
     /// New agent detected in a pane (pane.agent_detected with a tool name).
-    async fn register_agent_pane(&self, pane_id: &str, tool: &str, store: &Store) {
+    /// `agent_state` is the status from the triggering event when known —
+    /// a status_changed for an unregistered pane must not read Unknown, or
+    /// replay-ordering races make a blocked agent look unknown.
+    async fn register_agent_pane(
+        &self,
+        pane_id: &str,
+        tool: &str,
+        agent_state: AgentState,
+        store: &Store,
+    ) {
         let canonical = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(pane_id, None);
@@ -859,7 +897,7 @@ impl HerdrAdapter {
                 pane_id,
                 &agent_id,
                 Some(tool),
-                AgentState::Unknown,
+                agent_state,
                 None,
                 None,
                 &HashMap::new(),
@@ -867,13 +905,83 @@ impl HerdrAdapter {
             )
         };
         store.apply(Change::upsert(canonical)).await;
-        info!(pane = pane_id, tool, "agent detected");
+        info!(pane = pane_id, tool, ?agent_state, "agent detected");
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subscriptions + normalization helpers
-// ---------------------------------------------------------------------------
+/// Spawn a pane event stream with bounded retry. Returns immediately; the
+/// retry loop runs in its own task. On repeated failure it gives up silently
+/// (no `Closed` — that would trigger a respawn loop); the next
+/// pane.updated/agent_detected event or a new session reopens the stream.
+fn spawn_pane_event_stream(socket_path: PathBuf, pane_id: String, sink: mpsc::Sender<SinkFrame>) {
+    tokio::spawn(async move {
+        let key = StreamKey::Pane(pane_id.clone());
+        let subs = pane_subscriptions(&pane_id);
+        let mut backoff = PANE_RETRY_BASE;
+        for _ in 0..PANE_RETRY_ATTEMPTS {
+            if run_event_stream(socket_path.clone(), subs.clone(), sink.clone(), key.clone()).await
+            {
+                return; // went live; the forwarder reports death via Closed
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(RECONNECT_MAX);
+        }
+    });
+}
+
+/// One event-stream connection: subscribe once, forward pushed events into
+/// `sink` until the socket dies. Returns `true` if the subscription went
+/// live, `false` if connect/subscribe failed (callers decide retry policy).
+///
+/// The forwarder task holds a clone of the RPC client for the stream's whole
+/// lifetime: dropping the client would close the write half and send EOF to
+/// herdr, potentially killing the subscription. On subscribe failure the
+/// forwarder is aborted so the connection is torn down cleanly.
+async fn run_event_stream(
+    socket_path: PathBuf,
+    subs: Vec<Value>,
+    sink: mpsc::Sender<SinkFrame>,
+    key: StreamKey,
+) -> bool {
+    let stream = match UnixStream::connect(&socket_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, key = ?key, "event stream connect failed");
+            return false;
+        }
+    };
+    let (client, mut rx) = RpcClient::new(stream);
+    let key2 = key.clone();
+    let forwarder_sink = sink.clone();
+    let client_for_forwarder = client.clone();
+    let forwarder = async move {
+        // Keep the client (and its write half) alive for the whole stream.
+        let _client = client_for_forwarder;
+        loop {
+            match rx.recv().await {
+                Some(EventFrame { kind, data }) => {
+                    if forwarder_sink.send(SinkFrame::Event { kind, data }).await.is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    let _ = forwarder_sink.send(SinkFrame::Closed { key: key2 }).await;
+                    break;
+                }
+            }
+        }
+    };
+    let forwarder_handle = tokio::spawn(forwarder);
+    if let Err(e) = client
+        .call("events.subscribe", json!({ "subscriptions": subs }))
+        .await
+    {
+        warn!(key = ?key, error = %e, "event stream subscription failed");
+        forwarder_handle.abort();
+        return false;
+    }
+    true
+}
 
 fn pane_subscriptions(pane_id: &str) -> Vec<Value> {
     vec![
@@ -888,10 +996,16 @@ fn pane_subscriptions(pane_id: &str) -> Vec<Value> {
     ]
 }
 
+/// Derive the human reason from herdr's state_labels. HashMap iteration
+/// order is arbitrary, so keys are sorted first — a multi-label reason must
+/// be deterministic for a given input.
 fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
-    labels.iter().next().map(|(k, v)| {
+    let mut keys: Vec<&String> = labels.keys().collect();
+    keys.sort();
+    keys.first().map(|k| {
+        let v = &labels[*k];
         if v.is_empty() {
-            k.clone()
+            (*k).clone()
         } else {
             format!("{k}: {v}")
         }
@@ -1222,5 +1336,104 @@ mod tests {
         assert!(!adapter.knows_agent("nope"));
         let err = adapter.drive("nope", DriveCommand::Prompt { text: "hi".into() });
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::core::model::AgentState as S;
+    use serde_json::json;
+
+    fn adapter() -> HerdrAdapter {
+        HerdrAdapter::new(PathBuf::from("/nonexistent.sock"))
+    }
+
+    #[tokio::test]
+    async fn unregistered_pane_status_changed_keeps_actual_status() {
+        // m4: a status_changed for a pane we never registered must create the
+        // record with the event's status (blocked), not Unknown.
+        let store = Store::new();
+        let adapter = adapter();
+        let ev = serde_json::from_value::<StatusChangedWire>(json!({
+            "pane_id": "wX:p1",
+            "agent_status": "blocked",
+            "agent": "claude",
+            "title": "Waiting on approval",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&ev, &store).await;
+
+        let snap = store.snapshot().await;
+        let agent = snap.agents.get("herdr:pane:wX:p1").expect("record created");
+        assert_eq!(agent.state, S::Blocked, "must not read Unknown");
+        assert_eq!(agent.tool, "claude");
+        assert!(adapter.knows_agent(&agent.agent_id));
+    }
+
+    #[tokio::test]
+    async fn reconcile_removes_ghost_agents() {
+        // M2: panes closed while a stream was down never emit pane.closed on
+        // the new stream; the agent.list diff must drop the ghosts.
+        let store = Store::new();
+        let adapter = adapter();
+        let claude: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-live"},
+            "agent_status": "idle",
+            "pane_id": "wQ:p1",
+            "cwd": "/Users/jirathip/worktrees/a",
+            "name": "live-one",
+            "state_labels": {}
+        }))
+        .unwrap();
+        let ghost: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_status": "working",
+            "pane_id": "wG:p1",
+            "cwd": "/Users/jirathip/worktrees/ghost",
+            "name": "ghost",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&claude, &store).await;
+        adapter.apply_agent_info(&ghost, &store).await;
+        assert_eq!(store.snapshot().await.agents.len(), 2);
+
+        // Fresh agent.list: wG:p1 (and its pane) are gone.
+        let list: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-live"},
+            "agent_status": "idle",
+            "pane_id": "wQ:p1",
+            "cwd": "/Users/jirathip/worktrees/a",
+            "name": "live-one",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&list, &store).await;
+
+        let snap = store.snapshot().await;
+        assert_eq!(snap.agents.len(), 1, "ghost agent must be removed");
+        assert!(snap.agents.contains_key("herdr:ses-live"));
+        assert!(!snap.agents.contains_key("herdr:pane:wG:p1"));
+        assert!(!adapter.knows_agent("herdr:pane:wG:p1"), "state must forget the ghost too");
+    }
+
+    #[test]
+    fn reason_from_labels_is_deterministic() {
+        // m8: HashMap order is arbitrary; the derived reason must not depend
+        // on it, so identical label sets produce identical reasons.
+        let mut a = HashMap::new();
+        a.insert("waiting_for_approval".to_string(), "".to_string());
+        a.insert("focus_lost".to_string(), "user switched pane".to_string());
+        let mut b = HashMap::new();
+        b.insert("focus_lost".to_string(), "user switched pane".to_string());
+        b.insert("waiting_for_approval".to_string(), "".to_string());
+        assert_eq!(reason_from_labels(&a), reason_from_labels(&b));
+        assert_eq!(reason_from_labels(&a).as_deref(), Some("focus_lost: user switched pane"));
     }
 }

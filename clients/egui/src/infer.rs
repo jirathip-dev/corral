@@ -71,6 +71,11 @@ pub fn infer(branch: Option<&str>, known: &BTreeSet<u64>) -> Option<InferredIssu
 ///   `w2/issue-17-read-tail`, `issues/24`);
 /// - `#<N>…` anywhere in the name (e.g. `#123`, `feat/#123-fix`).
 ///
+/// Precedence (F2, documented): the `#<N>` form wins when both appear
+/// (e.g. `issue-5-rework-#12` infers `~#12`). Deterministic either way;
+/// the branch-name `issue-<N>` convention is preferred by the repo but not
+/// over the explicit `#` marker.
+///
 /// Returns `None` for every other shape: no number, number zero, leading
 /// non-digit after the marker (`issue-inference`), overflow, or bare
 /// numbers with no `issue`/`#` marker (`123`, `fix-24-crash`).

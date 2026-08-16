@@ -333,6 +333,9 @@ fn branch_cell(ui: &mut Ui, agent: &Agent, plain: &dyn Fn(&mut Ui, f32, String, 
     };
     let marker = inferred.marker();
     let (color, tip) = inferred_marker_ui(&inferred);
+    // F1 (review): the marker must survive truncation — truncate ONLY the
+    // branch text, then append the marker as its own segment so long
+    // branches (issue-431-embed-project-management) keep the ~#N signal.
     let mut job = egui::text::LayoutJob::default();
     job.append(
         branch,
@@ -343,17 +346,18 @@ fn branch_cell(ui: &mut Ui, agent: &Agent, plain: &dyn Fn(&mut Ui, f32, String, 
             ..Default::default()
         },
     );
-    job.append(
-        &format!(" {marker}"),
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::monospace(11.0),
-            color,
-            ..Default::default()
-        },
-    );
-    ui.add_sized([COL_BRANCH - 4.0, 18.0], egui::Label::new(job).truncate())
-        .on_hover_text(tip);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_sized([COL_BRANCH - 36.0, 18.0], egui::Label::new(job).truncate());
+        ui.label(
+            egui::RichText::new(format!(" {marker}"))
+                .monospace()
+                .size(11.0)
+                .color(color),
+        );
+    })
+    .response
+    .on_hover_text(tip);
 }
 
 /// Marker color + hover explanation for an inferred issue (D21: the `~`

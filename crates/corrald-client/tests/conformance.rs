@@ -219,10 +219,13 @@ async fn r2_read_path_and_sse_resume() {
         Some(daemon.repo_head_sha.as_str()),
         "snapshot carries the real HEAD sha (G21 acceptance 1)"
     );
+    // F4: the FULL subject text is pinned — the harness commits the subject
+    // with leading whitespace ("  conformance initial commit  "), so this
+    // exact literal proves the probe's first-line extraction + trim.
     assert_eq!(
         agent.workspace.head_subject.as_deref(),
-        Some("initial commit"),
-        "snapshot carries the first-line subject (G21 acceptance 1)"
+        Some("conformance initial commit"),
+        "snapshot carries the trimmed first-line subject (G21 acceptance 1, F4)"
     );
     let rev0 = snap.rev;
 
@@ -279,7 +282,11 @@ async fn r2_read_path_and_sse_resume() {
                 Some(daemon.repo_head_sha.as_str()),
                 "head fields survive the SSE snapshot frame (G21)"
             );
-            assert_eq!(a.workspace.head_subject.as_deref(), Some("initial commit"));
+            assert_eq!(
+                a.workspace.head_subject.as_deref(),
+                Some("conformance initial commit"),
+                "full pinned subject survives the SSE frame (F4)"
+            );
         }
         other => panic!("expected a snapshot frame, got {other:?}"),
     }

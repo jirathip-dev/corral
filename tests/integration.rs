@@ -397,3 +397,43 @@ async fn unchanged_facts_produce_no_delta() {
     assert_eq!(delta.upd.len(), 1, "unchanged duplicate produced no upsert");
     assert_eq!(delta.upd[0].agent_id, "b");
 }
+
+/// D9 regression (G21 re-review F1): a commit subject containing a seeded
+/// secret must reach the read model (the snapshot's source) redacted —
+/// never the raw token — while `head_sha` (identity) stays raw.
+#[tokio::test]
+async fn head_subject_egresses_redacted_not_raw() {
+    const GHP: &str = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
+    store.flush().await;
+
+    sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+        worktree: PathBuf::from(WT_A),
+        branch: "ws2/gh-plane".to_string(),
+        commit: "abc123".to_string(),
+        subject: Some(format!("fix: rotate {GHP} before release")),
+    }))
+    .await
+    .unwrap();
+
+    let a = wait_for(&store, "a", |a| a.workspace.head_sha.is_some()).await;
+    assert_eq!(
+        a.workspace.head_subject.as_deref(),
+        Some("fix: rotate [REDACTED] before release"),
+        "the subject egresses redacted (F1)"
+    );
+    assert!(
+        !a.workspace.head_subject.is_some_and(|s| s.contains(GHP)),
+        "no raw PAT may reach the snapshot source"
+    );
+    assert_eq!(a.workspace.head_sha.as_deref(), Some("abc123"), "the sha stays raw (identity)");
+
+    // The delta carrying the record is equally redacted.
+    let delta = store.flush().await.expect("head-facts delta");
+    assert_eq!(
+        delta.upd[0].workspace.head_subject.as_deref(),
+        Some("fix: rotate [REDACTED] before release"),
+        "delta payload is redacted (F1)"
+    );
+}

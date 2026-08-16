@@ -446,7 +446,10 @@ fn read_token(config_dir: &std::path::Path, name: &str) -> String {
 /// `git init` the config dir + one commit, returning the HEAD sha. The
 /// daemon probes this repo as its main checkout (`CORRAL_REPO_ROOT`); the
 /// conformance snapshot's `head_sha` must equal the returned sha and
-/// `head_subject` the message's first line (G21).
+/// `head_subject` the message's first line, trimmed (G21 F4: the subject is
+/// committed with LEADING whitespace — `git log %s` keeps leading spaces,
+/// so the probe's `.trim()` is the only thing producing the pinned
+/// "conformance initial commit", locking the trim against drift).
 fn init_scratch_repo(config_dir: &std::path::Path) -> String {
     let git = |args: &[&str]| {
         let output = Command::new("git")
@@ -467,7 +470,15 @@ fn init_scratch_repo(config_dir: &std::path::Path) -> String {
     git(&["config", "user.name", "Conformance Test"]);
     std::fs::write(config_dir.join("README.md"), "corral conformance repo\n").unwrap();
     git(&["add", "README.md"]);
-    git(&["commit", "-m", "initial commit"]);
+    // `--cleanup=verbatim` pins the exact message bytes; `%s` keeps the
+    // leading spaces (and trims trailing), so the probe's trim is exercised.
+    // The message file lives in THIS daemon's config dir (one tempdir per
+    // spawn_live_daemon call) — a shared temp path would race across the
+    // parallel conformance tests of the same binary.
+    let msg = config_dir.join(".conformance-commit-msg.txt");
+    std::fs::write(&msg, "  conformance initial commit  \n\nbody paragraph\n").unwrap();
+    git(&["commit", "-F", msg.to_str().expect("msg path"), "--cleanup=verbatim"]);
+    let _ = std::fs::remove_file(&msg);
     git(&["rev-parse", "HEAD"]).trim().to_string()
 }
 

@@ -75,6 +75,7 @@ use tracing::{debug, warn};
 
 use crate::core::events::{GhRepoState, GitEvent, GitStatus, PlaneEvent};
 use crate::core::model::{CiStatus, Workspace};
+use crate::core::redact::redact;
 use crate::core::store::Store;
 
 /// Last-known git facts for one worktree path (the re-apply unit).
@@ -289,7 +290,15 @@ impl Integrator {
                     // wire) for unborn/empty checkouts, whose probe never
                     // produces a head fact.
                     ws.head_sha = facts.commit.clone();
-                    ws.head_subject = facts.subject.clone();
+                    // D9: `head_subject` is DISPLAY text (arbitrary commit
+                    // prose), so it goes through the same redaction pass as
+                    // herdr pane text before it lands on the wire — a
+                    // subject like `fix: rotate ghp_…` must not egress raw.
+                    // `head_sha` stays raw: identity, not display (a sha
+                    // fails rule 4 by design). Unlike `branch` (F2 TODO
+                    // above), the subject is already redacted here, so the
+                    // snapshot/SSE egress is covered at this boundary.
+                    ws.head_subject = facts.subject.as_deref().map(|s| redact(s).into_owned());
                     if let Some(status) = &facts.status {
                         ws.dirty = status.is_dirty();
                         ws.ahead = status.ahead;
@@ -496,6 +505,43 @@ mod tests {
         let agents = store.matching(|_| true).await;
         assert_eq!(agents[0].workspace.head_sha, None);
         assert_eq!(agents[0].workspace.head_subject, None);
+    }
+
+    #[tokio::test]
+    async fn head_subject_is_redacted_before_landing_in_the_read_model() {
+        // D9 (G21 re-review F1): a commit subject is display text — a
+        // seeded secret in it must reach the snapshot redacted, while
+        // head_sha (identity) stays raw.
+        const GHP: &str = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
+        let store = Store::new();
+        store.apply(Change::upsert(agent_on("/wt/a"))).await;
+        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+
+        let facts = GitFacts {
+            branch: Some("feat/x".to_string()),
+            commit: Some("abc123".to_string()),
+            subject: Some(format!("rotate the {GHP} token now")),
+            ..Default::default()
+        };
+        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+
+        let agents = store.matching(|_| true).await;
+        let ws = &agents[0].workspace;
+        assert_eq!(
+            ws.head_subject.as_deref(),
+            Some("rotate the [REDACTED] token now"),
+            "the subject must egress redacted (F1)"
+        );
+        assert!(
+            !ws.head_subject.as_deref().is_some_and(|s| s.contains(GHP)),
+            "no raw PAT may reach the read model"
+        );
+        assert_eq!(ws.head_sha.as_deref(), Some("abc123"), "the sha is identity: stays raw");
+
+        // Idempotent under re-apply: the second pass must not double-redact.
+        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+        let agents = store.matching(|_| true).await;
+        assert_eq!(agents[0].workspace.head_subject.as_deref(), Some("rotate the [REDACTED] token now"));
     }
 
     #[tokio::test]

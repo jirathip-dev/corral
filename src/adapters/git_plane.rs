@@ -91,6 +91,14 @@ const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
 #[cfg(test)]
 static GIT_CALLS: AtomicU64 = AtomicU64::new(0);
 
+/// Serializes the probe tests (G21 re-review F2): `GIT_CALLS` is shared
+/// module state, so the delta assertion must not run while another probe
+/// test's counted invocations land in the before/after window. Both probe
+/// tests hold this lock for their whole body — no other test in the module
+/// (or anywhere — `run_git` is module-private) increments the counter.
+#[cfg(test)]
+static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -976,6 +984,13 @@ async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
     // subject (`%H%n%s`), so `head_sha`/`head_subject` on the snapshot cost
     // zero extra git calls. Fails like `rev-parse HEAD` on an unborn HEAD
     // (exit 128), keeping the unborn case a clean probe failure.
+    //
+    // Parity caveat (G21 re-review F3): on a PARTIAL/TREELESS clone whose
+    // HEAD commit object is missing, `git log -1` may attempt a lazy fetch
+    // (bounded by GIT_TIMEOUT) where `rev-parse HEAD` would fail fast —
+    // acceptable for herdr-managed worktrees, and the probe stays
+    // all-or-nothing (a head-read failure suppresses the whole fact, like
+    // any other probe failure).
     let head =
         run_git(wt, &["log", "-1", "--format=%H%n%s"]).await.map_err(ProbeError::Git)?;
     let mut lines = head.lines();
@@ -1336,6 +1351,8 @@ mod tests {
 
     #[tokio::test]
     async fn probe_returns_sha_and_first_line_subject_in_three_git_calls() {
+        // F2: serialize against the other probe test — GIT_CALLS is shared.
+        let _guard = PROBE_LOCK.lock().await;
         // G21 acceptance 2: the head fields ride the commit probe — the
         // subject is read by the SAME `git log` that resolves the sha, so a
         // probe is exactly three git invocations (branch, head+subject,
@@ -1365,6 +1382,8 @@ mod tests {
 
     #[tokio::test]
     async fn probe_survives_unborn_head_with_null_equivalents() {
+        // F2: serialize against the other probe test — GIT_CALLS is shared.
+        let _guard = PROBE_LOCK.lock().await;
         // Unborn/empty checkout: HEAD has no commit, so the head probe fails
         // like `rev-parse HEAD` did — the plane emits no head facts and the
         // snapshot's head_sha/head_subject stay null (acceptance 1).

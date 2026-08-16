@@ -1,9 +1,12 @@
-//! Fleet board: agent rows (state/reason/waiting_on kind badges), worktree
-//! topology columns (repo/branch/dirty/ahead-behind), PR/CI columns, and
+//! Fleet board: repo sections (CollapsingHeader, default open) with agent
+//! rows beneath — state/reason/waiting_on kind badges, worktree topology
+//! columns (repo/branch/dirty/ahead-behind), PR/CI columns, and
 //! capability-driven drive controls rendered from `agent.capabilities` AND
 //! the device's grant ledger.
 
-use eframe::egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
+use std::cmp::Ordering;
+
+use eframe::egui::{Color32, CollapsingHeader, RichText, ScrollArea, TextEdit, Ui};
 
 use crate::drive::{DriveIntent, DriveOutcome};
 use crate::state::DriveState;
@@ -23,6 +26,12 @@ const COL_AB: f32 = 64.0;
 const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
 const COL_DRIVE: f32 = 400.0;
+
+/// Header for the bucket of agents without `workspace.repo` (sorts last).
+const NO_REPO_LABEL: &str = "(no repo)";
+
+/// egui temp-memory key for the flat-list toggle (default: grouped).
+const FLAT_VIEW: &str = "corral-ui-board-flat";
 
 /// Callbacks the board issues to the app (drive dispatch).
 pub struct BoardActions<'a> {
@@ -59,6 +68,17 @@ pub fn show(
         + COL_DRIVE;
 
     let ids: Vec<String> = fleet.agents.keys().cloned().collect();
+    ui.horizontal(|ui| {
+        let mut flat = flat_view(ui);
+        if ui
+            .checkbox(&mut flat, "flat sort")
+            .on_hover_text("one flat list of every agent, instead of repo groups")
+            .changed()
+        {
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp::<bool>(egui::Id::new(FLAT_VIEW), flat));
+        }
+    });
     ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -66,25 +86,94 @@ pub fn show(
             header(ui);
             ui.separator();
             let mut toggles: Vec<String> = Vec::new();
-            for id in &ids {
-                let Some(agent) = fleet.agents.get(id) else {
-                    continue;
-                };
-                let is_expanded = fleet.is_expanded(id);
-                let (clicked, _) =
-                    agent_row(ui, agent, is_expanded, allowed, fleet, actions);
-                if clicked {
-                    toggles.push(id.clone());
+            if flat_view(ui) {
+                for id in &ids {
+                    board_row(ui, id, fleet, allowed, actions, &mut toggles);
                 }
-                if is_expanded {
-                    detail(ui, agent, fleet);
+            } else {
+                for group in group_by_repo(fleet) {
+                    let title = group.repo.unwrap_or(NO_REPO_LABEL);
+                    CollapsingHeader::new(
+                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                            .monospace()
+                            .color(theme::ui::TEXT_STRONG),
+                    )
+                    .id_salt(("corral-ui-repo-group", title))
+                    .default_open(true)
+                    .show_unindented(ui, |ui| {
+                        for id in &group.agent_ids {
+                            board_row(ui, id, fleet, allowed, actions, &mut toggles);
+                        }
+                    });
+                    ui.separator();
                 }
-                ui.separator();
             }
             for id in &toggles {
                 fleet.toggle_expanded(id);
             }
         });
+}
+
+fn flat_view(ui: &Ui) -> bool {
+    ui.ctx()
+        .memory(|m| m.data.get_temp::<bool>(egui::Id::new(FLAT_VIEW)).unwrap_or(false))
+}
+
+/// One board section: a repo (or the "(no repo)" orphan bucket) and the
+/// agent ids in it, in the fleet's stable ordering.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RepoGroup<'a> {
+    /// `None` = the orphan bucket (agents without `workspace.repo`).
+    pub repo: Option<&'a str>,
+    pub agent_ids: Vec<&'a str>,
+}
+
+/// Group agent ids by `workspace.repo`: named repos sorted by name, the
+/// "(no repo)" bucket last. Within a group, ids keep the fleet's BTreeMap
+/// ordering (stable across frames; unchanged by grouping).
+pub fn group_by_repo(fleet: &Fleet) -> Vec<RepoGroup<'_>> {
+    let mut groups: Vec<RepoGroup<'_>> = Vec::new();
+    for (id, agent) in &fleet.agents {
+        let repo = agent.workspace.repo.as_deref();
+        match groups.iter_mut().find(|g| g.repo == repo) {
+            Some(group) => group.agent_ids.push(id.as_str()),
+            None => groups.push(RepoGroup {
+                repo,
+                agent_ids: vec![id.as_str()],
+            }),
+        }
+    }
+    groups.sort_by(|a, b| match (a.repo, b.repo) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    });
+    groups
+}
+
+/// One agent row + its expanded detail + row separator (shared by the flat
+/// and grouped paths so per-agent rendering is identical).
+fn board_row(
+    ui: &mut Ui,
+    id: &str,
+    fleet: &Fleet,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+    toggles: &mut Vec<String>,
+) {
+    let Some(agent) = fleet.agents.get(id) else {
+        return;
+    };
+    let is_expanded = fleet.is_expanded(id);
+    let (clicked, _) = agent_row(ui, agent, is_expanded, allowed, fleet, actions);
+    if clicked {
+        toggles.push(id.to_string());
+    }
+    if is_expanded {
+        detail(ui, agent, fleet);
+    }
+    ui.separator();
 }
 
 fn header(ui: &mut Ui) {
@@ -552,6 +641,82 @@ mod tests {
             display_name: None,
             title: None,
         }
+    }
+
+    fn agent_in_repo(id: &str, repo: Option<&str>) -> Agent {
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = id.into();
+        agent.workspace.repo = repo.map(str::to_string);
+        agent
+    }
+
+    #[test]
+    fn group_by_repo_sorts_names_and_pushes_orphans_last() {
+        let mut fleet = Fleet::default();
+        for (id, repo) in [
+            ("herdr:z", Some("zeta")),
+            ("herdr:a", Some("alpha")),
+            ("herdr:o", None),
+            ("herdr:b", Some("alpha")),
+        ] {
+            fleet.agents.insert(id.into(), agent_in_repo(id, repo));
+        }
+        let groups = group_by_repo(&fleet);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].repo, Some("alpha"));
+        assert_eq!(groups[0].agent_ids, vec!["herdr:a", "herdr:b"]);
+        assert_eq!(groups[1].repo, Some("zeta"));
+        assert_eq!(groups[1].agent_ids, vec!["herdr:z"]);
+        assert_eq!(groups[2].repo, None, "orphan bucket is last");
+        assert_eq!(groups[2].agent_ids, vec!["herdr:o"]);
+    }
+
+    #[test]
+    fn group_by_repo_keeps_fleet_ordering_within_groups() {
+        let mut fleet = Fleet::default();
+        for (id, repo) in [
+            ("herdr:c", Some("one")),
+            ("herdr:a", Some("one")),
+            ("herdr:b", Some("one")),
+        ] {
+            fleet.agents.insert(id.into(), agent_in_repo(id, repo));
+        }
+        let groups = group_by_repo(&fleet);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].agent_ids,
+            vec!["herdr:a", "herdr:b", "herdr:c"],
+            "group order follows the fleet's BTreeMap order, not insertion"
+        );
+    }
+
+    #[test]
+    fn group_by_repo_partitions_all_agents_exactly_once() {
+        let mut fleet = Fleet::default();
+        for i in 0..29 {
+            let id = format!("herdr:agent-{i:02}");
+            let repo = match i % 3 {
+                0 => Some("herdr-board"),
+                1 => Some("sendmeter"),
+                _ => None,
+            };
+            fleet.agents.insert(id.clone(), agent_in_repo(&id, repo));
+        }
+        let groups = group_by_repo(&fleet);
+        let total: usize = groups.iter().map(|g| g.agent_ids.len()).sum();
+        assert_eq!(total, 29, "every agent lands in exactly one group");
+        assert_eq!(groups.last().unwrap().repo, None);
+        let mut seen: Vec<&str> = groups.iter().flat_map(|g| g.agent_ids.iter().copied()).collect();
+        seen.sort_unstable();
+        let mut unique = seen.clone();
+        unique.dedup();
+        assert_eq!(seen, unique, "no agent id appears in two groups");
+        assert_eq!(groups.last().unwrap().agent_ids.len(), 9);
+    }
+
+    #[test]
+    fn group_by_repo_empty_fleet_has_no_groups() {
+        assert!(group_by_repo(&Fleet::default()).is_empty());
     }
 
     #[test]

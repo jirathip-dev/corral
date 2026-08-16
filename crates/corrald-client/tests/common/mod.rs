@@ -176,12 +176,6 @@ impl FakeHerdr {
 
     /// Point the fake agent's cwd at a real (git) directory, so the daemon's
     /// git plane probes it and the snapshot carries real head facts (G21).
-    pub fn set_agent_cwd(&self, cwd: &std::path::Path) {
-        let mut agents = self.inner.agents.lock().unwrap();
-        if let Some(agent) = agents.first_mut() {
-            agent.cwd = cwd.to_string_lossy().into_owned();
-        }
-    }
 
     /// `pane.agent_status_changed` — the adapter maps this onto the agent's
     /// state (and clears waiting_on for non-blocked states).
@@ -354,8 +348,10 @@ pub async fn spawn_live_daemon() -> LiveDaemon {
     // The cwd must be set BEFORE the daemon boots: the herdr adapter learns
     // it from the bootstrap agent.list, and the git plane probes it on the
     // first sweep. A post-boot mutation would never reach the daemon.
-    let mut agent = FakeAgent::default();
-    agent.cwd = config_dir.to_string_lossy().into_owned();
+    let agent = FakeAgent {
+        cwd: config_dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
     let mut daemon = spawn_live_daemon_at(dir.path(), vec![agent]).await;
     daemon.repo_head_sha = repo_head_sha;
     daemon._dir = Some(dir);

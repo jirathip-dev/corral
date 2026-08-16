@@ -63,7 +63,8 @@
 //! ## Biometric step-up (destructive patterns)
 //!
 //! Payloads matching a destructive pattern (`rm -rf`, `push --force`,
-//! `curl | sh`, `~/.aws`, `~/.ssh`, `.env`, `dd if=…of=`, remote-eval
+//! `curl|sh` and spaced pipe-to-shell forms, `dd of=…` / `dd if=…of=`,
+//! `~/.aws`, `~/.ssh`, `.env`, remote-eval and process-substitution
 //! forms, …) require a step-up proof: a short-lived (5 min), single-use
 //! token minted by `POST /step-up` only after the client proves possession
 //! of the device signing key (signed [`StepUpRequest`], freshness

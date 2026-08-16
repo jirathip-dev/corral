@@ -19,6 +19,10 @@ pub const HOST_KEY_FILE: &str = "host-key";
 pub const HOST_KEY_ALGORITHM: &str = "X25519";
 
 pub struct HostIdentity {
+    /// Held in memory (zeroized on drop via x25519-dalek/zeroize) for a
+    /// future ECDH pairing channel; no production read path yet, so the
+    /// non-test build sees it as unread.
+    #[cfg_attr(not(any(test, feature = "test-utils")), allow(dead_code))]
     secret: StaticSecret,
     public_key: [u8; 32],
     path: PathBuf,
@@ -27,21 +31,32 @@ pub struct HostIdentity {
 impl HostIdentity {
     /// Load the host key from `<config_dir>/host-key`, creating it on
     /// first run. Fails fast on corrupt material — never silently re-keys.
+    /// Enforces 0700/0600 on the load path too (F5).
     pub fn load_or_create(config_dir: &Path) -> Result<Self, String> {
+        use zeroize::Zeroize;
+        super::ensure_dir_0700(config_dir)?;
         let path = config_dir.join(HOST_KEY_FILE);
         let secret: [u8; 32] = match std::fs::read_to_string(&path) {
             Ok(content) => {
-                let decoded = super::decode_b64(content.trim())
+                super::ensure_file_0600(&path)?;
+                let mut decoded = super::decode_b64(content.trim())
                     .ok_or_else(|| format!("corrupt host key {}: not base64", path.display()))?;
-                decoded
-                    .try_into()
-                    .map_err(|_| format!("corrupt host key {}: wrong length", path.display()))?
+                if decoded.len() != 32 {
+                    decoded.zeroize();
+                    return Err(format!("corrupt host key {}: wrong length", path.display()));
+                }
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&decoded);
+                decoded.zeroize();
+                bytes
             }
             Err(_) => {
-                let raw = random_bytes::<32>();
+                let mut raw = random_bytes::<32>();
                 let encoded = b64_encode(&raw);
                 write_secret(&path, encoded.as_bytes())?;
-                raw
+                let out = raw;
+                raw.zeroize();
+                out
             }
         };
         let secret = StaticSecret::from(secret);
@@ -70,8 +85,10 @@ impl HostIdentity {
         &self.path
     }
 
-    /// Secret accessor for a future ECDH pairing channel. Marked doc(hidden)
-    /// so it cannot appear in the public-facing API surface by accident.
+    /// Secret accessor for a future ECDH pairing channel. Compiled only
+    /// for tests or the explicit `test-utils` feature (F12) — the release
+    /// binary cannot lift the host secret.
+    #[cfg(any(test, feature = "test-utils"))]
     #[doc(hidden)]
     pub fn secret(&self) -> &StaticSecret {
         &self.secret

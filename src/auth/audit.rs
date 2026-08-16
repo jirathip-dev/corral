@@ -4,7 +4,7 @@
 //! carries `prev` (the SHA-256 of the previous entry's canonical record)
 //! and `hash` (SHA-256 over its own canonical record), so the chain is
 //! self-authenticating: `chain()` recomputes every hash and reports
-//! `valid` — any tampered/inserted/deleted line breaks it.
+//! `valid` — any tampered/inserted line breaks it.
 //!
 //! Canonical record order is fixed by the [`AuditRecord`] struct field
 //! order (same discipline as the drive envelope), so hashes are
@@ -15,9 +15,23 @@
 //! GETs and never for authentication failures. The drive seam in
 //! `http.rs` follows this; the caller-stub test proves it.
 //!
-//! The file is append-only (never rewritten in place). Rotation is a
-//! future W4 concern; v1 keeps one file and documents the archive story
-//! (stop daemon, move the file, restart — the new chain re-geneses).
+//! **Crash repair (F4b)**: a daemon killed mid-append leaves a partial
+//! line. `open()` rewrites it as a [`Tombstone`] (hash of the raw bytes
+//! kept for forensics) before anything reads or appends, so a crash can
+//! never permanently brick the `valid` verdict; `chain()` and the resume
+//! scan skip tombstones.
+//!
+//! **TODO(W4) — external anchor**: the chain head is self-referential
+//! (derived from the file itself), so wholesale truncation of trailing
+//! entries silently re-geneses the chain at the next open and is not
+//! detected. W4 must anchor the head externally (a second checkpoint
+//! file, or a host-key-signed head shipped off-machine) and fold the
+//! registry into the integrity story (F6).
+//!
+//! The file is append-only (never rewritten in place — the only exception
+//! is the boot-time tombstone repair above). Rotation is a future W4
+//! concern; v1 keeps one file and documents the archive story (stop
+//! daemon, move the file, restart — the new chain re-geneses).
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -30,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::drive::{AuditEntry, AuditLog, AuditOutcome};
 
-use super::hex;
+use super::{hex, now_secs};
 
 /// File name of the audit log inside the config dir.
 pub const AUDIT_FILE: &str = "audit.log";
@@ -134,12 +148,37 @@ pub struct HashChainAuditLog {
     state: Mutex<AuditState>,
 }
 
+/// A crash-repair marker (F4b): when a daemon dies mid-append, the partial
+/// line cannot be parsed and would otherwise poison `chain()`'s integrity
+/// verdict forever. `open()` rewrites it as this tombstone (hash = SHA-256
+/// of the raw partial bytes, for forensics). `chain()` skips tombstones —
+/// they are artifacts, not entries. TODO(W4): the chain head is
+/// self-referential (derived from the file itself), so wholesale
+/// truncation of trailing entries is undetectable without an external
+/// anchor (second checkpoint file or host-key-signed head shipped
+/// off-machine) — W4 must add it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tombstone {
+    pub tombstone: bool,
+    pub ts: u64,
+    /// The sequence number the crashed append was about to write.
+    pub seq: u64,
+    /// SHA-256 hex of the raw partial line bytes.
+    pub hash: String,
+    /// Chain head at crash time (forensics only).
+    pub prev: String,
+}
+
 impl HashChainAuditLog {
     pub fn open(config_dir: &Path) -> Result<Self, String> {
-        std::fs::create_dir_all(config_dir).map_err(|e| format!("mkdir: {e}"))?;
+        super::ensure_dir_0700(config_dir)?;
         let path = config_dir.join(AUDIT_FILE);
+        // F4b: repair a crash-mid-append partial tail BEFORE anything
+        // reads or appends, so a bad line can never brick `valid`.
+        repair_partial_tail(&path)?;
         // Append-only: never truncate, never rewrite. Read handle for
-        // chain() scans; writes go to the end.
+        // chain() scans; writes go to the end. Mode enforced on the load
+        // path too (F5).
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -147,7 +186,9 @@ impl HashChainAuditLog {
             .mode(0o600)
             .open(&path)
             .map_err(|e| format!("open audit log {}: {e}", path.display()))?;
-        // Re-read the tail to resume the chain across restarts.
+        super::ensure_file_0600(&path)?;
+        // Re-read the tail to resume the chain across restarts (tombstones
+        // skipped — they carry no chain link).
         let (head, next_seq) = scan_tail(&file);
         Ok(Self {
             path,
@@ -166,7 +207,8 @@ impl HashChainAuditLog {
     /// Full chain: entries, head hash, and integrity verdict. `valid` is
     /// false if any stored hash does not match its recomputed canonical
     /// record, if any `prev` does not match the predecessor's hash, or if
-    /// the file has a partial/truncated tail line.
+    /// a line is neither a valid entry nor a tombstone. Tombstones (crash
+    /// artifacts) are skipped without breaking `valid` (F4b).
     pub fn chain(&self) -> (Vec<ChainEntry>, String, bool) {
         let state = self.state.lock().expect("audit lock poisoned");
         let mut content = String::new();
@@ -181,36 +223,39 @@ impl HashChainAuditLog {
         let mut valid = true;
         let mut last_hash = state.head.clone();
         for line in content.lines() {
-            let line: AuditLine = match serde_json::from_str(line) {
-                Ok(l) => l,
-                Err(_) => {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(line) = serde_json::from_str::<AuditLine>(line) {
+                if line.record.prev != prev {
                     valid = false;
-                    last_hash = state.head.clone();
-                    break;
                 }
-            };
-            if line.record.prev != prev {
+                let record_bytes = serde_json::to_vec(&line.record).expect("record serializes");
+                let recomputed = hex(&sha256(&record_bytes));
+                if recomputed != line.hash {
+                    valid = false;
+                }
+                let seq = line.record.seq;
+                last_hash = line.hash.clone();
+                entries.push(ChainEntry {
+                    seq,
+                    ts: line.record.ts,
+                    key_id: line.record.key_id,
+                    request_id: line.record.request_id,
+                    capability: line.record.capability,
+                    target: line.record.target,
+                    outcome: line.record.outcome.into(),
+                    prev: line.record.prev,
+                    hash: line.hash,
+                });
+                prev = last_hash.clone();
+            } else if serde_json::from_str::<Tombstone>(line).is_ok() {
+                // Crash artifact: skipped, carries no chain link (F4b).
+                continue;
+            } else {
                 valid = false;
+                break;
             }
-            let record_bytes = serde_json::to_vec(&line.record).expect("record serializes");
-            let recomputed = hex(&sha256(&record_bytes));
-            if recomputed != line.hash {
-                valid = false;
-            }
-            let seq = line.record.seq;
-            last_hash = line.hash.clone();
-            entries.push(ChainEntry {
-                seq,
-                ts: line.record.ts,
-                key_id: line.record.key_id,
-                request_id: line.record.request_id,
-                capability: line.record.capability,
-                target: line.record.target,
-                outcome: line.record.outcome.into(),
-                prev: line.record.prev,
-                hash: line.hash,
-            });
-            prev = last_hash.clone();
         }
         (entries, last_hash, valid)
     }
@@ -265,8 +310,8 @@ impl AuditLog for HashChainAuditLog {
 }
 
 /// Recompute chain head + next sequence from the current file contents
-/// (resume across daemon restarts). A trailing partial line is ignored for
-/// the *tail* scan (it will be flagged invalid by `chain()`).
+/// (resume across daemon restarts). Tombstones are skipped — they carry
+/// no chain link.
 fn scan_tail(file: &File) -> (String, u64) {
     let mut head = GENESIS_HASH.to_string();
     let mut count = 0u64;
@@ -279,12 +324,80 @@ fn scan_tail(file: &File) -> (String, u64) {
         if line.trim().is_empty() {
             continue;
         }
-        let line: AuditLine = match serde_json::from_str(&line) {
-            Ok(l) => l,
-            Err(_) => break, // partial tail (crash mid-write) — not counted
-        };
-        count += 1;
-        head = line.hash;
+        if let Ok(line) = serde_json::from_str::<AuditLine>(&line) {
+            count += 1;
+            head = line.hash;
+        }
+        // Tombstones are skipped; anything else (partial tail) is a
+        // crash artifact that open() already repaired — treat as a stop.
+    }
+    (head, count)
+}
+
+/// F4b: if the file ends with a partial (unparseable, non-tombstone) line
+/// — the signature of a crash mid-append — rewrite it as a tombstone so
+/// `chain()` can keep reporting `valid` and appends can resume. The
+/// tombstone's `hash` covers the raw partial bytes for forensics. No-op
+/// when the file is clean. This is the ONLY write path that rewrites the
+/// file; it runs at open(), before the daemon serves anything.
+fn repair_partial_tail(path: &Path) -> Result<(), String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // missing file: open() creates it
+    };
+    if content.is_empty() {
+        return Ok(());
+    }
+    // Drop the trailing element left by a final newline.
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let Some(tail) = lines.last() else {
+        return Ok(());
+    };
+    let tail_is_entry = serde_json::from_str::<AuditLine>(tail).is_ok();
+    let tail_is_tombstone = serde_json::from_str::<Tombstone>(tail).is_ok();
+    if tail_is_entry || tail_is_tombstone {
+        return Ok(()); // clean tail
+    }
+
+    // Partial line: capture its raw bytes, then rebuild the file as
+    // [complete lines…, tombstone].
+    let (head, count) = head_and_count(&lines[..lines.len() - 1]);
+    let tombstone = Tombstone {
+        tombstone: true,
+        ts: now_secs(),
+        seq: count,
+        hash: hex(&sha256(tail.as_bytes())),
+        prev: head,
+    };
+    let mut out = lines[..lines.len() - 1].join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    // No trailing newline here: write_secret appends one.
+    out.push_str(&serde_json::to_string(&tombstone).expect("tombstone serializes"));
+    tracing::warn!(
+        path = %path.display(),
+        "audit log crash artifact repaired as tombstone (seq {}); raw bytes hashed for forensics",
+        tombstone.seq
+    );
+    super::write_secret(path, out.as_bytes())
+}
+
+/// Head hash + entry count over complete lines only (tombstones skipped).
+fn head_and_count(lines: &[&str]) -> (String, u64) {
+    let mut head = GENESIS_HASH.to_string();
+    let mut count = 0u64;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(line) = serde_json::from_str::<AuditLine>(line) {
+            count += 1;
+            head = line.hash;
+        }
     }
     (head, count)
 }
@@ -392,6 +505,124 @@ mod tests {
             entries[1].prev, entries[0].hash,
             "new process chains onto the stored head"
         );
+    }
+
+    /// F4b: a crash mid-append leaves a partial tail line. open() must
+    /// repair it as a tombstone so the log stays `valid` and appends can
+    /// resume — the partial line must never permanently brick the verdict.
+    #[test]
+    fn f4b_crash_mid_append_is_repaired_and_log_stays_valid() {
+        let d = dir();
+        let path = d.path().join(AUDIT_FILE);
+        {
+            let log = HashChainAuditLog::open(d.path()).unwrap();
+            log.append(&entry("1", AuditOutcome::Executed)).unwrap();
+            log.append(&entry("2", AuditOutcome::Executed)).unwrap();
+        } // simulate crash: kill the process mid-append
+
+        // Truncate the tail: cut the last 3 bytes of the final entry line.
+        let mut content = std::fs::read(&path).unwrap();
+        content.truncate(content.len() - 3);
+        std::fs::write(&path, &content).unwrap();
+
+        // Reopen: repair must tombstone the partial line.
+        let log = HashChainAuditLog::open(d.path()).unwrap();
+        let (entries, _, valid) = log.chain();
+        assert!(
+            valid,
+            "crash artifact must not poison the integrity verdict"
+        );
+        assert_eq!(entries.len(), 1, "the complete entry survives the crash");
+
+        // Appends resume and chain onto the last REAL entry, with the
+        // interrupted seq.
+        log.append(&entry("3", AuditOutcome::Executed)).unwrap();
+        let (entries, _, valid) = log.chain();
+        assert!(valid);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].prev, entries[0].hash);
+        assert_eq!(
+            entries[1].seq, 1,
+            "seq continues after the tombstoned entry"
+        );
+
+        // The tombstone line itself is on disk with the partial bytes
+        // hashed for forensics.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"tombstone\":true"),
+            "tombstone marker present"
+        );
+        let tomb = on_disk
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Tombstone>(l).ok())
+            .next()
+            .expect("one tombstone");
+        assert_eq!(tomb.seq, 1, "tombstone carries the interrupted seq");
+        assert_eq!(tomb.hash.len(), 64);
+        assert_eq!(
+            tomb.prev, entries[0].hash,
+            "tombstone anchors to the last real head"
+        );
+    }
+
+    /// F4b: tombstone lines anywhere in the chain are skipped — they are
+    /// artifacts, not entries — and never flip `valid`.
+    #[test]
+    fn f4b_tombstone_is_skipped_anywhere_in_chain() {
+        let d = dir();
+        let log = HashChainAuditLog::open(d.path()).unwrap();
+        log.append(&entry("1", AuditOutcome::Executed)).unwrap();
+        log.append(&entry("2", AuditOutcome::Executed)).unwrap();
+        drop(log);
+
+        // Inject a tombstone in the middle of the file, as a crash-repair
+        // would, then verify the chain skips it.
+        let path = d.path().join(AUDIT_FILE);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        let tomb = serde_json::to_string(&Tombstone {
+            tombstone: true,
+            ts: now_secs(),
+            seq: 1,
+            hash: "ab".repeat(32),
+            prev: "corral-audit-genesis-v1".into(),
+        })
+        .unwrap();
+        let with_tomb = format!("{}\n{tomb}\n{}", lines[0], lines[1]);
+        std::fs::write(&path, with_tomb).unwrap();
+
+        let log = HashChainAuditLog::open(d.path()).unwrap();
+        let (entries, _, valid) = log.chain();
+        assert!(valid, "tombstone mid-chain must not break the verdict");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].prev, entries[0].hash);
+    }
+
+    /// F5: a pre-existing audit.log with permissive modes is tightened on
+    /// load, not just at creation.
+    #[test]
+    fn f5_load_enforces_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let path = d.path().join(AUDIT_FILE);
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log = HashChainAuditLog::open(d.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "audit.log must be tightened to 0600 on load"
+        );
+        assert_eq!(
+            std::fs::metadata(d.path()).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "config dir must be tightened to 0700 on load"
+        );
+        log.append(&entry("1", AuditOutcome::Executed)).unwrap();
+        assert!(log.chain().2);
     }
 
     #[test]

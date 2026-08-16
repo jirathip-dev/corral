@@ -63,14 +63,26 @@
 //! ## Biometric step-up (destructive patterns)
 //!
 //! Payloads matching a destructive pattern (`rm -rf`, `push --force`,
-//! `curl | sh`, `~/.aws`, `~/.ssh`, `.env`, …) require a step-up proof: a
-//! short-lived (5 min), single-use token minted by `POST /step-up` only
-//! after the client proves possession of the device signing key. The drive
-//! seam then demands `X-Step-Up-Token: <token>` and binds it to the same
-//! `key_id`. No auto-approve in v1. Note: `AuthError` is contract-fixed and
-//! has no `StepUpRequired` variant (src/drive/mod.rs is frozen), so step-up
-//! is enforced as a **second gate after `verify()`** — see
-//! [`StepUpGate`] and the drive seam in `http.rs`.
+//! `curl | sh`, `~/.aws`, `~/.ssh`, `.env`, `dd if=…of=`, remote-eval
+//! forms, …) require a step-up proof: a short-lived (5 min), single-use
+//! token minted by `POST /step-up` only after the client proves possession
+//! of the device signing key (signed [`StepUpRequest`], freshness
+//! enforced: `|now - ts| < 60s`). The drive seam then demands
+//! `X-Step-Up-Token: <token>` and binds it to the same `key_id`. No
+//! auto-approve in v1.
+//!
+//! **Honest scope note**: pattern detection canonicalizes the payload
+//! (lowercase, `\s+` → single space, `$HOME` → `~`, quote normalization)
+//! and is deliberately conservative, but it is a **deterrent layer, not a
+//! security boundary** — a determined attacker with full prompt control
+//! can always obfuscate (e.g. `rm$'\x2d\x2dr\x2df'`). The real boundaries
+//! are the per-capability prompt grant, W2's claim-based approval, and the
+//! step-up itself as friction. Patterns live in one table as the W4
+//! extension point.
+//!
+//! Note: `AuthError` is contract-fixed and has no `StepUpRequired` variant
+//! (src/drive/mod.rs is frozen), so step-up is enforced as a **second gate
+//! after `verify()`** — see [`StepUpGate`] and the drive seam in `http.rs`.
 //!
 //! ## Audit log (AC5)
 //!
@@ -79,7 +91,12 @@
 //! enforced by the caller**: entries are appended only for drive
 //! executions and typed refusals at dispatch — never for GETs and never
 //! for authentication failures. The drive seam follows this; tests prove
-//! it with a caller stub.
+//! it with a caller stub. A crash mid-append is repaired at next open as a
+//! flagged tombstone line (skipped by the chain verifier). **TODO(W4)**:
+//! the chain head is self-referential (derived from the file itself), so
+//! wholesale truncation of trailing entries is undetectable without an
+//! external anchor (e.g. a second checkpoint file, or a host-key-signed
+//! head shipped off-machine) — W4 must add that anchor.
 //!
 //! ## Security invariants
 //!
@@ -88,7 +105,13 @@
 //! - Secrets are never logged; `Debug` impls in this module print only
 //!   public material (public keys, key ids, counts).
 //! - Registration/admin tokens are compared in constant time (`subtle`).
-//! - Key material is persisted 0600 under a 0700 directory.
+//! - Key material is persisted 0600 under a 0700 directory, enforced on
+//!   every load path as well as creation (F5).
+//! - Step-up tokens are reaped when expired (mint + spend) and capped at
+//!   [`step_up::MAX_LIVE_TOKENS`] (F3).
+//! - Secret accessors (`test_support`, admin-token getter, host secret) are
+//!   compiled only under `#[cfg(any(test, feature = "test-utils"))]` — the
+//!   release binary exposes none of them (F12).
 
 pub mod audit;
 pub mod authorizer;
@@ -108,6 +131,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
+use zeroize::Zeroize;
 
 use crate::drive::DriveAuthorizer;
 
@@ -205,11 +229,15 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Read a 0600 file containing base64 of [`TOKEN_BYTES`] random bytes,
-/// creating it on first run.
+/// creating it on first run. Enforces 0600/0700 on the load path too
+/// (F5): a pre-seeded file with permissive modes is tightened here, not
+/// only at creation.
 fn load_or_create_secret(path: &Path) -> Result<String, String> {
+    ensure_dir_0700(path.parent().ok_or("secret path has no parent")?)?;
     if let Ok(content) = std::fs::read_to_string(path) {
+        ensure_file_0600(path)?;
         let trimmed = content.trim();
-        let decoded = decode_b64(trimmed).ok_or_else(|| format!("corrupt secret file {}", path.display()))?;
+        let mut decoded = decode_b64(trimmed).ok_or_else(|| format!("corrupt secret file {}", path.display()))?;
         if decoded.len() != TOKEN_BYTES {
             return Err(format!(
                 "corrupt secret file {}: expected {} bytes, got {}",
@@ -218,12 +246,31 @@ fn load_or_create_secret(path: &Path) -> Result<String, String> {
                 decoded.len()
             ));
         }
-        return Ok(trimmed.to_string());
+        let token = trimmed.to_string();
+        decoded.zeroize();
+        return Ok(token);
     }
-    let raw = random_bytes::<TOKEN_BYTES>();
+    let mut raw = random_bytes::<TOKEN_BYTES>();
     let encoded = b64_encode(&raw);
+    raw.zeroize();
     write_secret(path, encoded.as_bytes())?;
     Ok(encoded)
+}
+
+/// Ensure a config dir exists and is 0700 (F5: enforced on every load).
+pub(crate) fn ensure_dir_0700(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod {}: {e}", dir.display()))
+}
+
+/// Ensure a key-material file is 0600 (F5: enforced on every load, not
+/// only at creation).
+pub(crate) fn ensure_file_0600(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod {}: {e}", path.display()))
 }
 
 /// Write a secret file atomically (temp + rename) with 0600 perms.
@@ -234,9 +281,7 @@ pub(crate) fn write_secret(path: &Path, contents: &[u8]) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("secret path has no parent: {}", path.display()))?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("chmod {}: {e}", dir.display()))?;
+    ensure_dir_0700(dir)?;
 
     let tmp = dir.join(format!(".{}.tmp.{}", file_stem(path), std::process::id()));
     let mut f = std::fs::OpenOptions::new()
@@ -290,15 +335,19 @@ impl fmt::Debug for AuthPlane {
     }
 }
 
-/// Host-side accessor for the admin credential (used by tests and host
-/// tooling; never transmitted to devices).
+/// Host-side accessor for the admin credential (tests + host tooling only;
+/// never transmitted to devices). Compiled only for tests or the explicit
+/// `test-utils` feature — absent from production builds (F12).
+#[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub fn admin_token_for_test(plane: &AuthPlane) -> String {
     plane.admin_token.clone()
 }
 
 /// Signing + envelope helpers for the test suite and the live self-test
-/// client. Kept out of the documented API surface (`#[doc(hidden)]`).
+/// client. Compiled only for tests or the explicit `test-utils` feature
+/// (F12).
+#[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_support {
     use std::sync::Arc;

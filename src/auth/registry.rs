@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::drive::Capability;
 
@@ -89,6 +90,10 @@ pub enum RegisterError {
     /// The public key was not 32 bytes of valid base64, or is not a
     /// canonical Ed25519 point.
     BadPublicKey,
+    /// The registry could not be persisted (disk full, perms, …). The
+    /// in-memory registration is applied; the error propagates instead of
+    /// panicking under the registry lock (F8).
+    Persist(String),
 }
 
 impl fmt::Display for RegisterError {
@@ -96,6 +101,7 @@ impl fmt::Display for RegisterError {
         match self {
             Self::BadToken => write!(f, "bad registration token"),
             Self::BadPublicKey => write!(f, "malformed device public key"),
+            Self::Persist(e) => write!(f, "registry persist failed: {e}"),
         }
     }
 }
@@ -113,13 +119,19 @@ impl DeviceRegistry {
         let path = config_dir.join(REGISTRY_FILE);
         let token_path = registration_token_path(config_dir);
         std::fs::create_dir_all(config_dir).map_err(|e| format!("mkdir: {e}"))?;
+        super::ensure_dir_0700(config_dir)?;
 
-        // Registration token: load or create (routing only).
+        // Registration token: load or create (routing only). Mode enforced
+        // on the load path too (F5).
         let token = match std::fs::read_to_string(&token_path) {
-            Ok(content) => content.trim().to_string(),
+            Ok(content) => {
+                super::ensure_file_0600(&token_path)?;
+                content.trim().to_string()
+            }
             Err(_) => {
-                let raw = random_bytes::<32>();
+                let mut raw = random_bytes::<32>();
                 let encoded = b64_encode(&raw);
+                raw.zeroize();
                 write_secret(&token_path, encoded.as_bytes())?;
                 encoded
             }
@@ -133,6 +145,7 @@ impl DeviceRegistry {
 
         let data = match std::fs::read_to_string(&path) {
             Ok(content) => {
+                super::ensure_file_0600(&path)?;
                 let file: RegistryFile = serde_json::from_str(&content)
                     .map_err(|e| format!("corrupt registry {}: {e}", path.display()))?;
                 if file.schema_version != SCHEMA_VERSION {
@@ -207,7 +220,8 @@ impl DeviceRegistry {
             revoked: false,
         };
         inner.devices.insert(key_id, rec.clone());
-        self.persist_locked(&inner);
+        self.persist_locked(&inner)
+            .map_err(RegisterError::Persist)?;
         Ok(rec)
     }
 
@@ -222,27 +236,35 @@ impl DeviceRegistry {
     }
 
     /// Replace the grant set (host promotion/demotion). Empty = read-only.
-    pub fn set_grants(&self, key_id: &str, grants: Vec<Capability>) -> Result<(), String> {
+    /// Persist failures propagate (F8): a disk error must not panic while
+    /// holding the registry lock (that would poison it for every verify).
+    pub fn set_grants(
+        &self,
+        key_id: &str,
+        grants: Vec<Capability>,
+    ) -> Result<(), RegistryMutationError> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let rec = inner
             .devices
             .get_mut(key_id)
-            .ok_or_else(|| format!("unknown key: {key_id}"))?;
+            .ok_or_else(|| RegistryMutationError::UnknownKey(key_id.to_string()))?;
         rec.grants = grants;
-        self.persist_locked(&inner);
+        self.persist_locked(&inner)
+            .map_err(RegistryMutationError::Persist)?;
         Ok(())
     }
 
     /// Set or clear the revoked flag. Revocation is checked on every
     /// verify — there are no authenticated sessions to cut short.
-    pub fn set_revoked(&self, key_id: &str, revoked: bool) -> Result<(), String> {
+    pub fn set_revoked(&self, key_id: &str, revoked: bool) -> Result<(), RegistryMutationError> {
         let mut inner = self.inner.lock().expect("registry lock poisoned");
         let rec = inner
             .devices
             .get_mut(key_id)
-            .ok_or_else(|| format!("unknown key: {key_id}"))?;
+            .ok_or_else(|| RegistryMutationError::UnknownKey(key_id.to_string()))?;
         rec.revoked = revoked;
-        self.persist_locked(&inner);
+        self.persist_locked(&inner)
+            .map_err(RegistryMutationError::Persist)?;
         Ok(())
     }
 
@@ -265,15 +287,37 @@ impl DeviceRegistry {
             .len()
     }
 
-    fn persist_locked(&self, inner: &RegistryData) {
+    /// Persist the registry atomically. Note: on failure the in-memory
+    /// mutation is already applied and reported via the error; the next
+    /// successful mutation persists the full current state.
+    fn persist_locked(&self, inner: &RegistryData) -> Result<(), String> {
         let file = RegistryFile {
             schema_version: SCHEMA_VERSION,
             devices: inner.devices.clone(),
         };
-        let json = serde_json::to_vec(&file).expect("registry serializes");
-        write_secret(&self.path, &json).expect("registry persist");
+        let json = serde_json::to_vec(&file).map_err(|e| format!("registry serializes: {e}"))?;
+        write_secret(&self.path, &json)
     }
 }
+
+/// Typed registry mutation failures (F8: persist errors propagate instead
+/// of panicking under the lock).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryMutationError {
+    UnknownKey(String),
+    Persist(String),
+}
+
+impl fmt::Display for RegistryMutationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownKey(k) => write!(f, "unknown key: {k}"),
+            Self::Persist(e) => write!(f, "registry persist failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RegistryMutationError {}
 
 /// `dev_<hex(sha256(pubkey)[..16])>` — stable, collision-resistant at
 /// personal-fleet scale, and independent of registration order.
@@ -409,6 +453,108 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join(REGISTRY_FILE), "{not json").unwrap();
         assert!(DeviceRegistry::load_or_create(d.path()).is_err());
+    }
+
+    /// F8: a persist failure must propagate as a typed error — never
+    /// panic while holding the registry lock (that would poison it for
+    /// every subsequent verify). Failure is injected by replacing
+    /// `registry.json` with a directory: `write_secret`'s atomic rename
+    /// over a directory fails while the dir stays writable.
+    #[test]
+    fn f8_persist_failure_propagates_and_lock_stays_usable() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+
+        // Inject the failure: registry.json becomes a directory.
+        std::fs::remove_file(d.path().join(REGISTRY_FILE)).unwrap();
+        std::fs::create_dir(d.path().join(REGISTRY_FILE)).unwrap();
+
+        let err = reg.register(&token, key(), std::time::Duration::from_secs(60));
+        assert!(
+            matches!(err, Err(RegisterError::Persist(_))),
+            "persist error must propagate: {err:?}"
+        );
+        let grants_err = reg.set_grants(&rec.key_id, vec![Capability::ReadTail]);
+        assert!(
+            matches!(grants_err, Err(RegistryMutationError::Persist(_))),
+            "set_grants persist error must propagate: {grants_err:?}"
+        );
+
+        // The lock is NOT poisoned: reads still answer (F8's whole point).
+        assert!(reg.get(&rec.key_id).is_some());
+        assert_eq!(reg.device_count(), 2, "in-memory state applied");
+
+        // Restore for TempDir cleanup.
+        std::fs::remove_dir(d.path().join(REGISTRY_FILE)).unwrap();
+    }
+
+    /// F5: a pre-seeded registry.json with permissive modes is tightened
+    /// on load, not just at creation.
+    #[test]
+    fn f5_load_enforces_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        // Pre-seed a valid registry file with 0644.
+        let content = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "devices": {},
+        });
+        std::fs::write(
+            d.path().join(REGISTRY_FILE),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            d.path().join(REGISTRY_FILE),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        std::fs::write(
+            d.path().join(REGISTRATION_TOKEN_FILE),
+            b64_encode(&[7u8; 32]),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            d.path().join(REGISTRATION_TOKEN_FILE),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(d.path().join(REGISTRY_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "registry.json tightened to 0600 on load"
+        );
+        assert_eq!(
+            std::fs::metadata(d.path().join(REGISTRATION_TOKEN_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "registration-token tightened to 0600 on load"
+        );
+        assert_eq!(
+            std::fs::metadata(d.path()).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "config dir tightened to 0700 on load"
+        );
+        assert_eq!(
+            reg.registration_token(),
+            b64_encode(&[7u8; 32]),
+            "pre-seeded token preserved"
+        );
     }
 
     #[test]

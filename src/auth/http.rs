@@ -40,8 +40,12 @@ use crate::drive::{AuditEntry, AuditLog, AuditOutcome, AuthError, SignedDrive};
 
 use super::step_up::{StepUpRequest, canonical_step_up_bytes};
 use super::{STEP_UP_TTL, b64_decode_array_32, decode_b64, now_secs};
+use super::registry::RegistryMutationError;
 
 pub const STEP_UP_HEADER: &str = "X-Step-Up-Token";
+/// Max accepted skew between a signed step-up request's `ts` and the host
+/// clock (F14) — beyond this the request is treated as stale/replayed.
+pub const STEP_UP_MAX_SKEW_SECS: u64 = 60;
 
 pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -54,11 +58,11 @@ pub fn auth_routes() -> Router<Arc<AppState>> {
 }
 
 /// GET /host-key — host identity is a curve25519 key, not a hostname.
+/// Deliberately discloses no filesystem path (F11).
 async fn host_key(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "algorithm": state.auth.host.algorithm(),
         "public_key": state.auth.host.public_key_b64(),
-        "key_file": state.auth.host.path().display().to_string(),
         "note": "host identity is an X25519 key; device writes are signed with per-device Ed25519 keys",
     }))
 }
@@ -106,6 +110,9 @@ async fn register(
             super::RegisterError::BadPublicKey => {
                 json_err(StatusCode::BAD_REQUEST, "public_key is not a valid Ed25519 point")
             }
+            super::RegisterError::Persist(err) => {
+                json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("registry persist failed: {err}"))
+            }
         },
     }
 }
@@ -114,7 +121,9 @@ async fn register(
 ///
 /// The signature proves possession of the device key: it covers
 /// [`canonical_step_up_bytes`] of the request. The minted token is
-/// single-use, expires in 5 minutes, and is bound to `key_id`.
+/// single-use, expires in 5 minutes, and is bound to `key_id`. The
+/// request's `ts` freshness is enforced (F14): `|now - ts| < 60s`.
+/// Revoked/expired keys cannot mint (F9).
 async fn step_up(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -126,6 +135,10 @@ async fn step_up(
     if request.purpose != "destructive" {
         return json_err(StatusCode::BAD_REQUEST, "unknown step-up purpose");
     }
+    // Freshness: reject replayed or stale signed requests (F14).
+    if now_secs().abs_diff(request.ts) > STEP_UP_MAX_SKEW_SECS {
+        return json_err(StatusCode::BAD_REQUEST, "stale step-up request: |now - ts| > 60s");
+    }
     let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => return json_err(StatusCode::BAD_REQUEST, "missing step-up signature"),
@@ -134,6 +147,14 @@ async fn step_up(
         Some(r) => r,
         None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
     };
+    // A revoked or expired key cannot mint step-up tokens (F9) — mirror
+    // verify()'s validity checks so a dead key cannot mint/exhaust state.
+    if rec.revoked {
+        return json_err(StatusCode::FORBIDDEN, "device key revoked");
+    }
+    if now_secs() >= rec.expiry_ts {
+        return json_err(StatusCode::FORBIDDEN, "device key expired");
+    }
     let sig = match decode_b64(signature_b64) {
         Some(s) => match s.try_into() {
             Ok(sig) => sig,
@@ -187,29 +208,50 @@ async fn grants(
     };
     let result = match action {
         Some("set_grants") => {
-            let Some(grants) = body
-                .get("grants")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|g| g.as_str())
-                        .filter_map(|s| s.parse().ok())
-                        .collect::<Vec<_>>()
-                })
-            else {
+            // Strict parse (F10): every element must be a known capability
+            // string — a typo'd grant must fail loudly, never silently
+            // produce an empty/partial set.
+            let Some(list) = body.get("grants").and_then(|v| v.as_array()) else {
                 return json_err(StatusCode::BAD_REQUEST, "grants must be an array of capability strings");
             };
+            let mut grants = Vec::with_capacity(list.len());
+            for g in list {
+                let Some(s) = g.as_str() else {
+                    return json_err(
+                        StatusCode::BAD_REQUEST,
+                        "grants must contain only capability strings",
+                    );
+                };
+                match s.parse() {
+                    Ok(cap) => grants.push(cap),
+                    Err(_) => {
+                        return json_err(
+                            StatusCode::BAD_REQUEST,
+                            &format!("unknown capability string: {s}"),
+                        );
+                    }
+                }
+            }
             state.auth.registry.set_grants(key_id, grants)
         }
         Some("revoke") => {
             let revoked = body.get("revoked").and_then(|v| v.as_bool()).unwrap_or(true);
             state.auth.registry.set_revoked(key_id, revoked)
         }
-        other => Err(format!("unknown action: {other:?}")),
+        other => return json_err(StatusCode::BAD_REQUEST, &format!("unknown action: {other:?}")),
     };
     match result {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true, "key_id": key_id }))),
-        Err(e) => json_err(StatusCode::NOT_FOUND, &e),
+        Err(e) => match e {
+            // F8: unknown key vs persist failure are distinct, typed paths.
+            RegistryMutationError::UnknownKey(k) => {
+                json_err(StatusCode::NOT_FOUND, &format!("unknown key: {k}"))
+            }
+            RegistryMutationError::Persist(err) => json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("registry persist failed: {err}"),
+            ),
+        },
     }
 }
 

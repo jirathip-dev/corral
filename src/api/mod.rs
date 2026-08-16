@@ -5,8 +5,10 @@
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
 //! - `GET /healthz` — liveness.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
-//!   capability-gated, signed by the device authorizer (see
-//!   [`crate::api::drive`]).
+//!   capability-gated, signed by the device authorizer, step-up-gated for
+//!   destructive payloads (see [`crate::api::drive`]).
+//! - P3 auth surface (W3, [`crate::auth::http`]): `GET /host-key`,
+//!   `POST /register`, `POST /step-up`, `POST /grants`, `GET /audit`.
 
 pub mod drive;
 
@@ -24,11 +26,11 @@ use futures::stream::{self, Stream, StreamExt};
 use tracing::info;
 
 use crate::adapters::Adapter;
+use crate::auth::AuthPlane;
 use crate::core::model::Resume;
 use crate::core::store::Store;
-use crate::drive::{AuditLog, DriveAuthorizer};
 
-use self::drive::{drive, NoopAdapter, ReplayTable, StubAudit, StubAuthorizer};
+use self::drive::{drive, NoopAdapter, ReplayTable};
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -36,26 +38,32 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    /// P3 auth plane (W3): host identity, device registry, authorizer,
+    /// step-up gate, hash-chained audit log. The drive handler reaches the
+    /// contract seams through `auth.authorizer` / `auth.audit`.
+    pub auth: Arc<AuthPlane>,
     /// Drive-path dispatch target (W1 resolves agent_ids, never coordinates).
     pub adapter: Arc<dyn Adapter>,
-    /// Signature/key/grant gate for every drive write (W3 provides the impl).
-    pub authorizer: Arc<dyn DriveAuthorizer>,
-    /// Append-only write log (W3 provides the impl; W1 calls it per write).
-    pub audit: Arc<dyn AuditLog>,
     /// Idempotency table keyed by request_id (bounded, LRU-ish).
     pub replay: Arc<ReplayTable>,
 }
 
 impl Default for AppState {
-    /// Read-path-only state: every drive dependency is a safe stub
-    /// ([`NoopAdapter`], [`StubAuthorizer`], [`StubAudit`]) so read-only
-    /// construction (tests, tooling) stays one struct away.
+    /// Read-path-only state: a fresh auth plane over a throwaway temp dir
+    /// and a no-op adapter, so read-only construction (tests, tooling)
+    /// stays one struct away. Write paths use the real plane.
     fn default() -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "corral-appstate-default-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let auth = Arc::new(AuthPlane::load_or_create(dir).expect("default auth plane"));
         Self {
             store: Store::new(),
+            auth,
             adapter: Arc::new(NoopAdapter),
-            authorizer: Arc::new(StubAuthorizer),
-            audit: Arc::new(StubAudit::default()),
             replay: Arc::new(ReplayTable::default()),
         }
     }
@@ -67,6 +75,7 @@ pub fn router(state: AppState) -> Router {
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/drive", post(drive))
+        .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
 }
 

@@ -70,12 +70,33 @@ use crate::approve::{ApprovalError, check_approval_claim};
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
-    AuditEntry, AuditLog, AuditOutcome, AuthorizedDrive, AuthError, Capability, DriveAuthorizer,
-    DriveEnvelope, DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive,
-    UnknownCapability,
+    AuditEntry, AuditLog, AuditOutcome, AuthorizedDrive, AuthError, Capability, DriveEnvelope,
+    DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive, UnknownCapability,
 };
 
 use super::AppState;
+
+/// Read-path dispatch stub: refuses every drive command with a typed error.
+/// Used by [`super::AppState::default`] so read-only construction needs no
+/// adapter wiring.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopAdapter;
+
+impl Adapter for NoopAdapter {
+    fn source(&self) -> &'static str {
+        "noop"
+    }
+
+    fn start(self: Arc<Self>, _store: Store) {}
+
+    fn drive(&self, _agent_id: &str, _command: DriveCommand) -> Result<(), DriveError> {
+        Err(DriveError::NotImplemented("noop adapter"))
+    }
+
+    fn knows_agent(&self, _agent_id: &str) -> bool {
+        false
+    }
+}
 
 /// Cap of the replay table (LRU-ish eviction; D3 keeps it bounded).
 const REPLAY_CAP: usize = 4096;
@@ -191,81 +212,6 @@ impl ReplayInner {
             self.entries.remove(&id);
             self.order.retain(|candidate| candidate != &id);
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// W1 placeholders behind the P3 seams (W3 provides the real impls)
-// ---------------------------------------------------------------------------
-
-/// W1 placeholder for W3's device-key verifier.
-///
-/// Accepts any non-empty signature (so the loopback daemon stays drivable
-/// before W3 lands) but fails closed on absent signatures. W3 MUST replace
-/// this before corrald is exposed beyond loopback.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct StubAuthorizer;
-
-impl DriveAuthorizer for StubAuthorizer {
-    fn verify(&self, signed: &SignedDrive) -> Result<AuthorizedDrive, AuthError> {
-        if signed.key_id.is_empty() || signed.signature.is_empty() {
-            return Err(AuthError::MissingSignature);
-        }
-        Ok(AuthorizedDrive {
-            key_id: signed.key_id.clone(),
-            envelope: signed.envelope.clone(),
-        })
-    }
-}
-
-/// W1 placeholder for W3's signed append-only audit log: mirrors entries to
-/// the trace log and keeps them in memory so tests can assert growth.
-#[derive(Debug, Default)]
-pub struct StubAudit {
-    entries: Mutex<Vec<AuditEntry>>,
-}
-
-impl StubAudit {
-    pub fn entries(&self) -> Vec<AuditEntry> {
-        self.entries.lock().expect("audit stub poisoned").clone()
-    }
-}
-
-impl AuditLog for StubAudit {
-    fn append(&self, entry: &AuditEntry) -> Result<(), String> {
-        tracing::info!(
-            key_id = %entry.key_id,
-            request_id = %entry.request_id,
-            capability = %entry.capability,
-            target = %entry.target,
-            outcome = ?entry.outcome,
-            "drive write audit"
-        );
-        self.entries
-            .lock()
-            .expect("audit stub poisoned")
-            .push(entry.clone());
-        Ok(())
-    }
-}
-
-/// Adapter that refuses everything; the read-path-only default.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopAdapter;
-
-impl Adapter for NoopAdapter {
-    fn source(&self) -> &'static str {
-        "noop"
-    }
-
-    fn start(self: Arc<Self>, _store: Store) {}
-
-    fn drive(&self, _agent_id: &str, _command: DriveCommand) -> Result<(), DriveError> {
-        Err(DriveError::NotImplemented("noop adapter"))
-    }
-
-    fn knows_agent(&self, _agent_id: &str) -> bool {
-        false
     }
 }
 
@@ -396,6 +342,15 @@ pub enum DriveApiError {
         error: AuthError,
         request_id: Option<String>,
     },
+    /// Destructive payload without a step-up token (W3).
+    StepUpRequired {
+        request_id: Option<String>,
+    },
+    /// Step-up token invalid, spent, expired, or key-bound to another device.
+    StepUpFailed {
+        error: String,
+        request_id: Option<String>,
+    },
     /// Claim-based approval refusal (W2): typed, never a 500. These refusals
     /// do NOT occupy the replay slot (parse-before-claim rule) and are NOT
     /// appended to the audit log (AC5: audit grows only on writes — a refused
@@ -441,8 +396,30 @@ impl IntoResponse for DriveApiError {
                 request_id,
             ),
             Self::Auth { error, request_id } => {
-                (StatusCode::FORBIDDEN, "auth", error.to_string(), request_id)
+                // W3's typed auth mapping (AC1): distinct status per error
+                // class — 401 bad signature, 404 unknown key, 403 the rest.
+                let (status, kind) = match &error {
+                    AuthError::MissingSignature => (StatusCode::BAD_REQUEST, "missing_signature"),
+                    AuthError::BadSignature => (StatusCode::UNAUTHORIZED, "bad_signature"),
+                    AuthError::UnknownKey => (StatusCode::NOT_FOUND, "unknown_key"),
+                    AuthError::Expired => (StatusCode::FORBIDDEN, "expired"),
+                    AuthError::Revoked => (StatusCode::FORBIDDEN, "revoked"),
+                    AuthError::NotGranted(_) => (StatusCode::FORBIDDEN, "not_granted"),
+                };
+                (status, kind, error.to_string(), request_id)
             }
+            Self::StepUpRequired { request_id } => (
+                StatusCode::FORBIDDEN,
+                "step_up_required",
+                "destructive payload needs a step-up token (POST /step-up, X-Step-Up-Token header)".to_string(),
+                request_id,
+            ),
+            Self::StepUpFailed { error, request_id } => (
+                StatusCode::UNAUTHORIZED,
+                "step_up_failed",
+                error,
+                request_id,
+            ),
             Self::Approval { error, request_id } => {
                 let (status, kind) = match error {
                     ApprovalError::NoWaitingApproval => {
@@ -492,6 +469,7 @@ impl IntoResponse for DriveApiError {
 
 pub async fn drive(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<DriveResponse>, DriveApiError> {
     let wire: SignedDriveWire = serde_json::from_slice(&body).map_err(|error| {
@@ -537,12 +515,37 @@ pub async fn drive(
     };
 
     let authorized = state
+        .auth
         .authorizer
         .verify(&signed)
         .map_err(|error| DriveApiError::Auth {
             error,
             request_id: Some(signed.envelope.request_id.clone()),
         })?;
+
+    // Step-up gate (W3): destructive payloads need a single-use, short-TTL
+    // token minted via POST /step-up. Step-up is part of AUTH — failures
+    // are NOT audited (AC5) and do not occupy the replay slot.
+    if state.auth.step_up.required(&authorized.envelope) {
+        let token = headers
+            .get(crate::auth::http::STEP_UP_HEADER)
+            .and_then(|v| v.to_str().ok());
+        match token {
+            None => {
+                return Err(DriveApiError::StepUpRequired {
+                    request_id: Some(authorized.envelope.request_id.clone()),
+                });
+            }
+            Some(token) => {
+                if let Err(e) = state.auth.step_up.spend(&authorized.key_id, token) {
+                    return Err(DriveApiError::StepUpFailed {
+                        error: e.to_string(),
+                        request_id: Some(authorized.envelope.request_id.clone()),
+                    });
+                }
+            }
+        }
+    }
 
     // Parse BEFORE claiming: a payload error is deterministic and must not
     // occupy the id's slot.
@@ -631,7 +634,7 @@ pub async fn drive(
         }
     };
 
-    append_audit(&state.audit, &authorized, outcome);
+    append_audit(state.auth.audit.as_ref(), &authorized, outcome);
 
     let rev = state.store.snapshot().await.rev;
     let response = DriveResponse {
@@ -647,7 +650,7 @@ pub async fn drive(
     Ok(Json(response))
 }
 
-fn append_audit(audit: &Arc<dyn AuditLog>, authorized: &AuthorizedDrive, outcome: AuditOutcome) {
+fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {
     let entry = AuditEntry {
         ts: now_millis(),
         key_id: authorized.key_id.clone(),

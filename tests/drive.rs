@@ -11,12 +11,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use corrald::adapters::{Adapter, DriveCommand, DriveError};
-use corrald::api::drive::{ReplayTable, StubAudit, StubAuthorizer};
+use corrald::api::drive::ReplayTable;
 use corrald::api::{router, AppState};
+use corrald::auth::audit::ChainEntry;
+use corrald::auth::test_support;
+use corrald::auth::AuthPlane;
 use corrald::core::store::Store;
-use corrald::drive::{
-    AuditOutcome, AuthError, AuthorizedDrive, DriveAuthorizer, READ_TAIL_MAX_LINES, SignedDrive,
-};
+use corrald::drive::{AuditOutcome, Capability};
+use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -114,81 +116,120 @@ impl Adapter for RecordingAdapter {
     }
 }
 
-/// Authorizer stub: valid passes, configured failures return the typed error.
-#[derive(Debug)]
-struct TestAuthorizer {
-    error: Option<AuthError>,
-}
+/// Every capability the drive tests exercise, granted to the harness device.
+const ALL_CAPABILITIES: [Capability; 6] = [
+    Capability::Prompt,
+    Capability::Interrupt,
+    Capability::Approve,
+    Capability::ReadTail,
+    Capability::Kill,
+    Capability::Attach,
+];
 
-impl TestAuthorizer {
-    fn accept() -> Arc<Self> {
-        Arc::new(Self { error: None })
-    }
-
-    fn reject(error: AuthError) -> Arc<Self> {
-        Arc::new(Self { error: Some(error) })
-    }
-}
-
-impl DriveAuthorizer for TestAuthorizer {
-    fn verify(&self, signed: &SignedDrive) -> Result<AuthorizedDrive, AuthError> {
-        if let Some(error) = &self.error {
-            return Err(error.clone());
-        }
-        Ok(AuthorizedDrive {
-            key_id: signed.key_id.clone(),
-            envelope: signed.envelope.clone(),
-        })
-    }
-}
-
+/// Real W3 auth plane over a temp dir + a registered, fully-granted device.
+/// Every `body()` request is genuinely signed by that device — no stubs.
 struct Harness {
     store: Store,
     adapter: Arc<RecordingAdapter>,
-    audit: Arc<StubAudit>,
+    auth: Arc<AuthPlane>,
+    signing: SigningKey,
+    pubkey: [u8; 32],
+    key_id: String,
     app: Router,
+    _dir: tempfile::TempDir,
 }
 
-fn harness(authorizer: Arc<dyn DriveAuthorizer>) -> Harness {
+impl Harness {
+    /// Register a SECOND device (distinct keypair); returns the signing key,
+    /// its pubkey and key_id.
+    fn register_other_device(&self, grants: &[Capability]) -> (SigningKey, [u8; 32], String) {
+        let (signing, pubkey) = test_support::keypair();
+        let env = test_support::envelope("bootstrap-other", Capability::Prompt, "bootstrap");
+        let token = self.auth.registry.registration_token();
+        let signed = test_support::signed(&self.auth.registry, &token, &signing, pubkey, &env);
+        self.auth
+            .registry
+            .set_grants(&signed.key_id, grants.to_vec())
+            .expect("set grants");
+        (signing, pubkey, signed.key_id)
+    }
+
+    /// A fully-signed drive request body from the harness device.
+    fn body(
+        &self,
+        request_id: &str,
+        capability: Capability,
+        target: &str,
+        payload: Value,
+        rev: Option<u64>,
+    ) -> String {
+        self.body_from(&self.signing, self.pubkey, request_id, capability, target, payload, rev)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn body_from(
+        &self,
+        signing: &SigningKey,
+        pubkey: [u8; 32],
+        request_id: &str,
+        capability: Capability,
+        target: &str,
+        payload: Value,
+        rev: Option<u64>,
+    ) -> String {
+        let envelope = corrald::drive::DriveEnvelope {
+            request_id: request_id.to_string(),
+            capability,
+            target: target.to_string(),
+            payload,
+            rev,
+        };
+        let token = self.auth.registry.registration_token();
+        let signed =
+            test_support::signed(&self.auth.registry, &token, signing, pubkey, &envelope);
+        serde_json::to_string(&signed).expect("signed body serializes")
+    }
+
+    /// Audit chain entries (W3's hash-chained log).
+    fn audit_entries(&self) -> Vec<ChainEntry> {
+        self.auth.audit.chain().0
+    }
+}
+
+fn harness() -> Harness {
     let store = Store::new();
     let coalescer = store.clone();
     std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
     let adapter = Arc::new(RecordingAdapter::default());
-    let audit = Arc::new(StubAudit::default());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = Arc::new(AuthPlane::load_or_create(dir.path().to_path_buf()).expect("auth plane"));
+
+    // Register the harness device once (idempotent) and grant everything.
+    let (signing, pubkey) = test_support::keypair();
+    let env = test_support::envelope("bootstrap", Capability::Prompt, "bootstrap");
+    let token = auth.registry.registration_token();
+    let signed = test_support::signed(&auth.registry, &token, &signing, pubkey, &env);
+    let key_id = signed.key_id.clone();
+    auth.registry
+        .set_grants(&key_id, ALL_CAPABILITIES.to_vec())
+        .expect("grants");
+
     let app = router(AppState {
         store: store.clone(),
+        auth: auth.clone(),
         adapter: adapter.clone(),
-        authorizer,
-        audit: audit.clone(),
         replay: Arc::new(ReplayTable::default()),
     });
     Harness {
         store,
         adapter,
-        audit,
+        auth,
+        signing,
+        pubkey,
+        key_id,
         app,
+        _dir: dir,
     }
-}
-
-fn signed_body(
-    request_id: &str,
-    capability: &str,
-    target: &str,
-    payload: Value,
-    rev: Option<u64>,
-) -> String {
-    json!({
-        "key_id": "test-key",
-        "signature": "dGVzdC1zaWc",
-        "envelope": {
-            "request_id": request_id,
-            "capability": capability,
-            "target": target,
-            "payload": payload,
-            "rev": rev,
-        }
-    })
-    .to_string()
 }
 
 fn prompt_payload(text: &str) -> Value {
@@ -218,12 +259,12 @@ async fn post(app: &Router, body: String) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn prompt_dispatches_with_typed_command_and_current_rev() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows("herdr:abc");
 
     let (status, value) = post(
         &h.app,
-        signed_body("req-1", "prompt", "herdr:abc", prompt_payload("continue"), Some(3)),
+        h.body("req-1", Capability::Prompt, "herdr:abc", prompt_payload("continue"), Some(3)),
     )
     .await;
 
@@ -246,16 +287,16 @@ async fn prompt_dispatches_with_typed_command_and_current_rev() {
 
 #[tokio::test]
 async fn command_only_capabilities_need_no_payload() {
-    for (capability, command) in [
-        ("interrupt", DriveCommand::Interrupt),
-        ("kill", DriveCommand::Kill),
-        ("attach", DriveCommand::Attach),
+    for (capability, command, cap) in [
+        ("interrupt", DriveCommand::Interrupt, Capability::Interrupt),
+        ("kill", DriveCommand::Kill, Capability::Kill),
+        ("attach", DriveCommand::Attach, Capability::Attach),
     ] {
-        let h = harness(TestAuthorizer::accept());
+        let h = harness();
         h.adapter.knows("herdr:a");
         let (status, value) = post(
             &h.app,
-            signed_body("req", capability, "herdr:a", Value::Null, None),
+            h.body("req", cap, "herdr:a", Value::Null, None),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{capability}");
@@ -268,10 +309,10 @@ async fn command_only_capabilities_need_no_payload() {
 
 #[tokio::test]
 async fn command_only_capability_with_payload_is_refused() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(
         &h.app,
-        signed_body("req", "interrupt", "herdr:a", json!({ "kind": "interrupt" }), None),
+        h.body("req", Capability::Interrupt, "herdr:a", json!({ "kind": "interrupt" }), None),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -282,13 +323,13 @@ async fn command_only_capability_with_payload_is_refused() {
 
 #[tokio::test]
 async fn approve_maps_to_approve_command() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows("herdr:a");
     let (status, _) = post(
         &h.app,
-        signed_body(
+        h.body(
             "req",
-            "approve",
+            Capability::Approve,
             "herdr:a",
             json!({ "kind": "approve", "approval_id": "ap-1", "prompt_hash": "sha256:x", "choice": "y" }),
             None,
@@ -343,16 +384,16 @@ async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
 
 #[tokio::test]
 async fn approve_with_stale_hash_is_refused_without_dispatch_or_audit() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows(W2_AGENT);
     seed_blocked_agent(&h.store, "Do you want to proceed?", vec![]).await;
 
     // Approval id matches, but the prompt_hash is stale (wrong question).
     let (status, value) = post(
         &h.app,
-        signed_body(
+        h.body(
             "req-stale",
-            "approve",
+            Capability::Approve,
             W2_AGENT,
             json!({
                 "kind": "approve",
@@ -367,12 +408,12 @@ async fn approve_with_stale_hash_is_refused_without_dispatch_or_audit() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(value["kind"], "hash_mismatch", "wrong-question race must be typed distinctly");
     assert!(h.adapter.commands().is_empty(), "stale hash must not dispatch");
-    assert_eq!(h.audit.entries().len(), 0, "refused approval is not a write (AC5)");
+    assert_eq!(h.audit_entries().len(), 0, "refused approval is not a write (AC5)");
 }
 
 #[tokio::test]
 async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows(W2_AGENT);
     seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into(), "no".into()]).await;
 
@@ -382,14 +423,14 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
         "prompt_hash": W2_HASH,
         "choice": "yes"
     });
-    let (status, _) = post(&h.app, signed_body("req-ok", "approve", W2_AGENT, body, None)).await;
+    let (status, _) = post(&h.app, h.body("req-ok", Capability::Approve, W2_AGENT, body, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         h.adapter.commands(),
         vec![(W2_AGENT.to_string(), DriveCommand::Approve { choice: "yes".to_string() })],
         "validated choice must dispatch exactly once"
     );
-    assert_eq!(h.audit.entries().len(), 1, "executed approval is one write (AC5)");
+    assert_eq!(h.audit_entries().len(), 1, "executed approval is one write (AC5)");
 
     // Replay of the same request_id returns the stored response, no double
     // send.
@@ -399,7 +440,7 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
         "prompt_hash": W2_HASH,
         "choice": "yes"
     });
-    let (status, _) = post(&h.app, signed_body("req-ok", "approve", W2_AGENT, body, None)).await;
+    let (status, _) = post(&h.app, h.body("req-ok", Capability::Approve, W2_AGENT, body, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         h.adapter.commands().len(),
@@ -414,10 +455,20 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
 
 #[tokio::test]
 async fn unknown_capability_is_typed_refusal() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(
         &h.app,
-        signed_body("req", "sudo", "herdr:a", prompt_payload("x"), None),
+        json!({
+            "key_id": h.key_id,
+            "signature": "stub",
+            "envelope": {
+                "request_id": "req",
+                "capability": "sudo",
+                "target": "herdr:a",
+                "payload": prompt_payload("x"),
+            }
+        })
+        .to_string(),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -425,27 +476,27 @@ async fn unknown_capability_is_typed_refusal() {
     assert_eq!(value["message"], "unknown capability: sudo");
     assert_eq!(value["request_id"], "req");
     assert_eq!(h.adapter.dispatch_count(), 0);
-    assert_eq!(h.audit.entries().len(), 0);
+    assert_eq!(h.audit_entries().len(), 0);
 }
 
 #[tokio::test]
 async fn payload_kind_mismatch_is_typed_refusal() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(
         &h.app,
-        signed_body("req", "prompt", "herdr:a", json!({ "kind": "read_tail" }), None),
+        h.body("req", Capability::Prompt, "herdr:a", json!({ "kind": "read_tail" }), None),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(value["kind"], "payload");
     assert!(value["message"].as_str().unwrap().contains("bad payload for prompt"));
     assert_eq!(h.adapter.dispatch_count(), 0);
-    assert_eq!(h.audit.entries().len(), 0);
+    assert_eq!(h.audit_entries().len(), 0);
 }
 
 #[tokio::test]
 async fn malformed_body_is_bad_request() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(&h.app, "{ not json".to_string()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(value["kind"], "bad_request");
@@ -454,10 +505,10 @@ async fn malformed_body_is_bad_request() {
 
 #[tokio::test]
 async fn empty_request_id_or_target_is_bad_request() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(
         &h.app,
-        signed_body("", "prompt", "herdr:a", prompt_payload("x"), None),
+        h.body("", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -465,7 +516,7 @@ async fn empty_request_id_or_target_is_bad_request() {
 
     let (status, value) = post(
         &h.app,
-        signed_body("req", "prompt", "", prompt_payload("x"), None),
+        h.body("req", Capability::Prompt, "", prompt_payload("x"), None),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -475,10 +526,10 @@ async fn empty_request_id_or_target_is_bad_request() {
 
 #[tokio::test]
 async fn unknown_agent_is_typed_refusal_at_dispatch() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     let (status, value) = post(
         &h.app,
-        signed_body("req", "prompt", "herdr:ghost", prompt_payload("x"), None),
+        h.body("req", Capability::Prompt, "herdr:ghost", prompt_payload("x"), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "dispatch outcomes ride the DriveResponse");
@@ -486,37 +537,37 @@ async fn unknown_agent_is_typed_refusal_at_dispatch() {
     assert_eq!(value["error"], "unknown agent: herdr:ghost");
     assert_eq!(value["request_id"], "req");
     assert_eq!(h.adapter.dispatch_count(), 1);
-    assert_eq!(h.audit.entries().len(), 1, "typed refusal at dispatch is audited");
+    assert_eq!(h.audit_entries().len(), 1, "typed refusal at dispatch is audited");
 }
 
 #[tokio::test]
 async fn not_implemented_and_transport_are_typed() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.mode(Mode::NotImplemented);
     let (status, value) = post(
         &h.app,
-        signed_body("req", "prompt", "herdr:a", prompt_payload("x"), None),
+        h.body("req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"], "command not implemented: test-command");
     assert!(matches!(
-        &h.audit.entries()[0].outcome,
+        &h.audit_entries()[0].outcome,
         AuditOutcome::Refused(_)
     ));
 
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.mode(Mode::Transport);
     let (status, value) = post(
         &h.app,
-        signed_body("req", "interrupt", "herdr:a", Value::Null, None),
+        h.body("req", Capability::Interrupt, "herdr:a", Value::Null, None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"], "transport error: boom");
-    assert!(matches!(&h.audit.entries()[0].outcome, AuditOutcome::Failed(_)));
+    assert!(matches!(&h.audit_entries()[0].outcome, AuditOutcome::Failed(_)));
 }
 
 // ---------------------------------------------------------------------------
@@ -525,54 +576,22 @@ async fn not_implemented_and_transport_are_typed() {
 
 #[tokio::test]
 async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows("herdr:a");
     let (status, value) = post(
         &h.app,
-        signed_body("req", "prompt", "herdr:a", prompt_payload("go"), None),
+        h.body("req", Capability::Prompt, "herdr:a", prompt_payload("go"), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], true);
 
-    for error in [
-        AuthError::MissingSignature,
-        AuthError::BadSignature,
-        AuthError::UnknownKey,
-        AuthError::Expired,
-        AuthError::Revoked,
-        AuthError::NotGranted(corrald::drive::Capability::Prompt),
-    ] {
-        let h = harness(TestAuthorizer::reject(error.clone()));
-        let (status, value) = post(
-            &h.app,
-            signed_body("req", "prompt", "herdr:a", prompt_payload("go"), None),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{error:?}");
-        assert_eq!(value["kind"], "auth", "{error:?}");
-        assert_eq!(value["message"], error.to_string(), "{error:?}");
-        assert_eq!(value["request_id"], "req", "{error:?}");
-        assert_eq!(h.adapter.dispatch_count(), 0, "{error:?}");
-        assert_eq!(h.audit.entries().len(), 0, "{error:?}");
-    }
-}
-
-#[tokio::test]
-async fn stub_authorizer_fails_closed_on_missing_signature() {
-    let h = harness(Arc::new(StubAuthorizer));
-    h.adapter.knows("herdr:a");
-    let (status, _) = post(
-        &h.app,
-        signed_body("req", "prompt", "herdr:a", prompt_payload("x"), None),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "non-empty stub signature passes");
-
+    // Missing signature: typed 400, no dispatch, no audit.
+    let h = harness();
     let (status, value) = post(
         &h.app,
         json!({
-            "key_id": "",
+            "key_id": h.key_id,
             "signature": "",
             "envelope": {
                 "request_id": "req",
@@ -584,183 +603,195 @@ async fn stub_authorizer_fails_closed_on_missing_signature() {
         .to_string(),
     )
     .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "empty signature on a registered key is a bad signature");
+    assert_eq!(value["kind"], "bad_signature");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert_eq!(h.audit_entries().len(), 0);
+
+    // Bad signature (tampered payload after signing): typed 401.
+    let h = harness();
+    let body = h.body("req", Capability::Prompt, "herdr:a", prompt_payload("go"), None);
+    let mut tampered: Value = serde_json::from_str(&body).unwrap();
+    tampered["envelope"]["payload"]["text"] = json!("go AND rm -rf /");
+    let (status, value) = post(&h.app, tampered.to_string()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(value["kind"], "bad_signature");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert_eq!(h.audit_entries().len(), 0);
+
+    // Unknown key: typed 404 (verify order: key validity before signature).
+    let h = harness();
+    let (status, value) = post(
+        &h.app,
+        json!({
+            "key_id": "dev_00000000000000000000000000000000",
+            "signature": "AAAA",
+            "envelope": {
+                "request_id": "req",
+                "capability": "prompt",
+                "target": "herdr:a",
+                "payload": prompt_payload("x"),
+            }
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(value["kind"], "unknown_key");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+
+    // Revoked key: typed 403 (second device, then revoked).
+    let h = harness();
+    let (other_signing, other_pubkey, other_key) = h.register_other_device(&ALL_CAPABILITIES);
+    h.auth
+        .registry
+        .set_revoked(&other_key, true)
+        .expect("revoke");
+    let (status, value) = post(
+        &h.app,
+        h.body_from(&other_signing, other_pubkey, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(value["kind"], "auth");
-    assert_eq!(value["message"], "missing signature");
-    assert_eq!(
-        h.adapter.dispatch_count(),
-        1,
-        "the missing-signature attempt must not dispatch (only the earlier valid one did)"
-    );
-}
+    assert_eq!(value["kind"], "revoked");
+    assert_eq!(h.adapter.dispatch_count(), 0);
 
-// ---------------------------------------------------------------------------
-// Replay idempotency
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn replay_returns_first_response_without_redispatch() {
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.knows("herdr:a");
-    let body = signed_body("req-dup", "prompt", "herdr:a", prompt_payload("go"), None);
-
-    let (status_1, value_1) = post(&h.app, body.clone()).await;
-    let (status_2, value_2) = post(&h.app, body).await;
-
-    assert_eq!(status_1, StatusCode::OK);
-    assert_eq!(status_2, StatusCode::OK);
-    assert_eq!(value_1, value_2, "replay returns the first response verbatim");
-    assert_eq!(value_1["request_id"], "req-dup");
-    assert_eq!(h.adapter.dispatch_count(), 1, "no double send");
-    assert_eq!(h.audit.entries().len(), 1, "replay hit is not a new write");
-}
-
-#[tokio::test]
-async fn replay_of_a_refusal_is_also_idempotent() {
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.mode(Mode::NotImplemented);
-    let body = signed_body("req-ref", "prompt", "herdr:a", prompt_payload("x"), None);
-
-    let (status_1, value_1) = post(&h.app, body.clone()).await;
-    let (_, value_2) = post(&h.app, body).await;
-
-    assert_eq!(status_1, StatusCode::OK);
-    assert_eq!(value_1["ok"], false);
-    assert_eq!(value_1, value_2);
-    assert_eq!(h.adapter.dispatch_count(), 1);
-    assert_eq!(h.audit.entries().len(), 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn concurrent_duplicate_dispatches_exactly_once() {
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.knows("herdr:a");
-    let (hold_tx, hold_rx) = std::sync::mpsc::channel();
-    *h.adapter.hold.lock().unwrap() = Some(hold_rx);
-
-    let body = signed_body("req-conc", "prompt", "herdr:a", prompt_payload("go"), None);
-    let first = {
-        let app = h.app.clone();
-        let body = body.clone();
-        tokio::spawn(async move { post(&app, body).await })
-    };
-    h.adapter.started.notified().await;
-
-    // The duplicate arrives while the first is mid-dispatch.
-    let (status_b, value_b) = post(&h.app, body.clone()).await;
-    assert_eq!(status_b, StatusCode::CONFLICT);
-    assert_eq!(value_b["kind"], "in_flight");
-
-    hold_tx.send(()).unwrap();
-    let (status_a, value_a) = first.await.unwrap();
-    assert_eq!(status_a, StatusCode::OK);
-    assert_eq!(value_a["ok"], true);
-    assert_eq!(h.adapter.dispatch_count(), 1, "concurrent duplicates never double-send");
-
-    // After completion the retry gets the stored response.
-    let (status_c, value_c) = post(&h.app, body).await;
-    assert_eq!(status_c, StatusCode::OK);
-    assert_eq!(value_c, value_a);
-    assert_eq!(h.adapter.dispatch_count(), 1);
-    assert_eq!(h.audit.entries().len(), 1);
-}
-
-// ---------------------------------------------------------------------------
-// read_tail bounds
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn read_tail_lines_are_bounded() {
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.knows("herdr:a");
-    post(
+    // Expired key: typed 403. Register a second device with a 1s TTL and
+    // wait it out (verifier checks expiry before signature).
+    let h = harness();
+    let (other_signing, pubkey_other) = test_support::keypair();
+    let token = h.auth.registry.registration_token();
+    let rec = h
+        .auth
+        .registry
+        .register(&token, pubkey_other, std::time::Duration::from_secs(1))
+        .expect("register with short ttl");
+    h.auth
+        .registry
+        .set_grants(&rec.key_id, ALL_CAPABILITIES.to_vec())
+        .expect("grants");
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let (status, value) = post(
         &h.app,
-        signed_body("req", "read_tail", "herdr:a", json!({ "kind": "read_tail", "lines": 999_999 }), None),
+        h.body_from(&other_signing, pubkey_other, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
     )
     .await;
-    assert_eq!(
-        h.adapter.commands()[0].1,
-        DriveCommand::ReadTail {
-            lines: Some(READ_TAIL_MAX_LINES)
-        },
-        "oversized lines clamp to READ_TAIL_MAX_LINES"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "expired");
+    assert_eq!(h.adapter.dispatch_count(), 0);
 
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.knows("herdr:a");
-    post(
+    // Read-only default: a device with NO grants cannot drive (AC3).
+    let h = harness();
+    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
+    let (status, value) = post(
         &h.app,
-        signed_body("req", "read_tail", "herdr:a", json!({ "kind": "read_tail" }), None),
+        h.body_from(&other_signing, other_pubkey, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
     )
     .await;
-    assert_eq!(
-        h.adapter.commands()[0].1,
-        DriveCommand::ReadTail {
-            lines: Some(READ_TAIL_MAX_LINES)
-        },
-        "omitted lines default to READ_TAIL_MAX_LINES"
-    );
-
-    let h = harness(TestAuthorizer::accept());
-    h.adapter.knows("herdr:a");
-    post(
-        &h.app,
-        signed_body("req", "read_tail", "herdr:a", json!({ "kind": "read_tail", "lines": 0 }), None),
-    )
-    .await;
-    assert_eq!(
-        h.adapter.commands()[0].1,
-        DriveCommand::ReadTail { lines: Some(1) },
-        "zero lines clamp up to 1"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "not_granted");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert_eq!(h.audit_entries().len(), 0, "auth failures are never audited (AC5)");
 }
 
-// ---------------------------------------------------------------------------
-// Audit call sites (AC5: grows only on writes)
-// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn step_up_gate_blocks_destructive_payloads_and_recovers_with_token() {
+    // F2 (W3 review): the step-up gate must be spliced into the REAL drive
+    // handler — destructive payload without a token → 403 step_up_required,
+    // audit 0; with a minted token → executes, audit 1.
+    let h = harness();
+    h.adapter.knows("herdr:a");
+
+    let (status, value) = post(
+        &h.app,
+        h.body("req-destr", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "step_up_required");
+    assert_eq!(h.adapter.dispatch_count(), 0, "no dispatch without step-up");
+    assert_eq!(h.audit_entries().len(), 0, "step-up failures are not audited (AC5)");
+
+    // Mint a token for the harness device and retry with the header.
+    let token = h.auth.step_up.mint(&h.key_id, std::time::Duration::from_secs(300));
+    let res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/drive")
+                .header("content-type", "application/json")
+                .header("X-Step-Up-Token", token.clone())
+                .body(Body::from(h.body("req-destr3", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "minted token unlocks the destructive payload");
+    assert_eq!(h.adapter.dispatch_count(), 1, "exactly one dispatch");
+    assert_eq!(h.audit_entries().len(), 1, "executed write is audited exactly once");
+
+    // Token replay is refused (single-use).
+    let res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/drive")
+                .header("content-type", "application/json")
+                .header("X-Step-Up-Token", token)
+                .body(Body::from(h.body("req-destr4", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "replayed step-up token refused");
+}
 
 #[tokio::test]
 async fn audit_grows_only_on_writes() {
     // Auth failure: no audit.
-    let h = harness(TestAuthorizer::reject(AuthError::BadSignature));
-    post(&h.app, signed_body("r1", "prompt", "herdr:a", prompt_payload("x"), None)).await;
-    assert_eq!(h.audit.entries().len(), 0);
+    let h = harness();
+    let body = h.body("r1", Capability::Prompt, "herdr:a", prompt_payload("x"), None);
+    let mut tampered: Value = serde_json::from_str(&body).unwrap();
+    tampered["envelope"]["payload"]["text"] = json!("tampered");
+    let (status, _) = post(&h.app, tampered.to_string()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(h.audit_entries().len(), 0);
 
     // Payload failure: no audit.
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     post(
         &h.app,
-        signed_body("r2", "prompt", "herdr:a", json!({ "kind": "read_tail" }), None),
+        h.body("r2", Capability::Prompt, "herdr:a", json!({ "kind": "read_tail" }), None),
     )
     .await;
-    assert_eq!(h.audit.entries().len(), 0);
+    assert_eq!(h.audit_entries().len(), 0);
     assert_eq!(h.adapter.dispatch_count(), 0);
 
     // Successful write: one Executed entry with the full field set.
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.knows("herdr:a");
     post(
         &h.app,
-        signed_body("r3", "prompt", "herdr:a", prompt_payload("go"), None),
+        h.body("r3", Capability::Prompt, "herdr:a", prompt_payload("go"), None),
     )
     .await;
-    let entries = h.audit.entries();
+    let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].request_id, "r3");
     assert_eq!(entries[0].capability, "prompt");
     assert_eq!(entries[0].target, "herdr:a");
-    assert_eq!(entries[0].key_id, "test-key");
+    assert_eq!(entries[0].key_id, h.key_id.as_str());
     assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
 
     // Dispatch refusal: one Refused entry.
-    let h = harness(TestAuthorizer::accept());
+    let h = harness();
     h.adapter.mode(Mode::NotImplemented);
     post(
         &h.app,
-        signed_body("r4", "prompt", "herdr:a", prompt_payload("x"), None),
+        h.body("r4", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
     )
     .await;
-    let entries = h.audit.entries();
+    let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
 }

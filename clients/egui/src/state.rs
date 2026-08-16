@@ -341,6 +341,39 @@ mod tests {
     }
 
     #[test]
+    fn read_tail_result_flows_into_the_tail_cache_the_detail_view_renders() {
+        // P4 W2.1 round trip: the daemon's DriveResponse.result for
+        // read_tail → parse → remember_tail → the exact lines board.rs's
+        // detail view iterates over.
+        let result = serde_json::json!({
+            "lines": ["  computing…", "deploy token [REDACTED]", "", "  done rev 42"]
+        });
+        let mut fleet = Fleet::default();
+        fleet.remember_tail("herdr:a", crate::drive::parse_tail_lines(&result));
+
+        let tail = fleet.tails.get("herdr:a").expect("tail cached");
+        assert_eq!(
+            tail,
+            &vec!["  computing…", "deploy token [REDACTED]", "", "  done rev 42"]
+        );
+        // The detail view renders each line as a monospace label.
+        assert_eq!(tail.len(), 4);
+        assert!(tail[1].contains("[REDACTED]"), "daemon-redacted line survives");
+    }
+
+    #[test]
+    fn empty_read_tail_result_is_a_clean_empty_state() {
+        // No output: the daemon returns `{"lines": []}`; the cache holds an
+        // empty tail and the detail view renders the empty-state copy —
+        // never an error.
+        let result = serde_json::json!({ "lines": [] });
+        let mut fleet = Fleet::default();
+        fleet.remember_tail("herdr:a", crate::drive::parse_tail_lines(&result));
+        let tail = fleet.tails.get("herdr:a").expect("empty tail stored");
+        assert!(tail.is_empty());
+    }
+
+    #[test]
     fn recent_drives_are_bounded() {
         let mut fleet = Fleet::default();
         for i in 0..20 {

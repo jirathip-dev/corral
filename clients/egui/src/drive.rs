@@ -224,14 +224,31 @@ impl DriveIntent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriveOutcome {
     /// `ok: true` — dispatched once (or a byte-identical replay).
-    /// `result` is the daemon's optional response payload (v1: always
-    /// `None`; a future `read_tail` result would ride here).
+    /// `result` is the daemon's optional response payload: for `read_tail`
+    /// it carries `{"lines": [...]}` (redacted, bounded ≤ 200 lines /
+    /// 32 KiB — see [`parse_tail_lines`]).
     Ok {
         rev: u64,
         result: Option<serde_json::Value>,
     },
     /// Typed refusal (HTTP 4xx pre-dispatch, or `ok:false` at dispatch).
     Refused(DriveFailure),
+}
+
+/// Parse `DriveResponse.result` for `read_tail` (`{"lines": [...]}`) into
+/// the tail cache shape. Tolerant: missing/wrong-shaped fields yield an
+/// empty vec (the daemon bounds to 200 lines / 32 KiB and redacts before
+/// the bytes leave it — the client never re-bounds, only renders).
+pub fn parse_tail_lines(result: &serde_json::Value) -> Vec<String> {
+    result
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| l.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Typed refusal space, mirroring the conformance error table:
@@ -935,5 +952,27 @@ mod tests {
         assert_eq!(intent.capability, Capability::ReadTail);
         let payload = intent.payload.as_object().unwrap();
         assert_eq!(payload["lines"], 200);
+    }
+
+    #[test]
+    fn parse_tail_lines_handles_the_daemon_result_shape() {
+        // The daemon's read_tail result (P4 W2.1): redacted, bounded lines.
+        let result = serde_json::json!({
+            "lines": ["  line one", "deploy token [REDACTED]", "", "  tail end"]
+        });
+        assert_eq!(
+            parse_tail_lines(&result),
+            vec!["  line one", "deploy token [REDACTED]", "", "  tail end"],
+            "empty lines survive (they are part of the pane output)"
+        );
+        // Missing / wrong-shaped result: tolerant empty, never an error.
+        assert!(parse_tail_lines(&serde_json::Value::Null).is_empty());
+        assert!(parse_tail_lines(&serde_json::json!({})).is_empty());
+        assert!(parse_tail_lines(&serde_json::json!({ "lines": "not-an-array" })).is_empty());
+        // Non-string entries are skipped, string ones kept.
+        assert_eq!(
+            parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
+            vec!["a", "b"]
+        );
     }
 }

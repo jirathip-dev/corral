@@ -250,7 +250,11 @@ pub trait AuditLog: fmt::Debug + Send + Sync {
 }
 
 /// Response to a drive write (W1). `ok` + `error` are the typed outcome;
-/// `rev` is the store's new monotonic rev after the write.
+/// `rev` is the store's new monotonic rev after the write. For `read_tail`
+/// `result` carries `{"lines": [...]}` — the adapter-returned tail, redacted
+/// (D9) and bounded (D5: ≤ 200 lines / ≤ 32 KiB) before it left the machine;
+/// an empty array means the agent had no output. All other capabilities
+/// leave `result` unset.
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveResponse {
     pub request_id: String,

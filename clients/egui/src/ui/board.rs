@@ -497,7 +497,7 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
             if let Some(tail) = fleet.tails.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("read_tail output (v1 returns no tail text; wired for a future daemon result)")
+                    RichText::new("read_tail output (daemon-redacted, latest tap)")
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
@@ -505,11 +505,21 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                     .fill(Color32::from_rgb(0x16, 0x1b, 0x22))
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
-                        ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                            for line in tail {
-                                ui.add(egui::Label::new(RichText::new(line).monospace().small()));
-                            }
-                        });
+                        if tail.is_empty() {
+                            ui.label(
+                                RichText::new("no recent output for this agent")
+                                    .small()
+                                    .color(theme::ui::TEXT_MUTED),
+                            );
+                        } else {
+                            ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                for line in tail {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(line).monospace().small()),
+                                    );
+                                }
+                            });
+                        }
                     });
             } else if fleet
                 .recent_drives
@@ -523,11 +533,11 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                     })
                 })
             {
-                // The drive dispatched + was audited, but corrald v1 never
-                // returns tail text (DriveResponse.result is always None).
+                // Defensive: the drive dispatched, but no tail result ever
+                // arrived (e.g. an older daemon without the result path).
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("read_tail dispatched + audited; v1 returns no tail text (the herdr adapter fire-and-forgets agent.read)")
+                    RichText::new("read_tail dispatched + audited; the daemon returned no result")
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );

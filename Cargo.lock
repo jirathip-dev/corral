@@ -712,7 +712,23 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
+name = "corrald-client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "ed25519-dalek",
+ "futures",
+ "getrandom 0.4.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "corrald-ui"
 version = "0.1.0"
 dependencies = [
@@ -736,23 +752,6 @@ dependencies = [
  "tracing-subscriber",
  "wgpu",
  "zeroize",
-||||||| 4af7519
-=======
-name = "corrald-client"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bytes",
- "ed25519-dalek",
- "futures",
- "getrandom 0.4.3",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
->>>>>>> origin/main
 ]
 
 [[package]]
@@ -4596,7 +4595,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "wayland-backend"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4732,9 +4730,6 @@ dependencies = [
 ]
 
 [[package]]
-||||||| 4af7519
-=======
->>>>>>> origin/main
 name = "web-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -40,8 +40,14 @@ final class FleetStore: ObservableObject {
     /// blocked) — the local-notification hook.
     var onNewlyBlocked: (@MainActor @Sendable (String) -> Void)?
 
+    /// Called once when an agent transitions INTO done (not on re-upserts
+    /// while staying done) — the completion-notification hook (D16).
+    var onNewlyDone: (@MainActor @Sendable (String) -> Void)?
+
     private var streamTask: Task<Void, Never>?
     private let cursorBox = CursorBox()
+    /// Shadow of last-seen agent states for done-transition detection.
+    private var previousStates: [String: AgentState] = [:]
 
     // MARK: - Application
 
@@ -64,6 +70,40 @@ final class FleetStore: ObservableObject {
             cursorBox.write(delta.rev)
         }
         connectionState = .connected
+        trackDone(event)
+    }
+
+    /// Diff-aware done detection: fire once per transition INTO done
+    /// (staying done re-upserts nothing). Shadowed locally, so a snapshot
+    /// replay or a reconnect cannot double-notify.
+    private func trackDone(_ event: FleetEvent) {
+        let transitioned: [String] = {
+            switch event {
+            case .snapshot(let snapshot):
+                return snapshot.agents.compactMap { id, agent in
+                    guard agent.state == .done, previousStates[id] != .done else { return nil }
+                    return id
+                }
+            case .delta(let delta):
+                var ids: [String] = []
+                for agent in delta.upd {
+                    if agent.state == .done, previousStates[agent.agentId] != .done {
+                        ids.append(agent.agentId)
+                    }
+                }
+                return ids
+            }
+        }()
+        switch event {
+        case .snapshot(let snapshot):
+            for (id, agent) in snapshot.agents { previousStates[id] = agent.state }
+        case .delta(let delta):
+            for agent in delta.upd { previousStates[agent.agentId] = agent.state }
+            for id in delta.del { previousStates.removeValue(forKey: id) }
+        }
+        for id in transitioned {
+            onNewlyDone?(id)
+        }
     }
 
     /// Diff-aware blocking detection: notify when an agent becomes blocked
@@ -120,6 +160,7 @@ final class FleetStore: ObservableObject {
             cursorBox.write(delta.rev)
         }
         connectionState = .connected
+        trackDone(event)
     }
 
     func agent(_ id: String) -> Agent? {
@@ -182,6 +223,7 @@ final class FleetStore: ObservableObject {
         agents = [:]
         lastEventId = nil
         cursorBox.write(nil)
+        previousStates = [:]
         connectionState = .disconnected
     }
 

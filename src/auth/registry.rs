@@ -41,6 +41,27 @@ pub struct DeviceRecord {
     pub expiry_ts: u64,
     pub grants: Vec<Capability>,
     pub revoked: bool,
+    /// APNs device token (D16, additive: `None` on pre-push registries).
+    /// Set via the signed `POST /device-token`; cleared by the device (send
+    /// an empty token) or by the notifier when Apple says the token died
+    /// (HTTP 410 `Unregistered`) — that is the push-side revocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_token: Option<String>,
+}
+
+impl DeviceRecord {
+    /// Push eligibility: a live, non-revoked key WITH a registered token.
+    /// The notifier filters on this — an expired/revoked key never receives
+    /// a notification, and a token-less device silently gets nothing.
+    pub fn push_eligible(&self) -> bool {
+        !self.revoked && self.device_token.is_some() && !self.expired()
+    }
+
+    /// Whether the key has passed its expiry (checked by the notifier and
+    /// the authorizer on every verify).
+    pub fn expired(&self) -> bool {
+        now_secs() >= self.expiry_ts
+    }
 }
 
 /// base64 (de)serialization of the raw Ed25519 public key.
@@ -218,6 +239,7 @@ impl DeviceRegistry {
             expiry_ts: now.saturating_add(ttl.as_secs()),
             grants: Vec::new(),
             revoked: false,
+            device_token: None,
         };
         inner.devices.insert(key_id, rec.clone());
         self.persist_locked(&inner)
@@ -266,6 +288,50 @@ impl DeviceRegistry {
         self.persist_locked(&inner)
             .map_err(RegistryMutationError::Persist)?;
         Ok(())
+    }
+
+    /// Set or clear a device's APNs push token (D16). `None`/empty clears
+    /// the registration (per-device revocation; the notifier also clears
+    /// it when Apple reports the token dead).
+    pub fn set_device_token(
+        &self,
+        key_id: &str,
+        device_token: Option<&str>,
+    ) -> Result<(), RegistryMutationError> {
+        let token = device_token.filter(|t| !t.is_empty()).map(String::from);
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let rec = inner
+            .devices
+            .get_mut(key_id)
+            .ok_or_else(|| RegistryMutationError::UnknownKey(key_id.to_string()))?;
+        rec.device_token = token;
+        self.persist_locked(&inner)
+            .map_err(RegistryMutationError::Persist)?;
+        Ok(())
+    }
+
+    /// Clear the token for whichever device holds it (used by the notifier
+    /// on `Unregistered` — Apple no longer knows the device). No-op when
+    /// no record matches; persist failures propagate (F8).
+    pub fn set_device_token_by_token(
+        &self,
+        device_token: &str,
+        replacement: Option<&str>,
+    ) -> Result<(), RegistryMutationError> {
+        let replacement = replacement.filter(|t| !t.is_empty()).map(String::from);
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let rec = inner
+            .devices
+            .values_mut()
+            .find(|rec| rec.device_token.as_deref() == Some(device_token));
+        match rec {
+            Some(rec) => {
+                rec.device_token = replacement;
+                self.persist_locked(&inner)
+                    .map_err(RegistryMutationError::Persist)
+            }
+            None => Ok(()),
+        }
     }
 
     /// Snapshot of all records (tests, admin display).
@@ -453,6 +519,82 @@ mod tests {
         let d = dir();
         std::fs::write(d.path().join(REGISTRY_FILE), "{not json").unwrap();
         assert!(DeviceRegistry::load_or_create(d.path()).is_err());
+    }
+
+    /// D16: the device-token column is additive — a pre-push registry.json
+    /// (schema 1, no `device_token`) loads with `None`, and a set token
+    /// survives reload.
+    #[test]
+    fn device_token_is_additive_and_persists() {
+        let d = dir();
+        // Pre-seed a v1 registry WITHOUT the device_token field.
+        let content = serde_json::json!({
+            "schema_version": 1,
+            "devices": {},
+        });
+        std::fs::write(
+            d.path().join(REGISTRY_FILE),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(rec.device_token, None, "additive column defaults to None");
+
+        reg.set_device_token(&rec.key_id, Some("a1b2c3d4e5f6"))
+            .unwrap();
+        let reloaded = DeviceRegistry::load_or_create(d.path()).unwrap();
+        assert_eq!(
+            reloaded.get(&rec.key_id).unwrap().device_token.as_deref(),
+            Some("a1b2c3d4e5f6")
+        );
+
+        // Empty clears (per-device revocation).
+        reloaded.set_device_token(&rec.key_id, Some("")).unwrap();
+        assert_eq!(reloaded.get(&rec.key_id).unwrap().device_token, None);
+
+        // by-token clear (the notifier's Unregistered path).
+        reloaded
+            .set_device_token(&rec.key_id, Some("a1b2c3d4e5f6"))
+            .unwrap();
+        reloaded
+            .set_device_token_by_token("a1b2c3d4e5f6", None)
+            .unwrap();
+        assert_eq!(reloaded.get(&rec.key_id).unwrap().device_token, None);
+        // Unknown token is a no-op, not an error.
+        reloaded.set_device_token_by_token("ghost", None).unwrap();
+    }
+
+    /// D16: push eligibility = live key + registered token; revoked or
+    /// expired keys never push even with a token.
+    #[test]
+    fn push_eligibility_gates_revoked_and_expired_keys() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(3600))
+            .unwrap();
+
+        assert!(!rec.push_eligible(), "no token -> not eligible");
+        reg.set_device_token(&rec.key_id, Some("tok")).unwrap();
+        assert!(reg.get(&rec.key_id).unwrap().push_eligible());
+
+        reg.set_revoked(&rec.key_id, true).unwrap();
+        assert!(!reg.get(&rec.key_id).unwrap().push_eligible());
+
+        let pk2 = key();
+        let rec2 = reg
+            .register(&token, pk2, std::time::Duration::ZERO)
+            .unwrap();
+        reg.set_device_token(&rec2.key_id, Some("tok2")).unwrap();
+        assert!(rec2.expired(), "zero TTL key is already expired");
+        assert!(!reg.get(&rec2.key_id).unwrap().push_eligible());
     }
 
     /// F8: a persist failure must propagate as a typed error — never

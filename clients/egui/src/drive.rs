@@ -932,6 +932,7 @@ mod tests {
             attachment: None,
             display_name: None,
             title: None,
+            issues: vec![],
         };
         let intent = DriveIntent::approve(&agent, "b".into(), Some(9));
         assert_eq!(intent.capability, Capability::Approve);

@@ -29,13 +29,21 @@ use corrald_client::{
     model::{SCHEMA_VERSION, apply_delta},
 };
 use common::{
-    AGENT_ID, AGENT_PANE, LiveDaemon, audit_len, raw_drive, spawn_live_daemon, wait_for_agent,
-    wait_for_dispatch_count, wait_for_head, wait_for_waiting_on,
+    AGENT_ID, AGENT_PANE, FakeAgent, LiveDaemon, audit_len, raw_drive, spawn_live_daemon,
+    spawn_live_daemon_at, wait_for_agent, wait_for_dispatch_count, wait_for_head,
+    wait_for_waiting_on,
 };
 use futures::StreamExt as _;
 use serde_json::json;
 
+use corrald::adapters::gh_plane::TRACKED_REPOS;
+
 const TIME_BUDGET: Duration = Duration::from_secs(20);
+/// R11 waits on the REAL gh API + the git plane: one poll round-trip plus
+/// probe/debounce margins, plus the gh plane's 60s foreground cadence as
+/// slack. Generous on purpose — a real regression fails on the assertion,
+/// not on a tight clock.
+const LIVE_GH_BUDGET: Duration = Duration::from_secs(60);
 
 async fn client_of(daemon: &LiveDaemon) -> CorralClient {
     CorralClient::new(&daemon.base).expect("client")
@@ -138,6 +146,8 @@ fn workspace_head_fields_round_trip_through_json() {
         dirty: false,
         ahead: 1,
         behind: 0,
+        pr_match_source: None,
+        issues: Vec::new(),
         head_sha: Some("a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2".to_string()),
         head_subject: Some("corral: add head fields".to_string()),
     };
@@ -927,4 +937,337 @@ async fn sse_resume_edge_cases() {
         other => panic!("expected delta replay from a covered cursor, got {other:?}"),
     }
     println!("sse edge cases pass: snapshot / live / future-resnapshot / replay");
+}
+
+// ---------------------------------------------------------------------------
+// R11: live gh facts — branch-fallback PR binding (#22) + authoritative
+// issues (#23) against the REAL GitHub API
+// ---------------------------------------------------------------------------
+
+/// One open PR on a tracked repo, as the live API sees it — the exact
+/// surfaces the daemon's gh plane polls.
+struct LivePrCandidate {
+    tracked: &'static corrald::adapters::gh_plane::TrackedRepo,
+    pr_number: u64,
+    head_branch: String,
+    /// PR head sha (`headRefOid`) — the "pushed" state the clone starts at.
+    head_sha: String,
+    /// closingIssuesReferences: (number, title, live state).
+    closing: Vec<(u64, String, String)>,
+    /// The repo's recent issues top-10 (number, state) — the SAME-poll
+    /// fetch the daemon's `issues` leg performs, used to predict the
+    /// daemon's state enrichment.
+    recent_issues: Vec<(u64, String)>,
+}
+
+fn gh_auth_available() -> bool {
+    if std::env::var("GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
+        return true;
+    }
+    std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Find an open PR on a tracked repo whose head branch is fetchable over
+/// https (same owner/repo — fork PRs are skipped) via ONE aliased GraphQL
+/// query shaped like the gh plane's. Prefers a PR WITH closing refs so the
+/// populated-issues leg can run; falls back to any open PR (which asserts
+/// the authoritative-empty leg). `None` -> "no suitable live repo exists".
+async fn find_live_pr_candidate() -> Option<LivePrCandidate> {
+    let mut aliases = String::new();
+    for (i, tracked) in TRACKED_REPOS.iter().enumerate() {
+        // Alias prefix `q` is required: GraphQL aliases cannot start with a
+        // digit (the gh plane uses the same q0..q7 convention).
+        aliases.push_str(&format!(
+            r#"q{i}: repository(owner: "{}", name: "{}") {{
+  pullRequests(first: 20, states: OPEN, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+    nodes {{
+      number
+      headRefName
+      headRefOid
+      closingIssuesReferences(first: 10) {{ nodes {{ number title state }} }}
+    }}
+  }}
+  issues(first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}, states: [OPEN, CLOSED]) {{
+    nodes {{ number state }}
+  }}
+}}"#,
+            tracked.owner, tracked.repo
+        ));
+    }
+    let query = format!("query {{ {aliases} }}");
+    let output = tokio::process::Command::new("gh")
+        .args(["api", "graphql", "-f"])
+        .arg(format!("query={query}"))
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let data = value.get("data")?;
+    let mut fallback: Option<LivePrCandidate> = None;
+    for (i, tracked) in TRACKED_REPOS.iter().enumerate() {
+        let alias = data.get(format!("q{i}"))?;
+        let recent_issues: Vec<(u64, String)> = alias["issues"]["nodes"]
+            .as_array()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| {
+                        Some((n["number"].as_u64()?, n["state"].as_str()?.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let nodes = alias["pullRequests"]["nodes"].as_array()?;
+        for pr in nodes {
+            let (Some(number), Some(head_branch), Some(head_sha)) = (
+                pr["number"].as_u64(),
+                pr["headRefName"].as_str().map(str::to_string),
+                pr["headRefOid"].as_str().map(str::to_string),
+            ) else {
+                continue;
+            };
+            if head_branch.is_empty() || head_sha.is_empty() {
+                continue;
+            }
+            let closing: Vec<(u64, String, String)> = pr["closingIssuesReferences"]["nodes"]
+                .as_array()
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .filter_map(|n| {
+                            Some((
+                                n["number"].as_u64()?,
+                                n["title"].as_str()?.to_string(),
+                                n["state"].as_str()?.to_string(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let candidate = LivePrCandidate {
+                tracked,
+                pr_number: number,
+                head_branch,
+                head_sha,
+                closing,
+                recent_issues: recent_issues.clone(),
+            };
+            if !candidate.closing.is_empty() {
+                return Some(candidate); // prefer the populated-issues leg
+            }
+            if fallback.is_none() {
+                fallback = Some(candidate);
+            }
+        }
+    }
+    fallback
+}
+
+async fn git_ok(clone: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("-C").arg(clone);
+    cmd.args(args);
+    cmd.output().await.expect("git spawn")
+}
+
+/// Poll /snapshot until the agent binds `pr_number` via `source`
+/// (`"head_sha"` | `"branch"` | `None` for unbound).
+async fn wait_for_pr_binding(
+    client: &CorralClient,
+    agent_id: &str,
+    pr_number: u64,
+    source: Option<&str>,
+    timeout: Duration,
+) -> corrald_client::Snapshot {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snap = client.snapshot().await.expect("snapshot");
+        if let Some(agent) = snap.agents.get(agent_id) {
+            let bound = agent.workspace.pr_number == Some(pr_number)
+                && agent.workspace.pr_match_source.as_deref() == source;
+            if bound {
+                return snap;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "agent {agent_id} never bound PR {pr_number} via {source:?} — last snapshot: {:?}",
+            snap.agents.get(agent_id).map(|a| a.workspace.clone())
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// R11 — against the REAL GitHub API: an agent whose worktree holds a
+/// committed-but-unpushed head on an open PR's branch binds its PR by the
+/// (repo, branch) fallback (issue #22), binds by head-SHA first in the
+/// pushed state (no regression), and its `workspace.issues` mirror ONLY the
+/// bound PR's authoritative `closingIssuesReferences` (issue #23).
+///
+/// Fully skippable — "if a suitable live repo exists": needs a gh token AND
+/// an open PR on a tracked repo whose head branch is fetchable over https.
+/// The scenario is staged in the daemon's scratch root (a local clone,
+/// never pushed; the tempdir owns it), so no remote state is touched.
+#[tokio::test]
+#[ignore = "live: requires gh auth + a suitable open PR on a tracked repo; run with --ignored"]
+async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
+    if !gh_auth_available() {
+        println!("R11 skip: no GITHUB_TOKEN and no `gh auth token` — gh plane would stay down");
+        return;
+    }
+    let Some(candidate) = find_live_pr_candidate().await else {
+        println!("R11 skip: no suitable live repo (no open PR with a fetchable head branch on a tracked repo)");
+        return;
+    };
+    let tracked = candidate.tracked;
+    println!(
+        "R11 candidate: {}#{} branch={} head={:.8} closing_refs={}",
+        tracked.name,
+        candidate.pr_number,
+        candidate.head_branch,
+        candidate.head_sha,
+        candidate.closing.len()
+    );
+
+    // (1) Stage the worktree: a local clone of the PR's head branch inside
+    // a scratch dir that becomes the daemon's repo/worktrees root. The
+    // clone sits at the PR head (pushed state) before the daemon boots.
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let clone = scratch
+        .path()
+        .join(tracked.name)
+        .join(format!("corral-r11-{}", candidate.pr_number));
+    let url = format!("https://github.com/{}/{}.git", tracked.owner, tracked.repo);
+    let cloned = tokio::process::Command::new("git")
+        .args(["clone", "-q", "--single-branch", "--branch", &candidate.head_branch])
+        .arg(&url)
+        .arg(&clone)
+        .output()
+        .await
+        .ok();
+    match cloned {
+        Some(output) if output.status.success() => {}
+        _ => {
+            println!("R11 skip: cannot clone {url} branch {} — not a suitable live repo", candidate.head_branch);
+            return;
+        }
+    }
+    let actual_head = git_ok(&clone, &["rev-parse", "HEAD"]).await;
+    let actual_head = String::from_utf8_lossy(&actual_head.stdout).trim().to_string();
+    if actual_head != candidate.head_sha {
+        println!(
+            "R11 skip: PR head moved mid-test ({actual_head:.8} != {}); branch churn — not suitable now",
+            &candidate.head_sha[..candidate.head_sha.len().min(8)]
+        );
+        return;
+    }
+
+    // (2) The fake herdr agent's cwd IS the clone; the daemon's git+gh
+    // planes fold real facts onto it. The first SSE subscriber makes the gh
+    // plane poll immediately (SWR).
+    let cwd = std::fs::canonicalize(&clone)
+        .unwrap_or_else(|_| clone.clone())
+        .to_string_lossy()
+        .into_owned();
+    let agent = FakeAgent {
+        cwd,
+        title: format!("r11: PR #{}", candidate.pr_number),
+        ..Default::default()
+    };
+    let daemon = spawn_live_daemon_at(scratch.path(), vec![agent]).await;
+    let client = client_of(&daemon).await;
+    // The first-ever SSE subscriber makes the gh plane poll immediately
+    // (SWR). The stream connects lazily on the first poll, so it must be
+    // DRAINED in a background task — a held-but-never-read stream would
+    // never register a subscriber and the gh plane would stay down.
+    let mut live = client.events(None);
+    let _subscriber = tokio::spawn(async move { while live.next().await.is_some() {} });
+
+    // (3) Pushed state: the clone HEAD equals the PR's head sha, so the
+    // PRIMARY head-SHA match binds — the fallback never fires (acceptance
+    // #22-3: no regression).
+    let snap = wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("head_sha"), LIVE_GH_BUDGET).await;
+    let agent = &snap.agents[AGENT_ID];
+    assert_eq!(agent.workspace.repo.as_deref(), Some(tracked.name), "repo derived from the worktree path");
+    assert_eq!(agent.workspace.branch.as_deref(), Some(candidate.head_branch.as_str()));
+    println!(
+        "R11 step 3 pass: pushed head binds PR #{} via head_sha (ci={:?})",
+        candidate.pr_number, agent.workspace.ci_status
+    );
+
+    // (4) Committed-but-unpushed (issue #22): a LOCAL commit on the PR
+    // branch — never pushed. The head-SHA match now misses and the (repo,
+    // branch) fallback must bind the SAME PR (acceptance #22-1: no blank
+    // badge for committed-but-unpushed work).
+    let committed = git_ok(
+        &clone,
+        &[
+            "-c", "user.name=corral r11 conformance",
+            "-c", "user.email=conformance@corral.local",
+            "commit", "--allow-empty", "-m", "corral r11: committed-but-unpushed head probe",
+        ],
+    )
+    .await;
+    assert!(committed.status.success(), "scratch commit failed: {}", String::from_utf8_lossy(&committed.stderr));
+    wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("branch"), LIVE_GH_BUDGET).await;
+    println!("R11 step 4 pass: committed-but-unpushed head re-binds PR #{} via (repo, branch)", candidate.pr_number);
+
+    // (5) Push-state round trip: reset the clone to the PR head — the
+    // primary head-SHA match must win again once the head matches.
+    let reset = git_ok(&clone, &["reset", "--hard", &candidate.head_sha]).await;
+    assert!(reset.status.success(), "reset failed: {}", String::from_utf8_lossy(&reset.stderr));
+    let snap = wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("head_sha"), LIVE_GH_BUDGET).await;
+    println!("R11 step 5 pass: reset head re-binds PR #{} via head_sha", candidate.pr_number);
+
+    // (6) Issues (issue #23): ONLY the bound PR's authoritative closing
+    // refs — never the repo's recent issues, never a guess.
+    let agent = &snap.agents[AGENT_ID];
+    if candidate.closing.is_empty() {
+        assert!(
+            agent.workspace.issues.is_empty(),
+            "PR with no closing refs must yield an empty issues array, got {:?}",
+            agent.workspace.issues
+        );
+        println!("R11 step 6 pass: PR #{} has no closing refs -> issues == [] (authoritative empty)", candidate.pr_number);
+    } else {
+        assert_eq!(
+            agent.workspace.issues.len(),
+            candidate.closing.len(),
+            "issues must mirror the PR's closingIssuesReferences exactly"
+        );
+        for (actual, (number, title, live_state)) in
+            agent.workspace.issues.iter().zip(candidate.closing.iter())
+        {
+            assert_eq!(actual.repo, tracked.name);
+            assert_eq!(actual.number, *number, "linkage comes only from closing refs");
+            assert_eq!(actual.title, *title, "titles come only from closing refs");
+            // State: the daemon enriches from the SAME poll's repo-level
+            // issues fetch (UNKNOWN when the issue is not among the recent
+            // top-10); a live-API race between our query and the daemon's
+            // poll can flip the enrichment, so the live state is tolerated.
+            let expected = candidate
+                .recent_issues
+                .iter()
+                .find(|(n, _)| *n == *number)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            assert!(
+                actual.state == expected || actual.state == "UNKNOWN" || actual.state == *live_state,
+                "issue #{number}: daemon state {:?} not in {{expected {expected:?}, live {live_state:?}, UNKNOWN}}",
+                actual.state
+            );
+        }
+        println!("R11 step 6 pass: issues[] mirrors closingIssuesReferences ({} refs)", candidate.closing.len());
+    }
+    println!(
+        "R11 pass: real-repo branch fallback + head-SHA primary + authoritative issues on {}",
+        tracked.name
+    );
 }

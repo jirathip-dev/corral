@@ -240,6 +240,7 @@ mod tests {
             attachment: None,
             display_name: None,
             title: None,
+            issues: vec![],
         }
     }
 

@@ -36,6 +36,8 @@ fn sample_agent() -> Agent {
             behind: 2,
             head_sha: Some("a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2".to_string()),
             head_subject: Some("Fix Blender acceptance gate".to_string()),
+            pr_match_source: None,
+            issues: Vec::new(),
         },
         attachment: Some(Attachment {
             kind: "herdr-pane".to_string(),
@@ -181,25 +183,87 @@ fn workspace_read_model_fields_serialize() {
     assert_eq!(ws["behind"], 2);
     assert_eq!(ws["head_sha"], "a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2");
     assert_eq!(ws["head_subject"], "Fix Blender acceptance gate");
+    // G23 fields: `issues` is always present (empty array when no links —
+    // acceptance #23-2); `pr_match_source` is debug-only and omitted when
+    // unbound.
+    assert_eq!(ws["issues"], serde_json::json!([]));
+    assert!(
+        !v["workspace"]
+            .as_object()
+            .unwrap()
+            .contains_key("pr_match_source"),
+        "unbound agents omit the debug match source"
+    );
 }
 
 #[test]
-fn head_fields_null_when_defaulted() {
-    // G21: the head fields are serde-defaulted — a workspace without them
-    // (unborn/empty checkout, or a pre-G21 daemon) decodes with nulls.
-    let ws: Workspace = serde_json::from_str(
-        r#"{"repo":null,"branch":null,"worktree_path":"/wt/a","pr_number":null}"#,
+fn g23_workspace_fields_round_trip() {
+    // A bound agent serializes pr_match_source + issues and decodes back.
+    let agent = Agent {
+        workspace: Workspace {
+            repo: Some("herdr-board".to_string()),
+            branch: Some("ws2/gh-plane".to_string()),
+            worktree_path: Some(
+                "/Users/jirathip/.herdr/worktrees/herdr-board/corral-g23".to_string(),
+            ),
+            pr_number: Some(42),
+            ci_status: Some(CiStatus::Pending),
+            pr_match_source: Some("branch".to_string()),
+            issues: vec![GhIssueRef {
+                repo: "herdr-board".to_string(),
+                number: 22,
+                state: "OPEN".to_string(),
+                title: "PR badges: add headRefName to gh fragment".to_string(),
+            }],
+            ..Default::default()
+        },
+        ..sample_agent()
+    };
+    let v = serde_json::to_value(&agent).unwrap();
+    let ws = &v["workspace"];
+    assert_eq!(ws["pr_match_source"], "branch");
+    assert_eq!(ws["issues"][0]["number"], 22);
+    assert_eq!(
+        ws["issues"][0]["title"],
+        "PR badges: add headRefName to gh fragment"
+    );
+    let back: Agent = serde_json::from_value(v).expect("round trip");
+    assert_eq!(
+        back.workspace.pr_match_source,
+        agent.workspace.pr_match_source
+    );
+    assert_eq!(back.workspace.issues, agent.workspace.issues);
+}
+
+#[test]
+fn g23_payload_without_new_fields_decodes_with_defaults() {
+    // A v3-shaped workspace with the G23 fields absent still decodes
+    // (additive-only: pr_match_source -> None, issues -> empty).
+    let agent: Agent = serde_json::from_str(
+        r#"{
+            "agent_id": "herdr:a",
+            "source": "herdr",
+            "tool": "claude",
+            "state": "working",
+            "reason": null,
+            "seq": 1,
+            "ts": 1755273000000,
+            "capabilities": ["prompt"],
+            "waiting_on": null,
+            "cost": null,
+            "parent_id": null,
+            "host": null,
+            "workspace": {"repo": "herdr-board", "branch": "ws2/gh-plane",
+                          "worktree_path": "/wt/a", "pr_number": 42,
+                          "ci_status": "pending", "dirty": false, "ahead": 0, "behind": 0},
+            "attachment": null,
+            "display_name": null,
+            "title": null
+        }"#,
     )
-    .expect("workspace without head fields decodes");
-    assert_eq!(ws.head_sha, None);
-    assert_eq!(ws.head_subject, None);
-    // ... and a null-carrying payload round-trips to null.
-    let ws: Workspace = serde_json::from_str(
-        r#"{"repo":null,"branch":null,"worktree_path":"/wt/a","pr_number":null,"head_sha":null,"head_subject":null}"#,
-    )
-    .expect("null head fields decode");
-    assert_eq!(ws.head_sha, None);
-    assert_eq!(ws.head_subject, None);
+    .expect("v3-shaped agent decodes");
+    assert_eq!(agent.workspace.pr_match_source, None);
+    assert!(agent.workspace.issues.is_empty());
 }
 
 #[test]

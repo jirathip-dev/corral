@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use corrald::core::events::{
-    plane_channel, GhPrState, GhRepoState, GitEvent, GitStatus, PlaneEvent,
+    plane_channel, GhIssueRef, GhPrState, GhRepoState, GitEvent, GitStatus, PlaneEvent,
 };
 use corrald::core::model::{Agent, AgentState, Change, CiStatus, Workspace};
 use corrald::core::store::Store;
@@ -63,7 +63,16 @@ fn pr(number: u64, head_sha: &str, ci: &str) -> GhPrState {
         mergeable: "MERGEABLE".to_string(),
         ci_status: ci.to_string(),
         head_sha: head_sha.to_string(),
+        head_branch: String::new(),
+        closing_issues: Vec::new(),
     }
+}
+
+/// A PR carrying a head branch (#22) and authoritative closing refs (#23).
+fn pr_with_branch(number: u64, head_sha: &str, head_branch: &str, ci: &str) -> GhPrState {
+    let mut p = pr(number, head_sha, ci);
+    p.head_branch = head_branch.to_string();
+    p
 }
 
 fn head(worktree: &str, branch: &str, commit: &str) -> PlaneEvent {
@@ -150,26 +159,83 @@ async fn gh_facts_map_pr_and_ci_and_reset_when_pr_leaves_the_open_set() {
     sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
     wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
 
-    // PR 42's head SHA matches the agent's commit -> pr_number + ci_status.
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "SUCCESS")]))).await.unwrap();
+    // PR 42's head SHA matches the agent's commit -> pr_number + ci_status,
+    // match source = head-SHA (primary, never the fallback).
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "SUCCESS")]))).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
     assert_eq!(a.workspace.ci_status, Some(CiStatus::Success));
+    assert_eq!(a.workspace.pr_match_source.as_deref(), Some("head_sha"));
+    assert!(a.workspace.issues.is_empty(), "PR 42 links no issues -> empty");
 
     // The agent commits locally (HEAD moves); the gh cache still carries the
-    // OLD head SHA with a FAILURE verdict. PR 42 is still OPEN, so the bound
-    // PR survives the lag instead of flashing to None — and the WS2 verdict
-    // is mapped verbatim (G4).
+    // OLD head SHA with a FAILURE verdict. PR 42 is still OPEN and its head
+    // branch still equals the agent's branch, so the #22 (repo, branch)
+    // fallback re-binds it instead of flashing to None.
     sink.send(head(WT_A, "ws2/gh-plane", "def456")).await.unwrap();
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "FAILURE")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "FAILURE")]))).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.ci_status == Some(CiStatus::Failure)).await;
-    assert_eq!(a.workspace.pr_number, Some(42), "still-open bound PR survives head-SHA lag");
+    assert_eq!(a.workspace.pr_number, Some(42), "branch fallback keeps the committed-but-unpushed PR bound");
+    assert_eq!(a.workspace.pr_match_source.as_deref(), Some("branch"));
 
     // The PR leaves the open set -> pr/ci reset, git facts untouched.
     sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new()))).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
     assert_eq!(a.workspace.ci_status, None);
+    assert_eq!(a.workspace.pr_match_source, None);
+    assert!(a.workspace.issues.is_empty());
     assert_eq!(a.workspace.branch.as_deref(), Some("ws2/gh-plane"));
     assert!(!a.workspace.dirty && a.workspace.ahead == 0 && a.workspace.behind == 0);
+}
+
+#[tokio::test]
+async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
+    store.flush().await;
+
+    let mut bound = pr_with_branch(42, "abc123", "ws2/gh-plane", "SUCCESS");
+    bound.closing_issues = vec![GhIssueRef {
+        repo: "herdr-board".to_string(),
+        number: 4,
+        state: "OPEN".to_string(),
+        title: "P2 planes".to_string(),
+    }];
+    let state = gh_state("herdr-board", vec![bound]);
+
+    // Head-SHA binding carries the PR's authoritative closing refs (#23).
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
+    sink.send(PlaneEvent::Gh(state.clone())).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
+    assert_eq!(a.workspace.pr_match_source.as_deref(), Some("head_sha"));
+    assert_eq!(a.workspace.issues.len(), 1);
+    assert_eq!(a.workspace.issues[0].number, 4);
+    assert_eq!(a.workspace.issues[0].state, "OPEN");
+    assert_eq!(a.workspace.issues[0].title, "P2 planes");
+
+    // The repo has OTHER recent issues — they must NOT leak into the agent
+    // (the linkage is the PR's closing refs, nothing else).
+    let mut repo_with_more = state.clone();
+    repo_with_more.issues = vec![GhIssueRef {
+        repo: "herdr-board".to_string(),
+        number: 99,
+        state: "OPEN".to_string(),
+        title: "unrelated".to_string(),
+    }];
+    sink.send(PlaneEvent::Gh(repo_with_more)).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
+    assert_eq!(a.workspace.issues.len(), 1, "repo-level issues never populate the agent");
+
+    // A binding to a PR with NO closing refs -> empty array, no guess.
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(9, "abc123", "ws2/gh-plane", "PENDING")]))).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(9)).await;
+    assert!(a.workspace.issues.is_empty(), "no closing refs -> empty, never a heuristic");
+
+    // Unbound (PR leaves the open set) -> issues reset to empty.
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new()))).await.unwrap();
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
+    assert!(a.workspace.issues.is_empty());
+    assert_eq!(a.workspace.pr_match_source, None);
 }
 
 #[tokio::test]
@@ -284,6 +350,8 @@ async fn worktree_removed_resets_git_derived_fields_and_pr_binding() {
     assert_eq!(a.workspace.ci_status, None, "PR binding dropped");
     assert_eq!(a.workspace.head_sha, None, "head facts dropped with the worktree (G21)");
     assert_eq!(a.workspace.head_subject, None);
+    assert_eq!(a.workspace.pr_match_source, None, "match source dropped with the binding");
+    assert!(a.workspace.issues.is_empty(), "issues dropped with the binding");
     // repo is path-derived, not git-fact-derived: it survives the reset.
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
 }

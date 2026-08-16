@@ -105,10 +105,12 @@ pub struct FakeHerdr {
 }
 
 impl FakeHerdr {
-    pub async fn bind(socket_path: PathBuf) -> Self {
+    /// Bind with caller-supplied agents (the R11 live gh test points a fake
+    /// agent's cwd at a real git worktree so git+gh facts bind).
+    pub async fn bind_with_agents(socket_path: PathBuf, agents: Vec<FakeAgent>) -> Self {
         let listener = UnixListener::bind(&socket_path).expect("bind fake herdr socket");
         let inner = Arc::new(Inner {
-            agents: Mutex::new(vec![FakeAgent::default()]),
+            agents: Mutex::new(agents),
             conns: Mutex::new(Vec::new()),
             commands: Mutex::new(Vec::new()),
         });
@@ -305,7 +307,11 @@ async fn handle_conn(stream: UnixStream, inner: Arc<Inner>) {
 /// A spawned, real corrald with a scratch config dir and the fake herdr.
 pub struct LiveDaemon {
     child: Child,
-    _dir: tempfile::TempDir,
+    /// Owned scratch dir when the harness created it (`spawn_live_daemon`);
+    /// `None` when the test supplied its own dir and keeps it alive
+    /// (`spawn_live_daemon_at` — e.g. R11, whose git worktree must exist
+    /// before the daemon boots).
+    _dir: Option<tempfile::TempDir>,
     pub base: String,
     pub registration_token: String,
     pub admin_token: String,
@@ -331,16 +337,10 @@ fn pick_port() -> u16 {
         .port()
 }
 
-/// Spawn corrald (CARGO_BIN_EXE / workspace target dir) with the scratch
+/// Spawn corrald (CARGO_BIN_EXE / workspace target dir) with a FRESH scratch
 /// config dir, wait for `/healthz`, and read the host-side credentials the
 /// daemon minted (registration + admin tokens — the same files a host
 /// operator would hand a device out of band).
-///
-/// Retries with a fresh port on failure, and probes identity with a real
-/// register: under parallel test spawns, the ephemeral-port picker can race
-/// another daemon onto the same port, in which case `/healthz` answers but
-/// belongs to a stranger. Registering our scratch key with OUR registration
-/// token only succeeds against OUR daemon.
 pub async fn spawn_live_daemon() -> LiveDaemon {
     let dir = tempfile::tempdir().expect("scratch config dir");
     let config_dir = dir.path().to_path_buf();
@@ -348,13 +348,35 @@ pub async fn spawn_live_daemon() -> LiveDaemon {
     // fake agent's cwd at it, so the daemon's git plane probes it and the
     // snapshot carries a real head_sha/head_subject for the conformance
     // agent — proving the fields round-trip through the full pipeline, not
-    // just the wire decode.
+    // just the wire decode. The R11 _at flow pre-clones its own worktree
+    // and must NOT get this staging.
     let repo_head_sha = init_scratch_repo(&config_dir);
+    // The cwd must be set BEFORE the daemon boots: the herdr adapter learns
+    // it from the bootstrap agent.list, and the git plane probes it on the
+    // first sweep. A post-boot mutation would never reach the daemon.
+    let mut agent = FakeAgent::default();
+    agent.cwd = config_dir.to_string_lossy().into_owned();
+    let mut daemon = spawn_live_daemon_at(dir.path(), vec![agent]).await;
+    daemon.repo_head_sha = repo_head_sha;
+    daemon._dir = Some(dir);
+    daemon
+}
+
+/// Spawn corrald over a caller-owned scratch dir with caller-supplied fake
+/// agents. The dir must exist and stay alive for the daemon's lifetime (the
+/// R11 live gh test pre-clones a git worktree into it); the retry/identity
+/// probe recipe is identical to [`spawn_live_daemon`].
+pub async fn spawn_live_daemon_at(dir: &std::path::Path, agents: Vec<FakeAgent>) -> LiveDaemon {
+    let config_dir = dir.to_path_buf();
     let socket = config_dir.join("herdr.sock");
-    let herdr = FakeHerdr::bind(socket.clone()).await;
-    herdr.set_agent_cwd(&config_dir);
+    let herdr = FakeHerdr::bind_with_agents(socket.clone(), agents).await;
     let bin = daemon_binary();
     let http = reqwest::Client::new();
+    // The repo/worktrees roots MUST be canonical: the git plane
+    // canonicalizes every fact path, and the integrator derives the repo by
+    // stripping the (raw) root — a symlinked tempdir (macOS /var/folders ->
+    // /private/var/folders) would otherwise leave every agent repo-less.
+    let roots = std::fs::canonicalize(&config_dir).unwrap_or_else(|_| config_dir.clone());
 
     let mut last_failure = String::from("no spawn attempt made");
     for _ in 0..3 {
@@ -362,8 +384,8 @@ pub async fn spawn_live_daemon() -> LiveDaemon {
         let base = format!("http://127.0.0.1:{port}");
         let mut child = Command::new(&bin)
             .env("CORRAL_CONFIG_DIR", &config_dir)
-            .env("CORRAL_REPO_ROOT", &config_dir)
-            .env("CORRAL_WORKTREES_ROOT", &config_dir)
+            .env("CORRAL_REPO_ROOT", &roots)
+            .env("CORRAL_WORKTREES_ROOT", &roots)
             .arg("--port")
             .arg(port.to_string())
             .arg("--socket")
@@ -412,12 +434,15 @@ pub async fn spawn_live_daemon() -> LiveDaemon {
                 let admin_token = read_token(&config_dir, "admin-token");
                 return LiveDaemon {
                     child,
-                    _dir: dir,
+                    _dir: None,
                     base,
                     registration_token,
                     admin_token,
                     herdr,
-                    repo_head_sha,
+                    // R11's _at flow pre-clones its own worktree; the
+                    // scratch-repo HEAD is only set by the default
+                    // spawn_live_daemon flow (G21 staging).
+                    repo_head_sha: String::new(),
                 };
             }
             Ok(response) => {

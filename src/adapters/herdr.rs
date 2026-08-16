@@ -916,8 +916,16 @@ impl HerdrAdapter {
             .and_then(|r| r.text.clone())
             .unwrap_or_default();
         let waiting_on = classify_waiting_on(&matched, &text);
+        let agent_id_for_claim = agent_id.clone();
         self.update_record(store, &agent_id, move |agent| {
             if agent.state == AgentState::Blocked {
+                let mut waiting_on = waiting_on.clone();
+                // P3 D8: emit the live approval claim — the approval_id is
+                // the stable identity (agent + exact prompt hash) clients
+                // echo back in DrivePayload::Approve. The drive path
+                // re-derives it and never trusts this stored copy.
+                waiting_on.approval_id =
+                    crate::approve::approval_id_for(&agent_id_for_claim, &waiting_on.prompt_hash);
                 agent.waiting_on = Some(waiting_on);
             }
         })
@@ -1064,10 +1072,17 @@ fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
 }
 
 /// Classify a matched output line into the canonical waiting_on record.
+///
 /// The prompt and the choice buffer are pane output: redacted at this
 /// boundary (D9) so the stored prompt, its hash, and the serialized output
 /// never carry secret-shaped text. The hash covers the redacted prompt —
 /// host and client hash the same bytes the client sees.
+///
+/// P3 D8 (W2): the `prompt_hash` MUST cover the EXACT prompt text herdr
+/// emitted — never trimmed — so the claim's hash is byte-identical to what
+/// an approve reply must echo. `prompt` is therefore stored untrimmed too
+/// (redacted only); the approval claim is derived from it by
+/// `crate::approve`.
 ///
 /// F4 (re-review): the kind is classified from the RAW matched line before
 /// redaction, so a secret span swallowing the keyword cannot degrade
@@ -1079,7 +1094,7 @@ fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
 /// line), so a future redaction rule change cannot silently break in-flight
 /// approvals.
 fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
-    let raw_prompt = matched_line.trim();
+    let raw_prompt = matched_line;
     let lower = raw_prompt.to_lowercase();
     let kind = if ["approve", "approval", "permission", "allow"]
         .iter()
@@ -1099,6 +1114,10 @@ fn classify_waiting_on(matched_line: &str, read_text: &str) -> WaitingOn {
         kind,
         prompt,
         prompt_hash: hash,
+        // The claim identity needs the agent_id, which the classifier does
+        // not see; the adapter attaches it when persisting the record
+        // (handle_output_matched).
+        approval_id: String::new(),
         choices: extract_choices(redact(read_text).as_ref()),
     }
 }
@@ -1181,7 +1200,19 @@ impl Adapter for HerdrAdapter {
                 "agent.read",
                 json!({"target": target, "source": "recent_unwrapped", "lines": lines}),
             ),
-            DriveCommand::Approve => return Err(DriveError::NotImplemented("approve")),
+            // Approve mechanism (P3 D8, verified live against herdr 0.7.5):
+            // herdr exposes NO approve-specific RPC (`herdr api schema` lists
+            // agent.prompt / agent.send_keys / pane.send_text / pane.send_input
+            // — nothing approve-shaped), and the pane's approve IS an input
+            // send. `agent.prompt` is herdr's input-send to the agent session
+            // (the same call DriveCommand::Prompt uses); a blocked agent
+            // receives the choice text, exactly as if the human had typed it.
+            // Live-verified: an opencode agent blocked on a y/n menu executed
+            // the choice submitted this way.
+            DriveCommand::Approve { choice } => (
+                "agent.prompt",
+                json!({"target": target, "text": choice}),
+            ),
             DriveCommand::Kill => return Err(DriveError::NotImplemented("kill")),
             DriveCommand::Attach => return Err(DriveError::NotImplemented("attach")),
         };
@@ -1349,8 +1380,23 @@ mod tests {
         let after = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
         let w = after.waiting_on.as_ref().expect("waiting_on set while blocked");
         assert_eq!(w.kind, WaitingOnKind::AnswerQuestion);
-        assert_eq!(w.prompt, "Do you want to proceed?");
+        // P3 D8: the prompt is the EXACT matched line — never trimmed — and
+        // the hash covers those exact bytes (a trimmed re-hash would not
+        // equal the claim's hash).
+        assert_eq!(w.prompt, "  Do you want to proceed?");
         assert!(w.prompt_hash.starts_with("sha256:"));
+        let mut hasher = Sha256::new();
+        hasher.update(b"  Do you want to proceed?");
+        assert_eq!(w.prompt_hash, format!("sha256:{}", hex(&hasher.finalize())));
+        // Claim emission: the stored approval_id is the stable claim identity
+        // clients echo in DrivePayload::Approve.
+        assert_eq!(
+            w.approval_id,
+            crate::approve::approval_id_for(
+                "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784",
+                &w.prompt_hash
+            )
+        );
         assert!(w.choices.iter().any(|c| c == "Continue"));
         assert!(after.seq > blocked.seq, "seq must be monotonic");
 
@@ -1386,6 +1432,15 @@ mod tests {
         let a = classify_waiting_on("Approve this change?", "");
         let b = classify_waiting_on("Approve this change?", "");
         assert_eq!(a.prompt_hash, b.prompt_hash);
+
+        // P3 D8: the hash covers the EXACT prompt text — leading/trailing
+        // whitespace is part of the hashed bytes, never trimmed away.
+        let spaced = classify_waiting_on("  Approve this change?  ", "");
+        assert_eq!(spaced.prompt, "  Approve this change?  ");
+        assert_ne!(spaced.prompt_hash, a.prompt_hash);
+        let mut hasher = Sha256::new();
+        hasher.update(b"  Approve this change?  ");
+        assert_eq!(spaced.prompt_hash, format!("sha256:{}", hex(&hasher.finalize())));
     }
 
     #[test]
@@ -1518,6 +1573,254 @@ mod tests {
         assert!(!adapter.knows_agent("nope"));
         let err = adapter.drive("nope", DriveCommand::Prompt { text: "hi".into() });
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
+    }
+
+    #[test]
+    fn approve_dispatches_via_agent_prompt() {
+        // The pane's approve is an input send; herdr exposes no
+        // approve-shaped RPC, so the choice goes through agent.prompt (the
+        // same input-send the human typing into the pane produces).
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        assert!(!adapter.knows_agent("nope"));
+        let err = adapter.drive("nope", DriveCommand::Approve { choice: "y".into() });
+        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AC2 (P3 verdict gate): the LIVE claim flow against a real blocked herdr
+// agent — the wrong-question race simulation.
+//
+// Gated by env so the normal suite stays hermetic:
+//   CORRAL_AC2=1              enable the live test
+//   CORRAL_AC2_PANE=<pane_id> the pane whose agent must be BLOCKED on a prompt
+//   CORRAL_SOCKET=<path>      optional herdr socket override
+//
+// Exercises the production paths end to end over the real herdr socket:
+// agent.list bootstrap -> claim emission from the pane's REAL output ->
+// claim check (stale hash / stale id refused, correct hash + choice
+// executes) -> approve dispatch -> agent unblocks.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod ac2_live_tests {
+    use super::*;
+    use crate::approve::{ApprovalError, claim_for};
+    use serde_json::json;
+
+    /// Emulate the pane.output_matched match (PROMPT_REGEX over the
+    /// recent_unwrapped window) to obtain the exact matched line the real
+    /// subscription would deliver. herdr unwraps full terminal lines, so a
+    /// question line arrives as one WIDE line whose `?` may sit mid-line
+    /// (right-hand column merged in). The prompt is the last line containing
+    /// both a question mark and a prompt phrase (e.g. the footer "…select…"
+    /// matches phrases but has no `?` and must not win). The chosen line is
+    /// hashed EXACTLY as delivered — untrimmed — which is the D8 contract.
+    fn ac2_matched_line(read_text: &str) -> Option<&str> {
+        let phrases = [
+            "approve", "approval", "permission", "allow this", "confirm",
+            "proceed?", "continue?", "do you want", "should i", "are you sure",
+            "is that", "is this", "waiting for", "select", "choose",
+            "[y/n]", "(y/n)", "yes/no", "please review", "need your input",
+            "your decision",
+        ];
+        let lines: Vec<&str> = read_text.lines().collect();
+        lines
+            .iter()
+            .rev()
+            .find(|line| {
+                let lower = line.trim().to_lowercase();
+                lower.contains('?') && phrases.iter().any(|k| lower.contains(k))
+            })
+            .or_else(|| {
+                lines.iter().rev().find(|line| {
+                    let lower = line.trim().to_lowercase();
+                    phrases.iter().any(|k| lower.contains(k))
+                })
+            })
+            .copied()
+    }
+    fn ac2_env() -> Option<(PathBuf, String)> {
+        if std::env::var("CORRAL_AC2").as_deref() != Ok("1") {
+            return None;
+        }
+        let pane = std::env::var("CORRAL_AC2_PANE").ok()?;
+        let socket = std::env::var("CORRAL_SOCKET")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".config/herdr/herdr.sock")
+            });
+        Some((socket, pane))
+    }
+
+    fn ac2_evidence(name: &str, value: &impl serde::Serialize) {
+        println!("AC2_EVIDENCE {} {}", name, serde_json::to_string(value).unwrap());
+    }
+
+    #[tokio::test]
+    async fn ac2_live_claim_flow() {
+        let Some((socket, pane)) = ac2_env() else {
+            return;
+        };
+
+        // 1. Bootstrap over the real socket: agent.list.
+        let list = rpc_call(&socket, "agent.list", json!({})).await.expect("agent.list");
+        let list: AgentListWire = serde_json::from_value(list).expect("agent list decode");
+        let info = list
+            .agents
+            .iter()
+            .find(|a| a.pane_id == pane)
+            .expect("CORRAL_AC2_PANE must be in agent.list");
+        assert_eq!(
+            info.agent_status.as_str(),
+            "blocked",
+            "the AC2 agent must be blocked on a prompt before the test runs"
+        );
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket.clone());
+        adapter.apply_agent_info(info, &store).await;
+        let agent_id = {
+            let state = adapter.state.lock().unwrap();
+            state
+                .pane_agents
+                .get(&pane)
+                .cloned()
+                .expect("pane registered by bootstrap")
+        };
+        ac2_evidence("bootstrap-agent", &json!({ "agent_id": agent_id, "pane_id": pane }));
+
+        // 2. Status change to blocked (mirrors the real event stream).
+        let status = StatusChangedWire {
+            pane_id: pane.clone(),
+            agent_status: Some("blocked".to_string()),
+            agent: info.agent.clone(),
+            title: info.title.clone(),
+            state_labels: info.state_labels.clone(),
+        };
+        adapter.handle_status_changed(&status, &store).await;
+
+        // 3. Real read: the pane's current output window, with the same
+        //    source/lines the output_matched subscription uses.
+        let read: Value = rpc_call(
+            &socket,
+            "agent.read",
+            json!({ "target": pane, "source": "recent_unwrapped", "lines": 40 }),
+        )
+        .await
+        .expect("agent.read");
+        let read_text = read
+            .get("read")
+            .and_then(|r| r.get("text"))
+            .and_then(|t| t.as_str())
+            .expect("agent.read text")
+            .to_string();
+        let matched_line = ac2_matched_line(&read_text).expect("prompt line in read window");
+        let mut hasher = Sha256::new();
+        hasher.update(matched_line.as_bytes());
+        ac2_evidence(
+            "matched-line",
+            &json!({ "line": matched_line, "hash": format!("sha256:{}", hex(&hasher.finalize())) }),
+        );
+        ac2_evidence("read-window", &read_text);
+        let matched = OutputMatchedWire {
+            pane_id: pane.clone(),
+            matched_line: Some(matched_line.to_string()),
+            read: Some(OutputReadWire { text: Some(read_text.clone()) }),
+        };
+        adapter.handle_output_matched(&matched, &store).await;
+
+        // 4. The live claim, emitted by the production path.
+        let agent = store.get(&agent_id).await.expect("agent record");
+        let w = agent.waiting_on.as_ref().expect("waiting_on set while blocked");
+        let claim = claim_for(&agent_id, w);
+        assert_eq!(claim.approval_id, w.approval_id, "derived claim == stored claim");
+        assert_eq!(claim.prompt_hash, w.prompt_hash);
+        ac2_evidence("approval-claim", &claim);
+
+        // 5a. Wrong-question race: SAME approval_id, STALE prompt_hash ->
+        //     typed refusal, nothing dispatched.
+        let stale_hash = format!("sha256:{}", "0".repeat(64));
+        let refusal = crate::approve::check_approval_claim(
+            &agent_id,
+            Some(w),
+            &claim.approval_id,
+            &stale_hash,
+            "1",
+        );
+        assert_eq!(refusal, Err(ApprovalError::HashMismatch));
+        ac2_evidence("stale-hash-approve", &format!("{refusal:?}"));
+
+        // 5b. Stale approval identity -> typed refusal.
+        let stale_id = format!("herdr:stale-agent:sha256:{}", "0".repeat(64));
+        let refusal = crate::approve::check_approval_claim(
+            &agent_id,
+            Some(w),
+            &stale_id,
+            &claim.prompt_hash,
+            "1",
+        );
+        assert_eq!(refusal, Err(ApprovalError::StaleApproval));
+        ac2_evidence("stale-id-approve", &format!("{refusal:?}"));
+
+        // 6. Correct hash + choice -> the claim executes and is dispatched
+        //    over the real socket (agent.prompt = the pane's input send).
+        let approved = crate::approve::check_approval_claim(
+            &agent_id,
+            Some(w),
+            &claim.approval_id,
+            &claim.prompt_hash,
+            "1",
+        )
+        .expect("matching claim executes");
+        ac2_evidence("approved", &approved);
+        adapter
+            .drive(&agent_id, DriveCommand::Approve { choice: approved.choice.clone() })
+            .expect("approve dispatch accepted");
+
+        // 7. The agent receives the input and leaves blocked (agent.wait is
+        //    herdr's event-driven wait, not polling).
+        let waited: Value = rpc_call(
+            &socket,
+            "agent.wait",
+            json!({ "target": pane, "until": ["working", "done", "idle"], "timeout_ms": 30000 }),
+        )
+        .await
+        .expect("agent.wait");
+        ac2_evidence("agent-after-approve", &waited);
+
+        // 8. Mirror the real status_changed(working) the event stream would
+        //    deliver after the approve: the consumed approval must not stay
+        //    live in the record.
+        let working = StatusChangedWire {
+            pane_id: pane.clone(),
+            agent_status: Some("working".to_string()),
+            agent: info.agent.clone(),
+            title: info.title.clone(),
+            state_labels: HashMap::new(),
+        };
+        adapter.handle_status_changed(&working, &store).await;
+        let after = store.get(&agent_id).await.expect("agent record after approve");
+        assert!(
+            after.waiting_on.is_none(),
+            "a consumed approval must not stay live in the record"
+        );
+
+        // 9. Evidence: the pane's own output now shows the answered prompt.
+        let read_after: Value = rpc_call(
+            &socket,
+            "agent.read",
+            json!({ "target": pane, "source": "visible", "lines": 30 }),
+        )
+        .await
+        .expect("agent.read after approve");
+        ac2_evidence(
+            "pane-after-approve",
+            &read_after
+                .get("read")
+                .and_then(|r| r.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or_default(),
+        );
     }
 }
 

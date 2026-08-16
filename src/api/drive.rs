@@ -66,6 +66,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
+use crate::approve::{ApprovalError, check_approval_claim};
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
@@ -294,22 +295,49 @@ struct EnvelopeWire {
     rev: Option<u64>,
 }
 
+/// What the drive handler will dispatch after the claim-check phase.
+///
+/// Approve is special: the command cannot be constructed here because the
+/// claim check (W2) must validate the approval against the store first, and
+/// the validated `choice` (not the raw payload) must be what gets dispatched
+/// so menu membership holds.
+enum PendingCommand {
+    Command(DriveCommand),
+    Approve {
+        approval_id: String,
+        prompt_hash: String,
+        choice: String,
+    },
+}
+
 /// Map a verified capability + payload onto the adapter command vocabulary.
 /// Payload-bearing capabilities go through [`DrivePayload::parse`] (typed
 /// mismatch refused); the three command-only capabilities take no payload.
 fn command_for(
     capability: Capability,
     payload: &serde_json::Value,
-) -> Result<DriveCommand, PayloadError> {
+) -> Result<PendingCommand, PayloadError> {
     match capability {
         Capability::Prompt | Capability::ReadTail | Capability::Approve => {
             let parsed = DrivePayload::parse(capability, payload)?;
             Ok(match parsed {
-                DrivePayload::Prompt { text } => DriveCommand::Prompt { text },
-                DrivePayload::ReadTail { lines } => DriveCommand::ReadTail {
-                    lines: Some(bound_tail_lines(lines)),
+                DrivePayload::Prompt { text } => {
+                    PendingCommand::Command(DriveCommand::Prompt { text })
+                }
+                DrivePayload::ReadTail { lines } => {
+                    PendingCommand::Command(DriveCommand::ReadTail {
+                        lines: Some(bound_tail_lines(lines)),
+                    })
+                }
+                DrivePayload::Approve {
+                    approval_id,
+                    prompt_hash,
+                    choice,
+                } => PendingCommand::Approve {
+                    approval_id,
+                    prompt_hash,
+                    choice,
                 },
-                DrivePayload::Approve { .. } => DriveCommand::Approve,
             })
         }
         Capability::Interrupt | Capability::Kill | Capability::Attach => {
@@ -324,9 +352,9 @@ fn command_for(
                 });
             }
             Ok(match capability {
-                Capability::Interrupt => DriveCommand::Interrupt,
-                Capability::Kill => DriveCommand::Kill,
-                Capability::Attach => DriveCommand::Attach,
+                Capability::Interrupt => PendingCommand::Command(DriveCommand::Interrupt),
+                Capability::Kill => PendingCommand::Command(DriveCommand::Kill),
+                Capability::Attach => PendingCommand::Command(DriveCommand::Attach),
                 Capability::Prompt | Capability::ReadTail | Capability::Approve => unreachable!(),
             })
         }
@@ -368,6 +396,19 @@ pub enum DriveApiError {
         error: AuthError,
         request_id: Option<String>,
     },
+    /// Claim-based approval refusal (W2): typed, never a 500. These refusals
+    /// do NOT occupy the replay slot (parse-before-claim rule) and are NOT
+    /// appended to the audit log (AC5: audit grows only on writes — a refused
+    /// approval never dispatched).
+    Approval {
+        error: ApprovalError,
+        request_id: Option<String>,
+    },
+    /// The store has no record for the target agent (claim-check prerequisite).
+    UnknownAgent {
+        agent_id: String,
+        request_id: Option<String>,
+    },
     InFlight {
         request_id: String,
     },
@@ -402,6 +443,34 @@ impl IntoResponse for DriveApiError {
             Self::Auth { error, request_id } => {
                 (StatusCode::FORBIDDEN, "auth", error.to_string(), request_id)
             }
+            Self::Approval { error, request_id } => {
+                let (status, kind) = match error {
+                    ApprovalError::NoWaitingApproval => {
+                        (StatusCode::CONFLICT, "no_waiting_approval")
+                    }
+                    ApprovalError::StaleApproval => (StatusCode::CONFLICT, "stale_approval"),
+                    // The wrong-question race kill — must be distinct from
+                    // stale so clients can tell "I answered late" from
+                    // "I answered the wrong prompt".
+                    ApprovalError::HashMismatch => (StatusCode::CONFLICT, "hash_mismatch"),
+                    ApprovalError::ChoiceNotInMenu => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "choice_not_in_menu")
+                    }
+                    ApprovalError::CannotApproveKind(_) => {
+                        (StatusCode::UNPROCESSABLE_ENTITY, "cannot_approve_kind")
+                    }
+                };
+                (status, kind, error.to_string(), request_id)
+            }
+            Self::UnknownAgent {
+                agent_id,
+                request_id,
+            } => (
+                StatusCode::NOT_FOUND,
+                "unknown_agent",
+                format!("unknown agent: {agent_id}"),
+                request_id,
+            ),
             Self::InFlight { request_id } => (
                 StatusCode::CONFLICT,
                 "in_flight",
@@ -477,12 +546,66 @@ pub async fn drive(
 
     // Parse BEFORE claiming: a payload error is deterministic and must not
     // occupy the id's slot.
-    let command = command_for(capability, &authorized.envelope.payload).map_err(|error| {
+    let pending = command_for(capability, &authorized.envelope.payload).map_err(|error| {
         DriveApiError::Payload {
             error,
             request_id: Some(authorized.envelope.request_id.clone()),
         }
     })?;
+
+    // Claim check (W2, D8): the approve reply is validated against the
+    // agent's CURRENT waiting approval BEFORE the replay claim, so a stale
+    // hash / stale approval can never occupy the id's slot or dispatch.
+    // Refusals here are client errors: no replay entry, no audit entry.
+    let agent_id = authorized.envelope.target.clone();
+    let command = match pending {
+        PendingCommand::Command(command) => command,
+        PendingCommand::Approve {
+            approval_id,
+            prompt_hash,
+            choice,
+        } => {
+            // First check: pre-claim validation (the refusal must not occupy
+            // the replay slot).
+            let agent = state.store.get(&agent_id).await.ok_or_else(|| {
+                DriveApiError::UnknownAgent {
+                    agent_id: agent_id.clone(),
+                    request_id: Some(authorized.envelope.request_id.clone()),
+                }
+            })?;
+            check_approval_claim(&agent_id, agent.waiting_on.as_ref(), &approval_id, &prompt_hash, &choice)
+                .map_err(|error| DriveApiError::Approval {
+                    error,
+                    request_id: Some(authorized.envelope.request_id.clone()),
+                })?;
+            // F3 mitigation (W2 review): re-read immediately before dispatch
+            // shrinks the TOCTOU window to the RPC duration. The residual
+            // (the agent moved on between re-read and RPC completion) is
+            // inherent to the async adapter and documented in src/approve.
+            let agent = state.store.get(&agent_id).await.ok_or_else(|| {
+                DriveApiError::UnknownAgent {
+                    agent_id: agent_id.clone(),
+                    request_id: Some(authorized.envelope.request_id.clone()),
+                }
+            })?;
+            let approved = check_approval_claim(
+                &agent_id,
+                agent.waiting_on.as_ref(),
+                &approval_id,
+                &prompt_hash,
+                &choice,
+            )
+            .map_err(|error| DriveApiError::Approval {
+                error,
+                request_id: Some(authorized.envelope.request_id.clone()),
+            })?;
+            // Dispatch the VALIDATED choice, never the raw payload — menu
+            // membership must hold.
+            DriveCommand::Approve {
+                choice: approved.choice,
+            }
+        }
+    };
 
     match state.replay.claim(&authorized.envelope.request_id) {
         Claim::Done(response) => return Ok(Json(response)),
@@ -494,7 +617,6 @@ pub async fn drive(
         Claim::Claimed => {}
     }
 
-    let agent_id = authorized.envelope.target.clone();
     let (ok, error, outcome) = match state.adapter.drive(&agent_id, command) {
         Ok(()) => (true, None, AuditOutcome::Executed),
         Err(e) => {

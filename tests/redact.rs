@@ -143,7 +143,9 @@ async fn ingest_redacts_secrets_before_the_store_can_serialize() {
         "title: sk-ant token stripped"
     );
     let w = agent.waiting_on.as_ref().expect("waiting_on set while blocked");
-    assert_eq!(w.prompt, "Please approve [REDACTED] deploy?", "prompt: AKIA key stripped");
+    // D8 (W2): the stored prompt is untrimmed — the hash covers the exact
+    // bytes a client echoes for the approval claim.
+    assert_eq!(w.prompt, "  Please approve [REDACTED] deploy?", "prompt: AKIA key stripped");
     assert!(!w.prompt_hash.contains("AKIA"), "hash covers only the redacted prompt");
 
     // The serialized output (what SSE / snapshot bytes look like) must not

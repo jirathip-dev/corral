@@ -1527,7 +1527,9 @@ mod tests {
             "title redacted on ingest"
         );
         let w = record.waiting_on.expect("waiting_on set while blocked");
-        assert_eq!(w.prompt, "Approve with [REDACTED]?");
+        // D8 (W2): the stored prompt is UNTRIMMED — the hash covers the exact
+        // bytes a client echoes; leading whitespace is part of the claim.
+        assert_eq!(w.prompt, "  Approve with [REDACTED]?");
         assert!(!w.prompt_hash.contains("sk-ant"), "hash covers the redacted prompt only");
     }
 

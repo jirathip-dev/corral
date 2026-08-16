@@ -104,7 +104,7 @@ impl Adapter for RecordingAdapter {
                     Err(DriveError::UnknownAgent(agent_id.to_string()))
                 }
             }
-            Mode::NotImplemented => Err(DriveError::NotImplemented("approve")),
+            Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
             Mode::Transport => Err(DriveError::Transport("boom".to_string())),
         }
     }
@@ -295,10 +295,116 @@ async fn approve_maps_to_approve_command() {
         ),
     )
     .await;
+    // W2 claim check: the store has no record for the target (and thus no
+    // waiting approval) → typed 404, never a dispatch.
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(h.adapter.commands().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Claim-based approvals (W2 wiring): the handler must validate the claim
+// against the store BEFORE dispatching, refuse stale hashes with a typed
+// error (no replay slot, no dispatch, no audit), and dispatch the validated
+// choice exactly once on a matching claim.
+// ---------------------------------------------------------------------------
+
+const W2_AGENT: &str = "herdr:ses-live";
+const W2_HASH: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
+    let approval_id = format!("{W2_AGENT}:{W2_HASH}");
+    let agent = corrald::core::model::Agent {
+        agent_id: W2_AGENT.to_string(),
+        source: "herdr".to_string(),
+        tool: "opencode".to_string(),
+        state: corrald::core::model::AgentState::Blocked,
+        reason: Some("waiting_for_input".to_string()),
+        seq: 1,
+        ts: 1,
+        capabilities: Vec::new(),
+        waiting_on: Some(corrald::core::model::WaitingOn {
+            kind: corrald::core::model::WaitingOnKind::AnswerQuestion,
+            prompt: prompt.to_string(),
+            prompt_hash: W2_HASH.to_string(),
+            approval_id,
+            choices,
+        }),
+        cost: None,
+        parent_id: None,
+        host: None,
+        workspace: Default::default(),
+        attachment: None,
+        display_name: None,
+        title: None,
+    };
+    let store2 = store.clone();
+    store2.apply(corrald::core::model::Change::upsert(agent)).await;
+}
+
+#[tokio::test]
+async fn approve_with_stale_hash_is_refused_without_dispatch_or_audit() {
+    let h = harness(TestAuthorizer::accept());
+    h.adapter.knows(W2_AGENT);
+    seed_blocked_agent(&h.store, "Do you want to proceed?", vec![]).await;
+
+    // Approval id matches, but the prompt_hash is stale (wrong question).
+    let (status, value) = post(
+        &h.app,
+        signed_body(
+            "req-stale",
+            "approve",
+            W2_AGENT,
+            json!({
+                "kind": "approve",
+                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+                "prompt_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "choice": "yes"
+            }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["kind"], "hash_mismatch", "wrong-question race must be typed distinctly");
+    assert!(h.adapter.commands().is_empty(), "stale hash must not dispatch");
+    assert_eq!(h.audit.entries().len(), 0, "refused approval is not a write (AC5)");
+}
+
+#[tokio::test]
+async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() {
+    let h = harness(TestAuthorizer::accept());
+    h.adapter.knows(W2_AGENT);
+    seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into(), "no".into()]).await;
+
+    let body = json!({
+        "kind": "approve",
+        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+        "prompt_hash": W2_HASH,
+        "choice": "yes"
+    });
+    let (status, _) = post(&h.app, signed_body("req-ok", "approve", W2_AGENT, body, None)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         h.adapter.commands(),
-        vec![("herdr:a".to_string(), DriveCommand::Approve)]
+        vec![(W2_AGENT.to_string(), DriveCommand::Approve { choice: "yes".to_string() })],
+        "validated choice must dispatch exactly once"
+    );
+    assert_eq!(h.audit.entries().len(), 1, "executed approval is one write (AC5)");
+
+    // Replay of the same request_id returns the stored response, no double
+    // send.
+    let body = json!({
+        "kind": "approve",
+        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+        "prompt_hash": W2_HASH,
+        "choice": "yes"
+    });
+    let (status, _) = post(&h.app, signed_body("req-ok", "approve", W2_AGENT, body, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        h.adapter.commands().len(),
+        1,
+        "replay must not double-send"
     );
 }
 
@@ -389,18 +495,12 @@ async fn not_implemented_and_transport_are_typed() {
     h.adapter.mode(Mode::NotImplemented);
     let (status, value) = post(
         &h.app,
-        signed_body(
-            "req",
-            "approve",
-            "herdr:a",
-            json!({ "kind": "approve", "approval_id": "a", "prompt_hash": "h", "choice": "y" }),
-            None,
-        ),
+        signed_body("req", "prompt", "herdr:a", prompt_payload("x"), None),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], false);
-    assert_eq!(value["error"], "command not implemented: approve");
+    assert_eq!(value["error"], "command not implemented: test-command");
     assert!(matches!(
         &h.audit.entries()[0].outcome,
         AuditOutcome::Refused(_)
@@ -519,13 +619,7 @@ async fn replay_returns_first_response_without_redispatch() {
 async fn replay_of_a_refusal_is_also_idempotent() {
     let h = harness(TestAuthorizer::accept());
     h.adapter.mode(Mode::NotImplemented);
-    let body = signed_body(
-        "req-ref",
-        "approve",
-        "herdr:a",
-        json!({ "kind": "approve", "approval_id": "a", "prompt_hash": "h", "choice": "y" }),
-        None,
-    );
+    let body = signed_body("req-ref", "prompt", "herdr:a", prompt_payload("x"), None);
 
     let (status_1, value_1) = post(&h.app, body.clone()).await;
     let (_, value_2) = post(&h.app, body).await;
@@ -663,13 +757,7 @@ async fn audit_grows_only_on_writes() {
     h.adapter.mode(Mode::NotImplemented);
     post(
         &h.app,
-        signed_body(
-            "r4",
-            "approve",
-            "herdr:a",
-            json!({ "kind": "approve", "approval_id": "a", "prompt_hash": "h", "choice": "y" }),
-            None,
-        ),
+        signed_body("r4", "prompt", "herdr:a", prompt_payload("x"), None),
     )
     .await;
     let entries = h.audit.entries();

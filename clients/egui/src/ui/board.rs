@@ -297,7 +297,7 @@ fn topology_cells(ui: &mut Ui, agent: &Agent) {
     };
     ui.vertical(|ui| {
         cell(ui, COL_REPO, ws.repo.clone().unwrap_or_else(|| "—".into()), theme::ui::TEXT_MUTED);
-        cell(ui, COL_BRANCH, ws.branch.clone().unwrap_or_else(|| "—".into()), theme::ui::TEXT_STRONG);
+        branch_cell(ui, agent, &cell);
         cell(ui, COL_DIRTY, if ws.dirty { "●".into() } else { "".into() }, theme::ui::DIRTY);
         let ab = if ws.ahead == 0 && ws.behind == 0 {
             "".to_string()
@@ -314,6 +314,79 @@ fn topology_cells(ui: &mut Ui, agent: &Agent) {
             None => cell(ui, COL_CI, "—".into(), theme::ui::TEXT_MUTED),
         }
     });
+}
+
+/// The branch cell: the branch name plus, when the name infers an issue
+/// (D21, display-only), the distinct `~#N` / `~#N?` marker in a
+/// validating/flagging color. The marker is pure + deterministic, so the
+/// cell is stable across frames.
+fn branch_cell(ui: &mut Ui, agent: &Agent, plain: &dyn Fn(&mut Ui, f32, String, Color32)) {
+    let ws = &agent.workspace;
+    let Some(branch) = ws.branch.as_deref() else {
+        plain(ui, COL_BRANCH, "—".into(), theme::ui::TEXT_STRONG);
+        return;
+    };
+    let Some(inferred) = crate::infer::infer(ws.branch.as_deref(), &agent.known_issue_numbers())
+    else {
+        plain(ui, COL_BRANCH, branch.to_string(), theme::ui::TEXT_STRONG);
+        return;
+    };
+    let marker = inferred.marker();
+    let (color, tip) = inferred_marker_ui(&inferred);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        branch,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::monospace(11.0),
+            color: theme::ui::TEXT_STRONG,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!(" {marker}"),
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::monospace(11.0),
+            color,
+            ..Default::default()
+        },
+    );
+    ui.add_sized([COL_BRANCH - 4.0, 18.0], egui::Label::new(job).truncate())
+        .on_hover_text(tip);
+}
+
+/// Marker color + hover explanation for an inferred issue (D21: the `~`
+/// prefix and distinct colors make it clearly non-authoritative).
+fn inferred_marker_ui(inferred: &crate::infer::InferredIssue) -> (Color32, String) {
+    if inferred.known {
+        (
+            theme::ui::ACCENT,
+            format!(
+                "~#{}: inferred from the branch name; matches a fetched closing issue — display-only, not authoritative",
+                inferred.number
+            ),
+        )
+    } else {
+        (
+            theme::ui::WARN,
+            format!(
+                "~#{}?: inferred from the branch name; NOT in the fetched issue set — display-only, never asserted as real",
+                inferred.number
+            ),
+        )
+    }
+}
+
+/// Pure D21 surface text for an agent's branch-inferred issue: the
+/// `~#N` / `~#N?` marker, or `None` when the branch name infers nothing.
+/// Shared by the row renderer and tests.
+pub fn inferred_marker(agent: &Agent) -> Option<String> {
+    crate::infer::infer(
+        agent.workspace.branch.as_deref(),
+        &agent.known_issue_numbers(),
+    )
+    .map(|inferred| inferred.marker())
 }
 
 fn drive_cell(
@@ -475,6 +548,20 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
             });
             if let Some(title) = &agent.title {
                 ui.label(RichText::new(title).color(theme::ui::TEXT_STRONG));
+            }
+            if let Some(inferred) =
+                crate::infer::infer(agent.workspace.branch.as_deref(), &agent.known_issue_numbers())
+            {
+                let (color, tip) = inferred_marker_ui(&inferred);
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    badge(ui, &inferred.marker(), color);
+                    ui.label(
+                        RichText::new(tip)
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
+                });
             }
             if let Some(w) = &agent.waiting_on {
                 ui.add_space(4.0);
@@ -650,6 +737,7 @@ mod tests {
             attachment: None,
             display_name: None,
             title: None,
+            issues: vec![],
         }
     }
 
@@ -727,6 +815,34 @@ mod tests {
     #[test]
     fn group_by_repo_empty_fleet_has_no_groups() {
         assert!(group_by_repo(&Fleet::default()).is_empty());
+    }
+
+    #[test]
+    fn inferred_marker_flags_branch_hints_display_only() {
+        // D21: `~#N` when validated against the fetched issue set,
+        // `~#N?` when not; no marker for branches that infer nothing.
+        let mut agent = agent_with_caps(&[]);
+        agent.workspace.branch = Some("issue-24-widget".into());
+        assert_eq!(
+            inferred_marker(&agent).as_deref(),
+            Some("~#24?"),
+            "no fetched set (pre-G23 daemon) → flagged, never asserted"
+        );
+        agent.issues = vec![crate::model::GhIssueRef {
+            repo: "corral".into(),
+            number: 24,
+            state: "open".into(),
+            title: "widget".into(),
+        }];
+        assert_eq!(
+            inferred_marker(&agent).as_deref(),
+            Some("~#24"),
+            "present in the fetched set → validated marker"
+        );
+        agent.workspace.branch = Some("main".into());
+        assert_eq!(inferred_marker(&agent), None);
+        agent.workspace.branch = None;
+        assert_eq!(inferred_marker(&agent), None);
     }
 
     #[test]

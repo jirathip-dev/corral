@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod drive;
+pub mod infer;
 pub mod keys;
 pub mod model;
 pub mod protocol;

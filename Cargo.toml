@@ -1,6 +1,11 @@
 [workspace]
-members = ["clients/egui"]
-resolver = "2"
+# Additive-only: corrald's package stays untouched; new crates go under crates/.
+# default-members keeps the mandated root gate (build/clippy/test) covering
+# BOTH crates: at a non-virtual workspace root, cargo would otherwise
+# operate on the root package only and silently skip corrald-client.
+resolver = "3"
+members = ["crates/corrald-client", "clients/egui"]
+default-members = [".", "crates/corrald-client", "clients/egui"]
 
 [package]
 name = "corrald"

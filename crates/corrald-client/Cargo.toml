@@ -1,0 +1,22 @@
+[package]
+name = "corrald-client"
+version = "0.1.0"
+edition = "2024"
+description = "Corral P4 shared client layer: snapshot/SSE read path, typed models, signed-drive plane, and the R1-R10 conformance suite (client of the frozen corrald HTTP surface)"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+bytes = "1"
+ed25519-dalek = { version = "3", default-features = true }
+futures = "0.3"
+getrandom = "0.4"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "process"] }

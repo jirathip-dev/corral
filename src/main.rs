@@ -1,4 +1,10 @@
 //! Corral host daemon (`corrald`) binary entrypoint.
+//!
+//! Subcommands:
+//! - (default) run the daemon: `corrald [--socket <path>] [--port <n>] [--bind <ip>]`
+//! - D33 digest, offline against the history ring:
+//!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
+//!   (the cron/launchd artifact — see `crate::history` for the hook).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,6 +19,8 @@ use corrald::api::drive::ReplayTable;
 use corrald::api::AppState;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
+use corrald::core::util::now_millis;
+use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
 
@@ -25,27 +33,113 @@ const DEFAULT_PORT: u16 = 8474;
 const INTEGRATOR_RECONNECT_BASE: Duration = Duration::from_secs(1);
 const INTEGRATOR_RECONNECT_MAX: Duration = Duration::from_secs(30);
 const INTEGRATOR_RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
+/// `corrald digest` default window when `--since` is omitted: the last 24h.
+const DIGEST_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
 
-fn parse_args() -> (PathBuf, SocketAddr) {
+/// $CORRAL_CONFIG_DIR, or ~/.config/corral.
+fn config_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::env::var("CORRAL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(&home).join(".config/corral"))
+}
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("digest") {
+        run_digest(&args[1..]);
+        return;
+    }
+
+    let (socket_path, addr) = parse_args(&args);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    runtime.block_on(async_main(socket_path, addr));
+}
+
+/// D33: `corrald digest` — offline daily digest over the history ring.
+/// Reads the same `$CORRAL_CONFIG_DIR/history` segments the daemon writes
+/// (or `--config-dir`), so it runs without a live daemon or herdr socket.
+/// `--since` is epoch millis; the default window is the last 24h.
+fn run_digest(args: &[String]) {
+    let mut since: Option<u64> = None;
+    let mut dir: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--since" => {
+                i += 1;
+                since = args.get(i).and_then(|v| v.parse().ok());
+                if since.is_none() {
+                    eprintln!("corrald digest: --since needs epoch millis (e.g. 1784210400000)");
+                    std::process::exit(2);
+                }
+            }
+            "--config-dir" => {
+                i += 1;
+                dir = args.get(i).map(PathBuf::from);
+                if dir.is_none() {
+                    eprintln!("corrald digest: --config-dir needs a path");
+                    std::process::exit(2);
+                }
+            }
+            "--help" | "-h" => {
+                println!(
+                    "corrald digest — daily per-agent digest from the history ring (D33)\n\n\
+                     USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\n\
+                     --since        window start, epoch millis (default: now - 24h)\n\
+                     --config-dir   history dir base (default $CORRAL_CONFIG_DIR or\n\
+                     ~/.config/corral); the ring lives under <dir>/history\n\n\
+                     cron example:\n\
+                     0 9 * * * corrald digest --since \"$(( $(date +%s) * 1000 - 86400000 ))\""
+                );
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("corrald digest: unknown argument: {other} (see --help)");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let dir = dir.unwrap_or_else(config_dir);
+    let since = since.unwrap_or_else(|| now_millis().saturating_sub(DIGEST_DEFAULT_WINDOW.as_millis() as u64));
+    let ring = HistoryRing::open(dir.join("history"), RotationPolicy::default());
+    let events = ring.query(Some(since), None);
+    let digest = Digest::compute(&events, since, now_millis());
+    print!("{}", digest.render());
+}
+
+fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
     let mut socket: Option<String> = None;
     let mut port: Option<u16> = None;
     let mut bind = DEFAULT_BIND.to_string();
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--socket" | "-s" => {
-                socket = args.next();
+                socket = iter.next().cloned();
             }
             "--port" | "-p" => {
-                port = args.next().and_then(|p| p.parse().ok());
+                port = iter.next().and_then(|p| p.parse().ok());
             }
             "--bind" | "-b" => {
-                bind = args.next().unwrap_or_else(|| DEFAULT_BIND.to_string());
+                bind = iter.next().cloned().unwrap_or_else(|| DEFAULT_BIND.to_string());
             }
             "--help" | "-h" => {
                 println!(
                     "corrald — agent-fleet control plane daemon (P1)\n\n\
-                     USAGE: corrald [--socket <path>] [--port <n>] [--bind <ip>]\n\n\
+                     USAGE: corrald [--socket <path>] [--port <n>] [--bind <ip>]\n\
+                     USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\n\
                      --socket  herdr API socket (default ~/.config/herdr/herdr.sock)\n\
                      --port    HTTP port (default {DEFAULT_PORT})\n\
                      --bind    loopback bind address (default {DEFAULT_BIND})"
@@ -80,24 +174,8 @@ fn parse_args() -> (PathBuf, SocketAddr) {
     (socket_path, addr)
 }
 
-fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-
-    let (socket_path, addr) = parse_args();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-
-    runtime.block_on(async_main(socket_path, addr));
-}
-
 async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
-    let store = Store::new();
+    let store = Store::with_history_dir(config_dir().join("history"));
     let coalescer = store.clone();
     tokio::spawn(async move { coalescer.run_coalescer().await });
 
@@ -105,13 +183,9 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     // step-up gate, hash-chained audit log, admin token. Config dir is
     // $CORRAL_CONFIG_DIR or ~/.config/corral; all key material is 0600
     // under a 0700 directory (see crate::auth for the rotation story).
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_dir = std::env::var("CORRAL_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(&home).join(".config/corral"));
     let auth = Arc::new(
-        corrald::auth::AuthPlane::load_or_create(config_dir.clone())
-            .unwrap_or_else(|e| panic!("auth plane init failed in {config_dir:?}: {e}")),
+        corrald::auth::AuthPlane::load_or_create(config_dir())
+            .unwrap_or_else(|e| panic!("auth plane init failed in {:?}: {e}", config_dir())),
     );
 
     let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new(socket_path.clone()));
@@ -122,6 +196,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     // the HOME-derived defaults. The planes keep their push-only contract;
     // the integrator is a pure channel drain (no polling, no SSE receiver),
     // supervised so a panic cannot silently kill the data plane (WS3 F4).
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let repo_root = std::env::var("CORRAL_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&home).join("Projects/herdr-board"));
@@ -152,7 +227,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     tracing::info!(
         %addr,
         socket = %socket_path.display(),
-        config_dir = %config_dir.display(),
+        config_dir = %config_dir().display(),
         "corrald listening (loopback only); auth plane live: GET /host-key, POST /register"
     );
     axum::serve(listener, app)

@@ -65,8 +65,29 @@ pub trait Adapter: Debug + Send + Sync {
 
     /// Drive path: issue a command to `agent_id`. Synchronous validation,
     /// transport happens in the background; failures are logged by the
-    /// adapter.
+    /// adapter. Fire-and-forget by contract — every capability except
+    /// `read_tail` (whose whole point is a response) dispatches this way.
     fn drive(&self, agent_id: &str, command: DriveCommand) -> Result<(), DriveError>;
+
+    /// Synchronous `read_tail`: fetch `agent_id`'s recent output and return
+    /// it to the caller. The returned lines are redacted at the adapter
+    /// boundary (D9) and bounded (D5: `READ_TAIL_MAX_LINES` /
+    /// `READ_TAIL_MAX_BYTES`) BEFORE they leave the machine — the caller
+    /// serializes them verbatim. An empty vec means "no output". The API
+    /// layer routes `DriveCommand::ReadTail` here and never through
+    /// [`Adapter::drive`] (the `drive` path stays fire-and-forget).
+    /// Default: this adapter does not implement the command.
+    ///
+    /// A boxed future keeps the trait dyn-compatible (callers hold
+    /// `Arc<dyn Adapter>`); `Send` by construction (`BoxFuture`).
+    fn read_tail<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        let _ = (agent_id, lines);
+        Box::pin(async move { Err(DriveError::NotImplemented("read_tail")) })
+    }
 
     /// True if `agent_id` is currently tracked by this adapter.
     fn knows_agent(&self, agent_id: &str) -> bool;

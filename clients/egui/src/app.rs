@@ -353,9 +353,11 @@ impl CorralApp {
         }
     }
 
-    /// read_tail content path: the daemon v1 returns `result: None` (the
-    /// herdr adapter fire-and-forgets `agent.read`), so nothing is stored
-    /// today — this wires the day the daemon grows a result (F2).
+    /// read_tail content path: the daemon's `DriveResponse.result` carries
+    /// `{"lines": [...]}` (redacted + bounded before the bytes left it) —
+    /// store into the tail cache for the detail view. An empty lines array
+    /// (agent with no output) stores an empty tail so the view shows the
+    /// clean empty state.
     fn remember_tail_result(&mut self, msg: &DriveMsg) {
         let DriveOutcome::Ok { result, .. } = &msg.outcome else {
             return;
@@ -363,19 +365,8 @@ impl CorralApp {
         let Some(result) = result else {
             return;
         };
-        let lines: Vec<String> = result
-            .get("tail")
-            .or_else(|| result.get("content"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|l| l.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !lines.is_empty() {
-            self.fleet.remember_tail(&msg.agent_id, lines);
-        }
+        let lines = crate::drive::parse_tail_lines(result);
+        self.fleet.remember_tail(&msg.agent_id, lines);
     }
 
     /// Register (or re-register with a fresh key, or refresh grants with

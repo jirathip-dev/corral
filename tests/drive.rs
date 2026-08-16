@@ -45,6 +45,11 @@ struct RecordingAdapter {
     /// before returning (concurrency test support — never in production).
     hold: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     started: Arc<tokio::sync::Notify>,
+    /// read_tail lines served back (empty = no output). `read_tail` never
+    /// touches `commands` — the seam is distinct from `drive()`.
+    tail: Mutex<Option<Vec<String>>>,
+    /// The lines argument each read_tail call received.
+    tail_requests: Mutex<Vec<u32>>,
 }
 
 impl Default for RecordingAdapter {
@@ -56,6 +61,8 @@ impl Default for RecordingAdapter {
             mode: Mutex::new(Mode::Ok),
             hold: Mutex::new(None),
             started: Arc::new(tokio::sync::Notify::new()),
+            tail: Mutex::new(None),
+            tail_requests: Mutex::new(Vec::new()),
         }
     }
 }
@@ -68,6 +75,11 @@ impl RecordingAdapter {
 
     fn mode(&self, mode: Mode) -> &Self {
         *self.mode.lock().unwrap() = mode;
+        self
+    }
+
+    fn tail(&self, lines: Vec<String>) -> &Self {
+        *self.tail.lock().unwrap() = Some(lines);
         self
     }
 
@@ -113,6 +125,29 @@ impl Adapter for RecordingAdapter {
 
     fn knows_agent(&self, agent_id: &str) -> bool {
         self.known.lock().unwrap().contains(agent_id)
+    }
+
+    fn read_tail<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        let future = async move {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            self.tail_requests.lock().unwrap().push(lines);
+            match *self.mode.lock().unwrap() {
+                Mode::Ok => {
+                    if self.known.lock().unwrap().contains(agent_id) {
+                        Ok(self.tail.lock().unwrap().clone().unwrap_or_default())
+                    } else {
+                        Err(DriveError::UnknownAgent(agent_id.to_string()))
+                    }
+                }
+                Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
+                Mode::Transport => Err(DriveError::Transport("boom".to_string())),
+            }
+        };
+        Box::pin(future)
     }
 }
 
@@ -447,6 +482,103 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
         1,
         "replay must not double-send"
     );
+}
+
+// ---------------------------------------------------------------------------
+// read_tail result path (P4 W2.1): DriveResponse.result carries the lines
+// the adapter returned (redacted, bounded), the audit entry stays
+// `executed`, and the seam is the dedicated Adapter::read_tail — never the
+// fire-and-forget drive() path.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_tail_result_carries_lines_and_audits_executed() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(vec!["line one".into(), "line two".into()]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail", "lines": 200 }), None),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["result"]["lines"], json!(["line one", "line two"]));
+    let rev = h.store.snapshot().await.rev;
+    assert_eq!(value["rev"].as_u64(), Some(rev));
+
+    // Routed through Adapter::read_tail, not the drive() fire-and-forget
+    // path: exactly one dispatch, zero drive() commands, the requested
+    // line count passed through.
+    assert_eq!(h.adapter.dispatch_count(), 1);
+    assert!(h.adapter.commands().is_empty(), "read_tail must not reach drive()");
+    assert_eq!(*h.adapter.tail_requests.lock().unwrap(), vec![200]);
+
+    // Audit: one Executed entry, capability read_tail, fields unchanged.
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].request_id, "req-tail");
+    assert_eq!(entries[0].capability, "read_tail");
+    assert_eq!(entries[0].target, "herdr:abc");
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+}
+
+#[tokio::test]
+async fn read_tail_with_no_output_is_ok_with_empty_lines() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(vec![]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail" }), None),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["result"]["lines"], json!([]), "no output -> clean empty lines");
+    assert_eq!(h.adapter.dispatch_count(), 1);
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+}
+
+#[tokio::test]
+async fn read_tail_transport_failure_is_typed_and_audited_failed() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").mode(Mode::Transport);
+
+    let (status, value) = post(
+        &h.app,
+        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail" }), None),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "dispatch outcomes ride the DriveResponse");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"], "transport error: boom");
+    assert!(value.get("result").is_none());
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Failed(_)));
+}
+
+#[tokio::test]
+async fn read_tail_unknown_agent_is_typed_refusal() {
+    let h = harness();
+    let (status, value) = post(
+        &h.app,
+        h.body("req-tail", Capability::ReadTail, "herdr:ghost", json!({ "kind": "read_tail" }), None),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"], "unknown agent: herdr:ghost");
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
 }
 
 // ---------------------------------------------------------------------------

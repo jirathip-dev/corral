@@ -22,9 +22,13 @@
 //!    caller ever dispatches for a given id, even under concurrent
 //!    duplicates (the loser gets `409 in_flight` and can retry for the
 //!    stored response). Replays return the first response byte-identical.
-//! 5. Dispatch via [`Adapter::drive`]. The adapter resolves the canonical
-//!    `agent_id` to its own transport target — the daemon never sends keys
-//!    by coordinates (D8), and W1 never sees pane ids.
+//! 5. Dispatch via [`Adapter::drive`] (fire-and-forget). The adapter
+//!    resolves the canonical `agent_id` to its own transport target — the
+//!    daemon never sends keys by coordinates (D8), and W1 never sees pane
+//!    ids. Exception: `read_tail` routes through
+//!    [`Adapter::read_tail`], which returns the redacted, bounded tail so
+//!    the response can carry `result.lines` (the one capability whose whole
+//!    point is a response).
 //! 6. Audit: [`AuditLog::append`] exactly once per dispatched write —
 //!    success (`Executed`) or typed refusal at dispatch (`Refused` /
 //!    `Failed`). An `append` failure is logged, never allowed to fail the
@@ -620,18 +624,27 @@ pub async fn drive(
         Claim::Claimed => {}
     }
 
-    let (ok, error, outcome) = match state.adapter.drive(&agent_id, command) {
-        Ok(()) => (true, None, AuditOutcome::Executed),
-        Err(e) => {
-            let text = e.to_string();
-            let outcome = match &e {
-                DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),
-                DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) => {
-                    AuditOutcome::Refused(text.clone())
-                }
-            };
-            (false, Some(text), outcome)
+    let (ok, error, outcome, result) = match command {
+        // read_tail is the one capability whose whole point is a response:
+        // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
+        // carry it back in `result.lines` — the drive() fire-and-forget path
+        // never sees it.
+        DriveCommand::ReadTail { lines } => {
+            let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
+            match state.adapter.read_tail(&agent_id, requested).await {
+                Ok(lines) => (
+                    true,
+                    None,
+                    AuditOutcome::Executed,
+                    Some(serde_json::json!({ "lines": lines })),
+                ),
+                Err(e) => drive_refusal(e),
+            }
         }
+        other => match state.adapter.drive(&agent_id, other) {
+            Ok(()) => (true, None, AuditOutcome::Executed, None),
+            Err(e) => drive_refusal(e),
+        },
     };
 
     append_audit(state.auth.audit.as_ref(), &authorized, outcome);
@@ -642,12 +655,28 @@ pub async fn drive(
         ok,
         error,
         rev,
-        result: None,
+        result,
     };
     state
         .replay
         .complete(&authorized.envelope.request_id, response.clone());
     Ok(Json(response))
+}
+
+/// Map a dispatch-level [`DriveError`] onto the response: `ok:false` + the
+/// typed error text + the matching audit outcome (transport → `Failed`,
+/// everything else → `Refused`). `result` is always `None` on refusal.
+fn drive_refusal(
+    e: DriveError,
+) -> (bool, Option<String>, AuditOutcome, Option<serde_json::Value>) {
+    let text = e.to_string();
+    let outcome = match &e {
+        DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),
+        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) => {
+            AuditOutcome::Refused(text.clone())
+        }
+    };
+    (false, Some(text), outcome, None)
 }
 
 fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {

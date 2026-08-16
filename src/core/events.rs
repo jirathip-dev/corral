@@ -56,7 +56,10 @@ impl GitStatus {
 ///
 /// `HeadMoved` carries both of the brief's "branch switch" and "HEAD move"
 /// events: the consumer diffs `branch`/`commit` against the previously seen
-/// head to tell them apart, so the wire surface stays one event.
+/// head to tell them apart, so the wire surface stays one event. `subject`
+/// is the first line of the commit message, read by the same probe that
+/// resolves the commit (zero extra git calls); `None` when the commit has
+/// no message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitEvent {
     /// HEAD changed in a watched worktree: branch switch and/or commit move.
@@ -64,6 +67,10 @@ pub enum GitEvent {
         worktree: PathBuf,
         branch: String,
         commit: String,
+        /// First line of the commit message (P4 G21), from the probe's
+        /// `git log` read of the same HEAD it resolves for `commit`.
+        #[serde(default)]
+        subject: Option<String>,
     },
     /// Dirty state changed (or the 10s sweep refreshed it).
     DirtyChanged {
@@ -79,6 +86,10 @@ pub enum GitEvent {
         worktree: PathBuf,
         branch: String,
         commit: String,
+        /// First line of the commit message (P4 G21) — same probe as
+        /// `commit`.
+        #[serde(default)]
+        subject: Option<String>,
     },
 }
 
@@ -194,6 +205,7 @@ mod tests {
                 worktree: PathBuf::from("/wt/a"),
                 branch: "feat/x".to_string(),
                 commit: "abc123".to_string(),
+                subject: Some("add head fields".to_string()),
             }),
             PlaneEvent::Git(GitEvent::DirtyChanged {
                 worktree: PathBuf::from("/wt/a"),
@@ -208,6 +220,7 @@ mod tests {
                 worktree: PathBuf::from("/wt/b"),
                 branch: "main".to_string(),
                 commit: "def456".to_string(),
+                subject: None,
             }),
             PlaneEvent::Gh(GhRepoState {
                 repo: "herdr-board".to_string(),
@@ -236,5 +249,32 @@ mod tests {
             let back: PlaneEvent = serde_json::from_str(&wire).expect("deserialize");
             assert_eq!(back, event, "round trip must preserve the event");
         }
+    }
+
+    #[test]
+    fn head_events_decode_without_subject_additive() {
+        // P4 G21: `subject` is additive — a pre-G21 payload (no subject
+        // field) must still decode, with the subject defaulted to None.
+        let old_head: GitEvent = serde_json::from_str(
+            r#"{"HeadMoved":{"worktree":"/wt/a","branch":"feat/x","commit":"abc123"}}"#,
+        )
+        .expect("pre-G21 HeadMoved decodes");
+        assert_eq!(
+            old_head,
+            GitEvent::HeadMoved {
+                worktree: PathBuf::from("/wt/a"),
+                branch: "feat/x".to_string(),
+                commit: "abc123".to_string(),
+                subject: None,
+            }
+        );
+        let old_commit: GitEvent = serde_json::from_str(
+            r#"{"CommitOnBranch":{"worktree":"/wt/b","branch":"main","commit":"def456"}}"#,
+        )
+        .expect("pre-G21 CommitOnBranch decodes");
+        assert!(matches!(
+            old_commit,
+            GitEvent::CommitOnBranch { subject: None, .. }
+        ));
     }
 }

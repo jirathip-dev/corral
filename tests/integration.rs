@@ -80,6 +80,7 @@ fn head(worktree: &str, branch: &str, commit: &str) -> PlaneEvent {
         worktree: PathBuf::from(worktree),
         branch: branch.to_string(),
         commit: commit.to_string(),
+        subject: Some("add head fields".to_string()),
     })
 }
 
@@ -134,6 +135,10 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
     assert_eq!(a.workspace.ahead, 1);
     assert_eq!(a.workspace.behind, 2);
+    // G21: the head commit the PR matcher resolves is carried onto the
+    // snapshot — sha + first-line subject, no extra git calls.
+    assert_eq!(a.workspace.head_sha.as_deref(), Some("abc123"));
+    assert_eq!(a.workspace.head_subject.as_deref(), Some("add head fields"));
 
     // Both facts landed inside ONE coalesce window: one delta, one rev bump,
     // the agent upserted once (deduped by agent_id).
@@ -141,6 +146,7 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     assert_eq!(delta.rev, 2);
     assert_eq!(delta.upd.len(), 1, "one record per batch, not per event");
     assert_eq!(delta.upd[0].workspace.ci_status, None, "no gh facts yet");
+    assert_eq!(delta.upd[0].workspace.head_sha.as_deref(), Some("abc123"), "delta carries head facts");
 }
 
 #[tokio::test]
@@ -342,6 +348,8 @@ async fn worktree_removed_resets_git_derived_fields_and_pr_binding() {
     assert!(!a.workspace.dirty, "git-derived dirty reset");
     assert_eq!((a.workspace.ahead, a.workspace.behind), (0, 0));
     assert_eq!(a.workspace.ci_status, None, "PR binding dropped");
+    assert_eq!(a.workspace.head_sha, None, "head facts dropped with the worktree (G21)");
+    assert_eq!(a.workspace.head_subject, None);
     assert_eq!(a.workspace.pr_match_source, None, "match source dropped with the binding");
     assert!(a.workspace.issues.is_empty(), "issues dropped with the binding");
     // repo is path-derived, not git-fact-derived: it survives the reset.
@@ -456,4 +464,44 @@ async fn unchanged_facts_produce_no_delta() {
     assert_eq!(delta.rev, 3);
     assert_eq!(delta.upd.len(), 1, "unchanged duplicate produced no upsert");
     assert_eq!(delta.upd[0].agent_id, "b");
+}
+
+/// D9 regression (G21 re-review F1): a commit subject containing a seeded
+/// secret must reach the read model (the snapshot's source) redacted —
+/// never the raw token — while `head_sha` (identity) stays raw.
+#[tokio::test]
+async fn head_subject_egresses_redacted_not_raw() {
+    const GHP: &str = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
+    let (store, sink) = setup().await;
+    store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
+    store.flush().await;
+
+    sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+        worktree: PathBuf::from(WT_A),
+        branch: "ws2/gh-plane".to_string(),
+        commit: "abc123".to_string(),
+        subject: Some(format!("fix: rotate {GHP} before release")),
+    }))
+    .await
+    .unwrap();
+
+    let a = wait_for(&store, "a", |a| a.workspace.head_sha.is_some()).await;
+    assert_eq!(
+        a.workspace.head_subject.as_deref(),
+        Some("fix: rotate [REDACTED] before release"),
+        "the subject egresses redacted (F1)"
+    );
+    assert!(
+        !a.workspace.head_subject.is_some_and(|s| s.contains(GHP)),
+        "no raw PAT may reach the snapshot source"
+    );
+    assert_eq!(a.workspace.head_sha.as_deref(), Some("abc123"), "the sha stays raw (identity)");
+
+    // The delta carrying the record is equally redacted.
+    let delta = store.flush().await.expect("head-facts delta");
+    assert_eq!(
+        delta.upd[0].workspace.head_subject.as_deref(),
+        Some("fix: rotate [REDACTED] before release"),
+        "delta payload is redacted (F1)"
+    );
 }

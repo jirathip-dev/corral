@@ -34,6 +34,8 @@ fn sample_agent() -> Agent {
             dirty: true,
             ahead: 3,
             behind: 2,
+            head_sha: Some("a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2".to_string()),
+            head_subject: Some("Fix Blender acceptance gate".to_string()),
             pr_match_source: None,
             issues: Vec::new(),
         },
@@ -111,8 +113,9 @@ fn snapshot_is_versioned_flat_keyed_records() {
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(v["schema_version"], SCHEMA_VERSION);
-    // v3 (P3 D8): WaitingOn gained `approval_id` — versioned strictly.
-    assert_eq!(v["schema_version"], 3);
+    // v4 (P4 G21): Workspace gained `head_sha`/`head_subject` — versioned
+    // strictly.
+    assert_eq!(v["schema_version"], 4);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
 }
@@ -165,8 +168,9 @@ fn ci_status_serializes_snake_case() {
 
 #[test]
 fn workspace_read_model_fields_serialize() {
-    // P2 task-centric read-model fields (D7) must be present on the wire with
-    // the canonical spellings, inside `workspace` where P1 clients look.
+    // P2 task-centric read-model fields (D7) + P4 G21 head fields must be
+    // present on the wire with the canonical spellings, inside `workspace`
+    // where P1 clients look.
     let agent = sample_agent();
     let v = serde_json::to_value(&agent).unwrap();
     let ws = &v["workspace"];
@@ -177,6 +181,8 @@ fn workspace_read_model_fields_serialize() {
     assert_eq!(ws["dirty"], true);
     assert_eq!(ws["ahead"], 3);
     assert_eq!(ws["behind"], 2);
+    assert_eq!(ws["head_sha"], "a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2");
+    assert_eq!(ws["head_subject"], "Fix Blender acceptance gate");
     // G23 fields: `issues` is always present (empty array when no links —
     // acceptance #23-2); `pr_match_source` is debug-only and omitted when
     // unbound.

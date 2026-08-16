@@ -1,7 +1,7 @@
 //! Typed read model, mirroring the daemon's canonical schema
 //! (`src/core/model.rs` on main) field-for-field. Additive-only alignment:
 //! decoding is tolerant of defaulted/missing fields so a client on schema
-//! v3 still reads snapshots from a daemon that has since added defaulted
+//! v4 still reads snapshots from a daemon that has since added defaulted
 //! fields (unknown extra fields are ignored by serde by default).
 
 use std::collections::BTreeMap;
@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Snapshot/delta schema version served by corrald on main.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives
 /// in `reason` / `waiting_on`.
@@ -97,6 +97,14 @@ pub struct Workspace {
     pub ahead: u64,
     #[serde(default)]
     pub behind: u64,
+    /// Current HEAD commit (full SHA) of the worktree (G21), from the git
+    /// plane's probe — `null` for unborn/empty checkouts.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// First line of the HEAD commit message (G21) — line-2 identity
+    /// (`a1b3f9c "subject"`). `null` when there is no head commit.
+    #[serde(default)]
+    pub head_subject: Option<String>,
     /// Debug-only: how the agent's PR was resolved — `"head_sha"`,
     /// `"branch"` (committed-but-unpushed fallback), or `"bound_pr"`.
     /// `None` when no PR is bound. Not a render-driver.

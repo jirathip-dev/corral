@@ -307,6 +307,10 @@ pub struct LiveDaemon {
     pub registration_token: String,
     pub admin_token: String,
     pub herdr: FakeHerdr,
+    /// HEAD sha of the scratch git repo created at the config dir (the
+    /// daemon's `CORRAL_REPO_ROOT`); the snapshot's `head_sha` must equal it
+    /// (G21 conformance).
+    pub repo_head_sha: String,
 }
 
 impl Drop for LiveDaemon {
@@ -330,7 +334,23 @@ fn pick_port() -> u16 {
 /// operator would hand a device out of band).
 pub async fn spawn_live_daemon() -> LiveDaemon {
     let dir = tempfile::tempdir().expect("scratch config dir");
-    let mut daemon = spawn_live_daemon_at(dir.path(), vec![FakeAgent::default()]).await;
+    let config_dir = dir.path().to_path_buf();
+    // G21: make the config dir a REAL git repo (one commit) and point the
+    // fake agent's cwd at it, so the daemon's git plane probes it and the
+    // snapshot carries a real head_sha/head_subject for the conformance
+    // agent — proving the fields round-trip through the full pipeline, not
+    // just the wire decode. The R11 _at flow pre-clones its own worktree
+    // and must NOT get this staging.
+    let repo_head_sha = init_scratch_repo(&config_dir);
+    // The cwd must be set BEFORE the daemon boots: the herdr adapter learns
+    // it from the bootstrap agent.list, and the git plane probes it on the
+    // first sweep. A post-boot mutation would never reach the daemon.
+    let agent = FakeAgent {
+        cwd: config_dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let mut daemon = spawn_live_daemon_at(dir.path(), vec![agent]).await;
+    daemon.repo_head_sha = repo_head_sha;
     daemon._dir = Some(dir);
     daemon
 }
@@ -412,6 +432,10 @@ pub async fn spawn_live_daemon_at(dir: &std::path::Path, agents: Vec<FakeAgent>)
                     registration_token,
                     admin_token,
                     herdr,
+                    // R11's _at flow pre-clones its own worktree; the
+                    // scratch-repo HEAD is only set by the default
+                    // spawn_live_daemon flow (G21 staging).
+                    repo_head_sha: String::new(),
                 };
             }
             Ok(response) => {
@@ -437,6 +461,45 @@ fn read_token(config_dir: &std::path::Path, name: &str) -> String {
         .to_string()
 }
 
+/// `git init` the config dir + one commit, returning the HEAD sha. The
+/// daemon probes this repo as its main checkout (`CORRAL_REPO_ROOT`); the
+/// conformance snapshot's `head_sha` must equal the returned sha and
+/// `head_subject` the message's first line, trimmed (G21 F4: the subject is
+/// committed with LEADING whitespace — `git log %s` keeps leading spaces,
+/// so the probe's `.trim()` is the only thing producing the pinned
+/// "conformance initial commit", locking the trim against drift).
+fn init_scratch_repo(config_dir: &std::path::Path) -> String {
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(config_dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.email", "conformance@test.local"]);
+    git(&["config", "user.name", "Conformance Test"]);
+    std::fs::write(config_dir.join("README.md"), "corral conformance repo\n").unwrap();
+    git(&["add", "README.md"]);
+    // `--cleanup=verbatim` pins the exact message bytes; `%s` keeps the
+    // leading spaces (and trims trailing), so the probe's trim is exercised.
+    // The message file lives in THIS daemon's config dir (one tempdir per
+    // spawn_live_daemon call) — a shared temp path would race across the
+    // parallel conformance tests of the same binary.
+    let msg = config_dir.join(".conformance-commit-msg.txt");
+    std::fs::write(&msg, "  conformance initial commit  \n\nbody paragraph\n").unwrap();
+    git(&["commit", "-F", msg.to_str().expect("msg path"), "--cleanup=verbatim"]);
+    let _ = std::fs::remove_file(&msg);
+    git(&["rev-parse", "HEAD"]).trim().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Read-path helpers
 // ---------------------------------------------------------------------------
@@ -456,6 +519,32 @@ pub async fn wait_for_agent(
         assert!(
             tokio::time::Instant::now() < deadline,
             "agent {agent_id} never appeared in the snapshot"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Poll `/snapshot` until the agent's workspace carries a head commit
+/// (G21): the git plane's boot probe must have merged before the assertions
+/// that pin `head_sha`/`head_subject`.
+pub async fn wait_for_head(
+    client: &corrald_client::CorralClient,
+    agent_id: &str,
+    timeout: Duration,
+) -> corrald_client::Snapshot {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snap = client.snapshot().await.expect("snapshot");
+        if snap
+            .agents
+            .get(agent_id)
+            .is_some_and(|a| a.workspace.head_sha.is_some())
+        {
+            return snap;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "agent {agent_id} never carried a head commit in the snapshot"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

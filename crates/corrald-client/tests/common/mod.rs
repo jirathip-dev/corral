@@ -174,9 +174,6 @@ impl FakeHerdr {
         tokio::task::yield_now().await;
     }
 
-    /// Point the fake agent's cwd at a real (git) directory, so the daemon's
-    /// git plane probes it and the snapshot carries real head facts (G21).
-
     /// `pane.agent_status_changed` — the adapter maps this onto the agent's
     /// state (and clears waiting_on for non-blocked states).
     pub async fn set_status(&self, pane_id: &str, status: &str) {

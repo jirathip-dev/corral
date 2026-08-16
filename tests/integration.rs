@@ -71,6 +71,7 @@ fn head(worktree: &str, branch: &str, commit: &str) -> PlaneEvent {
         worktree: PathBuf::from(worktree),
         branch: branch.to_string(),
         commit: commit.to_string(),
+        subject: Some("add head fields".to_string()),
     })
 }
 
@@ -125,6 +126,10 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
     assert_eq!(a.workspace.ahead, 1);
     assert_eq!(a.workspace.behind, 2);
+    // G21: the head commit the PR matcher resolves is carried onto the
+    // snapshot — sha + first-line subject, no extra git calls.
+    assert_eq!(a.workspace.head_sha.as_deref(), Some("abc123"));
+    assert_eq!(a.workspace.head_subject.as_deref(), Some("add head fields"));
 
     // Both facts landed inside ONE coalesce window: one delta, one rev bump,
     // the agent upserted once (deduped by agent_id).
@@ -132,6 +137,7 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     assert_eq!(delta.rev, 2);
     assert_eq!(delta.upd.len(), 1, "one record per batch, not per event");
     assert_eq!(delta.upd[0].workspace.ci_status, None, "no gh facts yet");
+    assert_eq!(delta.upd[0].workspace.head_sha.as_deref(), Some("abc123"), "delta carries head facts");
 }
 
 #[tokio::test]
@@ -276,6 +282,8 @@ async fn worktree_removed_resets_git_derived_fields_and_pr_binding() {
     assert!(!a.workspace.dirty, "git-derived dirty reset");
     assert_eq!((a.workspace.ahead, a.workspace.behind), (0, 0));
     assert_eq!(a.workspace.ci_status, None, "PR binding dropped");
+    assert_eq!(a.workspace.head_sha, None, "head facts dropped with the worktree (G21)");
+    assert_eq!(a.workspace.head_subject, None);
     // repo is path-derived, not git-fact-derived: it survives the reset.
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
 }

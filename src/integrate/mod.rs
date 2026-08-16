@@ -7,7 +7,9 @@
 //!   worktree updates EVERY agent whose `worktree_path` matches that path.
 //!   `HeadMoved`/`CommitOnBranch` set `branch` (+ `repo` derived from the
 //!   worktree path pattern `<worktrees_root>/<repo>/<label>`, or the repo
-//!   root directory name for the main checkout); `DirtyChanged` sets
+//!   root directory name for the main checkout), `head_sha` + `head_subject`
+//!   (G21: the head commit the PR matcher resolves, carried onto the
+//!   snapshot — `null` for unborn/empty checkouts); `DirtyChanged` sets
 //!   `dirty` (index OR worktree dirty) and `ahead`/`behind`. The path's
 //!   `<label>` component is a herdr worktree label, NOT branch identity —
 //!   `branch` always comes from the git head fact, never from the path.
@@ -80,13 +82,17 @@ use crate::core::store::Store;
 struct GitFacts {
     branch: Option<String>,
     commit: Option<String>,
+    /// First line of the commit message, carried by the same probe that
+    /// resolved `commit` (G21) — `None` when the commit has no message.
+    subject: Option<String>,
     status: Option<GitStatus>,
 }
 
 impl GitFacts {
-    fn head(&mut self, branch: String, commit: String) {
+    fn head(&mut self, branch: String, commit: String, subject: Option<String>) {
         self.branch = Some(branch);
         self.commit = Some(commit);
+        self.subject = subject;
     }
 }
 
@@ -154,16 +160,16 @@ impl Integrator {
 
     async fn handle_git(&self, event: GitEvent) {
         match event {
-            GitEvent::HeadMoved { worktree, branch, commit } => {
+            GitEvent::HeadMoved { worktree, branch, commit, subject } => {
                 self.git
                     .lock()
                     .unwrap()
                     .entry(worktree.clone())
                     .or_default()
-                    .head(branch, commit);
+                    .head(branch, commit, subject);
                 self.converge().await;
             }
-            GitEvent::CommitOnBranch { worktree, branch, commit } => {
+            GitEvent::CommitOnBranch { worktree, branch, commit, subject } => {
                 // Wire-level distinction only: the read-model impact equals
                 // HeadMoved's (branch + head commit facts).
                 self.git
@@ -171,7 +177,7 @@ impl Integrator {
                     .unwrap()
                     .entry(worktree.clone())
                     .or_default()
-                    .head(branch, commit);
+                    .head(branch, commit, subject);
                 self.converge().await;
             }
             GitEvent::DirtyChanged { worktree, status } => {
@@ -276,6 +282,14 @@ impl Integrator {
                         // path/repo, so matching is unaffected.
                         ws.branch = (branch != "HEAD").then(|| branch.clone());
                     }
+                    // G21: the head commit the PR matcher already resolves is
+                    // carried onto the snapshot (sha + first-line subject) —
+                    // same probe, no extra git calls. The workspace head
+                    // mirrors the cached facts exactly: `None` (null on the
+                    // wire) for unborn/empty checkouts, whose probe never
+                    // produces a head fact.
+                    ws.head_sha = facts.commit.clone();
+                    ws.head_subject = facts.subject.clone();
                     if let Some(status) = &facts.status {
                         ws.dirty = status.is_dirty();
                         ws.ahead = status.ahead;
@@ -313,8 +327,9 @@ impl Integrator {
     }
 
     /// F6: a removed worktree's agents lose their git-derived read-model
-    /// fields and their PR binding (branch/dirty/ahead/behind/pr/ci reset;
-    /// `repo` stays — it is path-derived and re-derived by the fallback).
+    /// fields and their PR binding (branch/dirty/ahead/behind/pr/ci/head
+    /// reset; `repo` stays — it is path-derived and re-derived by the
+    /// fallback).
     async fn reset_worktree(&self, worktree: &Path) {
         let path = worktree.to_path_buf();
         self.store
@@ -333,6 +348,8 @@ impl Integrator {
                     ws.behind = 0;
                     ws.pr_number = None;
                     ws.ci_status = None;
+                    ws.head_sha = None;
+                    ws.head_subject = None;
                 },
             )
             .await;
@@ -414,6 +431,92 @@ fn map_ci(s: &str) -> CiStatus {
 mod tests {
     use super::*;
     use crate::core::events::GhPrState;
+    use crate::core::model::{Agent, Change};
+
+    fn agent_on(path: &str) -> Agent {
+        Agent {
+            agent_id: "herdr:a".to_string(),
+            source: "herdr".to_string(),
+            tool: "claude".to_string(),
+            state: crate::core::model::AgentState::Idle,
+            reason: None,
+            seq: 1,
+            ts: 1,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            cost: None,
+            parent_id: None,
+            host: None,
+            workspace: Workspace {
+                worktree_path: Some(path.to_string()),
+                ..Default::default()
+            },
+            attachment: None,
+            display_name: None,
+            title: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn reapply_path_merges_head_sha_and_subject_from_cached_facts() {
+        // G21 acceptance 1+2: the head fields ride the cached git facts the
+        // PR matcher already resolves — merged here with zero extra git.
+        let store = Store::new();
+        store.apply(Change::upsert(agent_on("/wt/a"))).await;
+        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+
+        let facts = GitFacts {
+            branch: Some("feat/x".to_string()),
+            commit: Some("abc123".to_string()),
+            subject: Some("add head fields".to_string()),
+            status: Some(GitStatus {
+                dirty_index: true,
+                ..Default::default()
+            }),
+        };
+        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+
+        let agents = store.matching(|_| true).await;
+        let ws = &agents[0].workspace;
+        assert_eq!(ws.head_sha.as_deref(), Some("abc123"));
+        assert_eq!(ws.head_subject.as_deref(), Some("add head fields"));
+        assert_eq!(ws.branch.as_deref(), Some("feat/x"));
+        assert!(ws.dirty);
+
+        // No head fact (unborn/empty checkout): fields stay null.
+        integrator
+            .reapply_path(
+                Path::new("/wt/a"),
+                &GitFacts {
+                    branch: Some("feat/x".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let agents = store.matching(|_| true).await;
+        assert_eq!(agents[0].workspace.head_sha, None);
+        assert_eq!(agents[0].workspace.head_subject, None);
+    }
+
+    #[tokio::test]
+    async fn reset_worktree_clears_head_fields() {
+        let store = Store::new();
+        store.apply(Change::upsert(agent_on("/wt/a"))).await;
+        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+        let facts = GitFacts {
+            commit: Some("abc123".to_string()),
+            subject: Some("add head fields".to_string()),
+            ..Default::default()
+        };
+        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+
+        integrator.reset_worktree(Path::new("/wt/a")).await;
+        let agents = store.matching(|_| true).await;
+        let ws = &agents[0].workspace;
+        assert_eq!(ws.head_sha, None, "removed worktree must drop its head facts");
+        assert_eq!(ws.head_subject, None);
+        assert_eq!(ws.branch, None);
+    }
 
     #[test]
     fn derives_repo_from_both_path_forms() {

@@ -30,7 +30,7 @@ use corrald_client::{
 };
 use common::{
     AGENT_ID, AGENT_PANE, LiveDaemon, audit_len, raw_drive, spawn_live_daemon, wait_for_agent,
-    wait_for_dispatch_count, wait_for_waiting_on,
+    wait_for_dispatch_count, wait_for_head, wait_for_waiting_on,
 };
 use futures::StreamExt as _;
 use serde_json::json;
@@ -122,6 +122,40 @@ fn step_up_canonical_bytes_are_fixed_order() {
     assert_eq!(canonical_step_up_bytes(&request), literal);
 }
 
+/// G21 wire pin: `head_sha` + `head_subject` survive snapshot decode with
+/// their values intact — the conformance decode path a v4 client uses for
+/// /snapshot and SSE frames (schema-strict, additive).
+#[test]
+fn workspace_head_fields_round_trip_through_json() {
+    use corrald_client::model::Workspace;
+
+    let ws = Workspace {
+        repo: Some("herdr-board".to_string()),
+        branch: Some("g21/head-fields".to_string()),
+        worktree_path: Some("/wt/a".to_string()),
+        pr_number: Some(42),
+        ci_status: Some(corrald_client::model::CiStatus::Success),
+        dirty: false,
+        ahead: 1,
+        behind: 0,
+        head_sha: Some("a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2".to_string()),
+        head_subject: Some("corral: add head fields".to_string()),
+    };
+    let wire = serde_json::to_string(&ws).expect("serialize");
+    let back: Workspace = serde_json::from_str(&wire).expect("decode");
+    assert_eq!(back, ws, "head fields round-trip through the snapshot wire format");
+    assert!(wire.contains("\"head_sha\""), "head_sha serializes on the wire");
+    assert!(wire.contains("\"head_subject\""), "head_subject serializes on the wire");
+
+    // Unborn/empty checkout: null on the wire decodes to None.
+    let ws: Workspace = serde_json::from_str(
+        r#"{"repo":null,"branch":null,"worktree_path":"/wt/u","pr_number":null,"head_sha":null,"head_subject":null}"#,
+    )
+    .expect("null head fields decode");
+    assert_eq!(ws.head_sha, None);
+    assert_eq!(ws.head_subject, None);
+}
+
 // ---------------------------------------------------------------------------
 // R1-R10 against a real corrald (the W1 acceptance bar)
 // ---------------------------------------------------------------------------
@@ -161,24 +195,35 @@ async fn r1_register() {
     println!("R1 pass: key_id={} grants=[]", dev.key_id);
 }
 
-/// R2 — Read path: /snapshot returns schema 3, monotonic rev, agents;
-/// /events resumes from Last-Event-ID (snapshot | deltas) and delivers live
-/// deltas.
+/// R2 — Read path: /snapshot returns schema 4, monotonic rev, agents with
+/// head facts; /events resumes from Last-Event-ID (snapshot | deltas) and
+/// delivers live deltas.
 #[tokio::test]
 #[ignore = "requires a live corrald; run the suite with --ignored"]
 async fn r2_read_path_and_sse_resume() {
     let daemon = spawn_live_daemon().await;
     let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    // Snapshot shape: schema 3, agents keyed by agent_id.
-    let snap = client.snapshot().await.expect("snapshot");
+    // G21: wait until the git plane's head facts merged, then pin them —
+    // the scratch repo's HEAD sha + first-line subject must round-trip
+    // through the real pipeline (plane -> integrator -> store -> snapshot
+    // -> client decode) unchanged.
+    let snap = wait_for_head(&client, AGENT_ID, TIME_BUDGET).await;
     assert_eq!(snap.schema_version, SCHEMA_VERSION);
     assert!(snap.agents.contains_key(AGENT_ID));
     let agent = &snap.agents[AGENT_ID];
     assert_eq!(agent.source, "herdr");
     assert_eq!(agent.state, AgentState::Idle);
     assert_eq!(agent.attachment.as_ref().map(|a| a.kind.as_str()), Some("herdr-pane"));
+    assert_eq!(
+        agent.workspace.head_sha.as_deref(),
+        Some(daemon.repo_head_sha.as_str()),
+        "snapshot carries the real HEAD sha (G21 acceptance 1)"
+    );
+    assert_eq!(
+        agent.workspace.head_subject.as_deref(),
+        Some("initial commit"),
+        "snapshot carries the first-line subject (G21 acceptance 1)"
+    );
     let rev0 = snap.rev;
 
     // (a) Current cursor -> Live: NO initial frame. The daemon emits nothing
@@ -228,7 +273,13 @@ async fn r2_read_path_and_sse_resume() {
     match &event {
         SseEvent::Snapshot(snap) => {
             assert_eq!(snap.schema_version, SCHEMA_VERSION);
-            assert!(snap.agents.contains_key(AGENT_ID));
+            let a = snap.agents.get(AGENT_ID).expect("agent in SSE snapshot frame");
+            assert_eq!(
+                a.workspace.head_sha.as_deref(),
+                Some(daemon.repo_head_sha.as_str()),
+                "head fields survive the SSE snapshot frame (G21)"
+            );
+            assert_eq!(a.workspace.head_subject.as_deref(), Some("initial commit"));
         }
         other => panic!("expected a snapshot frame, got {other:?}"),
     }
@@ -800,7 +851,11 @@ async fn register_read_sign_drive_step_up_approve() {
 async fn sse_resume_edge_cases() {
     let daemon = spawn_live_daemon().await;
     let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
+    // G21 harness: the config dir is a real repo, so the git plane merges
+    // facts at boot — wait until they are flushed so the baseline rev
+    // captures them (otherwise the boot merge could land as a live delta
+    // mid-test and reorder the pushes below).
+    let _ = wait_for_head(&client, AGENT_ID, TIME_BUDGET).await;
 
     // (1) No cursor -> full snapshot.
     let mut stream = client.events(None);

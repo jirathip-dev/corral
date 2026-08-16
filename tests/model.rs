@@ -34,6 +34,8 @@ fn sample_agent() -> Agent {
             dirty: true,
             ahead: 3,
             behind: 2,
+            head_sha: Some("a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2".to_string()),
+            head_subject: Some("Fix Blender acceptance gate".to_string()),
         },
         attachment: Some(Attachment {
             kind: "herdr-pane".to_string(),
@@ -109,8 +111,9 @@ fn snapshot_is_versioned_flat_keyed_records() {
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(v["schema_version"], SCHEMA_VERSION);
-    // v3 (P3 D8): WaitingOn gained `approval_id` — versioned strictly.
-    assert_eq!(v["schema_version"], 3);
+    // v4 (P4 G21): Workspace gained `head_sha`/`head_subject` — versioned
+    // strictly.
+    assert_eq!(v["schema_version"], 4);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
 }
@@ -163,8 +166,9 @@ fn ci_status_serializes_snake_case() {
 
 #[test]
 fn workspace_read_model_fields_serialize() {
-    // P2 task-centric read-model fields (D7) must be present on the wire with
-    // the canonical spellings, inside `workspace` where P1 clients look.
+    // P2 task-centric read-model fields (D7) + P4 G21 head fields must be
+    // present on the wire with the canonical spellings, inside `workspace`
+    // where P1 clients look.
     let agent = sample_agent();
     let v = serde_json::to_value(&agent).unwrap();
     let ws = &v["workspace"];
@@ -175,6 +179,27 @@ fn workspace_read_model_fields_serialize() {
     assert_eq!(ws["dirty"], true);
     assert_eq!(ws["ahead"], 3);
     assert_eq!(ws["behind"], 2);
+    assert_eq!(ws["head_sha"], "a1b3f9c48b8e9cfbe7f42ee64f4e8cd8f5f6b9a2");
+    assert_eq!(ws["head_subject"], "Fix Blender acceptance gate");
+}
+
+#[test]
+fn head_fields_null_when_defaulted() {
+    // G21: the head fields are serde-defaulted — a workspace without them
+    // (unborn/empty checkout, or a pre-G21 daemon) decodes with nulls.
+    let ws: Workspace = serde_json::from_str(
+        r#"{"repo":null,"branch":null,"worktree_path":"/wt/a","pr_number":null}"#,
+    )
+    .expect("workspace without head fields decodes");
+    assert_eq!(ws.head_sha, None);
+    assert_eq!(ws.head_subject, None);
+    // ... and a null-carrying payload round-trips to null.
+    let ws: Workspace = serde_json::from_str(
+        r#"{"repo":null,"branch":null,"worktree_path":"/wt/a","pr_number":null,"head_sha":null,"head_subject":null}"#,
+    )
+    .expect("null head fields decode");
+    assert_eq!(ws.head_sha, None);
+    assert_eq!(ws.head_subject, None);
 }
 
 #[test]

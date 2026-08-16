@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 /// (and P1 clients reading v2 snapshots) still decode.
 /// v3 (P3 D8): `WaitingOn` gained `approval_id` (the claim identity clients
 /// echo in `DrivePayload::Approve`) — serde-defaulted, additive-only.
-pub const SCHEMA_VERSION: u32 = 3;
+/// v4 (P4 G21): `Workspace` gained `head_sha` + `head_subject` (the current
+/// HEAD commit + its first-line subject, from the git plane's existing
+/// probe — no new git calls) — serde-defaulted, additive-only.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
@@ -109,6 +112,17 @@ pub struct Workspace {
     /// Commits behind the upstream branch.
     #[serde(default)]
     pub behind: u64,
+    /// Current HEAD commit (full SHA) of the worktree (P4 G21), from the git
+    /// plane's probe — the same commit the PR matcher already resolves, now
+    /// carried onto the snapshot instead of dropped. `None` for
+    /// unborn/empty checkouts.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// First line of the HEAD commit message (P4 G21) — the "subject" for
+    /// line-2 identity (`a1b3f9c "subject"`). Travels with `head_sha` from
+    /// the same probe; `None` for unborn/empty checkouts.
+    #[serde(default)]
+    pub head_subject: Option<String>,
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).

@@ -138,8 +138,9 @@ async fn temp_repo_commit_emits_events_under_second() {
         &mut rx,
         |e| matches!(
             e,
-            PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch, .. })
+            PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch, subject, .. })
                 if worktree == &wt1 && branch == "feat/plane"
+                    && subject.as_deref() == Some("ws1 integration")
         ),
         Duration::from_secs(3),
     )

@@ -172,6 +172,15 @@ impl FakeHerdr {
         tokio::task::yield_now().await;
     }
 
+    /// Point the fake agent's cwd at a real (git) directory, so the daemon's
+    /// git plane probes it and the snapshot carries real head facts (G21).
+    pub fn set_agent_cwd(&self, cwd: &std::path::Path) {
+        let mut agents = self.inner.agents.lock().unwrap();
+        if let Some(agent) = agents.first_mut() {
+            agent.cwd = cwd.to_string_lossy().into_owned();
+        }
+    }
+
     /// `pane.agent_status_changed` — the adapter maps this onto the agent's
     /// state (and clears waiting_on for non-blocked states).
     pub async fn set_status(&self, pane_id: &str, status: &str) {
@@ -301,6 +310,10 @@ pub struct LiveDaemon {
     pub registration_token: String,
     pub admin_token: String,
     pub herdr: FakeHerdr,
+    /// HEAD sha of the scratch git repo created at the config dir (the
+    /// daemon's `CORRAL_REPO_ROOT`); the snapshot's `head_sha` must equal it
+    /// (G21 conformance).
+    pub repo_head_sha: String,
 }
 
 impl Drop for LiveDaemon {
@@ -331,8 +344,15 @@ fn pick_port() -> u16 {
 pub async fn spawn_live_daemon() -> LiveDaemon {
     let dir = tempfile::tempdir().expect("scratch config dir");
     let config_dir = dir.path().to_path_buf();
+    // G21: make the config dir a REAL git repo (one commit) and point the
+    // fake agent's cwd at it, so the daemon's git plane probes it and the
+    // snapshot carries a real head_sha/head_subject for the conformance
+    // agent — proving the fields round-trip through the full pipeline, not
+    // just the wire decode.
+    let repo_head_sha = init_scratch_repo(&config_dir);
     let socket = config_dir.join("herdr.sock");
     let herdr = FakeHerdr::bind(socket.clone()).await;
+    herdr.set_agent_cwd(&config_dir);
     let bin = daemon_binary();
     let http = reqwest::Client::new();
 
@@ -397,6 +417,7 @@ pub async fn spawn_live_daemon() -> LiveDaemon {
                     registration_token,
                     admin_token,
                     herdr,
+                    repo_head_sha,
                 };
             }
             Ok(response) => {
@@ -422,6 +443,34 @@ fn read_token(config_dir: &std::path::Path, name: &str) -> String {
         .to_string()
 }
 
+/// `git init` the config dir + one commit, returning the HEAD sha. The
+/// daemon probes this repo as its main checkout (`CORRAL_REPO_ROOT`); the
+/// conformance snapshot's `head_sha` must equal the returned sha and
+/// `head_subject` the message's first line (G21).
+fn init_scratch_repo(config_dir: &std::path::Path) -> String {
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(config_dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.email", "conformance@test.local"]);
+    git(&["config", "user.name", "Conformance Test"]);
+    std::fs::write(config_dir.join("README.md"), "corral conformance repo\n").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "initial commit"]);
+    git(&["rev-parse", "HEAD"]).trim().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Read-path helpers
 // ---------------------------------------------------------------------------
@@ -441,6 +490,32 @@ pub async fn wait_for_agent(
         assert!(
             tokio::time::Instant::now() < deadline,
             "agent {agent_id} never appeared in the snapshot"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Poll `/snapshot` until the agent's workspace carries a head commit
+/// (G21): the git plane's boot probe must have merged before the assertions
+/// that pin `head_sha`/`head_subject`.
+pub async fn wait_for_head(
+    client: &corrald_client::CorralClient,
+    agent_id: &str,
+    timeout: Duration,
+) -> corrald_client::Snapshot {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let snap = client.snapshot().await.expect("snapshot");
+        if snap
+            .agents
+            .get(agent_id)
+            .is_some_and(|a| a.workspace.head_sha.is_some())
+        {
+            return snap;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "agent {agent_id} never carried a head commit in the snapshot"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

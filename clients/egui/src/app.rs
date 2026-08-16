@@ -466,6 +466,16 @@ impl CorralApp {
                     base: grants.clone(),
                     denied: vec![],
                 };
+                // F5 success path: a re-register rotated the persisted
+                // seed BEFORE this result arrived — reload the in-memory
+                // signing key so subsequent drives sign with the NEW key
+                // (otherwise the next drive presents the new key_id with
+                // the old signature and 401s bad_signature until restart).
+                if let Some(fp) = self.host_fingerprint.clone()
+                    && let Ok(key) = crate::keys::load_or_create_key(&fp)
+                {
+                    self.device_key = Some(key);
+                }
                 self.config.registration = self.registration.clone();
                 self.config.persist(&self.config_path);
                 self.toast(

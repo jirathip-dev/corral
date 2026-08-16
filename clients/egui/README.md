@@ -93,14 +93,23 @@ cargo test -p corrald-ui
 # then:
 CORRALD_URL=http://127.0.0.1:8574 \
 CORRAL_CONFIG_DIR=<scratch daemon config> \
-cargo test -p corrald-ui --test live -- --ignored --nocapture
+CORRAL_UI_CONFIG_DIR=<scratch ui config> \
+cargo test -p corrald-ui --test live -- --ignored --nocapture --test-threads=1
 ```
+
+(``--test-threads=1``: the re-register probes share the host-scoped keyring
+entry and the daemon registry, so they must not race.)
 
 The live probe writes nothing to the GUI's keyring; it registers a fresh
 ephemeral key so the read-only default is observed on every run. The
 second probe (`live_reregister_failure_preserves_key_and_registration`)
-verifies the F5 ordering: a failed re-register leaves the persisted seed
-and registration untouched and the old key still drives. To make the GUI
+verifies the F5 failure ordering: a failed re-register leaves the
+persisted seed and registration untouched and the old key still drives.
+The third (`live_reregister_success_rotates_the_in_memory_key`) verifies
+the F5 success path: after a successful rotation the in-memory signing
+key is reloaded to the new seed and the next signed drive verifies
+against the daemon (and the old key under the new key_id is refused with
+`bad_signature`). To make the GUI
 itself boot straight to the board, register once (registration screen
 in-app, or the probe flow) so `config.json` carries the matching
 registration for the host fingerprint.

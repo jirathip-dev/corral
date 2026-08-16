@@ -224,7 +224,12 @@ impl DriveIntent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriveOutcome {
     /// `ok: true` — dispatched once (or a byte-identical replay).
-    Ok { rev: u64 },
+    /// `result` is the daemon's optional response payload (v1: always
+    /// `None`; a future `read_tail` result would ride here).
+    Ok {
+        rev: u64,
+        result: Option<serde_json::Value>,
+    },
     /// Typed refusal (HTTP 4xx pre-dispatch, or `ok:false` at dispatch).
     Refused(DriveFailure),
 }
@@ -405,7 +410,10 @@ pub async fn execute_drive(
         match drive_once(endpoint, &signed, None).await {
             Ok(outcome) => {
                 if outcome.ok {
-                    return DriveOutcome::Ok { rev: outcome.rev };
+                    return DriveOutcome::Ok {
+                        rev: outcome.rev,
+                        result: outcome.result,
+                    };
                 }
                 // Dispatch-level `ok:false` (kill/attach not implemented,
                 // unknown agent at dispatch, transport failure): typed, no
@@ -475,7 +483,10 @@ async fn retry_loop(
         match drive_once(endpoint, signed, Some(token)).await {
             Ok(outcome) => {
                 if outcome.ok {
-                    return DriveOutcome::Ok { rev: outcome.rev };
+                    return DriveOutcome::Ok {
+                        rev: outcome.rev,
+                        result: outcome.result,
+                    };
                 }
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
                 let failure = if message.contains("transport") || message.contains("rpc")

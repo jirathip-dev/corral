@@ -247,9 +247,11 @@ impl CorralApp {
                 );
                 self.registration = None;
             } else {
+                // Restore the persisted grant ledger, including demotions
+                // that survived a restart (F3).
                 self.ledger = GrantLedger {
                     base: reg.grants.clone(),
-                    denied: vec![],
+                    denied: reg.denied.clone(),
                 };
             }
         }
@@ -304,16 +306,22 @@ impl CorralApp {
 
     fn on_drive(&mut self, msg: DriveMsg) {
         let capability = msg.capability.clone();
-        let state = crate::ui::board::classify_drive_state(&msg.outcome);
+        let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
         self.fleet
             .remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
-            DriveOutcome::Ok { rev } => {
+            DriveOutcome::Ok { rev, .. } => {
                 self.ledger.note_success(&capability);
+                self.persist_ledger();
+                // If the daemon ever grows a read_tail result, surface it.
+                if capability == "read_tail" {
+                    self.remember_tail_result(&msg);
+                }
                 self.toast(Level::Info, format!("{capability} → ok (rev {rev})"));
             }
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
+                self.persist_ledger();
                 let level = if failure.suggests_re_registration() {
                     Level::Warn
                 } else {
@@ -330,9 +338,55 @@ impl CorralApp {
         }
     }
 
-    /// Register (or re-register with a fresh key) against the host. The
-    /// device key is created/rotated first so the public key registered
-    /// is exactly the key the app will sign with.
+    /// Persist the ledger's demoted capabilities alongside the
+    /// registration record (F3): a `not_granted` demotion survives a
+    /// restart, and a later grants refresh or successful drive clears it.
+    fn persist_ledger(&mut self) {
+        if let Some(reg) = &mut self.config.registration
+            && let Some(mut current) = self.registration.clone()
+        {
+            current.denied = self.ledger.denied.clone();
+            if current != *reg {
+                *reg = current;
+                self.config.persist(&self.config_path);
+            }
+        }
+    }
+
+    /// read_tail content path: the daemon v1 returns `result: None` (the
+    /// herdr adapter fire-and-forgets `agent.read`), so nothing is stored
+    /// today — this wires the day the daemon grows a result (F2).
+    fn remember_tail_result(&mut self, msg: &DriveMsg) {
+        let DriveOutcome::Ok { result, .. } = &msg.outcome else {
+            return;
+        };
+        let Some(result) = result else {
+            return;
+        };
+        let lines: Vec<String> = result
+            .get("tail")
+            .or_else(|| result.get("content"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !lines.is_empty() {
+            self.fleet.remember_tail(&msg.agent_id, lines);
+        }
+    }
+
+    /// Register (or re-register with a fresh key, or refresh grants with
+    /// the existing key) against the host.
+    ///
+    /// Rotation ordering (F5): the new pubkey is registered FIRST; the
+    /// seed rotation is persisted only AFTER the daemon accepted it. A
+    /// failed re-register therefore leaves the old seed + old key_id
+    /// untouched and consistent — never an orphaned key_id that 401s.
+    /// (First registration persists the seed up front: an unregistered
+    /// seed is harmless and retries reuse it.)
     fn register(&mut self, token: String, rotate: bool) {
         let Some(fp) = self.host_fingerprint.clone() else {
             self.settings.notice = Some((
@@ -346,36 +400,51 @@ impl CorralApp {
         let rt = self.rt.clone();
         let tx = self.tx_apply();
         rt.spawn(async move {
-            let seed: Result<[u8; 32], String> = if rotate {
+            let registration: Result<(String, Vec<String>), String> = if rotate {
+                // Fresh seed in memory only — nothing persisted yet.
                 let mut seed = [0u8; 32];
                 match getrandom::fill(&mut seed) {
-                    Ok(()) => crate::keys::rotate_key(&fp, &seed).map(|_| seed),
+                    Ok(()) => {
+                        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+                        let pubkey_b64 = {
+                            use base64::Engine;
+                            base64::engine::general_purpose::STANDARD
+                                .encode(signing.verifying_key().to_bytes())
+                        };
+                        match protocol::register_device(&client, &host_url, &token, &pubkey_b64)
+                            .await
+                        {
+                            Ok(reg) => {
+                                // The daemon accepted the new key: only NOW
+                                // persist the rotation.
+                                match crate::keys::rotate_key(&fp, &seed) {
+                                    Ok(()) => Ok(reg),
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
                     Err(e) => Err(format!("OS RNG failure: {e}")),
                 }
             } else {
-                crate::keys::load_or_create_key(&fp).map(|key| key.signing.to_bytes())
+                // Existing key (or a fresh one for first registration):
+                // re-register its pubkey to (re)learn current grants.
+                let key = match crate::keys::load_or_create_key(&fp) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        let _ = tx.send(ApplyMsg::RegisterResult(Err(e)));
+                        return;
+                    }
+                };
+                let pubkey_b64 = {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .encode(key.signing.verifying_key().to_bytes())
+                };
+                protocol::register_device(&client, &host_url, &token, &pubkey_b64).await
             };
-            let seed = match seed {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(ApplyMsg::RegisterResult(Err(e)));
-                    return;
-                }
-            };
-            let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
-            let pubkey_b64 = {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD
-                    .encode(signing.verifying_key().to_bytes())
-            };
-            match protocol::register_device(&client, &host_url, &token, &pubkey_b64).await {
-                Ok((key_id, grants)) => {
-                    let _ = tx.send(ApplyMsg::RegisterResult(Ok((key_id, grants))));
-                }
-                Err(e) => {
-                    let _ = tx.send(ApplyMsg::RegisterResult(Err(e)));
-                }
-            }
+            let _ = tx.send(ApplyMsg::RegisterResult(registration));
         });
     }
 
@@ -383,10 +452,15 @@ impl CorralApp {
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
+                // A successful (re)registration refreshes the ledger from
+                // the host's CURRENT grant set: any locally-demoted
+                // capability the host re-granted is re-enabled, and a
+                // capability the host revoked is dropped (F3).
                 self.registration = Some(RegistrationRecord {
                     host_fingerprint: fp.clone(),
                     key_id: key_id.clone(),
                     grants: grants.clone(),
+                    denied: vec![],
                 });
                 self.ledger = GrantLedger {
                     base: grants.clone(),
@@ -484,6 +558,27 @@ impl CorralApp {
                         ));
                     }
                 }
+            }
+            crate::ui::register::Request::RefreshGrants => {
+                // Re-register the SAME device key: the daemon returns the
+                // key's CURRENT grant set, which re-enables capabilities
+                // the host granted since registration and drops revoked
+                // ones (F3/F4 recovery path).
+                let token = if !self.settings.token_input.trim().is_empty() {
+                    self.settings.token_input.trim().to_string()
+                } else {
+                    match crate::keys::read_daemon_registration_token() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.settings.notice = Some((
+                                Level::Error,
+                                format!("refresh grants needs the registration token: {e}"),
+                            ));
+                            return;
+                        }
+                    }
+                };
+                self.register(token, false);
             }
             crate::ui::register::Request::SaveAdminToken => {
                 let token = self.settings.admin_token_input.trim().to_string();
@@ -637,7 +732,6 @@ impl eframe::App for CorralApp {
             Tab::Board => {
                 let ledger = self.ledger.clone();
                 let allowed = |cap: &str| ledger.allowed(cap);
-                let is_denied = |cap: &str| ledger.is_denied(cap);
                 // Split borrows: the drive closure needs &mut state while
                 // board::show holds &mut fleet, so capture field copies.
                 let registration = self.registration.clone();
@@ -651,7 +745,6 @@ impl eframe::App for CorralApp {
                     ui,
                     &mut self.fleet,
                     &allowed,
-                    &is_denied,
                     &mut crate::ui::board::BoardActions {
                         drive: &mut |intent| pending.push(intent),
                     },
@@ -688,6 +781,7 @@ impl eframe::App for CorralApp {
                         &intent.target,
                         crate::state::DriveState::Sending {
                             request_id: intent.request_id.clone(),
+                            capability: capability.clone(),
                         },
                     );
                     rt.spawn(async move {

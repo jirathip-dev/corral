@@ -17,6 +17,11 @@ pub struct RegistrationRecord {
     /// empty). The drive outcome feed keeps this honest (not_granted
     /// refusals demote).
     pub grants: Vec<String>,
+    /// Capabilities observed refused with `not_granted` (persisted so a
+    /// restart keeps the demotion; cleared when a successful drive or a
+    /// grants refresh re-enables them).
+    #[serde(default)]
+    pub denied: Vec<String>,
 }
 
 /// Persisted client config (`~/.config/corral/ui/config.json`).
@@ -27,12 +32,23 @@ pub struct PersistedConfig {
 }
 
 /// One drive action in flight (UI-side bookkeeping only — the actual
-/// HTTP runs on the tokio runtime).
+/// HTTP runs on the tokio runtime). Each variant carries the capability
+/// so the board can answer "what did this drive do" (e.g. whether a
+/// read_tail Ok dispatched) without extra state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriveState {
-    Sending { request_id: String },
-    Ok { rev: u64 },
-    Failed { failure: DriveFailure },
+    Sending {
+        request_id: String,
+        capability: String,
+    },
+    Ok {
+        rev: u64,
+        capability: String,
+    },
+    Failed {
+        failure: DriveFailure,
+        capability: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,6 +348,7 @@ mod tests {
                 "a",
                 DriveState::Sending {
                     request_id: format!("r{i}"),
+                    capability: "read_tail".into(),
                 },
             );
         }

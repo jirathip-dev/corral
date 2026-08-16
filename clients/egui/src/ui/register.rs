@@ -22,6 +22,7 @@ pub enum Request {
     AutoRegister,
     Register,
     ReRegister,
+    RefreshGrants,
     SaveAdminToken,
     ClearAdminToken,
 }
@@ -219,9 +220,23 @@ pub fn settings_pane(
                     .color(theme::ui::TEXT_MUTED),
                 );
             }
-            if ui.button("re-register (new device key)").clicked() {
-                requested = Some(Request::ReRegister);
-            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("re-register (new device key)").clicked() {
+                    requested = Some(Request::ReRegister);
+                }
+                if ui.button("refresh grants (re-fetch from host)").clicked() {
+                    requested = Some(Request::RefreshGrants);
+                }
+            });
+            ui.label(
+                RichText::new(
+                    "refresh grants re-registers the SAME device key to re-learn the host's \
+                     current grant set and clears any locally-demoted capability (re-enables \
+                     buttons the host re-granted).",
+                )
+                .small()
+                .color(theme::ui::TEXT_MUTED),
+            );
             ui.add_space(8.0);
             ui.label(
                 RichText::new("audit (host admin)")

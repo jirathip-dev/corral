@@ -34,7 +34,6 @@ pub fn show(
     ui: &mut Ui,
     fleet: &mut Fleet,
     allowed: &dyn Fn(&str) -> bool,
-    is_denied: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
     if fleet.agents.is_empty() {
@@ -72,15 +71,8 @@ pub fn show(
                     continue;
                 };
                 let is_expanded = fleet.is_expanded(id);
-                let (clicked, _) = agent_row(
-                    ui,
-                    agent,
-                    is_expanded,
-                    allowed,
-                    is_denied,
-                    fleet,
-                    actions,
-                );
+                let (clicked, _) =
+                    agent_row(ui, agent, is_expanded, allowed, fleet, actions);
                 if clicked {
                     toggles.push(id.clone());
                 }
@@ -123,7 +115,6 @@ fn agent_row(
     agent: &Agent,
     is_expanded: bool,
     allowed: &dyn Fn(&str) -> bool,
-    is_denied: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     actions: &mut BoardActions,
 ) -> (bool, egui::Response) {
@@ -142,7 +133,7 @@ fn agent_row(
                 state_cell(ui, agent);
                 waiting_cell(ui, agent);
                 topology_cells(ui, agent);
-                drive_cell(ui, agent, allowed, is_denied, fleet, &mut actions.drive);
+                drive_cell(ui, agent, allowed, fleet, &mut actions.drive);
             })
         })
         .response;
@@ -240,7 +231,6 @@ fn drive_cell(
     ui: &mut Ui,
     agent: &Agent,
     allowed: &dyn Fn(&str) -> bool,
-    is_denied: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
 ) {
@@ -258,8 +248,15 @@ fn drive_cell(
                     "prompt" => {
                         if allowed(cap) {
                             prompt_widget(ui, agent, rev, drive);
-                        } else if is_denied(cap) {
-                            crate::ui::disabled_button_with_reason(ui, cap, "not granted by host");
+                        } else {
+                            // F4: every agent-advertised capability renders
+                            // SOMETHING — disabled with the reason, whether
+                            // the ledger denies it or simply lacks it.
+                            crate::ui::disabled_button_with_reason(
+                                ui,
+                                cap,
+                                "not granted by host (read-only default) — refresh grants in Settings",
+                            );
                         }
                     }
                     "approve" => {
@@ -268,8 +265,12 @@ fn drive_cell(
                         }
                         if allowed(cap) {
                             approve_choices(ui, agent, rev, drive);
-                        } else if is_denied(cap) {
-                            crate::ui::disabled_button_with_reason(ui, cap, "not granted by host");
+                        } else {
+                            crate::ui::disabled_button_with_reason(
+                                ui,
+                                cap,
+                                "not granted by host (read-only default) — refresh grants in Settings",
+                            );
                         }
                     }
                     _ => {
@@ -283,8 +284,12 @@ fn drive_cell(
                                 };
                                 drive(intent);
                             }
-                        } else if is_denied(cap) {
-                            crate::ui::disabled_button_with_reason(ui, cap, "not granted by host");
+                        } else {
+                            crate::ui::disabled_button_with_reason(
+                                ui,
+                                cap,
+                                "not granted by host (read-only default) — refresh grants in Settings",
+                            );
                         }
                     }
                 }
@@ -403,7 +408,7 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
             if let Some(tail) = fleet.tails.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("read_tail (bounded 200 lines, on tap only)")
+                    RichText::new("read_tail output (v1 returns no tail text; wired for a future daemon result)")
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
@@ -417,6 +422,26 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                             }
                         });
                     });
+            } else if fleet
+                .recent_drives
+                .get(&agent.agent_id)
+                .is_some_and(|drives| {
+                    drives.iter().any(|d| {
+                        matches!(
+                            d,
+                            DriveState::Ok { capability, .. } if capability == "read_tail"
+                        )
+                    })
+                })
+            {
+                // The drive dispatched + was audited, but corrald v1 never
+                // returns tail text (DriveResponse.result is always None).
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("read_tail dispatched + audited; v1 returns no tail text (the herdr adapter fire-and-forgets agent.read)")
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
             }
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
@@ -455,9 +480,14 @@ fn detail_kv(ui: &mut Ui, key: &str, value: &str) {
 /// Outcome display for a drive state (shared with tests).
 pub fn drive_state_text(state: &DriveState) -> String {
     match state {
-        DriveState::Sending { request_id } => format!("sending {request_id}"),
-        DriveState::Ok { rev } => format!("ok  rev {rev}"),
-        DriveState::Failed { failure } => format!("{}: {failure}", failure.kind()),
+        DriveState::Sending {
+            request_id,
+            capability,
+        } => format!("{capability} sending {request_id}"),
+        DriveState::Ok { rev, capability } => format!("{capability} → ok  rev {rev}"),
+        DriveState::Failed { failure, capability } => {
+            format!("{capability} {kind}: {failure}", kind = failure.kind())
+        }
     }
 }
 
@@ -485,11 +515,15 @@ pub fn renderable_capabilities(
 }
 
 /// Outcome classifier used by the app when a drive round-trips.
-pub fn classify_drive_state(outcome: &DriveOutcome) -> DriveState {
+pub fn classify_drive_state(outcome: &DriveOutcome, capability: &str) -> DriveState {
     match outcome {
-        DriveOutcome::Ok { rev } => DriveState::Ok { rev: *rev },
+        DriveOutcome::Ok { rev, .. } => DriveState::Ok {
+            rev: *rev,
+            capability: capability.to_string(),
+        },
         DriveOutcome::Refused(failure) => DriveState::Failed {
             failure: failure.clone(),
+            capability: capability.to_string(),
         },
     }
 }
@@ -539,12 +573,21 @@ mod tests {
     fn drive_state_text_covers_all_variants() {
         let sending = drive_state_text(&DriveState::Sending {
             request_id: "r1".into(),
+            capability: "read_tail".into(),
         });
         assert!(sending.contains("r1"));
-        assert!(drive_state_text(&DriveState::Ok { rev: 7 }).contains("rev 7"));
+        assert!(sending.contains("read_tail"));
+        assert!(
+            drive_state_text(&DriveState::Ok {
+                rev: 7,
+                capability: "interrupt".into(),
+            })
+            .contains("rev 7")
+        );
         assert!(
             drive_state_text(&DriveState::Failed {
                 failure: DriveFailure::NotGranted("n".into()),
+                capability: "kill".into(),
             })
             .contains("not_granted")
         );
@@ -553,13 +596,23 @@ mod tests {
     #[test]
     fn classify_drive_state_maps_outcomes() {
         assert_eq!(
-            classify_drive_state(&DriveOutcome::Ok { rev: 3 }),
-            DriveState::Ok { rev: 3 }
+            classify_drive_state(
+                &DriveOutcome::Ok {
+                    rev: 3,
+                    result: None
+                },
+                "read_tail"
+            ),
+            DriveState::Ok {
+                rev: 3,
+                capability: "read_tail".into(),
+            }
         );
         assert!(matches!(
-            classify_drive_state(&DriveOutcome::Refused(
-                DriveFailure::StaleApproval
-            )),
+            classify_drive_state(
+                &DriveOutcome::Refused(DriveFailure::StaleApproval),
+                "approve"
+            ),
             DriveState::Failed { .. }
         ));
     }

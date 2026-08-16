@@ -143,14 +143,14 @@ async fn live_register_read_drive_audit() {
     let intent = DriveIntent::read_tail(&first_agent, Some(snapshot.rev));
     let outcome = corrald_ui::drive::execute_drive(&endpoint, &intent).await;
     match &outcome {
-        DriveOutcome::Ok { rev } => println!(
+        DriveOutcome::Ok { rev, .. } => println!(
             "read_tail executed on {first_agent}: ok rev {rev} (request_id {})",
             intent.request_id
         ),
         other => panic!("read_tail drive failed: {other:?}"),
     }
     // The response rev must be >= the request rev (contract).
-    if let DriveOutcome::Ok { rev } = &outcome {
+    if let DriveOutcome::Ok { rev, .. } = &outcome {
         assert!(*rev >= snapshot.rev, "rev monotonicity");
     }
 
@@ -205,4 +205,118 @@ async fn fetch_audit(
     protocol::fetch_audit(client, base_url, admin_token)
         .await
         .expect("GET /audit")
+}
+
+/// F5 regression, live: a FAILED re-register must leave the persisted
+/// seed AND the registration record untouched (register-then-rotate
+/// ordering) — the old key keeps working instead of 401ing.
+///
+/// Uses a persistent device key in a scratch `CORRAL_UI_CONFIG_DIR` (the
+/// daemon's registration token + admin token come from `CORRAL_CONFIG_DIR`).
+#[tokio::test]
+#[ignore = "needs a real corrald (see module docs)"]
+async fn live_reregister_failure_preserves_key_and_registration() {
+    let base_url = env_or(ENV_URL, "http://127.0.0.1:8474");
+    let client = reqwest::Client::new();
+    let host = protocol::fetch_host_key(&client, &base_url)
+        .await
+        .expect("GET /host-key");
+    let fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
+    let token = corrald_ui::keys::read_daemon_registration_token()
+        .expect("registration token (scratch CORRAL_CONFIG_DIR)");
+    let admin_token =
+        corrald_ui::keys::read_daemon_admin_token().expect("admin token");
+
+    // The persistent device key (created under the scratch UI config dir).
+    let key = corrald_ui::keys::load_or_create_key(&fingerprint).expect("device key");
+    let seed_before = key.signing.to_bytes();
+    let pubkey_b64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(key.signing.verifying_key().to_bytes())
+    };
+    let (key_id, _) =
+        protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+            .await
+            .expect("register the persistent key");
+    println!("registered persistent key key_id={key_id}");
+
+    // Host grants read_tail so the OLD key can still drive afterwards.
+    let grants_url = format!("{}/grants", base_url.trim_end_matches('/'));
+    let response = client
+        .post(&grants_url)
+        .bearer_auth(&admin_token)
+        .json(&serde_json::json!({
+            "action": "set_grants",
+            "key_id": key_id,
+            "grants": ["read_tail"],
+        }))
+        .send()
+        .await
+        .expect("POST /grants");
+    assert!(response.status().is_success(), "grants: {}", response.status());
+
+    // Simulate the app's RE-REGISTER path with a BAD token: the daemon
+    // refuses before registering anything, and the seed rotation must not
+    // have happened (register-then-rotate ordering).
+    let mut new_seed = [0u8; 32];
+    getrandom::fill(&mut new_seed).expect("OS RNG");
+    let new_signing = ed25519_dalek::SigningKey::from_bytes(&new_seed);
+    let new_pubkey_b64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(new_signing.verifying_key().to_bytes())
+    };
+    let failed = protocol::register_device(&client, &base_url, "definitely-not-the-token", &new_pubkey_b64)
+        .await;
+    assert!(failed.is_err(), "bad registration token must be refused");
+    println!("re-register with bad token refused: {}", failed.unwrap_err());
+
+    // The PERSISTED seed must be unchanged (rotation happens only after a
+    // successful registration).
+    let reloaded = corrald_ui::keys::load_or_create_key(&fingerprint).expect("reload");
+    assert_eq!(
+        reloaded.signing.to_bytes(),
+        seed_before,
+        "failed re-register must not rotate the persisted seed"
+    );
+    println!("persisted seed unchanged after failed re-register");
+
+    // And the OLD key_id still drives (not orphaned).
+    let snapshot = protocol::fetch_snapshot(&client, &base_url)
+        .await
+        .expect("snapshot");
+    let first_agent = snapshot
+        .agents
+        .keys()
+        .next()
+        .cloned()
+        .expect("a real herdr agent");
+    let endpoint = DriveEndpoint {
+        client: client.clone(),
+        base_url: base_url.clone(),
+        key_id: key_id.clone(),
+        signing: key.signing,
+    };
+    let outcome =
+        corrald_ui::drive::execute_drive(&endpoint, &DriveIntent::read_tail(&first_agent, None))
+            .await;
+    assert!(
+        matches!(outcome, DriveOutcome::Ok { .. }),
+        "old key must still drive after a failed re-register: {outcome:?}"
+    );
+    println!("old key still drives after failed re-register: ok");
+
+    // F3 primitive: re-registering the SAME key re-fetches the host's
+    // CURRENT grant set (the Settings "refresh grants" action) — a grant
+    // the host added after registration surfaces without a new key.
+    let (_, refreshed_grants) =
+        protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+            .await
+            .expect("refresh grants (same key)");
+    assert!(
+        refreshed_grants.iter().any(|g| g == "read_tail"),
+        "refresh grants must surface the host's current set: {refreshed_grants:?}"
+    );
+    println!("refresh grants (same key) re-fetched current grants: {refreshed_grants:?}");
 }

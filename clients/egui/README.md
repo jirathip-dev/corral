@@ -9,7 +9,10 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
 - **Live fleet board** — snapshot + SSE with `Last-Event-ID` resume (the
   daemon answers a stale cursor with a full snapshot or delta replay),
   reconnect with doubling backoff capped at 30s, `/snapshot` fallback on
-  reconnect only (no daemon polling).
+  reconnect only (no daemon polling). The SSE connection carries NO total
+  request timeout (a total deadline severed the stream every 60s); each
+  chunk read has a 45s deadline — 3x the daemon's 15s keepalive cadence —
+  so a genuinely dead socket still forces a reconnect.
 - **Dark-dashboard theme pass** — custom `egui::Visuals` (charcoal canvas
   `#0d1117`, teal accent, distinct hues for the four agent states and the
   four waiting-on kind badges: approve-tool / question / menu / crash).
@@ -22,7 +25,11 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   auto-register on localhost (reads the daemon's `registration-token`
   file, same user). Read-only default: drive buttons render only from
   `agent.capabilities` AND the device's grant ledger; a `not_granted`
-  refusal surfaces as a typed error banner and demotes the button.
+  refusal surfaces as a typed error banner and demotes the button
+  (demotions persist; Settings → "refresh grants" re-registers the SAME
+  key to re-learn the host's current grant set and re-enable re-granted
+  capabilities). Every agent-advertised capability renders SOMETHING —
+  a disabled button with the reason when the ledger lacks it.
 - **Drive controls from capabilities** — prompt (Enter sends), interrupt,
   read_tail (bounded 200 lines, on tap only — never prefetch), approve
   (choice buttons from `waiting_on.choices`; the claim echoes
@@ -31,7 +38,9 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   them).
 - **Idempotent retries** — one `request_id` per logical action, reused
   across transport/5xx/`in_flight` retries; the daemon's replay table
-  dedupes. `403 step_up_required` triggers the transparent step-up flow:
+  dedupes. Re-registration rotates the device key only AFTER the daemon
+  accepts the new pubkey (a failed re-register leaves the old key + old
+  key_id intact and driving). `403 step_up_required` triggers the transparent step-up flow:
   sign a `StepUpRequest` (fresh nonce/ts), mint via `POST /step-up`,
   retry the SAME envelope with `X-Step-Up-Token`. The daemon is the
   authority on destructive-pattern detection; the client only mirrors the
@@ -88,10 +97,13 @@ cargo test -p corrald-ui --test live -- --ignored --nocapture
 ```
 
 The live probe writes nothing to the GUI's keyring; it registers a fresh
-ephemeral key so the read-only default is observed on every run. To make
-the GUI itself boot straight to the board, register once (registration
-screen in-app, or the `tests/live.rs` flow) so `config.json` carries the
-matching registration for the host fingerprint.
+ephemeral key so the read-only default is observed on every run. The
+second probe (`live_reregister_failure_preserves_key_and_registration`)
+verifies the F5 ordering: a failed re-register leaves the persisted seed
+and registration untouched and the old key still drives. To make the GUI
+itself boot straight to the board, register once (registration screen
+in-app, or the probe flow) so `config.json` carries the matching
+registration for the host fingerprint.
 
 ## Layout
 

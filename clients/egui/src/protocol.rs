@@ -45,15 +45,26 @@ pub enum StreamOutcome {
 pub const SSE_BACKOFF_BASE_MS: u64 = 500;
 pub const SSE_BACKOFF_MAX_MS: u64 = 30_000;
 
+/// Per-chunk read deadline for the SSE stream. reqwest's `.timeout()` is a
+/// TOTAL deadline that keeps ticking through body streaming, so a long-lived
+/// SSE connection must NOT carry one (the daemon's 15s keepalive comments
+/// keep the stream alive; a 60s total timeout severed it every minute).
+/// Instead, each `chunk()` await gets a read deadline well above the
+/// keepalive cadence (3x), so a genuinely dead socket still forces a
+/// reconnect without ever killing a healthy stream.
+pub const SSE_CHUNK_READ_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Open a streaming connection to `/events`, resuming from `last_rev`.
 /// Returns an error for non-2xx so the caller can fall back to snapshot.
+/// No total request timeout: the connection is meant to live indefinitely
+/// (connect timeout comes from the shared client builder).
 pub async fn open_events(
     client: &reqwest::Client,
     base_url: &str,
     last_rev: Option<u64>,
 ) -> Result<reqwest::Response, String> {
     let url = format!("{}/events", base_url.trim_end_matches('/'));
-    let mut builder = client.get(&url).timeout(Duration::from_secs(60));
+    let mut builder = client.get(&url);
     if let Some(rev) = last_rev {
         builder = builder.header("Last-Event-ID", rev.to_string());
     }
@@ -199,21 +210,29 @@ pub async fn fetch_audit(
 
 /// Drain one SSE byte stream to the `on_event` callback. Returns
 /// `StreamOutcome::Closed` on a clean EOF and `Error` on transport/parse
-/// trouble — the caller owns reconnect/backoff.
+/// trouble — the caller owns reconnect/backoff. Each read carries a
+/// bounded deadline (see [`SSE_CHUNK_READ_TIMEOUT`]); the stream itself
+/// has no total lifetime.
 pub async fn stream_events<F: FnMut(SseEvent)>(
     mut response: reqwest::Response,
     mut on_event: F,
 ) -> StreamOutcome {
     let mut parser = SseParser::default();
     loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                for frame in parser.push(&chunk) {
-                    on_event(parse_frame(&frame));
-                }
+        let chunk = match tokio::time::timeout(SSE_CHUNK_READ_TIMEOUT, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            Ok(Ok(None)) => break,
+            Ok(Err(_)) => return StreamOutcome::Error,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = SSE_CHUNK_READ_TIMEOUT.as_millis(),
+                    "SSE chunk read deadline exceeded — reconnecting"
+                );
+                return StreamOutcome::Error;
             }
-            Ok(None) => break,
-            Err(_) => return StreamOutcome::Error,
+        };
+        for frame in parser.push(&chunk) {
+            on_event(parse_frame(&frame));
         }
     }
     for frame in parser.finish() {

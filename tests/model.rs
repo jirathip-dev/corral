@@ -17,6 +17,7 @@ fn sample_agent() -> Agent {
             kind: WaitingOnKind::ApproveTool,
             prompt: "Approve this change?".to_string(),
             prompt_hash: "sha256:abc".to_string(),
+            approval_id: "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784:sha256:abc".to_string(),
             choices: vec!["Approve".to_string(), "Reject".to_string()],
         }),
         cost: None,
@@ -108,7 +109,8 @@ fn snapshot_is_versioned_flat_keyed_records() {
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(v["schema_version"], SCHEMA_VERSION);
-    assert_eq!(v["schema_version"], 2);
+    // v3 (P3 D8): WaitingOn gained `approval_id` — versioned strictly.
+    assert_eq!(v["schema_version"], 3);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
 }

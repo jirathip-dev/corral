@@ -1,11 +1,16 @@
-//! Read path: HTTP API served on loopback.
+//! HTTP API served on loopback.
 //!
 //! - `GET /snapshot` — full current state with monotonic `rev`.
 //! - `GET /events`  — SSE; resumes from `Last-Event-ID` (full snapshot when
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
 //! - `GET /healthz` — liveness.
-//!
-//! Read path only. Drive commands (P3) are a separate module boundary.
+//! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
+//!   capability-gated, signed by the device authorizer, step-up-gated for
+//!   destructive payloads (see [`crate::api::drive`]).
+//! - P3 auth surface (W3, [`crate::auth::http`]): `GET /host-key`,
+//!   `POST /register`, `POST /step-up`, `POST /grants`, `GET /audit`.
+
+pub mod drive;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -15,13 +20,17 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Json;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use tracing::info;
 
+use crate::adapters::Adapter;
+use crate::auth::AuthPlane;
 use crate::core::model::Resume;
 use crate::core::store::Store;
+
+use self::drive::{drive, NoopAdapter, ReplayTable};
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -29,6 +38,35 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    /// P3 auth plane (W3): host identity, device registry, authorizer,
+    /// step-up gate, hash-chained audit log. The drive handler reaches the
+    /// contract seams through `auth.authorizer` / `auth.audit`.
+    pub auth: Arc<AuthPlane>,
+    /// Drive-path dispatch target (W1 resolves agent_ids, never coordinates).
+    pub adapter: Arc<dyn Adapter>,
+    /// Idempotency table keyed by request_id (bounded, LRU-ish).
+    pub replay: Arc<ReplayTable>,
+}
+
+impl Default for AppState {
+    /// Read-path-only state: a fresh auth plane over a throwaway temp dir
+    /// and a no-op adapter, so read-only construction (tests, tooling)
+    /// stays one struct away. Write paths use the real plane.
+    fn default() -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "corral-appstate-default-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let auth = Arc::new(AuthPlane::load_or_create(dir).expect("default auth plane"));
+        Self {
+            store: Store::new(),
+            auth,
+            adapter: Arc::new(NoopAdapter),
+            replay: Arc::new(ReplayTable::default()),
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -36,6 +74,8 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
+        .route("/drive", post(drive))
+        .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
 }
 

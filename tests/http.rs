@@ -37,7 +37,10 @@ async fn app() -> (Store, axum::Router) {
     let store = Store::new();
     let coalescer = store.clone();
     std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    let app = router(AppState { store: store.clone() });
+    let app = router(AppState {
+        store: store.clone(),
+        ..Default::default()
+    });
     (store, app)
 }
 
@@ -81,7 +84,8 @@ async fn snapshot_returns_json_with_rev_and_agents() {
 
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["schema_version"], 2);
+    // v3 (P3 D8): WaitingOn gained `approval_id` — versioned strictly.
+    assert_eq!(v["schema_version"], 3);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }

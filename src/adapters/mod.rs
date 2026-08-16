@@ -21,7 +21,10 @@ use crate::core::store::Store;
 pub enum DriveCommand {
     Prompt { text: String },
     Interrupt,
-    Approve,
+    /// Claim-checked approval reply (P3 D8): `choice` is the validated
+    /// choice text to send to the agent (menu member, approve-tool answer,
+    /// or free-form answer).
+    Approve { choice: String },
     ReadTail { lines: Option<u32> },
     Kill,
     Attach,

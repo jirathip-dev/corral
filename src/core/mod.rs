@@ -2,6 +2,7 @@
 
 pub mod events;
 pub mod model;
+pub mod redact;
 pub mod store;
 pub mod util;
 
@@ -14,4 +15,5 @@ pub use model::{
     Agent, AgentState, Attachment, Change, CiStatus, Delta, Resume, SCHEMA_VERSION, Snapshot,
     WaitingOn, WaitingOnKind, Workspace, CAPABILITIES,
 };
+pub use redact::{REDACTED, redact};
 pub use store::Store;

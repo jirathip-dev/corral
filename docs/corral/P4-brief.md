@@ -47,6 +47,22 @@ implemented server-side in P3).
   available; documented fallback 0600 file with a warning).
 - Speaks corrald directly on loopback (default) or Tailscale host.
 
+**Dev build note — macOS keychain prompts (Guy 2026-08-16):** the dev
+binary is unsigned, and `keyring` reads its device key from the macOS
+Keychain. A fresh `cargo build` changes the (unsigned) identity, so macOS
+re-prompts "corrald-ui wants to access key…" on EVERY launch of an
+existing device. Fix after every rebuild in this worktree:
+
+```
+codesign -s - --force target/release/corrald-ui
+```
+
+Ad-hoc signing gives a stable CDHash, so the next launch prompts once and
+"Always Allow" sticks. First-run/new devices don't prompt (keychain adds
+are silent) — prompts appear when READING an item created by an older
+binary identity. If a session hits the prompts again, the binary was
+rebuilt without re-signing.
+
 ### W3 — iOS SwiftUI "Fleet Notifier" (MVP, iOS-first, per D12/TestFlight)
 - Fleet list + blocked agents surfaced; push when blocked/done (APNs —
   P4 scope: the LOCAL notification path on the phone + a documented hook

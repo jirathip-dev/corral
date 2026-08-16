@@ -57,6 +57,11 @@ impl SseEvent {
 
 const RECONNECT_BASE: Duration = Duration::from_millis(250);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// Per-chunk read deadline. The daemon's keep-alive cadence is 15s
+/// (`src/api/mod.rs`), so a silent stream for 2x that means the connection
+/// is stalled or dead — reconnect instead of hanging forever (F3: W2's
+/// board must never sit on a permanently silent stream).
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Backoff reset when a connection delivered at least one frame.
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +109,8 @@ struct SseState {
     /// Sleep before the next (re)connect attempt.
     delay: Option<Pin<Box<Sleep>>>,
     backoff: Backoff,
+    /// Per-chunk read deadline (see [`READ_TIMEOUT`]).
+    read_timeout: Duration,
     /// Partial-frame parsing state.
     event_name: Option<String>,
     event_id: Option<u64>,
@@ -127,6 +134,7 @@ impl SseStream {
             body: None,
             delay: None,
             backoff: Backoff::new(),
+            read_timeout: READ_TIMEOUT,
             event_name: None,
             event_id: None,
             data_lines: Vec::new(),
@@ -157,7 +165,9 @@ impl std::fmt::Debug for SseStream {
 /// happens in between.
 async fn poll_state(mut state: SseState) -> Option<(Result<SseEvent, ApiError>, SseState)> {
     loop {
-        // Ensure an active connection.
+        // Ensure an active connection. Connect + response headers are under
+        // the same read deadline as the body chunks: a server that accepts
+        // but never answers must not hang the stream's first poll forever.
         if state.body.is_none() {
             if let Some(delay) = state.delay.take() {
                 delay.await;
@@ -165,20 +175,33 @@ async fn poll_state(mut state: SseState) -> Option<(Result<SseEvent, ApiError>, 
             let url = state.url.clone();
             let http = state.http.clone();
             let last_rev = state.last_rev;
-            match open(&http, &url, last_rev).await {
-                Ok(body) => state.body = Some(body),
-                Err(e) => {
+            let read_timeout = state.read_timeout;
+            match tokio::time::timeout(read_timeout, open(&http, &url, last_rev)).await {
+                Ok(Ok(body)) => state.body = Some(body),
+                Ok(Err(e)) => {
                     let delay = state.backoff.next();
                     state.delay = Some(Box::pin(sleep(delay)));
                     return Some((Err(e), state));
+                }
+                Err(_elapsed) => {
+                    let delay = state.backoff.next();
+                    state.delay = Some(Box::pin(sleep(delay)));
+                    return Some((
+                        Err(ApiError::Plain {
+                            status: reqwest::StatusCode::OK,
+                            error: format!("event stream connect timed out after {read_timeout:?}"),
+                        }),
+                        state,
+                    ));
                 }
             }
         }
 
         let body = state.body.as_mut().expect("body set above");
-        let chunk = match body.next().await {
-            Some(Ok(chunk)) => chunk,
-            Some(Err(e)) => {
+        let read_timeout = state.read_timeout;
+        let chunk = match tokio::time::timeout(read_timeout, body.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(e))) => {
                 // Mid-stream transport failure: reconnect from the last
                 // processed rev (the daemon's resume covers any gap).
                 state.body = None;
@@ -186,7 +209,7 @@ async fn poll_state(mut state: SseState) -> Option<(Result<SseEvent, ApiError>, 
                 state.delay = Some(Box::pin(sleep(delay)));
                 return Some((Err(ApiError::Transport(e)), state));
             }
-            None => {
+            Ok(None) => {
                 // Clean EOF (daemon closed the stream): reconnect.
                 state.body = None;
                 let delay = state.backoff.next();
@@ -195,6 +218,21 @@ async fn poll_state(mut state: SseState) -> Option<(Result<SseEvent, ApiError>, 
                     Err(ApiError::Plain {
                         status: reqwest::StatusCode::OK,
                         error: "event stream closed by the daemon".to_string(),
+                    }),
+                    state,
+                ));
+            }
+            Err(_elapsed) => {
+                // Stalled connection: no data for 2x the daemon's keep-alive
+                // cadence. Drop the connection and reconnect from the last
+                // processed rev; the daemon's resume covers the gap.
+                state.body = None;
+                let delay = state.backoff.next();
+                state.delay = Some(Box::pin(sleep(delay)));
+                return Some((
+                    Err(ApiError::Plain {
+                        status: reqwest::StatusCode::OK,
+                        error: format!("event stream read timed out after {READ_TIMEOUT:?}"),
                     }),
                     state,
                 ));
@@ -318,5 +356,52 @@ pub async fn first_event(
             status: reqwest::StatusCode::OK,
             error: format!("timed out waiting for the first event ({timeout:?})"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F3 regression: a connection that accepts and then stalls (no data,
+    /// no keep-alive) must time out and drop the connection instead of
+    /// hanging forever — with an injected short deadline so the test is
+    /// fast. The daemon's keep-alive is 15s; the default deadline is 30s.
+    #[tokio::test]
+    async fn stalled_stream_times_out_instead_of_hanging() {
+        // Server accepts and holds the connection open without ever
+        // answering (not even response headers).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _held_open = stream; // keep the socket alive, never write
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let state = SseState {
+            url: format!("http://{addr}/events"),
+            http: reqwest::Client::new(),
+            last_rev: None,
+            body: None,
+            delay: None,
+            backoff: Backoff::new(),
+            read_timeout: Duration::from_millis(100),
+            event_name: None,
+            event_id: None,
+            data_lines: Vec::new(),
+            line_buf: Vec::new(),
+        };
+        let start = tokio::time::Instant::now();
+        let (item, next) = poll_state(state).await.expect("one item");
+        let Err(ApiError::Plain { error, .. }) = item else {
+            panic!("stalled stream must surface a timeout error, got {item:?}");
+        };
+        assert!(error.contains("timed out"), "{error}");
+        assert!(next.body.is_none(), "stalled connection must be dropped for reconnect");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the read deadline must fire promptly"
+        );
     }
 }

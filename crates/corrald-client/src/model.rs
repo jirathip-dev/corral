@@ -103,12 +103,17 @@ pub const CAPABILITIES: [&str; 6] = [
 
 /// Canonical agent record. Flat keyed record in snapshot/delta payloads.
 /// `agent_id` is opaque and source-stable (never a pane id).
+///
+/// Every optional field carries `#[serde(default)]` so a future daemon that
+/// omits one degrades to `None` instead of hard-failing the whole
+/// snapshot/SSE decode (additive-only alignment).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Agent {
     pub agent_id: String,
     pub source: String,
     pub tool: String,
     pub state: AgentState,
+    #[serde(default)]
     pub reason: Option<String>,
     /// Per-source monotonic ordering. `ts` is display-only.
     pub seq: u64,
@@ -117,15 +122,21 @@ pub struct Agent {
     pub capabilities: Vec<String>,
     pub waiting_on: Option<WaitingOn>,
     /// Cumulative spend in USD, nullable.
+    #[serde(default)]
     pub cost: Option<f64>,
     /// Topology: reviewer belongs to its implementation agent (P2+).
+    #[serde(default)]
     pub parent_id: Option<String>,
     /// Host public-key identity (D10). null until P3 device keys.
+    #[serde(default)]
     pub host: Option<String>,
     #[serde(default)]
     pub workspace: Workspace,
+    #[serde(default)]
     pub attachment: Option<Attachment>,
+    #[serde(default)]
     pub display_name: Option<String>,
+    #[serde(default)]
     pub title: Option<String>,
 }
 

@@ -37,6 +37,10 @@ fn repo_json(repo: &TrackedRepo) -> Value {
                 "state": "OPEN",
                 "mergeable": "MERGEABLE",
                 "headRefOid": "abc123",
+                "headRefName": "ws2/gh-plane",
+                "closingIssuesReferences": { "nodes": [
+                    { "number": 4, "title": "P2 planes" }
+                ]},
                 "statusCheckRollup": {
                     "state": "SUCCESS",
                     "contexts": { "nodes": [
@@ -410,6 +414,13 @@ async fn maps_all_repos_and_emits_only_changes() {
         assert_eq!(state.prs[0].pr_number, 7);
         assert_eq!(state.prs[0].ci_status, "SUCCESS");
         assert_eq!(state.prs[0].head_sha, "abc123");
+        assert_eq!(state.prs[0].head_branch, "ws2/gh-plane", "#22 fragment field mapped");
+        // #23: the closing ref's state is enriched from the SAME poll's
+        // repo-level issues fetch (issue 4 is among the recent ones).
+        assert_eq!(state.prs[0].closing_issues.len(), 1);
+        assert_eq!(state.prs[0].closing_issues[0].number, 4);
+        assert_eq!(state.prs[0].closing_issues[0].state, "OPEN");
+        assert_eq!(state.prs[0].closing_issues[0].title, "P2 planes");
         assert_eq!(state.issues.len(), 1);
         assert_eq!(state.issues[0].number, 4);
         assert_eq!(state.issues[0].state, "OPEN");

@@ -717,6 +717,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
+ "corrald",
  "ed25519-dalek",
  "futures",
  "getrandom 0.4.3",

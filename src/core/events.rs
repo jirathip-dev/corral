@@ -94,6 +94,19 @@ pub struct GhPrState {
     pub mergeable: String,
     pub ci_status: String,
     pub head_sha: String,
+    /// Head branch name (`headRefName`), the (repo, branch) matching key
+    /// (#22): an agent's committed-but-unpushed branch binds its PR after
+    /// the head-SHA match misses. Empty when GitHub reports none (deleted
+    /// head branch).
+    #[serde(default)]
+    pub head_branch: String,
+    /// Issues this PR closes, from GitHub's authoritative
+    /// `closingIssuesReferences` (#23). The `state` of each ref is enriched
+    /// from the same poll's repo-level issues fetch when the issue is among
+    /// the recent ones; otherwise `"UNKNOWN"` — the linkage itself always
+    /// comes from the closing refs, never a heuristic.
+    #[serde(default)]
+    pub closing_issues: Vec<GhIssueRef>,
 }
 
 /// Issue reference for one repo (WS2) — "issue refs" leg of the aliased
@@ -207,6 +220,13 @@ mod tests {
                     mergeable: "MERGEABLE".to_string(),
                     ci_status: "SUCCESS".to_string(),
                     head_sha: "abc123".to_string(),
+                    head_branch: "ws2/gh-plane".to_string(),
+                    closing_issues: vec![GhIssueRef {
+                        repo: "herdr-board".to_string(),
+                        number: 4,
+                        state: "OPEN".to_string(),
+                        title: "P2 planes".to_string(),
+                    }],
                 }],
                 ..Default::default()
             }),

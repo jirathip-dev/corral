@@ -64,6 +64,23 @@ pub enum CiStatus {
     Unknown,
 }
 
+/// Issue reference joined into the agent's workspace (G23): the issues the
+/// agent's PR closes, per GitHub's authoritative `closingIssuesReferences`.
+/// `state` is `"UNKNOWN"` when the closing ref's issue is not among the
+/// repo's recently-fetched issues (the daemon enriches it from the same
+/// poll's repo-level issues fetch when available).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueRef {
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub title: String,
+}
+
 /// Git topology + task-centric read-model fields (P2). Every field defaults
 /// so P1-shaped payloads still decode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +97,16 @@ pub struct Workspace {
     pub ahead: u64,
     #[serde(default)]
     pub behind: u64,
+    /// Debug-only: how the agent's PR was resolved — `"head_sha"`,
+    /// `"branch"` (committed-but-unpushed fallback), or `"bound_pr"`.
+    /// `None` when no PR is bound. Not a render-driver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_match_source: Option<String>,
+    /// Issues the agent's PR closes (GitHub's authoritative
+    /// `closingIssuesReferences`). Empty when no PR is bound or the PR
+    /// links none.
+    #[serde(default)]
+    pub issues: Vec<GhIssueRef>,
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).
@@ -172,5 +199,77 @@ pub fn apply_delta(agents: &mut BTreeMap<String, Agent>, delta: &Delta) {
     }
     for agent in &delta.upd {
         agents.insert(agent.agent_id.clone(), agent.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_mirrors_the_g23_daemon_fields_tolerantly() {
+        // A G23-shaped workspace (pr_match_source + issues) decodes.
+        let ws: Workspace = serde_json::from_value(serde_json::json!({
+            "repo": "herdr-board",
+            "branch": "ws2/gh-plane",
+            "worktree_path": "/wt/a",
+            "pr_number": 42,
+            "ci_status": "success",
+            "dirty": false,
+            "ahead": 0,
+            "behind": 0,
+            "pr_match_source": "branch",
+            "issues": [{"repo": "herdr-board", "number": 22, "state": "OPEN",
+                        "title": "PR badges: add headRefName to gh fragment"}]
+        }))
+        .expect("G23 workspace decodes");
+        assert_eq!(ws.pr_match_source.as_deref(), Some("branch"));
+        assert_eq!(ws.issues.len(), 1);
+        assert_eq!(ws.issues[0].number, 22);
+        assert_eq!(
+            ws.issues[0].title,
+            "PR badges: add headRefName to gh fragment"
+        );
+
+        // A pre-G23 workspace (fields absent) decodes with defaults —
+        // additive-only alignment with the daemon's schema.
+        let old: Workspace = serde_json::from_value(serde_json::json!({
+            "repo": null, "branch": null, "worktree_path": "/wt/a", "pr_number": null,
+            "ci_status": null, "dirty": false, "ahead": 0, "behind": 0
+        }))
+        .expect("pre-G23 workspace decodes");
+        assert_eq!(old.pr_match_source, None);
+        assert!(old.issues.is_empty());
+    }
+
+    #[test]
+    fn workspace_serializes_issues_always_and_match_source_only_when_bound() {
+        let ws = Workspace {
+            issues: vec![GhIssueRef {
+                repo: "herdr-board".to_string(),
+                number: 22,
+                state: "OPEN".to_string(),
+                title: "t".to_string(),
+            }],
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&ws).unwrap();
+        assert_eq!(
+            v["issues"],
+            serde_json::json!([{
+                "repo": "herdr-board", "number": 22, "state": "OPEN", "title": "t"
+            }])
+        );
+        assert!(
+            !v.as_object().unwrap().contains_key("pr_match_source"),
+            "unbound -> the debug match source is omitted"
+        );
+
+        let bound = Workspace {
+            pr_match_source: Some("head_sha".to_string()),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&bound).unwrap();
+        assert_eq!(v["pr_match_source"], "head_sha");
     }
 }

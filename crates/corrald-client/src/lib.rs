@@ -52,6 +52,8 @@ pub use client::{CorralClient, DriveClient};
 pub use drive::{Capability, DriveEnvelope, DriveResponse, SignedDrive, canonical_envelope_bytes};
 pub use errors::{ApiError, DriveErrorKind};
 pub use keypair::DeviceKeypair;
-pub use model::{Agent, AgentState, CiStatus, Delta, Snapshot, WaitingOn, WaitingOnKind, Workspace};
+pub use model::{
+    Agent, AgentState, CiStatus, Delta, GhIssueRef, Snapshot, WaitingOn, WaitingOnKind, Workspace,
+};
 pub use sse::{SseEvent, SseStream};
 pub use stepup::StepUpRequest;

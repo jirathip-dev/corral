@@ -40,19 +40,18 @@ jobs:
         id: sim
         run: |
           set -euo pipefail
-          udid="$(xcrun simctl list devices available --json | python3 -c '
-import json, sys
-runtimes = json.load(sys.stdin)["devices"]
-devices = [
-    d
-    for rt, ds in runtimes.items() if "iOS" in rt
-    for d in ds if d.get("isAvailable")
-]
-# Prefer a plain iPhone; fall back to any available iOS device.
-iphones = [d for d in devices if d["name"].startswith("iPhone")]
-chosen = sorted(iphones or devices, key=lambda d: d["name"])
-print(chosen[0]["udid"] if chosen else "")
-')"
+          # jq rather than an inline python heredoc: every line here must stay
+          # indented inside this YAML block scalar, and python is
+          # indentation-sensitive, so a python one-liner would have to be
+          # unreadable to be correct.
+          udid="$(xcrun simctl list devices available --json | jq -r '
+            [ .devices | to_entries[]
+              | select(.key | test("iOS"))
+              | .value[] | select(.isAvailable) ] as $all
+            | [ $all[] | select(.name | startswith("iPhone")) ] as $iphones
+            | (if ($iphones | length) > 0 then $iphones else $all end)
+            | sort_by(.name) | .[0].udid // empty
+          ')"
           if [ -z "$udid" ]; then
             echo "::error::no available iOS simulator on this runner image"
             xcrun simctl list devices available

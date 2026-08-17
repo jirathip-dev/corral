@@ -17,10 +17,12 @@
 		51C62A6BD448EC1B61EB78E6 /* LiveVerifyRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB3D0089119DBD19AC4FA0 /* LiveVerifyRunner.swift */; };
 		556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B21EE35CCFE7F224BFA95B8 /* Models.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
+		854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */; };
 		925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D352A1E84318BD30D5AF512 /* SSEParser.swift */; };
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C886615F9AD8FA9BF1D80944 /* DestructivePatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
+		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
 		F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */; };
 		F633BB49ACEC0A2CB69B3B35 /* FleetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0642A04325429AB1072D2ADB /* FleetStore.swift */; };
 /* End PBXBuildFile section */
@@ -42,14 +44,17 @@
 		28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierTests.swift; sourceTree = "<group>"; };
 		44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorraldClient.swift; sourceTree = "<group>"; };
 		4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
+		5BE93BE3E43A856F09154FE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6B21EE35CCFE7F224BFA95B8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		77E397B25B007445181A67AA /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
 		A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestructivePatterns.swift; sourceTree = "<group>"; };
+		AA1B824D203FC54632815108 /* PushPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPayload.swift; sourceTree = "<group>"; };
 		AC7C4F4D9245391F122670D6 /* Biometrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Biometrics.swift; sourceTree = "<group>"; };
 		ADDB3D0089119DBD19AC4FA0 /* LiveVerifyRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveVerifyRunner.swift; sourceTree = "<group>"; };
 		C07EBB7872D62A8E042D4DB1 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C4857B5F4535FFC7B0AA0F5D /* FleetNotifier.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FleetNotifier.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA101747C96FC7E0499AD652 /* DemoFleet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFleet.swift; sourceTree = "<group>"; };
 		D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalJSON.swift; sourceTree = "<group>"; };
@@ -60,7 +65,9 @@
 		115A5618C4FB65C2FD1CAEDE /* Notifications */ = {
 			isa = PBXGroup;
 			children = (
+				C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */,
 				F6CE363C959DE49C12B69596 /* LocalNotifier.swift */,
+				AA1B824D203FC54632815108 /* PushPayload.swift */,
 			);
 			path = Notifications;
 			sourceTree = "<group>";
@@ -135,6 +142,7 @@
 				3FDDF36D414905797E00EC32 /* Security */,
 				344952870B29AC48E1D31AA7 /* UI */,
 				C20D3428EE20D1FB4CA7B751 /* Wire */,
+				5BE93BE3E43A856F09154FE7 /* Info.plist */,
 			);
 			path = FleetNotifier;
 			sourceTree = "<group>";
@@ -257,6 +265,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */,
 				2DD53F53A68D569106692E27 /* AppModel.swift in Sources */,
 				3DB0D4E85BE2653D28D180DF /* Biometrics.swift in Sources */,
 				F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */,
@@ -271,6 +280,7 @@
 				51C62A6BD448EC1B61EB78E6 /* LiveVerifyRunner.swift in Sources */,
 				E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */,
 				556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */,
+				E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */,
 				925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -317,13 +327,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				INFOPLIST_KEY_CFBundleDisplayName = "Fleet Notifier";
-				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID step-up is required before destructive commands are sent to agents.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands.";
-				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Fleet Notifier shows a local notification when an agent blocks, so you can answer from the lock screen.";
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = FleetNotifier/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -341,13 +345,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				INFOPLIST_KEY_CFBundleDisplayName = "Fleet Notifier";
-				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID step-up is required before destructive commands are sent to agents.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands.";
-				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Fleet Notifier shows a local notification when an agent blocks, so you can answer from the lock screen.";
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = FleetNotifier/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

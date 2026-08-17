@@ -10,7 +10,7 @@ enum AgentState: String, Codable, CaseIterable, Sendable {
 
 /// Why an agent is blocked. "Blocked" is not one UI: an approve-tool prompt,
 /// a free-form question, a menu, and a crash each render differently.
-enum WaitingOnKind: String, Codable, CaseIterable, Sendable {
+enum WaitingOnKind: String, Codable, CaseIterable, Equatable, Sendable {
     case approveTool = "approve_tool"
     case answerQuestion = "answer_question"
     case menu
@@ -317,6 +317,19 @@ struct StepUpResponse: Codable, Equatable, Sendable {
         case keyId = "key_id"
         case ttlSecs = "ttl_secs"
         case expiresTs = "expires_ts"
+    }
+}
+
+/// `POST /device-token` response (D16): `{ok, key_id, push_registered}`.
+struct DeviceTokenResponse: Codable, Equatable, Sendable {
+    var ok: Bool
+    var keyId: String
+    var pushRegistered: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case keyId = "key_id"
+        case pushRegistered = "push_registered"
     }
 }
 

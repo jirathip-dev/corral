@@ -1,0 +1,126 @@
+# fastlane/Fastfile — Corral (FleetNotifier) TestFlight distribution.
+# Adapted from the proven sendmeter pattern (2026-08):
+# ASC API key auth (no Apple ID password/2FA), idempotent check-before-create
+# registration, local Distribution-cert reuse (never mint on this laptop),
+# export via -authenticationKey* flags so xcodebuild talks to ASC headless.
+require "json"
+
+default_platform(:ios)
+
+APP_IDENTIFIER = "com.corral.fleetnotifier"
+PROJECT = "ios/FleetNotifier.xcodeproj"
+SCHEME = "FleetNotifier"
+TEAM_ID = "9244PWFYD7"
+# Required by the APNs notifier (#26): the App ID must declare push.
+APNS_CAPABILITY = "PUSH_NOTIFICATIONS"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def api_key
+  app_store_connect_api_key(
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_filepath: ENV.fetch("ASC_KEY_PATH")
+  )
+end
+
+# Idempotent: App ID exists? create it. Push capability exists? add it.
+def ensure_app_id(_key)
+  bundle = Spaceship::ConnectAPI::BundleId.all(filter: { identifier: APP_IDENTIFIER }).first
+  unless bundle
+    bundle = Spaceship::ConnectAPI::BundleId.create(
+      name: "Corral: Agent Fleet",
+      identifier: APP_IDENTIFIER,
+      platform: "IOS"
+    )
+    UI.message("Registered App ID #{APP_IDENTIFIER}")
+  end
+
+  caps = Spaceship::ConnectAPI::BundleIdCapability.all(
+    bundle_id_id: bundle.id
+  ).map(&:capability_type)
+  unless caps.include?(APNS_CAPABILITY)
+    Spaceship::ConnectAPI::BundleIdCapability.create(
+      bundle_id_id: bundle.id,
+      capability_type: APNS_CAPABILITY
+    )
+    UI.message("Added #{APNS_CAPABILITY} to #{APP_IDENTIFIER}")
+  end
+  bundle
+end
+
+# The ASC API CANNOT create app records (POST /v1/apps is read-only) — created
+# once in the ASC web UI. Fail fast with instructions instead of dying deep in
+# an archive.
+def ensure_app_record
+  app = Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+  UI.user_error!(
+    "App record missing on ASC — create ONCE in the ASC web UI " \
+    "(My Apps → + → New App: name 'Corral: Agent Fleet', bundle id " \
+    "#{APP_IDENTIFIER}, SKU CORRAL01). Then re-run this lane."
+  ) unless app
+  app
+end
+
+# ---------------------------------------------------------------------------
+# Lanes
+# ---------------------------------------------------------------------------
+
+desc "Preflight: check App ID / capability / app-record state on ASC"
+lane :query_app do
+  key = api_key
+  bundle = Spaceship::ConnectAPI::BundleId.all(
+    filter: { identifier: APP_IDENTIFIER }
+  ).first
+  if bundle
+    UI.message("App ID #{APP_IDENTIFIER}: REGISTERED (#{bundle.id})")
+    caps = Spaceship::ConnectAPI::BundleIdCapability.all(
+      bundle_id_id: bundle.id
+    ).map(&:capability_type)
+    UI.message("Capabilities: #{caps.join(', ')}")
+  else
+    UI.message("App ID #{APP_IDENTIFIER}: NOT REGISTERED (testflight lane will create it + push capability)")
+  end
+  app = Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+  UI.message(
+    app ? "App record: EXISTS (#{app.name})" :
+    "App record: MISSING — create once in ASC web UI (API cannot create it)"
+  )
+end
+
+desc "Build + upload Corral (FleetNotifier) to TestFlight"
+lane :testflight do
+  key = api_key
+  ensure_app_id(key)
+  ensure_app_record
+
+  # Local cert reuse: get_certificates finds the already-installed
+  # 'Apple Distribution: JIRATHIP KUNKANJANATHORN (9244PWFYD7)' and uses it —
+  # never mints a new one on this laptop.
+  get_certificates(api_key: key, output_path: "fastlane/certs")
+
+  build = latest_testflight_build_number(
+    api_key: key,
+    app_identifier: APP_IDENTIFIER,
+    initial_build_number: 0
+  ) + 1
+  UI.message("Next build number: #{build}")
+
+  build_app(
+    project: PROJECT,
+    scheme: SCHEME,
+    clean: true,
+    export_method: "app-store-connect",
+    export_xcargs: "-allowProvisioningUpdates " \
+      "-authenticationKeyID #{ENV.fetch("ASC_KEY_ID")} " \
+      "-authenticationKeyIssuerID #{ENV.fetch("ASC_ISSUER_ID")} " \
+      "-authenticationKeyPath #{ENV.fetch("ASC_KEY_PATH")}",
+    xcargs: "CURRENT_PROJECT_VERSION=#{build}",
+    output_directory: "build/ios",
+    output_name: "FleetNotifier"
+  )
+
+  upload_to_testflight(api_key: key, skip_waiting_for_build_processing: true)
+end

@@ -1,0 +1,5 @@
+app_identifier("com.corral.fleetnotifier")
+
+# Team is resolved from the App Store Connect API key; team is 9244PWFYD7
+# (Apple Distribution: JIRATHIP KUNKANJANATHORN) — pinned for safety.
+team_id("9244PWFYD7")

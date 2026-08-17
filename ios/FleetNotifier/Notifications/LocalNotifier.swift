@@ -30,7 +30,12 @@ enum CannedChoice {
         case .continue: preferred = continueSpellings
         }
         if !choices.isEmpty {
-            return preferred.first { choices.contains($0) } ?? (action == .approve ? choices.first : nil)
+            // F3: NO fallback to `choices.first` — for a menu with no
+            // conventional affirmative spelling, Approve must resolve to
+            // nil (button not offered) rather than silently send the first
+            // member, which can be the OPPOSITE of intent (e.g. "cancel"
+            // from a ["cancel", "confirm"] menu).
+            return preferred.first { choices.contains($0) }
         }
         // Menu/ApproveTool with no extracted choices is lenient server-side
         // (the adapter sends the text); AnswerQuestion is free-form.
@@ -51,21 +56,21 @@ enum CannedChoice {
     }
 }
 
-/// Local-notification path (D5/D12): when an agent blocks, a local
-/// notification fires with the claim; the lock-screen actions execute the
-/// canned approve with the byte-for-byte `approval_id` + `prompt_hash` from
-/// the snapshot. APNs/relay is OUT of v1 — `notificationHook` documents the
-/// seam a future relay would fill (register device token, push payload =
-/// claim dict below).
+/// Notification presentation + reply routing (D16). Both delivery paths —
+/// the daemon's APNs push and the DEBUG-only local bridge — produce the
+/// SAME [`PushPayload`] dict shape, so `didReceive` routes every reply
+/// through the payload-bound handler: the lock-screen action is bound to
+/// the notification's OWN `prompt_hash`, and a stale hash is refused with
+/// a typed refusal before any signed bytes leave the phone.
 final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     static let blockedCategory = "AGENT_BLOCKED"
-    static let crashedCategory = "AGENT_CRASHED"
 
     private let center = UNUserNotificationCenter.current()
 
-    /// Called with `(agentId, action)` when a notification action fires —
-    /// the app executes the signed approve through its DriveController.
-    var onAction: (@MainActor @Sendable (String, CannedChoice.Action) -> Void)?
+    /// Called with `(payload, action)` when a notification action fires —
+    /// the app validates the payload's claim against the live snapshot and
+    /// executes the signed approve through its DriveController.
+    var onReply: (@MainActor @Sendable (PushPayload, CannedChoice.Action) -> Void)?
 
     override init() {
         super.init()
@@ -91,41 +96,36 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecke
                                              actions: blockedActions,
                                              intentIdentifiers: [],
                                              options: [])
-        let crashed = UNNotificationCategory(identifier: Self.crashedCategory,
-                                             actions: [],
-                                             intentIdentifiers: [],
-                                             options: [])
-        center.setNotificationCategories([blocked, crashed])
+        // Done notifications carry NO category: a plain completion has no
+        // reply surface (D16).
+        center.setNotificationCategories([blocked])
     }
 
-    /// Claim payload stored on the notification — the app re-reads the
-    /// LIVE snapshot claim before driving, never a stale copy; the
-    /// prompt_hash here is only for dedupe/debug.
-    struct ClaimPayload {
-        let agentId: String
-        let kind: WaitingOnKind
-        let promptHash: String
-        let approvalId: String?
-        let choices: [String]
-    }
-
-    /// Fire a notification for a newly-blocked agent. Idempotent per
+    /// Fire a blocked notification (D16 surface 1). Idempotent per
     /// prompt_hash: same agent + same hash → same identifier, so a
-    /// repeating block does not stack notifications.
-    func notifyBlocked(_ claim: ClaimPayload, title: String, prompt: String) {
+    /// repeating block does not stack notifications. The userInfo embeds
+    /// the payload — identical to the APNs body the daemon sends.
+    func notifyBlocked(_ payload: PushPayload, title: String, prompt: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = prompt
         content.sound = .default
-        content.categoryIdentifier = claim.kind == .crash ? Self.crashedCategory : Self.blockedCategory
-        content.userInfo = [
-            "agent_id": claim.agentId,
-            "kind": claim.kind.rawValue,
-            "prompt_hash": claim.promptHash,
-            "approval_id": claim.approvalId ?? "",
-            "choices": claim.choices,
-        ]
-        let identifier = "blocked-\(claim.agentId)-\(claim.promptHash)"
+        content.categoryIdentifier = Self.blockedCategory
+        content.userInfo = payload.asUserInfo(title: title, body: prompt)
+        let identifier = "blocked-\(payload.agentId)-\(payload.promptHash ?? "?")"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        center.add(request) { _ in }
+    }
+
+    /// Fire a done notification (D16 surface 2): plain completion, no
+    /// category, no actions.
+    func notifyDone(_ payload: PushPayload) {
+        let content = UNMutableNotificationContent()
+        content.title = payload.title ?? payload.agentId
+        content.body = payload.body ?? "Agent finished"
+        content.sound = .default
+        content.userInfo = payload.asUserInfo(title: content.title, body: content.body)
+        let identifier = "done-\(payload.agentId)-\(payload.ts ?? 0)"
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         center.add(request) { _ in }
     }
@@ -140,7 +140,8 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecke
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // App foregrounded: the blocked card is already visible.
+        // App foregrounded: the blocked card is already visible; still
+        // show the banner so the lock-screen action is reachable.
         completionHandler([.banner, .sound])
     }
 
@@ -148,13 +149,14 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecke
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        guard let agentId = info["agent_id"] as? String,
+        guard let payload = PushPayload.parse(userInfo: info),
+              payload.type == .blocked,
               let action = CannedChoice.Action(rawValue: response.actionIdentifier) else {
             completionHandler()
             return
         }
         Task { @MainActor in
-            onAction?(agentId, action)
+            onReply?(payload, action)
         }
         completionHandler()
     }

@@ -217,9 +217,11 @@ impl GitPlane {
     ///
     /// **Scope of that fix, stated precisely:** the only production caller is
     /// [`Self::rescan`], which filters `git worktree list --porcelain`
-    /// output. Its entries are already canonicalized before they get here,
-    /// and a missing one is caught two lines later by an `is_dir()` guard —
-    /// so today this changes no observable behaviour. It is a latent
+    /// output. Entries that EXIST arrive already canonicalized (the scan
+    /// falls back to the raw spelling only when canonicalization fails,
+    /// i.e. when the path is gone), and a missing one is caught two lines
+    /// later by an `is_dir()` guard — so today this changes no observable
+    /// behaviour either way. It is a latent
     /// correctness fix: it removes a trap for the next caller, for which the
     /// platform-dependent answer would be a real bug. Filesystem events do
     /// NOT come through here; they go through `handle_fs_event` →
@@ -1373,9 +1375,11 @@ mod tests {
     /// exist and the raw `/var/...` spelling never matched a
     /// `/private/var/...` root.
     ///
-    /// This is not an edge case for a filesystem watcher: a worktree that
-    /// was just removed, or one whose creation event arrives before the
-    /// directory is visible, is exactly what `watches()` gets asked about.
+    /// `watches()` itself never sees filesystem events — its only production
+    /// caller is `rescan()`, where a missing entry is masked anyway by the
+    /// `is_dir()` guard on the following line. What this pins is the
+    /// *helper's* answer for the missing-path case, which `handle_fs_event`
+    /// does depend on: a delete event names a path that is already gone.
     #[test]
     fn watches_resolves_paths_that_do_not_exist_yet() {
         let root = std::env::temp_dir().join(format!(
@@ -1439,8 +1443,9 @@ mod tests {
         // NOTE: this one resolves via `/`, which exists — it does NOT
         // exercise the "no existing ancestor" fallback, and an earlier
         // version of this comment claimed it did. That arm is unreachable
-        // for any absolute Unix path; it fires only for an empty path, a
-        // bare relative component, or a path ending in `..`.
+        // for an absolute `..`-free Unix path; it fires for an empty path, a
+        // bare relative component, or a path CONTAINING (not merely ending
+        // in) `..` — see the helper's own doc, which is the authority here.
         assert!(
             !plane.watches(Path::new("/nonexistent-root-level-path/x")),
             "an absolute missing path outside both roots is not watched"

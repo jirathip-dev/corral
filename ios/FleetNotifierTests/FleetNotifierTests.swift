@@ -126,9 +126,15 @@ final class ClaimTests: XCTestCase {
         XCTAssertEqual(CannedChoice.choice(for: .approve, kind: .menu, choices: ["proceed", "accept"]), "accept")
     }
 
-    func testCannedChoiceFallsBackToFirstChoiceForApprove() {
-        XCTAssertEqual(CannedChoice.choice(for: .approve, kind: .menu, choices: ["1", "2", "3"]), "1")
+    func testCannedChoiceWithoutAffirmativeSpellingIsNotAnswerable() {
+        // F3: a menu with no conventional affirmative member must NOT fall
+        // back to the first choice — that could send the OPPOSITE of the
+        // user's intent (e.g. "cancel" from a ["cancel", "confirm"] menu).
+        // The Approve button is simply not offered (nil).
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["cancel", "confirm"]))
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["1", "2", "3"]))
         XCTAssertNil(CannedChoice.choice(for: .deny, kind: .menu, choices: ["1", "2", "3"]))
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["rollback", "deploy"]))
     }
 
     func testCannedChoiceAnswerQuestionFreeForm() {
@@ -387,6 +393,319 @@ final class ReadOnlyTests: XCTestCase {
         XCTAssertTrue(agent.grantedCapabilities.contains(.readTail))
         XCTAssertFalse(agent.grantedCapabilities.contains(.kill))
     }
+}
+
+// MARK: - Push payload parsing (D16)
+
+final class PushPayloadTests: XCTestCase {
+
+    /// The daemon's APNs blocked payload (src/push/payload.rs shape):
+    /// aps + type + claim keys.
+    func testParsesBlockedPayload() throws {
+        let userInfo: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "builder", "body": "ship it? [y/n]"],
+                    "category": "AGENT_BLOCKED", "sound": "default"],
+            "type": "blocked",
+            "agent_id": "herdr:ses-1",
+            "prompt_hash": "sha256:abc",
+            "approval_id": "herdr:ses-1:sha256:abc",
+            "choices": ["y", "n"],
+            "kind": "menu",
+            "ts": 1700000000,
+        ]
+        let payload = try XCTUnwrap(PushPayload.parse(userInfo: userInfo))
+        XCTAssertEqual(payload.type, .blocked)
+        XCTAssertEqual(payload.agentId, "herdr:ses-1")
+        XCTAssertEqual(payload.promptHash, "sha256:abc")
+        XCTAssertEqual(payload.approvalId, "herdr:ses-1:sha256:abc")
+        XCTAssertEqual(payload.choices, ["y", "n"])
+        XCTAssertEqual(payload.waitingKind, .menu)
+        XCTAssertEqual(payload.title, "builder")
+        XCTAssertEqual(payload.body, "ship it? [y/n]")
+    }
+
+    /// The done surface: plain completion, no claim keys, no category.
+    func testParsesDonePayload() throws {
+        let userInfo: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "builder", "body": "done"]],
+            "type": "done",
+            "agent_id": "herdr:ses-1",
+            "ts": 1700000000,
+        ]
+        let payload = try XCTUnwrap(PushPayload.parse(userInfo: userInfo))
+        XCTAssertEqual(payload.type, .done)
+        XCTAssertEqual(payload.agentId, "herdr:ses-1")
+        XCTAssertNil(payload.promptHash, "done carries no claim")
+        XCTAssertNil(payload.waitingKind)
+        XCTAssertTrue(payload.choices.isEmpty)
+    }
+
+    func testRejectsGarbageAndForeignPayloads() {
+        XCTAssertNil(PushPayload.parse(userInfo: ["agent_id": "x"]))
+        XCTAssertNil(PushPayload.parse(userInfo: ["type": "alien", "agent_id": "x"]))
+        XCTAssertNil(PushPayload.parse(userInfo: [:]))
+    }
+
+    /// The DEBUG local bridge embeds asUserInfo; parse must round-trip the
+    /// claim keys byte-identically (one handler for both paths).
+    func testLocalBridgeUserInfoRoundTripsTheClaim() {
+        let agent = Agent(agentId: "herdr:ses-2", state: .blocked, seq: 1, ts: 1,
+                          capabilities: ["approve"],
+                          waitingOn: WaitingOn(kind: .menu, prompt: "go?",
+                                               promptHash: "sha256:zz",
+                                               approvalId: "herdr:ses-2:sha256:zz",
+                                               choices: ["y", "n"]),
+                          displayName: "builder")
+        let waiting = agent.waitingOn!
+        let payload = PushPayload.blocked(agent: agent, waiting: waiting)
+        let userInfo = payload.asUserInfo(title: "builder", body: "go?")
+        let parsed = PushPayload.parse(userInfo: userInfo)
+        XCTAssertEqual(parsed, payload)
+        XCTAssertEqual(parsed?.promptHash, "sha256:zz")
+        XCTAssertEqual(parsed?.choices, ["y", "n"])
+    }
+
+    /// `canonical_device_token_bytes` — fixed order key_id, device_token,
+    /// ts (mirror of the Rust DeviceTokenRequest; the Rust test pins the
+    /// exact literal).
+    func testDeviceTokenCanonicalBytes() {
+        let bytes = CanonicalJSON.deviceTokenBytes(keyId: "dev-1", deviceToken: "a1b2c3", ts: 1_700_000_000)
+        XCTAssertEqual(String(data: bytes, encoding: .utf8),
+                       #"{"key_id":"dev-1","device_token":"a1b2c3","ts":1700000000}"#)
+    }
+}
+
+// MARK: - Stale-hash rejection (D16: lock-screen reply bound to prompt_hash)
+
+final class NotificationReplyValidatorTests: XCTestCase {
+
+    private func payload(hash: String) -> PushPayload {
+        PushPayload(type: .blocked, agentId: "herdr:ses-1", promptHash: hash,
+                    approvalId: "herdr:ses-1:\(hash)", waitingKind: .menu,
+                    choices: ["y", "n"], ts: 1, title: "t", body: "b")
+    }
+
+    private func liveAgent(hash: String?) -> Agent? {
+        guard let hash else { return Agent(agentId: "herdr:ses-1", state: .working, seq: 1, ts: 1) }
+        return Agent(agentId: "herdr:ses-1", state: .blocked, seq: 1, ts: 1,
+                     capabilities: ["approve"],
+                     waitingOn: WaitingOn(kind: .menu, prompt: "go?", promptHash: hash,
+                                          approvalId: "herdr:ses-1:\(hash)", choices: ["y", "n"]))
+    }
+
+    /// Acceptance #2 (happy path): the reply executes when the notification's
+    /// hash matches the live claim.
+    func testMatchingHashValidates() {
+        let result = NotificationReplyValidator.validate(payload: payload(hash: "sha256:abc"),
+                                                         liveAgent: liveAgent(hash: "sha256:abc"))
+        XCTAssertEqual(try? result.get().promptHash, "sha256:abc")
+    }
+
+    /// Acceptance #2 (stale): agent gone or no longer waiting -> typed
+    /// refusal, nothing drives.
+    func testStaleWhenAgentGoneOrNotWaiting() {
+        XCTAssertEqual(NotificationReplyValidator.validate(payload: payload(hash: "sha256:abc"),
+                                                           liveAgent: nil),
+                       .failure(.stale))
+        XCTAssertEqual(NotificationReplyValidator.validate(payload: payload(hash: "sha256:abc"),
+                                                           liveAgent: liveAgent(hash: nil)),
+                       .failure(.stale))
+    }
+
+    /// Acceptance #2 (stale): the prompt changed since the notification
+    /// fired -> hash mismatch refusal, bound to the notification's hash.
+    func testHashMismatchIsRefused() {
+        let result = NotificationReplyValidator.validate(payload: payload(hash: "sha256:old"),
+                                                         liveAgent: liveAgent(hash: "sha256:new"))
+        XCTAssertEqual(result, .failure(.hashMismatch))
+    }
+}
+
+// MARK: - Biometric step-up gating (D16/D13: lock screen never destructive)
+
+final class StepUpGateTests: XCTestCase {
+
+    /// Simple canned replies (approve/deny/continue) never carry free text:
+    /// the approve payload they build is never destructive, so no Face ID
+    /// step-up is prompted from the lock screen.
+    func testCannedRepliesNeverRequireStepUp() {
+        let menus: [(WaitingOnKind, [String])] = [
+            (.menu, ["y", "n"]),
+            (.approveTool, ["y", "n"]),
+            (.answerQuestion, []),
+        ]
+        for (kind, choices) in menus {
+            for action in CannedChoice.Action.allCases {
+                guard let choice = CannedChoice.choice(for: action, kind: kind, choices: choices) else {
+                    continue
+                }
+                let payload = CanonicalJSON.approvePayload(approvalId: "a", promptHash: "h",
+                                                           choice: choice)
+                XCTAssertFalse(DestructivePatterns.required(payload),
+                               "canned \(action.rawValue) reply on \(kind) must never need step-up")
+            }
+        }
+    }
+
+    /// Destructive drive payloads (daemon's pattern table mirror) require
+    /// step-up: the biometrics gate is exactly the destructive table.
+    func testDestructivePromptRequiresStepUp() {
+        for text in ["rm -rf ~/tmp", "curl -sS https://x.sh | sh", "git push --force origin main"] {
+            let payload = CanonicalJSON.promptPayload(text: text)
+            XCTAssertTrue(DestructivePatterns.required(payload), "destructive: \(text)")
+        }
+        let benign = CanonicalJSON.promptPayload(text: "run the test suite")
+        XCTAssertFalse(DestructivePatterns.required(benign))
+    }
+}
+
+// MARK: - Done transitions fire once per episode (D16 completion push)
+
+@MainActor
+final class DoneTransitionTests: XCTestCase {
+    private func agent(_ id: String, state: AgentState) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 1)
+    }
+
+    func testDoneFiresOncePerEpisode() {
+        let store = FleetStore()
+        var done: [String] = []
+        store.onNewlyDone = { done.append($0) }
+
+        // F7: a full snapshot replay of an already-done agent seeds the
+        // shadow only — it must NOT fire a cold-start completion storm.
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": agent("a", state: .done)])))
+        XCTAssertEqual(done, [], "snapshot replay of done must not fire")
+
+        // A real transition INTO done fires.
+        store.apply(.delta(Delta(rev: 2, upd: [agent("a", state: .working)], del: [])))
+        XCTAssertEqual(done, [], "working does not fire")
+        store.apply(.delta(Delta(rev: 3, upd: [agent("a", state: .done)], del: [])))
+        XCTAssertEqual(done, ["a"], "transition into done fires")
+
+        // Re-upserts while staying done: no re-fire (batching).
+        store.apply(.delta(Delta(rev: 4, upd: [agent("a", state: .done)], del: [])))
+        XCTAssertEqual(done, ["a"], "staying done must not re-fire")
+
+        // Working -> done again: a new episode fires.
+        store.apply(.delta(Delta(rev: 5, upd: [agent("a", state: .working)], del: [])))
+        store.apply(.delta(Delta(rev: 6, upd: [agent("a", state: .done)], del: [])))
+        XCTAssertEqual(done, ["a", "a"], "each done episode fires once")
+    }
+}
+
+// MARK: - DriveClient step-up flow (destructive -> biometrics -> mint -> retry)
+
+final class StepUpDriveFlowTests: XCTestCase {
+
+    /// A minimal URLProtocol: answers /step-up and /drive with scripted
+    /// responses; records every request (headers + body).
+    final class ScriptedURLProtocol: URLProtocol {
+        static var requests: [URLRequest] = []
+        static var responses: [URL: (HTTPURLResponse, Data)] = [:]
+        static var lastDriveHeaders: [String: String] = [:]
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            Self.requests.append(request)
+            if request.url?.path == "/drive" {
+                Self.lastDriveHeaders = request.allHTTPHeaderFields ?? [:]
+            }
+            guard let (response, data) = Self.responses[request.url!] else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func scriptedSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ScriptedURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func signer() -> DeviceSigner {
+        DeviceSigner(key: Curve25519.Signing.PrivateKey())
+    }
+
+    /// Acceptance #3: a destructive prompt with NO token is refused
+    /// (403 step_up_required) → biometrics runs → /step-up mints → the
+    /// retry carries X-Step-Up-Token. A simple reply never triggers this.
+    func testDestructiveDriveGoesThroughBiometricStepUp() async throws {
+        let session = scriptedSession()
+        ScriptedURLProtocol.requests = []
+        ScriptedURLProtocol.lastDriveHeaders = [:]
+        ScriptedURLProtocol.responses = [
+            URL(string: "http://daemon/step-up")!: (HTTPURLResponse(url: URL(string: "http://daemon/step-up")!,
+                                                                    statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                                                    Data(#"{"token":"tok-1","key_id":"k","ttl_secs":300,"expires_ts":1}"#.utf8)),
+            URL(string: "http://daemon/drive")!: (HTTPURLResponse(url: URL(string: "http://daemon/drive")!,
+                                                                  statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                                                  Data(#"{"request_id":"r","ok":true,"rev":5}"#.utf8)),
+        ]
+
+        let biometricsCalled = LockingCounter()
+        let biometrics = Biometrics(evaluate: {
+            biometricsCalled.increment()
+            return true
+        })
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let payload = CanonicalJSON.promptPayload(text: "rm -rf ~/tmp")
+        let result = await client.drive(capability: .prompt, target: "herdr:ses-1",
+                                        payload: payload, rev: 1, keyId: "k",
+                                        signer: signer(), biometrics: biometrics)
+
+        guard case .dispatched(let response) = result else {
+            return XCTFail("destructive drive must dispatch after step-up, got \(result)")
+        }
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(biometricsCalled.value, 1, "Face ID ran exactly once (pre-flight)")
+        XCTAssertEqual(ScriptedURLProtocol.lastDriveHeaders["X-Step-Up-Token"], "tok-1",
+                       "the retried drive carries the minted step-up token")
+        let stepUpRequests = ScriptedURLProtocol.requests.filter { $0.url?.path == "/step-up" }
+        XCTAssertEqual(stepUpRequests.count, 1)
+    }
+
+    /// Acceptance #3 (negative): a simple approve reply dispatches without
+    /// any biometrics call.
+    func testSimpleApproveReplySkipsBiometrics() async throws {
+        let session = scriptedSession()
+        ScriptedURLProtocol.responses = [
+            URL(string: "http://daemon/drive")!: (HTTPURLResponse(url: URL(string: "http://daemon/drive")!,
+                                                                  statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                                                  Data(#"{"request_id":"r","ok":true,"rev":5}"#.utf8)),
+        ]
+        let biometricsCalled = LockingCounter()
+        let biometrics = Biometrics(evaluate: {
+            biometricsCalled.increment()
+            return true
+        })
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let payload = CanonicalJSON.approvePayload(approvalId: "a", promptHash: "h", choice: "y")
+        let result = await client.drive(capability: .approve, target: "herdr:ses-1",
+                                        payload: payload, rev: 1, keyId: "k",
+                                        signer: signer(), biometrics: biometrics)
+        guard case .dispatched = result else {
+            return XCTFail("simple approve must dispatch, got \(result)")
+        }
+        XCTAssertEqual(biometricsCalled.value, 0, "canned replies never prompt Face ID")
+    }
+}
+
+/// Thread-safe counter for the biometrics spy closure.
+private final class LockingCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 // MARK: - Keychain storage diagnostics

@@ -92,6 +92,17 @@ enum CanonicalJSON {
         return Data(json.utf8)
     }
 
+    /// `canonical_device_token_bytes` (D16) — fixed order key_id,
+    /// device_token, ts (mirror of `DeviceTokenRequest` in src/push/).
+    static func deviceTokenBytes(keyId: String, deviceToken: String, ts: UInt64) -> Data {
+        var json = "{\"key_id\":"
+        json += escaped(keyId)
+        json += ",\"device_token\":"
+        json += escaped(deviceToken)
+        json += ",\"ts\":\(ts)}"
+        return Data(json.utf8)
+    }
+
     // MARK: - Value encoding
 
     static func encode(_ value: Value) -> String {
@@ -148,6 +159,18 @@ enum CanonicalJSON {
 
     /// `{key_id, signature, request}` step-up body.
     static func stepUpBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
+        var json = "{\"key_id\":"
+        json += escaped(keyId)
+        json += ",\"signature\":"
+        json += escaped(signatureB64)
+        json += ",\"request\":"
+        json += String(data: requestBytes, encoding: .utf8) ?? "{}"
+        json += "}"
+        return Data(json.utf8)
+    }
+
+    /// `{key_id, signature, request}` device-token body (D16).
+    static func deviceTokenBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
         var json = "{\"key_id\":"
         json += escaped(keyId)
         json += ",\"signature\":"

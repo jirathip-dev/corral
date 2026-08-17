@@ -1,4 +1,4 @@
-# Fleet Notifier — Corral P4 W3 (iOS, SwiftUI)
+# Corral — iOS app for the corral control plane (fleet board + APNs notifier).
 
 The iOS client for corrald: a fleet dashboard that surfaces blocked agents
 with their approval claims, answers them from the lock screen, and drives
@@ -50,6 +50,21 @@ account and a development/distribution team selected in `CODE_SIGN_STYLE =
 Automatic` (set `DEVELOPMENT_TEAM` in project.yml or Xcode). **No account is
 configured in this repo (D12: App Store via TestFlight first) — that is the
 only blocker between this build and TestFlight.**
+
+### fastlane credentials
+
+The TestFlight lane reads App Store Connect API credentials from
+`fastlane/.env`, which is **gitignored and never committed**. Set it up once:
+
+```sh
+cp fastlane/.env.example fastlane/.env
+# then fill in ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH
+```
+
+`ASC_KEY_PATH` points at the `.p8` private key **outside this repo** — the
+key itself is never copied in (`*.p8` is gitignored). `fastlane/.env` was
+tracked in this repo until #26 untracked it; if you cloned before that, run
+`git rm --cached fastlane/.env` locally.
 
 ## Key storage
 

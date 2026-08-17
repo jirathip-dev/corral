@@ -40,8 +40,14 @@ final class FleetStore: ObservableObject {
     /// blocked) — the local-notification hook.
     var onNewlyBlocked: (@MainActor @Sendable (String) -> Void)?
 
+    /// Called once when an agent transitions INTO done (not on re-upserts
+    /// while staying done) — the completion-notification hook (D16).
+    var onNewlyDone: (@MainActor @Sendable (String) -> Void)?
+
     private var streamTask: Task<Void, Never>?
     private let cursorBox = CursorBox()
+    /// Shadow of last-seen agent states for done-transition detection.
+    private var previousStates: [String: AgentState] = [:]
 
     // MARK: - Application
 
@@ -64,6 +70,35 @@ final class FleetStore: ObservableObject {
             cursorBox.write(delta.rev)
         }
         connectionState = .connected
+        trackDone(event)
+    }
+
+    /// Diff-aware done detection: fire once per transition INTO done
+    /// (staying done re-upserts nothing). Shadowed locally, so a delta
+    /// reconnect cannot double-notify. A full snapshot replay (cold start /
+    /// stale cursor) seeds only the shadow — it must NOT fire a completion
+    /// for every already-done agent (F7: cold-start done storm).
+    private func trackDone(_ event: FleetEvent) {
+        switch event {
+        case .snapshot(let snapshot):
+            for (id, agent) in snapshot.agents {
+                previousStates[id] = agent.state
+            }
+        case .delta(let delta):
+            var transitioned: [String] = []
+            for agent in delta.upd {
+                if agent.state == .done, previousStates[agent.agentId] != .done {
+                    transitioned.append(agent.agentId)
+                }
+                previousStates[agent.agentId] = agent.state
+            }
+            for id in delta.del {
+                previousStates.removeValue(forKey: id)
+            }
+            for id in transitioned {
+                onNewlyDone?(id)
+            }
+        }
     }
 
     /// Diff-aware blocking detection: notify when an agent becomes blocked
@@ -120,6 +155,7 @@ final class FleetStore: ObservableObject {
             cursorBox.write(delta.rev)
         }
         connectionState = .connected
+        trackDone(event)
     }
 
     func agent(_ id: String) -> Agent? {
@@ -182,6 +218,7 @@ final class FleetStore: ObservableObject {
         agents = [:]
         lastEventId = nil
         cursorBox.write(nil)
+        previousStates = [:]
         connectionState = .disconnected
     }
 

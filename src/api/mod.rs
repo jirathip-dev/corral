@@ -15,6 +15,20 @@
 //!   destructive payloads (see [`crate::api::drive`]).
 //! - P3 auth surface (W3, [`crate::auth::http`]): `GET /host-key`,
 //!   `POST /register`, `POST /step-up`, `POST /grants`, `GET /audit`.
+//! - `POST /device-token` — D16 push registration: the device signs a
+//!   [`DeviceTokenRequest`](crate::push::payload::DeviceTokenRequest) with
+//!   its key (same proof-of-possession shape as `/step-up`); the token is
+//!   stored on the registry record (revocable per-device).
+//!
+//! ## Push notifier arming
+//!
+//! `main.rs` arms the APNs notifier once per process (it calls
+//! [`Notifier::from_env`](crate::push::Notifier::from_env) + `start`
+//! before building the router). [`router()`] itself never touches the
+//! environment: it is also the test constructor, and arming as a side
+//! effect of it made every API test read `CORRAL_APNS_*` from the ambient
+//! environment (N6). See [`crate::push`] for the D16 architecture and the
+//! provisioning inputs (the `.p8` push key is Guy's).
 
 pub mod drive;
 
@@ -23,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Json;
 use axum::routing::{get, post};
@@ -36,6 +50,7 @@ use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
 use crate::core::model::Resume;
 use crate::core::store::Store;
+use crate::push::payload::{DeviceTokenRequest, canonical_device_token_bytes};
 
 use self::drive::{drive, NoopAdapter, ReplayTable};
 
@@ -80,6 +95,10 @@ impl Default for AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    // The push notifier is armed by main.rs BEFORE calling this, never as
+    // a side effect here: router() is also the test constructor (N6), and
+    // reading CORRAL_APNS_* from every test's ambient env would race the
+    // config tests and arm a live notifier on machines that export it.
     Router::new()
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
@@ -87,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history))
         .route("/cost", get(cost))
         .route("/drive", post(drive))
+        .route("/device-token", post(device_token))
         .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
 }
@@ -197,4 +217,396 @@ fn delta_event(kind: &str, rev: u64, data: &impl serde::Serialize) -> Event {
         .id(rev.to_string())
         .json_data(data)
         .expect("delta/snapshot serializes")
+}
+
+/// Max accepted skew between a signed device-token request's `ts` and the
+/// host clock — same freshness rule as the step-up request (replay-proof).
+const DEVICE_TOKEN_MAX_SKEW_SECS: u64 = 60;
+
+/// `POST /device-token {key_id, signature, request}` → `{ok, key_id}`.
+///
+/// Proof of possession, mirroring `POST /step-up` (src/auth/http.rs): the
+/// signature covers [`canonical_device_token_bytes`] of the request
+/// (fixed-order `{key_id, device_token, ts}`), verified against the
+/// registered device key; freshness `|now - ts| < 60s`; revoked/expired
+/// keys are refused. An empty `device_token` clears the registration
+/// (per-device revocation). The token itself is opaque (hex APNs token
+/// from the app) and is persisted on the registry record — the notifier's
+/// delivery filter (`DeviceRecord::push_eligible`).
+async fn device_token(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let request: DeviceTokenRequest =
+        match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
+            Ok(r) => r,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed device-token request"),
+        };
+    if now_secs().abs_diff(request.ts) > DEVICE_TOKEN_MAX_SKEW_SECS {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "stale device-token request: |now - ts| > 60s",
+        );
+    }
+    let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return json_err(StatusCode::BAD_REQUEST, "missing device-token signature"),
+    };
+    let rec = match state.auth.registry.get(&request.key_id) {
+        Some(r) => r,
+        None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
+    };
+    if rec.revoked {
+        return json_err(StatusCode::FORBIDDEN, "device key revoked");
+    }
+    if now_secs() >= rec.expiry_ts {
+        return json_err(StatusCode::FORBIDDEN, "device key expired");
+    }
+    let sig = match crate::auth::decode_b64(signature_b64) {
+        Some(s) => match s.try_into() {
+            Ok(sig) => sig,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "signature must be 64 bytes"),
+        },
+        None => return json_err(StatusCode::BAD_REQUEST, "signature must be base64"),
+    };
+    let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&rec.public_key) {
+        Ok(pk) => pk,
+        Err(_) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "corrupt registry key"),
+    };
+    let message = canonical_device_token_bytes(&request);
+    if public_key
+        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
+        .is_err()
+    {
+        return json_err(StatusCode::UNAUTHORIZED, "bad device-token signature");
+    }
+    // N13: the token is spliced into the APNs URL verbatim
+    // (…/3/device/<token>), so a stored token must be a plain lowercase
+    // hex id — 32–200 chars, like APNs' 64-char tokens. Anything else
+    // (path segments, query strings, unbounded length) is refused before
+    // it is persisted, so a registered device cannot redirect the provider
+    // URL or grow registry.json without limit. An empty token is the
+    // documented revocation path and is allowed.
+    if !request.device_token.is_empty()
+        && (!(32..=200).contains(&request.device_token.len())
+            || !request
+                .device_token
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "device token must be 32-200 lowercase hex characters",
+        );
+    }
+    match state
+        .auth
+        .registry
+        .set_device_token(&request.key_id, Some(&request.device_token))
+    {
+        Ok(()) => {
+            info!(
+                key_id = %request.key_id,
+                registered = !request.device_token.is_empty(),
+                "device push token updated"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "key_id": request.key_id,
+                    "push_registered": !request.device_token.is_empty(),
+                })),
+            )
+        }
+        Err(e) => match e {
+            crate::auth::registry::RegistryMutationError::UnknownKey(k) => {
+                json_err(StatusCode::NOT_FOUND, &format!("unknown key: {k}"))
+            }
+            crate::auth::registry::RegistryMutationError::Persist(err) => json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("registry persist failed: {err}"),
+            ),
+        },
+    }
+}
+
+fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({ "error": error })))
+}
+
+fn now_secs() -> u64 {
+    crate::auth::registry::now_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::registry::now_secs;
+    use crate::auth::test_support;
+    use tower::ServiceExt;
+
+    /// A signed device-token request the handler must accept.
+    fn signed_request(
+        registry: &crate::auth::registry::DeviceRegistry,
+        signing: &ed25519_dalek::SigningKey,
+        pubkey: [u8; 32],
+        device_token: &str,
+    ) -> serde_json::Value {
+        let token = registry.registration_token();
+        let rec = registry
+            .register(&token, pubkey, std::time::Duration::from_secs(3600))
+            .expect("register");
+        let request = DeviceTokenRequest {
+            key_id: rec.key_id.clone(),
+            device_token: device_token.to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(signing, &canonical_device_token_bytes(&request));
+        serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": signature,
+            "request": request,
+        })
+    }
+
+    /// A valid-format APNs token (64 lowercase hex chars — the N13 shape).
+    const VALID_TOKEN: &str =
+        "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+    /// Drive one signed `/device-token` request for `key_id` and return the
+    /// HTTP status — shared by the register/clear and N13 rejection tests.
+    async fn post_device_token(
+        app: &Router,
+        key_id: &str,
+        signing: &ed25519_dalek::SigningKey,
+        device_token: &str,
+    ) -> StatusCode {
+        let request = DeviceTokenRequest {
+            key_id: key_id.to_string(),
+            device_token: device_token.to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(signing, &canonical_device_token_bytes(&request));
+        let body = serde_json::json!({
+            "key_id": key_id,
+            "signature": signature,
+            "request": request,
+        });
+        app.clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn device_token_registers_and_clears() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+
+        // Register a token.
+        let body = signed_request(&state.auth.registry, &signing, pubkey, VALID_TOKEN);
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let key_id = body["key_id"].as_str().unwrap();
+        assert_eq!(
+            state.auth.registry.get(key_id).unwrap().device_token.as_deref(),
+            Some(VALID_TOKEN)
+        );
+
+        // Empty token clears (revocation).
+        let body = signed_request(&state.auth.registry, &signing, pubkey, "");
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            state.auth.registry.get(key_id).unwrap().device_token,
+            None,
+            "empty token clears the push registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_token_requires_a_valid_signature_and_freshness() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+
+        // Tampered signature -> 401.
+        let request = DeviceTokenRequest {
+            key_id: rec.key_id.clone(),
+            device_token: "abc".to_string(),
+            ts: now_secs(),
+        };
+        let forged = serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": test_support::sign_bytes(&signing, b"tampered"),
+            "request": request,
+        });
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&forged).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            state.auth.registry.get(&rec.key_id).unwrap().device_token,
+            None,
+            "forged registration must not land"
+        );
+
+        // Stale ts -> 400.
+        let stale = DeviceTokenRequest {
+            key_id: rec.key_id.clone(),
+            device_token: "abc".to_string(),
+            ts: now_secs() - 3600,
+        };
+        let signature = test_support::sign_bytes(&signing, &canonical_device_token_bytes(&stale));
+        let stale_body = serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": signature,
+            "request": stale,
+        });
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&stale_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Unknown key / revoked key refuse without touching the registry.
+    #[tokio::test]
+    async fn device_token_refuses_unknown_and_revoked_keys() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+        state.auth.registry.set_revoked(&rec.key_id, true).unwrap();
+
+        let request = DeviceTokenRequest {
+            key_id: rec.key_id.clone(),
+            device_token: "abc".to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(&signing, &canonical_device_token_bytes(&request));
+        let body = serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": signature,
+            "request": request,
+        });
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "revoked key cannot register push");
+    }
+
+    /// N13: a device token is spliced into the APNs URL verbatim, so
+    /// anything that is not 32–200 lowercase hex chars must be refused
+    /// before it is persisted — path traversal, query strings, uppercase
+    /// hex, or unbounded length.
+    #[tokio::test]
+    async fn device_token_rejects_non_hex_or_path_traversing_tokens() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+
+        for bad in [
+            "../evil/../secret",      // path traversal
+            "a1b2c3d4e5f6?x=1",      // query string
+            "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2", // uppercase
+            "short",                 // too short
+            &"a".repeat(300),        // too long
+        ] {
+            assert_eq!(
+                post_device_token(&app, &rec.key_id, &signing, bad).await,
+                StatusCode::BAD_REQUEST,
+                "token {bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            state.auth.registry.get(&rec.key_id).unwrap().device_token,
+            None,
+            "no rejected token is persisted"
+        );
+
+        // A valid-format token is accepted (the same signer).
+        assert_eq!(
+            post_device_token(&app, &rec.key_id, &signing, VALID_TOKEN).await,
+            StatusCode::OK
+        );
+    }
 }

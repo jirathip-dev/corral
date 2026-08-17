@@ -23,14 +23,14 @@ targets:
     info:
       path: FleetNotifier/Info.plist
       properties:
-        CFBundleDisplayName: Fleet Notifier
+        CFBundleDisplayName: Corral
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: YES
         NSFaceIDUsageDescription: "Face ID step-up is required before destructive commands are sent to agents."
-        NSUserNotificationsUsageDescription: "Fleet Notifier shows a local notification when an agent blocks, so you can answer from the lock screen."
+        NSUserNotificationsUsageDescription: "Corral shows a local notification when an agent blocks, so you can answer from the lock screen."
         UIBackgroundModes:
           - remote-notification
     settings:

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Fleet Notifier</string>
+	<string>Corral</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -30,7 +30,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands.</string>
 	<key>NSUserNotificationsUsageDescription</key>
-	<string>Fleet Notifier shows a local notification when an agent blocks, so you can answer from the lock screen.</string>
+	<string>Corral shows a local notification when an agent blocks, so you can answer from the lock screen.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

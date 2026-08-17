@@ -1,1 +1,8 @@
 /target
+*.p8
+*.ipa
+*.dSYM.zip
+fastlane/report.xml
+fastlane/certs/
+fastlane/README.md
+build/

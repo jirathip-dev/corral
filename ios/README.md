@@ -1,4 +1,4 @@
-# Fleet Notifier — Corral P4 W3 (iOS, SwiftUI)
+# Corral — iOS app for the corral control plane (fleet board + APNs notifier).
 
 The iOS client for corrald: a fleet dashboard that surfaces blocked agents
 with their approval claims, answers them from the lock screen, and drives

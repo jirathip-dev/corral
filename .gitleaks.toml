@@ -3,23 +3,11 @@ title = "Corral secret-scan config"
 [extend]
 useDefault = true
 
-# generic-api-key (the high-entropy catch-all) fires on benign identifiers in
-# this repo: a Swift member named `key` and test-fixture device tokens. Keep
-# the rule active everywhere else.
-[[allowlists]]
-targetRules = ["generic-api-key"]
-description = "Benign identifiers and test fixtures in corral"
-paths = [
-    '''.*ios/FleetNotifier/Keychain/DeviceKeyStore\.swift''',
-    '''.*tests/push\.rs''',
-    '''.*src/push/mod\.rs''',
-]
-
 # Default rules do not cover Fastlane's ASC env vars (the #36 leak:
 # ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH in fastlane/.env). Flag them.
 [[rules]]
 id = "fastlane-asc-credentials"
 description = "Fastlane App Store Connect API credentials"
 regex = '''(?i)ASC_(KEY_ID|ISSUER_ID|KEY_PATH)\s*=\s*\S+'''
-secretGroup = 0
+secretGroup = 1
 tags = ["fastlane", "app-store-connect"]

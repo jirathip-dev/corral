@@ -10,7 +10,7 @@ import Security
 /// unavailable (restricted device/entitlement issues) a documented in-app
 /// fallback store is used and surfaced with a warning banner in the UI.
 final class DeviceSigner: @unchecked Sendable {
-    let key: Curve25519.Signing.PrivateKey
+    let key: Curve25519.Signing.PrivateKey // gitleaks:allow — Swift member name, not a secret value
 
     init(key: Curve25519.Signing.PrivateKey) {
         self.key = key

@@ -209,13 +209,21 @@ impl GitPlane {
     /// `HOME` (standard APFS firmlink setups) cannot split the raw porcelain
     /// paths from the canonicalized roots (WS3 F5).
     ///
-    /// The canonicalization goes through [`canonicalize_existing_prefix`]
-    /// rather than [`fs::canonicalize`] because the interesting inputs are
-    /// often paths that do NOT exist — a worktree that was just removed, or
-    /// one whose creation event arrives before the directory is visible.
-    /// `fs::canonicalize` fails outright on those, and the raw fallback then
-    /// compares a `/var/...` spelling against a `/private/var/...` root on
-    /// macOS, so every missing path answered `false` (#43).
+    /// Canonicalization goes through [`canonicalize_existing_prefix`] rather
+    /// than [`fs::canonicalize`], which fails outright on a path that does
+    /// not exist and leaves the caller comparing a raw `/var/...` spelling
+    /// against a `/private/var/...` root on macOS — so every missing path
+    /// answered `false` while Linux answered `true` (#43).
+    ///
+    /// **Scope of that fix, stated precisely:** the only production caller is
+    /// [`Self::rescan`], which filters `git worktree list --porcelain`
+    /// output. Its entries are already canonicalized before they get here,
+    /// and a missing one is caught two lines later by an `is_dir()` guard —
+    /// so today this changes no observable behaviour. It is a latent
+    /// correctness fix: it removes a trap for the next caller, for which the
+    /// platform-dependent answer would be a real bug. Filesystem events do
+    /// NOT come through here; they go through `handle_fs_event` →
+    /// `map_event_path`.
     fn watches(&self, path: &Path) -> bool {
         let canon = canonicalize_existing_prefix(path);
         canon == self.repo_root || canon.starts_with(&self.worktrees_root)
@@ -344,7 +352,16 @@ impl GitPlane {
         let mut affected: Vec<PathBuf> = Vec::new();
         let mut need_rescan = false;
         for path in &event.paths {
-            let canon = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            // Same canonicalization discipline as `watches()` (#43): a
+            // DELETE event names a path that no longer exists, so
+            // `fs::canonicalize` fails and the raw spelling would be
+            // compared against gitdirs/commondirs that were canonicalized at
+            // registry-scan time. Resolving the existing prefix keeps both
+            // sides canonical. FSEvents usually hands us device-resolved
+            // paths already, so this is belt-and-braces rather than an
+            // observed miss — but the two code paths must not disagree about
+            // how a path becomes canonical.
+            let canon = canonicalize_existing_prefix(path);
             let (worktrees, maybe_new) = self.map_event_path(&canon);
             need_rescan |= maybe_new;
             for wt in worktrees {
@@ -882,19 +899,6 @@ fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)> {
     entries
 }
 
-/// Resolve a porcelain worktree path to the path that actually exists.
-///
-/// `git worktree list --porcelain` prints paths RAW — verified against the
-/// git source (`printf("worktree %s%c", wt->path, ...)` in
-/// `builtin/worktree.c`, stable across versions; a space or tab in a path
-/// comes through as the literal byte, confirmed with `od -c`). So the raw
-/// path is used as-is whenever it exists on disk — a literal `\t` or `\f`
-/// sequence in a real path must never be rewritten.
-///
-/// The unescape below is a DEFENSIVE fallback for the (currently
-/// hypothetical) case where a git build starts C-escaping the path: the
-/// raw form then won't exist on disk, and the unescaped variant is tried.
-/// If the raw path exists, it always wins.
 /// Canonicalize the longest EXISTING prefix of `path`, then re-append the
 /// components that do not exist yet.
 ///
@@ -907,7 +911,15 @@ fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)> {
 /// creation event arrives before the directory is visible.
 ///
 /// Walking up cannot loop: each step drops one component, and a path with
-/// no parent (`/`, or a bare relative component) returns the input.
+/// no parent returns the input unchanged.
+///
+/// **Known limitation.** [`Path::file_name`] returns `None` for a `..`
+/// component, so a path containing (or ending in) `..` hits that fallback
+/// and keeps its raw spelling — meaning #43's platform split survives for
+/// those inputs. Unreachable from today's callers, whose paths come from
+/// `git worktree list --porcelain` and from FSEvents, both absolute and
+/// `..`-free. Normalising `..` textually would be wrong anyway: with
+/// symlinks in play, `a/b/../c` and `a/c` are not the same path.
 fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut cursor = path;
@@ -933,6 +945,19 @@ fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
     }
 }
 
+/// Resolve a porcelain worktree path to the path that actually exists.
+///
+/// `git worktree list --porcelain` prints paths RAW — verified against the
+/// git source (`printf("worktree %s%c", wt->path, ...)` in
+/// `builtin/worktree.c`, stable across versions; a space or tab in a path
+/// comes through as the literal byte, confirmed with `od -c`). So the raw
+/// path is used as-is whenever it exists on disk — a literal `\t` or `\f`
+/// sequence in a real path must never be rewritten.
+///
+/// The unescape below is a DEFENSIVE fallback for the (currently
+/// hypothetical) case where a git build starts C-escaping the path: the
+/// raw form then won't exist on disk, and the unescaped variant is tried.
+/// If the raw path exists, it always wins.
 fn resolve_possibly_escaped(raw: &Path) -> PathBuf {
     if raw.is_dir() {
         return raw.to_path_buf();
@@ -1392,6 +1417,17 @@ mod tests {
             "several missing components still resolve to the watched root"
         );
 
+        // Pin the RECONSTRUCTED PATH, not just the prefix match. Everything
+        // above goes through `watches()`, which is a `starts_with` test, so
+        // any permutation of the re-appended tail still passes — a helper
+        // that walked the tail forwards instead of in reverse would resolve
+        // `wts/a/b/c/d` to `<wts>/d/c/b/a` and satisfy every assertion here.
+        assert_eq!(
+            canonicalize_existing_prefix(&wts.join("a/b/c/d")),
+            fs::canonicalize(&wts).unwrap().join("a/b/c/d"),
+            "missing components are re-appended in their original order"
+        );
+
         // The negative direction must survive the fix: a missing path
         // OUTSIDE both roots stays out of scope. A helper that resolved
         // everything to the worktrees root would pass the assertions above
@@ -1400,9 +1436,20 @@ mod tests {
             !plane.watches(&root.join("outside/also-missing")),
             "a missing path outside both roots is not watched"
         );
+        // NOTE: this one resolves via `/`, which exists — it does NOT
+        // exercise the "no existing ancestor" fallback, and an earlier
+        // version of this comment claimed it did. That arm is unreachable
+        // for any absolute Unix path; it fires only for an empty path, a
+        // bare relative component, or a path ending in `..`.
         assert!(
             !plane.watches(Path::new("/nonexistent-root-level-path/x")),
-            "a missing path with no existing ancestor is not watched"
+            "an absolute missing path outside both roots is not watched"
+        );
+        // The actual fallback arm: no existing ancestor to canonicalize.
+        assert_eq!(
+            canonicalize_existing_prefix(Path::new("")),
+            PathBuf::from(""),
+            "an empty path falls back to the raw spelling"
         );
 
         let _ = fs::remove_dir_all(&root);

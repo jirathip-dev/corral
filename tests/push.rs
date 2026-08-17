@@ -30,6 +30,9 @@ fn test_config() -> Config {
     }
 }
 
+/// A valid-format APNs token (64 lowercase hex chars — N13).
+const DEVICE_TOKEN: &str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
 fn blocked_agent(id: &str, hash: &str, prompt: &str) -> Agent {
     Agent {
         agent_id: id.to_string(),
@@ -97,7 +100,7 @@ async fn enroll_device(
 
     let request = DeviceTokenRequest {
         key_id: key_id.clone(),
-        device_token: "a1b2c3d4e5f6".to_string(),
+        device_token: DEVICE_TOKEN.to_string(),
         ts: corrald::auth::registry::now_secs(),
     };
     let signature = test_support::sign_bytes(&signing, &canonical_device_token_bytes(&request));
@@ -162,7 +165,7 @@ async fn blocked_transition_reaches_provider_within_10s_then_done_pushes() {
         "push arrived in {:?} (well inside the 10s budget)",
         started.elapsed()
     );
-    assert_eq!(token, "a1b2c3d4e5f6");
+    assert_eq!(token, DEVICE_TOKEN);
     assert_eq!(payload["type"], "blocked");
     assert_eq!(payload["agent_id"], "herdr:ses-e2e");
     assert_eq!(payload["prompt_hash"], "sha256:e2e");

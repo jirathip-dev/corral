@@ -18,10 +18,13 @@
 //!
 //! ## Push notifier arming
 //!
-//! [`router()`] arms the APNs notifier once per process (main calls it
-//! exactly once; tests never set `CORRAL_APNS_*` so they stay unarmed).
-//! See [`crate::push`] for the D16 architecture and the provisioning
-//! inputs (the `.p8` push key is Guy's).
+//! `main.rs` arms the APNs notifier once per process (it calls
+//! [`Notifier::from_env`](crate::push::Notifier::from_env) + `start`
+//! before building the router). [`router()`] itself never touches the
+//! environment: it is also the test constructor, and arming as a side
+//! effect of it made every API test read `CORRAL_APNS_*` from the ambient
+//! environment (N6). See [`crate::push`] for the D16 architecture and the
+//! provisioning inputs (the `.p8` push key is Guy's).
 
 pub mod drive;
 
@@ -88,18 +91,10 @@ impl Default for AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    // D16: arm the APNs push notifier once per process. main calls router
-    // exactly once; tests never set CORRAL_APNS_* so they stay unarmed.
-    // Disabled (unconfigured / bad p8) -> the daemon runs exactly as
-    // before, with a startup warning. Kept out of main.rs so the daemon
-    // entrypoint stays untouched (see crate::push for the architecture).
-    if let Some(notifier) =
-        crate::push::Notifier::from_env(state.store.clone(), state.auth.registry.clone())
-    {
-        notifier.start();
-    } else {
-        info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");
-    }
+    // The push notifier is armed by main.rs BEFORE calling this, never as
+    // a side effect here: router() is also the test constructor (N6), and
+    // reading CORRAL_APNS_* from every test's ambient env would race the
+    // config tests and arm a live notifier on machines that export it.
     Router::new()
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
@@ -270,6 +265,25 @@ async fn device_token(
     {
         return json_err(StatusCode::UNAUTHORIZED, "bad device-token signature");
     }
+    // N13: the token is spliced into the APNs URL verbatim
+    // (…/3/device/<token>), so a stored token must be a plain lowercase
+    // hex id — 32–200 chars, like APNs' 64-char tokens. Anything else
+    // (path segments, query strings, unbounded length) is refused before
+    // it is persisted, so a registered device cannot redirect the provider
+    // URL or grow registry.json without limit. An empty token is the
+    // documented revocation path and is allowed.
+    if !request.device_token.is_empty()
+        && (!(32..=200).contains(&request.device_token.len())
+            || !request
+                .device_token
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "device token must be 32-200 lowercase hex characters",
+        );
+    }
     match state
         .auth
         .registry
@@ -341,6 +355,43 @@ mod tests {
         })
     }
 
+    /// A valid-format APNs token (64 lowercase hex chars — the N13 shape).
+    const VALID_TOKEN: &str =
+        "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+    /// Drive one signed `/device-token` request for `key_id` and return the
+    /// HTTP status — shared by the register/clear and N13 rejection tests.
+    async fn post_device_token(
+        app: &Router,
+        key_id: &str,
+        signing: &ed25519_dalek::SigningKey,
+        device_token: &str,
+    ) -> StatusCode {
+        let request = DeviceTokenRequest {
+            key_id: key_id.to_string(),
+            device_token: device_token.to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(signing, &canonical_device_token_bytes(&request));
+        let body = serde_json::json!({
+            "key_id": key_id,
+            "signature": signature,
+            "request": request,
+        });
+        app.clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/device-token")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
     #[tokio::test]
     async fn device_token_registers_and_clears() {
         let state = AppState::default();
@@ -348,7 +399,7 @@ mod tests {
         let (signing, pubkey) = test_support::keypair();
 
         // Register a token.
-        let body = signed_request(&state.auth.registry, &signing, pubkey, "a1b2c3d4e5f6");
+        let body = signed_request(&state.auth.registry, &signing, pubkey, VALID_TOKEN);
         let res = app
             .clone()
             .oneshot(
@@ -365,7 +416,7 @@ mod tests {
         let key_id = body["key_id"].as_str().unwrap();
         assert_eq!(
             state.auth.registry.get(key_id).unwrap().device_token.as_deref(),
-            Some("a1b2c3d4e5f6")
+            Some(VALID_TOKEN)
         );
 
         // Empty token clears (revocation).
@@ -498,5 +549,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "revoked key cannot register push");
+    }
+
+    /// N13: a device token is spliced into the APNs URL verbatim, so
+    /// anything that is not 32–200 lowercase hex chars must be refused
+    /// before it is persisted — path traversal, query strings, uppercase
+    /// hex, or unbounded length.
+    #[tokio::test]
+    async fn device_token_rejects_non_hex_or_path_traversing_tokens() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+
+        for bad in [
+            "../evil/../secret",      // path traversal
+            "a1b2c3d4e5f6?x=1",      // query string
+            "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2", // uppercase
+            "short",                 // too short
+            &"a".repeat(300),        // too long
+        ] {
+            assert_eq!(
+                post_device_token(&app, &rec.key_id, &signing, bad).await,
+                StatusCode::BAD_REQUEST,
+                "token {bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            state.auth.registry.get(&rec.key_id).unwrap().device_token,
+            None,
+            "no rejected token is persisted"
+        );
+
+        // A valid-format token is accepted (the same signer).
+        assert_eq!(
+            post_device_token(&app, &rec.key_id, &signing, VALID_TOKEN).await,
+            StatusCode::OK
+        );
     }
 }

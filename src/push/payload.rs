@@ -38,6 +38,42 @@ use crate::core::redact::redact;
 /// 8; this is a second, payload-level bound so a pathological record can
 /// never blow the 4 KiB APNs limit).
 const MAX_CHOICES: usize = 8;
+/// Apple's hard payload cap: anything larger is refused with 400
+/// PayloadTooLarge.
+const APNS_PAYLOAD_LIMIT: usize = 4096;
+/// The notifier's own budget: the WHOLE serialized payload must fit under
+/// this (N3) — a long prompt must be truncated before it leaves the
+/// machine, never silently dropped by Apple.
+const PAYLOAD_BUDGET: usize = 3891;
+/// Max bytes per choice string (bounds the choice LENGTH as well as the
+/// count — a pathological multi-KB choice must not eat the payload budget).
+const MAX_CHOICE_BYTES: usize = 200;
+/// Max bytes for the alert title (display_name is agent-supplied).
+const MAX_TITLE_BYTES: usize = 200;
+/// Body budget the shrink loop starts from; reduced until the serialized
+/// payload fits under [`PAYLOAD_BUDGET`].
+const BODY_BUDGET: usize = 2048;
+/// Floor for the shrink loop: with choices/title bounded above, a body at
+/// this floor guarantees the total always fits.
+const MIN_BODY_BUDGET: usize = 256;
+/// Marker appended when a field is truncated for size.
+const TRUNCATION_MARKER: &str = "…";
+
+/// Truncate `s` to at most `max_bytes` bytes on a UTF-8 char boundary,
+/// appending [`TRUNCATION_MARKER`] when anything was cut. Idempotent: a
+/// string that already fits (including an earlier truncation) is returned
+/// unchanged, so shrinking the budget in the payload loop never doubles
+/// the marker.
+fn truncate_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(TRUNCATION_MARKER.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &s[..end], TRUNCATION_MARKER)
+}
 
 /// `POST /device-token` signed request. The signature covers the
 /// fixed-order bytes of this struct (same discipline as the drive envelope
@@ -76,32 +112,62 @@ pub fn blocked_payload(
     approval_id: &str,
     choices: &[String],
 ) -> serde_json::Value {
-    let title = display_name.filter(|s| !s.is_empty()).unwrap_or(agent_id);
-    let choices: Vec<&str> = choices
+    let title = truncate_bytes(
+        &redact(display_name.filter(|s| !s.is_empty()).unwrap_or(agent_id)),
+        MAX_TITLE_BYTES,
+    );
+    let choices: Vec<String> = choices
         .iter()
         .take(MAX_CHOICES)
-        .map(String::as_str)
+        .map(|c| truncate_bytes(&redact(c), MAX_CHOICE_BYTES))
         .collect();
-    json!({
-        "aps": {
-            "alert": {
-                "title": redact(title),
-                "body": redact(prompt),
+    // N3: a pathological prompt (embedded diff / multi-paragraph tool
+    // description) must be TRUNCATED before it leaves the machine — not
+    // silently dropped by Apple's 400 PayloadTooLarge. Measure the whole
+    // serialized payload and shrink the body until it fits the budget.
+    // truncate_bytes is idempotent, so re-truncating at a smaller budget
+    // never doubles the marker.
+    let mut budget = BODY_BUDGET;
+    loop {
+        let body = truncate_bytes(&redact(prompt), budget);
+        let candidate = json!({
+            "aps": {
+                "alert": {
+                    "title": &title,
+                    "body": body,
+                },
+                "sound": "default",
+                "category": "AGENT_BLOCKED",
+                "thread-id": agent_id,
             },
-            "sound": "default",
-            "category": "AGENT_BLOCKED",
-            "thread-id": agent_id,
-        },
-        "type": "blocked",
-        "agent_id": agent_id,
-        "prompt_hash": prompt_hash,
-        "approval_id": approval_id,
-        "choices": choices,
-        "kind": kind,
-        "repo": workspace.repo,
-        "branch": workspace.branch,
-        "ts": now_secs(),
-    })
+            "type": "blocked",
+            "agent_id": agent_id,
+            "prompt_hash": prompt_hash,
+            "approval_id": approval_id,
+            "choices": &choices,
+            "kind": kind,
+            "repo": workspace.repo,
+            "branch": workspace.branch,
+            "ts": now_secs(),
+        });
+        if serde_json::to_vec(&candidate)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX)
+            <= PAYLOAD_BUDGET
+            || budget <= MIN_BODY_BUDGET
+        {
+            // The budget loop is the guarantee; this is the belt-and-braces
+            // check that Apple's hard cap is never approached.
+            debug_assert!(
+                serde_json::to_vec(&candidate)
+                    .map(|b| b.len())
+                    .unwrap_or(usize::MAX)
+                    < APNS_PAYLOAD_LIMIT
+            );
+            break candidate;
+        }
+        budget = budget * 3 / 4;
+    }
 }
 
 /// APNs push body for a done agent (D16 surface 2): a plain completion
@@ -111,7 +177,10 @@ pub fn done_payload(
     display_name: Option<&str>,
     workspace: &Workspace,
 ) -> serde_json::Value {
-    let title = display_name.filter(|s| !s.is_empty()).unwrap_or(agent_id);
+    let title = truncate_bytes(
+        &redact(display_name.filter(|s| !s.is_empty()).unwrap_or(agent_id)),
+        MAX_TITLE_BYTES,
+    );
     let body = match (&workspace.repo, &workspace.branch) {
         (Some(repo), Some(branch)) => format!("{repo} · {branch} — done"),
         _ => "done".to_string(),
@@ -119,7 +188,7 @@ pub fn done_payload(
     json!({
         "aps": {
             "alert": {
-                "title": redact(title),
+                "title": title,
                 "body": redact(&body),
             },
             "sound": "default",
@@ -228,5 +297,86 @@ mod tests {
             "no category -> no buttons"
         );
         assert!(p["aps"]["alert"]["body"].as_str().unwrap().contains("done"));
+    }
+
+    #[test]
+    fn oversized_prompt_truncates_to_fit_the_apns_budget() {
+        // N3: a 10 KiB prompt (embedded diff, multi-paragraph tool output —
+        // routine) must yield a payload Apple accepts, with a truncation
+        // marker — never a silent 400 PayloadTooLarge drop.
+        let huge = "a".repeat(10 * 1024);
+        let p = blocked_payload(
+            "herdr:ses-1",
+            Some("builder"),
+            &workspace(),
+            WaitingOnKind::ApproveTool,
+            &huge,
+            "sha256:big",
+            "herdr:ses-1:sha256:big",
+            &["y".to_string(), "n".to_string()],
+        );
+        let bytes = serde_json::to_vec(&p).expect("payload serializes");
+        assert!(
+            bytes.len() <= PAYLOAD_BUDGET,
+            "10 KiB prompt must shrink the payload under {PAYLOAD_BUDGET} bytes, got {}",
+            bytes.len()
+        );
+        assert!(bytes.len() < APNS_PAYLOAD_LIMIT, "under the APNs hard cap");
+        let body = p["aps"]["alert"]["body"].as_str().unwrap();
+        assert!(
+            body.contains(TRUNCATION_MARKER),
+            "truncated prompt carries the marker"
+        );
+        assert!(
+            body.len() < huge.len(),
+            "the body was actually cut, not copied verbatim"
+        );
+        assert_eq!(
+            p["prompt_hash"], "sha256:big",
+            "the claim is untouched by truncation"
+        );
+    }
+
+    #[test]
+    fn oversized_choices_are_truncated_to_the_per_choice_budget() {
+        // N3: the COUNT of choices was already bounded; the LENGTH of each
+        // choice is bounded here so 8 pathological choices cannot eat the
+        // whole payload budget.
+        let huge_choice = "z".repeat(10 * 1024);
+        let choices: Vec<String> = vec![huge_choice.clone(); 20];
+        let p = blocked_payload(
+            "herdr:ses-1",
+            None,
+            &workspace(),
+            WaitingOnKind::Menu,
+            "proceed?",
+            "sha256:abc",
+            "herdr:ses-1:sha256:abc",
+            &choices,
+        );
+        let body_choices = p["choices"].as_array().unwrap();
+        assert_eq!(body_choices.len(), MAX_CHOICES, "count still bounded");
+        for c in body_choices {
+            let c = c.as_str().unwrap();
+            assert!(c.len() <= MAX_CHOICE_BYTES + TRUNCATION_MARKER.len());
+            assert!(c.contains(TRUNCATION_MARKER), "oversized choice truncated");
+        }
+        let bytes = serde_json::to_vec(&p).unwrap();
+        assert!(bytes.len() <= PAYLOAD_BUDGET, "still fits the budget");
+    }
+
+    #[test]
+    fn truncate_bytes_is_utf8_safe_and_idempotent() {
+        // Multi-byte char boundaries must never be split, and re-truncating
+        // at a smaller budget must not double the marker.
+        let s = "é".repeat(100); // 200 bytes, all multi-byte chars
+        let t = truncate_bytes(&s, 60);
+        assert!(t.is_char_boundary(t.len()), "cut on a char boundary");
+        assert!(t.ends_with(TRUNCATION_MARKER));
+        assert_eq!(t.matches(TRUNCATION_MARKER).count(), 1);
+        let smaller = truncate_bytes(&t, 30);
+        assert_eq!(smaller.matches(TRUNCATION_MARKER).count(), 1);
+        let fits = truncate_bytes(&t, t.len());
+        assert_eq!(fits, t, "a string that already fits is untouched");
     }
 }

@@ -1,5 +1,4 @@
 /target
-*.p8
 *.ipa
 *.dSYM.zip
 fastlane/report.xml
@@ -7,4 +6,14 @@ fastlane/certs/
 fastlane/README.md
 build/
 
+# Credential material — never tracked. The `.env.example` files are the
+# documented contract (key names, empty values) and are the one exception.
+# fastlane/.env was tracked until #26; see fastlane/.env.example.
+.env
+*.env
+!*.env.example
 fastlane/.env
+*.p8
+*.p12
+*.mobileprovision
+*.cer

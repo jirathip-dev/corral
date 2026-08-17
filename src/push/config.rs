@@ -50,29 +50,50 @@ impl Config {
     /// daemon then runs with the notifier disabled (a documented
     /// first-run state; everything else still works).
     pub fn from_env() -> Option<Self> {
-        let team_id = std::env::var("CORRAL_APNS_TEAM_ID").ok()?;
-        let key_id = std::env::var("CORRAL_APNS_KEY_ID").ok()?;
-        let auth_key_path = std::env::var("CORRAL_APNS_AUTH_KEY_PATH").ok()?;
-        let endpoint = match std::env::var("CORRAL_APNS_ENDPOINT").as_deref() {
-            Ok("production") | Ok("") => Endpoint::Production,
-            Ok("sandbox") => Endpoint::Sandbox,
-            Ok(other) => {
+        let mut vars = std::collections::HashMap::new();
+        for var in [
+            "CORRAL_APNS_TEAM_ID",
+            "CORRAL_APNS_KEY_ID",
+            "CORRAL_APNS_AUTH_KEY_PATH",
+            "CORRAL_APNS_ENDPOINT",
+            "CORRAL_APNS_TOPIC",
+        ] {
+            if let Ok(value) = std::env::var(var) {
+                vars.insert(var.to_string(), value);
+            }
+        }
+        Self::from_map(&vars)
+    }
+
+    /// The testable seam: build a [`Config`] from an explicit variable map,
+    /// never the process env. Tests exercise every branch through this;
+    /// the only env reader is [`Config::from_env`], which production (and
+    /// main.rs, which arms the notifier) uses — never the test suite.
+    pub fn from_map(vars: &std::collections::HashMap<String, String>) -> Option<Self> {
+        let team_id = vars.get("CORRAL_APNS_TEAM_ID")?;
+        let key_id = vars.get("CORRAL_APNS_KEY_ID")?;
+        let auth_key_path = vars.get("CORRAL_APNS_AUTH_KEY_PATH")?;
+        let endpoint = match vars.get("CORRAL_APNS_ENDPOINT").map(String::as_str) {
+            Some("production") | Some("") => Endpoint::Production,
+            Some("sandbox") => Endpoint::Sandbox,
+            Some(other) => {
                 tracing::warn!(
                     endpoint = other,
                     "CORRAL_APNS_ENDPOINT must be production or sandbox; defaulting to production"
                 );
                 Endpoint::Production
             }
-            Err(_) => Endpoint::Production,
+            None => Endpoint::Production,
         };
-        let topic = std::env::var("CORRAL_APNS_TOPIC")
-            .ok()
+        let topic = vars
+            .get("CORRAL_APNS_TOPIC")
             .filter(|t| !t.is_empty())
+            .cloned()
             .unwrap_or_else(|| "com.corral.fleetnotifier".to_string());
         Some(Self {
-            team_id,
-            key_id,
-            auth_key_path,
+            team_id: team_id.clone(),
+            key_id: key_id.clone(),
+            auth_key_path: auth_key_path.clone(),
             endpoint,
             topic,
         })
@@ -93,35 +114,61 @@ impl Config {
 mod tests {
     use super::*;
 
-    #[test]
-    fn from_env_requires_all_three() {
-        // Unset everything (tests never set CORRAL_APNS_*): not configured.
-        // Rust 2024 marks set/remove_var unsafe (thread-safety); tests are
-        // single-threaded and run before any notifier could be armed.
-        unsafe {
-            for var in [
-                "CORRAL_APNS_TEAM_ID",
-                "CORRAL_APNS_KEY_ID",
-                "CORRAL_APNS_AUTH_KEY_PATH",
-                "CORRAL_APNS_ENDPOINT",
-                "CORRAL_APNS_TOPIC",
-            ] {
-                std::env::remove_var(var);
-            }
-        }
-        assert!(Config::from_env().is_none(), "unconfigured -> disabled");
+    /// Build a map with the three required vars set, for branch testing.
+    fn required() -> std::collections::HashMap<String, String> {
+        let mut m = std::collections::HashMap::new();
+        m.insert("CORRAL_APNS_TEAM_ID".to_string(), "TEAM123456".to_string());
+        m.insert("CORRAL_APNS_KEY_ID".to_string(), "KEY12345678".to_string());
+        m.insert(
+            "CORRAL_APNS_AUTH_KEY_PATH".to_string(),
+            "/keys/push.p8".to_string(),
+        );
+        m
     }
 
     #[test]
-    fn partial_config_is_disabled() {
-        unsafe {
-            std::env::remove_var("CORRAL_APNS_TEAM_ID");
-            std::env::remove_var("CORRAL_APNS_KEY_ID");
-            std::env::remove_var("CORRAL_APNS_AUTH_KEY_PATH");
-            std::env::remove_var("CORRAL_APNS_ENDPOINT");
-            std::env::remove_var("CORRAL_APNS_TOPIC");
-            std::env::set_var("CORRAL_APNS_TEAM_ID", "T");
-        }
-        assert!(Config::from_env().is_none(), "partial env must not arm");
+    fn from_map_requires_all_three() {
+        // No env is ever touched (N6): set_var/remove_var on the process
+        // env is UB under Rust 2024 and races the rest of the test binary.
+        // The seam is a plain map, so the ambient environment can neither
+        // break these tests nor silently arm a notifier.
+        assert!(Config::from_map(&std::collections::HashMap::new()).is_none());
+
+        let mut m = std::collections::HashMap::new();
+        m.insert("CORRAL_APNS_TEAM_ID".to_string(), "T".to_string());
+        assert!(Config::from_map(&m).is_none(), "partial config is disabled");
+        m.insert("CORRAL_APNS_KEY_ID".to_string(), "K".to_string());
+        assert!(
+            Config::from_map(&m).is_none(),
+            "still missing the auth key path"
+        );
+        m.insert("CORRAL_APNS_AUTH_KEY_PATH".to_string(), "/p8".to_string());
+        let c = Config::from_map(&m).expect("complete config parses");
+        assert_eq!(c.team_id, "T");
+        assert_eq!(c.key_id, "K");
+        assert_eq!(c.auth_key_path, "/p8");
+        assert_eq!(c.endpoint, Endpoint::Production, "default endpoint");
+        assert_eq!(c.topic, "com.corral.fleetnotifier", "default topic");
+    }
+
+    #[test]
+    fn from_map_parses_endpoint_and_topic() {
+        let mut m = required();
+        m.insert("CORRAL_APNS_ENDPOINT".to_string(), "sandbox".to_string());
+        assert_eq!(Config::from_map(&m).unwrap().endpoint, Endpoint::Sandbox);
+
+        // A bogus endpoint warns and defaults to production.
+        m.insert("CORRAL_APNS_ENDPOINT".to_string(), "bogus".to_string());
+        assert_eq!(Config::from_map(&m).unwrap().endpoint, Endpoint::Production);
+
+        // An empty topic falls back to the bundle id.
+        m.insert("CORRAL_APNS_ENDPOINT".to_string(), "production".to_string());
+        m.insert("CORRAL_APNS_TOPIC".to_string(), String::new());
+        assert_eq!(
+            Config::from_map(&m).unwrap().topic,
+            "com.corral.fleetnotifier"
+        );
+        m.insert("CORRAL_APNS_TOPIC".to_string(), "com.example".to_string());
+        assert_eq!(Config::from_map(&m).unwrap().topic, "com.example");
     }
 }

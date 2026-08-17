@@ -215,6 +215,19 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
 
+    // N6: arm the APNs notifier HERE — the daemon entrypoint — not as a
+    // side effect of router() (which is also the test constructor; reading
+    // CORRAL_APNS_* inside it made every API test read the ambient env and
+    // race the config tests). Disabled (unconfigured / bad p8) -> the
+    // daemon runs exactly as before, with a startup warning.
+    if let Some(notifier) =
+        corrald::push::Notifier::from_env(store.clone(), auth.registry.clone())
+    {
+        notifier.start();
+    } else {
+        tracing::info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");
+    }
+
     let app = corrald::api::router(AppState {
         store,
         auth,

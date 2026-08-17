@@ -238,7 +238,7 @@ impl ApnsProvider for RealApnsProvider {
                 .await
                 .map_err(|e| PushError::Retryable {
                     status: None,
-                    reason: e.to_string(),
+                    reason: transport_reason(&e),
                 })?;
             let status = response.status();
             if status.is_success() {
@@ -252,9 +252,51 @@ impl ApnsProvider for RealApnsProvider {
                 .ok()
                 .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
                 .unwrap_or_else(|| format!("HTTP {status}"));
+            // N5: a suspended laptop resumes with a stale clock; Apple
+            // rejects the cached JWT with 403 ExpiredProviderToken. Clear
+            // the cache so the retry re-mints, and treat this ONE case as
+            // retryable — clock skew heals, a bad key (InvalidProviderToken)
+            // does not and stays Configuration.
+            if is_expired_provider_token(status.as_u16(), &reason) {
+                self.token
+                    .lock()
+                    .expect("token lock poisoned")
+                    .jwt
+                    .clear();
+                return Err(PushError::Retryable {
+                    status: Some(403),
+                    reason: "ExpiredProviderToken (cached token invalidated; retry re-mints)"
+                        .to_string(),
+                });
+            }
             Err(classify_apns_error(status.as_u16(), &reason))
         })
     }
+}
+
+/// Classify a reqwest transport failure into a short reason string.
+///
+/// NEVER the error's `Display`: reqwest appends ` for url ({url})`, and the
+/// URL is `…/3/device/<raw device token>` (F5). Callers log the hash
+/// ([`token_hash`]) as a separate field instead.
+fn transport_reason(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "timeout".to_string()
+    } else if e.is_connect() {
+        "connect".to_string()
+    } else if e.is_body() {
+        "body".to_string()
+    } else {
+        "transport".to_string()
+    }
+}
+
+/// Whether a 403 `ExpiredProviderToken` response is the clock-skew case
+/// (the caller invalidates its cached JWT and retries once — N5) rather
+/// than a bad-key Configuration. Only this exact pair is special-cased:
+/// every other 401/403 stays Configuration (permanent).
+fn is_expired_provider_token(status: u16, reason: &str) -> bool {
+    status == 403 && reason == "ExpiredProviderToken"
 }
 
 /// Map an APNs HTTP status + Apple `reason` to a typed [`PushError`].
@@ -312,7 +354,7 @@ fn json_b64(v: &Value) -> String {
 /// One-way fingerprint of a device token for logs — never the raw token,
 /// not even a prefix (F5): the first 8 hex chars of SHA-256 give enough
 /// entropy to correlate a log line without disclosing a per-device id.
-fn token_hash(token: &str) -> String {
+pub(crate) fn token_hash(token: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(token.as_bytes());
     crate::auth::hex(&digest[..4])
@@ -531,5 +573,41 @@ mod tests {
         assert_ne!(token_hash("a1b2c3d4e5f6"), token_hash("a1b2c3d4e5f7"));
         let h = token_hash("deadbeefdeadbeef");
         assert!(!h.contains("dead"), "no raw token material in the log form");
+    }
+
+    #[tokio::test]
+    async fn transport_error_reason_is_classified_not_displayed() {
+        // F5/N2: the reason string a transport failure carries into the
+        // logs must NEVER embed the URL (which contains the raw device
+        // token). Classify into a fixed vocabulary instead of the error's
+        // Display, which reqwest appends ` for url ({url})` to.
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(500))
+            .build()
+            .expect("client builds");
+        // Connection refused on loopback is deterministic and immediate —
+        // a real reqwest::Error, exercising the real classification.
+        let err = client
+            .get("http://127.0.0.1:1/")
+            .send()
+            .await
+            .expect_err("closed loopback port must fail");
+        assert!(err.is_connect(), "connection-refused classifies as connect");
+        let reason = transport_reason(&err);
+        assert_eq!(reason, "connect");
+        assert!(
+            !reason.contains("127.0.0.1") && !reason.contains("url"),
+            "classified reason must not embed the URL/token: {reason}"
+        );
+    }
+
+    #[test]
+    fn expired_provider_token_is_retryable_but_only_that_exact_case() {
+        // N5: only 403 ExpiredProviderToken is the clock-skew case; a bad
+        // key (InvalidProviderToken) or a 401 must stay Configuration.
+        assert!(is_expired_provider_token(403, "ExpiredProviderToken"));
+        assert!(!is_expired_provider_token(403, "InvalidProviderToken"));
+        assert!(!is_expired_provider_token(401, "ExpiredProviderToken"));
+        assert!(!is_expired_provider_token(400, "ExpiredProviderToken"));
     }
 }

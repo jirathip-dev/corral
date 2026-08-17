@@ -24,13 +24,14 @@
 //! in tests), with retry + backoff for transient failures, tokens dropped
 //! from the registry when Apple says the device is gone, and every failure
 //! logged — the notifier never crashes the daemon and never blocks the
-//! store path (pushes run in spawned tasks; a stalled provider only lags
-//! this task, which re-arms from the next delta).
+//! store path. The watcher awaits the (bounded) delivery results so a
+//! failed delivery is recorded in the shadow and re-attempted by the
+//! periodic reconcile tick (N4) instead of being silently swallowed.
 //!
 //! ## Arming
 //!
-//! `router()` (crate::api) calls [`Notifier::from_env`] + [`Notifier::start`]
-//! once per process. Unconfigured (`CORRAL_APNS_*` absent) → the daemon runs
+//! `main.rs` calls [`Notifier::from_env`] + [`Notifier::start`] once per
+//! process. Unconfigured (`CORRAL_APNS_*` absent) → the daemon runs
 //! as before, notifier disabled. See [`crate::push::config`] for the
 //! provisioning inputs (the `.p8` push key is Guy's).
 
@@ -52,7 +53,7 @@ use crate::core::store::Store;
 
 use self::config::Config;
 use self::payload::{blocked_payload, done_payload};
-use self::provider::{ApnsProvider, PushError};
+use self::provider::{token_hash, ApnsProvider, PushError};
 
 /// How long a single provider call may take before the notifier gives up
 /// and treats it as transient (Apple's own guidance: fail fast, retry
@@ -61,6 +62,11 @@ const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Retry ladder for transient provider failures (network/429/5xx).
 const RETRY_ATTEMPTS: usize = 3;
 const RETRY_BASE: Duration = Duration::from_secs(1);
+/// Reconcile cadence (N4): a Blocked agent whose last delivery failed (or
+/// was dropped because no device was enrolled) is re-evaluated on this
+/// tick, so a permanently-failed or missed delivery heals within one
+/// interval instead of being recorded as handled forever.
+const RECONCILE_TICK: Duration = Duration::from_secs(60);
 /// A lagged notifier clears its shadow so the next delta re-evaluates
 /// every agent (a missed transition must not be silenced forever by stale
 /// dedupe state).
@@ -71,6 +77,12 @@ struct Shadow {
     /// True once a done push fired for this agent; cleared when the agent
     /// leaves Done (so a new done episode can notify again).
     done_pushed: bool,
+    /// True once the last blocked push for `blocked_hash` was DELIVERED
+    /// successfully to every eligible device (N4). The reconcile tick only
+    /// re-pushes a Blocked agent whose shadow lacks this marker, so a
+    /// failed delivery — or one skipped for lack of devices — is retried,
+    /// never silently recorded as handled. Reset by any fresh claim.
+    delivered_ok: bool,
 }
 
 /// The push notifier. Clone-safe; [`Notifier::start`] spawns the watcher.
@@ -112,7 +124,11 @@ impl Notifier {
         }
     }
 
-    /// Test seam: completes once the watcher holds its subscription.
+    /// Test seam: completes once the watcher has subscribed AND run its
+    /// boot seed (N14) — a caller can safely apply changes afterwards
+    /// without racing the seed loop. `notify_one` stores a permit, so a
+    /// waiter that registers late (after the watcher signalled) still
+    /// wakes instead of hanging forever.
     pub async fn ready(&self) {
         self.ready.notified().await;
     }
@@ -154,35 +170,79 @@ impl Notifier {
     }
 
     /// Watch deltas forever. On `Lagged` (a burst the channel could not
-    /// buffer) the shadow is cleared so the next delta re-evaluates every
-    /// agent; on `Closed` (store shutdown) the watcher exits quietly.
+    /// buffer) the shadow is cleared and re-seeded from the snapshot so an
+    /// agent whose delta was dropped is re-evaluated instead of being
+    /// silenced forever (N1); on `Closed` (store shutdown) the watcher
+    /// exits quietly. A periodic reconcile tick re-pushes Blocked agents
+    /// whose last delivery failed or never happened (N4).
     async fn run(&self) {
         let mut rx = self.store.subscribe();
-        self.ready.notify_waiters();
         let mut shadow: HashMap<String, Shadow> = HashMap::new();
         // Boot seed (F6): the watcher only reacts to deltas, so an agent
         // that is ALREADY blocked when the daemon restarts would never get
         // its notification. Seed the shadow from the current snapshot and
         // push for already-blocked agents (fire-and-forget; deduped by
         // prompt_hash like any other blocked push).
-        for agent in self.store.snapshot().await.agents.values() {
-            if agent.state == AgentState::Blocked
-                && let Some(push) = self.transition_push(agent, &mut shadow)
-            {
-                self.deliver(&push).await;
+        self.seed_from_snapshot(&mut shadow).await;
+        // N14: ready() must mean "seed done", not "subscription held" —
+        // notify_one stores a permit so a waiter that registered before
+        // the seed loop still wakes, and a late waiter gets the permit too.
+        self.ready.notify_one();
+        let mut reconcile = tokio::time::interval(RECONCILE_TICK);
+        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        reconcile.tick().await; // discard the immediate first tick
+        loop {
+            tokio::select! {
+                recv = rx.recv() => match recv {
+                    Ok(delta) => self.handle_delta(&delta, &mut shadow).await,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "push watcher lagged; re-seeding from snapshot");
+                        shadow.clear();
+                        self.seed_from_snapshot(&mut shadow).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("push watcher: store closed");
+                        return;
+                    }
+                },
+                _ = reconcile.tick() => {
+                    self.reconcile(&mut shadow).await;
+                }
             }
         }
-        loop {
-            match rx.recv().await {
-                Ok(delta) => self.handle_delta(&delta, &mut shadow).await,
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "push watcher lagged; re-evaluating from next delta");
-                    shadow.clear();
+    }
+
+    /// Re-evaluate every currently-Blocked agent against the shadow and
+    /// re-push those whose last delivery did not succeed (N4). Also seeds
+    /// the shadow for agents never seen by a delta (boot/Lagged, N1).
+    /// Trades a silent miss for a possible duplicate — the trade the module
+    /// doc already endorses (dedupe is by prompt_hash on the phone).
+    async fn reconcile(&self, shadow: &mut HashMap<String, Shadow>) {
+        for agent in self.store.snapshot().await.agents.values() {
+            if agent.state == AgentState::Blocked {
+                let undelivered = match shadow.get(&agent.agent_id) {
+                    Some(s) => {
+                        s.state != AgentState::Blocked
+                            || s.blocked_hash
+                                != agent.waiting_on.as_ref().map(|w| w.prompt_hash.clone())
+                            || !s.delivered_ok
+                    }
+                    None => true,
+                };
+                if undelivered {
+                    self.process_agent(agent, true, shadow).await;
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    debug!("push watcher: store closed");
-                    return;
-                }
+            }
+        }
+    }
+
+    /// Seed (or re-seed, after a Lagged drop) the shadow from the current
+    /// snapshot: already-blocked agents get their notification now, exactly
+    /// as if their delta had just arrived (N1/F6).
+    async fn seed_from_snapshot(&self, shadow: &mut HashMap<String, Shadow>) {
+        for agent in self.store.snapshot().await.agents.values() {
+            if agent.state == AgentState::Blocked {
+                self.process_agent(agent, false, shadow).await;
             }
         }
     }
@@ -196,25 +256,56 @@ impl Notifier {
             last_seen.insert(agent.agent_id.as_str(), agent);
         }
         for agent in last_seen.values() {
-            if let Some(push) = self.transition_push(agent, shadow) {
-                self.deliver(&push).await;
-            }
+            self.process_agent(agent, false, shadow).await;
         }
         for removed in &delta.del {
             shadow.remove(removed);
         }
     }
 
+    /// Decide + deliver for one agent, recording the outcome in the shadow
+    /// (N4: a failed delivery leaves the Blocked agent re-eligible for the
+    /// reconcile tick; a successful one sets `delivered_ok`).
+    async fn process_agent(
+        &self,
+        agent: &Agent,
+        force: bool,
+        shadow: &mut HashMap<String, Shadow>,
+    ) {
+        let agent_id = agent.agent_id.clone();
+        if let Some(push) = self.transition_push(agent, force, shadow) {
+            let delivered = self.deliver(&push).await;
+            if delivered
+                && let Some(s) = shadow.get_mut(&agent_id)
+                && s.state == agent.state
+                && s.blocked_hash
+                    == agent.waiting_on.as_ref().map(|w| w.prompt_hash.clone())
+            {
+                s.delivered_ok = true;
+            }
+        }
+    }
+
     /// Decide whether this upsert is a new notification (batching: at most
     /// one push per agent per state), and record the new shadow. The shadow
     /// is ALWAYS updated before returning — a fired push must mark its
-    /// state as seen, or the next identical upsert would re-push.
-    fn transition_push(&self, agent: &Agent, shadow: &mut HashMap<String, Shadow>) -> Option<Value> {
+    /// state as seen, or the next identical upsert would re-push. `force`
+    /// (reconcile tick) re-pushes a Blocked agent whose claim is unchanged
+    /// but whose last delivery failed or was skipped for lack of devices
+    /// (N4); the shadow is still written, with `delivered_ok` reset so a
+    /// fresh delivery outcome is what the next tick reads.
+    fn transition_push(
+        &self,
+        agent: &Agent,
+        force: bool,
+        shadow: &mut HashMap<String, Shadow>,
+    ) -> Option<Value> {
         let prev = shadow.get(&agent.agent_id);
         let mut current = Shadow {
             state: agent.state,
             blocked_hash: None,
             done_pushed: false,
+            delivered_ok: false,
         };
         let push = match agent.state {
             AgentState::Blocked => {
@@ -222,11 +313,18 @@ impl Notifier {
                     .waiting_on
                     .as_ref()
                     .map(|w| w.prompt_hash.clone());
-                let is_new = match prev {
-                    Some(p) => p.state != AgentState::Blocked || p.blocked_hash != hash,
-                    None => true,
-                };
+                let is_new = force
+                    || match prev {
+                        Some(p) => p.state != AgentState::Blocked || p.blocked_hash != hash,
+                        None => true,
+                    };
                 current.blocked_hash = hash;
+                // An unchanged, already-delivered claim keeps its marker
+                // (the reconcile tick must NOT re-push a delivered block);
+                // anything new starts undelivered.
+                if !is_new {
+                    current.delivered_ok = prev.is_some_and(|p| p.delivered_ok);
+                }
                 if is_new {
                     if let Some(waiting) = agent.waiting_on.as_ref() {
                         let approval_id = if waiting.approval_id.is_empty() {
@@ -278,36 +376,54 @@ impl Notifier {
         push
     }
 
-    /// Deliver one notification to every registered, non-revoked,
-    /// non-expired device that has a push token. Each delivery runs in its
-    /// own task with bounded retry, so a slow provider can never stall the
-    /// watcher or the store.
-    async fn deliver(&self, payload: &Value) {
+    /// Deliver one notification to every push-eligible device. Each delivery
+    /// runs in its own task with bounded retry, so a slow provider can
+    /// never stall the store; the watcher awaits the bounded results so it
+    /// can record whether the block was actually delivered (N4).
+    ///
+    /// Returns true when the notification reached every eligible device
+    /// (or there were none to reach is NOT success: a device that enrolls
+    /// one second after a block must still learn about the live block on
+    /// the next reconcile tick). The shadow's `delivered_ok` is only set on
+    /// a fully-successful delivery.
+    async fn deliver(&self, payload: &Value) -> bool {
         let devices: Vec<DeviceRecord> = self
             .registry
             .records()
             .into_iter()
-            .filter(|rec| !rec.revoked && rec.device_token.is_some() && !rec.expired())
+            .filter(DeviceRecord::push_eligible)
             .collect();
         if devices.is_empty() {
             debug!("push notification ready but no registered devices");
-            return;
+            return false;
         }
-        let payload = payload.clone();
+        let mut handles = Vec::with_capacity(devices.len());
         for device in devices {
             let provider = self.provider.clone();
             let registry = self.registry.clone();
             let token = device.device_token.clone().expect("filtered above");
             let payload = payload.clone();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    deliver_with_retry(provider.as_ref(), &token, &payload, registry.as_ref())
-                        .await
+            handles.push(tokio::spawn(async move {
+                match deliver_with_retry(provider.as_ref(), &token, &payload, registry.as_ref()).await
                 {
-                    warn!(key_id = %device.key_id, error = %e, "apns delivery failed");
+                    Ok(()) => true,
+                    Err(e) => {
+                        warn!(
+                            key_id = %device.key_id,
+                            device_token = %token_hash(&token),
+                            error = %e,
+                            "apns delivery failed"
+                        );
+                        false
+                    }
                 }
-            });
+            }));
         }
+        let mut all_ok = true;
+        for handle in handles {
+            all_ok &= handle.await.unwrap_or(false);
+        }
+        all_ok
     }
 }
 
@@ -340,7 +456,12 @@ async fn deliver_with_retry(
                 return Err(PushError::Unregistered);
             }
             Ok(Err(e)) if e.is_retryable() && attempt + 1 < RETRY_ATTEMPTS => {
-                warn!(attempt, error = %e, "apns retryable failure, backing off");
+                warn!(
+                    attempt,
+                    device_token = %token_hash(device_token),
+                    error = %e,
+                    "apns retryable failure, backing off"
+                );
                 continue;
             }
             Ok(Err(e)) => return Err(e),
@@ -769,5 +890,193 @@ mod tests {
         assert!(result.is_ok(), "transient failures retry to success");
         let (_token, p) = received.recv().await.unwrap();
         assert_eq!(p["type"], "blocked");
+    }
+
+    #[tokio::test]
+    async fn boot_seed_pushes_agents_already_blocked_before_start() {
+        // F6 regression: the watcher only reacts to deltas, so an agent
+        // that is ALREADY blocked when the daemon (re)starts must be
+        // notified by the boot seed — the store is populated BEFORE start().
+        let (store, registry, notifier, mut received) = harness();
+        device_with_token(&registry);
+        store
+            .apply(Change::upsert(blocked_agent("herdr:ses-boot", "sha256:boot", "boot?")))
+            .await;
+        notifier.clone().start();
+        notifier.ready().await;
+
+        let (_token, payload) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("boot seed pushes the already-blocked agent")
+            .expect("provider channel closed");
+        assert_eq!(payload["type"], "blocked");
+        assert_eq!(payload["agent_id"], "herdr:ses-boot");
+        assert_eq!(payload["prompt_hash"], "sha256:boot");
+    }
+
+    /// A provider that parks every push on a semaphore until the test adds
+    /// permits — lets a test stall the watcher mid-delivery while the store
+    /// floods. Each permit admits one push; the test adds exactly as many
+    /// as it expects to flow.
+    struct GatedProvider {
+        tx: mpsc::UnboundedSender<(String, Value)>,
+        gate: Arc<tokio::sync::Semaphore>,
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// What `GatedProvider::new` hands back: the provider, the delivery
+    /// receiver, the gate that releases queued pushes, and the in-flight
+    /// counter the concurrency assertions read.
+    type GatedHarness = (
+        Arc<GatedProvider>,
+        mpsc::UnboundedReceiver<(String, Value)>,
+        Arc<tokio::sync::Semaphore>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    );
+
+    impl GatedProvider {
+        fn new() -> GatedHarness {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Arc::new(Self {
+                    tx,
+                    gate: gate.clone(),
+                    in_flight: in_flight.clone(),
+                }),
+                rx,
+                gate,
+                in_flight,
+            )
+        }
+    }
+
+    impl ApnsProvider for GatedProvider {
+        fn push<'a>(
+            &'a self,
+            token: &'a str,
+            payload: &'a Value,
+        ) -> futures::future::BoxFuture<'a, Result<(), PushError>> {
+            Box::pin(async move {
+                self.in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _permit = self.gate.acquire().await.expect("gate never closed");
+                self.tx.send((token.to_string(), payload.clone())).map_err(|_| {
+                    PushError::Rejected {
+                        status: 500,
+                        reason: "mock receiver dropped".to_string(),
+                    }
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn lagged_watcher_re_seeds_and_never_loses_the_block() {
+        // N1: a burst that overflows the broadcast cap (256) drops queued
+        // deltas. The Lagged arm must re-seed from the snapshot, or an
+        // agent whose blocked delta was dropped stays Blocked forever with
+        // no notification. Deterministic via the gate: the watcher parks
+        // inside the FIRST delivery while the store floods past the cap.
+        let store = Store::new();
+        let (registry, _, _, _dir) = test_support::setup();
+        let (provider, mut received, gate, in_flight) = GatedProvider::new();
+        let notifier = Arc::new(Notifier::new(
+            store.clone(),
+            registry.clone(),
+            provider,
+            test_config(),
+        ));
+        notifier.clone().start();
+        notifier.ready().await;
+        device_with_token(&registry);
+
+        // First block parks the watcher inside delivery (gate closed).
+        store
+            .apply(Change::upsert(blocked_agent("herdr:lag-1", "sha256:lag", "go?")))
+            .await;
+        store.flush().await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while in_flight.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("watcher parks inside the first delivery");
+
+        // Flood past the broadcast cap while the watcher is parked: 300
+        // more deltas, none of them the blocked agent.
+        for i in 0..300 {
+            let mut a = blocked_agent(&format!("herdr:flood-{i}"), "sha256:flood", "noop?");
+            a.state = AgentState::Working;
+            a.waiting_on = None;
+            store.apply(Change::upsert(a)).await;
+            store.flush().await;
+        }
+
+        // Open the gate for exactly two pushes: the delta-path push and the
+        // post-Lagged re-seed push. A possible duplicate is the documented
+        // trade for never missing the block.
+        gate.add_permits(2);
+
+        let (_t1, p1) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("first push (delta path)")
+            .expect("provider channel closed");
+        assert_eq!(p1["agent_id"], "herdr:lag-1");
+        let (_t2, p2) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("second push (post-Lagged re-seed)")
+            .expect("provider channel closed");
+        assert_eq!(p2["agent_id"], "herdr:lag-1");
+        assert_eq!(p1["prompt_hash"], p2["prompt_hash"], "same claim re-pushed");
+    }
+
+    #[tokio::test]
+    async fn reconcile_retries_a_failed_delivery_until_it_succeeds() {
+        // N4: a delivery that exhausts its retries must NOT be recorded as
+        // handled — the reconcile tick re-pushes a Blocked agent whose
+        // shadow lacks `delivered_ok`, so the block heals instead of being
+        // silently swallowed. (Also covers N3's 400 PayloadTooLarge fallout:
+        // a permanently Rejected delivery is retried the same way.)
+        let store = Store::new();
+        let (registry, _, _, _dir) = test_support::setup();
+        device_with_token(&registry);
+        let (provider, mut received) = MockProvider::new();
+        // All three attempts fail (503), exhausting the retry ladder.
+        provider.fail_next(3);
+        let notifier = Arc::new(Notifier::new(
+            store.clone(),
+            registry.clone(),
+            provider,
+            test_config(),
+        ));
+        let mut shadow = HashMap::new();
+
+        store
+            .apply(Change::upsert(blocked_agent("herdr:n4", "sha256:n4", "go?")))
+            .await;
+        notifier.reconcile(&mut shadow).await;
+
+        let s = shadow.get("herdr:n4").expect("shadow recorded");
+        assert!(
+            !s.delivered_ok,
+            "a failed delivery is not recorded as handled"
+        );
+
+        // The next tick's provider is healthy (fail_next exhausted): the
+        // block is re-pushed and the shadow marks the claim delivered.
+        notifier.reconcile(&mut shadow).await;
+        let (_token, p) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("reconciled delivery lands")
+            .expect("provider channel closed");
+        assert_eq!(p["agent_id"], "herdr:n4");
+        assert_eq!(p["prompt_hash"], "sha256:n4");
+        assert!(
+            shadow.get("herdr:n4").is_some_and(|s| s.delivered_ok),
+            "a successful retry marks the claim handled"
+        );
     }
 }

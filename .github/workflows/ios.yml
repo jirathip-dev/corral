@@ -49,14 +49,25 @@ jobs:
   ios:
     name: ios
     needs: [changes]
-    # always() overrides the implicit "needs jobs must succeed" default,
-    # which would otherwise skip this job whenever `changes` itself was
-    # skipped (i.e. every non-pull_request run). On a pull_request, this
-    # only runs when ios/** actually changed; on any other event
-    # (workflow_dispatch), it always runs.
+    # !cancelled() overrides the implicit "needs jobs must succeed" default
+    # (which would otherwise skip this job whenever `changes` itself was
+    # skipped, i.e. every non-pull_request run) without also forcing the job
+    # to run on a genuinely cancelled workflow run — always() would do that,
+    # which defeats cancel-in-progress on the only 10x-billed job here and
+    # lets a cancelled run report a passing skipped ios.
+    #
+    # `needs.changes.result != 'success'` is the fail-*closed* half: if
+    # `changes` errors (a transient paths-filter API blip, a runner issue)
+    # its output is never set, so `needs.changes.outputs.ios == 'true'`
+    # alone would be false and ios would silently skip — reporting as a
+    # passing required check while a real ios/** change goes unbuilt. A
+    # filter that can't decide must fail toward running the expensive job,
+    # not skipping it.
     if: |
-      always() &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.ios == 'true')
+      !cancelled() &&
+      (github.event_name != 'pull_request' ||
+       needs.changes.result != 'success' ||
+       needs.changes.outputs.ios == 'true')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

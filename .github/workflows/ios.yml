@@ -8,19 +8,24 @@ on:
     paths:
       - "ios/**"
   # Manual trigger for operators to verify the gate without opening a PR
-  # (the branch-under-test need not touch ios/ for a dispatch).
+  # (the branch-under-test need not touch ios/ for a dispatch). Inert until
+  # this workflow file lands on main — workflow_dispatch only fires for
+  # workflow definitions GitHub has indexed off the default branch.
   workflow_dispatch:
 
 concurrency:
-  group: ios-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   ios:
     name: ios
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -28,6 +33,9 @@ jobs:
       - name: Generate Xcode project (XcodeGen)
         run: xcodegen generate --spec project.yml
         working-directory: ios
+
+      - name: Fail on Xcode project spec drift
+        run: git diff --exit-code -- ios/
 
       # Resolve a concrete simulator by UDID instead of hardcoding a device
       # name. The first run of this job failed with exit 70: it asked for
@@ -56,7 +64,7 @@ jobs:
             xcrun simctl list devices available
             exit 1
           fi
-          name="$(xcrun simctl list devices available | grep "$udid" | head -1 | sed 's/^ *//')"
+          name="$(xcrun simctl list devices available | grep "$udid" | head -1 | sed 's/^ *//' || true)"
           echo "Selected simulator: $name"
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
 

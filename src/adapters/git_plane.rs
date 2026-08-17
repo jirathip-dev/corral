@@ -1305,10 +1305,7 @@ mod tests {
         // EXISTS and is under neither root does not match.
         let outside = root.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        assert!(
-            !plane.watches(&outside),
-            "out-of-scope path does not match"
-        );
+        assert!(!plane.watches(&outside), "out-of-scope path does not match");
         let _ = fs::remove_dir_all(&root);
     }
 

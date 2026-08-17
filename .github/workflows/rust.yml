@@ -7,17 +7,20 @@ on:
     branches: ["**"]
 
 concurrency:
-  group: rust-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   rust:
     name: rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           components: rustfmt, clippy
 
@@ -42,13 +45,13 @@ jobs:
             libgl1-mesa-dev \
             libkeyutils-dev
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
       # cargo fmt --check currently FAILS on pre-existing formatting debt
-      # across the whole tree (hundreds of hunfs). Reformating the repo here
+      # across the whole tree (hundreds of hunks). Reformatting the repo here
       # would make this PR unreviewable and violates the additive-only
       # constraint, so this step is report-only (continue-on-error) and must
       # become a required gate only after a dedicated formatting commit lands

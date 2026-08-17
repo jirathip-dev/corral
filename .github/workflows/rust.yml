@@ -22,6 +22,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with

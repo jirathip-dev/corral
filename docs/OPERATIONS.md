@@ -130,6 +130,54 @@ corrald digest --since 1784210400000    # explicit window
 corrald digest --config-dir <path>      # non-default config dir
 ```
 
+## Cost / usage meter
+
+`GET /cost` reports per-provider spend over rolling 5h / weekly / monthly
+windows, read straight from each tool's own session store (read-only).
+
+> **The default caps are invented.** Nobody has supplied the real
+> opencode-go / claude / codex subscription limits, so every unset cap is a
+> placeholder and the response marks it `cap_is_placeholder: true` (the UI
+> prefixes such percentages with `~`). **Do not act on a percentage until
+> you have set the real cap.** A meter that looks authoritative while
+> resting on a guess is worse than no meter — the outage this feature
+> exists to prevent was a silent credit exhaustion.
+
+Set the real limits before trusting the alert:
+
+```sh
+CORRAL_COST_CAP_OPENCODE_5H_USD=...   CORRAL_COST_CAP_OPENCODE_WEEKLY_USD=...   CORRAL_COST_CAP_OPENCODE_MONTHLY_USD=...
+CORRAL_COST_CAP_CLAUDE_5H_USD=...     CORRAL_COST_CAP_CLAUDE_WEEKLY_USD=...     CORRAL_COST_CAP_CLAUDE_MONTHLY_USD=...
+CORRAL_COST_CAP_CODEX_5H_USD=...      CORRAL_COST_CAP_CODEX_WEEKLY_USD=...      CORRAL_COST_CAP_CODEX_MONTHLY_USD=...
+
+CORRAL_COST_WARN_THRESHOLD_PCT=70     # window status -> warning at/above
+CORRAL_COST_ALERT_THRESHOLD_PCT=90    # window status -> problem at/above
+```
+
+A provider whose store is absent reports `store_found: false` and renders
+as "no store" — distinct from `$0.00`, which would wrongly read as "you
+have spent nothing".
+
+## Fleet registry
+
+`corrald fleet` reads the control-plane registry describing each fleet's
+repo, local checkout, worktree dir, orchestrator, workers and per-role
+models. Read-only: it never edits the registry or touches a running agent.
+
+```sh
+corrald fleet list                    # one greppable line per fleet
+corrald fleet check                   # validate + verify each local checkout
+corrald fleet list --registry <path>  # override the default
+```
+
+The registry path is `$CORRAL_FLEETS_PATH`, else
+`~/.hermes/scripts/fleets.json`. Exit codes: **0** all good, **1** at least
+one fleet failed `check`, **2** usage or parse/validation error. Validation
+is strict on purpose — unknown fields, empty required fields, whitespace
+inside `name`/`gh_repo`, a `gh_repo` that is not `owner/repo`, a `local`
+starting with a bare `~`, and duplicate names all fail loudly. Full schema:
+[corral/G35-registry.md](corral/G35-registry.md).
+
 ## Security model summary
 
 - Loopback-only binding; `corrald` exits if asked to bind a routable

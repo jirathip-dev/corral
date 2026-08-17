@@ -4,13 +4,15 @@ Corral is the control plane for the herdr agent fleet: it reads every
 worktree / agent / PR / CI fact into a snapshot read model served over
 loopback HTTP + SSE, and lets a registered device drive the agents with
 typed, signed commands — prompt, interrupt, approve, read_tail, kill,
-attach. The daemon is `corrald`; a desktop fleet board (`corrald-ui`) is
-in flight on branch `w2/egui-desktop`.
+attach. The daemon is `corrald`, with a desktop fleet board (`corrald-ui`,
+egui) and an iOS notifier app alongside it.
 
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)
 git watcher ──┤ → integrator →   ├─ GET /history (event ring, ?since= &limit=)
-gh (GraphQL) ─┘   read model     ├─ POST /register, /step-up, /grants, GET /host-key, /audit
+gh (GraphQL) ─┘   read model     ├─ GET /cost   (per-provider spend, 5h/weekly/monthly)
+                                 ├─ POST /register, /step-up, /grants, GET /host-key, /audit
+                                 ├─ POST /device-token (APNs registration, signed)
                                  └─ POST /drive (Ed25519-signed, capability-gated)
 ```
 
@@ -54,14 +56,44 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   `curl | sh`, `~/.aws`, `~/.ssh`, `.env` need a 5-minute single-use
   biometric token. All writes land in a hash-chained audit log.
 
+## Beyond the board
+
+- **Event history + daily digest** — every status transition is appended at
+  the store-apply choke point to a rotating JSONL ring. Query a window with
+  `GET /history?since=<epoch-ms>&limit=<n>`, or take a per-agent daily
+  summary offline with `corrald digest`. See
+  [docs/OPERATIONS.md](docs/OPERATIONS.md).
+- **Cost / usage meter** — per-provider spend (opencode, claude, codex) over
+  rolling 5h / weekly / monthly windows on `GET /cost`, with a board COST
+  column and per-provider dashboard tiles.
+  **The plan caps and the claude/codex pricing table are placeholders** —
+  real subscription limits have not been supplied, the API marks every
+  synthetic cap `cap_is_placeholder: true`, and the UI prefixes those
+  percentages with `~`. Set `CORRAL_COST_CAP_*` before trusting the alert.
+- **Fleet registry** — `corrald fleet list` / `corrald fleet check` read the
+  `fleets.json` registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's
+  repo, worktree dir, workers and per-role models. Read-only in this phase;
+  see [docs/corral/G35-registry.md](docs/corral/G35-registry.md).
+- **APNs notifier (iOS)** — blocked/done transitions push to a registered
+  device, with canned lock-screen replies bound to the prompt's
+  `prompt_hash` and a biometric step-up on destructive payloads. Armed with
+  `CORRAL_APNS_*`; unconfigured, the daemon runs exactly as before.
+  **Not device-verified yet** — see [Status](#status).
+
 ## Development
 
 ```sh
-cargo build --release
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo build --release
 cargo test
 cargo test -p corrald-client -- --ignored   # R1–R10 conformance vs a real corrald
+cargo test -p corrald-ui --test live -- --ignored   # egui live tests
 ```
+
+The workspace is **non-virtual** with
+`default-members = [".", "crates/corrald-client", "clients/egui"]`, so a
+bare `cargo clippy`/`build`/`test` at the root covers all three crates.
 
 Module map, conventions (zero polling in the herdr adapter, additive-only
 schema), and how to add a capability: [docs/DEVELOPING.md](docs/DEVELOPING.md).
@@ -69,9 +101,19 @@ schema), and how to add a capability: [docs/DEVELOPING.md](docs/DEVELOPING.md).
 ## Status
 
 On `main`: P1–P3 (read model, data planes, drive plane, device-keypair
-auth) + P4 W1 (shared `corrald-client` crate with R1–R10 conformance).
-In flight: P4 W2 desktop UI (`corrald-ui`, branch `w2/egui-desktop`,
-unmerged), P4 W3 iOS app (branch `w3/ios-fleet-notifier`).
+auth), P4 (shared `corrald-client` crate with R1–R10 conformance, the
+`corrald-ui` desktop board, the iOS client), the read_tail content
+round-trip, repo grouping, PR/issue binding, and the event-history ring +
+daily digest.
+
+Landing alongside this documentation: hosted CI, the cost/usage meter, and
+the fleet registry commands.
+
+**Honest verification status of the APNs notifier:** the daemon and iOS code
+are written and unit-tested, but every test mocks the provider seam. Real
+APNs delivery, the lock-screen reply round-trip, and the Face ID step-up
+have **not** been exercised on hardware — they need a TestFlight build on a
+real device. Treat the notifier as unproven end to end until that happens.
 
 ## Docs
 

@@ -6,10 +6,14 @@ All quality-gate commands below were run and verified on main
 
 ## Workspace layout
 
-A cargo workspace at the root: `members = ["crates/corrald-client"]`,
-`default-members = [".", "crates/corrald-client"]` — so root-level
-build/clippy/test cover **both** crates. Additive-only: new crates go
-under `crates/`; `corrald` itself is never restructured.
+A **non-virtual** cargo workspace at the root:
+`members = ["crates/corrald-client", "clients/egui"]`,
+`default-members = [".", "crates/corrald-client", "clients/egui"]` — so
+root-level build/clippy/test cover **all three** crates. That
+`default-members` line is load-bearing: at a non-virtual workspace root
+cargo would otherwise operate on the root package only and silently skip
+the other two. Additive-only: new crates go under `crates/`; `corrald`
+itself is never restructured.
 
 ```
 src/main.rs              binary entrypoint: --socket/--port/--bind parsing
@@ -46,14 +50,30 @@ docs/corral/             P1–P4 briefs (history) + P4-conformance.md
                          (normative wire contract)
 ```
 
-## Quality gates (run all four before merging)
+## Quality gates (run all of these before merging)
 
 ```sh
-cargo build --release
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo build --release
 cargo test
-cargo test -p corrald-client
+cargo test -p corrald-client                       # client unit + wire pins
+cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
+
+These are the same gates hosted CI runs (`.github/workflows/rust.yml`), so
+a local pass is a good predictor of a green run — with two caveats worth
+knowing before you push:
+
+- **`cargo fmt --check` currently fails on pre-existing formatting debt.**
+  CI runs it `continue-on-error: true`, so it reports rather than blocks.
+  It becomes a real gate once the tree is reformatted in one isolated
+  commit. Do not reformat as a side effect of an unrelated PR.
+- **CI runs on Linux; most development here happens on macOS.** That
+  difference is not cosmetic — it has already caught a test that passed on
+  macOS only because `/var` is a symlink to `/private/var` while `/tmp` on
+  Linux is real. If a test touches canonicalized paths, assume the two
+  platforms disagree until CI says otherwise.
 
 Verified results on main:
 

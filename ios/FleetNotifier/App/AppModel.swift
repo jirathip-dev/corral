@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
     private var driveTask: Task<Void, Never>?
+    /// In-flight notification-reply validation (cold-start snapshot fetch).
+    private var notificationTask: Task<Void, Never>?
 
     private let defaults = UserDefaults.standard
 
@@ -95,12 +97,21 @@ final class AppModel: ObservableObject {
         fleet.onNewlyBlocked = { [weak self] agentId in
             Task { @MainActor in self?.notifyBlocked(agentId: agentId) }
         }
+        fleet.onNewlyDone = { [weak self] agentId in
+            Task { @MainActor in self?.notifyDone(agentId: agentId) }
+        }
         fleet.connect(client: client)
         notifier = LocalNotifier()
         Task { await notifier?.requestAuthorization() }
         notifier?.registerCategories()
-        notifier?.onAction = { [weak self] agentId, action in
-            self?.handleCannedAction(agentId: agentId, action: action, driveClient: driveClient)
+        notifier?.onReply = { [weak self] payload, action in
+            self?.handleNotificationReply(payload: payload, action: action, driveClient: driveClient)
+        }
+        // APNs registration (D16): the token is sent to the daemon by the
+        // AppDelegate; on the simulator this fails and the DEBUG local
+        // bridge (PushBridge) stays active.
+        Task { @MainActor in
+            UIApplication.shared.registerForRemoteNotifications()
         }
     }
 
@@ -109,19 +120,32 @@ final class AppModel: ObservableObject {
         fleet.persistCursor()
     }
 
-    // MARK: - Notifications
+    // MARK: - Notifications (D16)
 
+    /// Blocked hook. The local path fires ONLY through the DEBUG bridge
+    /// (`PushBridge`); release builds rely on APNs — the daemon pushes the
+    /// same payload the bridge would have.
     private func notifyBlocked(agentId: String) {
         guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else { return }
-        let claim = LocalNotifier.ClaimPayload(agentId: agent.agentId, kind: waiting.kind,
-                                               promptHash: waiting.promptHash,
-                                               approvalId: waiting.approvalId,
-                                               choices: waiting.choices)
-        notifier?.notifyBlocked(claim,
+        guard PushBridge.shouldPresentLocally else { return }
+        let payload = PushPayload.blocked(agent: agent, waiting: waiting)
+        notifier?.notifyBlocked(payload,
                                 title: agent.displayName ?? agent.agentId,
                                 prompt: waiting.prompt)
     }
 
+    /// Done hook (completion notification, no reply surface — D16).
+    private func notifyDone(agentId: String) {
+        guard let agent = fleet.agent(agentId) else { return }
+        guard PushBridge.shouldPresentLocally else { return }
+        let payload = PushPayload.done(agentId: agent.agentId)
+        notifier?.notifyDone(payload)
+    }
+
+    /// In-app canned reply (UI row buttons): the LIVE claim is authoritative
+    /// here — the row is rendered from the live agent record. (The lock
+    /// screen uses [`handleNotificationReply`], which binds to the
+    /// notification's OWN prompt_hash instead.)
     func handleCannedAction(agentId: String, action: CannedChoice.Action, driveClient: DriveClient) {
         guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else {
             banner = .error("no_waiting_approval", "The agent is no longer waiting; the claim is stale.")
@@ -132,6 +156,76 @@ final class AppModel: ObservableObject {
             return
         }
         driveApprove(agent: agent, choice: choice, driveClient: driveClient)
+    }
+
+    /// The lock-screen reply path: bound to the notification's OWN
+    /// `prompt_hash`. The reply is validated against the LIVE claim before
+    /// any signed bytes leave the phone — a stale notification (agent
+    /// moved on, or the prompt changed) surfaces a typed refusal here, and
+    /// the daemon would refuse it anyway (`stale_approval` /
+    /// `hash_mismatch`). Simple approve/deny/continue replies never carry
+    /// free text, so the lock-screen surface cannot trip the destructive
+    /// step-up gate; destructive drives happen in-app where Face ID runs.
+    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
+                                 driveClient: DriveClient) {
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let live = await self.resolveLiveAgent(payload: payload)
+            switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
+            case .failure(.stale):
+                self.banner = .error("stale_approval",
+                                     "This notification is stale: the agent is no longer waiting on an approval.")
+            case .failure(.hashMismatch):
+                self.banner = .error("hash_mismatch",
+                                     "Stale notification: the agent is now waiting on a different prompt (prompt_hash mismatch).")
+            case .success(let waiting):
+                guard let choice = CannedChoice.choice(for: action, kind: waiting.kind,
+                                                       choices: waiting.choices) else {
+                    self.banner = .error("cannot_approve_kind",
+                                         "This waiting state cannot be answered with \(action.rawValue).")
+                    return
+                }
+                self.driveApproveClaim(payload: payload, choice: choice, driveClient: driveClient)
+            }
+        }
+        notificationTask = task
+    }
+
+    /// Cold-start case: the app may have been killed before the action
+    /// tap, so the fleet store is empty — fetch the live snapshot once and
+    /// re-validate against it.
+    private func resolveLiveAgent(payload: PushPayload) async -> Agent? {
+        if let agent = fleet.agent(payload.agentId) { return agent }
+        guard let hostURL else { return nil }
+        let client = CorraldClient(host: hostURL)
+        guard let snapshot = try? await client.fetchSnapshot() else { return nil }
+        fleet.apply(.snapshot(snapshot))
+        return fleet.agent(payload.agentId)
+    }
+
+    /// Drive the approve with the NOTIFICATION's claim (approval_id +
+    /// prompt_hash from the payload — equal to the live claim post-check;
+    /// the binding stays explicit). Canned approve payloads are never
+    /// destructive, so no biometric step-up is prompted from the lock
+    /// screen (D13); the drive path still enforces it if the daemon
+    /// disagrees.
+    private func driveApproveClaim(payload: PushPayload, choice: String,
+                                   driveClient: DriveClient) {
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard let promptHash = payload.promptHash else {
+            banner = .error("bad_payload", "Notification carried no prompt_hash.")
+            return
+        }
+        let approvalId = payload.approvalId ?? Claim.approvalId(agentId: payload.agentId,
+                                                                promptHash: promptHash)
+        let approvePayload = CanonicalJSON.approvePayload(approvalId: approvalId,
+                                                          promptHash: promptHash,
+                                                          choice: choice)
+        drive(capability: .approve, target: payload.agentId, payload: approvePayload,
+              driveClient: driveClient, keyId: keyId, signer: signer)
     }
 
     // MARK: - Drive flows (D8 claims, byte-for-byte from the snapshot)
@@ -222,6 +316,7 @@ final class AppModel: ObservableObject {
 
     func enterDemo() {
         driveTask?.cancel()
+        notificationTask?.cancel()
         fleet.disconnect()
         fleet.reset()
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)

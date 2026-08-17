@@ -1,11 +1,26 @@
 /target
+*.ipa
+*.dSYM.zip
+fastlane/report.xml
+fastlane/certs/
+fastlane/README.md
+build/
 
-# Secrets — never track (the #36 leak was a tracked fastlane/.env whose
-# comment claimed it was gitignored; the CI secret scan enforces this).
+# Credential material — never tracked. The #36 leak was a tracked
+# fastlane/.env whose own first line claimed it was gitignored; the CI
+# secret scan (.github/workflows/secret-scan.yml) now enforces this against
+# the git index rather than trusting these rules.
+#
+# `.env.*` covers .env.local / .env.production / .env.development, the
+# common real-world names — the CI check matches the same set. The
+# `.example` files are the documented contract (key names, empty values)
+# and are the one exception, so they are re-included below.
 .env
 .env.*
 *.env
 !.env.example
+!*.env.example
+fastlane/.env
 *.p8
 *.p12
 *.mobileprovision

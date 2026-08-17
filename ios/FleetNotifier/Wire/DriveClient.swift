@@ -98,6 +98,29 @@ struct DriveClient: Sendable {
         return try JSONDecoder().decode(StepUpResponse.self, from: data)
     }
 
+    // MARK: - Push registration (D16)
+
+    /// `POST /device-token` — enroll (or clear, with an empty token) this
+    /// device's APNs token on the daemon. Signed proof of possession of
+    /// the device key (same canonical-bytes discipline as /step-up), so a
+    /// stolen token alone cannot re-register push on another device.
+    func registerDeviceToken(_ deviceToken: String, keyId: String,
+                             signer: DeviceSigner) async throws -> DeviceTokenResponse {
+        let ts = UInt64(Date().timeIntervalSince1970)
+        let requestBytes = CanonicalJSON.deviceTokenBytes(keyId: keyId, deviceToken: deviceToken, ts: ts)
+        let signature = try signer.sign(requestBytes).base64EncodedString()
+        let body = CanonicalJSON.deviceTokenBody(keyId: keyId, signatureB64: signature, requestBytes: requestBytes)
+        let (status, data) = try await post("/device-token", body: body)
+        guard status == 200 else {
+            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
+            throw DriveError.server(status: status,
+                                    kind: typed?.kind ?? "device_token_failed",
+                                    message: typed?.message ?? "device-token registration failed",
+                                    requestId: typed?.requestId)
+        }
+        return try JSONDecoder().decode(DeviceTokenResponse.self, from: data)
+    }
+
     // MARK: - Drive (R3–R9)
 
     /// Sign + send one envelope. `requestId` must be stable per logical

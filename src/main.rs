@@ -5,6 +5,9 @@
 //! - D33 digest, offline against the history ring:
 //!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
+//! - #35 phase 1, read-only fleet registry views:
+//!   `corrald fleet list|check [--registry <path>]`
+//!   (see `crate::fleet` for the registry format and validation).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,6 +23,7 @@ use corrald::api::AppState;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
+use corrald::fleet;
 use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
@@ -54,6 +58,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("digest") {
         run_digest(&args[1..]);
+        return;
+    }
+    if args.first().map(String::as_str) == Some("fleet") {
+        run_fleet(&args[1..]);
         return;
     }
 
@@ -117,6 +125,132 @@ fn run_digest(args: &[String]) {
     let events = ring.query(Some(since), None);
     let digest = Digest::compute(&events, since, now_millis());
     print!("{}", digest.render());
+}
+
+/// #35 phase 1: `corrald fleet list|check` — read-only views over the fleet
+/// registry (see `crate::fleet`). Both accept `--registry <path>` to
+/// override `$CORRAL_FLEETS_PATH` / `~/.hermes/scripts/fleets.json`.
+fn run_fleet(args: &[String]) {
+    let Some(sub) = args.first().map(String::as_str) else {
+        eprintln!("corrald fleet: need a subcommand: list | check (see --help)");
+        std::process::exit(2);
+    };
+    if matches!(sub, "--help" | "-h") {
+        print_fleet_help();
+        std::process::exit(0);
+    }
+    let mut registry: Option<PathBuf> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    eprintln!("corrald fleet {sub}: --registry needs a path");
+                    std::process::exit(2);
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("corrald fleet {sub}: unknown argument: {other} (see --help)");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    match sub {
+        "list" => run_fleet_list(&path),
+        "check" => run_fleet_check(&path),
+        other => {
+            eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn print_fleet_help() {
+    println!(
+        "corrald fleet — read-only views over the fleet registry (#35 phase 1)\n\n\
+         USAGE: corrald fleet list [--registry <path>]\n\
+         USAGE: corrald fleet check [--registry <path>]\n\n\
+         list    one line per fleet: name, gh_repo, worker count,\n\
+         paused flag, and the three model ids\n\
+         check   parse + validate, then verify each fleet's local\n\
+         dir exists and holds a .git entry; exit 0 when every\n\
+         fleet checks out, 1 when any fails, 2 on usage/parse error\n\n\
+         --registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
+         or ~/.hermes/scripts/fleets.json)"
+    );
+}
+
+/// `corrald fleet list`: one greppable line per fleet.
+fn run_fleet_list(path: &std::path::Path) {
+    let registry = match fleet::config::load(path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("corrald fleet list: {error}");
+            std::process::exit(2);
+        }
+    };
+    for fleet in &registry.fleets {
+        println!(
+            "{} {} workers={} paused={} orch={} impl={} review={}",
+            fleet.name,
+            fleet.gh_repo,
+            fleet.workers.len(),
+            fleet.paused,
+            fleet.models.orch,
+            fleet.models.impl_,
+            fleet.models.review
+        );
+    }
+}
+
+/// `corrald fleet check`: validate, then verify each fleet's `local_path()`
+/// exists, is a directory, and holds a `.git` entry ("repo resolves"). Exit
+/// 0 when every fleet checks out, 1 when any fails.
+fn run_fleet_check(path: &std::path::Path) {
+    let registry = match fleet::config::load(path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("corrald fleet check: {error}");
+            std::process::exit(2);
+        }
+    };
+    let mut failed = 0;
+    for fleet in &registry.fleets {
+        let local = fleet.local_path();
+        match check_local(&local) {
+            None => println!("ok {}", fleet.name),
+            Some(reason) => {
+                failed += 1;
+                println!("FAIL {}: {}", fleet.name, reason);
+            }
+        }
+    }
+    if failed > 0 {
+        std::process::exit(1);
+    }
+}
+
+/// Verify a resolved local path is a directory holding a `.git` entry.
+fn check_local(path: &std::path::Path) -> Option<String> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) => return Some(format!("cannot stat {}: {error}", path.display())),
+    };
+    if !meta.is_dir() {
+        return Some(format!("{} is not a directory", path.display()));
+    }
+    if !path.join(".git").exists() {
+        return Some(format!("{} has no .git entry", path.display()));
+    }
+    None
 }
 
 fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
@@ -214,6 +348,19 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         worktrees_root = %worktrees_root.display(),
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
+
+    // N6: arm the APNs notifier HERE — the daemon entrypoint — not as a
+    // side effect of router() (which is also the test constructor; reading
+    // CORRAL_APNS_* inside it made every API test read the ambient env and
+    // race the config tests). Disabled (unconfigured / bad p8) -> the
+    // daemon runs exactly as before, with a startup warning.
+    if let Some(notifier) =
+        corrald::push::Notifier::from_env(store.clone(), auth.registry.clone())
+    {
+        notifier.start();
+    } else {
+        tracing::info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");
+    }
 
     let app = corrald::api::router(AppState {
         store,

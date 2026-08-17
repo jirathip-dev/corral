@@ -1,5 +1,9 @@
 # Corral — P3 brief: the drive plane (full, security-critical)
 
+> **Historical phase brief** (shipped, superseded). Kept as design
+> history — current docs: README + docs/ARCHITECTURE.md,
+> docs/OPERATIONS.md.
+
 Branch: feat/corral-p3. P2 shipped the three data planes (PR #6, merged).
 DECISIONS.md (hermes-brain/plans/corral/) is the authoritative design.
 P3 is the WRITE side of corrald — everything from D3/D8/D10/D13 that turns

@@ -77,11 +77,11 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   dashboard tiles. **The plan caps and the claude/codex pricing table are
   placeholders** until real subscription limits are supplied — see
   [Cost meter (G34)](#cost-meter-g34) below.
-- **Fleet registry** — `corrald fleet list` / `corrald fleet check` read the
-  `fleets.json` registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's
-  repo, worktree dir, workers and per-role models. Read-only in this phase;
-  full schema in `docs/corral/G35-registry.md`, which lands with the
-  registry PR.
+- **Fleet registry** — `corrald fleet list|check` read, and `corrald fleet
+  add|remove` atomically rewrite, the `fleets.json` registry
+  (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree dir,
+  workers and per-role models. Full schema and exit codes in
+  `docs/corral/G35-registry.md`.
 - **APNs notifier (iOS)** — blocked/done transitions push to a registered
   device, with canned lock-screen replies bound to the prompt's
   `prompt_hash` and a biometric step-up on destructive payloads. Armed with

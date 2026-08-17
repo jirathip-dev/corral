@@ -166,9 +166,11 @@ fn print_fleet_help() {
         "corrald fleet — read/write views over the fleet registry (#35)\n\n\
          USAGE: corrald fleet list [--registry <path>]\n\
          USAGE: corrald fleet check [--registry <path>]\n\
-         USAGE: corrald fleet add --name <n> --gh <owner/repo> [--local <path>]\n\
-         \t[--worktree-dir <path>] [--orch <agent>] [--workers a,b,c]\n\
+         USAGE: corrald fleet add <name> --gh <owner/repo> [--local <path>]\n\
+         \t[--worktree <path>] [--orch <agent>] [--workers a,b,c]\n\
          \t[--models orch=..,impl=..,review=..] [--registry <path>]\n\
+         \t(<name> may also be passed as --name; --worktree-dir is an\n\
+         \talias for --worktree — both match the legacy fleet CLI)\n\
          USAGE: corrald fleet remove <name> [--registry <path>]\n\n\
          list     one line per fleet: name, gh_repo, worker count,\n\
          \tpaused flag, and the three model ids\n\
@@ -178,9 +180,15 @@ fn print_fleet_help() {
          add      resolve the repo via `gh repo view`, validate the\n\
          \tcandidate registry, then atomically insert the fleet;\n\
          \tdefaults: local ~/Projects/<name>, worktree_dir <name>,\n\
-         \torch orch-<name>, workers empty, models inherited from an\n\
-         \texisting fleet (or required via --models on an empty registry)\n\
+         \torch orch-<name>, workers empty, models inherited from the\n\
+         \tfirst existing fleet (or required via --models on an empty\n\
+         \tregistry). The registry file must exist — bootstrap one\n\
+         \twith: echo '{{\"fleets\": []}}' > <path>\n\
          remove   atomically drop exactly one fleet by name\n\n\
+         add/remove exit codes: 0 = written; 1 = refused or the write\n\
+         \tfailed (duplicate name, unresolvable repo, unknown name,\n\
+         \tfilesystem error) — the registry is left byte-identical;\n\
+         \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
          \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
          \tor ~/.hermes/scripts/fleets.json)"
     );
@@ -282,10 +290,13 @@ fn run_fleet_add(args: &[String]) {
                     usage("fleet add: --local needs a value");
                 }
             }
-            "--worktree-dir" => {
+            // `--worktree` is the legacy fleet CLI's spelling (#35 design
+            // principle 2: same names and semantics); `--worktree-dir`
+            // matches the registry field name. Both are accepted.
+            "--worktree" | "--worktree-dir" => {
                 worktree_dir = value();
                 if worktree_dir.is_none() {
-                    usage("fleet add: --worktree-dir needs a value");
+                    usage("fleet add: --worktree needs a value");
                 }
             }
             "--orch" => {
@@ -317,12 +328,22 @@ fn run_fleet_add(args: &[String]) {
                 print_fleet_help();
                 std::process::exit(0);
             }
-            other => usage(&format!("fleet add: unknown argument: {other}")),
+            other => {
+                // The legacy fleet CLI takes the name as a positional
+                // (`fleet add <name> --gh o/r`); accept that shape too.
+                if other.starts_with('-') {
+                    usage(&format!("fleet add: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage("fleet add: exactly one fleet name");
+                }
+                name = Some(other.to_string());
+            }
         }
         i += 1;
     }
     let Some(name) = name else {
-        usage("fleet add: --name is required");
+        usage("fleet add: a fleet name is required (positional or --name)");
     };
     let Some(gh_repo) = gh_repo else {
         usage("fleet add: --gh is required");
@@ -358,8 +379,10 @@ fn run_fleet_add(args: &[String]) {
     let fleet = match fleet::ops::add(&path, &opts, &fleet::ops::GhCli) {
         Ok(fleet) => fleet,
         Err(error) => {
+            // Exit contract: 1 = the operation was refused or the write
+            // failed; 2 = usage/parse/validation (see ConfigError::exit_code).
             eprintln!("corrald fleet add: {error}");
-            std::process::exit(2);
+            std::process::exit(error.exit_code());
         }
     };
     println!("added fleet {} ({})", fleet.name, fleet.gh_repo);
@@ -415,7 +438,7 @@ fn run_fleet_remove(args: &[String]) {
         }
         Err(error) => {
             eprintln!("corrald fleet remove: {error}");
-            std::process::exit(2);
+            std::process::exit(error.exit_code());
         }
     }
 }

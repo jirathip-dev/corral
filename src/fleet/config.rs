@@ -60,9 +60,10 @@ pub struct Models {
 /// `paused` is `#[serde(default)]` and intentionally SKIPPED when false, so a
 /// freshly added fleet (and any fleet a `load()` -> write round-trip touches)
 /// omits the field exactly as the existing live registries do. `true` is
-/// always written. This keeps `deny_unknown_fields`/`default` symmetric and
-/// the diff minimal; documented here because the brief asked for the decision
-/// to be stated explicitly, not buried in a derive.
+/// always written — dropping it would silently release the #35 ops-safety
+/// pause gate, which is why `add_writes_and_round_trips_through_load` pins
+/// its survival. Documented here because the decision must be stated
+/// explicitly, not buried in a derive.
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -103,7 +104,16 @@ impl Registry {
                     });
                 }
             }
-            for (field, value) in [("name", &fleet.name), ("gh_repo", &fleet.gh_repo)] {
+            // `models.*` join `name`/`gh_repo` in the whitespace-delimited
+            // `fleet list` line, so internal whitespace in any of them would
+            // corrupt that output contract the same way.
+            for (field, value) in [
+                ("name", &fleet.name),
+                ("gh_repo", &fleet.gh_repo),
+                ("models.orch", &fleet.models.orch),
+                ("models.impl", &fleet.models.impl_),
+                ("models.review", &fleet.models.review),
+            ] {
                 if value.chars().any(char::is_whitespace) {
                     return Err(ConfigError::Whitespace {
                         fleet: fleet_locator(index, fleet, field),
@@ -195,48 +205,64 @@ pub fn load(path: &Path) -> Result<Registry, ConfigError> {
 /// Atomically replace `path` with `registry` serialised back to the registry
 /// schema.
 ///
-/// Write discipline (#35 slice 1): a temp file in the SAME directory as the
-/// target (so the rename is same-filesystem), written, `sync_all()`-ed, then
-/// renamed over the target. The original is never truncated in place — on any
-/// error the original file is left byte-identical. Serialisation uses
-/// `serde_json::to_string_pretty` plus a trailing newline so the registry
-/// stays diffable in git. This is the first WRITE surface for `Fleet` /
-/// `Models` / `Registry`; the round-trip is exact: `Models::impl_` writes back
-/// as the JSON key `impl`, and `paused` is skipped when false (see
-/// [`is_false`]).
+/// Write discipline (#35 slice 1): a PID-suffixed temp file in the SAME
+/// directory as the (symlink-resolved) target, written, `sync_all()`-ed,
+/// renamed over the target, then the parent directory is fsynced so the
+/// rename survives power loss. The original is never truncated in place; the
+/// temp file is removed on every failure path, so any single failed write
+/// leaves the original byte-identical. The target's permissions are copied
+/// onto the temp file before the rename, so a `chmod 600` registry stays
+/// `600`. A symlinked registry is followed (the target file is replaced, the
+/// link survives).
+///
+/// KNOWN LIMIT (reviewed, deferred): there is no cross-process lock, so a
+/// concurrent writer — corrald or the legacy fleet tooling — can lose the
+/// race between `load()` and the rename (last rename wins, the other
+/// writer's fields are clobbered). Single-writer discipline is assumed for
+/// the #35 migration window; a lockfile is a follow-up.
+///
+/// Serialisation uses `serde_json::to_string_pretty` (2-space indent, struct
+/// field order) plus a trailing newline. The round-trip is semantically exact
+/// — `Models::impl_` writes back as the JSON key `impl`, `paused` is skipped
+/// when false (see [`is_false`]) — but the first write NORMALISES any
+/// hand-maintained formatting to this canonical shape.
 pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError> {
+    // Follow a symlinked registry so the rename replaces the target file,
+    // not the link (a dotfiles-checkout registry keeps working).
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let bytes = serialize(path, registry)?;
     let temp_path = parent.join(format!(
-        ".{}.corrald-tmp",
+        ".{}.corrald-tmp.{}",
         path.file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("fleets")
+            .unwrap_or("fleets"),
+        std::process::id()
     ));
-    {
-        let mut file = std::fs::File::create(&temp_path).map_err(|source| ConfigError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        file.write_all(&bytes)
-            .map_err(|source| ConfigError::Write {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        file.sync_all().map_err(|source| ConfigError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    }
-    std::fs::rename(&temp_path, path).map_err(|source| {
-        // The rename is the atomic commit point. If it fails the temp file is
-        // cleaned up and the original is untouched.
+    let write_error = |source: std::io::Error| {
+        // Every failure before the rename lands removes the partial temp
+        // file, so nothing dot-named accumulates in the registry directory.
         let _ = std::fs::remove_file(&temp_path);
         ConfigError::Write {
             path: path.to_path_buf(),
             source,
         }
-    })?;
+    };
+    {
+        let mut file = std::fs::File::create(&temp_path).map_err(write_error)?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            file.set_permissions(meta.permissions())
+                .map_err(write_error)?;
+        }
+        file.write_all(&bytes).map_err(write_error)?;
+        file.sync_all().map_err(write_error)?;
+    }
+    std::fs::rename(&temp_path, path).map_err(write_error)?;
+    // The rename is the atomic commit point; fsync the directory so the new
+    // entry is durable across power loss, not just process crash.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
@@ -284,7 +310,15 @@ pub enum ConfigError {
     /// A `fleet add` `--gh <owner/repo>` could not be resolved upstream.
     /// Non-zero exit from `gh repo view` — including `gh` being absent — is a
     /// refusal, never a silent skip (#35's "repo resolves before add").
-    AddRepoUnresolved { repo: String },
+    /// `detail` carries the first stderr line from `gh` when there is one,
+    /// so an expired token is distinguishable from a typo'd slug.
+    AddRepoUnresolved {
+        repo: String,
+        detail: Option<String>,
+    },
+    /// A `fleet add` on a registry with no existing fleet to inherit
+    /// `models` from, and no `--models` supplied.
+    AddNeedsModels,
     /// A `fleet remove <name>` named a fleet that is not in the registry.
     RemoveNotFound { name: String },
     /// The registry file could not be replaced atomically.
@@ -292,6 +326,28 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+impl ConfigError {
+    /// The exit code contract (docs/corral/G35-registry.md): 1 = the
+    /// operation failed (refusals and filesystem failures — retrying or
+    /// paging may be appropriate), 2 = usage error, unreadable/unparseable
+    /// registry, or validation failure (retrying is pointless).
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            ConfigError::DuplicateFleet { .. }
+            | ConfigError::AddRepoUnresolved { .. }
+            | ConfigError::AddNeedsModels
+            | ConfigError::RemoveNotFound { .. }
+            | ConfigError::Write { .. } => 1,
+            ConfigError::Io { .. }
+            | ConfigError::Parse { .. }
+            | ConfigError::Empty { .. }
+            | ConfigError::Whitespace { .. }
+            | ConfigError::GhRepoShape { .. }
+            | ConfigError::BadTilde { .. } => 2,
+        }
+    }
 }
 
 impl fmt::Display for ConfigError {
@@ -334,10 +390,21 @@ impl fmt::Display for ConfigError {
             ConfigError::DuplicateFleet { name } => {
                 write!(f, "duplicate fleet name {name:?}")
             }
-            ConfigError::AddRepoUnresolved { repo } => {
+            ConfigError::AddRepoUnresolved { repo, detail } => {
                 write!(
                     f,
                     "cannot add fleet: repo {repo:?} did not resolve via `gh repo view`"
+                )?;
+                if let Some(detail) = detail {
+                    write!(f, " ({detail})")?;
+                }
+                Ok(())
+            }
+            ConfigError::AddNeedsModels => {
+                write!(
+                    f,
+                    "cannot add fleet: the registry has no existing fleet to inherit \
+                     `models` from; pass --models orch=..,impl=..,review=.."
                 )
             }
             ConfigError::RemoveNotFound { name } => {
@@ -366,6 +433,7 @@ impl std::error::Error for ConfigError {
             | ConfigError::BadTilde { .. }
             | ConfigError::DuplicateFleet { .. }
             | ConfigError::AddRepoUnresolved { .. }
+            | ConfigError::AddNeedsModels
             | ConfigError::RemoveNotFound { .. } => None,
         }
     }

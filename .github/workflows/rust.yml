@@ -20,12 +20,28 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # No `toolchain:` or `components:` input on purpose (#48): with both
-      # omitted, the action installs what `rust-toolchain.toml` pins, so the
-      # repo has exactly ONE toolchain version and CI cannot drift from a
-      # local checkout. Re-adding an input here would silently override the
-      # file and reintroduce the drift this closes.
+      # `rust-toolchain.toml` is the single source of truth for the version
+      # (#48), but dtolnay/rust-toolchain does NOT read it — omitting the
+      # input fails the run with "'toolchain' is a required input". So the
+      # channel is parsed out of the file and handed to the action, which
+      # keeps ONE version in the repo and stops CI drifting from a local
+      # checkout. Do not hardcode a version below; edit the toml.
+      - name: Read pinned toolchain
+        id: pinned
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -1)"
+          if [ -z "$channel" ]; then
+            echo "::error::could not parse channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "Pinned toolchain: $channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.pinned.outputs.channel }}
+          components: rustfmt, clippy
 
       # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
       # the wayland/x11/GL system packages below. Keeping all three workspace

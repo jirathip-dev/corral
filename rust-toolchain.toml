@@ -11,11 +11,13 @@
 # "a deliberate toolchain-bump PR", where the reformat and any new lint
 # fixes land together and are reviewable as such.
 #
-# CI reads this file too — `.github/workflows/rust.yml` passes no explicit
-# toolchain, so there is exactly one version in the repo and local
-# development cannot silently diverge from the hosted gates. That matters
-# here: CI runs Linux, most development happens on macOS, and that gap has
-# already produced one bug (#43).
+# CI reads this file too: `.github/workflows/rust.yml` parses `channel`
+# out of it and hands that to dtolnay/rust-toolchain, which does NOT read
+# the file itself (omitting its `toolchain` input fails the run). So there
+# is exactly one version in the repo and local development cannot silently
+# diverge from the hosted gates. That matters here: CI runs Linux, most
+# development happens on macOS, and that gap has already produced one bug
+# (#43). Change the version HERE, never in the workflow.
 #
 # To bump: raise `channel`, run `cargo fmt` and `cargo clippy --all-targets
 # -- -D warnings`, and land the result as its own PR.

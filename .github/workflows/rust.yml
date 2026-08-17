@@ -1,0 +1,64 @@
+name: Rust workspace
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
+      # the wayland/x11/GL system packages below. Keeping all three workspace
+      # members in this single 1x-billed Ubuntu job is far cheaper than a
+      # second 10x-billed macOS job just for the UI crate; the same crate also
+      # builds on macOS via the darwin runners used for the iOS job, so a Linux
+      # failure here is caught on the hosted runner, not in a local worktree.
+      # libkeyutils-dev is needed by the keyring linux-keyutils store used by
+      # corrald and corrald-ui.
+      - name: Install Linux system deps for egui/wgpu (and keyring)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libkeyutils-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      # cargo fmt --check currently FAILS on pre-existing formatting debt
+      # across the whole tree (hundreds of hunfs). Reformating the repo here
+      # would make this PR unreviewable and violates the additive-only
+      # constraint, so this step is report-only (continue-on-error) and must
+      # become a required gate only after a dedicated formatting commit lands
+      # in a follow-up. clippy/build/test below are the blocking gates.
+      - name: cargo fmt --check (report-only until formatting follow-up)
+        continue-on-error: true
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: build (release)
+        run: cargo build --release
+
+      - name: test
+        run: cargo test

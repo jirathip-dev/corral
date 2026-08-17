@@ -1,0 +1,43 @@
+name: iOS build
+
+on:
+  # PR-triggered only and path-filtered on ios/** so the 10x-billed macOS
+  # runner never fires for Rust/docs-only changes.
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "ios/**"
+  # Manual trigger for operators to verify the gate without opening a PR
+  # (the branch-under-test need not touch ios/ for a dispatch).
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: ios
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project (XcodeGen)
+        run: xcodegen generate --spec project.yml
+        working-directory: ios
+
+      # Concrete simulator destination, never generic/platform=iOS Simulator:
+      # the #36 review established the generic destination makes xcodebuild
+      # silently no-op its test run instead of executing unit tests.
+      - name: Build (concrete simulator destination)
+        run: |
+          xcodebuild build \
+            -project FleetNotifier.xcodeproj \
+            -scheme FleetNotifier \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO
+        working-directory: ios

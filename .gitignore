@@ -1,1 +1,11 @@
 /target
+
+# Secrets — never track (the #36 leak was a tracked fastlane/.env whose
+# comment claimed it was gitignored; the CI secret scan enforces this).
+.env
+*.env
+!*.env.example
+*.p8
+*.p12
+*.mobileprovision
+*.cer

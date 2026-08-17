@@ -1,5 +1,8 @@
 # Corral — P2 brief: three data planes (Rust)
 
+> **Historical phase brief** (shipped, superseded). Kept as design
+> history — current docs: README + docs/ARCHITECTURE.md.
+
 Branch: feat/corral-p2 (worktrees per workstream). P1 shipped corrald's
 canonical model + herdr push adapter + snapshot/SSE (PR #2, merged).
 DECISIONS.md (hermes-brain/plans/corral/) is the authoritative design.

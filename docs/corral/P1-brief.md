@@ -1,5 +1,9 @@
 # Corral — P1 brief: corrald core (Rust)
 
+> **Historical phase brief** (shipped, superseded). Kept as design
+> history — current docs: README + docs/QUICKSTART.md, ARCHITECTURE.md,
+> OPERATIONS.md, DEVELOPING.md.
+
 Branch: feat/corral. Product: Corral — a tool-agnostic agent-fleet control
 plane (monitor, approve, and drive AI coding agents from iOS/macOS/web/
 Telegram). Neutral by design: herdr is ONE adapter of five (herdr, claude,

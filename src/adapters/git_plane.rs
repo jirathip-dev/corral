@@ -43,7 +43,8 @@
 //! - Events are keyed by worktree path (`/Users/.../corral-p2-ws2`), never
 //!   by `.git` internals.
 //! - The plane is strictly read-only: only `status` / `rev-parse` /
-//!   `worktree list` subprocesses (`--no-optional-locks`), never a mutation.
+//!   `log` / `worktree list` subprocesses (`--no-optional-locks`), never a
+//!   mutation.
 //! - Boot: the first registry scan reports the current worktree set as
 //!   WorktreeAdded facts (path-keyed and idempotent for the consumer — WS3
 //!   upserts on the path), so a worktree created during the boot scan can
@@ -83,6 +84,20 @@ const RESCAN_THROTTLE_MILLIS: u64 = 1000;
 /// `git worktree add` registers the entry *while* the events are still
 /// arriving, so the first rescan can race the registration.
 const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
+
+/// Total `git` subprocess invocations since the test binary started (G21
+/// acceptance 2: the head fields must add ZERO git calls — the probe tests
+/// assert the per-probe delta stays at three).
+#[cfg(test)]
+static GIT_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Serializes the probe tests (G21 re-review F2): `GIT_CALLS` is shared
+/// module state, so the delta assertion must not run while another probe
+/// test's counted invocations land in the before/after window. Both probe
+/// tests hold this lock for their whole body — no other test in the module
+/// (or anywhere — `run_git` is module-private) increments the counter.
+#[cfg(test)]
+static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // State
@@ -135,6 +150,9 @@ struct PlaneState {
 struct Probe {
     branch: String,
     commit: String,
+    /// First line of the commit message (P4 G21), read by the SAME `git log`
+    /// invocation that resolves `commit` — zero extra subprocesses.
+    subject: Option<String>,
     status: GitStatus,
 }
 
@@ -564,12 +582,14 @@ impl GitPlane {
                     worktree: wt.to_path_buf(),
                     branch: probe.branch.clone(),
                     commit: probe.commit.clone(),
+                    subject: probe.subject.clone(),
                 });
                 if commit_changed && !branch_changed && probe.branch != "HEAD" {
                     events.push(GitEvent::CommitOnBranch {
                         worktree: wt.to_path_buf(),
                         branch: probe.branch.clone(),
                         commit: probe.commit.clone(),
+                        subject: probe.subject.clone(),
                     });
                 }
             }
@@ -952,7 +972,7 @@ fn resolve_gitdir(wt: &Path) -> Option<PathBuf> {
     None
 }
 
-/// One worktree snapshot. Two `git` subprocesses; never mutates anything
+/// One worktree snapshot. Three `git` subprocesses; never mutates anything
 /// (`--no-optional-locks` so `status` cannot rewrite the index).
 async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
     if !wt.is_dir() {
@@ -960,17 +980,39 @@ async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
     }
     let branch =
         run_git(wt, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(ProbeError::Git)?;
-    let commit = run_git(wt, &["rev-parse", "HEAD"]).await.map_err(ProbeError::Git)?;
+    // P4 G21: ONE invocation resolves both the head commit AND its first-line
+    // subject (`%H%n%s`), so `head_sha`/`head_subject` on the snapshot cost
+    // zero extra git calls. Fails like `rev-parse HEAD` on an unborn HEAD
+    // (exit 128), keeping the unborn case a clean probe failure.
+    //
+    // Parity caveat (G21 re-review F3): on a PARTIAL/TREELESS clone whose
+    // HEAD commit object is missing, `git log -1` may attempt a lazy fetch
+    // (bounded by GIT_TIMEOUT) where `rev-parse HEAD` would fail fast —
+    // acceptable for herdr-managed worktrees, and the probe stays
+    // all-or-nothing (a head-read failure suppresses the whole fact, like
+    // any other probe failure).
+    let head =
+        run_git(wt, &["log", "-1", "--format=%H%n%s"]).await.map_err(ProbeError::Git)?;
+    let mut lines = head.lines();
+    let commit = lines.next().unwrap_or_default().trim().to_string();
+    let subject = lines
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let status =
         run_git(wt, &["status", "--porcelain=v1", "-b"]).await.map_err(ProbeError::Git)?;
     Ok(Probe {
         branch: branch.trim().to_string(),
-        commit: commit.trim().to_string(),
+        commit,
+        subject,
         status: parse_status(&status),
     })
 }
 
 async fn run_git(wt: &Path, args: &[&str]) -> Result<String, String> {
+    #[cfg(test)]
+    GIT_CALLS.fetch_add(1, Ordering::Relaxed);
     let output = tokio::time::timeout(
         GIT_TIMEOUT,
         Command::new("git")
@@ -1277,6 +1319,88 @@ mod tests {
         fs::create_dir_all(&rel_gitdir).unwrap();
         fs::write(rel.join(".git"), "gitdir: ../commondir/worktrees/rel\n").unwrap();
         assert_eq!(resolve_gitdir(&rel).expect("relative form resolves"), fs::canonicalize(&rel_gitdir).unwrap());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A throwaway repo with one committed file, returning (root, HEAD sha).
+    fn scratch_repo(tag: &str) -> (PathBuf, String) {
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-probe-{}-{}-{tag}",
+            std::process::id(),
+            now_millis()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("git subprocess runs")
+        };
+        assert!(git(&["init", "-b", "main"]).status.success());
+        assert!(git(&["config", "user.email", "plane@test.local"]).status.success());
+        assert!(git(&["config", "user.name", "Plane Test"]).status.success());
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        assert!(git(&["add", "README.md"]).status.success());
+        assert!(git(&["commit", "-m", "initial"]).status.success());
+        let sha = git(&["rev-parse", "HEAD"]).stdout;
+        let sha = String::from_utf8_lossy(&sha).trim().to_string();
+        (root, sha)
+    }
+
+    #[tokio::test]
+    async fn probe_returns_sha_and_first_line_subject_in_three_git_calls() {
+        // F2: serialize against the other probe test — GIT_CALLS is shared.
+        let _guard = PROBE_LOCK.lock().await;
+        // G21 acceptance 2: the head fields ride the commit probe — the
+        // subject is read by the SAME `git log` that resolves the sha, so a
+        // probe is exactly three git invocations (branch, head+subject,
+        // status), never four.
+        let (root, _) = scratch_repo("head-fields");
+        // Multi-line message: the subject is the FIRST line only.
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("git subprocess runs")
+        };
+        assert!(git(&["commit", "--allow-empty", "-m", "second line\n\nbody paragraph"]).status.success());
+        let sha = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout).trim().to_string();
+
+        let before = GIT_CALLS.load(Ordering::Relaxed);
+        let probe = probe_worktree(&root).await.expect("probe succeeds");
+        let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
+        assert_eq!(delta, 3, "head_sha/head_subject must add zero git calls (probe = 3)");
+        assert_eq!(probe.commit, sha, "probe resolves the same HEAD sha as rev-parse");
+        assert_eq!(probe.subject.as_deref(), Some("second line"), "subject is the commit's first line");
+        assert_eq!(probe.branch, "main");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn probe_survives_unborn_head_with_null_equivalents() {
+        // F2: serialize against the other probe test — GIT_CALLS is shared.
+        let _guard = PROBE_LOCK.lock().await;
+        // Unborn/empty checkout: HEAD has no commit, so the head probe fails
+        // like `rev-parse HEAD` did — the plane emits no head facts and the
+        // snapshot's head_sha/head_subject stay null (acceptance 1).
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-unborn-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-b", "main"])
+            .output()
+            .expect("git subprocess runs");
+        assert!(init.status.success());
+        assert!(probe_worktree(&root).await.is_err(), "unborn HEAD must fail the probe");
         let _ = fs::remove_dir_all(&root);
     }
 }

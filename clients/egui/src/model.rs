@@ -3,7 +3,7 @@
 //! normative contract; the daemon's serde shapes are mirrored 1:1 here so
 //! snapshot/delta payloads decode verbatim.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +133,18 @@ pub struct Attachment {
     pub reference: String,
 }
 
+/// Authoritative GitHub issue ref joined into the snapshot from the PR's
+/// `closingIssuesReferences` (mirrors corrald's `GhIssueRef`; G23 wires the
+/// daemon join — this client mirror decodes it via `#[serde(default)]` on
+/// [`Agent::issues`], so daemons without the join stay empty).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueRef {
+    pub repo: String,
+    pub number: u64,
+    pub state: String,
+    pub title: String,
+}
+
 /// Canonical agent record (mirrors corrald's `Agent`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Agent {
@@ -152,6 +164,12 @@ pub struct Agent {
     pub attachment: Option<Attachment>,
     pub display_name: Option<String>,
     pub title: Option<String>,
+    /// Authoritative issues this work closes (daemon-joined
+    /// `closingIssuesReferences`, G23). Empty on older daemons — the
+    /// branch-name inference (infer.rs) then validates against an empty
+    /// set and stays flagged (`~#N?`), never asserted.
+    #[serde(default)]
+    pub issues: Vec<GhIssueRef>,
 }
 
 impl Agent {
@@ -160,6 +178,12 @@ impl Agent {
             .clone()
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| self.agent_id.clone())
+    }
+
+    /// The fetched authoritative issue numbers for this agent — the set
+    /// branch-name inference validates against (D21: display-only).
+    pub fn known_issue_numbers(&self) -> BTreeSet<u64> {
+        self.issues.iter().map(|i| i.number).collect()
     }
 }
 
@@ -343,6 +367,61 @@ mod tests {
         assert_eq!(agent.workspace.ci_status, Some(CiStatus::Pending));
         assert_eq!(agent.workspace.pr_number, Some(12));
         assert!(agent.workspace.dirty);
+        assert!(
+            agent.issues.is_empty(),
+            "absent `issues` field decodes empty (backward compat, pre-G23 daemon)"
+        );
+        assert!(agent.known_issue_numbers().is_empty());
+    }
+
+    #[test]
+    fn snapshot_decodes_authoritative_closing_issue_refs() {
+        // G23 join: `issues: [GhIssueRef]` on the agent record. The client
+        // mirrors corrald's GhIssueRef (repo/number/state/title) and the
+        // known-issue set feeds D21 validation (display-only).
+        let wire = serde_json::json!({
+            "schema_version": 3,
+            "rev": 1,
+            "generated_at": 0,
+            "agents": {
+                "herdr:a": {
+                    "agent_id": "herdr:a",
+                    "source": "herdr",
+                    "tool": "claude",
+                    "state": "working",
+                    "reason": null,
+                    "seq": 2,
+                    "ts": 0,
+                    "capabilities": [],
+                    "waiting_on": null,
+                    "cost": null,
+                    "parent_id": null,
+                    "host": null,
+                    "workspace": {
+                        "repo": "corral",
+                        "branch": "issue-24-issue-inference"
+                    },
+                    "attachment": null,
+                    "display_name": null,
+                    "title": null,
+                    "issues": [
+                        {
+                            "repo": "jirathip-k/corral",
+                            "number": 24,
+                            "state": "open",
+                            "title": "Branch-name issue inference"
+                        }
+                    ]
+                }
+            }
+        });
+        let snap: Snapshot = serde_json::from_value(wire).unwrap();
+        let agent = snap.agents.get("herdr:a").unwrap();
+        assert_eq!(agent.issues.len(), 1);
+        assert_eq!(agent.issues[0].number, 24);
+        assert_eq!(agent.issues[0].repo, "jirathip-k/corral");
+        assert_eq!(agent.issues[0].title, "Branch-name issue inference");
+        assert_eq!(agent.known_issue_numbers(), BTreeSet::from([24]));
     }
 
     #[test]
@@ -381,6 +460,7 @@ mod tests {
             attachment: None,
             display_name: Some("w2/egui-desktop".into()),
             title: None,
+            issues: vec![],
         };
         assert_eq!(a.display(), "w2/egui-desktop");
         a.display_name = Some(String::new());

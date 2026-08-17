@@ -5,14 +5,23 @@
 //! ("foreground" = at least one SSE subscriber). Every delta bumps the global
 //! monotonic `rev` and is retained in a bounded history ring so SSE clients
 //! can resume via `Last-Event-ID`.
+//!
+//! D23: the `Change::Upsert` arm of [`Store::apply`] is ALSO the single
+//! choke point where status transitions land (every caller is the herdr
+//! adapter; the integrator merges workspace fields via [`Store::update_where`]
+//! and never touches `state`). A state change (old != new) is pushed into the
+//! persistent [`crate::history::HistoryRing`] — zero polling, zero extra git
+//! calls, one page-cache write syscall.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{broadcast, watch, Mutex, Notify};
 
 use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
+use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
 
 /// How many coalesced delta batches to retain for SSE resume.
 const HISTORY_CAP: usize = 1024;
@@ -48,6 +57,9 @@ pub struct Store {
     /// convergence trigger — a `watch`, NOT a broadcast receiver, so it
     /// cannot pin `subscriber_count`/the gh plane's cadence).
     version: watch::Sender<u64>,
+    /// D23: persistent status-transition history (in-memory only when no dir
+    /// was configured; see [`HistoryRing::open`]).
+    history: HistoryRing,
 }
 
 impl Default for Store {
@@ -59,6 +71,7 @@ impl Default for Store {
             tx,
             notify: Arc::new(Notify::new()),
             version,
+            history: HistoryRing::in_memory(RotationPolicy::default()),
         }
     }
 }
@@ -68,15 +81,50 @@ impl Store {
         Self::default()
     }
 
+    /// Daemon entry: history persists under `dir` (see [`crate::history`]).
+    /// `Store::new()` stays in-memory-only for tests and read-path defaults.
+    pub fn with_history_dir(dir: PathBuf) -> Self {
+        Self {
+            history: HistoryRing::open(dir, RotationPolicy::default()),
+            ..Self::default()
+        }
+    }
+
+    /// D23: the status-transition history ring (persistent when the store
+    /// was built with [`Store::with_history_dir`]).
+    pub fn history(&self) -> HistoryRing {
+        self.history.clone()
+    }
+
     /// Apply one change. State updates immediately; publishing waits for the
     /// coalesce tick. Upserts within one window dedupe by agent_id (the
     /// latest record wins), so memory stays bounded by the agent count even
     /// under a burst.
+    ///
+    /// D23: an actual state transition (old != new, or a first-seen agent)
+    /// is recorded into the history ring while the lock is held, so ring
+    /// order matches apply order exactly.
     pub async fn apply(&self, change: Change) {
         let mut inner = self.inner.lock().await;
+        let mut event: Option<HistoryEvent> = None;
         match change {
             Change::Upsert(agent) => {
                 let agent_id = agent.agent_id.clone();
+                let old_state = inner.agents.get(&agent_id).map(|a| a.state);
+                if old_state != Some(agent.state) {
+                    event = Some(HistoryEvent {
+                        ts: now_millis(),
+                        pane_id: agent
+                            .attachment
+                            .as_ref()
+                            .map(|a| a.reference.clone()),
+                        agent_id: Some(agent_id.clone()),
+                        old_status: old_state,
+                        new_status: agent.state,
+                        source: agent.source.clone(),
+                        repo: agent.workspace.repo.clone(),
+                    });
+                }
                 inner.pending_upd.insert(agent_id.clone(), (*agent).clone());
                 inner.agents.insert(agent_id, *agent);
             }
@@ -94,6 +142,9 @@ impl Store {
         self.notify.notify_one();
         let next = self.version.borrow().wrapping_add(1);
         let _ = self.version.send(next);
+        if let Some(event) = event {
+            self.history.push(event);
+        }
     }
 
     /// Atomically read-compare-apply a transformation to every record

@@ -4,9 +4,9 @@
 //! round-trip per poll; measured ~1.4s live against the real API — the
 //! brief's 531ms estimate predates the 2026 schema's rollup `contexts`
 //! pagination, so treat <2s as the budget target) and emits [`GhRepoState`]
-//! facts into the [`PlaneSink`]: open PRs (state, mergeability, head oid, CI
-//! status collapsed from `statusCheckRollup`), recent issue refs, default
-//! branch.
+//! facts into the [`PlaneSink`]: open PRs (state, mergeability, head oid,
+//! head branch name, closing-issue refs, CI status collapsed from
+//! `statusCheckRollup`), recent issue refs, default branch.
 //!
 //! Cadence rule (acceptance criterion 2):
 //! - **Zero polling** until at least one SSE client has EVER connected this
@@ -100,6 +100,9 @@ pub const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const PR_LIMIT: usize = 20;
 /// Recent issues per repo per poll (open + closed, by updated).
 const ISSUE_LIMIT: usize = 10;
+/// Issues a PR closes, per PR per poll (the authoritative issue-linkage
+/// surface, #23).
+const CLOSING_ISSUES_LIMIT: usize = 10;
 /// Rollup context items (check runs + commit statuses) per PR per poll.
 const CONTEXTS_LIMIT: usize = 50;
 
@@ -625,6 +628,10 @@ fragment GhPlaneRepo on Repository {{
       state
       mergeable
       headRefOid
+      headRefName
+      closingIssuesReferences(first: {CLOSING_ISSUES_LIMIT}) {{
+        nodes {{ number title }}
+      }}
       statusCheckRollup {{
         state
         contexts(first: {CONTEXTS_LIMIT}) {{
@@ -674,7 +681,19 @@ struct PrWire {
     state: Option<String>,
     mergeable: Option<String>,
     head_ref_oid: Option<String>,
+    head_ref_name: Option<String>,
+    closing_issues_references: Option<NodesWire<ClosingIssueWire>>,
     status_check_rollup: Option<RollupWire>,
+}
+
+/// One node of a PR's `closingIssuesReferences` (the #23 authoritative
+/// linkage): number + title only — the same-poll repo-level `issues` leg
+/// enriches the state, so no extra fields hit the wire.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ClosingIssueWire {
+    number: u64,
+    title: Option<String>,
 }
 
 /// `statusCheckRollup` (2026 schema): a single object carrying the aggregate
@@ -784,11 +803,17 @@ fn collapse_items(items: &[RollupItemWire]) -> Option<String> {
 }
 
 fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
+    let issues_wire: &[IssueWire] = wire
+        .issues
+        .as_ref()
+        .and_then(|i| i.nodes.as_ref())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let mut prs: Vec<GhPrState> = wire
         .pull_requests
         .as_ref()
         .and_then(|p| p.nodes.as_ref())
-        .map(|nodes| nodes.iter().map(|pr| normalize_pr(repo, pr)).collect())
+        .map(|nodes| nodes.iter().map(|pr| normalize_pr(repo, pr, issues_wire)).collect())
         .unwrap_or_default();
     let mut issues: Vec<GhIssueRef> = wire
         .issues
@@ -826,7 +851,35 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
     }
 }
 
-fn normalize_pr(repo: TrackedRepo, pr: &PrWire) -> GhPrState {
+fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> GhPrState {
+    // #23: the authoritative linkage is the PR's closingIssuesReferences.
+    // `state` is not on the fragment — it is enriched from the SAME poll's
+    // repo-level issues fetch (already fetched, zero extra requests) when
+    // the issue is among the recent ones; otherwise the honest
+    // "cannot tell" sentinel, never a guess.
+    let closing_issues = pr
+        .closing_issues_references
+        .as_ref()
+        .and_then(|c| c.nodes.as_ref())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|closing| {
+                    let state = repo_issues
+                        .iter()
+                        .find(|issue| issue.number == closing.number)
+                        .and_then(|issue| issue.state.clone())
+                        .unwrap_or_else(|| "UNKNOWN".to_string());
+                    GhIssueRef {
+                        repo: repo.name.to_string(),
+                        number: closing.number,
+                        state,
+                        title: closing.title.clone().unwrap_or_default(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     GhPrState {
         repo: repo.name.to_string(),
         pr_number: pr.number,
@@ -835,6 +888,8 @@ fn normalize_pr(repo: TrackedRepo, pr: &PrWire) -> GhPrState {
         mergeable: pr.mergeable.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
         ci_status: collapse_ci(pr.status_check_rollup.as_ref()),
         head_sha: pr.head_ref_oid.clone().unwrap_or_default(),
+        head_branch: pr.head_ref_name.clone().unwrap_or_default(),
+        closing_issues,
     }
 }
 
@@ -854,6 +909,13 @@ mod tests {
         }
         assert_eq!(query.matches("repository(owner:").count(), TRACKED_REPOS.len());
         assert!(query.contains("fragment GhPlaneRepo on Repository"));
+        // #22/#23: the branch-fallback and issue-linkage surfaces ride the
+        // SAME fragment — one extra field each, never an extra request.
+        assert!(query.contains("headRefName"), "branch-fallback key (issue #22)");
+        assert!(
+            query.contains("closingIssuesReferences(first: 10)"),
+            "authoritative issue linkage (issue #23)"
+        );
         assert!(!query.contains("mutation"), "never a mutation (D-083)");
         assert_eq!(
             query.matches('{').count(),
@@ -937,6 +999,11 @@ mod tests {
                     "state": "OPEN",
                     "mergeable": "CONFLICTING",
                     "headRefOid": "abc123",
+                    "headRefName": "ws2/gh-plane",
+                    "closingIssuesReferences": { "nodes": [
+                        { "number": 4, "title": "P2 planes" },
+                        { "number": 99, "title": "long-closed" }
+                    ]},
                     "statusCheckRollup": {
                         "state": "SUCCESS",
                         "contexts": { "nodes": [
@@ -951,6 +1018,8 @@ mod tests {
                     "state": "OPEN",
                     "mergeable": "MERGEABLE",
                     "headRefOid": null,
+                    "headRefName": null,
+                    "closingIssuesReferences": null,
                     "statusCheckRollup": { "state": "PENDING", "contexts": { "nodes": [] } }
                 }
             ]},
@@ -975,10 +1044,23 @@ mod tests {
         assert_eq!(state.prs[0].mergeable, "MERGEABLE");
         assert_eq!(state.prs[0].ci_status, "PENDING", "empty contexts -> aggregate state");
         assert_eq!(state.prs[0].head_sha, "", "null headRefOid -> empty string");
+        assert_eq!(state.prs[0].head_branch, "", "null headRefName -> empty string");
+        assert!(state.prs[0].closing_issues.is_empty(), "null closing refs -> empty");
         assert_eq!(state.prs[1].pr_number, 7);
         assert_eq!(state.prs[1].mergeable, "CONFLICTING");
         assert_eq!(state.prs[1].ci_status, "SUCCESS");
         assert_eq!(state.prs[1].head_sha, "abc123");
+        assert_eq!(state.prs[1].head_branch, "ws2/gh-plane");
+        // #23: closing refs are enriched with the state of the SAME poll's
+        // repo-level issues fetch when the number is present; issues outside
+        // the recent set keep the honest "UNKNOWN" (never a guess).
+        assert_eq!(state.prs[1].closing_issues.len(), 2);
+        assert_eq!(state.prs[1].closing_issues[0].number, 4);
+        assert_eq!(state.prs[1].closing_issues[0].state, "OPEN");
+        assert_eq!(state.prs[1].closing_issues[0].title, "P2 planes");
+        assert_eq!(state.prs[1].closing_issues[1].number, 99);
+        assert_eq!(state.prs[1].closing_issues[1].state, "UNKNOWN");
+        assert_eq!(state.prs[1].closing_issues[1].title, "long-closed");
         assert_eq!(state.issues.len(), 2);
         assert_eq!(state.issues[0].number, 3, "issues sorted by number");
         assert_eq!(state.issues[0].state, "CLOSED");

@@ -1,0 +1,21 @@
+title = "Corral secret-scan config"
+
+[extend]
+useDefault = true
+
+# Default rules do not cover Fastlane's ASC env vars (the #36 leak:
+# ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH in fastlane/.env). Flag them.
+#
+# `[^\S\r\n]` (horizontal whitespace) rather than `\s`, which also matches
+# newlines: with `\s*` an EMPTY placeholder like `ASC_KEY_ID=` swallowed the
+# line break and matched the *next* line's variable name, so this rule fired
+# on fastlane/.env.example — the documented empty-value contract — and
+# reported the wrong line. A credential must now appear on the same line as
+# its key. The capture group is the VALUE, so --redact masks the secret
+# rather than the variable name.
+[[rules]]
+id = "fastlane-asc-credentials"
+description = "Fastlane App Store Connect API credentials"
+regex = '''(?i)ASC_(?:KEY_ID|ISSUER_ID|KEY_PATH)[^\S\r\n]*=[^\S\r\n]*(\S+)'''
+secretGroup = 1
+tags = ["fastlane", "app-store-connect"]

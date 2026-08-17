@@ -615,7 +615,7 @@ mod tests {
             .await
             .expect("push must arrive within 10s of the blocked transition")
             .expect("provider channel closed");
-        assert_eq!(token, "a1b2c3d4e5f6");
+        assert_eq!(token, "a1b2c3d4e5f6"); // gitleaks:allow — fixture device token
         assert_eq!(payload["type"], "blocked");
         assert_eq!(payload["agent_id"], "herdr:ses-1");
         assert_eq!(payload["prompt_hash"], "sha256:aaa");

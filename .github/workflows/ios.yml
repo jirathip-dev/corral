@@ -1,12 +1,14 @@
 name: iOS build
 
 on:
-  # PR-triggered only and path-filtered on ios/** so the 10x-billed macOS
-  # runner never fires for Rust/docs-only changes.
+  # No path filter here — see the `changes` job below. A workflow skipped by
+  # PATH FILTERING never reports a check at all, which is what made `ios`
+  # unrequireable (a required check that never reports blocks every PR
+  # forever). A JOB skipped by an `if:` condition still reports — as a
+  # passing "skipped" conclusion, which satisfies a required check — so the
+  # path gate has to live inside the job, not the trigger.
   pull_request:
     branches: ["**"]
-    paths:
-      - "ios/**"
   # Manual trigger for operators to verify the gate without opening a PR
   # (the branch-under-test need not touch ios/ for a dispatch). Inert until
   # this workflow file lands on main — workflow_dispatch only fires for
@@ -21,8 +23,40 @@ permissions:
   contents: read
 
 jobs:
+  # Cheap 1x-billed job that decides whether the 10x-billed macOS job below
+  # needs to run. Only meaningful for pull_request, where there's a base to
+  # diff against; workflow_dispatch has no such base and is a deliberate
+  # manual "build it anyway" request, so this job doesn't even run for it
+  # (see the `ios` job's `if:`, which short-circuits around this job's
+  # output for any non-pull_request event).
+  changes:
+    name: changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            ios:
+              - 'ios/**'
+
   ios:
     name: ios
+    needs: [changes]
+    # always() overrides the implicit "needs jobs must succeed" default,
+    # which would otherwise skip this job whenever `changes` itself was
+    # skipped (i.e. every non-pull_request run). On a pull_request, this
+    # only runs when ios/** actually changed; on any other event
+    # (workflow_dispatch), it always runs.
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.ios == 'true')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

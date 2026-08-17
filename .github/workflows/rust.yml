@@ -25,6 +25,16 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
+      # Formatting is checked FIRST, before the apt install and the cache
+      # restore, because `cargo fmt` needs only the toolchain — no system
+      # libraries, no cached artifacts. Ordering it here means a formatting
+      # slip fails in seconds rather than after ~a minute of installing a
+      # wayland/x11/GL stack this path never uses (#51). Blocking as of #40:
+      # the tree was reformatted in one mechanical commit, so the gate can
+      # hold the line.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
       # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
       # the wayland/x11/GL system packages below. Keeping all three workspace
       # members in this single 1x-billed Ubuntu job is far cheaper than a
@@ -50,12 +60,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-
-      # Blocking as of #40. It was report-only while the tree carried ~613
-      # pre-existing diff sites; that debt was cleared in one mechanical
-      # `cargo fmt` commit in this PR, so the gate can now hold the line.
-      - name: cargo fmt --check
-        run: cargo fmt --check
 
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings

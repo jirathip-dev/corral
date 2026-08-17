@@ -12,6 +12,7 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     GENERATE_INFOPLIST_FILE: YES
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 9244PWFYD7
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: "0.1.0"
 targets:
@@ -20,12 +21,19 @@ targets:
     platform: iOS
     sources:
       - FleetNotifier
+      - path: FleetNotifier/Assets.xcassets
+        buildPhase: resources
     info:
       path: FleetNotifier/Info.plist
       properties:
         CFBundleDisplayName: "Corral: Agent Fleet"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: YES

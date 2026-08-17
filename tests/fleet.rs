@@ -28,6 +28,17 @@ const VALID_B: &str = r#"{
     "models": { "orch": "fable", "impl": "sonnet", "review": "opus" }
 }"#;
 
+/// A healthy `models` object used by the validation-failure fixtures below.
+const MODELS: &str = r#"{"orch": "f", "impl": "i", "review": "r"}"#;
+
+/// Single-fleet registry body with the given field values interpolated.
+fn fleet_body(name: &str, repo: &str, local: &str, workers: &str, models: &str) -> String {
+    format!(
+        r#"{{ "fleets": [{{ "name": "{name}", "gh_repo": "{repo}", "local": "{local}",
+            "worktree_dir": "w", "orch": "o", "workers": {workers}, "models": {models} }}] }}"#
+    )
+}
+
 fn write_registry(dir: &std::path::Path, body: &str) -> PathBuf {
     let path = dir.join("fleets.json");
     std::fs::write(&path, body).expect("write registry fixture");
@@ -194,6 +205,94 @@ fn local_path_passes_absolute_through_unchanged() {
     assert_eq!(registry.fleets[0].local_path(), PathBuf::from("/opt/board"));
 }
 
+#[test]
+fn empty_model_id_is_a_hard_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (field, models) in [
+        ("models.orch", r#"{"orch": "", "impl": "i", "review": "r"}"#),
+        (
+            "models.impl",
+            r#"{"orch": "f", "impl": "   ", "review": "r"}"#,
+        ),
+        (
+            "models.review",
+            r#"{"orch": "f", "impl": "i", "review": ""}"#,
+        ),
+    ] {
+        let path = write_registry(
+            dir.path(),
+            &fleet_body("corral", "x/y", "~/p", "[]", models),
+        );
+        let err = load(&path).expect_err("empty model id must fail");
+        assert!(matches!(err, ConfigError::Empty { .. }), "kind: {err:?}");
+        assert!(err.to_string().contains(field), "names {field}: {err}");
+    }
+}
+
+#[test]
+fn empty_worker_entry_is_a_hard_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &fleet_body("corral", "x/y", "~/p", r#"["", "  "]"#, MODELS),
+    );
+    let err = load(&path).expect_err("empty worker must fail");
+    assert!(matches!(err, ConfigError::Empty { .. }), "kind: {err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("workers[0]"), "indexes the worker: {msg}");
+}
+
+#[test]
+fn whitespace_in_name_or_gh_repo_is_a_hard_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (field, name, repo) in [("name", "not a repo", "x/y"), ("gh_repo", "corral", "x /y")] {
+        let path = write_registry(dir.path(), &fleet_body(name, repo, "~/p", "[]", MODELS));
+        let err = load(&path).expect_err("internal whitespace must fail");
+        assert!(
+            matches!(err, ConfigError::Whitespace { .. }),
+            "kind: {err:?}"
+        );
+        assert!(err.to_string().contains(field), "names {field}: {err}");
+    }
+}
+
+#[test]
+fn gh_repo_must_be_a_single_owner_repo_slug() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for bad in ["x", "a/b/c", "/b", "a/"] {
+        let path = write_registry(dir.path(), &fleet_body("corral", bad, "~/p", "[]", MODELS));
+        let err = load(&path).expect_err("bad gh_repo must fail");
+        assert!(
+            matches!(err, ConfigError::GhRepoShape { .. }),
+            "kind: {err:?}"
+        );
+        assert!(err.to_string().contains("owner/repo"), "shape hint: {err}");
+    }
+}
+
+#[test]
+fn local_bare_tilde_is_a_hard_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for bad in ["~", "~user/p"] {
+        let path = write_registry(dir.path(), &fleet_body("corral", "x/y", bad, "[]", MODELS));
+        let err = load(&path).expect_err("bare tilde must fail");
+        assert!(matches!(err, ConfigError::BadTilde { .. }), "kind: {err:?}");
+        assert!(err.to_string().contains("~/"), "hint: {err}");
+    }
+}
+
+#[test]
+fn empty_name_error_carries_index_and_gh_repo_locator() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &fleet_body("", "x/y", "~/p", "[]", MODELS));
+    let err = load(&path).expect_err("empty name must fail");
+    assert!(matches!(err, ConfigError::Empty { .. }), "kind: {err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("#1"), "carries the array index: {msg}");
+    assert!(msg.contains("x/y"), "falls back to gh_repo: {msg}");
+    assert!(msg.contains("name"), "names the field: {msg}");
+}
+
 // ---------------------------------------------------------------------------
 // CLI: corrald fleet list / check (real binary, temp-dir fixtures)
 // ---------------------------------------------------------------------------
@@ -321,6 +420,85 @@ fn fleet_check_exits_1_and_reports_reason_on_failure() {
 }
 
 #[test]
+fn fleet_check_exits_1_when_local_is_not_a_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let not_dir = dir.path().join("file");
+    std::fs::write(&not_dir, "just a file").expect("write regular file");
+    let path = write_registry(
+        dir.path(),
+        &fleet_body(
+            "corral",
+            "x/y",
+            &not_dir.display().to_string(),
+            "[]",
+            MODELS,
+        ),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "check", "--registry"])
+        .arg(&path)
+        .output()
+        .expect("run corrald fleet check");
+    assert_eq!(output.status.code(), Some(1), "non-directory exits 1");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("FAIL corral:") && l.contains("is not a directory")),
+        "FAIL line: {text}"
+    );
+}
+
+#[test]
+fn fleet_check_exits_1_when_local_has_no_git_entry() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bare = dir.path().join("bare-dir");
+    std::fs::create_dir_all(&bare).expect("create dir without .git");
+    let path = write_registry(
+        dir.path(),
+        &fleet_body("corral", "x/y", &bare.display().to_string(), "[]", MODELS),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "check", "--registry"])
+        .arg(&path)
+        .output()
+        .expect("run corrald fleet check");
+    assert_eq!(output.status.code(), Some(1), "no .git exits 1");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("FAIL corral:") && l.contains("has no .git entry")),
+        "FAIL line: {text}"
+    );
+}
+
+#[test]
+fn fleet_check_passes_when_git_is_a_regular_file() {
+    // Linked worktrees carry `.git` as a FILE (a `gitdir:` pointer), not a
+    // directory. Pinning this keeps a future tightening to `.is_dir()` from
+    // silently breaking every linked worktree with zero test failures.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let linked = dir.path().join("linked");
+    std::fs::create_dir_all(&linked).expect("create linked-worktree dir");
+    std::fs::write(linked.join(".git"), "gitdir: /elsewhere/.git\n").expect("write .git file");
+    let path = write_registry(
+        dir.path(),
+        &fleet_body("corral", "x/y", &linked.display().to_string(), "[]", MODELS),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "check", "--registry"])
+        .arg(&path)
+        .output()
+        .expect("run corrald fleet check");
+    assert!(
+        output.status.success(),
+        "linked-worktree .git file passes: {:?}",
+        output.status
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.lines().any(|l| l == "ok corral"), "ok line: {text}");
+}
+
+#[test]
 fn fleet_check_exits_2_on_parse_error() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(dir.path(), r#"{ "fleets": [ oops"#);
@@ -389,4 +567,31 @@ fn fleet_list_registry_flag_overrides_default_path() {
     );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("corral"), "lists the fixture fleet: {text}");
+}
+
+/// The override test above only proves `--registry` *beats*
+/// `$CORRAL_FLEETS_PATH`. This pins the other half: with no `--registry`,
+/// the env var is what gets read. Set on the child process only — never
+/// `std::env::set_var`, which is UB under Rust 2024 in a threaded test
+/// binary.
+#[test]
+fn fleet_list_reads_corral_fleets_path_as_the_default() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let output = Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .env("CORRAL_FLEETS_PATH", &path)
+        .args(["fleet", "list"])
+        .output()
+        .expect("run corrald fleet list");
+    assert!(
+        output.status.success(),
+        "$CORRAL_FLEETS_PATH is honoured as the default: {:?} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("corral"),
+        "lists the fleet from the env-var registry: {text}"
+    );
 }

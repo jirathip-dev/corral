@@ -55,8 +55,18 @@ is a directory, and holds a `.git` entry (the "repo resolves" validation):
 
 ```
 ok corral
-FAIL missing: /path/to/nowhere is not a directory
+FAIL notadir: /etc/hosts is not a directory
+FAIL nogit: /tmp has no .git entry
+FAIL gone: cannot stat /path/to/nowhere: No such file or directory (os error 2)
 ```
+
+Lines follow registry order, one per fleet.
+
+`.git` may be a directory (ordinary clone) or a regular file (linked
+worktree) — both count as resolved.
+
+Both `ok` and `FAIL` lines go to **stdout**, deliberately, so `check` output
+stays one greppable stream; the exit code is what a script should branch on.
 
 ## Exit codes
 

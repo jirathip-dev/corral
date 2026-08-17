@@ -4,7 +4,9 @@
 //! already treats as its single source of truth; corrald adopts that format
 //! unchanged. Everything in here is read-only: `load()` parses and validates,
 //! and validation fails loudly (hard error, not silent acceptance) on unknown
-//! fields anywhere, empty required fields, and duplicate fleet names.
+//! fields anywhere, empty required fields, whitespace inside `name`/`gh_repo`,
+//! a `gh_repo` that is not a single `owner/repo`, a `local` that begins with a
+//! bare `~`, and duplicate fleet names.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -50,23 +52,57 @@ pub struct Models {
 
 impl Registry {
     /// Field-level validation beyond what serde enforces: the required
-    /// strings must be non-empty and fleet names must be unique.
+    /// strings (including `models.*` and every `workers` entry) must be
+    /// non-empty, `name`/`gh_repo` must be free of internal whitespace,
+    /// `gh_repo` must be a single `owner/repo`, `local` must not begin with a
+    /// bare `~`, and fleet names must be unique.
     fn validate(&self) -> Result<(), ConfigError> {
         let mut seen: Vec<&str> = Vec::new();
-        for fleet in &self.fleets {
+        for (index, fleet) in self.fleets.iter().enumerate() {
             for (field, value) in [
                 ("name", &fleet.name),
                 ("gh_repo", &fleet.gh_repo),
                 ("local", &fleet.local),
                 ("worktree_dir", &fleet.worktree_dir),
                 ("orch", &fleet.orch),
+                ("models.orch", &fleet.models.orch),
+                ("models.impl", &fleet.models.impl_),
+                ("models.review", &fleet.models.review),
             ] {
                 if value.trim().is_empty() {
                     return Err(ConfigError::Empty {
-                        fleet: fleet.name.clone(),
-                        field,
+                        fleet: fleet_locator(index, fleet, field),
+                        field: field.to_string(),
                     });
                 }
+            }
+            for (worker_index, worker) in fleet.workers.iter().enumerate() {
+                if worker.trim().is_empty() {
+                    return Err(ConfigError::Empty {
+                        fleet: fleet_locator(index, fleet, "workers"),
+                        field: format!("workers[{worker_index}]"),
+                    });
+                }
+            }
+            for (field, value) in [("name", &fleet.name), ("gh_repo", &fleet.gh_repo)] {
+                if value.chars().any(char::is_whitespace) {
+                    return Err(ConfigError::Whitespace {
+                        fleet: fleet_locator(index, fleet, field),
+                        field: field.to_string(),
+                    });
+                }
+            }
+            if !is_repo_slug(&fleet.gh_repo) {
+                return Err(ConfigError::GhRepoShape {
+                    fleet: fleet_locator(index, fleet, "gh_repo"),
+                    value: fleet.gh_repo.clone(),
+                });
+            }
+            if fleet.local.starts_with('~') && !fleet.local.starts_with("~/") {
+                return Err(ConfigError::BadTilde {
+                    fleet: fleet_locator(index, fleet, "local"),
+                    value: fleet.local.clone(),
+                });
             }
             if seen.contains(&fleet.name.as_str()) {
                 return Err(ConfigError::DuplicateFleet {
@@ -77,6 +113,24 @@ impl Registry {
         }
         Ok(())
     }
+}
+
+/// A human-locatable label for a fleet, e.g. `#2 (gh_repo "x/y")`. When the
+/// offending field is `name` itself the name is unusable as a locator, so it
+/// falls back to `gh_repo`.
+fn fleet_locator(index: usize, fleet: &Fleet, field: &str) -> String {
+    if field == "name" {
+        format!("#{} (gh_repo {:?})", index + 1, fleet.gh_repo)
+    } else {
+        format!("#{} (name {:?})", index + 1, fleet.name)
+    }
+}
+
+/// A single `owner/repo` slug: exactly one `/`, both halves non-empty.
+/// (Internal whitespace is rejected separately.)
+fn is_repo_slug(slug: &str) -> bool {
+    let (owner, repo) = slug.split_once('/').unwrap_or(("", ""));
+    !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
 impl Fleet {
@@ -133,8 +187,18 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    /// A required string field is empty.
-    Empty { fleet: String, field: &'static str },
+    /// A required string field is empty. `fleet` is a locator (index plus a
+    /// usable identifier) rather than the fleet name, which may itself be the
+    /// empty offender.
+    Empty { fleet: String, field: String },
+    /// `name` or `gh_repo` contains internal whitespace, which would corrupt
+    /// the whitespace-delimited `fleet list` output contract.
+    Whitespace { fleet: String, field: String },
+    /// `gh_repo` is not a single `owner/repo` slug.
+    GhRepoShape { fleet: String, value: String },
+    /// `local` begins with a bare `~` (not `~/`), which would be passed
+    /// through literally instead of expanded against `$HOME`.
+    BadTilde { fleet: String, value: String },
     /// Two fleets share a `name`.
     DuplicateFleet { name: String },
 }
@@ -155,7 +219,25 @@ impl fmt::Display for ConfigError {
             ConfigError::Empty { fleet, field } => {
                 write!(
                     f,
-                    "fleet {fleet:?}: field {field:?} must be a non-empty string"
+                    "fleet {fleet}: field {field:?} must be a non-empty string"
+                )
+            }
+            ConfigError::Whitespace { fleet, field } => {
+                write!(
+                    f,
+                    "fleet {fleet}: field {field:?} must contain no whitespace"
+                )
+            }
+            ConfigError::GhRepoShape { fleet, value } => {
+                write!(
+                    f,
+                    "fleet {fleet}: gh_repo {value:?} must be a single owner/repo"
+                )
+            }
+            ConfigError::BadTilde { fleet, value } => {
+                write!(
+                    f,
+                    "fleet {fleet}: local {value:?} must start with ~/ to be tilde-expanded"
                 )
             }
             ConfigError::DuplicateFleet { name } => {
@@ -170,7 +252,11 @@ impl std::error::Error for ConfigError {
         match self {
             ConfigError::Io { source, .. } => Some(source),
             ConfigError::Parse { source, .. } => Some(source),
-            ConfigError::Empty { .. } | ConfigError::DuplicateFleet { .. } => None,
+            ConfigError::Empty { .. }
+            | ConfigError::Whitespace { .. }
+            | ConfigError::GhRepoShape { .. }
+            | ConfigError::BadTilde { .. }
+            | ConfigError::DuplicateFleet { .. } => None,
         }
     }
 }

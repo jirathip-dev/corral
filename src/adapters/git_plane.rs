@@ -208,8 +208,16 @@ impl GitPlane {
     /// worktrees root. The input is canonicalized best-effort so a symlinked
     /// `HOME` (standard APFS firmlink setups) cannot split the raw porcelain
     /// paths from the canonicalized roots (WS3 F5).
+    ///
+    /// The canonicalization goes through [`canonicalize_existing_prefix`]
+    /// rather than [`fs::canonicalize`] because the interesting inputs are
+    /// often paths that do NOT exist — a worktree that was just removed, or
+    /// one whose creation event arrives before the directory is visible.
+    /// `fs::canonicalize` fails outright on those, and the raw fallback then
+    /// compares a `/var/...` spelling against a `/private/var/...` root on
+    /// macOS, so every missing path answered `false` (#43).
     fn watches(&self, path: &Path) -> bool {
-        let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let canon = canonicalize_existing_prefix(path);
         canon == self.repo_root || canon.starts_with(&self.worktrees_root)
     }
 
@@ -887,6 +895,44 @@ fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)> {
 /// hypothetical) case where a git build starts C-escaping the path: the
 /// raw form then won't exist on disk, and the unescaped variant is tried.
 /// If the raw path exists, it always wins.
+/// Canonicalize the longest EXISTING prefix of `path`, then re-append the
+/// components that do not exist yet.
+///
+/// [`fs::canonicalize`] fails outright on a missing path, which leaves the
+/// caller comparing a raw spelling against canonicalized roots. On macOS
+/// those disagree by construction — `/var` is a symlink to `/private/var`
+/// and `/tmp` to `/private/tmp` — so a path under a watched root answered
+/// `false` purely because it did not exist yet (#43). A filesystem watcher
+/// asks about exactly those paths: a worktree just removed, or one whose
+/// creation event arrives before the directory is visible.
+///
+/// Walking up cannot loop: each step drops one component, and a path with
+/// no parent (`/`, or a bare relative component) returns the input.
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path;
+    loop {
+        if let Ok(base) = fs::canonicalize(cursor) {
+            let mut out = base;
+            // `tail` was pushed leaf-first while walking up; re-append in
+            // reverse so the original order is restored.
+            for part in tail.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (cursor.parent(), cursor.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                cursor = parent;
+            }
+            // No existing ancestor resolved (or a rootless/relative path):
+            // fall back to the raw spelling, exactly as before.
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 fn resolve_possibly_escaped(raw: &Path) -> PathBuf {
     if raw.is_dir() {
         return raw.to_path_buf();
@@ -1289,23 +1335,76 @@ mod tests {
         );
         assert!(plane.watches(&fs::canonicalize(&repo).unwrap()), "main checkout matches");
 
-        // Out-of-scope check. This previously used `wts.join("elsewhere")`,
-        // a NON-existent path under the worktrees root, and asserted it did
-        // not match. That passed on macOS for the wrong reason and failed on
-        // Linux under hosted CI: `canonicalize` fails on a missing path, so
-        // the raw spelling is compared against canonicalized roots — and on
-        // macOS `temp_dir()` is `/var/...` while the roots resolve to
-        // `/private/var/...`, so nothing ever matched. On Linux `/tmp` is
-        // real, both spellings agree, and `watches()` answered `true` —
-        // correctly, since that path IS under the worktrees root.
-        //
-        // The missing-path divergence is a genuine `watches()` bug (issue
-        // #43); it is deliberately NOT asserted here in either direction.
-        // This test pins only what is platform-independent: a directory that
-        // EXISTS and is under neither root does not match.
+        // Out-of-scope: a directory that EXISTS and is under neither root.
         let outside = root.join("outside");
         fs::create_dir_all(&outside).unwrap();
         assert!(!plane.watches(&outside), "out-of-scope path does not match");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #43 regression. Both directions of the MISSING-path case, which was
+    /// previously unpinned — and which used to answer `false` on macOS for
+    /// every input, because `fs::canonicalize` fails on a path that does not
+    /// exist and the raw `/var/...` spelling never matched a
+    /// `/private/var/...` root.
+    ///
+    /// This is not an edge case for a filesystem watcher: a worktree that
+    /// was just removed, or one whose creation event arrives before the
+    /// directory is visible, is exactly what `watches()` gets asked about.
+    #[test]
+    fn watches_resolves_paths_that_do_not_exist_yet() {
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-missing-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let real = root.join("real");
+        let repo = real.join("repo");
+        let wts = real.join("wts");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wts).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let plane = GitPlane::new(link.join("repo"), link.join("wts"));
+
+        // A worktree under the watched root that does NOT exist on disk.
+        // Both spellings must match: the raw one (`/var/...` on macOS) and
+        // the symlinked one. Before #43 both answered false.
+        let missing = wts.join("not-created-yet");
+        assert!(
+            !missing.exists(),
+            "precondition: the path must not exist, or this proves nothing"
+        );
+        assert!(
+            plane.watches(&missing),
+            "a missing path under the worktrees root is still watched"
+        );
+        assert!(
+            plane.watches(&link.join("wts/not-created-yet")),
+            "the symlinked spelling of that missing path is watched too"
+        );
+
+        // Deeper, and with several missing components — the helper has to
+        // walk up more than one level to find an existing ancestor.
+        assert!(
+            plane.watches(&wts.join("a/b/c/deeply-missing")),
+            "several missing components still resolve to the watched root"
+        );
+
+        // The negative direction must survive the fix: a missing path
+        // OUTSIDE both roots stays out of scope. A helper that resolved
+        // everything to the worktrees root would pass the assertions above
+        // and fail this one.
+        assert!(
+            !plane.watches(&root.join("outside/also-missing")),
+            "a missing path outside both roots is not watched"
+        );
+        assert!(
+            !plane.watches(Path::new("/nonexistent-root-level-path/x")),
+            "a missing path with no existing ancestor is not watched"
+        );
+
         let _ = fs::remove_dir_all(&root);
     }
 

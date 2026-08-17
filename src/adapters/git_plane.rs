@@ -92,10 +92,11 @@ const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
 static GIT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Serializes the probe tests (G21 re-review F2): `GIT_CALLS` is shared
-/// module state, so the delta assertion must not run while another probe
-/// test's counted invocations land in the before/after window. Both probe
-/// tests hold this lock for their whole body — no other test in the module
-/// (or anywhere — `run_git` is module-private) increments the counter.
+/// module state, so the delta assertion must not run while another test's
+/// counted `run_git` invocations (via `probe_worktree` OR `rescan`) land in
+/// the before/after window. Every test in the module that calls either
+/// holds this lock for its whole body (`run_git` is module-private, so
+/// nothing outside the module can increment the counter unguarded).
 #[cfg(test)]
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -1209,6 +1210,32 @@ impl Plane for GitPlane {
 mod tests {
     use super::*;
 
+    /// Poll `rx` until a `WorktreeRemoved` for `want` arrives or `timeout`
+    /// elapses. Non-matching events (boot-scan `WorktreeAdded`, head facts,
+    /// ...) are drained and ignored rather than failing the wait.
+    async fn wait_for_removed(
+        rx: &mut mpsc::Receiver<PlaneEvent>,
+        want: &Path,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(PlaneEvent::Git(GitEvent::WorktreeRemoved { worktree })))
+                    if worktree == want =>
+                {
+                    return true;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return false,
+            }
+        }
+    }
+
     #[test]
     fn parses_status_clean_branch_header() {
         let status = parse_status("## ws1/git-plane\n");
@@ -1531,6 +1558,102 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Construct a `GitPlane` over made-up, nonexistent roots and let the
+    /// caller populate its registry state directly. `map_event_path` never
+    /// touches the filesystem, so these unit tests need no temp dirs — only
+    /// the state it reads.
+    fn plane_with_state(mutate: impl FnOnce(&mut PlaneState)) -> GitPlane {
+        let plane = GitPlane::new(
+            PathBuf::from("/nonexistent-gitplane-repo-root"),
+            PathBuf::from("/nonexistent-gitplane-wts-root"),
+        );
+        mutate(&mut plane.state.lock().unwrap());
+        plane
+    }
+
+    #[test]
+    fn map_event_path_prefers_most_specific_gitdir_when_nested() {
+        // Two gitdirs where one is a path-prefix of the other: the event
+        // must resolve to the worktree whose gitdir is the longer (more
+        // specific) match, not whichever the map happens to iterate first.
+        let outer_gitdir = PathBuf::from("/fake/commondir/worktrees/outer");
+        let inner_gitdir = outer_gitdir.join("nested-gitdir");
+        let outer_wt = PathBuf::from("/fake/wts/outer");
+        let inner_wt = PathBuf::from("/fake/wts/inner");
+        let plane = plane_with_state(|state| {
+            state.worktrees.insert(
+                outer_wt.clone(),
+                WorktreeState {
+                    gitdir: Some(outer_gitdir.clone()),
+                    ..Default::default()
+                },
+            );
+            state.worktrees.insert(
+                inner_wt.clone(),
+                WorktreeState {
+                    gitdir: Some(inner_gitdir.clone()),
+                    ..Default::default()
+                },
+            );
+        });
+        let (worktrees, maybe_new) = plane.map_event_path(&inner_gitdir.join("HEAD"));
+        assert_eq!(
+            worktrees,
+            vec![inner_wt],
+            "the longer (more specific) gitdir prefix wins over the shorter one it nests inside"
+        );
+        assert!(!maybe_new);
+    }
+
+    #[test]
+    fn map_event_path_maps_refs_heads_to_the_worktree_on_that_branch() {
+        let commondir = PathBuf::from("/fake/repo/.git");
+        let main = PathBuf::from("/fake/repo");
+        let wt = PathBuf::from("/fake/wts/feature");
+        let plane = plane_with_state(|state| {
+            state.main_checkouts.insert(commondir.clone(), main);
+            state
+                .by_branch
+                .insert((commondir.clone(), "feat/x".to_string()), wt.clone());
+        });
+        let (worktrees, maybe_new) = plane.map_event_path(&commondir.join("refs/heads/feat/x"));
+        assert_eq!(
+            worktrees,
+            vec![wt],
+            "refs/heads/<branch> maps to the worktree checked out on that branch"
+        );
+        assert!(!maybe_new);
+    }
+
+    #[test]
+    fn map_event_path_unmatched_worktrees_path_signals_rescan() {
+        // A path under commondir/worktrees/ that matches no known gitdir:
+        // the worktree may have just appeared (or just been removed), so
+        // the caller must rescan — no worktree is resolved directly.
+        let commondir = PathBuf::from("/fake/repo/.git");
+        let main = PathBuf::from("/fake/repo");
+        let plane = plane_with_state(|state| {
+            state.main_checkouts.insert(commondir.clone(), main);
+        });
+        let (worktrees, maybe_new) = plane.map_event_path(&commondir.join("worktrees/brand-new"));
+        assert!(
+            worktrees.is_empty(),
+            "no worktree is resolved for an unmatched worktrees/ path"
+        );
+        assert!(
+            maybe_new,
+            "a commondir/worktrees/ path matching no known gitdir signals a rescan"
+        );
+    }
+
+    #[test]
+    fn map_event_path_unrelated_path_maps_to_nothing() {
+        let plane = plane_with_state(|_| {});
+        let (worktrees, maybe_new) = plane.map_event_path(Path::new("/completely/unrelated/path"));
+        assert!(worktrees.is_empty());
+        assert!(!maybe_new);
+    }
+
     /// A throwaway repo with one committed file, returning (root, HEAD sha).
     fn scratch_repo(tag: &str) -> (PathBuf, String) {
         let root = std::env::temp_dir().join(format!(
@@ -1638,6 +1761,227 @@ mod tests {
             probe_worktree(&root).await.is_err(),
             "unborn HEAD must fail the probe"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #46/#50: a delete event for a known, now-removed worktree must map
+    /// to that worktree and drive a `WorktreeRemoved` all the way through —
+    /// mapping, debounce, probe (`ProbeError::Gone`), emit. This is the case
+    /// #46 touched (`fs::canonicalize` -> `canonicalize_existing_prefix`)
+    /// and the one with no coverage before this test.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fs_event_emits_worktree_removed_for_deleted_worktree() {
+        // F2: serialize against the probe-delta tests — `rescan()` below
+        // calls `run_git`, which increments the same shared `GIT_CALLS`
+        // static the probe tests measure a before/after delta over.
+        let _guard = PROBE_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-delete-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let repo = root.join("repo");
+        let wts = root.join("wts");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wts).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git subprocess runs")
+        };
+        assert!(git(&repo, &["init", "-b", "main"]).status.success());
+        assert!(
+            git(&repo, &["config", "user.email", "plane@test.local"])
+                .status
+                .success()
+        );
+        assert!(
+            git(&repo, &["config", "user.name", "Plane Test"])
+                .status
+                .success()
+        );
+        fs::write(repo.join("README.md"), "hello\n").unwrap();
+        assert!(git(&repo, &["add", "README.md"]).status.success());
+        assert!(git(&repo, &["commit", "-m", "initial"]).status.success());
+
+        let wt = wts.join("wt1");
+        assert!(
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    &wt.to_string_lossy(),
+                    "-b",
+                    "feat/delete"
+                ],
+            )
+            .status
+            .success()
+        );
+        let wt = fs::canonicalize(&wt).unwrap();
+
+        let plane = Arc::new(GitPlane::new(repo.clone(), wts.clone()));
+        let (sink, mut rx) = crate::core::plane_channel();
+        plane.rescan(&sink).await;
+
+        let gitdir = resolve_gitdir(&wt).expect("gitdir resolves before removal");
+        assert!(
+            git(
+                &repo,
+                &["worktree", "remove", "--force", &wt.to_string_lossy()],
+            )
+            .status
+            .success(),
+            "git worktree remove cleans up both the working dir and the admin gitdir"
+        );
+        assert!(!wt.exists(), "precondition: worktree directory is gone");
+        assert!(!gitdir.exists(), "precondition: gitdir is gone");
+
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<()>();
+        let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+            .add_path(gitdir);
+        let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;
+        assert_eq!(
+            affected,
+            vec![wt.clone()],
+            "delete event for the gitdir maps to the removed worktree"
+        );
+
+        for w in affected {
+            plane.debounce(w, sink.clone());
+        }
+        assert!(
+            wait_for_removed(&mut rx, &wt, Duration::from_secs(2)).await,
+            "WorktreeRemoved for {wt:?} within 2s of the delete event"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The highest-value regression test for #46: the whole #43 family of
+    /// bugs only appears when the raw and canonical spellings of a path
+    /// differ. Built like `watches_accepts_symlinked_roots_and_canonical_spellings`
+    /// — a `real/` tree plus a `link/` symlink to it — the plane is
+    /// constructed through the symlinked path, then the delete event names
+    /// the RAW spelling (through `link/`) of the now-gone gitdir. Before #46
+    /// (bare `fs::canonicalize`, which fails outright on a missing path and
+    /// falls back to the raw spelling) this path would not have resolved,
+    /// because the raw spelling never `starts_with` the canonical gitdir
+    /// recorded in the registry at scan time.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fs_event_resolves_raw_symlinked_delete_path() {
+        // F2: serialize against the probe-delta tests — see the guard note
+        // on `handle_fs_event_emits_worktree_removed_for_deleted_worktree`.
+        let _guard = PROBE_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "corral-gitplane-delete-symlink-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let real = root.join("real");
+        let repo = real.join("repo");
+        let wts = real.join("wts");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wts).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let git = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git subprocess runs")
+        };
+        assert!(git(&repo, &["init", "-b", "main"]).status.success());
+        assert!(
+            git(&repo, &["config", "user.email", "plane@test.local"])
+                .status
+                .success()
+        );
+        assert!(
+            git(&repo, &["config", "user.name", "Plane Test"])
+                .status
+                .success()
+        );
+        fs::write(repo.join("README.md"), "hello\n").unwrap();
+        assert!(git(&repo, &["add", "README.md"]).status.success());
+        assert!(git(&repo, &["commit", "-m", "initial"]).status.success());
+
+        let wt_raw = wts.join("wt1");
+        assert!(
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    &wt_raw.to_string_lossy(),
+                    "-b",
+                    "feat/delete",
+                ],
+            )
+            .status
+            .success()
+        );
+        let wt = fs::canonicalize(&wt_raw).unwrap();
+
+        // Construct the plane through the SYMLINKED path (link/repo,
+        // link/wts) — `GitPlane::new` canonicalizes both internally, so the
+        // registry it builds is keyed on the canonical `real/...` spelling.
+        let plane = Arc::new(GitPlane::new(link.join("repo"), link.join("wts")));
+        let (sink, mut rx) = crate::core::plane_channel();
+        plane.rescan(&sink).await;
+
+        let canonical_real = fs::canonicalize(&real).unwrap();
+        let gitdir = resolve_gitdir(&wt).expect("gitdir resolves before removal");
+        let rel = gitdir
+            .strip_prefix(&canonical_real)
+            .expect("gitdir lives under the real root");
+        // The RAW spelling: the same file, reached through the symlink
+        // instead of the canonical root.
+        let raw_event_path = link.join(rel);
+        assert_ne!(
+            raw_event_path, gitdir,
+            "precondition: raw and canonical spellings differ"
+        );
+
+        assert!(
+            git(
+                &repo,
+                &["worktree", "remove", "--force", &wt_raw.to_string_lossy()],
+            )
+            .status
+            .success()
+        );
+        assert!(!gitdir.exists(), "precondition: gitdir is gone");
+        assert!(
+            !raw_event_path.exists(),
+            "precondition: raw spelling is gone too"
+        );
+
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<()>();
+        let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+            .add_path(raw_event_path);
+        let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;
+        assert_eq!(
+            affected,
+            vec![wt.clone()],
+            "raw symlinked delete path still maps to the canonical worktree"
+        );
+
+        for w in affected {
+            plane.debounce(w, sink.clone());
+        }
+        assert!(
+            wait_for_removed(&mut rx, &wt, Duration::from_secs(2)).await,
+            "WorktreeRemoved for {wt:?} within 2s of the raw-spelling delete event"
+        );
+
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -43,6 +43,9 @@ jobs:
             libkeyutils-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       # cargo fmt --check currently FAILS on pre-existing formatting debt
       # across the whole tree (hundreds of hunfs). Reformating the repo here

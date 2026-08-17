@@ -6,14 +6,16 @@ command in this guide was run and verified against a throwaway daemon
 
 ## Prerequisites
 
-- Rust toolchain (edition 2024 — `rustc` ≥ 1.85; verified with 1.97.1).
+- Rust toolchain — **pinned by `rust-toolchain.toml`** (currently 1.97.1).
+  You do not choose a version: rustup reads that file and installs it on the
+  first `cargo` command in this repo (#48).
 - `herdr` running on the same machine — `corrald` reads the fleet from
   the herdr unix socket (`~/.config/herdr/herdr.sock`). If herdr is down,
   `corrald` still serves HTTP; it just shows no herdr agents (see
   [OPERATIONS.md](OPERATIONS.md#troubleshooting)).
 
 ```sh
-rustc --version   # ≥ 1.85
+rustc --version   # prints the pinned version; rustup fetches it if absent
 ```
 
 ## 1. Build

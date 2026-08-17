@@ -20,9 +20,42 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      # `rust-toolchain.toml` is the single source of truth for the version
+      # (#48), but dtolnay/rust-toolchain does NOT read it — omitting the
+      # input fails the run with "'toolchain' is a required input". So the
+      # channel is parsed out of the file and handed to the action, which
+      # keeps ONE version in the repo and stops CI drifting from a local
+      # checkout. Do not hardcode a version below; edit the toml.
+      - name: Read pinned toolchain
+        id: pinned
+        run: |
+          set -euo pipefail
+          # Table-aware on purpose: only `channel` INSIDE [toolchain] counts.
+          # A plain grep would take a `channel` key from any earlier table and
+          # pin the wrong version silently — the emptiness guard below cannot
+          # catch a wrong-but-non-empty parse. Accepts TOML basic ("") and
+          # literal ('') strings; anything else falls through to the guard and
+          # fails the run loudly rather than guessing.
+          channel="$(awk '
+            /^[[:space:]]*\[toolchain\][[:space:]]*$/ { in_tc = 1; next }
+            /^[[:space:]]*\[/                         { in_tc = 0 }
+            in_tc && /^[[:space:]]*channel[[:space:]]*=/ {
+              if (match($0, /"[^"]*"/) || match($0, /'"'"'[^'"'"']*'"'"'/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+              }
+            }
+          ' rust-toolchain.toml)"
+          if [ -z "$channel" ]; then
+            echo "::error::could not parse a channel from [toolchain] in rust-toolchain.toml"
+            exit 1
+          fi
+          echo "Pinned toolchain: $channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pinned.outputs.channel }}
           components: rustfmt, clippy
 
       # Formatting is checked FIRST, before the apt install and the cache

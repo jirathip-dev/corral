@@ -73,7 +73,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::Instant;
 use tracing::{info, warn};
 
@@ -122,18 +122,46 @@ pub struct TrackedRepo {
 
 /// The 8 tracked repos, in a fixed order (aliases `q0..q7` in one query).
 pub const TRACKED_REPOS: &[TrackedRepo] = &[
-    TrackedRepo { name: "sendmeter", owner: "sendmeter", repo: "sendmeter" },
-    TrackedRepo { name: "project-hearthwild", owner: "jirathip-k", repo: "project-hearthwild" },
+    TrackedRepo {
+        name: "sendmeter",
+        owner: "sendmeter",
+        repo: "sendmeter",
+    },
+    TrackedRepo {
+        name: "project-hearthwild",
+        owner: "jirathip-k",
+        repo: "project-hearthwild",
+    },
     TrackedRepo {
         name: "synergy-costing",
         owner: "synergy-services-cooling-tower",
         repo: "synergy-apps",
     },
-    TrackedRepo { name: "dotfiles", owner: "jirathip-k", repo: "dotfiles" },
-    TrackedRepo { name: "agent-ops", owner: "jirathip-k", repo: "agent-ops" },
-    TrackedRepo { name: "herdr-board", owner: "jirathip-k", repo: "herdr-board" },
-    TrackedRepo { name: "office-ops", owner: "jirathip-k", repo: "office-ops" },
-    TrackedRepo { name: "synergy-services-website", owner: "synergy-services", repo: "synergy-services-website" },
+    TrackedRepo {
+        name: "dotfiles",
+        owner: "jirathip-k",
+        repo: "dotfiles",
+    },
+    TrackedRepo {
+        name: "agent-ops",
+        owner: "jirathip-k",
+        repo: "agent-ops",
+    },
+    TrackedRepo {
+        name: "herdr-board",
+        owner: "jirathip-k",
+        repo: "herdr-board",
+    },
+    TrackedRepo {
+        name: "office-ops",
+        owner: "jirathip-k",
+        repo: "office-ops",
+    },
+    TrackedRepo {
+        name: "synergy-services-website",
+        owner: "synergy-services",
+        repo: "synergy-services-website",
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -238,7 +266,10 @@ impl GhTransport for ReqwestTransport {
                 .await
                 .map_err(|e| GhError::Transport(e.to_string()))?;
             if !status.is_success() {
-                return Err(GhError::Http { status: status.as_u16(), body: text });
+                return Err(GhError::Http {
+                    status: status.as_u16(),
+                    body: text,
+                });
             }
             serde_json::from_str(&text).map_err(|e| GhError::Decode(e.to_string()))
         })
@@ -334,7 +365,12 @@ fn cadence_step(
         // A client (re)joined since the last decision: immediate SWR fetch —
         // on the first-ever join AND on every reconnect, never wait out a
         // stale background deadline (F2).
-        return (CadenceAction::Poll { next: config.foreground }, true);
+        return (
+            CadenceAction::Poll {
+                next: config.foreground,
+            },
+            true,
+        );
     }
     if !ever_connected {
         // Zero polling until the first client ever connects.
@@ -401,7 +437,12 @@ impl GhPlane {
         token: Option<String>,
         config: GhPlaneConfig,
     ) -> Self {
-        Self { store, transport, token, config }
+        Self {
+            store,
+            transport,
+            token,
+            config,
+        }
     }
 
     /// Constructor with an explicit token: skips `GITHUB_TOKEN`/`gh auth
@@ -423,9 +464,7 @@ impl GhPlane {
             None => match resolve_token().await {
                 Some(token) => token,
                 None => {
-                    warn!(
-                        "gh plane staying down: no GITHUB_TOKEN and `gh auth token` unavailable"
-                    );
+                    warn!("gh plane staying down: no GITHUB_TOKEN and `gh auth token` unavailable");
                     return;
                 }
             },
@@ -512,7 +551,10 @@ impl GhPlane {
         sink: &PlaneSink,
     ) -> Result<(), GhError> {
         let started = Instant::now();
-        let response = self.transport.post(GRAPHQL_ENDPOINT, token, json!({ "query": query })).await?;
+        let response = self
+            .transport
+            .post(GRAPHQL_ENDPOINT, token, json!({ "query": query }))
+            .await?;
         let latency_ms = started.elapsed().as_millis() as u64;
 
         let Some(data) = response.get("data").and_then(|d| d.as_object()) else {
@@ -530,7 +572,7 @@ impl GhPlane {
         };
 
         let (new_last, changed) =
-            match             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 process_response(data, last)
             })) {
                 Ok(result) => result,
@@ -579,7 +621,10 @@ fn process_response(
             .get(&key)
             .and_then(|v| serde_json::from_value::<RepoWire>(v.clone()).ok())
         else {
-            warn!(repo = repo.name, "repo alias null or undecodable; skipping this poll");
+            warn!(
+                repo = repo.name,
+                "repo alias null or undecodable; skipping this poll"
+            );
             continue;
         };
         let state = build_repo_state(*repo, &wire);
@@ -773,9 +818,7 @@ fn collapse_items(items: &[RollupItemWire]) -> Option<String> {
             Some("CheckRun") => match (item.status.as_deref(), item.conclusion.as_deref()) {
                 (Some("COMPLETED"), Some(conclusion)) => match conclusion {
                     "SUCCESS" | "NEUTRAL" | "SKIPPED" => any_success = true,
-                    "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "CANCELLED" => {
-                        any_failure = true
-                    }
+                    "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "CANCELLED" => any_failure = true,
                     // ACTION_REQUIRED / STALE: neither green nor in-flight.
                     _ => {}
                 },
@@ -813,7 +856,12 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
         .pull_requests
         .as_ref()
         .and_then(|p| p.nodes.as_ref())
-        .map(|nodes| nodes.iter().map(|pr| normalize_pr(repo, pr, issues_wire)).collect())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|pr| normalize_pr(repo, pr, issues_wire))
+                .collect()
+        })
         .unwrap_or_default();
     let mut issues: Vec<GhIssueRef> = wire
         .issues
@@ -885,7 +933,10 @@ fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
         pr_number: pr.number,
         title: pr.title.clone().unwrap_or_default(),
         state: pr.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-        mergeable: pr.mergeable.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
+        mergeable: pr
+            .mergeable
+            .clone()
+            .unwrap_or_else(|| "UNKNOWN".to_string()),
         ci_status: collapse_ci(pr.status_check_rollup.as_ref()),
         head_sha: pr.head_ref_oid.clone().unwrap_or_default(),
         head_branch: pr.head_ref_name.clone().unwrap_or_default(),
@@ -902,16 +953,25 @@ mod tests {
         let query = build_query();
         for (i, repo) in TRACKED_REPOS.iter().enumerate() {
             assert!(
-                query.contains(&format!("q{i}: repository(owner: \"{}\", name: \"{}\")", repo.owner, repo.repo)),
+                query.contains(&format!(
+                    "q{i}: repository(owner: \"{}\", name: \"{}\")",
+                    repo.owner, repo.repo
+                )),
                 "alias q{i} for {} must be in the query",
                 repo.name
             );
         }
-        assert_eq!(query.matches("repository(owner:").count(), TRACKED_REPOS.len());
+        assert_eq!(
+            query.matches("repository(owner:").count(),
+            TRACKED_REPOS.len()
+        );
         assert!(query.contains("fragment GhPlaneRepo on Repository"));
         // #22/#23: the branch-fallback and issue-linkage surfaces ride the
         // SAME fragment — one extra field each, never an extra request.
-        assert!(query.contains("headRefName"), "branch-fallback key (issue #22)");
+        assert!(
+            query.contains("headRefName"),
+            "branch-fallback key (issue #22)"
+        );
         assert!(
             query.contains("closingIssuesReferences(first: 10)"),
             "authoritative issue linkage (issue #23)"
@@ -926,7 +986,10 @@ mod tests {
 
     #[test]
     fn collapse_ci_priorities_and_unknowns() {
-        let item = |typename: &str, status: Option<&str>, conclusion: Option<&str>, state: Option<&str>| {
+        let item = |typename: &str,
+                    status: Option<&str>,
+                    conclusion: Option<&str>,
+                    state: Option<&str>| {
             RollupItemWire {
                 typename: Some(typename.to_string()),
                 status: status.map(String::from),
@@ -943,47 +1006,105 @@ mod tests {
         let status_success = item("StatusContext", None, None, Some("SUCCESS"));
 
         assert_eq!(collapse_ci(None), "UNKNOWN", "absent rollup -> UNKNOWN");
-        assert_eq!(collapse_ci(Some(&rollup(vec![], None))), "UNKNOWN", "empty rollup -> UNKNOWN");
         assert_eq!(
-            collapse_ci(Some(&rollup(vec![success_run.clone(), status_success.clone()], Some("SUCCESS")))),
+            collapse_ci(Some(&rollup(vec![], None))),
+            "UNKNOWN",
+            "empty rollup -> UNKNOWN"
+        );
+        assert_eq!(
+            collapse_ci(Some(&rollup(
+                vec![success_run.clone(), status_success.clone()],
+                Some("SUCCESS")
+            ))),
             "SUCCESS"
         );
 
         let failing = item("CheckRun", Some("COMPLETED"), Some("FAILURE"), None);
-        assert_eq!(collapse_ci(Some(&rollup(vec![success_run.clone(), failing], Some("FAILURE")))), "FAILURE");
+        assert_eq!(
+            collapse_ci(Some(&rollup(
+                vec![success_run.clone(), failing],
+                Some("FAILURE")
+            ))),
+            "FAILURE"
+        );
         let errored = item("StatusContext", None, None, Some("ERROR"));
-        assert_eq!(collapse_ci(Some(&rollup(vec![success_run.clone(), errored], Some("FAILURE")))), "FAILURE");
+        assert_eq!(
+            collapse_ci(Some(&rollup(
+                vec![success_run.clone(), errored],
+                Some("FAILURE")
+            ))),
+            "FAILURE"
+        );
 
         let in_flight = item("CheckRun", Some("IN_PROGRESS"), None, None);
-        assert_eq!(collapse_ci(Some(&rollup(vec![success_run.clone(), in_flight], Some("PENDING")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(
+                vec![success_run.clone(), in_flight],
+                Some("PENDING")
+            ))),
+            "PENDING"
+        );
         let context_pending = item("StatusContext", None, None, Some("PENDING"));
-        assert_eq!(collapse_ci(Some(&rollup(vec![status_success.clone(), context_pending], Some("PENDING")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(
+                vec![status_success.clone(), context_pending],
+                Some("PENDING")
+            ))),
+            "PENDING"
+        );
 
         let neutral = item("CheckRun", Some("COMPLETED"), Some("NEUTRAL"), None);
-        assert_eq!(collapse_ci(Some(&rollup(vec![neutral], Some("SUCCESS")))), "SUCCESS");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![neutral], Some("SUCCESS")))),
+            "SUCCESS"
+        );
         let cancelled = item("CheckRun", Some("COMPLETED"), Some("CANCELLED"), None);
-        assert_eq!(collapse_ci(Some(&rollup(vec![cancelled], Some("FAILURE")))), "FAILURE");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![cancelled], Some("FAILURE")))),
+            "FAILURE"
+        );
         // A recognized success still decides even next to an ACTION_REQUIRED run.
         let action = item("CheckRun", Some("COMPLETED"), Some("ACTION_REQUIRED"), None);
         assert_eq!(
-            collapse_ci(Some(&rollup(vec![success_run.clone(), action.clone()], Some("FAILURE")))),
+            collapse_ci(Some(&rollup(
+                vec![success_run.clone(), action.clone()],
+                Some("FAILURE")
+            ))),
             "SUCCESS",
             "recognized items decide (defensible asymmetry)"
         );
         // All-ignored items (ACTION_REQUIRED only) fall back to the aggregate (F5):
-        assert_eq!(collapse_ci(Some(&rollup(vec![action.clone()], Some("FAILURE")))), "FAILURE");
-        assert_eq!(collapse_ci(Some(&rollup(vec![action.clone()], Some("PENDING")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![action.clone()], Some("FAILURE")))),
+            "FAILURE"
+        );
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![action.clone()], Some("PENDING")))),
+            "PENDING"
+        );
         assert_eq!(collapse_ci(Some(&rollup(vec![action], None))), "UNKNOWN");
         // Unknown typename only -> aggregate too.
         let alien = item("SomethingElse", Some("COMPLETED"), Some("SUCCESS"), None);
-        assert_eq!(collapse_ci(Some(&rollup(vec![alien.clone()], Some("PENDING")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![alien.clone()], Some("PENDING")))),
+            "PENDING"
+        );
         assert_eq!(collapse_ci(Some(&rollup(vec![alien], None))), "UNKNOWN");
 
         // Empty contexts fall back to the rollup's aggregate state.
-        assert_eq!(collapse_ci(Some(&rollup(vec![], Some("SUCCESS")))), "SUCCESS");
-        assert_eq!(collapse_ci(Some(&rollup(vec![], Some("PENDING")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![], Some("SUCCESS")))),
+            "SUCCESS"
+        );
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![], Some("PENDING")))),
+            "PENDING"
+        );
         assert_eq!(collapse_ci(Some(&rollup(vec![], Some("ERROR")))), "FAILURE");
-        assert_eq!(collapse_ci(Some(&rollup(vec![], Some("EXPECTED")))), "PENDING");
+        assert_eq!(
+            collapse_ci(Some(&rollup(vec![], Some("EXPECTED")))),
+            "PENDING"
+        );
         assert_eq!(collapse_ci(Some(&rollup(vec![], Some("WEIRD")))), "UNKNOWN");
     }
 
@@ -1042,10 +1163,19 @@ mod tests {
         // Wire order is 7,6 — decoded output is sorted by number (F7).
         assert_eq!(state.prs[0].pr_number, 6);
         assert_eq!(state.prs[0].mergeable, "MERGEABLE");
-        assert_eq!(state.prs[0].ci_status, "PENDING", "empty contexts -> aggregate state");
+        assert_eq!(
+            state.prs[0].ci_status, "PENDING",
+            "empty contexts -> aggregate state"
+        );
         assert_eq!(state.prs[0].head_sha, "", "null headRefOid -> empty string");
-        assert_eq!(state.prs[0].head_branch, "", "null headRefName -> empty string");
-        assert!(state.prs[0].closing_issues.is_empty(), "null closing refs -> empty");
+        assert_eq!(
+            state.prs[0].head_branch, "",
+            "null headRefName -> empty string"
+        );
+        assert!(
+            state.prs[0].closing_issues.is_empty(),
+            "null closing refs -> empty"
+        );
         assert_eq!(state.prs[1].pr_number, 7);
         assert_eq!(state.prs[1].mergeable, "CONFLICTING");
         assert_eq!(state.prs[1].ci_status, "SUCCESS");
@@ -1122,7 +1252,9 @@ mod tests {
         assert!(ever, "marks ever-connected");
         assert_eq!(
             action,
-            CadenceAction::Poll { next: FOREGROUND_POLL },
+            CadenceAction::Poll {
+                next: FOREGROUND_POLL
+            },
             "SWR: first subscriber fetches immediately, next poll in 60s"
         );
     }
@@ -1136,13 +1268,25 @@ mod tests {
         let (action, ever) =
             cadence_step(true, 1, 0, Some(t0 + Duration::from_secs(290)), t0, &config);
         assert!(ever);
-        assert_eq!(action, CadenceAction::Poll { next: FOREGROUND_POLL });
+        assert_eq!(
+            action,
+            CadenceAction::Poll {
+                next: FOREGROUND_POLL
+            }
+        );
         // ...whereas no join preserves the background sleep...
-        let (action, _) = cadence_step(true, 0, 0, Some(t0 + Duration::from_secs(290)), t0, &config);
-        assert_eq!(action, CadenceAction::SleepUntil(t0 + Duration::from_secs(290)));
+        let (action, _) =
+            cadence_step(true, 0, 0, Some(t0 + Duration::from_secs(290)), t0, &config);
+        assert_eq!(
+            action,
+            CadenceAction::SleepUntil(t0 + Duration::from_secs(290))
+        );
         // ...and a steady subscriber (prev=1, now=1) does not spuriously poll.
         let (action, _) = cadence_step(true, 1, 1, Some(t0 + Duration::from_secs(10)), t0, &config);
-        assert_eq!(action, CadenceAction::SleepUntil(t0 + Duration::from_secs(10)));
+        assert_eq!(
+            action,
+            CadenceAction::SleepUntil(t0 + Duration::from_secs(10))
+        );
     }
 
     #[test]
@@ -1151,14 +1295,24 @@ mod tests {
         let config = GhPlaneConfig::default();
         // Due now, subscriber live -> poll, 60s cadence.
         let (action, _) = cadence_step(true, 1, 1, Some(t0 - Duration::from_secs(1)), t0, &config);
-        assert_eq!(action, CadenceAction::Poll { next: FOREGROUND_POLL });
+        assert_eq!(
+            action,
+            CadenceAction::Poll {
+                next: FOREGROUND_POLL
+            }
+        );
         // Not due -> sleep until the deadline.
         let deadline = t0 + Duration::from_secs(10);
         let (action, _) = cadence_step(true, 1, 1, Some(deadline), t0, &config);
         assert_eq!(action, CadenceAction::SleepUntil(deadline));
         // Due again exactly 60s later.
         let (action, _) = cadence_step(true, 1, 1, Some(t0), t0 + FOREGROUND_POLL, &config);
-        assert_eq!(action, CadenceAction::Poll { next: FOREGROUND_POLL });
+        assert_eq!(
+            action,
+            CadenceAction::Poll {
+                next: FOREGROUND_POLL
+            }
+        );
     }
 
     #[test]
@@ -1167,12 +1321,25 @@ mod tests {
         let config = GhPlaneConfig::default();
         // Ever connected, subscriber just dropped, due -> poll, 300s cadence.
         let (action, _) = cadence_step(true, 0, 1, Some(t0 - Duration::from_secs(1)), t0, &config);
-        assert_eq!(action, CadenceAction::Poll { next: BACKGROUND_POLL });
+        assert_eq!(
+            action,
+            CadenceAction::Poll {
+                next: BACKGROUND_POLL
+            }
+        );
         // Just polled with nobody watching -> next poll scheduled 300s out.
         let (action, _) = cadence_step(true, 0, 0, Some(t0 + Duration::from_secs(10)), t0, &config);
-        assert_eq!(action, CadenceAction::SleepUntil(t0 + Duration::from_secs(10)));
+        assert_eq!(
+            action,
+            CadenceAction::SleepUntil(t0 + Duration::from_secs(10))
+        );
         let (action, _) = cadence_step(true, 0, 0, Some(t0), t0 + BACKGROUND_POLL, &config);
-        assert_eq!(action, CadenceAction::Poll { next: BACKGROUND_POLL });
+        assert_eq!(
+            action,
+            CadenceAction::Poll {
+                next: BACKGROUND_POLL
+            }
+        );
     }
 
     #[test]
@@ -1190,7 +1357,8 @@ mod tests {
             assert_eq!(*delay, Duration::from_secs(seconds));
         }
         // Capped at the cadence when the cadence is smaller than the backoff.
-        let (delay, next) = failure_backoff_step(Duration::from_millis(400), Duration::from_millis(150));
+        let (delay, next) =
+            failure_backoff_step(Duration::from_millis(400), Duration::from_millis(150));
         assert_eq!(delay, Duration::from_millis(150));
         assert_eq!(next, Duration::from_millis(150));
         // The first failure waits the base backoff, not the full cadence.

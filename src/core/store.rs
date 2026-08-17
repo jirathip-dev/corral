@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, watch, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, broadcast, watch};
 
 use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
@@ -114,10 +114,7 @@ impl Store {
                 if old_state != Some(agent.state) {
                     event = Some(HistoryEvent {
                         ts: now_millis(),
-                        pane_id: agent
-                            .attachment
-                            .as_ref()
-                            .map(|a| a.reference.clone()),
+                        pane_id: agent.attachment.as_ref().map(|a| a.reference.clone()),
                         agent_id: Some(agent_id.clone()),
                         old_status: old_state,
                         new_status: agent.state,
@@ -156,11 +153,7 @@ impl Store {
     ///
     /// Returns how many records actually changed; unchanged records are not
     /// re-published. The coalescer owns the rev exactly as with [`Store::apply`].
-    pub async fn update_where(
-        &self,
-        f: impl Fn(&Agent) -> bool,
-        g: impl Fn(&mut Agent),
-    ) -> usize {
+    pub async fn update_where(&self, f: impl Fn(&Agent) -> bool, g: impl Fn(&mut Agent)) -> usize {
         let mut inner = self.inner.lock().await;
         let mut changed_records: Vec<Agent> = Vec::new();
         for agent in inner.agents.values_mut() {
@@ -183,7 +176,7 @@ impl Store {
             inner.pending_any = true;
             self.notify.notify_one();
             let next = self.version.borrow().wrapping_add(1);
-        let _ = self.version.send(next);
+            let _ = self.version.send(next);
         }
         changed
     }
@@ -233,7 +226,9 @@ impl Store {
         inner.pending_any = false;
         let delta = Delta {
             rev: inner.rev + 1,
-            upd: std::mem::take(&mut inner.pending_upd).into_values().collect(),
+            upd: std::mem::take(&mut inner.pending_upd)
+                .into_values()
+                .collect(),
             del: std::mem::take(&mut inner.pending_del),
         };
         inner.rev = delta.rev;

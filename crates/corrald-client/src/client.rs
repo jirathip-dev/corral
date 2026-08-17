@@ -100,7 +100,8 @@ impl CorralClient {
     pub fn new(base: impl AsRef<str>) -> Result<Self, ApiError> {
         let base = base.as_ref().trim_end_matches('/');
         // Validate the origin shape (scheme + host) up front.
-        let parsed = reqwest::Url::parse(&format!("{base}/")).map_err(|e| ApiError::Url(e.to_string()))?;
+        let parsed =
+            reqwest::Url::parse(&format!("{base}/")).map_err(|e| ApiError::Url(e.to_string()))?;
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(ApiError::Url("base URL must be http(s)".to_string()));
         }
@@ -214,11 +215,14 @@ impl CorralClient {
         grants: &[Capability],
     ) -> Result<(), ApiError> {
         let wire: Vec<String> = grants.iter().map(|c| c.to_string()).collect();
-        self.grants(admin_token, json!({
-            "action": "set_grants",
-            "key_id": key_id,
-            "grants": wire,
-        }))
+        self.grants(
+            admin_token,
+            json!({
+                "action": "set_grants",
+                "key_id": key_id,
+                "grants": wire,
+            }),
+        )
         .await
     }
 
@@ -229,11 +233,14 @@ impl CorralClient {
         key_id: &str,
         revoked: bool,
     ) -> Result<(), ApiError> {
-        self.grants(admin_token, json!({
-            "action": "revoke",
-            "key_id": key_id,
-            "revoked": revoked,
-        }))
+        self.grants(
+            admin_token,
+            json!({
+                "action": "revoke",
+                "key_id": key_id,
+                "revoked": revoked,
+            }),
+        )
         .await
     }
 
@@ -299,7 +306,11 @@ impl CorralClient {
             .await
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(ToOwned::to_owned))
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .map(ToOwned::to_owned)
+            })
             .unwrap_or_else(|| format!("HTTP {status}"));
         ApiError::Plain { status, error }
     }
@@ -386,7 +397,12 @@ impl DriveClient {
         envelope: &DriveEnvelope,
         step_up_token: Option<&str>,
     ) -> Result<DriveResponse, ApiError> {
-        if let Some(stored) = self.replay.lock().expect("replay lock").get(&envelope.request_id) {
+        if let Some(stored) = self
+            .replay
+            .lock()
+            .expect("replay lock")
+            .get(&envelope.request_id)
+        {
             return Ok(stored.clone());
         }
 
@@ -414,7 +430,9 @@ impl DriveClient {
                     // replay table guarantees at most one dispatch.
                     backoff = next_backoff(backoff, self.policy);
                 }
-                Err(ApiError::Drive(refusal)) if refusal.kind == Some(crate::errors::DriveErrorKind::InFlight) => {
+                Err(ApiError::Drive(refusal))
+                    if refusal.kind == Some(crate::errors::DriveErrorKind::InFlight) =>
+                {
                     // A concurrent duplicate is dispatching; the table will
                     // hold the response shortly.
                     backoff = next_backoff(backoff, self.policy);
@@ -439,8 +457,7 @@ impl DriveClient {
             error: format!(
                 "drive {}: retries exhausted after {} attempts (outcome unknown; resubmit \
                  with the same request_id and the replay table answers)",
-                envelope.request_id,
-                self.policy.max_attempts
+                envelope.request_id, self.policy.max_attempts
             ),
         })
     }
@@ -474,9 +491,7 @@ pub fn envelope(
 /// Build a snapshot-led consumer: fetch the current snapshot, then follow
 /// deltas from `SseStream`, returning both. (Small helper for W2's board
 /// bootstrapping.)
-pub async fn snapshot_and_stream(
-    client: &CorralClient,
-) -> Result<(Snapshot, SseStream), ApiError> {
+pub async fn snapshot_and_stream(client: &CorralClient) -> Result<(Snapshot, SseStream), ApiError> {
     let snapshot = client.snapshot().await?;
     let stream = client.events(Some(snapshot.rev));
     Ok((snapshot, stream))
@@ -494,10 +509,12 @@ pub async fn wait_for_event(
                 Some(Ok(event)) if predicate(&event) => return Ok(event),
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e),
-                None => return Err(ApiError::Plain {
-                    status: reqwest::StatusCode::OK,
-                    error: "event stream ended".to_string(),
-                }),
+                None => {
+                    return Err(ApiError::Plain {
+                        status: reqwest::StatusCode::OK,
+                        error: "event stream ended".to_string(),
+                    });
+                }
             }
         }
     })
@@ -520,10 +537,7 @@ mod tests {
     fn base_url_normalization() {
         let c = CorralClient::new("http://127.0.0.1:8474/").unwrap();
         assert_eq!(c.base(), "http://127.0.0.1:8474");
-        assert_eq!(
-            c.endpoint("snapshot"),
-            "http://127.0.0.1:8474/snapshot"
-        );
+        assert_eq!(c.endpoint("snapshot"), "http://127.0.0.1:8474/snapshot");
         assert_eq!(c.endpoint("/snapshot"), "http://127.0.0.1:8474/snapshot");
         assert!(CorralClient::new("not a url").is_err());
         assert!(CorralClient::new("ftp://x").is_err());
@@ -542,11 +556,14 @@ mod tests {
             },
             Some(3),
         );
-        assert_eq!(env.payload, serde_json::json!({
-            "kind": "approve",
-            "approval_id": "a",
-            "prompt_hash": "sha256:bb",
-            "choice": "y"
-        }));
+        assert_eq!(
+            env.payload,
+            serde_json::json!({
+                "kind": "approve",
+                "approval_id": "a",
+                "prompt_hash": "sha256:bb",
+                "choice": "y"
+            })
+        );
     }
 }

@@ -99,23 +99,23 @@ pub struct ProviderUsage {
 
 /// $CORRAL_OPENCODE_DB, or the opencode default install path.
 pub fn opencode_db_path() -> PathBuf {
-    std::env::var("CORRAL_OPENCODE_DB").map(PathBuf::from).unwrap_or_else(|_| {
-        home_dir().join(".local/share/opencode/opencode.db")
-    })
+    std::env::var("CORRAL_OPENCODE_DB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".local/share/opencode/opencode.db"))
 }
 
 /// $CORRAL_CLAUDE_DIR, or `~/.claude/projects`.
 pub fn claude_dir_path() -> PathBuf {
-    std::env::var("CORRAL_CLAUDE_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-        home_dir().join(".claude/projects")
-    })
+    std::env::var("CORRAL_CLAUDE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".claude/projects"))
 }
 
 /// $CORRAL_CODEX_DIR, or `~/.codex/sessions`.
 pub fn codex_dir_path() -> PathBuf {
-    std::env::var("CORRAL_CODEX_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-        home_dir().join(".codex/sessions")
-    })
+    std::env::var("CORRAL_CODEX_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".codex/sessions"))
 }
 
 fn home_dir() -> PathBuf {
@@ -127,7 +127,14 @@ fn home_dir() -> PathBuf {
 /// read once over the trailing 30 days; the 5h/weekly windows are cheap
 /// slices of that same result.
 pub async fn compute_all(config: &CostConfig, now_ms: u64) -> Vec<ProviderUsage> {
-    compute_all_with_paths(config, now_ms, &opencode_db_path(), &claude_dir_path(), &codex_dir_path()).await
+    compute_all_with_paths(
+        config,
+        now_ms,
+        &opencode_db_path(),
+        &claude_dir_path(),
+        &codex_dir_path(),
+    )
+    .await
 }
 
 /// [`compute_all`]'s core, parameterized on store paths — lets tests point
@@ -143,8 +150,14 @@ pub async fn compute_all_with_paths(
     let start_ms = now_ms.saturating_sub(Window::Monthly.duration_ms());
 
     let opencode_found = opencode_path.exists();
-    let claude_found = tokio::fs::metadata(claude_path).await.map(|m| m.is_dir()).unwrap_or(false);
-    let codex_found = tokio::fs::metadata(codex_path).await.map(|m| m.is_dir()).unwrap_or(false);
+    let claude_found = tokio::fs::metadata(claude_path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let codex_found = tokio::fs::metadata(codex_path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
 
     let (opencode_events, claude_events, codex_events) = tokio::join!(
         opencode::opencode_usage(opencode_path, start_ms, now_ms),
@@ -153,8 +166,20 @@ pub async fn compute_all_with_paths(
     );
 
     vec![
-        provider_usage(Provider::Opencode, &opencode_events, opencode_found, config, now_ms),
-        provider_usage(Provider::Claude, &claude_events, claude_found, config, now_ms),
+        provider_usage(
+            Provider::Opencode,
+            &opencode_events,
+            opencode_found,
+            config,
+            now_ms,
+        ),
+        provider_usage(
+            Provider::Claude,
+            &claude_events,
+            claude_found,
+            config,
+            now_ms,
+        ),
         provider_usage(Provider::Codex, &codex_events, codex_found, config, now_ms),
     ]
 }
@@ -171,7 +196,11 @@ fn provider_usage(
         .map(|&window| {
             let usd = windows::sum_usd_in_window(events, window, now_ms);
             let (cap_usd, cap_is_placeholder) = config.cap_for(provider, window);
-            let pct_of_cap = if cap_usd > 0.0 { usd / cap_usd * 100.0 } else { 0.0 };
+            let pct_of_cap = if cap_usd > 0.0 {
+                usd / cap_usd * 100.0
+            } else {
+                0.0
+            };
             let status = if pct_of_cap >= config.alert_threshold_pct {
                 AlertStatus::Problem
             } else if pct_of_cap >= config.warn_threshold_pct {
@@ -179,10 +208,21 @@ fn provider_usage(
             } else {
                 AlertStatus::Ok
             };
-            WindowUsage { window, usd, cap_usd, cap_is_placeholder, pct_of_cap, status }
+            WindowUsage {
+                window,
+                usd,
+                cap_usd,
+                cap_is_placeholder,
+                pct_of_cap,
+                status,
+            }
         })
         .collect();
-    ProviderUsage { provider, store_found, windows }
+    ProviderUsage {
+        provider,
+        store_found,
+        windows,
+    }
 }
 
 /// Recompute usage on `interval` and `tracing::warn!` the moment any
@@ -231,15 +271,31 @@ mod tests {
         config.warn_threshold_pct = 70.0;
         let now_ms = 1_000_000_000u64;
 
-        let cheap = vec![UsageEvent { ts_ms: now_ms, usd: Some(0.01), workspace_path: None }];
+        let cheap = vec![UsageEvent {
+            ts_ms: now_ms,
+            usd: Some(0.01),
+            workspace_path: None,
+        }];
         let usage = provider_usage(Provider::Claude, &cheap, true, &config, now_ms);
-        let five_h = usage.windows.iter().find(|w| w.window == Window::FiveHour).unwrap();
+        let five_h = usage
+            .windows
+            .iter()
+            .find(|w| w.window == Window::FiveHour)
+            .unwrap();
         assert_eq!(five_h.status, AlertStatus::Ok);
 
         let (cap, _) = config.cap_for(Provider::Claude, Window::FiveHour);
-        let expensive = vec![UsageEvent { ts_ms: now_ms, usd: Some(cap * 0.95), workspace_path: None }];
+        let expensive = vec![UsageEvent {
+            ts_ms: now_ms,
+            usd: Some(cap * 0.95),
+            workspace_path: None,
+        }];
         let usage = provider_usage(Provider::Claude, &expensive, true, &config, now_ms);
-        let five_h = usage.windows.iter().find(|w| w.window == Window::FiveHour).unwrap();
+        let five_h = usage
+            .windows
+            .iter()
+            .find(|w| w.window == Window::FiveHour)
+            .unwrap();
         assert_eq!(five_h.status, AlertStatus::Problem);
     }
 

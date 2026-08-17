@@ -60,11 +60,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
@@ -74,7 +74,7 @@ use crate::approve::{ApprovalError, check_approval_claim};
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
-    AuditEntry, AuditLog, AuditOutcome, AuthorizedDrive, AuthError, Capability, DriveEnvelope,
+    AuditEntry, AuditLog, AuditOutcome, AuthError, AuthorizedDrive, Capability, DriveEnvelope,
     DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive, UnknownCapability,
 };
 
@@ -181,7 +181,9 @@ impl ReplayTable {
 
     fn complete(&self, request_id: &str, response: DriveResponse) {
         let mut inner = self.inner.lock().expect("replay table poisoned");
-        inner.entries.insert(request_id.to_string(), Entry::Done(response));
+        inner
+            .entries
+            .insert(request_id.to_string(), Entry::Done(response));
         inner.touch(request_id);
         inner.evict_to_cap();
     }
@@ -294,11 +296,7 @@ fn command_for(
             if !is_empty_payload(payload) {
                 return Err(PayloadError {
                     capability,
-                    detail: format!(
-                        "no payload expected for {}, got {}",
-                        capability,
-                        payload
-                    ),
+                    detail: format!("no payload expected for {}, got {}", capability, payload),
                 });
             }
             Ok(match capability {
@@ -384,10 +382,14 @@ struct DriveErrorBody {
 impl IntoResponse for DriveApiError {
     fn into_response(self) -> Response {
         let (status, kind, message, request_id) = match self {
-            Self::BadRequest { message, request_id } => {
-                (StatusCode::BAD_REQUEST, "bad_request", message, request_id)
-            }
-            Self::UnknownCapability { capability, request_id } => (
+            Self::BadRequest {
+                message,
+                request_id,
+            } => (StatusCode::BAD_REQUEST, "bad_request", message, request_id),
+            Self::UnknownCapability {
+                capability,
+                request_id,
+            } => (
                 StatusCode::BAD_REQUEST,
                 "unknown_capability",
                 format!("unknown capability: {capability}"),
@@ -415,7 +417,8 @@ impl IntoResponse for DriveApiError {
             Self::StepUpRequired { request_id } => (
                 StatusCode::FORBIDDEN,
                 "step_up_required",
-                "destructive payload needs a step-up token (POST /step-up, X-Step-Up-Token header)".to_string(),
+                "destructive payload needs a step-up token (POST /step-up, X-Step-Up-Token header)"
+                    .to_string(),
                 request_id,
             ),
             Self::StepUpFailed { error, request_id } => (
@@ -476,12 +479,11 @@ pub async fn drive(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<DriveResponse>, DriveApiError> {
-    let wire: SignedDriveWire = serde_json::from_slice(&body).map_err(|error| {
-        DriveApiError::BadRequest {
+    let wire: SignedDriveWire =
+        serde_json::from_slice(&body).map_err(|error| DriveApiError::BadRequest {
             message: error.to_string(),
             request_id: None,
-        }
-    })?;
+        })?;
 
     let request_id = wire.envelope.request_id.clone();
     if request_id.is_empty() {
@@ -497,14 +499,16 @@ pub async fn drive(
             request_id: Some(request_id.clone()),
         });
     }
-    let capability: Capability = wire
-        .envelope
-        .capability
-        .parse()
-        .map_err(|error: UnknownCapability| DriveApiError::UnknownCapability {
-            capability: error.0,
-            request_id: Some(request_id.clone()),
-        })?;
+    let capability: Capability =
+        wire.envelope
+            .capability
+            .parse()
+            .map_err(
+                |error: UnknownCapability| DriveApiError::UnknownCapability {
+                    capability: error.0,
+                    request_id: Some(request_id.clone()),
+                },
+            )?;
 
     let signed = SignedDrive {
         key_id: wire.key_id,
@@ -518,14 +522,15 @@ pub async fn drive(
         },
     };
 
-    let authorized = state
-        .auth
-        .authorizer
-        .verify(&signed)
-        .map_err(|error| DriveApiError::Auth {
-            error,
-            request_id: Some(signed.envelope.request_id.clone()),
-        })?;
+    let authorized =
+        state
+            .auth
+            .authorizer
+            .verify(&signed)
+            .map_err(|error| DriveApiError::Auth {
+                error,
+                request_id: Some(signed.envelope.request_id.clone()),
+            })?;
 
     // Step-up gate (W3): destructive payloads need a single-use, short-TTL
     // token minted via POST /step-up. Step-up is part of AUTH — failures
@@ -565,54 +570,61 @@ pub async fn drive(
     // hash / stale approval can never occupy the id's slot or dispatch.
     // Refusals here are client errors: no replay entry, no audit entry.
     let agent_id = authorized.envelope.target.clone();
-    let command = match pending {
-        PendingCommand::Command(command) => command,
-        PendingCommand::Approve {
-            approval_id,
-            prompt_hash,
-            choice,
-        } => {
-            // First check: pre-claim validation (the refusal must not occupy
-            // the replay slot).
-            let agent = state.store.get(&agent_id).await.ok_or_else(|| {
-                DriveApiError::UnknownAgent {
-                    agent_id: agent_id.clone(),
-                    request_id: Some(authorized.envelope.request_id.clone()),
-                }
-            })?;
-            check_approval_claim(&agent_id, agent.waiting_on.as_ref(), &approval_id, &prompt_hash, &choice)
+    let command =
+        match pending {
+            PendingCommand::Command(command) => command,
+            PendingCommand::Approve {
+                approval_id,
+                prompt_hash,
+                choice,
+            } => {
+                // First check: pre-claim validation (the refusal must not occupy
+                // the replay slot).
+                let agent = state.store.get(&agent_id).await.ok_or_else(|| {
+                    DriveApiError::UnknownAgent {
+                        agent_id: agent_id.clone(),
+                        request_id: Some(authorized.envelope.request_id.clone()),
+                    }
+                })?;
+                check_approval_claim(
+                    &agent_id,
+                    agent.waiting_on.as_ref(),
+                    &approval_id,
+                    &prompt_hash,
+                    &choice,
+                )
                 .map_err(|error| DriveApiError::Approval {
                     error,
                     request_id: Some(authorized.envelope.request_id.clone()),
                 })?;
-            // F3 mitigation (W2 review): re-read immediately before dispatch
-            // shrinks the TOCTOU window to the RPC duration. The residual
-            // (the agent moved on between re-read and RPC completion) is
-            // inherent to the async adapter and documented in src/approve.
-            let agent = state.store.get(&agent_id).await.ok_or_else(|| {
-                DriveApiError::UnknownAgent {
-                    agent_id: agent_id.clone(),
+                // F3 mitigation (W2 review): re-read immediately before dispatch
+                // shrinks the TOCTOU window to the RPC duration. The residual
+                // (the agent moved on between re-read and RPC completion) is
+                // inherent to the async adapter and documented in src/approve.
+                let agent = state.store.get(&agent_id).await.ok_or_else(|| {
+                    DriveApiError::UnknownAgent {
+                        agent_id: agent_id.clone(),
+                        request_id: Some(authorized.envelope.request_id.clone()),
+                    }
+                })?;
+                let approved = check_approval_claim(
+                    &agent_id,
+                    agent.waiting_on.as_ref(),
+                    &approval_id,
+                    &prompt_hash,
+                    &choice,
+                )
+                .map_err(|error| DriveApiError::Approval {
+                    error,
                     request_id: Some(authorized.envelope.request_id.clone()),
+                })?;
+                // Dispatch the VALIDATED choice, never the raw payload — menu
+                // membership must hold.
+                DriveCommand::Approve {
+                    choice: approved.choice,
                 }
-            })?;
-            let approved = check_approval_claim(
-                &agent_id,
-                agent.waiting_on.as_ref(),
-                &approval_id,
-                &prompt_hash,
-                &choice,
-            )
-            .map_err(|error| DriveApiError::Approval {
-                error,
-                request_id: Some(authorized.envelope.request_id.clone()),
-            })?;
-            // Dispatch the VALIDATED choice, never the raw payload — menu
-            // membership must hold.
-            DriveCommand::Approve {
-                choice: approved.choice,
             }
-        }
-    };
+        };
 
     match state.replay.claim(&authorized.envelope.request_id) {
         Claim::Done(response) => return Ok(Json(response)),
@@ -668,7 +680,12 @@ pub async fn drive(
 /// everything else → `Refused`). `result` is always `None` on refusal.
 fn drive_refusal(
     e: DriveError,
-) -> (bool, Option<String>, AuditOutcome, Option<serde_json::Value>) {
+) -> (
+    bool,
+    Option<String>,
+    AuditOutcome,
+    Option<serde_json::Value>,
+) {
     let text = e.to_string();
     let outcome = match &e {
         DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),

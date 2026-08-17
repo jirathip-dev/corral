@@ -238,7 +238,8 @@ fn load_or_create_secret(path: &Path) -> Result<String, String> {
     if let Ok(content) = std::fs::read_to_string(path) {
         ensure_file_0600(path)?;
         let trimmed = content.trim();
-        let mut decoded = decode_b64(trimmed).ok_or_else(|| format!("corrupt secret file {}", path.display()))?;
+        let mut decoded =
+            decode_b64(trimmed).ok_or_else(|| format!("corrupt secret file {}", path.display()))?;
         if decoded.len() != TOKEN_BYTES {
             return Err(format!(
                 "corrupt secret file {}: expected {} bytes, got {}",

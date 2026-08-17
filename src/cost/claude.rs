@@ -39,7 +39,10 @@ pub async fn claude_usage(dir: &Path, start_ms: u64, end_ms: u64) -> Vec<UsageEv
 }
 
 async fn is_dir(path: &Path) -> bool {
-    fs::metadata(path).await.map(|m| m.is_dir()).unwrap_or(false)
+    fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
 }
 
 /// Iterative breadth-first walk (no recursion crate, no async recursion
@@ -49,10 +52,14 @@ async fn jsonl_files_since(root: &Path, margin_ms: u64) -> Vec<PathBuf> {
     let mut queue = VecDeque::new();
     queue.push_back(root.to_path_buf());
     while let Some(dir) = queue.pop_front() {
-        let Ok(mut rd) = fs::read_dir(&dir).await else { continue };
+        let Ok(mut rd) = fs::read_dir(&dir).await else {
+            continue;
+        };
         while let Ok(Some(entry)) = rd.next_entry().await {
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else { continue };
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
             if meta.is_dir() {
                 queue.push_back(path);
                 continue;
@@ -76,7 +83,9 @@ async fn jsonl_files_since(root: &Path, margin_ms: u64) -> Vec<PathBuf> {
 }
 
 async fn scan_jsonl_file(path: &Path, start_ms: u64, end_ms: u64, out: &mut Vec<UsageEvent>) {
-    let Ok(file) = fs::File::open(path).await else { return };
+    let Ok(file) = fs::File::open(path).await else {
+        return;
+    };
     let mut lines = BufReader::new(file).lines();
     let mut workspace_path: Option<String> = None;
     while let Ok(Some(line)) = lines.next_line().await {
@@ -84,13 +93,17 @@ async fn scan_jsonl_file(path: &Path, start_ms: u64, end_ms: u64, out: &mut Vec<
         if line.is_empty() {
             continue;
         }
-        let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if workspace_path.is_none()
             && let Some(cwd) = record.get("cwd").and_then(Value::as_str)
         {
             workspace_path = Some(cwd.to_string());
         }
-        let Some(usage) = record.get("message").and_then(|m| m.get("usage")) else { continue };
+        let Some(usage) = record.get("message").and_then(|m| m.get("usage")) else {
+            continue;
+        };
         let Some(ts_ms) = record
             .get("timestamp")
             .and_then(Value::as_str)
@@ -174,8 +187,20 @@ mod tests {
             &proj,
             "session.jsonl",
             &[
-                assistant_line("2026-08-17T05:48:59.202Z", "claude-opus-5", 1000, 500, "/repo"),
-                assistant_line("2020-01-01T00:00:00.000Z", "claude-opus-5", 999, 999, "/repo"),
+                assistant_line(
+                    "2026-08-17T05:48:59.202Z",
+                    "claude-opus-5",
+                    1000,
+                    500,
+                    "/repo",
+                ),
+                assistant_line(
+                    "2020-01-01T00:00:00.000Z",
+                    "claude-opus-5",
+                    999,
+                    999,
+                    "/repo",
+                ),
             ],
         );
 
@@ -199,7 +224,13 @@ mod tests {
         write_jsonl(
             tmp.path(),
             "session.jsonl",
-            &[assistant_line("2026-08-17T05:48:59.202Z", "some-future-model", 10, 10, "/repo")],
+            &[assistant_line(
+                "2026-08-17T05:48:59.202Z",
+                "some-future-model",
+                10,
+                10,
+                "/repo",
+            )],
         );
         let events = claude_usage(tmp.path(), 0, u64::MAX).await;
         assert_eq!(events.len(), 1);

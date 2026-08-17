@@ -36,12 +36,12 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Json;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
-use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use tracing::info;
@@ -52,7 +52,7 @@ use crate::core::model::Resume;
 use crate::core::store::Store;
 use crate::push::payload::{DeviceTokenRequest, canonical_device_token_bytes};
 
-use self::drive::{drive, NoopAdapter, ReplayTable};
+use self::drive::{NoopAdapter, ReplayTable, drive};
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -130,7 +130,10 @@ async fn history(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HistoryQuery>,
 ) -> Json<serde_json::Value> {
-    let limit = params.limit.unwrap_or(HISTORY_DEFAULT_LIMIT).min(HISTORY_MAX_LIMIT);
+    let limit = params
+        .limit
+        .unwrap_or(HISTORY_DEFAULT_LIMIT)
+        .min(HISTORY_MAX_LIMIT);
     let events = state.store.history().query(params.since, Some(limit));
     Json(serde_json::json!({ "events": events }))
 }
@@ -174,7 +177,10 @@ async fn events(
             info!(rev = snap.rev, "SSE client joined with full snapshot");
             (vec![delta_event("snapshot", snap.rev, &snap)], snap.rev)
         }
-        Resume::Deltas { deltas, live_from_rev } => {
+        Resume::Deltas {
+            deltas,
+            live_from_rev,
+        } => {
             info!(replayed = deltas.len(), "SSE client resumed");
             (
                 deltas
@@ -371,8 +377,7 @@ mod tests {
     }
 
     /// A valid-format APNs token (64 lowercase hex chars — the N13 shape).
-    const VALID_TOKEN: &str =
-        "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+    const VALID_TOKEN: &str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 
     /// Drive one signed `/device-token` request for `key_id` and return the
     /// HTTP status — shared by the register/clear and N13 rejection tests.
@@ -430,7 +435,13 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let key_id = body["key_id"].as_str().unwrap();
         assert_eq!(
-            state.auth.registry.get(key_id).unwrap().device_token.as_deref(),
+            state
+                .auth
+                .registry
+                .get(key_id)
+                .unwrap()
+                .device_token
+                .as_deref(),
             Some(VALID_TOKEN)
         );
 
@@ -517,7 +528,9 @@ mod tests {
                     .method("POST")
                     .uri("/device-token")
                     .header("content-type", "application/json")
-                    .body(axum::body::Body::from(serde_json::to_vec(&stale_body).unwrap()))
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&stale_body).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -563,7 +576,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN, "revoked key cannot register push");
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "revoked key cannot register push"
+        );
     }
 
     /// N13: a device token is spliced into the APNs URL verbatim, so
@@ -585,11 +602,11 @@ mod tests {
         };
 
         for bad in [
-            "../evil/../secret",      // path traversal
-            "a1b2c3d4e5f6?x=1",      // query string
+            "../evil/../secret", // path traversal
+            "a1b2c3d4e5f6?x=1",  // query string
             "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2", // uppercase
-            "short",                 // too short
-            &"a".repeat(300),        // too long
+            "short",             // too short
+            &"a".repeat(300),    // too long
         ] {
             assert_eq!(
                 post_device_token(&app, &rec.key_id, &signing, bad).await,

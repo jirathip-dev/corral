@@ -18,11 +18,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::drive::{
-    canonical_envelope_bytes, AuthError, AuthorizedDrive, DriveAuthorizer, SignedDrive,
+    AuthError, AuthorizedDrive, DriveAuthorizer, SignedDrive, canonical_envelope_bytes,
 };
 
-use super::registry::now_secs;
 use super::DeviceRegistry;
+use super::registry::now_secs;
 
 pub struct DeviceAuthorizer {
     registry: Arc<DeviceRegistry>,

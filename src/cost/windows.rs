@@ -66,7 +66,11 @@ mod tests {
     use super::*;
 
     fn ev(ts_ms: u64, usd: Option<f64>) -> UsageEvent {
-        UsageEvent { ts_ms, usd, workspace_path: None }
+        UsageEvent {
+            ts_ms,
+            usd,
+            workspace_path: None,
+        }
     }
 
     #[test]

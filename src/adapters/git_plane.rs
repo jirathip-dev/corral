@@ -378,7 +378,9 @@ impl GitPlane {
         let state = self.state.lock().unwrap();
         let mut best: Option<(usize, PathBuf)> = None;
         for (wt, st) in &state.worktrees {
-            let Some(gd) = st.gitdir.as_ref() else { continue };
+            let Some(gd) = st.gitdir.as_ref() else {
+                continue;
+            };
             // The main checkout's gitdir is its repo's commondir; its paths
             // are resolved below so `refs/heads/<b>` can reach the worktree
             // actually checked out on that branch.
@@ -436,8 +438,13 @@ impl GitPlane {
                 // just removed) linked worktree.
                 Some("worktrees") => return (vec![], true),
                 // commondir root files belong to the main checkout.
-                Some("index") | Some("HEAD") | Some("ORIG_HEAD") | Some("FETCH_HEAD")
-                | Some("MERGE_HEAD") | Some("CHERRY_PICK_HEAD") | Some("REVERT_HEAD")
+                Some("index")
+                | Some("HEAD")
+                | Some("ORIG_HEAD")
+                | Some("FETCH_HEAD")
+                | Some("MERGE_HEAD")
+                | Some("CHERRY_PICK_HEAD")
+                | Some("REVERT_HEAD")
                 | Some("config") => return (vec![main.clone()], false),
                 // objects/, hooks/, info/, ... — no worktree state to re-read.
                 _ => return (vec![], false),
@@ -686,9 +693,13 @@ impl GitPlane {
                 }
             }
             for entry in &added {
-                state
-                    .worktrees
-                    .insert(entry.path.clone(), WorktreeState { gitdir: entry.gitdir.clone(), ..Default::default() });
+                state.worktrees.insert(
+                    entry.path.clone(),
+                    WorktreeState {
+                        gitdir: entry.gitdir.clone(),
+                        ..Default::default()
+                    },
+                );
             }
             for path in &removed {
                 state.worktrees.remove(path);
@@ -769,7 +780,9 @@ impl GitPlane {
         let mut result = ScanResult::default();
         let mut seen: HashSet<PathBuf> = HashSet::new();
         for source in sources {
-            let mut out = run_git(&source, &["worktree", "list", "--porcelain"]).await.ok();
+            let mut out = run_git(&source, &["worktree", "list", "--porcelain"])
+                .await
+                .ok();
             if out.is_none() {
                 // herdr containers are not repos; probe their worktree
                 // children until one answers.
@@ -894,11 +907,7 @@ fn resolve_possibly_escaped(raw: &Path) -> PathBuf {
     match unescape_worktree_path(raw.to_string_lossy().as_ref()) {
         Some(unescaped) => {
             let alt = PathBuf::from(unescaped);
-            if alt.is_dir() {
-                alt
-            } else {
-                raw.to_path_buf()
-            }
+            if alt.is_dir() { alt } else { raw.to_path_buf() }
         }
         None => raw.to_path_buf(),
     }
@@ -966,7 +975,11 @@ fn resolve_gitdir(wt: &Path) -> Option<PathBuf> {
             .lines()
             .find_map(|line| line.strip_prefix("gitdir: "))?;
         let path = PathBuf::from(target);
-        let abs = if path.is_absolute() { path } else { wt.join(path) };
+        let abs = if path.is_absolute() {
+            path
+        } else {
+            wt.join(path)
+        };
         return fs::canonicalize(abs).ok();
     }
     None
@@ -978,8 +991,9 @@ async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
-    let branch =
-        run_git(wt, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(ProbeError::Git)?;
+    let branch = run_git(wt, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .map_err(ProbeError::Git)?;
     // P4 G21: ONE invocation resolves both the head commit AND its first-line
     // subject (`%H%n%s`), so `head_sha`/`head_subject` on the snapshot cost
     // zero extra git calls. Fails like `rev-parse HEAD` on an unborn HEAD
@@ -991,8 +1005,9 @@ async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
     // acceptable for herdr-managed worktrees, and the probe stays
     // all-or-nothing (a head-read failure suppresses the whole fact, like
     // any other probe failure).
-    let head =
-        run_git(wt, &["log", "-1", "--format=%H%n%s"]).await.map_err(ProbeError::Git)?;
+    let head = run_git(wt, &["log", "-1", "--format=%H%n%s"])
+        .await
+        .map_err(ProbeError::Git)?;
     let mut lines = head.lines();
     let commit = lines.next().unwrap_or_default().trim().to_string();
     let subject = lines
@@ -1000,8 +1015,9 @@ async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let status =
-        run_git(wt, &["status", "--porcelain=v1", "-b"]).await.map_err(ProbeError::Git)?;
+    let status = run_git(wt, &["status", "--porcelain=v1", "-b"])
+        .await
+        .map_err(ProbeError::Git)?;
     Ok(Probe {
         branch: branch.trim().to_string(),
         commit,
@@ -1047,11 +1063,7 @@ fn parse_status(output: &str) -> GitStatus {
     for line in output.lines() {
         if let Some(rest) = line.strip_prefix("##") {
             // `## main...origin/main [ahead 1, behind 2]` | `[gone]` | none.
-            if let Some(bracket) = rest
-                .split('[')
-                .nth(1)
-                .and_then(|s| s.strip_suffix(']'))
-            {
+            if let Some(bracket) = rest.split('[').nth(1).and_then(|s| s.strip_suffix(']')) {
                 for part in bracket.split(',') {
                     let mut it = part.split_whitespace();
                     match it.next() {
@@ -1146,7 +1158,10 @@ mod tests {
                    ?? docs/todo.md\n";
         let status = parse_status(out);
         assert!(status.dirty_index, "staged `M ` must dirty the index");
-        assert!(status.dirty_worktree, "unstaged + untracked must dirty the worktree");
+        assert!(
+            status.dirty_worktree,
+            "unstaged + untracked must dirty the worktree"
+        );
         assert_eq!(status.ahead, 1);
         assert_eq!(status.behind, 2);
     }
@@ -1189,7 +1204,10 @@ mod tests {
                    detached\n";
         let entries = parse_worktree_list(out);
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].0, PathBuf::from("/Users/jirathip/Projects/herdr-board"));
+        assert_eq!(
+            entries[0].0,
+            PathBuf::from("/Users/jirathip/Projects/herdr-board")
+        );
         assert_eq!(entries[0].1.as_deref(), Some("main"));
         assert_eq!(entries[1].1.as_deref(), Some("ws1/git-plane"));
         assert_eq!(entries[2].1, None, "detached worktree has no branch");
@@ -1214,7 +1232,11 @@ mod tests {
             PathBuf::from("/Users/jirathip/.herdr/worktrees/herdr-board/wt one"),
             "space in path survives raw"
         );
-        assert_eq!(entries[1].0, PathBuf::from("/tmp/wt\twith\ttab"), "tab in path survives raw");
+        assert_eq!(
+            entries[1].0,
+            PathBuf::from("/tmp/wt\twith\ttab"),
+            "tab in path survives raw"
+        );
         assert_eq!(entries[2].0, PathBuf::from("/tmp/wt\"quote"));
     }
 
@@ -1254,7 +1276,10 @@ mod tests {
         );
         // Non-existent raw path with escape-like content → unescaped
         // variant wins only when it exists.
-        assert_eq!(resolve_possibly_escaped(Path::new("/nonexistent/raw")), PathBuf::from("/nonexistent/raw"));
+        assert_eq!(
+            resolve_possibly_escaped(Path::new("/nonexistent/raw")),
+            PathBuf::from("/nonexistent/raw")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1282,12 +1307,18 @@ mod tests {
         fs::create_dir_all(&worktree).unwrap();
         let canonical_wt = fs::canonicalize(&worktree).unwrap();
         assert!(plane.watches(&canonical_wt), "canonical spelling matches");
-        assert!(plane.watches(&worktree), "raw spelling matches via canonicalization");
+        assert!(
+            plane.watches(&worktree),
+            "raw spelling matches via canonicalization"
+        );
         assert!(
             plane.watches(&link.join("wts/herdr-board/corral-p2-ws2")),
             "symlinked spelling matches"
         );
-        assert!(plane.watches(&fs::canonicalize(&repo).unwrap()), "main checkout matches");
+        assert!(
+            plane.watches(&fs::canonicalize(&repo).unwrap()),
+            "main checkout matches"
+        );
 
         // Out-of-scope check. This previously used `wts.join("elsewhere")`,
         // a NON-existent path under the worktrees root, and asserted it did
@@ -1327,15 +1358,25 @@ mod tests {
         fs::create_dir_all(&wt_gitdir).unwrap();
         let linked = root.join("linked");
         fs::create_dir_all(&linked).unwrap();
-        fs::write(linked.join(".git"), format!("gitdir: {}\n", wt_gitdir.display())).unwrap();
-        assert_eq!(resolve_gitdir(&linked).expect("file form resolves"), fs::canonicalize(&wt_gitdir).unwrap());
+        fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", wt_gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_gitdir(&linked).expect("file form resolves"),
+            fs::canonicalize(&wt_gitdir).unwrap()
+        );
         // Relative target form.
         let rel = root.join("rel-wt");
         fs::create_dir_all(&rel).unwrap();
         let rel_gitdir = commondir.join("worktrees/rel");
         fs::create_dir_all(&rel_gitdir).unwrap();
         fs::write(rel.join(".git"), "gitdir: ../commondir/worktrees/rel\n").unwrap();
-        assert_eq!(resolve_gitdir(&rel).expect("relative form resolves"), fs::canonicalize(&rel_gitdir).unwrap());
+        assert_eq!(
+            resolve_gitdir(&rel).expect("relative form resolves"),
+            fs::canonicalize(&rel_gitdir).unwrap()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1356,7 +1397,11 @@ mod tests {
                 .expect("git subprocess runs")
         };
         assert!(git(&["init", "-b", "main"]).status.success());
-        assert!(git(&["config", "user.email", "plane@test.local"]).status.success());
+        assert!(
+            git(&["config", "user.email", "plane@test.local"])
+                .status
+                .success()
+        );
         assert!(git(&["config", "user.name", "Plane Test"]).status.success());
         fs::write(root.join("README.md"), "hello\n").unwrap();
         assert!(git(&["add", "README.md"]).status.success());
@@ -1384,15 +1429,36 @@ mod tests {
                 .output()
                 .expect("git subprocess runs")
         };
-        assert!(git(&["commit", "--allow-empty", "-m", "second line\n\nbody paragraph"]).status.success());
-        let sha = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout).trim().to_string();
+        assert!(
+            git(&[
+                "commit",
+                "--allow-empty",
+                "-m",
+                "second line\n\nbody paragraph"
+            ])
+            .status
+            .success()
+        );
+        let sha = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
 
         let before = GIT_CALLS.load(Ordering::Relaxed);
         let probe = probe_worktree(&root).await.expect("probe succeeds");
         let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
-        assert_eq!(delta, 3, "head_sha/head_subject must add zero git calls (probe = 3)");
-        assert_eq!(probe.commit, sha, "probe resolves the same HEAD sha as rev-parse");
-        assert_eq!(probe.subject.as_deref(), Some("second line"), "subject is the commit's first line");
+        assert_eq!(
+            delta, 3,
+            "head_sha/head_subject must add zero git calls (probe = 3)"
+        );
+        assert_eq!(
+            probe.commit, sha,
+            "probe resolves the same HEAD sha as rev-parse"
+        );
+        assert_eq!(
+            probe.subject.as_deref(),
+            Some("second line"),
+            "subject is the commit's first line"
+        );
         assert_eq!(probe.branch, "main");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1417,7 +1483,10 @@ mod tests {
             .output()
             .expect("git subprocess runs");
         assert!(init.status.success());
-        assert!(probe_worktree(&root).await.is_err(), "unborn HEAD must fail the probe");
+        assert!(
+            probe_worktree(&root).await.is_err(),
+            "unborn HEAD must fail the probe"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

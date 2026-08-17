@@ -50,7 +50,9 @@ pub async fn opencode_usage(db_path: &Path, start_ms: u64, end_ms: u64) -> Vec<U
     {
         return events;
     }
-    query_session_fallback(db_path, start_ms, end_ms).await.unwrap_or_default()
+    query_session_fallback(db_path, start_ms, end_ms)
+        .await
+        .unwrap_or_default()
 }
 
 async fn has_message_data_column(db_path: &Path) -> bool {
@@ -69,8 +71,12 @@ async fn query_message_data(db_path: &Path, start_ms: u64, end_ms: u64) -> Optio
     let rows = run_sqlite_json(db_path, &sql).await?;
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
-        let Some(data_str) = row.get("data").and_then(Value::as_str) else { continue };
-        let Ok(data) = serde_json::from_str::<Value>(data_str) else { continue };
+        let Some(data_str) = row.get("data").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<Value>(data_str) else {
+            continue;
+        };
         let ts_ms = data
             .get("time")
             .and_then(|t| t.get("created"))
@@ -83,12 +89,20 @@ async fn query_message_data(db_path: &Path, start_ms: u64, end_ms: u64) -> Optio
             .and_then(|p| p.get("cwd"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        events.push(UsageEvent { ts_ms, usd, workspace_path });
+        events.push(UsageEvent {
+            ts_ms,
+            usd,
+            workspace_path,
+        });
     }
     Some(events)
 }
 
-async fn query_session_fallback(db_path: &Path, start_ms: u64, end_ms: u64) -> Option<Vec<UsageEvent>> {
+async fn query_session_fallback(
+    db_path: &Path,
+    start_ms: u64,
+    end_ms: u64,
+) -> Option<Vec<UsageEvent>> {
     let sql = format!(
         "SELECT cost, time_updated, directory FROM session WHERE time_updated >= {start_ms} AND time_updated <= {end_ms};"
     );
@@ -98,9 +112,15 @@ async fn query_session_fallback(db_path: &Path, start_ms: u64, end_ms: u64) -> O
             .filter_map(|row| {
                 let ts_ms = row.get("time_updated").and_then(Value::as_u64)?;
                 let usd = row.get("cost").and_then(Value::as_f64);
-                let workspace_path =
-                    row.get("directory").and_then(Value::as_str).map(str::to_string);
-                Some(UsageEvent { ts_ms, usd, workspace_path })
+                let workspace_path = row
+                    .get("directory")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Some(UsageEvent {
+                    ts_ms,
+                    usd,
+                    workspace_path,
+                })
             })
             .collect(),
     )
@@ -199,7 +219,10 @@ mod tests {
         assert_eq!(events.len(), 1, "SQL WHERE clause must bound the query");
         assert_eq!(events[0].ts_ms, 1_000_500);
         assert!((events[0].usd.unwrap() - 0.0021316).abs() < 1e-9);
-        assert_eq!(events[0].workspace_path.as_deref(), Some("/Users/jirathip/Projects/foo"));
+        assert_eq!(
+            events[0].workspace_path.as_deref(),
+            Some("/Users/jirathip/Projects/foo")
+        );
     }
 
     #[tokio::test]

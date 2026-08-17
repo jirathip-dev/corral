@@ -143,7 +143,7 @@ impl From<crate::model::CiStatus> for CiStatusLike {
 
 /// Build the dark-dashboard `Visuals` from the palette above.
 pub fn dark_dashboard() -> Visuals {
-    use eframe::egui::{style::Widgets, CornerRadius, Stroke};
+    use eframe::egui::{CornerRadius, Stroke, style::Widgets};
 
     let mut v = Visuals::dark();
     v.panel_fill = Color32::from_rgb(0x0d, 0x11, 0x17);

@@ -370,11 +370,19 @@ mod tests {
         let tail = fleet.tails.get("herdr:a").expect("tail cached");
         assert_eq!(
             tail,
-            &vec!["  computing…", "deploy token [REDACTED]", "", "  done rev 42"]
+            &vec![
+                "  computing…",
+                "deploy token [REDACTED]",
+                "",
+                "  done rev 42"
+            ]
         );
         // The detail view renders each line as a monospace label.
         assert_eq!(tail.len(), 4);
-        assert!(tail[1].contains("[REDACTED]"), "daemon-redacted line survives");
+        assert!(
+            tail[1].contains("[REDACTED]"),
+            "daemon-redacted line survives"
+        );
     }
 
     #[test]

@@ -30,7 +30,10 @@ pub enum SseEvent {
     Snapshot(Snapshot),
     Delta(Delta),
     /// An event type we do not understand (forward-compatible: ignore).
-    Unknown { event: String, id: Option<String> },
+    Unknown {
+        event: String,
+        id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,10 +114,7 @@ pub async fn fetch_host_key(client: &reqwest::Client, base_url: &str) -> Result<
     })
 }
 
-pub async fn fetch_snapshot(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<Snapshot, String> {
+pub async fn fetch_snapshot(client: &reqwest::Client, base_url: &str) -> Result<Snapshot, String> {
     let url = format!("{}/snapshot", base_url.trim_end_matches('/'));
     let response = client
         .get(&url)
@@ -171,10 +171,7 @@ pub async fn register_device(
         .await
         .map_err(|e| format!("connect: {e}"))?;
     let status = response.status();
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("body: {e}"))?;
+    let json: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
     if !status.is_success() {
         let error = json
             .get("error")
@@ -563,19 +560,14 @@ mod tests {
         assert!(frames[0].data.contains("\"rev\":12"));
         assert_eq!(frames[1].event, "delta");
         assert!(frames[1].data.contains("\"rev\":13"));
-        assert!(matches!(
-            parse_frame(&frames[0]),
-            SseEvent::Snapshot(_)
-        ));
+        assert!(matches!(parse_frame(&frames[0]), SseEvent::Snapshot(_)));
         assert!(matches!(parse_frame(&frames[1]), SseEvent::Delta(_)));
     }
 
     #[test]
     fn sse_parser_joins_multiline_data() {
         let mut parser = SseParser::default();
-        let frames = parser.push(
-            b"event: delta\nid: 14\ndata: {\"rev\":14,\n: comment\n\n",
-        );
+        let frames = parser.push(b"event: delta\nid: 14\ndata: {\"rev\":14,\n: comment\n\n");
         // No flush yet (blank line missing after the split).
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].data, "{\"rev\":14,");
@@ -583,9 +575,8 @@ mod tests {
         let frames = parser.finish();
         assert_eq!(frames.len(), 0);
         let mut parser = SseParser::default();
-        let frames = parser.push(
-            b"event: delta\nid: 14\ndata: {\"rev\":14,\ndata: \"upd\":[]}\n\n",
-        );
+        let frames =
+            parser.push(b"event: delta\nid: 14\ndata: {\"rev\":14,\ndata: \"upd\":[]}\n\n");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].data, "{\"rev\":14,\n\"upd\":[]}");
     }
@@ -606,9 +597,8 @@ mod tests {
     #[test]
     fn sse_parser_ignores_unknown_fields_and_comments() {
         let mut parser = SseParser::default();
-        let frames = parser.push(
-            b": keepalive\nevent: snapshot\nid: 5\nretry: 100\ndata: {\"rev\":5}\n\n",
-        );
+        let frames =
+            parser.push(b": keepalive\nevent: snapshot\nid: 5\nretry: 100\ndata: {\"rev\":5}\n\n");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event, "snapshot");
         assert_eq!(frames[0].data, "{\"rev\":5}");

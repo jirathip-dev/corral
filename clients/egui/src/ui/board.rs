@@ -6,11 +6,11 @@
 
 use std::cmp::Ordering;
 
-use eframe::egui::{Color32, CollapsingHeader, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{CollapsingHeader, Color32, RichText, ScrollArea, TextEdit, Ui};
 
 use crate::drive::{DriveIntent, DriveOutcome};
-use crate::state::DriveState;
 use crate::model::Agent;
+use crate::state::DriveState;
 use crate::state::Fleet;
 use crate::theme::{self, ci, kind, state};
 use crate::ui::badge;
@@ -117,8 +117,11 @@ pub fn show(
 }
 
 fn flat_view(ui: &Ui) -> bool {
-    ui.ctx()
-        .memory(|m| m.data.get_temp::<bool>(egui::Id::new(FLAT_VIEW)).unwrap_or(false))
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<bool>(egui::Id::new(FLAT_VIEW))
+            .unwrap_or(false)
+    })
 }
 
 /// One board section: a repo (or the "(no repo)" orphan bucket) and the
@@ -263,7 +266,9 @@ fn state_cell(ui: &mut Ui, agent: &Agent) {
             ui.add_sized(
                 [COL_STATE - 8.0, 30.0],
                 egui::Label::new(
-                    RichText::new(truncated).small().color(theme::ui::TEXT_MUTED),
+                    RichText::new(truncated)
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
                 ),
             )
             .on_hover_text(reason);
@@ -282,7 +287,9 @@ fn waiting_cell(ui: &mut Ui, agent: &Agent) {
         ui.add_sized(
             [COL_WAITING - 8.0, 30.0],
             egui::Label::new(
-                RichText::new(prompt_preview).small().color(theme::ui::TEXT_MUTED),
+                RichText::new(prompt_preview)
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
             )
             .truncate(),
         )
@@ -299,16 +306,42 @@ fn topology_cells(ui: &mut Ui, agent: &Agent) {
         );
     };
     ui.vertical(|ui| {
-        cell(ui, COL_REPO, ws.repo.clone().unwrap_or_else(|| "—".into()), theme::ui::TEXT_MUTED);
+        cell(
+            ui,
+            COL_REPO,
+            ws.repo.clone().unwrap_or_else(|| "—".into()),
+            theme::ui::TEXT_MUTED,
+        );
         branch_cell(ui, agent, &cell);
-        cell(ui, COL_DIRTY, if ws.dirty { "●".into() } else { "".into() }, theme::ui::DIRTY);
+        cell(
+            ui,
+            COL_DIRTY,
+            if ws.dirty { "●".into() } else { "".into() },
+            theme::ui::DIRTY,
+        );
         let ab = if ws.ahead == 0 && ws.behind == 0 {
             "".to_string()
         } else {
             format!("+{}/−{}", ws.ahead, ws.behind)
         };
-        cell(ui, COL_AB, ab, if ws.ahead > 0 { theme::ui::WARN } else { theme::ui::TEXT_MUTED });
-        cell(ui, COL_PR, ws.pr_number.map(|n| format!("#{n}")).unwrap_or_else(|| "—".into()), theme::ui::TEXT_MUTED);
+        cell(
+            ui,
+            COL_AB,
+            ab,
+            if ws.ahead > 0 {
+                theme::ui::WARN
+            } else {
+                theme::ui::TEXT_MUTED
+            },
+        );
+        cell(
+            ui,
+            COL_PR,
+            ws.pr_number
+                .map(|n| format!("#{n}"))
+                .unwrap_or_else(|| "—".into()),
+            theme::ui::TEXT_MUTED,
+        );
         match ws.ci_status {
             Some(status) => {
                 ui.add_sized([COL_CI - 4.0, 18.0], egui::Label::new(RichText::new("")));
@@ -330,11 +363,7 @@ pub fn cost_text(cost: Option<f64>) -> String {
     }
 }
 
-fn cost_cell(
-    ui: &mut Ui,
-    cost: Option<f64>,
-    plain: &dyn Fn(&mut Ui, f32, String, Color32),
-) {
+fn cost_cell(ui: &mut Ui, cost: Option<f64>, plain: &dyn Fn(&mut Ui, f32, String, Color32)) {
     let color = if cost.is_some() {
         theme::ui::TEXT_STRONG
     } else {
@@ -514,7 +543,11 @@ fn approve_choices(
     if w.choices.is_empty() {
         return;
     }
-    ui.label(RichText::new("approve:").small().color(theme::ui::TEXT_MUTED));
+    ui.label(
+        RichText::new("approve:")
+            .small()
+            .color(theme::ui::TEXT_MUTED),
+    );
     for choice in &w.choices {
         let label: String = choice.chars().take(16).collect();
         if ui.small_button(label).clicked() {
@@ -525,12 +558,7 @@ fn approve_choices(
 
 /// Prompt input + Enter-to-send. The buffer lives in egui's temp memory
 /// keyed by agent id (no per-frame churn in the fleet model).
-fn prompt_widget(
-    ui: &mut Ui,
-    agent: &Agent,
-    rev: Option<u64>,
-    drive: &mut dyn FnMut(DriveIntent),
-) {
+fn prompt_widget(ui: &mut Ui, agent: &Agent, rev: Option<u64>, drive: &mut dyn FnMut(DriveIntent)) {
     let id = eframe::egui::Id::new(("corral-ui-prompt", &agent.agent_id));
     let mut text: String = ui
         .ctx()
@@ -580,18 +608,15 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
             if let Some(title) = &agent.title {
                 ui.label(RichText::new(title).color(theme::ui::TEXT_STRONG));
             }
-            if let Some(inferred) =
-                crate::infer::infer(agent.workspace.branch.as_deref(), &agent.known_issue_numbers())
-            {
+            if let Some(inferred) = crate::infer::infer(
+                agent.workspace.branch.as_deref(),
+                &agent.known_issue_numbers(),
+            ) {
                 let (color, tip) = inferred_marker_ui(&inferred);
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     badge(ui, &inferred.marker(), color);
-                    ui.label(
-                        RichText::new(tip)
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                    );
+                    ui.label(RichText::new(tip).small().color(theme::ui::TEXT_MUTED));
                 });
             }
             if let Some(w) = &agent.waiting_on {
@@ -605,7 +630,9 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                     .fill(Color32::from_rgb(0x16, 0x1b, 0x22))
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
-                        ui.add(egui::Label::new(RichText::new(w.prompt.clone()).monospace()).wrap());
+                        ui.add(
+                            egui::Label::new(RichText::new(w.prompt.clone()).monospace()).wrap(),
+                        );
                     });
                 ui.horizontal_wrapped(|ui| {
                     detail_kv(ui, "prompt_hash", &w.prompt_hash);
@@ -632,9 +659,9 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                         } else {
                             ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                                 for line in tail {
-                                    ui.add(
-                                        egui::Label::new(RichText::new(line).monospace().small()),
-                                    );
+                                    ui.add(egui::Label::new(
+                                        RichText::new(line).monospace().small(),
+                                    ));
                                 }
                             });
                         }
@@ -702,7 +729,10 @@ pub fn drive_state_text(state: &DriveState) -> String {
             capability,
         } => format!("{capability} sending {request_id}"),
         DriveState::Ok { rev, capability } => format!("{capability} → ok  rev {rev}"),
-        DriveState::Failed { failure, capability } => {
+        DriveState::Failed {
+            failure,
+            capability,
+        } => {
             format!("{capability} {kind}: {failure}", kind = failure.kind())
         }
     }
@@ -835,7 +865,10 @@ mod tests {
         let total: usize = groups.iter().map(|g| g.agent_ids.len()).sum();
         assert_eq!(total, 29, "every agent lands in exactly one group");
         assert_eq!(groups.last().unwrap().repo, None);
-        let mut seen: Vec<&str> = groups.iter().flat_map(|g| g.agent_ids.iter().copied()).collect();
+        let mut seen: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| g.agent_ids.iter().copied())
+            .collect();
         seen.sort_unstable();
         let mut unique = seen.clone();
         unique.dedup();

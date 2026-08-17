@@ -6,18 +6,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
-use corrald::api::{router, AppState};
+use corrald::api::{AppState, router};
 use corrald::auth::test_support;
 use corrald::core::model::{Agent, AgentState, Change, WaitingOn, WaitingOnKind, Workspace};
+use corrald::push::Notifier;
 use corrald::push::config::Config;
 use corrald::push::payload::{DeviceTokenRequest, canonical_device_token_bytes};
 use corrald::push::provider::MockProvider;
-use corrald::push::Notifier;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn test_config() -> Config {
@@ -67,10 +67,7 @@ fn blocked_agent(id: &str, hash: &str, prompt: &str) -> Agent {
 /// Register a device via the real `/register` route, then enroll its push
 /// token via the real `/device-token` route (signed request, the same
 /// proof of possession the iOS app performs).
-async fn enroll_device(
-    app: &Router,
-    state: &AppState,
-) -> (String, ed25519_dalek::SigningKey) {
+async fn enroll_device(app: &Router, state: &AppState) -> (String, ed25519_dalek::SigningKey) {
     let (signing, pubkey) = test_support::keypair();
     let token = state.auth.registry.registration_token();
     let body = json!({
@@ -153,7 +150,11 @@ async fn blocked_transition_reaches_provider_within_10s_then_done_pushes() {
     let started = std::time::Instant::now();
     state
         .store
-        .apply(Change::upsert(blocked_agent("herdr:ses-e2e", "sha256:e2e", "ship it? [y/n]")))
+        .apply(Change::upsert(blocked_agent(
+            "herdr:ses-e2e",
+            "sha256:e2e",
+            "ship it? [y/n]",
+        )))
         .await;
 
     let (token, payload) = tokio::time::timeout(Duration::from_secs(10), received.recv())
@@ -216,7 +217,11 @@ async fn only_enrolled_live_devices_receive_pushes() {
     state.auth.registry.set_revoked(&key_id, true).unwrap();
     state
         .store
-        .apply(Change::upsert(blocked_agent("herdr:revoked", "sha256:r", "go?")))
+        .apply(Change::upsert(blocked_agent(
+            "herdr:revoked",
+            "sha256:r",
+            "go?",
+        )))
         .await;
     assert!(
         tokio::time::timeout(Duration::from_millis(600), received.recv())

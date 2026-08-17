@@ -19,13 +19,19 @@ use crate::core::store::Store;
 /// one so the read path never reaches into adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveCommand {
-    Prompt { text: String },
+    Prompt {
+        text: String,
+    },
     Interrupt,
     /// Claim-checked approval reply (P3 D8): `choice` is the validated
     /// choice text to send to the agent (menu member, approve-tool answer,
     /// or free-form answer).
-    Approve { choice: String },
-    ReadTail { lines: Option<u32> },
+    Approve {
+        choice: String,
+    },
+    ReadTail {
+        lines: Option<u32>,
+    },
     Kill,
     Attach,
 }

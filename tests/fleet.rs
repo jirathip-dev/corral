@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use corrald::fleet::config::{load, ConfigError, Fleet, Models, Registry};
+use corrald::fleet::config::{ConfigError, Fleet, Models, Registry, load};
 
 const VALID_A: &str = r#"{
     "name": "corral",

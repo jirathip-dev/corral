@@ -173,7 +173,12 @@ impl Integrator {
 
     async fn handle_git(&self, event: GitEvent) {
         match event {
-            GitEvent::HeadMoved { worktree, branch, commit, subject } => {
+            GitEvent::HeadMoved {
+                worktree,
+                branch,
+                commit,
+                subject,
+            } => {
                 self.git
                     .lock()
                     .unwrap()
@@ -182,7 +187,12 @@ impl Integrator {
                     .head(branch, commit, subject);
                 self.converge().await;
             }
-            GitEvent::CommitOnBranch { worktree, branch, commit, subject } => {
+            GitEvent::CommitOnBranch {
+                worktree,
+                branch,
+                commit,
+                subject,
+            } => {
                 // Wire-level distinction only: the read-model impact equals
                 // HeadMoved's (branch + head commit facts).
                 self.git
@@ -206,7 +216,11 @@ impl Integrator {
                 // Topology fact, no read-model payload. Ensure the path is
                 // cached so later partial facts have a landing spot; no agent
                 // mapping and no synthetic agents.
-                self.git.lock().unwrap().entry(worktree.clone()).or_default();
+                self.git
+                    .lock()
+                    .unwrap()
+                    .entry(worktree.clone())
+                    .or_default();
                 debug!(worktree = %worktree.display(), "integrator: worktree added (topology only)");
             }
             GitEvent::WorktreeRemoved { worktree } => {
@@ -251,13 +265,17 @@ impl Integrator {
         let repo_root = self.repo_root.clone();
         let worktrees_root = self.worktrees_root.clone();
         self.store
-            .update_where(|_| true, move |agent| {
-                if let Some(path) = agent.workspace.worktree_path.as_deref()
-                    && let Some(repo) = derive_repo(Path::new(path), &repo_root, &worktrees_root)
-                {
-                    agent.workspace.repo = Some(repo);
-                }
-            })
+            .update_where(
+                |_| true,
+                move |agent| {
+                    if let Some(path) = agent.workspace.worktree_path.as_deref()
+                        && let Some(repo) =
+                            derive_repo(Path::new(path), &repo_root, &worktrees_root)
+                    {
+                        agent.workspace.repo = Some(repo);
+                    }
+                },
+            )
             .await;
     }
 
@@ -274,9 +292,10 @@ impl Integrator {
         self.store
             .update_where(
                 |a| {
-                    a.workspace.worktree_path.as_deref().is_some_and(|p| {
-                        paths_match(Path::new(p), &match_path)
-                    })
+                    a.workspace
+                        .worktree_path
+                        .as_deref()
+                        .is_some_and(|p| paths_match(Path::new(p), &match_path))
                 },
                 move |agent| {
                     let ws = &mut agent.workspace;
@@ -517,7 +536,8 @@ mod tests {
         // PR matcher already resolves — merged here with zero extra git.
         let store = Store::new();
         store.apply(Change::upsert(agent_on("/wt/a"))).await;
-        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+        let integrator =
+            Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
 
         let facts = GitFacts {
             branch: Some("feat/x".to_string()),
@@ -560,7 +580,8 @@ mod tests {
         const GHP: &str = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
         let store = Store::new();
         store.apply(Change::upsert(agent_on("/wt/a"))).await;
-        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+        let integrator =
+            Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
 
         let facts = GitFacts {
             branch: Some("feat/x".to_string()),
@@ -581,19 +602,27 @@ mod tests {
             !ws.head_subject.as_deref().is_some_and(|s| s.contains(GHP)),
             "no raw PAT may reach the read model"
         );
-        assert_eq!(ws.head_sha.as_deref(), Some("abc123"), "the sha is identity: stays raw");
+        assert_eq!(
+            ws.head_sha.as_deref(),
+            Some("abc123"),
+            "the sha is identity: stays raw"
+        );
 
         // Idempotent under re-apply: the second pass must not double-redact.
         integrator.reapply_path(Path::new("/wt/a"), &facts).await;
         let agents = store.matching(|_| true).await;
-        assert_eq!(agents[0].workspace.head_subject.as_deref(), Some("rotate the [REDACTED] token now"));
+        assert_eq!(
+            agents[0].workspace.head_subject.as_deref(),
+            Some("rotate the [REDACTED] token now")
+        );
     }
 
     #[tokio::test]
     async fn reset_worktree_clears_head_fields() {
         let store = Store::new();
         store.apply(Change::upsert(agent_on("/wt/a"))).await;
-        let integrator = Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
+        let integrator =
+            Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
         let facts = GitFacts {
             commit: Some("abc123".to_string()),
             subject: Some("add head fields".to_string()),
@@ -604,7 +633,10 @@ mod tests {
         integrator.reset_worktree(Path::new("/wt/a")).await;
         let agents = store.matching(|_| true).await;
         let ws = &agents[0].workspace;
-        assert_eq!(ws.head_sha, None, "removed worktree must drop its head facts");
+        assert_eq!(
+            ws.head_sha, None,
+            "removed worktree must drop its head facts"
+        );
         assert_eq!(ws.head_subject, None);
         assert_eq!(ws.branch, None);
     }
@@ -690,7 +722,11 @@ mod tests {
         };
         let mut ws = Workspace::default();
         apply_pr_facts(&mut ws, Some(&state), &facts);
-        assert_eq!(ws.pr_number, Some(42), "highest open PR for the head commit wins");
+        assert_eq!(
+            ws.pr_number,
+            Some(42),
+            "highest open PR for the head commit wins"
+        );
         assert_eq!(ws.ci_status, Some(CiStatus::Success));
         assert_eq!(
             ws.pr_match_source.as_deref(),
@@ -714,7 +750,11 @@ mod tests {
             ..Default::default()
         };
         apply_pr_facts(&mut ws, Some(&state), &unpushed);
-        assert_eq!(ws.pr_number, Some(42), "branch fallback keeps the committed-but-unpushed PR bound");
+        assert_eq!(
+            ws.pr_number,
+            Some(42),
+            "branch fallback keeps the committed-but-unpushed PR bound"
+        );
         assert_eq!(ws.pr_match_source.as_deref(), Some("branch"));
 
         // The branch fallback also beats a stale binding to a DIFFERENT PR.
@@ -723,7 +763,11 @@ mod tests {
             ..Default::default()
         };
         apply_pr_facts(&mut ws, Some(&state), &unpushed);
-        assert_eq!(ws.pr_number, Some(42), "a live branch match outranks the stale bound PR");
+        assert_eq!(
+            ws.pr_number,
+            Some(42),
+            "a live branch match outranks the stale bound PR"
+        );
         assert_eq!(ws.pr_match_source.as_deref(), Some("branch"));
 
         // --- Bound-PR survival: neither SHA nor branch matches (e.g. the
@@ -741,7 +785,11 @@ mod tests {
             ..Default::default()
         };
         apply_pr_facts(&mut ws, Some(&state), &renamed);
-        assert_eq!(ws.pr_number, Some(42), "still-open bound PR survives head-SHA lag");
+        assert_eq!(
+            ws.pr_number,
+            Some(42),
+            "still-open bound PR survives head-SHA lag"
+        );
         assert_eq!(ws.ci_status, Some(CiStatus::Success));
         assert_eq!(ws.pr_match_source.as_deref(), Some("bound_pr"));
 
@@ -786,7 +834,11 @@ mod tests {
         apply_pr_facts(&mut ws, None, &unpushed);
         assert_eq!(ws.pr_number, Some(42));
         assert_eq!(ws.pr_match_source.as_deref(), Some("head_sha"));
-        assert_eq!(ws.issues.len(), 1, "no gh facts -> the last-known binding is untouched");
+        assert_eq!(
+            ws.issues.len(),
+            1,
+            "no gh facts -> the last-known binding is untouched"
+        );
     }
 
     #[test]
@@ -815,7 +867,11 @@ mod tests {
         // refs — never the repo's recent issues (that would be a heuristic).
         let mut ws = Workspace::default();
         apply_pr_facts(&mut ws, Some(&state), &facts);
-        assert_eq!(ws.pr_number, Some(11), "head-SHA primary wins (highest number)");
+        assert_eq!(
+            ws.pr_number,
+            Some(11),
+            "head-SHA primary wins (highest number)"
+        );
         assert_eq!(
             ws.issues,
             vec![],
@@ -832,7 +888,10 @@ mod tests {
         assert_eq!(ws.pr_number, Some(42), "branch fallback binds PR 42");
         assert_eq!(
             ws.issues,
-            vec![issue(4, "OPEN", "P2 planes"), issue(3, "UNKNOWN", "long-closed")],
+            vec![
+                issue(4, "OPEN", "P2 planes"),
+                issue(3, "UNKNOWN", "long-closed")
+            ],
             "issues mirror the bound PR's authoritative closing refs"
         );
     }

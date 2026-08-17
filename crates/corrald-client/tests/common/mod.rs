@@ -132,8 +132,7 @@ impl FakeHerdr {
             .unwrap()
             .iter()
             .filter(|(method, params)| {
-                method == "agent.prompt"
-                    && params.get("text").and_then(Value::as_str) == Some(text)
+                method == "agent.prompt" && params.get("text").and_then(Value::as_str) == Some(text)
             })
             .count()
     }
@@ -210,7 +209,8 @@ impl FakeHerdr {
         self.set_status(AGENT_PANE, "blocked").await;
         // Small settle: the status change must land before the output match.
         tokio::time::sleep(Duration::from_millis(100)).await;
-        self.set_output_match(AGENT_PANE, matched_line, choices_text).await;
+        self.set_output_match(AGENT_PANE, matched_line, choices_text)
+            .await;
     }
 }
 
@@ -495,7 +495,12 @@ fn init_scratch_repo(config_dir: &std::path::Path) -> String {
     // parallel conformance tests of the same binary.
     let msg = config_dir.join(".conformance-commit-msg.txt");
     std::fs::write(&msg, "  conformance initial commit  \n\nbody paragraph\n").unwrap();
-    git(&["commit", "-F", msg.to_str().expect("msg path"), "--cleanup=verbatim"]);
+    git(&[
+        "commit",
+        "-F",
+        msg.to_str().expect("msg path"),
+        "--cleanup=verbatim",
+    ]);
     let _ = std::fs::remove_file(&msg);
     git(&["rev-parse", "HEAD"]).trim().to_string()
 }
@@ -592,11 +597,7 @@ pub async fn wait_for_dispatch_count(
 
 /// Current audit log length (admin token).
 pub async fn audit_len(client: &corrald_client::CorralClient, admin: &str) -> usize {
-    client
-        .audit(admin)
-        .await
-        .expect("GET /audit")
-        .len()
+    client.audit(admin).await.expect("GET /audit").len()
 }
 
 /// Raw POST /drive, returning status + exact body bytes (byte-identical

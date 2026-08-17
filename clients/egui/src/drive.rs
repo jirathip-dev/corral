@@ -184,7 +184,10 @@ impl DriveIntent {
     /// Claim-based approval: `approval_id` + `prompt_hash` echoed verbatim
     /// from the snapshot's `waiting_on` (byte-for-byte claim).
     pub fn approve(agent: &crate::model::Agent, choice: String, rev: Option<u64>) -> Self {
-        let w = agent.waiting_on.as_ref().expect("approve requires waiting_on");
+        let w = agent
+            .waiting_on
+            .as_ref()
+            .expect("approve requires waiting_on");
         Self {
             request_id: new_request_id("approve"),
             capability: Capability::Approve,
@@ -349,7 +352,10 @@ impl DriveFailure {
 
     /// Refusals that suggest the device key is no longer valid.
     pub fn suggests_re_registration(&self) -> bool {
-        matches!(self, Self::UnknownKey(_) | Self::Expired(_) | Self::Revoked(_))
+        matches!(
+            self,
+            Self::UnknownKey(_) | Self::Expired(_) | Self::Revoked(_)
+        )
     }
 }
 
@@ -404,10 +410,7 @@ pub fn new_request_id(what: &str) -> String {
 
 /// Execute a logical action end-to-end: sign → POST → retry policy →
 /// step-up mint-and-retry. Retries always reuse `intent.request_id`.
-pub async fn execute_drive(
-    endpoint: &DriveEndpoint,
-    intent: &DriveIntent,
-) -> DriveOutcome {
+pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> DriveOutcome {
     let envelope = DriveEnvelope {
         request_id: intent.request_id.clone(),
         capability: intent.capability,
@@ -436,7 +439,8 @@ pub async fn execute_drive(
                 // unknown agent at dispatch, transport failure): typed, no
                 // retry (the daemon already stored it in the replay table).
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
-                let failure = if message.contains("transport") || message.contains("rpc")
+                let failure = if message.contains("transport")
+                    || message.contains("rpc")
                     || message.contains("failed")
                 {
                     DriveFailure::Failed(message)
@@ -489,11 +493,7 @@ pub async fn execute_drive(
 }
 
 /// Retry loop once a step-up token is in hand (same request_id).
-async fn retry_loop(
-    endpoint: &DriveEndpoint,
-    signed: &SignedDrive,
-    token: &str,
-) -> DriveOutcome {
+async fn retry_loop(endpoint: &DriveEndpoint, signed: &SignedDrive, token: &str) -> DriveOutcome {
     let mut attempt = 0u32;
     let mut backoff = RETRY_BASE_MS;
     loop {
@@ -506,7 +506,8 @@ async fn retry_loop(
                     };
                 }
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
-                let failure = if message.contains("transport") || message.contains("rpc")
+                let failure = if message.contains("transport")
+                    || message.contains("rpc")
                     || message.contains("failed")
                 {
                     DriveFailure::Failed(message)
@@ -539,7 +540,11 @@ async fn drive_once(
     step_up_token: Option<&str>,
 ) -> Result<DriveResponse, DriveFailure> {
     let url = format!("{}/drive", endpoint.base_url.trim_end_matches('/'));
-    let mut builder = endpoint.client.post(&url).json(signed).timeout(DRIVE_TIMEOUT);
+    let mut builder = endpoint
+        .client
+        .post(&url)
+        .json(signed)
+        .timeout(DRIVE_TIMEOUT);
     if let Some(token) = step_up_token {
         builder = builder.header("X-Step-Up-Token", token);
     }
@@ -618,7 +623,10 @@ pub async fn mint_step_up(endpoint: &DriveEndpoint) -> Result<String, String> {
         .await
         .map_err(|e| format!("step-up transport: {e}"))?;
     let status = response.status();
-    let text: serde_json::Value = response.json().await.map_err(|e| format!("step-up body: {e}"))?;
+    let text: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("step-up body: {e}"))?;
     if !status.is_success() {
         let error = text
             .get("error")
@@ -626,8 +634,8 @@ pub async fn mint_step_up(endpoint: &DriveEndpoint) -> Result<String, String> {
             .unwrap_or("unknown step-up error");
         return Err(format!("{status} {error}"));
     }
-    let parsed: StepUpResponse = serde_json::from_value(text)
-        .map_err(|e| format!("unexpected step-up shape: {e}"))?;
+    let parsed: StepUpResponse =
+        serde_json::from_value(text).map_err(|e| format!("unexpected step-up shape: {e}"))?;
     Ok(parsed.token)
 }
 
@@ -735,7 +743,10 @@ mod tests {
         assert!(text.starts_with("{\"request_id\":\"req-1\",\"capability\":\"prompt\","));
         // Serialization round-trips to the same bytes (parse → re-serialize).
         let parsed: DriveEnvelope = serde_json::from_str(&text).unwrap();
-        assert_eq!(canonical_envelope_bytes(&parsed), canonical_envelope_bytes(&e));
+        assert_eq!(
+            canonical_envelope_bytes(&parsed),
+            canonical_envelope_bytes(&e)
+        );
         // rev: None is omitted entirely.
         let no_rev = DriveEnvelope { rev: None, ..e };
         let text = String::from_utf8(canonical_envelope_bytes(&no_rev)).unwrap();
@@ -872,23 +883,68 @@ mod tests {
             classify_refusal(401, "bad_signature", "bad signature"),
             DriveFailure::BadSignature("bad signature".into())
         );
-        assert_eq!(classify_refusal(403, "not_granted", "denied"), DriveFailure::NotGranted("denied".into()));
-        assert_eq!(classify_refusal(403, "step_up_required", "needs token"), DriveFailure::StepUpRequired);
-        assert_eq!(classify_refusal(409, "hash_mismatch", "wrong prompt"), DriveFailure::HashMismatch);
-        assert_eq!(classify_refusal(409, "stale_approval", "late"), DriveFailure::StaleApproval);
-        assert_eq!(classify_refusal(409, "no_waiting_approval", "none"), DriveFailure::NoWaitingApproval);
-        assert_eq!(classify_refusal(422, "choice_not_in_menu", "nope"), DriveFailure::ChoiceNotInMenu);
-        assert_eq!(classify_refusal(422, "cannot_approve_kind", "crash"), DriveFailure::CannotApproveKind);
-        assert_eq!(classify_refusal(404, "unknown_agent", "a"), DriveFailure::UnknownAgent("a".into()));
-        assert_eq!(classify_refusal(404, "unknown_key", "k"), DriveFailure::UnknownKey("k".into()));
-        assert_eq!(classify_refusal(403, "expired", "e"), DriveFailure::Expired("e".into()));
-        assert_eq!(classify_refusal(403, "revoked", "r"), DriveFailure::Revoked("r".into()));
-        assert_eq!(classify_refusal(401, "step_up_failed", "spent"), DriveFailure::StepUpFailed("spent".into()));
-        assert_eq!(classify_refusal(409, "in_flight", "busy"), DriveFailure::InFlight("busy".into()));
-        assert_eq!(classify_refusal(500, "oops", "boom"), DriveFailure::Transport("server error 500: boom".into()));
+        assert_eq!(
+            classify_refusal(403, "not_granted", "denied"),
+            DriveFailure::NotGranted("denied".into())
+        );
+        assert_eq!(
+            classify_refusal(403, "step_up_required", "needs token"),
+            DriveFailure::StepUpRequired
+        );
+        assert_eq!(
+            classify_refusal(409, "hash_mismatch", "wrong prompt"),
+            DriveFailure::HashMismatch
+        );
+        assert_eq!(
+            classify_refusal(409, "stale_approval", "late"),
+            DriveFailure::StaleApproval
+        );
+        assert_eq!(
+            classify_refusal(409, "no_waiting_approval", "none"),
+            DriveFailure::NoWaitingApproval
+        );
+        assert_eq!(
+            classify_refusal(422, "choice_not_in_menu", "nope"),
+            DriveFailure::ChoiceNotInMenu
+        );
+        assert_eq!(
+            classify_refusal(422, "cannot_approve_kind", "crash"),
+            DriveFailure::CannotApproveKind
+        );
+        assert_eq!(
+            classify_refusal(404, "unknown_agent", "a"),
+            DriveFailure::UnknownAgent("a".into())
+        );
+        assert_eq!(
+            classify_refusal(404, "unknown_key", "k"),
+            DriveFailure::UnknownKey("k".into())
+        );
+        assert_eq!(
+            classify_refusal(403, "expired", "e"),
+            DriveFailure::Expired("e".into())
+        );
+        assert_eq!(
+            classify_refusal(403, "revoked", "r"),
+            DriveFailure::Revoked("r".into())
+        );
+        assert_eq!(
+            classify_refusal(401, "step_up_failed", "spent"),
+            DriveFailure::StepUpFailed("spent".into())
+        );
+        assert_eq!(
+            classify_refusal(409, "in_flight", "busy"),
+            DriveFailure::InFlight("busy".into())
+        );
+        assert_eq!(
+            classify_refusal(500, "oops", "boom"),
+            DriveFailure::Transport("server error 500: boom".into())
+        );
         // Dispatch-level refusals ride ok:false in a 200 body — classified
         // by the caller from the message; here we check the fallback path.
-        assert!(matches!(classify_refusal(200, "unreachable", ""), DriveFailure::Transport(_)));
+        assert!(matches!(
+            classify_refusal(200, "unreachable", ""),
+            DriveFailure::Transport(_)
+        ));
     }
 
     #[test]

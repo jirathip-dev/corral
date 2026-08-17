@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use corrald::api::{router, AppState};
+use axum::http::{Request, StatusCode, header};
+use corrald::api::{AppState, router};
 use corrald::core::model::{Agent, AgentState, Change, Resume};
 use corrald::core::store::Store;
 use futures::stream::StreamExt;
@@ -70,17 +70,21 @@ async fn healthz_ok() {
 #[tokio::test]
 async fn snapshot_returns_json_with_rev_and_agents() {
     let (store, app) = app().await;
-    store.apply(Change::upsert(agent("a", AgentState::Blocked))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Blocked)))
+        .await;
 
     let res = app
         .oneshot(Request::get("/snapshot").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(res.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("application/json"));
+    assert!(
+        res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
 
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -94,9 +98,13 @@ async fn snapshot_returns_json_with_rev_and_agents() {
 #[tokio::test]
 async fn sse_with_fresh_cursor_resumes_incrementally() {
     let (store, app) = app().await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     store.flush().await; // rev 1
-    store.apply(Change::upsert(agent("b", AgentState::Idle))).await;
+    store
+        .apply(Change::upsert(agent("b", AgentState::Idle)))
+        .await;
     store.flush().await; // rev 2
 
     // Cursor 1 is within the retained history -> incremental delta (rev 2),
@@ -108,29 +116,47 @@ async fn sse_with_fresh_cursor_resumes_incrementally() {
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(res.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/event-stream"));
+    assert!(
+        res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream")
+    );
 
     let mut stream = res.into_body().into_data_stream();
     let first = read_frame(&mut stream, Duration::from_secs(2)).await;
-    assert!(first.contains("event: delta"), "fresh cursor must not resnapshot: {first}");
+    assert!(
+        first.contains("event: delta"),
+        "fresh cursor must not resnapshot: {first}"
+    );
     assert!(first.contains("id: 2"));
-    assert!(first.contains("\"agent_id\":\"b\""), "resumed delta carries only newer agents: {first}");
+    assert!(
+        first.contains("\"agent_id\":\"b\""),
+        "resumed delta carries only newer agents: {first}"
+    );
 
     // A new change flows live as the next delta.
-    store.apply(Change::upsert(agent("c", AgentState::Done))).await;
+    store
+        .apply(Change::upsert(agent("c", AgentState::Done)))
+        .await;
     let next = read_frame(&mut stream, Duration::from_secs(2)).await;
     assert!(next.contains("event: delta"));
-    assert!(next.contains("\"agent_id\":\"c\""), "live delta carries the new agent: {next}");
-    assert!(!next.contains("\"agent_id\":\"a\""), "live delta is incremental, not full state");
+    assert!(
+        next.contains("\"agent_id\":\"c\""),
+        "live delta carries the new agent: {next}"
+    );
+    assert!(
+        !next.contains("\"agent_id\":\"a\""),
+        "live delta is incremental, not full state"
+    );
 }
 
 #[tokio::test]
 async fn sse_with_stale_cursor_returns_full_snapshot() {
     let (store, app) = app().await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     store.flush().await;
 
     // Client cursor is behind the retained history (0 < oldest rev 1)
@@ -143,7 +169,10 @@ async fn sse_with_stale_cursor_returns_full_snapshot() {
     let res = app.clone().oneshot(req).await.unwrap();
     let mut stream = res.into_body().into_data_stream();
     let first = read_frame(&mut stream, Duration::from_secs(2)).await;
-    assert!(first.contains("event: snapshot"), "stale cursor must resnapshot: {first}");
+    assert!(
+        first.contains("event: snapshot"),
+        "stale cursor must resnapshot: {first}"
+    );
     assert!(first.contains("\"agents\""));
 
     // No cursor at all -> snapshot.
@@ -168,7 +197,9 @@ async fn sse_no_cursor_snapshot_then_live_delta() {
     assert!(first.contains("\"rev\":0"));
 
     // Live update flows as the next frame on the same connection.
-    store.apply(Change::upsert(agent("live", AgentState::Done))).await;
+    store
+        .apply(Change::upsert(agent("live", AgentState::Done)))
+        .await;
     let next = read_frame(&mut stream, Duration::from_secs(2)).await;
     assert!(next.contains("event: delta"));
     assert!(next.contains("\"agent_id\":\"live\""));
@@ -180,7 +211,9 @@ async fn sse_live_cursor_emits_no_fabricated_delta() {
     // synthetic empty delta (it would look like a state change); the first
     // frame on the wire must be a real delta.
     let (store, app) = app().await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     store.flush().await; // rev 1
 
     let req = Request::builder()
@@ -191,7 +224,9 @@ async fn sse_live_cursor_emits_no_fabricated_delta() {
     let res = app.clone().oneshot(req).await.unwrap();
     let mut stream = res.into_body().into_data_stream();
 
-    store.apply(Change::upsert(agent("b", AgentState::Done))).await;
+    store
+        .apply(Change::upsert(agent("b", AgentState::Done)))
+        .await;
     let first = read_frame(&mut stream, Duration::from_secs(3)).await;
     assert!(first.contains("event: delta"));
     assert!(!first.contains("\"upd\":[]"), "no fabricated empty delta");
@@ -201,7 +236,9 @@ async fn sse_live_cursor_emits_no_fabricated_delta() {
 #[tokio::test]
 async fn resume_semantics_are_exposed_by_store() {
     let store = Store::new();
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     store.flush().await;
     assert!(matches!(store.resume_from(None).await, Resume::Snapshot(_)));
 }

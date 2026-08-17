@@ -53,11 +53,7 @@ pub fn usd_text(window: &CostWindowUsage) -> String {
 /// for display — the daemon can hand back `-0.0` for an empty window, and
 /// `-0.0%` / `$-0.00` read as a bug even though the number is honest.
 fn norm(x: f64) -> f64 {
-    if x.abs() < 1e-9 {
-        0.0
-    } else {
-        x
-    }
+    if x.abs() < 1e-9 { 0.0 } else { x }
 }
 
 /// `Some(NO_STORE_LABEL)` when the provider has no session store — the

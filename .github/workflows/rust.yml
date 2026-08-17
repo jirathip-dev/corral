@@ -30,9 +30,24 @@ jobs:
         id: pinned
         run: |
           set -euo pipefail
-          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -1)"
+          # Table-aware on purpose: only `channel` INSIDE [toolchain] counts.
+          # A plain grep would take a `channel` key from any earlier table and
+          # pin the wrong version silently — the emptiness guard below cannot
+          # catch a wrong-but-non-empty parse. Accepts TOML basic ("") and
+          # literal ('') strings; anything else falls through to the guard and
+          # fails the run loudly rather than guessing.
+          channel="$(awk '
+            /^[[:space:]]*\[toolchain\][[:space:]]*$/ { in_tc = 1; next }
+            /^[[:space:]]*\[/                         { in_tc = 0 }
+            in_tc && /^[[:space:]]*channel[[:space:]]*=/ {
+              if (match($0, /"[^"]*"/) || match($0, /'"'"'[^'"'"']*'"'"'/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+              }
+            }
+          ' rust-toolchain.toml)"
           if [ -z "$channel" ]; then
-            echo "::error::could not parse channel from rust-toolchain.toml"
+            echo "::error::could not parse a channel from [toolchain] in rust-toolchain.toml"
             exit 1
           fi
           echo "Pinned toolchain: $channel"

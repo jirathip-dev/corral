@@ -1562,12 +1562,49 @@ mod tests {
     /// caller populate its registry state directly. `map_event_path` never
     /// touches the filesystem, so these unit tests need no temp dirs — only
     /// the state it reads.
+    ///
+    /// The caller's mutation is then RECONCILED against the invariants
+    /// `rescan` actually maintains, because a fixture that cannot occur in
+    /// production silently disarms the code under test. Concretely: with
+    /// `commondirs` left empty, the `state.commondirs.contains(gd)` skip in
+    /// `map_event_path` — the guard that stops the main checkout swallowing
+    /// every commondir-relative event — is dead, and deleting it goes
+    /// undetected.
+    ///
+    /// Enforced here rather than in each test so the invariant cannot drift:
+    ///
+    /// - `commondirs == main_checkouts.keys()` (`rescan` assigns it exactly so)
+    /// - every main checkout is itself a tracked worktree, with
+    ///   `gitdir == commondir` (it is the first porcelain entry)
+    /// - every `by_branch` value is a tracked worktree path (`rescan`
+    ///   `retain`s exactly that)
     fn plane_with_state(mutate: impl FnOnce(&mut PlaneState)) -> GitPlane {
         let plane = GitPlane::new(
             PathBuf::from("/nonexistent-gitplane-repo-root"),
             PathBuf::from("/nonexistent-gitplane-wts-root"),
         );
-        mutate(&mut plane.state.lock().unwrap());
+        {
+            let mut state = plane.state.lock().unwrap();
+            mutate(&mut state);
+
+            state.commondirs = state.main_checkouts.keys().cloned().collect();
+            for (commondir, main) in state.main_checkouts.clone() {
+                state.worktrees.entry(main).or_insert(WorktreeState {
+                    gitdir: Some(commondir),
+                    ..Default::default()
+                });
+            }
+
+            let tracked: HashSet<PathBuf> = state.worktrees.keys().cloned().collect();
+            for ((_, branch), path) in &state.by_branch {
+                assert!(
+                    tracked.contains(path),
+                    "fixture is unreachable in production: by_branch[{branch}] -> {} is not a \
+                     tracked worktree, but rescan retains only tracked paths",
+                    path.display()
+                );
+            }
+        }
         plane
     }
 
@@ -1576,33 +1613,44 @@ mod tests {
         // Two gitdirs where one is a path-prefix of the other: the event
         // must resolve to the worktree whose gitdir is the longer (more
         // specific) match, not whichever the map happens to iterate first.
+        //
+        // Repeated on a FRESH PlaneState each iteration on purpose. With two
+        // entries, a naive `if best.is_none()` first-match implementation is
+        // a coin flip against HashMap iteration order — measured at a 35%
+        // miss rate over 60 single-shot runs. `RandomState` reseeds per
+        // HashMap instance, so each iteration is an independent draw and 64
+        // of them make a first-match regression a certainty rather than a
+        // gamble. The test is pure (no I/O), so the loop is nearly free.
         let outer_gitdir = PathBuf::from("/fake/commondir/worktrees/outer");
         let inner_gitdir = outer_gitdir.join("nested-gitdir");
         let outer_wt = PathBuf::from("/fake/wts/outer");
         let inner_wt = PathBuf::from("/fake/wts/inner");
-        let plane = plane_with_state(|state| {
-            state.worktrees.insert(
-                outer_wt.clone(),
-                WorktreeState {
-                    gitdir: Some(outer_gitdir.clone()),
-                    ..Default::default()
-                },
+        for iteration in 0..64 {
+            let plane = plane_with_state(|state| {
+                state.worktrees.insert(
+                    outer_wt.clone(),
+                    WorktreeState {
+                        gitdir: Some(outer_gitdir.clone()),
+                        ..Default::default()
+                    },
+                );
+                state.worktrees.insert(
+                    inner_wt.clone(),
+                    WorktreeState {
+                        gitdir: Some(inner_gitdir.clone()),
+                        ..Default::default()
+                    },
+                );
+            });
+            let (worktrees, maybe_new) = plane.map_event_path(&inner_gitdir.join("HEAD"));
+            assert_eq!(
+                worktrees,
+                vec![inner_wt.clone()],
+                "iteration {iteration}: the longer (more specific) gitdir prefix wins over the \
+                 shorter one it nests inside"
             );
-            state.worktrees.insert(
-                inner_wt.clone(),
-                WorktreeState {
-                    gitdir: Some(inner_gitdir.clone()),
-                    ..Default::default()
-                },
-            );
-        });
-        let (worktrees, maybe_new) = plane.map_event_path(&inner_gitdir.join("HEAD"));
-        assert_eq!(
-            worktrees,
-            vec![inner_wt],
-            "the longer (more specific) gitdir prefix wins over the shorter one it nests inside"
-        );
-        assert!(!maybe_new);
+            assert!(!maybe_new);
+        }
     }
 
     #[test]
@@ -1612,6 +1660,15 @@ mod tests {
         let wt = PathBuf::from("/fake/wts/feature");
         let plane = plane_with_state(|state| {
             state.main_checkouts.insert(commondir.clone(), main);
+            // The branch's worktree must be tracked — `rescan` drops any
+            // by_branch entry whose value is not a known worktree.
+            state.worktrees.insert(
+                wt.clone(),
+                WorktreeState {
+                    gitdir: Some(commondir.join("worktrees/feature")),
+                    ..Default::default()
+                },
+            );
             state
                 .by_branch
                 .insert((commondir.clone(), "feat/x".to_string()), wt.clone());

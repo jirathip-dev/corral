@@ -27,9 +27,9 @@
 //! display name) passes through [`crate::core::redact::redact`] BEFORE it
 //! becomes a canonical record. Everything downstream (snapshot, SSE, drive
 //! responses, audit entries) serializes the store, so the output is redacted
-//! by construction. Paths and pane ids are identity, never redacted. A
-//! future W1 `read_tail` result path must apply `redact` to the returned
-//! text before it leaves the machine.
+//! by construction. Paths and pane ids are identity, never redacted. The
+//! `read_tail` result path applies the same `redact` to the fetched tail
+//! text before it leaves the machine ([`Adapter::read_tail`]).
 //!
 //! ## Drive policy for `unknown` state
 //!
@@ -62,6 +62,7 @@ use crate::core::model::{
 use crate::core::redact::redact;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
+use crate::drive::{READ_TAIL_MAX_BYTES, READ_TAIL_MAX_LINES};
 
 /// Where herdr exposes its JSON-RPC API socket (expanded from ~ in main).
 pub const DEFAULT_SOCKET: &str = "~/.config/herdr/herdr.sock";
@@ -625,6 +626,13 @@ impl HerdrAdapter {
 
     /// Register pane -> agent_id; returns the previous agent_id if it changed
     /// (caller must emit a Remove for it).
+    ///
+    /// Migration case (F, live smoke): when a pane's id migrates from the
+    /// pane-derived fallback to the session id (a pane.updated arrives with
+    /// `agent_session` after `agent_detected`), the OLD mapping is removed
+    /// AND the new agent_id is inserted — otherwise the drive target
+    /// resolution (agent_id -> pane) loses the pane entirely and every drive
+    /// on the migrated agent fails `UnknownAgent` until the next bootstrap.
     fn register_pane(
         &self,
         state: &mut SessionState,
@@ -639,6 +647,9 @@ impl HerdrAdapter {
         {
             state.agent_panes.remove(&old);
             state.agent_names.remove(&old);
+            state
+                .agent_panes
+                .insert(agent_id.to_string(), pane_id.to_string());
             return Some(old);
         }
         state
@@ -1176,18 +1187,15 @@ impl Adapter for HerdrAdapter {
     }
 
     fn drive(&self, agent_id: &str, command: DriveCommand) -> Result<(), DriveError> {
-        let target: String = {
-            let state = self.state.lock().unwrap();
-            let pane = state
-                .agent_panes
-                .get(agent_id)
-                .ok_or_else(|| DriveError::UnknownAgent(agent_id.to_string()))?;
-            state
-                .agent_names
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_else(|| pane.clone())
-        };
+        // read_tail is the one capability whose whole point is a response —
+        // it never dispatches fire-and-forget. The API layer routes it
+        // through Adapter::read_tail (synchronous, redacted, bounded);
+        // drive() refusing it here keeps a silent fallback to the
+        // discarded-response path impossible.
+        if matches!(command, DriveCommand::ReadTail { .. }) {
+            return Err(DriveError::NotImplemented("read_tail"));
+        }
+        let target = self.drive_target(agent_id)?;
         let (method, params) = match command {
             DriveCommand::Prompt { text } => {
                 ("agent.prompt", json!({"target": target, "text": text}))
@@ -1196,10 +1204,9 @@ impl Adapter for HerdrAdapter {
                 "agent.send_keys",
                 json!({"target": target, "keys": ["ctrl-c"]}),
             ),
-            DriveCommand::ReadTail { lines } => (
-                "agent.read",
-                json!({"target": target, "source": "recent_unwrapped", "lines": lines}),
-            ),
+            // read_tail is the one capability whose whole point is a
+            // response — refused above, before target resolution.
+            DriveCommand::ReadTail { .. } => unreachable!(),
             // Approve mechanism (P3 D8, verified live against herdr 0.7.5):
             // herdr exposes NO approve-specific RPC (`herdr api schema` lists
             // agent.prompt / agent.send_keys / pane.send_text / pane.send_input
@@ -1233,9 +1240,78 @@ impl Adapter for HerdrAdapter {
         }
     }
 
+    fn read_tail<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        let target = match self.drive_target(agent_id) {
+            Ok(t) => t,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        // Same source the output_matched subscription uses (D5: only the
+        // requested window, never a prefetch).
+        let params = json!({
+            "target": target,
+            "source": "recent_unwrapped",
+            "lines": lines.clamp(1, READ_TAIL_MAX_LINES),
+        });
+        let socket = self.socket_path.clone();
+        Box::pin(async move {
+            let response = rpc_call(&socket, "agent.read", params)
+                .await
+                .map_err(|e| DriveError::Transport(format!("agent.read failed: {e}")))?;
+            let text = response
+                .get("read")
+                .and_then(|read| read.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            Ok(bounded_redacted_tail(text, lines))
+        })
+    }
+
     fn knows_agent(&self, agent_id: &str) -> bool {
         self.state.lock().unwrap().agent_panes.contains_key(agent_id)
     }
+}
+
+/// Resolve the drive target for `agent_id`: the pane's herdr agent name when
+/// one is known, else the pane id. `None`-safe: an agent with no pane mapping
+/// is the typed [`DriveError::UnknownAgent`].
+impl HerdrAdapter {
+    fn drive_target(&self, agent_id: &str) -> Result<String, DriveError> {
+        let state = self.state.lock().unwrap();
+        let pane = state
+            .agent_panes
+            .get(agent_id)
+            .ok_or_else(|| DriveError::UnknownAgent(agent_id.to_string()))?;
+        Ok(state
+            .agent_names
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_else(|| pane.clone()))
+    }
+}
+
+/// Bound + redact the fetched tail at the adapter boundary, BEFORE any byte
+/// leaves the machine (D9/D5): at most `max_lines` lines (clamped to
+/// [`READ_TAIL_MAX_LINES`]), the redacted text bounded to
+/// [`READ_TAIL_MAX_BYTES`], every line through the shared redaction pass.
+fn bounded_redacted_tail(text: &str, max_lines: u32) -> Vec<String> {
+    let max_lines = (max_lines as usize).clamp(1, READ_TAIL_MAX_LINES as usize);
+    let mut lines: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for raw in text.lines().take(max_lines) {
+        let line = redact(raw).into_owned();
+        // The wire carries one newline per line; count it so the serialized
+        // payload stays under the byte bound too.
+        bytes += line.len() + 1;
+        if bytes > READ_TAIL_MAX_BYTES {
+            break;
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1534,6 +1610,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drive_target_survives_session_id_migration() {
+        // F (live smoke): a pane first detected without a session id is
+        // tracked by the pane-derived fallback; once a pane.updated carries
+        // `agent_session`, the id migrates. The drive target resolution must
+        // follow the MIGRATED id (agent_id -> pane), or every drive on the
+        // agent fails UnknownAgent until the next bootstrap.
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter
+            .register_agent_pane("wY:p1", "opencode", AgentState::Unknown, &store)
+            .await;
+        assert_eq!(
+            adapter.drive_target("herdr:pane:wY:p1").unwrap(),
+            "wY:p1",
+            "pane-derived id maps before migration"
+        );
+
+        // The pane.updated with a session id migrates the canonical id.
+        let updated = serde_json::from_value::<PaneInfoWire>(json!({
+            "pane_id": "wY:p1",
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses_migrated"},
+            "agent_status": "done",
+            "title": "OC | Migrated",
+            "state_labels": {}
+        }))
+        .unwrap();
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&updated, sink, &store).await;
+
+        assert!(adapter.drive_target("herdr:pane:wY:p1").is_err(), "old id is gone");
+        assert_eq!(
+            adapter.drive_target("herdr:ses_migrated").unwrap(),
+            "wY:p1",
+            "migrated id still resolves its pane for drive"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_state_flows_through_read_path() {
         let store = Store::new();
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
@@ -1586,6 +1702,150 @@ mod tests {
         assert!(!adapter.knows_agent("nope"));
         let err = adapter.drive("nope", DriveCommand::Approve { choice: "y".into() });
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
+    }
+
+    // -----------------------------------------------------------------------
+    // W2.1 read_tail: the adapter fetches agent.read SYNCHRONOUSLY, redacts
+    // (D9) and bounds (D5) the tail before it leaves the machine.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn drive_refuses_read_tail_fire_and_forget() {
+        // read_tail is the one capability whose whole point is a response:
+        // drive() (fire-and-forget) must refuse it so a silent fallback to
+        // the discarded-response path is impossible; the API layer routes it
+        // through Adapter::read_tail.
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let err = adapter.drive("herdr:a", DriveCommand::ReadTail { lines: Some(5) });
+        assert!(matches!(err, Err(DriveError::NotImplemented("read_tail"))));
+    }
+
+    #[tokio::test]
+    async fn read_tail_rejects_unknown_agents() {
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let err = adapter.read_tail("nope", 10).await;
+        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
+    }
+
+    #[tokio::test]
+    async fn read_tail_transport_failure_is_typed() {
+        // No socket: the RPC fails, mapped to DriveError::Transport (not a
+        // panic, not a fire-and-forget).
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let err = adapter.read_tail("herdr:pane:p1", 10).await;
+        assert!(matches!(err, Err(DriveError::Transport(_))));
+    }
+
+    #[test]
+    fn tail_is_redacted_and_bounded_at_the_boundary() {
+        let secret = "sk-ant-api03-AB12cdEF34ghIJ56klMN78op";
+        // 250 lines exceed the 200-line cap; each carries a seeded secret.
+        let text = (0..250)
+            .map(|i| format!("line {i:03} deploy {secret}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail = bounded_redacted_tail(&text, 200);
+        assert_eq!(tail.len(), READ_TAIL_MAX_LINES as usize, "line bound (D5)");
+        assert_eq!(tail[0], "line 000 deploy [REDACTED]");
+        let wire = tail.join("\n");
+        assert!(!wire.contains("sk-ant"), "redaction (D9) before bytes leave");
+        assert!(wire.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn tail_byte_bound_is_32_kib() {
+        // 200 lines of ~1 KiB each would be 200 KiB unwired; the byte cap
+        // must keep the returned payload under READ_TAIL_MAX_BYTES by
+        // dropping whole trailing lines.
+        let text = (0..200)
+            .map(|i| format!("log line {i:03} {}", "x".repeat(1024)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail = bounded_redacted_tail(&text, 200);
+        assert!(tail.len() < 200, "byte bound cuts lines");
+        let bytes = tail.join("\n").len() + 1;
+        assert!(bytes <= READ_TAIL_MAX_BYTES, "byte bound (D5): {bytes}");
+    }
+
+    #[test]
+    fn tail_passes_clean_prose_through_and_handles_empty_output() {
+        // Ordinary prose survives byte-identical (redaction is display-safe).
+        let text = "  1. Continue\n  2. Abort\n  → Waiting on your decision…\n";
+        let tail = bounded_redacted_tail(text, 200);
+        assert_eq!(tail, vec!["  1. Continue", "  2. Abort", "  → Waiting on your decision…"]);
+        // No output -> empty lines, never an error.
+        assert!(bounded_redacted_tail("", 200).is_empty());
+    }
+
+    /// One JSON-RPC exchange against a mock herdr socket: accept a
+    /// connection, read the `agent.read` request, answer with a fixed tail.
+    /// The caller binds the listener so the socket path exists before the
+    /// client connects.
+    async fn mock_socket_serve(
+        listener: tokio::net::UnixListener,
+        reply_text: Value,
+    ) -> (Value, Value) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut line = String::new();
+        let mut reader = BufReader::new(&mut stream);
+        reader.read_line(&mut line).await.unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        let resp = json!({
+            "id": req["id"],
+            "result": { "read": { "text": reply_text } }
+        });
+        let mut out = resp.to_string();
+        out.push('\n');
+        stream.write_all(out.as_bytes()).await.unwrap();
+        (req, resp)
+    }
+
+    #[tokio::test]
+    async fn read_tail_round_trips_over_the_socket_redacted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let seeded =
+            "line one\ndeploy token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 now\ntail three\n";
+        let server = tokio::spawn(mock_socket_serve(listener, seeded.into()));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let tail = adapter.read_tail("herdr:pane:p1", 200).await.expect("read_tail");
+        let (req, _) = server.await.unwrap();
+
+        assert_eq!(req["method"], "agent.read");
+        assert_eq!(req["params"]["source"], "recent_unwrapped");
+        assert_eq!(req["params"]["lines"], 200);
+        assert_eq!(req["params"]["target"], "p1", "target resolves to the pane/name");
+        assert_eq!(tail, vec!["line one", "deploy token [REDACTED] now", "tail three"]);
+        let wire = serde_json::to_string(&tail).unwrap();
+        assert!(!wire.contains("ghp_"), "no secret-shaped span leaves the machine");
+    }
+
+    #[tokio::test]
+    async fn read_tail_empty_output_is_empty_lines_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve(listener, Value::Null));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let tail = adapter.read_tail("herdr:pane:p1", 200).await.expect("read_tail");
+        server.await.unwrap();
+        assert!(tail.is_empty(), "no output -> clean empty lines");
     }
 }
 

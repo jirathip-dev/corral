@@ -4,8 +4,8 @@
 # BOTH crates: at a non-virtual workspace root, cargo would otherwise
 # operate on the root package only and silently skip corrald-client.
 resolver = "3"
-members = ["crates/corrald-client"]
-default-members = [".", "crates/corrald-client"]
+members = ["crates/corrald-client", "clients/egui"]
+default-members = [".", "crates/corrald-client", "clients/egui"]
 
 [package]
 name = "corrald"
@@ -23,9 +23,11 @@ test-utils = []
 [dependencies]
 axum = "0.8"
 base64 = "0.22"
+chrono = "0.4"
 ed25519-dalek = { version = "3", default-features = true }
 futures = "0.3"
 getrandom = "0.4"
+keyring = { version = "4.1.6", default-features = false, features = ["apple-native-keyring-store", "linux-keyutils-keyring-store", "v1"] }
 notify = "8"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

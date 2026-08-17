@@ -1,0 +1,27 @@
+warning: unused variable: `fingerprint`
+  --> clients/egui/tests/live.rs:42:9
+   |
+42 |     let fingerprint =
+   |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fingerprint`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `corrald-ui` (test "live") generated 1 warning (run `cargo fix --test "live" -p corrald-ui` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.35s
+     Running tests/live.rs (target/debug/deps/live-f662c1a5a8cbe9ad)
+
+running 1 test
+device key store: fresh ephemeral keypair
+registered key_id=dev_4a35257460de2718f95bdc3ba916135b grants=[]
+snapshot rev=52 agents=27
+SSE connect ok (Last-Event-ID: 52)
+read-only refusal verified (audit unchanged at 9)
+granted read_tail
+read_tail executed on herdr:0bc2a89e-d22b-4ea9-a5df-034922016659: ok rev 52 (request_id corrald-ui:tail:1786868622321:3e6e758084e8)
+idempotent replay verified (request_id corrald-ui:tail:1786868622321:3e6e758084e8)
+audit: seq=9 key_id=dev_4a35257460de2718f95bdc3ba916135b capability=read_tail target=herdr:0bc2a89e-d22b-4ea9-a5df-034922016659 outcome=executed
+probe done: key_id=dev_4a35257460de2718f95bdc3ba916135b host=http://127.0.0.1:8574 (GUI registration: see README)
+test live_register_read_drive_audit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

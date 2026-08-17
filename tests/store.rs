@@ -38,8 +38,9 @@ async fn snapshot_flushes_and_bumps_rev_once_per_batch() {
     let snap = store.snapshot().await;
     assert_eq!(snap.rev, 1, "coalesced batch bumps rev once");
     assert_eq!(snap.agents.len(), 3);
-    // v3 (P3 D8): WaitingOn gained `approval_id` — versioned strictly.
-    assert_eq!(snap.schema_version, 3);
+    // v4 (P4 G21): Workspace gained `head_sha` + `head_subject` — versioned
+    // strictly.
+    assert_eq!(snap.schema_version, 4);
 }
 
 #[tokio::test]

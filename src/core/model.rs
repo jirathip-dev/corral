@@ -8,6 +8,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Issue reference joined into the agent model (G23): the events contract's
+/// [`GhIssueRef`](crate::core::events::GhIssueRef) is the single definition —
+/// re-exported here so the canonical wire model and the contract cannot
+/// drift.
+pub use crate::core::events::GhIssueRef;
+
 /// Snapshot/delta schema version. Bump on breaking changes; keep additive.
 ///
 /// v1: P1 canonical record.
@@ -16,7 +22,12 @@ use serde::{Deserialize, Serialize};
 /// (and P1 clients reading v2 snapshots) still decode.
 /// v3 (P3 D8): `WaitingOn` gained `approval_id` (the claim identity clients
 /// echo in `DrivePayload::Approve`) — serde-defaulted, additive-only.
-pub const SCHEMA_VERSION: u32 = 3;
+/// v4 (P4 G21 + G23): `Workspace` gained `head_sha` + `head_subject` (the
+/// current HEAD commit + its first-line subject, from the git plane's
+/// existing probe — no new git calls), `pr_match_source` (debug-only
+/// match-source note) and `issues` (the bound PR's authoritative
+/// closing-issue refs) — all serde-defaulted, additive-only.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
@@ -109,6 +120,30 @@ pub struct Workspace {
     /// Commits behind the upstream branch.
     #[serde(default)]
     pub behind: u64,
+    /// Current HEAD commit (full SHA) of the worktree (P4 G21), from the git
+    /// plane's probe — the same commit the PR matcher already resolves, now
+    /// carried onto the snapshot instead of dropped. `None` for
+    /// unborn/empty checkouts.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// First line of the HEAD commit message (P4 G21) — the "subject" for
+    /// line-2 identity (`a1b3f9c "subject"`). Redacted (D-083) before it
+    /// egresses the daemon; travels with `head_sha` from the same probe;
+    /// `None` for unborn/empty checkouts.
+    #[serde(default)]
+    pub head_subject: Option<String>,
+    /// Debug-only: how the agent's PR was resolved against the gh facts —
+    /// `"head_sha"` (the primary match), `"branch"` (the #22 fallback for
+    /// committed-but-unpushed work), or `"bound_pr"` (the still-open bound
+    /// PR surviving head-SHA lag). `None` when no PR is bound. Not a
+    /// render-driver: clients must not branch UI on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_match_source: Option<String>,
+    /// Issues the agent's bound PR closes, from GitHub's authoritative
+    /// `closingIssuesReferences` (#23) — no heuristic, no branch-name
+    /// inference. Empty when no PR is bound or the PR links none.
+    #[serde(default)]
+    pub issues: Vec<GhIssueRef>,
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).

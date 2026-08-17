@@ -3,6 +3,8 @@
 //! - `GET /snapshot` — full current state with monotonic `rev`.
 //! - `GET /events`  — SSE; resumes from `Last-Event-ID` (full snapshot when
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
+//! - `GET /history` — D23: status-transition events from the persistent
+//!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
@@ -16,13 +18,14 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
+use serde::Deserialize;
 use tracing::info;
 
 use crate::adapters::Adapter;
@@ -34,6 +37,9 @@ use self::drive::{drive, NoopAdapter, ReplayTable};
 
 /// Keepalive comment cadence so idle connections stay alive through NATs.
 const KEEPALIVE: Duration = Duration::from_secs(15);
+/// Default / cap for one `/history` page.
+const HISTORY_DEFAULT_LIMIT: usize = 1000;
+const HISTORY_MAX_LIMIT: usize = 5000;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -74,6 +80,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
+        .route("/history", get(history))
         .route("/drive", post(drive))
         .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
@@ -81,6 +88,26 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok\n"
+}
+
+/// `GET /history` query parameters. `since` is epoch millis (inclusive);
+/// `limit` bounds the page. Both optional.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HistoryQuery {
+    pub since: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+/// D23 live feed: status-transition events from the persistent ring,
+/// oldest first. `?since=<ts>` filters to events at or after `ts`;
+/// `?limit=<n>` caps the page (default 1000, hard cap 5000).
+async fn history(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HistoryQuery>,
+) -> Json<serde_json::Value> {
+    let limit = params.limit.unwrap_or(HISTORY_DEFAULT_LIMIT).min(HISTORY_MAX_LIMIT);
+    let events = state.store.history().query(params.since, Some(limit));
+    Json(serde_json::json!({ "events": events }))
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {

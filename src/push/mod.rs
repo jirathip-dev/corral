@@ -166,10 +166,10 @@ impl Notifier {
         // push for already-blocked agents (fire-and-forget; deduped by
         // prompt_hash like any other blocked push).
         for agent in self.store.snapshot().await.agents.values() {
-            if agent.state == AgentState::Blocked {
-                if let Some(push) = self.transition_push(agent, &mut shadow) {
-                    self.deliver(&push).await;
-                }
+            if agent.state == AgentState::Blocked
+                && let Some(push) = self.transition_push(agent, &mut shadow)
+            {
+                self.deliver(&push).await;
             }
         }
         loop {
@@ -664,9 +664,15 @@ mod tests {
         let (registry, _, _, _dir) = test_support::setup();
         let key_id = device_with_token(&registry);
         let payload = serde_json::json!({"type": "blocked"});
+        let delivery_registry = Arc::clone(&registry);
         let handle = tokio::spawn(async move {
-            deliver_with_retry(provider.as_ref(), "a1b2c3d4e5f6", &payload, registry.as_ref())
-                .await
+            deliver_with_retry(
+                provider.as_ref(),
+                "a1b2c3d4e5f6",
+                &payload,
+                delivery_registry.as_ref(),
+            )
+            .await
         });
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
@@ -692,9 +698,15 @@ mod tests {
         let (registry, _, _, _dir) = test_support::setup();
         let key_id = device_with_token(&registry);
         let payload = serde_json::json!({"type": "blocked"});
+        let delivery_registry = Arc::clone(&registry);
         let handle = tokio::spawn(async move {
-            deliver_with_retry(provider.as_ref(), "a1b2c3d4e5f6", &payload, registry.as_ref())
-                .await
+            deliver_with_retry(
+                provider.as_ref(),
+                "a1b2c3d4e5f6",
+                &payload,
+                delivery_registry.as_ref(),
+            )
+            .await
         });
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await

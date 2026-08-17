@@ -1,0 +1,24 @@
+# Pinned toolchain (#48).
+#
+# `cargo fmt --check` became a BLOCKING CI gate in #40, which removed the
+# shock absorber that `continue-on-error` used to provide: with a floating
+# `stable`, a rustfmt bug-fix in any future release turns the NEXT pull
+# request red regardless of what it changes, and its author eats an
+# unrelated reformat. The same hazard applies to clippy, where `-D warnings`
+# means a newly-added lint fails untouched code.
+#
+# Pinning moves that cost from "a random contributor at a random time" to
+# "a deliberate toolchain-bump PR", where the reformat and any new lint
+# fixes land together and are reviewable as such.
+#
+# CI reads this file too — `.github/workflows/rust.yml` passes no explicit
+# toolchain, so there is exactly one version in the repo and local
+# development cannot silently diverge from the hosted gates. That matters
+# here: CI runs Linux, most development happens on macOS, and that gap has
+# already produced one bug (#43).
+#
+# To bump: raise `channel`, run `cargo fmt` and `cargo clippy --all-targets
+# -- -D warnings`, and land the result as its own PR.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

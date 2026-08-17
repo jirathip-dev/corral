@@ -104,6 +104,32 @@ curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
   entries is not detectable without an external anchor (a W4 follow-up).
 - A crash mid-append is repaired at next open as a flagged tombstone line.
 
+## Event history and the daily digest
+
+Separate from the audit log: the **event ring** (D23) records agent
+status-transition events — not just drive writes — appended at the
+store-apply choke point. It is the "what did the fleet actually do"
+record. On disk it is rotating append-only JSONL
+(`seg-<seq>-<start_ts>.jsonl`) under `<config-dir>/history`.
+
+Read a window over HTTP:
+
+```sh
+curl -s 'http://127.0.0.1:8474/history?since=1784210400000&limit=500'
+# {"events":[...]}
+```
+
+`since` is epoch millis; `limit` defaults to 1000 and is capped at 5000.
+
+Or take a per-agent daily digest offline, straight off the ring — no
+running daemon required (D33):
+
+```sh
+corrald digest                          # last 24h
+corrald digest --since 1784210400000    # explicit window
+corrald digest --config-dir <path>      # non-default config dir
+```
+
 ## Security model summary
 
 - Loopback-only binding; `corrald` exits if asked to bind a routable

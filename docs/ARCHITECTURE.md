@@ -24,6 +24,10 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
               (SSE; resumes from Last-Event-ID — full snapshot when
                the cursor is stale, incremental {rev, upd, del} deltas
                otherwise)
+        GET /history (D23 event ring: status transitions appended at
+              the store-apply choke point, persisted as rotating JSONL;
+              `?since=<epoch-millis>` and `?limit=` — 1000 default,
+              5000 cap)
 ```
 
 Every adapter normalizes into the canonical `Agent` record
@@ -131,7 +135,8 @@ src/drive/           frozen P3 contract: capabilities, envelope, signing,
 src/approve/         claim-based approvals (prompt_hash checks)
 src/auth/            host identity, device registry, authorizer, step-up,
                      hash-chained audit, HTTP routes
-src/api/             router, /snapshot /events /healthz, POST /drive
+src/api/             router, /snapshot /events /history /healthz, POST /drive
+src/history/         D23 event ring (rotating JSONL) + D33 daily digest
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
 tests/               integration tests per module
 ```

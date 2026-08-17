@@ -9,7 +9,7 @@ in flight on branch `w2/egui-desktop`.
 
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)
-git watcher ──┤ → integrator →   │
+git watcher ──┤ → integrator →   ├─ GET /history (event ring, ?since= &limit=)
 gh (GraphQL) ─┘   read model     ├─ POST /register, /step-up, /grants, GET /host-key, /audit
                                  └─ POST /drive (Ed25519-signed, capability-gated)
 ```

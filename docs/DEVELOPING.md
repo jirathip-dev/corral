@@ -33,8 +33,10 @@ src/approve/             claim-based approvals (approval_id, prompt_hash,
 src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
                          audit, tokens), host_identity.rs, registry.rs,
                          authorizer.rs, step_up.rs, audit.rs, http.rs
-src/api/                 mod.rs (router: /healthz /snapshot /events),
-                         drive.rs (POST /drive handler)
+src/api/                 mod.rs (router: /healthz /snapshot /events
+                         /history), drive.rs (POST /drive handler)
+src/history/             mod.rs, ring.rs (D23 persistent event ring),
+                         digest.rs (D33 `corrald digest`)
 crates/corrald-client/   shared client layer: model, drive, keypair,
                          stepup, approval, sse, client; tests/conformance.rs
 tests/                   auth.rs, drive.rs, http.rs, integration.rs,

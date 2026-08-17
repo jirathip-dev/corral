@@ -31,7 +31,7 @@ def ensure_app_id(_key)
   bundle = Spaceship::ConnectAPI::BundleId.all(filter: { identifier: APP_IDENTIFIER }).first
   unless bundle
     bundle = Spaceship::ConnectAPI::BundleId.create(
-      name: "Corral",
+      name: "Corral: Agent Fleet",
       identifier: APP_IDENTIFIER,
       platform: "IOS"
     )
@@ -58,7 +58,7 @@ def ensure_app_record
   app = Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
   UI.user_error!(
     "App record missing on ASC — create ONCE in the ASC web UI " \
-    "(My Apps → + → New App: name 'Corral', bundle id " \
+    "(My Apps → + → New App: name 'Corral: Agent Fleet', bundle id " \
     "#{APP_IDENTIFIER}, SKU CORRAL01). Then re-run this lane."
   ) unless app
   app

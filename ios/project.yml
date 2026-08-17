@@ -23,7 +23,7 @@ targets:
     info:
       path: FleetNotifier/Info.plist
       properties:
-        CFBundleDisplayName: Corral
+        CFBundleDisplayName: "Corral: Agent Fleet"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands."

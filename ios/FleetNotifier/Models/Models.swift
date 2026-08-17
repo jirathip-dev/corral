@@ -87,18 +87,23 @@ struct Workspace: Codable, Equatable, Sendable {
     var dirty: Bool
     var ahead: UInt64
     var behind: UInt64
+    /// Issues the bound PR closes (schema v4, G23) — this is the wire
+    /// location the daemon emits (`src/core/model.rs` puts `issues` on
+    /// `Workspace`, not on `Agent`; pinned there by `tests/model.rs`).
+    /// Serde-defaulted on the daemon, so absent decodes as empty.
+    var issues: [GhIssueRef]
 
     enum CodingKeys: String, CodingKey {
         case repo, branch
         case worktreePath = "worktree_path"
         case prNumber = "pr_number"
         case ciStatus = "ci_status"
-        case dirty, ahead, behind
+        case dirty, ahead, behind, issues
     }
 
     init(repo: String? = nil, branch: String? = nil, worktreePath: String? = nil,
          prNumber: UInt64? = nil, ciStatus: CiStatus? = nil, dirty: Bool = false,
-         ahead: UInt64 = 0, behind: UInt64 = 0) {
+         ahead: UInt64 = 0, behind: UInt64 = 0, issues: [GhIssueRef] = []) {
         self.repo = repo
         self.branch = branch
         self.worktreePath = worktreePath
@@ -107,6 +112,7 @@ struct Workspace: Codable, Equatable, Sendable {
         self.dirty = dirty
         self.ahead = ahead
         self.behind = behind
+        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -119,7 +125,19 @@ struct Workspace: Codable, Equatable, Sendable {
         dirty = try c.decodeIfPresent(Bool.self, forKey: .dirty) ?? false
         ahead = try c.decodeIfPresent(UInt64.self, forKey: .ahead) ?? 0
         behind = try c.decodeIfPresent(UInt64.self, forKey: .behind) ?? 0
+        issues = try c.decodeIfPresent([GhIssueRef].self, forKey: .issues) ?? []
     }
+}
+
+/// Issue reference joined into the agent model (G23): mirrors corrald's
+/// `GhIssueRef` — the bound PR's authoritative `closingIssuesReferences`.
+/// Authoritative linkage only; branch-name inference lives in BoardModel
+/// and is display-only (D21).
+struct GhIssueRef: Codable, Equatable, Sendable {
+    var repo: String
+    var number: UInt64
+    var state: String
+    var title: String
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).
@@ -222,6 +240,16 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     }
 
     var isBlocked: Bool { state == .blocked }
+
+    /// The bound PR's authoritative closing-issue refs (G23), forwarded from
+    /// their wire location on `workspace`.
+    var issues: [GhIssueRef] { workspace.issues }
+
+    /// The authoritative issue-number set the D21 inference validates
+    /// against (mirrors egui's `known_issue_numbers`).
+    var knownIssueNumbers: Set<UInt64> {
+        Set(workspace.issues.map(\.number))
+    }
 }
 
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a

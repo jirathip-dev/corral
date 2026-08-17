@@ -23,6 +23,7 @@
 		C886615F9AD8FA9BF1D80944 /* DestructivePatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
 		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
+		EE1946637720786C9E6E45A5 /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8277522F2489E093BC28309 /* BoardModel.swift */; };
 		F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */; };
 		F633BB49ACEC0A2CB69B3B35 /* FleetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0642A04325429AB1072D2ADB /* FleetStore.swift */; };
 /* End PBXBuildFile section */
@@ -53,6 +54,7 @@
 		AA1B824D203FC54632815108 /* PushPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPayload.swift; sourceTree = "<group>"; };
 		AC7C4F4D9245391F122670D6 /* Biometrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Biometrics.swift; sourceTree = "<group>"; };
 		ADDB3D0089119DBD19AC4FA0 /* LiveVerifyRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveVerifyRunner.swift; sourceTree = "<group>"; };
+		B8277522F2489E093BC28309 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
 		C07EBB7872D62A8E042D4DB1 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C4857B5F4535FFC7B0AA0F5D /* FleetNotifier.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FleetNotifier.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -92,6 +94,7 @@
 		344952870B29AC48E1D31AA7 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				B8277522F2489E093BC28309 /* BoardModel.swift */,
 				8439EED775F825EE1DE8EAC3 /* FleetViews.swift */,
 			);
 			path = UI;
@@ -268,6 +271,7 @@
 				854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */,
 				2DD53F53A68D569106692E27 /* AppModel.swift in Sources */,
 				3DB0D4E85BE2653D28D180DF /* Biometrics.swift in Sources */,
+				EE1946637720786C9E6E45A5 /* BoardModel.swift in Sources */,
 				F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */,
 				04FEAD293E09FF31A5CF356A /* CorraldClient.swift in Sources */,
 				07BCD4DDA01FCF6529B8CB0B /* DemoFleet.swift in Sources */,

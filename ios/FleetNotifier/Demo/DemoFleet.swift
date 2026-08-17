@@ -39,9 +39,15 @@ enum DemoFleet {
                                choices: ["y", "n"]),
             capabilities: tail("approve"),
             displayName: "demo-approve", title: "Push plush catalog v2",
+            // Authoritative closing-issue ref (G23) on the WORKSPACE — the
+            // wire location the daemon emits — so the demo `⑂ #N` chip goes
+            // through the same read path as live data. The other demo agents
+            // exercise the inferred `~#N?` / no-chip paths.
             workspace: Workspace(repo: "project-hearthwild", branch: "feat/plush-v2",
                                  worktreePath: "~/worktrees/project-hearthwild/feat-plush-v2",
-                                 prNumber: 42, ciStatus: .pending, dirty: true, ahead: 3, behind: 0),
+                                 prNumber: 42, ciStatus: .pending, dirty: true, ahead: 3, behind: 0,
+                                 issues: [GhIssueRef(repo: "project-hearthwild", number: 41,
+                                                     state: "open", title: "Plush catalog v2")]),
             seq: 5, tsOffset: 30)
 
         // Blocked on a menu with explicit choices.

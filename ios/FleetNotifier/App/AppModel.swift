@@ -270,14 +270,10 @@ final class AppModel: ObservableObject {
               driveClient: driveClient, keyId: keyId, signer: signer)
     }
 
-    func driveCommand(_ capability: Capability, agent: Agent, driveClient: DriveClient) {
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        drive(capability: capability, target: agent.agentId, payload: .null,
-              driveClient: driveClient, keyId: keyId, signer: signer)
-    }
+    // NOTE: `driveCommand` (the interrupt/kill wrapper) was removed with the
+    // D30 board rework — row actions are Approve/Deny/Prompt/Tail only, and
+    // kill-on-phone is D29-cut. `DriveClient.drive` still supports every
+    // capability for any future, non-row surface.
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                        driveClient: DriveClient, keyId: String, signer: DeviceSigner) {

@@ -162,26 +162,10 @@ final class FleetStore: ObservableObject {
         agents[id]
     }
 
-    var blockedAgents: [Agent] {
-        agents.values.filter { $0.isBlocked }
-            .sorted { $0.ts > $1.ts }
-    }
-
-    var sortedAgents: [Agent] {
-        agents.values.sorted { a, b in
-            let rank: (Agent) -> Int = {
-                switch $0.state {
-                case .blocked: return 0
-                case .working: return 1
-                case .idle: return 2
-                case .done: return 3
-                case .unknown: return 4
-                }
-            }
-            if rank(a) == rank(b) { return a.ts > b.ts }
-            return rank(a) < rank(b)
-        }
-    }
+    // NOTE: the pre-D25 `blockedAgents`/`sortedAgents` accessors were
+    // removed with the board rework — ordering now lives ONLY in
+    // `BoardModel.ordered` (blocked > working > done > idle > unknown),
+    // so no second, contradictory rank can be reached for.
 
     // MARK: - Streaming
 

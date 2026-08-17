@@ -5,6 +5,10 @@
 //!   the cursor is too old, incremental `{rev, upd, del}` otherwise).
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
+//! - `GET /cost`    — G34: per-provider USD + % of cap over rolling
+//!   5h/weekly/monthly windows (opencode/claude/codex), with a `status`
+//!   per window (`ok`/`warning`/`problem`) dashboard tiles render as the
+//!   before-exhaustion alert.
 //! - `GET /healthz` — liveness.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
@@ -81,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/history", get(history))
+        .route("/cost", get(cost))
         .route("/drive", post(drive))
         .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
@@ -108,6 +113,16 @@ async fn history(
     let limit = params.limit.unwrap_or(HISTORY_DEFAULT_LIMIT).min(HISTORY_MAX_LIMIT);
     let events = state.store.history().query(params.since, Some(limit));
     Json(serde_json::json!({ "events": events }))
+}
+
+/// G34: per-provider cost/usage-% meter. Stateless relative to `AppState`
+/// (reads session stores directly, same as `corrald digest` reads the
+/// history ring offline) — no store/auth coupling needed.
+async fn cost(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let config = crate::cost::CostConfig::from_env();
+    let now_ms = crate::core::util::now_millis();
+    let providers = crate::cost::compute_all(&config, now_ms).await;
+    Json(serde_json::json!({ "generated_at": now_ms, "providers": providers }))
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {

@@ -673,6 +673,15 @@ impl HerdrAdapter {
         display_name: Option<String>,
     ) -> Agent {
         let seq = state.next_seq(agent_id);
+        // G34: best-effort cumulative spend from the D30 background cache,
+        // keyed by (tool, worktree_path). `None` until the refresh loop
+        // has populated a match for this pair — same as the pre-G34
+        // hardcoded None, never an error path.
+        let cost = tool.and_then(|t| {
+            worktree_path
+                .as_deref()
+                .and_then(|w| crate::cost::agent_cache::cumulative_cost_for(t, w))
+        });
         Agent {
             agent_id: agent_id.to_string(),
             source: "herdr".to_string(),
@@ -683,7 +692,7 @@ impl HerdrAdapter {
             ts: now_millis(),
             capabilities: CAPABILITIES.iter().map(|s| s.to_string()).collect(),
             waiting_on: None,
-            cost: None,
+            cost,
             parent_id: None,
             host: None,
             workspace: Workspace {

@@ -310,9 +310,12 @@ impl DeviceRegistry {
         Ok(())
     }
 
-    /// Clear the token for whichever device holds it (used by the notifier
+    /// Clear the token for every record holding it (used by the notifier
     /// on `Unregistered` — Apple no longer knows the device). No-op when
-    /// no record matches; persist failures propagate (F8).
+    /// no record matches; persist failures propagate (F8). All matches are
+    /// cleared (F4): the same token can legitimately appear on more than
+    /// one record (one install re-registered under two keys), and leaving
+    /// one stale copy would fail on every future push.
     pub fn set_device_token_by_token(
         &self,
         device_token: &str,
@@ -320,17 +323,18 @@ impl DeviceRegistry {
     ) -> Result<(), RegistryMutationError> {
         let replacement = replacement.filter(|t| !t.is_empty()).map(String::from);
         let mut inner = self.inner.lock().expect("registry lock poisoned");
-        let rec = inner
-            .devices
-            .values_mut()
-            .find(|rec| rec.device_token.as_deref() == Some(device_token));
-        match rec {
-            Some(rec) => {
-                rec.device_token = replacement;
-                self.persist_locked(&inner)
-                    .map_err(RegistryMutationError::Persist)
+        let mut changed = false;
+        for rec in inner.devices.values_mut() {
+            if rec.device_token.as_deref() == Some(device_token) {
+                rec.device_token = replacement.clone();
+                changed = true;
             }
-            None => Ok(()),
+        }
+        if changed {
+            self.persist_locked(&inner)
+                .map_err(RegistryMutationError::Persist)
+        } else {
+            Ok(())
         }
     }
 
@@ -567,6 +571,34 @@ mod tests {
         assert_eq!(reloaded.get(&rec.key_id).unwrap().device_token, None);
         // Unknown token is a no-op, not an error.
         reloaded.set_device_token_by_token("ghost", None).unwrap();
+    }
+
+    /// F4: the same token on MORE THAN ONE record (one install
+    /// re-registered under two keys) must clear ALL of them, not just the
+    /// first match — a leftover dead token fails on every future push.
+    #[test]
+    fn set_device_token_by_token_clears_all_matching_records() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let mut key_ids = vec![];
+        for _ in 0..3 {
+            let token = reg.registration_token();
+            let rec = reg
+                .register(&token, key(), std::time::Duration::from_secs(3600))
+                .unwrap();
+            reg.set_device_token(&rec.key_id, Some("deadbeef0001"))
+                .unwrap();
+            key_ids.push(rec.key_id);
+        }
+
+        reg.set_device_token_by_token("deadbeef0001", None).unwrap();
+        for id in &key_ids {
+            assert_eq!(
+                reg.get(id).unwrap().device_token,
+                None,
+                "every record sharing the token is cleared (F4)"
+            );
+        }
     }
 
     /// D16: push eligibility = live key + registered token; revoked or

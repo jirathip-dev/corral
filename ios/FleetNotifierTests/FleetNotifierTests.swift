@@ -126,9 +126,15 @@ final class ClaimTests: XCTestCase {
         XCTAssertEqual(CannedChoice.choice(for: .approve, kind: .menu, choices: ["proceed", "accept"]), "accept")
     }
 
-    func testCannedChoiceFallsBackToFirstChoiceForApprove() {
-        XCTAssertEqual(CannedChoice.choice(for: .approve, kind: .menu, choices: ["1", "2", "3"]), "1")
+    func testCannedChoiceWithoutAffirmativeSpellingIsNotAnswerable() {
+        // F3: a menu with no conventional affirmative member must NOT fall
+        // back to the first choice — that could send the OPPOSITE of the
+        // user's intent (e.g. "cancel" from a ["cancel", "confirm"] menu).
+        // The Approve button is simply not offered (nil).
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["cancel", "confirm"]))
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["1", "2", "3"]))
         XCTAssertNil(CannedChoice.choice(for: .deny, kind: .menu, choices: ["1", "2", "3"]))
+        XCTAssertNil(CannedChoice.choice(for: .approve, kind: .menu, choices: ["rollback", "deploy"]))
     }
 
     func testCannedChoiceAnswerQuestionFreeForm() {
@@ -566,17 +572,25 @@ final class DoneTransitionTests: XCTestCase {
         var done: [String] = []
         store.onNewlyDone = { done.append($0) }
 
+        // F7: a full snapshot replay of an already-done agent seeds the
+        // shadow only — it must NOT fire a cold-start completion storm.
         store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
                                        agents: ["a": agent("a", state: .done)])))
+        XCTAssertEqual(done, [], "snapshot replay of done must not fire")
+
+        // A real transition INTO done fires.
+        store.apply(.delta(Delta(rev: 2, upd: [agent("a", state: .working)], del: [])))
+        XCTAssertEqual(done, [], "working does not fire")
+        store.apply(.delta(Delta(rev: 3, upd: [agent("a", state: .done)], del: [])))
         XCTAssertEqual(done, ["a"], "transition into done fires")
 
         // Re-upserts while staying done: no re-fire (batching).
-        store.apply(.delta(Delta(rev: 2, upd: [agent("a", state: .done)], del: [])))
+        store.apply(.delta(Delta(rev: 4, upd: [agent("a", state: .done)], del: [])))
         XCTAssertEqual(done, ["a"], "staying done must not re-fire")
 
         // Working -> done again: a new episode fires.
-        store.apply(.delta(Delta(rev: 3, upd: [agent("a", state: .working)], del: [])))
-        store.apply(.delta(Delta(rev: 4, upd: [agent("a", state: .done)], del: [])))
+        store.apply(.delta(Delta(rev: 5, upd: [agent("a", state: .working)], del: [])))
+        store.apply(.delta(Delta(rev: 6, upd: [agent("a", state: .done)], del: [])))
         XCTAssertEqual(done, ["a", "a"], "each done episode fires once")
     }
 }

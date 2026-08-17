@@ -74,35 +74,30 @@ final class FleetStore: ObservableObject {
     }
 
     /// Diff-aware done detection: fire once per transition INTO done
-    /// (staying done re-upserts nothing). Shadowed locally, so a snapshot
-    /// replay or a reconnect cannot double-notify.
+    /// (staying done re-upserts nothing). Shadowed locally, so a delta
+    /// reconnect cannot double-notify. A full snapshot replay (cold start /
+    /// stale cursor) seeds only the shadow — it must NOT fire a completion
+    /// for every already-done agent (F7: cold-start done storm).
     private func trackDone(_ event: FleetEvent) {
-        let transitioned: [String] = {
-            switch event {
-            case .snapshot(let snapshot):
-                return snapshot.agents.compactMap { id, agent in
-                    guard agent.state == .done, previousStates[id] != .done else { return nil }
-                    return id
-                }
-            case .delta(let delta):
-                var ids: [String] = []
-                for agent in delta.upd {
-                    if agent.state == .done, previousStates[agent.agentId] != .done {
-                        ids.append(agent.agentId)
-                    }
-                }
-                return ids
-            }
-        }()
         switch event {
         case .snapshot(let snapshot):
-            for (id, agent) in snapshot.agents { previousStates[id] = agent.state }
+            for (id, agent) in snapshot.agents {
+                previousStates[id] = agent.state
+            }
         case .delta(let delta):
-            for agent in delta.upd { previousStates[agent.agentId] = agent.state }
-            for id in delta.del { previousStates.removeValue(forKey: id) }
-        }
-        for id in transitioned {
-            onNewlyDone?(id)
+            var transitioned: [String] = []
+            for agent in delta.upd {
+                if agent.state == .done, previousStates[agent.agentId] != .done {
+                    transitioned.append(agent.agentId)
+                }
+                previousStates[agent.agentId] = agent.state
+            }
+            for id in delta.del {
+                previousStates.removeValue(forKey: id)
+            }
+            for id in transitioned {
+                onNewlyDone?(id)
+            }
         }
     }
 

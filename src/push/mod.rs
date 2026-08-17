@@ -160,6 +160,18 @@ impl Notifier {
         let mut rx = self.store.subscribe();
         self.ready.notify_waiters();
         let mut shadow: HashMap<String, Shadow> = HashMap::new();
+        // Boot seed (F6): the watcher only reacts to deltas, so an agent
+        // that is ALREADY blocked when the daemon restarts would never get
+        // its notification. Seed the shadow from the current snapshot and
+        // push for already-blocked agents (fire-and-forget; deduped by
+        // prompt_hash like any other blocked push).
+        for agent in self.store.snapshot().await.agents.values() {
+            if agent.state == AgentState::Blocked {
+                if let Some(push) = self.transition_push(agent, &mut shadow) {
+                    self.deliver(&push).await;
+                }
+            }
+        }
         loop {
             match rx.recv().await {
                 Ok(delta) => self.handle_delta(&delta, &mut shadow).await,
@@ -244,7 +256,12 @@ impl Notifier {
                     Some(p) => p.state != AgentState::Done || !p.done_pushed,
                     None => true,
                 };
-                current.done_pushed = is_new;
+                // Sticky once the agent is seen in Done: consecutive done
+                // re-upserts must not re-push (F1 — the flag records that a
+                // done episode was already notified, not that THIS upsert
+                // pushed). Cleared when the agent leaves Done via the fresh
+                // shadow, so a new episode can notify again.
+                current.done_pushed = true;
                 if is_new {
                     Some(done_payload(
                         &agent.agent_id,
@@ -604,6 +621,90 @@ mod tests {
                 .await
                 .is_err(),
             "staying done must not re-push"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_done_upserts_push_exactly_once() {
+        // F1 regression: the done_pushed shadow flipped on every done
+        // re-upsert, so 5 identical done upserts pushed 3 times. The flag
+        // must be sticky once the agent is seen in Done.
+        let (store, registry, notifier, mut received) = harness();
+        device_with_token(&registry);
+        notifier.clone().start();
+        notifier.ready().await;
+
+        for _ in 0..5 {
+            store.apply(Change::upsert(done_agent("herdr:ses-d1"))).await;
+            store.flush().await;
+        }
+
+        let (_token, payload) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("first done push arrives")
+            .expect("channel closed");
+        assert_eq!(payload["type"], "done");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), received.recv())
+                .await
+                .is_err(),
+            "five identical done upserts must produce exactly one push"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_400_keeps_device_token_in_registry() {
+        // F2: a 400 PayloadTooLarge (our bug) is Rejected, never
+        // Unregistered — the device token must survive in the registry.
+        let (provider, _received) = MockProvider::new();
+        provider.fail_with(PushError::Rejected {
+            status: 400,
+            reason: "PayloadTooLarge".to_string(),
+        });
+        let (registry, _, _, _dir) = test_support::setup();
+        let key_id = device_with_token(&registry);
+        let payload = serde_json::json!({"type": "blocked"});
+        let handle = tokio::spawn(async move {
+            deliver_with_retry(provider.as_ref(), "a1b2c3d4e5f6", &payload, registry.as_ref())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("delivery completes")
+            .expect("no panic");
+        assert!(
+            matches!(result, Err(PushError::Rejected { status: 400, .. })),
+            "PayloadTooLarge must map to Rejected, got {result:?}"
+        );
+        assert_eq!(
+            registry.get(&key_id).unwrap().device_token.as_deref(),
+            Some("a1b2c3d4e5f6"),
+            "a config bug must NOT deregister the device"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregistered_drops_device_token_from_registry() {
+        // The flip side of F2: a genuinely dead device still drops the
+        // token so the next block does not fail against a dead address.
+        let (provider, _received) = MockProvider::new();
+        provider.fail_with(PushError::Unregistered);
+        let (registry, _, _, _dir) = test_support::setup();
+        let key_id = device_with_token(&registry);
+        let payload = serde_json::json!({"type": "blocked"});
+        let handle = tokio::spawn(async move {
+            deliver_with_retry(provider.as_ref(), "a1b2c3d4e5f6", &payload, registry.as_ref())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("delivery completes")
+            .expect("no panic");
+        assert_eq!(result, Err(PushError::Unregistered));
+        assert_eq!(
+            registry.get(&key_id).unwrap().device_token,
+            None,
+            "a dead device's token is dropped (re-register on next launch)"
         );
     }
 

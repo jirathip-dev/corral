@@ -30,7 +30,12 @@ enum CannedChoice {
         case .continue: preferred = continueSpellings
         }
         if !choices.isEmpty {
-            return preferred.first { choices.contains($0) } ?? (action == .approve ? choices.first : nil)
+            // F3: NO fallback to `choices.first` — for a menu with no
+            // conventional affirmative spelling, Approve must resolve to
+            // nil (button not offered) rather than silently send the first
+            // member, which can be the OPPOSITE of intent (e.g. "cancel"
+            // from a ["cancel", "confirm"] menu).
+            return preferred.first { choices.contains($0) }
         }
         // Menu/ApproveTool with no extracted choices is lenient server-side
         // (the adapter sends the text); AnswerQuestion is free-form.

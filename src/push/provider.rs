@@ -242,7 +242,7 @@ impl ApnsProvider for RealApnsProvider {
                 })?;
             let status = response.status();
             if status.is_success() {
-                debug!(device_token = %short_token(device_token), "apns push delivered");
+                debug!(device_token = %token_hash(device_token), "apns push delivered");
                 return Ok(());
             }
             // Apple replies with a JSON reason body on errors.
@@ -252,29 +252,50 @@ impl ApnsProvider for RealApnsProvider {
                 .ok()
                 .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
                 .unwrap_or_else(|| format!("HTTP {status}"));
-            match status.as_u16() {
-                400 => {
-                    warn!(status = %status, reason, "apns rejected the device token");
-                    Err(PushError::Unregistered)
-                }
-                410 => {
-                    warn!(status = %status, reason, "apns: device unregistered (app removed)");
-                    Err(PushError::Unregistered)
-                }
-                401 | 403 => {
-                    warn!(status = %status, reason, "apns credential problem");
-                    Err(PushError::Configuration(reason))
-                }
-                s if RETRYABLE_STATUS.contains(&s) => Err(PushError::Retryable {
-                    status: Some(s),
-                    reason,
-                }),
-                _ => Err(PushError::Rejected {
-                    status: status.as_u16(),
-                    reason,
-                }),
-            }
+            Err(classify_apns_error(status.as_u16(), &reason))
         })
+    }
+}
+
+/// Map an APNs HTTP status + Apple `reason` to a typed [`PushError`].
+///
+/// Only a genuinely dead device drops the registry token: HTTP 400
+/// `BadDeviceToken`/`Unregistered`, or HTTP 410 `Unregistered` (F2). Our
+/// OWN config/payload bugs that Apple reports as 400 (PayloadTooLarge,
+/// DeviceTokenNotForTopic, BadTopic, …) must NOT deregister a healthy
+/// device — they are `Rejected` (logged + dropped, token retained), so a
+/// fixable config error never becomes silent push loss.
+fn classify_apns_error(status: u16, reason: &str) -> PushError {
+    match status {
+        400 => match reason {
+            "BadDeviceToken" | "Unregistered" => {
+                warn!(status, reason, "apns rejected the device token");
+                PushError::Unregistered
+            }
+            _ => {
+                warn!(status, reason, "apns rejected the push");
+                PushError::Rejected {
+                    status,
+                    reason: reason.to_string(),
+                }
+            }
+        },
+        410 => {
+            warn!(status, reason, "apns: device unregistered (app removed)");
+            PushError::Unregistered
+        }
+        401 | 403 => {
+            warn!(status, reason, "apns credential problem");
+            PushError::Configuration(reason.to_string())
+        }
+        s if RETRYABLE_STATUS.contains(&s) => PushError::Retryable {
+            status: Some(s),
+            reason: reason.to_string(),
+        },
+        _ => PushError::Rejected {
+            status,
+            reason: reason.to_string(),
+        },
     }
 }
 
@@ -288,10 +309,13 @@ fn json_b64(v: &Value) -> String {
     URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).expect("jwt part serializes"))
 }
 
-fn short_token(token: &str) -> String {
-    let mut t = token.to_string();
-    t.truncate(12);
-    t
+/// One-way fingerprint of a device token for logs — never the raw token,
+/// not even a prefix (F5): the first 8 hex chars of SHA-256 give enough
+/// entropy to correlate a log line without disclosing a per-device id.
+fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    crate::auth::hex(&digest[..4])
 }
 
 // ---------------------------------------------------------------------------
@@ -300,11 +324,13 @@ fn short_token(token: &str) -> String {
 
 /// Records every push. `received` yields `(device_token, payload)` pairs in
 /// order; `fail_next` makes the next `fail_next` pushes return
-/// [`PushError::Retryable`] (retry-policy tests). Never touches the
-/// network — the only provider the test suite uses.
+/// [`PushError::Retryable`] (retry-policy tests); `fail_with` makes the
+/// NEXT push return an exact [`PushError`] (error-mapping tests). Never
+/// touches the network — the only provider the test suite uses.
 pub struct MockProvider {
     tx: tokio::sync::mpsc::UnboundedSender<(String, Value)>,
     fail_next: Mutex<usize>,
+    fail_with: Mutex<Option<PushError>>,
 }
 
 impl MockProvider {
@@ -315,11 +341,23 @@ impl MockProvider {
         tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
     ) {
         let (tx, received) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { tx, fail_next: Mutex::new(0) }), received)
+        (
+            Arc::new(Self {
+                tx,
+                fail_next: Mutex::new(0),
+                fail_with: Mutex::new(None),
+            }),
+            received,
+        )
     }
 
     pub fn fail_next(&self, n: usize) {
         *self.fail_next.lock().expect("mock lock") = n;
+    }
+
+    /// The next push returns `error` exactly once.
+    pub fn fail_with(&self, error: PushError) {
+        *self.fail_with.lock().expect("mock lock") = Some(error);
     }
 }
 
@@ -329,6 +367,7 @@ impl Default for MockProvider {
         Self {
             tx,
             fail_next: Mutex::new(0),
+            fail_with: Mutex::new(None),
         }
     }
 }
@@ -347,6 +386,10 @@ impl ApnsProvider for MockProvider {
                     status: Some(503),
                     reason: "mock outage".to_string(),
                 });
+            }
+            drop(remaining);
+            if let Some(error) = self.fail_with.lock().expect("mock lock").take() {
+                return Err(error);
             }
             self.tx
                 .send((device_token.to_string(), payload.clone()))
@@ -415,5 +458,78 @@ mod tests {
         // scalar is canonical; the fixed bytes derive a valid P-256 key.
         let signing = SigningKey::from_bytes((&[0x42; 32]).into()).expect("valid p-256 scalar");
         signing.to_pkcs8_pem(LineEnding::LF).unwrap().to_string()
+    }
+
+    #[test]
+    fn apns_400_mapping_is_reason_aware() {
+        // A genuinely dead device: only these drop the registry token.
+        assert_eq!(
+            classify_apns_error(400, "BadDeviceToken"),
+            PushError::Unregistered
+        );
+        assert_eq!(
+            classify_apns_error(400, "Unregistered"),
+            PushError::Unregistered
+        );
+        // Our OWN config/payload bug (F2): rejected, NOT unregistered —
+        // the token must be retained so a fixable error stays fixable.
+        assert_eq!(
+            classify_apns_error(400, "PayloadTooLarge"),
+            PushError::Rejected {
+                status: 400,
+                reason: "PayloadTooLarge".to_string()
+            }
+        );
+        assert_eq!(
+            classify_apns_error(400, "DeviceTokenNotForTopic"),
+            PushError::Rejected {
+                status: 400,
+                reason: "DeviceTokenNotForTopic".to_string()
+            }
+        );
+        assert_eq!(
+            classify_apns_error(400, "BadTopic"),
+            PushError::Rejected {
+                status: 400,
+                reason: "BadTopic".to_string()
+            }
+        );
+        // 410 always means the device is gone.
+        assert_eq!(
+            classify_apns_error(410, "Unregistered"),
+            PushError::Unregistered
+        );
+        // Credentials and transient statuses are unchanged.
+        assert!(matches!(
+            classify_apns_error(401, "BadProviderToken"),
+            PushError::Configuration(_)
+        ));
+        assert!(classify_apns_error(503, "Unavailable").is_retryable());
+        assert!(classify_apns_error(429, "TooManyProviderRequests").is_retryable());
+    }
+
+    #[test]
+    fn apns_400_payload_too_large_is_not_unregistered() {
+        // The exact F2 regression: a 400 PayloadTooLarge body must yield
+        // Rejected (token retained), never Unregistered (token dropped).
+        let err = classify_apns_error(400, "PayloadTooLarge");
+        assert_ne!(err, PushError::Unregistered, "our bug is not a dead device");
+        match err {
+            PushError::Rejected { status, reason } => {
+                assert_eq!(status, 400);
+                assert_eq!(reason, "PayloadTooLarge");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn token_hash_is_one_way_and_stable() {
+        // Deterministic, 8 hex chars, and it never contains the token.
+        assert_eq!(token_hash("a1b2c3d4e5f6"), token_hash("a1b2c3d4e5f6"));
+        assert_eq!(token_hash("a1b2c3d4e5f6").len(), 8);
+        assert_ne!(token_hash("a1b2c3d4e5f6"), token_hash("a1b2c3d4e5f7"));
+        let h = token_hash("deadbeefdeadbeef");
+        assert!(!h.contains("dead"), "no raw token material in the log form");
     }
 }

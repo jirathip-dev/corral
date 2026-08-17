@@ -165,12 +165,14 @@ struct FlowLayout: Layout {
 struct AgentRow: View {
     let agent: Agent
     let grants: Set<Capability>
+    /// Draft prompt text, shared with every other row rendering the same
+    /// agent (a blocked agent appears in both NEEDS YOU and its repo
+    /// section — the two rows must not hold divergent drafts).
+    @Binding var promptText: String
     var onChoice: (String) -> Void
     var onCanned: (CannedChoice.Action) -> Void
     var onReadTail: () -> Void
     var onPrompt: (String) -> Void
-
-    @State private var promptText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -181,8 +183,17 @@ struct AgentRow: View {
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+                // Session identity must survive on the row even when a
+                // title is shown — two agents can share a title.
+                if agent.title != nil, let name = agent.displayName {
+                    Text(name)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                }
                 Spacer()
-                if let chip = IssueChip.chip(for: agent) {
+                ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
                     Text(chip.label)
                         .font(.caption2.monospaced())
                         .foregroundStyle(chip.isFlagged ? Color.secondary : Color.accentColor)
@@ -201,13 +212,11 @@ struct AgentRow: View {
                 ClaimCard(agent: agent, waiting: waiting, grants: grants,
                           onChoice: onChoice, onCanned: onCanned)
             }
-            if !isDimmed || hasRowActions {
+            if hasTailAction {
                 HStack(spacing: 8) {
-                    if agent.capabilities.contains(Capability.readTail.rawValue), grants.contains(.readTail) {
-                        Button("Tail 200") { onReadTail() }
-                            .buttonStyle(.bordered)
-                            .font(.caption)
-                    }
+                    Button("Tail 200") { onReadTail() }
+                        .buttonStyle(.bordered)
+                        .font(.caption)
                     Spacer()
                 }
             }
@@ -236,7 +245,9 @@ struct AgentRow: View {
         agent.state == .idle || agent.state == .done
     }
 
-    private var hasRowActions: Bool {
+    /// The Tail 200 button is the only bare row button (D30); Approve/Deny
+    /// live in the claim card and Prompt in the field below.
+    private var hasTailAction: Bool {
         agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail)
     }
 
@@ -253,44 +264,82 @@ struct AgentRow: View {
 
 /// Line 2 (D26): repo·branch·worktree basename — no nesting level — with
 /// PR / dirty / one `↑a↓b` badge trailing (D29: not separate columns).
+///
+/// Each segment is its own `Text` so truncation is per-segment: the repo
+/// and badges never truncate, the branch middle-truncates within its own
+/// bounds (the egui board's lesson: never middle-truncate the joined
+/// line, it eats the branch — the most identifying token on the row).
 struct WorkspaceLine: View {
     let agent: Agent
 
     var body: some View {
         let w = agent.workspace
-        HStack(spacing: 6) {
-            Text(pathLine(w))
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+        HStack(spacing: 4) {
+            if let repo = w.repo {
+                Text(repo)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(2)
+            }
+            if let branch = w.branch {
+                if w.repo != nil {
+                    Text("·").font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(branch)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let basename = Self.worktreeBasename(w) {
+                Text("·").font(.caption2).foregroundStyle(.secondary)
+                Text(basename)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+            if w.repo == nil && w.branch == nil && Self.worktreeBasename(w) == nil {
+                Text("—").font(.caption2).foregroundStyle(.secondary)
+            }
             Spacer(minLength: 4)
             if let pr = w.prNumber {
                 Text("#\(pr)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .layoutPriority(2)
             }
             if w.dirty {
                 Text("dirty").font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
+                    .layoutPriority(2)
             }
             if w.ahead > 0 || w.behind > 0 {
                 Text("↑\(w.ahead)↓\(w.behind)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
+                    .layoutPriority(2)
             }
         }
     }
 
-    private func pathLine(_ w: Workspace) -> String {
-        var parts: [String] = []
-        if let repo = w.repo { parts.append(repo) }
-        if let branch = w.branch { parts.append(branch) }
-        if let basename = w.worktreePath.flatMap({ $0.split(separator: "/").last }),
-           String(basename) != w.branch {
-            parts.append(String(basename))
+    /// The worktree basename (D26), suppressed when it just restates the
+    /// branch: herdr derives worktree dirs from branch names with `/`
+    /// flattened to `-`, so `g57/board-d24-d25` → `g57-board-d24-d25`
+    /// carries no extra information and only forces truncation.
+    static func worktreeBasename(_ w: Workspace) -> String? {
+        guard let raw = w.worktreePath?.split(separator: "/").last else {
+            return nil
         }
-        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+        let basename = String(raw)
+        guard let branch = w.branch else { return basename }
+        let flattened = branch.replacingOccurrences(of: "/", with: "-")
+        if basename == branch || basename == flattened
+            || flattened.hasPrefix(basename) || basename.hasPrefix(flattened) {
+            return nil
+        }
+        return basename
     }
 }
 
@@ -332,6 +381,9 @@ struct FleetView: View {
                     fleetList
                 }
             }
+            // D25's "sticky NEEDS YOU": only the plain list style pins
+            // section headers while scrolling (inset-grouped does not).
+            .listStyle(.plain)
             .navigationTitle("Fleet")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -360,11 +412,15 @@ struct FleetView: View {
 
     @State private var showSettings = false
     @State private var showIdleDone = false
+    /// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and
+    /// the repo-section row of the same blocked agent share one draft.
+    @State private var promptDrafts: [String: String] = [:]
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
     /// section) → repo sections with counts → orphan bucket → collapsed
-    /// IDLE/DONE.
+    /// IDLE/DONE. Section headers pin while scrolling via the `.plain`
+    /// list style set on the List (inset-grouped headers do not pin).
     @ViewBuilder
     private var fleetList: some View {
         let sections = BoardModel.sections(Array(model.fleet.agents.values))
@@ -386,7 +442,7 @@ struct FleetView: View {
             }
         }
         ForEach(sections.repos, id: \.repo) { group in
-            Section("\(group.repo ?? "(no repo)") (\(group.agents.count))") {
+            Section("\(group.repo ?? "(no repo)") (\(group.countLabel))") {
                 ForEach(group.agents) { agent in
                     agentRow(agent)
                 }
@@ -424,10 +480,17 @@ struct FleetView: View {
         }
     }
 
+    /// One draft per agent id, shared by every row rendering that agent.
+    private func promptBinding(_ agentId: String) -> Binding<String> {
+        Binding(get: { promptDrafts[agentId] ?? "" },
+                set: { promptDrafts[agentId] = $0 })
+    }
+
     private func agentRow(_ agent: Agent) -> some View {
         let driveClient = DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
         return AgentRow(agent: agent,
                         grants: Set(model.grants.compactMap(Capability.init(rawValue:))),
+                        promptText: promptBinding(agent.agentId),
                         onChoice: { choice in
                             if model.mode == .demo {
                                 model.driveDemo(capability: .approve, agent: agent, choice: choice)

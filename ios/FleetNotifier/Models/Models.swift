@@ -87,18 +87,23 @@ struct Workspace: Codable, Equatable, Sendable {
     var dirty: Bool
     var ahead: UInt64
     var behind: UInt64
+    /// Issues the bound PR closes (schema v4, G23) — this is the wire
+    /// location the daemon emits (`src/core/model.rs` puts `issues` on
+    /// `Workspace`, not on `Agent`; pinned there by `tests/model.rs`).
+    /// Serde-defaulted on the daemon, so absent decodes as empty.
+    var issues: [GhIssueRef]
 
     enum CodingKeys: String, CodingKey {
         case repo, branch
         case worktreePath = "worktree_path"
         case prNumber = "pr_number"
         case ciStatus = "ci_status"
-        case dirty, ahead, behind
+        case dirty, ahead, behind, issues
     }
 
     init(repo: String? = nil, branch: String? = nil, worktreePath: String? = nil,
          prNumber: UInt64? = nil, ciStatus: CiStatus? = nil, dirty: Bool = false,
-         ahead: UInt64 = 0, behind: UInt64 = 0) {
+         ahead: UInt64 = 0, behind: UInt64 = 0, issues: [GhIssueRef] = []) {
         self.repo = repo
         self.branch = branch
         self.worktreePath = worktreePath
@@ -107,6 +112,7 @@ struct Workspace: Codable, Equatable, Sendable {
         self.dirty = dirty
         self.ahead = ahead
         self.behind = behind
+        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -119,6 +125,7 @@ struct Workspace: Codable, Equatable, Sendable {
         dirty = try c.decodeIfPresent(Bool.self, forKey: .dirty) ?? false
         ahead = try c.decodeIfPresent(UInt64.self, forKey: .ahead) ?? 0
         behind = try c.decodeIfPresent(UInt64.self, forKey: .behind) ?? 0
+        issues = try c.decodeIfPresent([GhIssueRef].self, forKey: .issues) ?? []
     }
 }
 
@@ -173,9 +180,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     var attachment: Attachment?
     var displayName: String?
     var title: String?
-    /// Issues the agent's bound PR closes (schema v4, G23) — authoritative,
-    /// serde-defaulted on the daemon, so absent decodes as empty.
-    var issues: [GhIssueRef]
 
     enum CodingKeys: String, CodingKey {
         case agentId = "agent_id"
@@ -185,14 +189,14 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         case parentId = "parent_id"
         case host, workspace, attachment
         case displayName = "display_name"
-        case title, issues
+        case title
     }
 
     init(agentId: String, source: String = "herdr", tool: String = "claude", state: AgentState = .unknown,
          reason: String? = nil, seq: UInt64 = 0, ts: UInt64 = 0, capabilities: [String] = [],
          waitingOn: WaitingOn? = nil, cost: Double? = nil, parentId: String? = nil,
          host: String? = nil, workspace: Workspace = Workspace(), attachment: Attachment? = nil,
-         displayName: String? = nil, title: String? = nil, issues: [GhIssueRef] = []) {
+         displayName: String? = nil, title: String? = nil) {
         self.agentId = agentId
         self.source = source
         self.tool = tool
@@ -209,7 +213,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         self.attachment = attachment
         self.displayName = displayName
         self.title = title
-        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -230,7 +233,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         attachment = try c.decodeIfPresent(Attachment.self, forKey: .attachment)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         title = try c.decodeIfPresent(String.self, forKey: .title)
-        issues = try c.decodeIfPresent([GhIssueRef].self, forKey: .issues) ?? []
     }
 
     var grantedCapabilities: Set<Capability> {
@@ -239,10 +241,14 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
 
     var isBlocked: Bool { state == .blocked }
 
+    /// The bound PR's authoritative closing-issue refs (G23), forwarded from
+    /// their wire location on `workspace`.
+    var issues: [GhIssueRef] { workspace.issues }
+
     /// The authoritative issue-number set the D21 inference validates
     /// against (mirrors egui's `known_issue_numbers`).
     var knownIssueNumbers: Set<UInt64> {
-        Set(issues.map(\.number))
+        Set(workspace.issues.map(\.number))
     }
 }
 

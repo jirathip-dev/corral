@@ -57,7 +57,8 @@ final class LiveVerifyRunner {
             // 2. Read path (R2): snapshot render.
             let snapshot = try await readClient.fetchSnapshot()
             log.info("⚙️ snapshot schema_version=\(snapshot.schemaVersion) rev=\(snapshot.rev) agents=\(snapshot.agents.count)")
-            precondition(snapshot.schemaVersion == 3, "schema must be v3")
+            precondition(snapshot.schemaVersion >= 3,
+                         "schema must be v3+ (v4 added workspace.issues — G23)")
             let realAgent = snapshot.agents.values.first { $0.agentId.hasPrefix("herdr:ses_") || $0.agentId.hasPrefix("herdr:") }
             guard let targetAgent = realAgent else {
                 log.error("⚙️ no herdr agents in snapshot")

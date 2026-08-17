@@ -48,7 +48,7 @@ enum IssueInference {
     }
 
     /// Parse `issue-<N>…` / `#<N>…` style branch-name forms (the egui
-    /// grammar, ported verbatim):
+    /// grammar in `clients/egui/src/infer.rs`, matched case-by-case):
     ///
     /// - `issue-<N>-…`, `issues-<N>…`, `issue/<N>…`, `issues/<N>…` anywhere
     ///   in the name;
@@ -59,7 +59,7 @@ enum IssueInference {
     /// leading non-digit after the marker, overflow, or bare numbers with no
     /// `issue`/`#` marker.
     static func issueNumber(fromBranch branch: String) -> UInt64? {
-        let name = branch.trimmingCharacters(in: .whitespaces)
+        let name = branch.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty {
             return nil
         }
@@ -92,17 +92,23 @@ private extension Character {
 
 // MARK: - Issue chip (line 1 of the D24 row)
 
-/// The line-1 issue chip: authoritative `⑂ #N` (first `issues` ref, G23)
-/// when the daemon joined one, else the D21 inferred `~#N` / `~#N?` marker.
+/// The line-1 issue chips: the authoritative `⑂ #N` (first `issues` ref,
+/// G23; `+n` when the PR closes more) and, alongside it, the D21 inferred
+/// `~#N` / `~#N?` marker — computed UNCONDITIONALLY against the agent's
+/// authoritative issue set, exactly as the egui board does, so the
+/// validated `~#N` form is reachable. The one redundant case is dropped:
+/// an inference that merely repeats the authoritative chip's own number.
 /// Display-only either way — chip numbers never reach a drive payload.
 enum IssueChip: Equatable {
-    case authoritative(UInt64)
+    case authoritative(UInt64, more: Int)
     case inferred(InferredIssue)
 
     var label: String {
         switch self {
-        case .authoritative(let number): return "⑂ #\(number)"
-        case .inferred(let inferred): return inferred.marker
+        case .authoritative(let number, let more):
+            return more > 0 ? "⑂ #\(number) +\(more)" : "⑂ #\(number)"
+        case .inferred(let inferred):
+            return inferred.marker
         }
     }
 
@@ -112,15 +118,18 @@ enum IssueChip: Equatable {
         return false
     }
 
-    static func chip(for agent: Agent) -> IssueChip? {
-        if let first = agent.issues.first {
-            return .authoritative(first.number)
+    static func chips(for agent: Agent) -> [IssueChip] {
+        var chips: [IssueChip] = []
+        let issues = agent.workspace.issues
+        if let first = issues.first {
+            chips.append(.authoritative(first.number, more: issues.count - 1))
         }
         if let inferred = IssueInference.infer(branch: agent.workspace.branch,
-                                               known: agent.knownIssueNumbers) {
-            return .inferred(inferred)
+                                               known: agent.knownIssueNumbers),
+           !(inferred.known && inferred.number == issues.first?.number) {
+            chips.append(.inferred(inferred))
         }
-        return nil
+        return chips
     }
 }
 
@@ -144,7 +153,18 @@ enum BoardModel {
     struct RepoSection: Equatable {
         /// `nil` = the orphan bucket (agents without `workspace.repo`).
         let repo: String?
+        /// The ACTIVE agents shown in the section (idle/done live in the
+        /// collapsed bucket instead).
         let agents: [Agent]
+        /// Every agent of this repo, including its idle/done ones — so the
+        /// header can say "corral (2/8)" instead of under-reporting.
+        let total: Int
+
+        /// Header count label: `2/8` when idle/done agents are tucked away
+        /// in the collapsed bucket, plain `2` when nothing is hidden.
+        var countLabel: String {
+            total > agents.count ? "\(agents.count)/\(total)" : "\(agents.count)"
+        }
     }
 
     struct Sections: Equatable {
@@ -179,12 +199,19 @@ enum BoardModel {
         let idleDone = ordered(agents.filter { $0.state == .idle || $0.state == .done })
         let active = agents.filter { $0.state != .idle && $0.state != .done }
 
+        var totalByRepo: [String?: Int] = [:]
+        for agent in agents {
+            totalByRepo[agent.workspace.repo, default: 0] += 1
+        }
         var byRepo: [String?: [Agent]] = [:]
         for agent in active {
             byRepo[agent.workspace.repo, default: []].append(agent)
         }
         let repos = byRepo
-            .map { RepoSection(repo: $0.key, agents: ordered($0.value)) }
+            .map {
+                RepoSection(repo: $0.key, agents: ordered($0.value),
+                            total: totalByRepo[$0.key] ?? $0.value.count)
+            }
             .sorted { a, b in
                 switch (a.repo, b.repo) {
                 case (let x?, let y?): return x < y

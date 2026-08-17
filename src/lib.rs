@@ -10,5 +10,6 @@ pub mod approve;
 pub mod auth;
 pub mod core;
 pub mod drive;
+pub mod fleet;
 pub mod history;
 pub mod integrate;

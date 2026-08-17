@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod board;
+pub mod cost;
 pub mod register;
 
 use eframe::egui::{Color32, CornerRadius, FontId, RichText, Stroke, Ui};

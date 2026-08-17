@@ -9,6 +9,7 @@ pub mod api;
 pub mod approve;
 pub mod auth;
 pub mod core;
+pub mod cost;
 pub mod drive;
 pub mod fleet;
 pub mod history;

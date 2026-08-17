@@ -72,13 +72,11 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   `GET /history?since=<epoch-ms>&limit=<n>`, or take a per-agent daily
   summary offline with `corrald digest`. See
   [docs/OPERATIONS.md](docs/OPERATIONS.md).
-- **Cost / usage meter** — per-provider spend (opencode, claude, codex) over
-  rolling 5h / weekly / monthly windows on `GET /cost`, with a board COST
-  column and per-provider dashboard tiles.
-  **The plan caps and the claude/codex pricing table are placeholders** —
-  real subscription limits have not been supplied, the API marks every
-  synthetic cap `cap_is_placeholder: true`, and the UI prefixes those
-  percentages with `~`. Set `CORRAL_COST_CAP_*` before trusting the alert.
+- **Cost / usage meter** — per-provider spend over rolling 5h / weekly /
+  monthly windows on `GET /cost`, with a board COST column and per-provider
+  dashboard tiles. **The plan caps and the claude/codex pricing table are
+  placeholders** until real subscription limits are supplied — see
+  [Cost meter (G34)](#cost-meter-g34) below.
 - **Fleet registry** — `corrald fleet list` / `corrald fleet check` read the
   `fleets.json` registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's
   repo, worktree dir, workers and per-role models. Read-only in this phase;
@@ -124,6 +122,31 @@ are written and unit-tested, but every test mocks the provider seam. Real
 APNs delivery, the lock-screen reply round-trip, and the Face ID step-up
 have **not** been exercised on hardware — they need a TestFlight build on a
 real device. Treat the notifier as unproven end to end until that happens.
+
+## Cost meter (G34)
+
+`GET /cost` reports per-provider (opencode/claude/codex) USD spend and %
+of a configured cap over rolling 5h/weekly/monthly windows, read-only and
+bounded from each provider's own session store — see `src/cost/mod.rs` for
+the data flow and `docs/corral/DECISIONS.md` (D34) for the design writeup.
+**The default caps are invented.** Real opencode-go / claude / codex
+subscription limits have not been supplied, and the claude/codex pricing
+table is a documented guess (neither provider exposes a cost field — only
+tokens). So every unset cap is a placeholder: the API marks it
+`cap_is_placeholder: true`, the desktop tiles prefix such percentages with
+`~`, and a provider with no session store renders "no store" rather than
+`$0.00` — which would read as "nothing spent", the opposite of the truth.
+**Do not act on a percentage until you have set the real cap:**
+
+```sh
+CORRAL_COST_CAP_<PROVIDER>_<WINDOW>_USD   # e.g. CORRAL_COST_CAP_CLAUDE_WEEKLY_USD=100
+CORRAL_COST_WARN_THRESHOLD_PCT=70         # window status -> warning at/above
+CORRAL_COST_ALERT_THRESHOLD_PCT=90        # window status -> problem at/above
+```
+
+See `src/cost/config.rs` for the full variable list. The board's per-agent
+cost column and a `tracing::warn!` watchdog before any window nears
+exhaustion both come from the same meter.
 
 ## Docs
 

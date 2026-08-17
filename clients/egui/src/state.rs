@@ -155,6 +155,21 @@ impl Fleet {
     }
 }
 
+/// G34 cost-meter view state: the last `GET /cost` result, delivered over
+/// the same channel snapshots arrive on. `None` before the first poll;
+/// `Err` (daemon down, non-2xx, malformed body) degrades the tiles to
+/// "unknown" — never a panic.
+#[derive(Debug, Clone, Default)]
+pub struct CostState {
+    pub report: Option<Result<crate::model::CostReport, String>>,
+}
+
+impl CostState {
+    pub fn apply(&mut self, result: Result<crate::model::CostReport, String>) {
+        self.report = Some(result);
+    }
+}
+
 /// The single source of truth for device capability gating: an agent's
 /// capability button renders only if the agent advertises it AND the
 /// device's grant record (registration grants, minus observed
@@ -387,5 +402,22 @@ mod tests {
             );
         }
         assert_eq!(fleet.recent_drives["a"].len(), 8);
+    }
+
+    #[test]
+    fn cost_state_holds_the_last_poll_outcome() {
+        // G34: the cost poll delivers over the same channel snapshots use;
+        // the state holds the last outcome so the tiles never refetch per
+        // frame, and an error degrades to "unknown" instead of a panic.
+        let mut state = CostState::default();
+        assert!(state.report.is_none(), "no poll yet → unknown");
+        let report = crate::model::CostReport {
+            generated_at: 0,
+            providers: vec![],
+        };
+        state.apply(Ok(report.clone()));
+        assert_eq!(state.report, Some(Ok(report)));
+        state.apply(Err("daemon down".into()));
+        assert!(matches!(state.report, Some(Err(_))));
     }
 }

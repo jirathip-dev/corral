@@ -29,15 +29,45 @@ jobs:
         run: xcodegen generate --spec project.yml
         working-directory: ios
 
-      # Concrete simulator destination, never generic/platform=iOS Simulator:
-      # the #36 review established the generic destination makes xcodebuild
-      # silently no-op its test run instead of executing unit tests.
+      # Resolve a concrete simulator by UDID instead of hardcoding a device
+      # name. The first run of this job failed with exit 70: it asked for
+      # `name=iPhone 16` while the macos-latest image (Xcode 26.6) had moved
+      # on to the iPhone 17 family, so the destination matched nothing. A
+      # UDID is maximally concrete — never the generic destination the #36
+      # review warned about, which makes `xcodebuild test` silently no-op —
+      # and it survives image bumps instead of breaking on the next one.
+      - name: Select an available iOS simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          udid="$(xcrun simctl list devices available --json | python3 -c '
+import json, sys
+runtimes = json.load(sys.stdin)["devices"]
+devices = [
+    d
+    for rt, ds in runtimes.items() if "iOS" in rt
+    for d in ds if d.get("isAvailable")
+]
+# Prefer a plain iPhone; fall back to any available iOS device.
+iphones = [d for d in devices if d["name"].startswith("iPhone")]
+chosen = sorted(iphones or devices, key=lambda d: d["name"])
+print(chosen[0]["udid"] if chosen else "")
+')"
+          if [ -z "$udid" ]; then
+            echo "::error::no available iOS simulator on this runner image"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          name="$(xcrun simctl list devices available | grep "$udid" | head -1 | sed 's/^ *//')"
+          echo "Selected simulator: $name"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
       - name: Build (concrete simulator destination)
         run: |
           xcodebuild build \
             -project FleetNotifier.xcodeproj \
             -scheme FleetNotifier \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO
         working-directory: ios

@@ -1,11 +1,13 @@
-# Corral fleet registry — corrald read side (#35 phase 1)
+# Corral fleet registry — corrald registry surface (#35)
 
-Phase 1 of issue #35 (fleet control-plane consolidation): corrald learns to
-read the fleet registry — `fleets.json`, today the single source of truth for
-the separate fleet tooling — and exposes two read-only subcommands over it.
-**This phase is read-only**: nothing mutates the registry or touches a running
-agent. Mutation, pause/resume, model switching, spawning, watchdogs, reaping
-and worktree pruning land in later phases of #35.
+Issue #35 (fleet control-plane consolidation): corrald reads the fleet
+registry — `fleets.json`, today the single source of truth for the separate
+fleet tooling — and, as of slice 1, also WRITES it. `list` / `check` are
+read-only views; **`add` / `remove` mutate the registry** behind a
+repo-resolves check, candidate validation, and an atomic temp-file+rename
+write that leaves the original byte-identical on any refusal or failure.
+Nothing touches a running agent. Pause/resume, model switching, spawning,
+watchdogs, reaping and worktree pruning land in later phases of #35.
 
 ## Registry schema
 
@@ -68,16 +70,39 @@ worktree) — both count as resolved.
 Both `ok` and `FAIL` lines go to **stdout**, deliberately, so `check` output
 stays one greppable stream; the exit code is what a script should branch on.
 
+## Write commands (slice 1)
+
+```
+corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
+    [--orch <agent>] [--workers a,b,c] [--models orch=..,impl=..,review=..]
+    [--registry <path>]
+corrald fleet remove <name> [--registry <path>]
+```
+
+`<name>` may also be passed as `--name`, and `--worktree-dir` is an alias
+for `--worktree` — both spellings match the legacy fleet CLI. Defaults:
+`local` → `~/Projects/<name>`, `worktree_dir` → `<name>`, `orch` →
+`orch-<name>`, `workers` → empty, `models` inherited from the **first**
+fleet in the registry (an empty registry requires `--models`). The repo
+must resolve via `gh repo view <owner/repo>` before anything is written;
+the candidate registry is validated with the same rules `load()` applies;
+the write is a PID-suffixed temp file in the registry's directory,
+fsynced, then renamed over the (symlink-resolved) target. The registry
+file must already exist — bootstrap one with `echo '{"fleets": []}' >
+<path>`. There is no cross-process lock: concurrent writers (corrald or
+the legacy tooling) can lose the load→rename race; single-writer
+discipline is assumed during the migration window.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | success — `list` printed; `check` found every fleet OK |
-| 1    | `check`: at least one fleet failed verification |
+| 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove` wrote the registry |
+| 1    | `check`: at least one fleet failed verification; `add`/`remove`: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical |
 | 2    | usage error, unreadable/unparseable registry, or validation failure |
 
 ## Phase boundary (explicitly out of scope)
 
-- No `fleet add/remove/pause/resume/models/switch` — later phases.
+- No `fleet pause/resume/models/switch` — later phases.
 - No status/watch/reap/prune consolidation — later phases.
 - No change to the running agent, session, or `src/drive/` contract.

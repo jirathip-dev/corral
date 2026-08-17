@@ -57,9 +57,9 @@ inputs are files on disk rather than plane events:
   pricing table are placeholders** until real plan limits are supplied;
   synthetic caps are flagged `cap_is_placeholder: true` so no client can
   present them as fact.
-- **Fleet registry** (`src/fleet/`, `corrald fleet list|check`) — parses
-  and validates the `fleets.json` control-plane registry. Read-only in
-  this phase: no mutation, no process control, and the daemon runtime path
+- **Fleet registry** (`src/fleet/`, `corrald fleet list|check|add|remove`)
+  — parses, validates and (slice 1) atomically rewrites the `fleets.json`
+  control-plane registry. No process control, and the daemon runtime path
   never touches it (the subcommands dispatch before the tokio runtime is
   built).
 
@@ -191,7 +191,7 @@ src/api/             router, /snapshot /events /history /cost /healthz,
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
 src/cost/            per-provider spend readers (opencode.db, claude JSONL,
                      codex rollouts), rolling windows, pricing, caps
-src/fleet/           fleets.json registry: parse + validate (read-only)
+src/fleet/           fleets.json registry: parse + validate + atomic CRUD writes
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite

@@ -1,11 +1,14 @@
 //! #35 phase 1 test suite: fleet registry config (parse, validate,
-//! `local_path` expansion) and the `corrald fleet list|check` CLI surface,
-//! exercised with the real binary against temp-dir fixtures.
+//! `local_path` expansion, atomic write) and the `corrald fleet list|check`
+//! plus slice-1 `add|remove` CLI surface, exercised with the real binary
+//! against temp-dir fixtures. The `gh` repo check is injectable
+//! ([`RepoResolver`]), so the add/remove write-path tests run offline.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use corrald::fleet::config::{ConfigError, Fleet, Models, Registry, load};
+use corrald::fleet::config::{ConfigError, Fleet, Models, Registry, load, write_atomic};
+use corrald::fleet::ops::{AddOptions, RepoResolver};
 
 const VALID_A: &str = r#"{
     "name": "corral",
@@ -593,5 +596,599 @@ fn fleet_list_reads_corral_fleets_path_as_the_default() {
     assert!(
         text.contains("corral"),
         "lists the fleet from the env-var registry: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Write path (slice 1): `fleet add` / `fleet remove` — atomic-write
+// discipline, repo-resolves-before-add, byte-identical on refusal.
+// ---------------------------------------------------------------------------
+
+/// A `RepoResolver` stub: resolves exactly the repos the test says resolve,
+/// refusing everything else with a diagnostic. This is why add/remove tests
+/// run offline — the `gh` check is injected, not shelled out to.
+#[derive(Clone)]
+struct FakeResolver {
+    ok: Vec<String>,
+}
+
+impl RepoResolver for FakeResolver {
+    fn repo_resolves(&self, repo: &str) -> Result<(), Option<String>> {
+        if self.ok.iter().any(|r| r == repo) {
+            Ok(())
+        } else {
+            Err(Some("GraphQL: Could not resolve".to_string()))
+        }
+    }
+}
+
+fn add_options(name: &str, repo: &str) -> AddOptions {
+    AddOptions {
+        name: name.to_string(),
+        gh_repo: repo.to_string(),
+        local: None,
+        worktree_dir: None,
+        orch: None,
+        workers: Vec::new(),
+        models: None,
+    }
+}
+
+#[test]
+fn add_writes_and_round_trips_through_load() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    let opts = add_options("newfleet", "jirathip-k/corral");
+    let added = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+
+    assert_eq!(added.name, "newfleet");
+    assert_eq!(added.gh_repo, "jirathip-k/corral");
+    assert_eq!(added.local, "~/Projects/newfleet", "local default");
+    assert_eq!(added.worktree_dir, "newfleet", "worktree_dir default");
+    assert_eq!(added.orch, "orch-newfleet", "orch default");
+    assert!(added.workers.is_empty(), "workers default");
+    assert_eq!(
+        added.models.impl_, "opencode-go/deepseek-v4-flash",
+        "inherits models"
+    );
+
+    let after = std::fs::read(&path).expect("read registry after");
+    assert_ne!(before, after, "the file changed");
+    let registry = load(&path).expect("written file re-parses");
+    let fleet = registry
+        .fleets
+        .iter()
+        .find(|f| f.name == "newfleet")
+        .expect("new fleet present");
+    assert_eq!(fleet.models.impl_, "opencode-go/deepseek-v4-flash");
+    assert_eq!(fleet.worktree_dir, "newfleet");
+
+    // The single highest-consequence silent-data-loss path in the write
+    // surface: dropping `"paused": true` from an untouched fleet would
+    // release the ops-safety pause gate (#35) on every unrelated add. Pin
+    // that the pre-existing paused fleet survives the rewrite paused.
+    let corral = registry
+        .fleets
+        .iter()
+        .find(|f| f.name == "corral")
+        .expect("existing fleet survives");
+    assert!(corral.paused, "paused: true must survive a rewrite");
+    let text = std::fs::read_to_string(&path).expect("read written registry");
+    assert!(
+        text.contains("\"paused\": true"),
+        "paused: true is written explicitly: {text}"
+    );
+}
+
+#[test]
+fn add_refuses_duplicate_name_leaving_file_byte_identical() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    let opts = add_options("corral", "jirathip-k/corral");
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("duplicate name must be refused");
+    assert!(
+        matches!(err, ConfigError::DuplicateFleet { .. }),
+        "kind: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn add_refuses_unresolvable_repo_leaving_file_byte_identical() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    let opts = add_options("ghost", "nope/nothing");
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("unresolvable repo must be refused");
+    assert!(
+        matches!(err, ConfigError::AddRepoUnresolved { .. }),
+        "kind: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn add_refuses_invalid_local_leaving_file_byte_identical() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    // A `--local` of a bare tilde must be refused by validate() before write.
+    let mut opts = add_options("tilde", "jirathip-k/corral");
+    opts.local = Some("~".to_string());
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("bare-tilde local must be refused");
+    assert!(matches!(err, ConfigError::BadTilde { .. }), "kind: {err:?}");
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn remove_drops_exactly_one_fleet_and_round_trips() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_B}] }}"#),
+    );
+    let remaining = corrald::fleet::ops::remove(&path, "corral").expect("remove succeeds");
+    assert_eq!(remaining, 1, "one fleet remains");
+
+    let registry = load(&path).expect("written file re-parses");
+    assert_eq!(registry.fleets.len(), 1);
+    assert_eq!(registry.fleets[0].name, "board", "the other fleet survives");
+    assert_eq!(
+        registry.fleets[0].models.impl_, "sonnet",
+        "round-trip preserves impl"
+    );
+}
+
+#[test]
+fn remove_refuses_unknown_name_leaving_file_byte_identical() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_B}] }}"#),
+    );
+    let before = std::fs::read(&path).expect("read registry");
+
+    let err =
+        corrald::fleet::ops::remove(&path, "no-such-fleet").expect_err("unknown name refused");
+    assert!(
+        matches!(err, ConfigError::RemoveNotFound { .. }),
+        "kind: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn failed_operation_leaves_file_byte_identical_and_no_temp_file() {
+    // A write that fails at the filesystem level (target dir made read-only,
+    // so `File::create` of the temp file fails with EACCES) must leave the
+    // original byte-identical and leak no temp file — the atomic-write
+    // guarantee. (Vacuous when run as root, which never applies in CI.)
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make dir read-only");
+    }
+    let opts = add_options("x", "jirathip-k/corral");
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("write to read-only dir must fail");
+    assert!(matches!(err, ConfigError::Write { .. }), "kind: {err:?}");
+
+    // Restore so the tempdir cleanup doesn't fail.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore dir perms");
+    }
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+    assert_no_temp_files(dir.path());
+}
+
+#[test]
+fn mid_write_failure_cleans_up_the_temp_file() {
+    // Fail the write after load/validate succeed: pre-create a DIRECTORY at
+    // the temp path so `File::create` fails, and assert the original is
+    // byte-identical (the cleanup closure tolerates the unremovable dir).
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+    let temp_collision = dir
+        .path()
+        .join(format!(".fleets.json.corrald-tmp.{}", std::process::id()));
+    std::fs::create_dir(&temp_collision).expect("create colliding dir");
+
+    let opts = add_options("x", "jirathip-k/corral");
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("temp-path collision with a directory must fail");
+    assert!(matches!(err, ConfigError::Write { .. }), "kind: {err:?}");
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+/// No `.…corrald-tmp…` entries left behind in the registry directory.
+fn assert_no_temp_files(dir: &std::path::Path) {
+    let leftovers: Vec<String> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("corrald-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "leaked temp files: {leftovers:?}");
+}
+
+#[test]
+fn written_file_reparses_through_load() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), r#"{"fleets": []}"#);
+    let mut opts = add_options("roundtrip", "jirathip-k/corral");
+    opts.models = Some(Models {
+        orch: "fable".to_string(),
+        impl_: "deepseek-v4-flash".to_string(),
+        review: "opus".to_string(),
+    });
+    corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds on empty registry");
+    let registry = load(&path).expect("written empty->one re-parses");
+    assert_eq!(registry.fleets.len(), 1);
+}
+
+#[test]
+fn impl_serializes_back_to_json_key_impl_not_impl_underscore() {
+    // The brief's explicit round-trip contract: `Models::impl_` is
+    // `#[serde(rename = "impl")]` and must serialise back to the JSON key
+    // `impl`, not `impl_`. `paused` is skipped when false.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), r#"{"fleets": []}"#);
+    let mut opts = add_options("rt", "jirathip-k/corral");
+    opts.models = Some(Models {
+        orch: "fable".to_string(),
+        impl_: "deepseek-v4-flash".to_string(),
+        review: "opus".to_string(),
+    });
+    corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+    let text = std::fs::read_to_string(&path).expect("read written registry");
+    assert!(text.contains("\"impl\""), "writes impl key: {text}");
+    assert!(!text.contains("impl_"), "never writes impl_: {text}");
+    assert!(
+        !text.contains("\"paused\""),
+        "paused false is skipped: {text}"
+    );
+
+    // And it re-parses: the round-trip is lossless.
+    let registry = load(&path).expect("re-parses");
+    assert_eq!(registry.fleets[0].models.impl_, "deepseek-v4-flash");
+}
+
+#[test]
+fn write_atomic_round_trips_exact_pretty_json_with_trailing_newline() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let registry = load(&path).expect("load fixture");
+    write_atomic(&path, &registry).expect("write");
+    let text = std::fs::read_to_string(&path).expect("read back");
+    assert!(
+        text.ends_with('\n'),
+        "trailing newline for diffability: {text:?}"
+    );
+    let registry2 = load(&path).expect("re-loads");
+    assert_eq!(registry2.fleets.len(), 1);
+    assert_eq!(registry2.fleets[0].name, "corral");
+}
+
+/// CLI usage contract for the write commands: missing required flags and
+/// unknown args exit 2 (same as the read side), and `--help` exits 0 and
+/// documents the new commands. The network/`gh` path is covered by the
+/// injectable-resolver unit tests above; here we pin the arg-parsing surface
+/// that runs before any I/O.
+#[test]
+fn fleet_add_remove_usage_errors_exit_2_and_help_documents_writes() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+
+    let add_missing_name = Command::new(bin)
+        .args(["fleet", "add", "--gh", "x/y"])
+        .output()
+        .expect("run");
+    assert_eq!(
+        add_missing_name.status.code(),
+        Some(2),
+        "add without --name exits 2"
+    );
+
+    let add_unknown_flag = Command::new(bin)
+        .args(["fleet", "add", "--name", "x", "--gh", "x/y", "--bogus"])
+        .output()
+        .expect("run");
+    assert_eq!(
+        add_unknown_flag.status.code(),
+        Some(2),
+        "add with unknown flag exits 2"
+    );
+
+    let remove_no_name = Command::new(bin)
+        .args(["fleet", "remove"])
+        .output()
+        .expect("run");
+    assert_eq!(
+        remove_no_name.status.code(),
+        Some(2),
+        "remove without name exits 2"
+    );
+
+    let remove_two_names = Command::new(bin)
+        .args(["fleet", "remove", "a", "b"])
+        .output()
+        .expect("run");
+    assert_eq!(
+        remove_two_names.status.code(),
+        Some(2),
+        "remove with two names exits 2"
+    );
+
+    let help = Command::new(bin)
+        .args(["fleet", "--help"])
+        .output()
+        .expect("run");
+    assert!(help.status.success(), "help exits 0");
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("fleet add"), "documents add: {text}");
+    assert!(text.contains("fleet remove"), "documents remove: {text}");
+}
+
+// ---------------------------------------------------------------------------
+// Re-review round (PR #58): whitespace-in-models validation, exit-code
+// contract, bootstrap error, remove-to-empty, inheritance pin, legacy CLI.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn whitespace_in_models_is_a_hard_error() {
+    // models.* join the whitespace-delimited `fleet list` line; internal
+    // whitespace would corrupt it exactly like whitespace in name/gh_repo.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let before = std::fs::read(&path).expect("read registry");
+
+    let mut opts = add_options("spacey", "jirathip-k/corral");
+    opts.models = Some(Models {
+        orch: "claude opus 5".to_string(),
+        impl_: "i".to_string(),
+        review: "r".to_string(),
+    });
+    let err = corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("whitespace in models.orch must be refused");
+    assert!(
+        matches!(err, ConfigError::Whitespace { ref field, .. } if field == "models.orch"),
+        "kind: {err:?}"
+    );
+    assert_eq!(err.exit_code(), 2, "validation failure exits 2");
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn exit_code_contract_separates_refusals_from_usage_errors() {
+    // 1 = operational refusal / write failure; 2 = usage/parse/validation.
+    use corrald::fleet::config::ConfigError::*;
+    assert_eq!(DuplicateFleet { name: "x".into() }.exit_code(), 1);
+    assert_eq!(
+        AddRepoUnresolved {
+            repo: "o/r".into(),
+            detail: None
+        }
+        .exit_code(),
+        1
+    );
+    assert_eq!(AddNeedsModels.exit_code(), 1);
+    assert_eq!(RemoveNotFound { name: "x".into() }.exit_code(), 1);
+    assert_eq!(
+        Write {
+            path: "p".into(),
+            source: std::io::Error::other("x")
+        }
+        .exit_code(),
+        1
+    );
+    assert_eq!(
+        Empty {
+            fleet: "f".into(),
+            field: "name".into()
+        }
+        .exit_code(),
+        2
+    );
+    assert_eq!(
+        BadTilde {
+            fleet: "f".into(),
+            value: "~".into()
+        }
+        .exit_code(),
+        2
+    );
+}
+
+#[test]
+fn add_on_empty_registry_without_models_reports_the_bootstrap_remedy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), r#"{"fleets": []}"#);
+    let before = std::fs::read(&path).expect("read registry");
+
+    let err = corrald::fleet::ops::add(
+        &path,
+        &add_options("first", "jirathip-k/corral"),
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect_err("no models to inherit and no --models must be refused");
+    assert!(matches!(err, ConfigError::AddNeedsModels), "kind: {err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("--models orch="),
+        "the error names the remedy: {message}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical"
+    );
+}
+
+#[test]
+fn remove_last_fleet_writes_an_empty_registry_that_reloads() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let remaining = corrald::fleet::ops::remove(&path, "corral").expect("remove succeeds");
+    assert_eq!(remaining, 0, "registry is now empty");
+
+    // The written empty registry must still be `{"fleets": []}`-shaped —
+    // a serializer that skipped the empty vec would brick the file.
+    let registry = load(&path).expect("empty registry reloads through load()");
+    assert!(registry.fleets.is_empty());
+    let text = std::fs::read_to_string(&path).expect("read written registry");
+    assert!(text.contains("\"fleets\""), "fleets key survives: {text}");
+}
+
+#[test]
+fn models_inheritance_takes_the_first_fleet_in_array_order() {
+    // VALID_A (impl opencode-go/deepseek-v4-flash) is first, VALID_B (impl
+    // sonnet) second — the documented policy is FIRST fleet wins.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_B}] }}"#),
+    );
+    let added = corrald::fleet::ops::add(
+        &path,
+        &add_options("inheritor", "jirathip-k/corral"),
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+    assert_eq!(
+        added.models.impl_, "opencode-go/deepseek-v4-flash",
+        "inherits from the FIRST fleet, not the last"
+    );
+}
+
+#[test]
+fn fleet_add_accepts_the_legacy_positional_name_shape() {
+    // The legacy fleet CLI is `fleet add <name> --gh o/r` (positional name)
+    // — #35 design principle 2 requires the same shape to work. With no
+    // --gh the parse must fail as usage (2) AFTER accepting the positional,
+    // and the error must name --gh, proving the positional was consumed as
+    // the name.
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let out = Command::new(bin)
+        .args(["fleet", "add", "somefleet"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "missing --gh is usage");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--gh"), "asks for --gh: {stderr}");
+
+    let two_names = Command::new(bin)
+        .args(["fleet", "add", "a", "b", "--gh", "x/y"])
+        .output()
+        .expect("run");
+    assert_eq!(
+        two_names.status.code(),
+        Some(2),
+        "two positional names is usage"
     );
 }

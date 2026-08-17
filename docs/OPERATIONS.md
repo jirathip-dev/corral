@@ -160,13 +160,18 @@ have spent nothing".
 
 ## Fleet registry
 
-`corrald fleet` reads the control-plane registry describing each fleet's
-repo, local checkout, worktree dir, orchestrator, workers and per-role
-models. Read-only: it never edits the registry or touches a running agent.
+`corrald fleet` reads — and, since #35 slice 1, edits — the control-plane
+registry describing each fleet's repo, local checkout, worktree dir,
+orchestrator, workers and per-role models. `list`/`check` are read-only;
+**`add`/`remove` rewrite the registry file** (atomically, validated, with
+the repo resolved via `gh` before anything is written). Nothing touches a
+running agent.
 
 ```sh
 corrald fleet list                    # one greppable line per fleet
 corrald fleet check                   # validate + verify each local checkout
+corrald fleet add <name> --gh <o/r>   # insert a fleet (WRITES the registry)
+corrald fleet remove <name>           # drop a fleet (WRITES the registry)
 corrald fleet list --registry <path>  # override the default
 ```
 

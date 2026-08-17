@@ -1,20 +1,24 @@
-//! #35 phase 1: fleet registry config — parse, validate, default path.
+//! #35 phase 1: fleet registry config — parse, validate, default path, write.
 //!
 //! The registry is the `fleets.json` file that the separate fleet tooling
 //! already treats as its single source of truth; corrald adopts that format
-//! unchanged. Everything in here is read-only: `load()` parses and validates,
-//! and validation fails loudly (hard error, not silent acceptance) on unknown
-//! fields anywhere, empty required fields, whitespace inside `name`/`gh_repo`,
-//! a `gh_repo` that is not a single `owner/repo`, a `local` that begins with a
-//! bare `~`, and duplicate fleet names.
+//! unchanged. `load()` parses and validates, and validation fails loudly
+//! (hard error, not silent acceptance) on unknown fields anywhere, empty
+//! required fields, whitespace inside `name`/`gh_repo`, a `gh_repo` that is
+//! not a single `owner/repo`, a `local` that begins with a bare `~`, and
+//! duplicate fleet names. The write side (`write_atomic`) is the first
+//! registry-WRITING surface (#35 slice 1): it serialises back to the same
+//! schema and replaces the file via temp-file-in-same-dir + rename, so a
+//! refused or failed write leaves the original byte-identical.
 
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A whole fleet registry file: `{ "fleets": [...] }`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
     pub fleets: Vec<Fleet>,
@@ -25,7 +29,7 @@ pub struct Registry {
 /// - `workers` — required array of strings; may be empty.
 /// - `models` — required object with required string keys.
 /// - `paused` — optional, defaults to `false`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fleet {
     pub name: String,
@@ -35,13 +39,16 @@ pub struct Fleet {
     pub worktree_dir: String,
     pub orch: String,
     pub workers: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub paused: bool,
     pub models: Models,
 }
 
-/// Per-role model map. JSON key `impl` (a Rust keyword) maps to [`Self::impl_`].
-#[derive(Debug, Clone, Deserialize)]
+/// Per-role model map. JSON key `impl` (a Rust keyword) maps to [`Self::impl_`]
+/// in both directions: serde's `rename` round-trips `impl_` back to the JSON
+/// key `impl` on write, so a written registry is byte-compatible with what
+/// `load()` parses.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
     pub orch: String,
@@ -50,13 +57,26 @@ pub struct Models {
     pub review: String,
 }
 
+/// `paused` is `#[serde(default)]` and intentionally SKIPPED when false, so a
+/// freshly added fleet (and any fleet a `load()` -> write round-trip touches)
+/// omits the field exactly as the existing live registries do. `true` is
+/// always written — dropping it would silently release the #35 ops-safety
+/// pause gate, which is why `add_writes_and_round_trips_through_load` pins
+/// its survival. Documented here because the decision must be stated
+/// explicitly, not buried in a derive.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Registry {
     /// Field-level validation beyond what serde enforces: the required
     /// strings (including `models.*` and every `workers` entry) must be
     /// non-empty, `name`/`gh_repo` must be free of internal whitespace,
     /// `gh_repo` must be a single `owner/repo`, `local` must not begin with a
-    /// bare `~`, and fleet names must be unique.
-    fn validate(&self) -> Result<(), ConfigError> {
+    /// bare `~`, and fleet names must be unique. The write path
+    /// (`fleet::ops`) runs this on the candidate registry BEFORE any file is
+    /// touched, so a refusal leaves the original byte-identical.
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         let mut seen: Vec<&str> = Vec::new();
         for (index, fleet) in self.fleets.iter().enumerate() {
             for (field, value) in [
@@ -84,7 +104,16 @@ impl Registry {
                     });
                 }
             }
-            for (field, value) in [("name", &fleet.name), ("gh_repo", &fleet.gh_repo)] {
+            // `models.*` join `name`/`gh_repo` in the whitespace-delimited
+            // `fleet list` line, so internal whitespace in any of them would
+            // corrupt that output contract the same way.
+            for (field, value) in [
+                ("name", &fleet.name),
+                ("gh_repo", &fleet.gh_repo),
+                ("models.orch", &fleet.models.orch),
+                ("models.impl", &fleet.models.impl_),
+                ("models.review", &fleet.models.review),
+            ] {
                 if value.chars().any(char::is_whitespace) {
                     return Err(ConfigError::Whitespace {
                         fleet: fleet_locator(index, fleet, field),
@@ -173,6 +202,83 @@ pub fn load(path: &Path) -> Result<Registry, ConfigError> {
     Ok(registry)
 }
 
+/// Atomically replace `path` with `registry` serialised back to the registry
+/// schema.
+///
+/// Write discipline (#35 slice 1): a PID-suffixed temp file in the SAME
+/// directory as the (symlink-resolved) target, written, `sync_all()`-ed,
+/// renamed over the target, then the parent directory is fsynced so the
+/// rename survives power loss. The original is never truncated in place; the
+/// temp file is removed on every failure path, so any single failed write
+/// leaves the original byte-identical. The target's permissions are copied
+/// onto the temp file before the rename, so a `chmod 600` registry stays
+/// `600`. A symlinked registry is followed (the target file is replaced, the
+/// link survives).
+///
+/// KNOWN LIMIT (reviewed, deferred): there is no cross-process lock, so a
+/// concurrent writer — corrald or the legacy fleet tooling — can lose the
+/// race between `load()` and the rename (last rename wins, the other
+/// writer's fields are clobbered). Single-writer discipline is assumed for
+/// the #35 migration window; a lockfile is a follow-up.
+///
+/// Serialisation uses `serde_json::to_string_pretty` (2-space indent, struct
+/// field order) plus a trailing newline. The round-trip is semantically exact
+/// — `Models::impl_` writes back as the JSON key `impl`, `paused` is skipped
+/// when false (see [`is_false`]) — but the first write NORMALISES any
+/// hand-maintained formatting to this canonical shape.
+pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError> {
+    // Follow a symlinked registry so the rename replaces the target file,
+    // not the link (a dotfiles-checkout registry keeps working).
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let bytes = serialize(path, registry)?;
+    let temp_path = parent.join(format!(
+        ".{}.corrald-tmp.{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("fleets"),
+        std::process::id()
+    ));
+    let write_error = |source: std::io::Error| {
+        // Every failure before the rename lands removes the partial temp
+        // file, so nothing dot-named accumulates in the registry directory.
+        let _ = std::fs::remove_file(&temp_path);
+        ConfigError::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    };
+    {
+        let mut file = std::fs::File::create(&temp_path).map_err(write_error)?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            file.set_permissions(meta.permissions())
+                .map_err(write_error)?;
+        }
+        file.write_all(&bytes).map_err(write_error)?;
+        file.sync_all().map_err(write_error)?;
+    }
+    std::fs::rename(&temp_path, path).map_err(write_error)?;
+    // The rename is the atomic commit point; fsync the directory so the new
+    // entry is durable across power loss, not just process crash.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// `serde_json::to_string_pretty` + a trailing newline, so a written registry
+/// stays diffable in git. Serialisation itself is fallible only on non-UTF-8
+/// (this schema is all-strings), so errors are surfaced rather than written
+/// off as impossible.
+fn serialize(path: &Path, registry: &Registry) -> Result<Vec<u8>, ConfigError> {
+    let mut json = serde_json::to_string_pretty(registry).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source: std::io::Error::other(source),
+    })?;
+    json.push('\n');
+    Ok(json.into_bytes())
+}
+
 /// Why a registry failed to load or validate.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -201,6 +307,47 @@ pub enum ConfigError {
     BadTilde { fleet: String, value: String },
     /// Two fleets share a `name`.
     DuplicateFleet { name: String },
+    /// A `fleet add` `--gh <owner/repo>` could not be resolved upstream.
+    /// Non-zero exit from `gh repo view` — including `gh` being absent — is a
+    /// refusal, never a silent skip (#35's "repo resolves before add").
+    /// `detail` carries the first stderr line from `gh` when there is one,
+    /// so an expired token is distinguishable from a typo'd slug.
+    AddRepoUnresolved {
+        repo: String,
+        detail: Option<String>,
+    },
+    /// A `fleet add` on a registry with no existing fleet to inherit
+    /// `models` from, and no `--models` supplied.
+    AddNeedsModels,
+    /// A `fleet remove <name>` named a fleet that is not in the registry.
+    RemoveNotFound { name: String },
+    /// The registry file could not be replaced atomically.
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl ConfigError {
+    /// The exit code contract (docs/corral/G35-registry.md): 1 = the
+    /// operation failed (refusals and filesystem failures — retrying or
+    /// paging may be appropriate), 2 = usage error, unreadable/unparseable
+    /// registry, or validation failure (retrying is pointless).
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            ConfigError::DuplicateFleet { .. }
+            | ConfigError::AddRepoUnresolved { .. }
+            | ConfigError::AddNeedsModels
+            | ConfigError::RemoveNotFound { .. }
+            | ConfigError::Write { .. } => 1,
+            ConfigError::Io { .. }
+            | ConfigError::Parse { .. }
+            | ConfigError::Empty { .. }
+            | ConfigError::Whitespace { .. }
+            | ConfigError::GhRepoShape { .. }
+            | ConfigError::BadTilde { .. } => 2,
+        }
+    }
 }
 
 impl fmt::Display for ConfigError {
@@ -243,6 +390,33 @@ impl fmt::Display for ConfigError {
             ConfigError::DuplicateFleet { name } => {
                 write!(f, "duplicate fleet name {name:?}")
             }
+            ConfigError::AddRepoUnresolved { repo, detail } => {
+                write!(
+                    f,
+                    "cannot add fleet: repo {repo:?} did not resolve via `gh repo view`"
+                )?;
+                if let Some(detail) = detail {
+                    write!(f, " ({detail})")?;
+                }
+                Ok(())
+            }
+            ConfigError::AddNeedsModels => {
+                write!(
+                    f,
+                    "cannot add fleet: the registry has no existing fleet to inherit \
+                     `models` from; pass --models orch=..,impl=..,review=.."
+                )
+            }
+            ConfigError::RemoveNotFound { name } => {
+                write!(f, "no fleet named {name:?} in the registry")
+            }
+            ConfigError::Write { path, source } => {
+                write!(
+                    f,
+                    "cannot write fleet registry {}: {source}",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -252,11 +426,15 @@ impl std::error::Error for ConfigError {
         match self {
             ConfigError::Io { source, .. } => Some(source),
             ConfigError::Parse { source, .. } => Some(source),
+            ConfigError::Write { source, .. } => Some(source),
             ConfigError::Empty { .. }
             | ConfigError::Whitespace { .. }
             | ConfigError::GhRepoShape { .. }
             | ConfigError::BadTilde { .. }
-            | ConfigError::DuplicateFleet { .. } => None,
+            | ConfigError::DuplicateFleet { .. }
+            | ConfigError::AddRepoUnresolved { .. }
+            | ConfigError::AddNeedsModels
+            | ConfigError::RemoveNotFound { .. } => None,
         }
     }
 }

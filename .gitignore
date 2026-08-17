@@ -6,3 +6,5 @@ fastlane/report.xml
 fastlane/certs/
 fastlane/README.md
 build/
+
+fastlane/.env

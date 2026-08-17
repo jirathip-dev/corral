@@ -5,8 +5,9 @@
 //! - D33 digest, offline against the history ring:
 //!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
-//! - #35 phase 1, read-only fleet registry views:
-//!   `corrald fleet list|check [--registry <path>]`
+//! - #35 phase 1: fleet registry views AND writes:
+//!   `corrald fleet list|check` (read-only) and
+//!   `corrald fleet add|remove` (registry CRUD, atomic write)
 //!   (see `crate::fleet` for the registry format and validation).
 
 use std::net::SocketAddr;
@@ -133,20 +134,64 @@ fn run_digest(args: &[String]) {
     print!("{}", digest.render());
 }
 
-/// #35 phase 1: `corrald fleet list|check` — read-only views over the fleet
-/// registry (see `crate::fleet`). Both accept `--registry <path>` to
-/// override `$CORRAL_FLEETS_PATH` / `~/.hermes/scripts/fleets.json`.
+/// `corrald fleet` — read/write views over the fleet registry (#35). Read
+/// side: `list`, `check`. Write side (slice 1): `add`, `remove`, both behind
+/// atomic-write discipline and validation in [`crate::fleet::ops`]. All accept
+/// `--registry <path>` to override `$CORRAL_FLEETS_PATH` /
+/// `~/.hermes/scripts/fleets.json`. Everything here runs before the tokio
+/// runtime is built; no subcommand touches a running daemon or the herdr
+/// socket.
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
-        eprintln!("corrald fleet: need a subcommand: list | check (see --help)");
+        eprintln!("corrald fleet: need a subcommand: list | check | add | remove (see --help)");
         std::process::exit(2);
     };
     if matches!(sub, "--help" | "-h") {
         print_fleet_help();
         std::process::exit(0);
     }
+    match sub {
+        "list" | "check" => run_fleet_read_only(sub, &args[1..]),
+        "add" => run_fleet_add(&args[1..]),
+        "remove" => run_fleet_remove(&args[1..]),
+        other => {
+            eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn print_fleet_help() {
+    println!(
+        "corrald fleet — read/write views over the fleet registry (#35)\n\n\
+         USAGE: corrald fleet list [--registry <path>]\n\
+         USAGE: corrald fleet check [--registry <path>]\n\
+         USAGE: corrald fleet add --name <n> --gh <owner/repo> [--local <path>]\n\
+         \t[--worktree-dir <path>] [--orch <agent>] [--workers a,b,c]\n\
+         \t[--models orch=..,impl=..,review=..] [--registry <path>]\n\
+         USAGE: corrald fleet remove <name> [--registry <path>]\n\n\
+         list     one line per fleet: name, gh_repo, worker count,\n\
+         \tpaused flag, and the three model ids\n\
+         check    parse + validate, then verify each fleet's local\n\
+         \tdir exists and holds a .git entry; exit 0 when every\n\
+         \tfleet checks out, 1 when any fails, 2 on usage/parse error\n\
+         add      resolve the repo via `gh repo view`, validate the\n\
+         \tcandidate registry, then atomically insert the fleet;\n\
+         \tdefaults: local ~/Projects/<name>, worktree_dir <name>,\n\
+         \torch orch-<name>, workers empty, models inherited from an\n\
+         \texisting fleet (or required via --models on an empty registry)\n\
+         remove   atomically drop exactly one fleet by name\n\n\
+         \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
+         \tor ~/.hermes/scripts/fleets.json)"
+    );
+}
+
+/// `list`/`check` share one `--registry` parse; anything else is a usage
+/// error. This is the existing read-only surface — its exit contract is
+/// preserved unchanged (0 ok / 1 fleet failed / 2 usage-or-parse).
+fn run_fleet_read_only(sub: &str, args: &[String]) {
     let mut registry: Option<PathBuf> = None;
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--registry" => {
@@ -172,26 +217,8 @@ fn run_fleet(args: &[String]) {
     match sub {
         "list" => run_fleet_list(&path),
         "check" => run_fleet_check(&path),
-        other => {
-            eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
-            std::process::exit(2);
-        }
+        _ => unreachable!(),
     }
-}
-
-fn print_fleet_help() {
-    println!(
-        "corrald fleet — read-only views over the fleet registry (#35 phase 1)\n\n\
-         USAGE: corrald fleet list [--registry <path>]\n\
-         USAGE: corrald fleet check [--registry <path>]\n\n\
-         list    one line per fleet: name, gh_repo, worker count,\n\
-         paused flag, and the three model ids\n\
-         check   parse + validate, then verify each fleet's local\n\
-         dir exists and holds a .git entry; exit 0 when every\n\
-         fleet checks out, 1 when any fails, 2 on usage/parse error\n\n\
-         --registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
-         or ~/.hermes/scripts/fleets.json)"
-    );
 }
 
 /// `corrald fleet list`: one greppable line per fleet.
@@ -215,6 +242,220 @@ fn run_fleet_list(path: &std::path::Path) {
             fleet.models.review
         );
     }
+}
+
+/// `corrald fleet add`: build the candidate fleet, run the repo-resolves
+/// check, validate the candidate registry, then atomically write. Any refusal
+/// exits non-zero and leaves the registry byte-identical.
+fn run_fleet_add(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut gh_repo: Option<String> = None;
+    let mut local: Option<String> = None;
+    let mut worktree_dir: Option<String> = None;
+    let mut orch: Option<String> = None;
+    let mut workers: Option<String> = None;
+    let mut models: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let mut value = || {
+            i += 1;
+            args.get(i).cloned()
+        };
+        match arg {
+            "--name" => {
+                name = value();
+                if name.is_none() {
+                    usage("fleet add: --name needs a value");
+                }
+            }
+            "--gh" => {
+                gh_repo = value();
+                if gh_repo.is_none() {
+                    usage("fleet add: --gh needs a value");
+                }
+            }
+            "--local" => {
+                local = value();
+                if local.is_none() {
+                    usage("fleet add: --local needs a value");
+                }
+            }
+            "--worktree-dir" => {
+                worktree_dir = value();
+                if worktree_dir.is_none() {
+                    usage("fleet add: --worktree-dir needs a value");
+                }
+            }
+            "--orch" => {
+                orch = value();
+                if orch.is_none() {
+                    usage("fleet add: --orch needs a value");
+                }
+            }
+            "--workers" => {
+                workers = value();
+                if workers.is_none() {
+                    usage("fleet add: --workers needs a value");
+                }
+            }
+            "--models" => {
+                models = value();
+                if models.is_none() {
+                    usage("fleet add: --models needs a value");
+                }
+            }
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet add: --registry needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => usage(&format!("fleet add: unknown argument: {other}")),
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage("fleet add: --name is required");
+    };
+    let Some(gh_repo) = gh_repo else {
+        usage("fleet add: --gh is required");
+    };
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+
+    let workers = workers
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let models = match models {
+        Some(raw) => match parse_models(&raw) {
+            Ok(models) => Some(models),
+            Err(message) => usage(&format!("fleet add: {message}")),
+        },
+        None => None,
+    };
+
+    let opts = fleet::ops::AddOptions {
+        name: name.clone(),
+        gh_repo: gh_repo.clone(),
+        local,
+        worktree_dir,
+        orch,
+        workers,
+        models,
+    };
+    let fleet = match fleet::ops::add(&path, &opts, &fleet::ops::GhCli) {
+        Ok(fleet) => fleet,
+        Err(error) => {
+            eprintln!("corrald fleet add: {error}");
+            std::process::exit(2);
+        }
+    };
+    println!("added fleet {} ({})", fleet.name, fleet.gh_repo);
+    println!(
+        "{} {} workers={} paused={} orch={} impl={} review={}",
+        fleet.name,
+        fleet.gh_repo,
+        fleet.workers.len(),
+        fleet.paused,
+        fleet.models.orch,
+        fleet.models.impl_,
+        fleet.models.review
+    );
+}
+
+/// `corrald fleet remove <name>`: drop exactly one fleet by name, atomically.
+fn run_fleet_remove(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet remove: --registry needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                if other.starts_with('-') {
+                    usage(&format!("fleet remove: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage("fleet remove: exactly one fleet name");
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage("fleet remove: need a fleet name");
+    };
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    match fleet::ops::remove(&path, &name) {
+        Ok(remaining) => {
+            println!("removed fleet {name}; {remaining} remain");
+        }
+        Err(error) => {
+            eprintln!("corrald fleet remove: {error}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Parse `--models orch=..,impl=..,review=..` into a [`fleet::config::Models`].
+fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
+    let mut orch = None;
+    let mut impl_ = None;
+    let mut review = None;
+    for pair in raw.split(',') {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(format!("--models entries must be key=value, got {pair:?}"));
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(format!("--models {key}= has an empty value"));
+        }
+        match key.trim() {
+            "orch" => orch = Some(value.to_string()),
+            "impl" => impl_ = Some(value.to_string()),
+            "review" => review = Some(value.to_string()),
+            other => {
+                return Err(format!(
+                    "--models unknown key {other:?} (want orch, impl, review)"
+                ));
+            }
+        }
+    }
+    Ok(fleet::config::Models {
+        orch: orch.ok_or_else(|| "--models must set orch".to_string())?,
+        impl_: impl_.ok_or_else(|| "--models must set impl".to_string())?,
+        review: review.ok_or_else(|| "--models must set review".to_string())?,
+    })
+}
+
+/// Usage error: message, a hint, exit 2.
+fn usage(message: &str) -> ! {
+    eprintln!("corrald fleet: {message}");
+    eprintln!("see `corrald fleet --help` for usage");
+    std::process::exit(2);
 }
 
 /// `corrald fleet check`: validate, then verify each fleet's `local_path()`

@@ -122,6 +122,17 @@ struct Workspace: Codable, Equatable, Sendable {
     }
 }
 
+/// Issue reference joined into the agent model (G23): mirrors corrald's
+/// `GhIssueRef` — the bound PR's authoritative `closingIssuesReferences`.
+/// Authoritative linkage only; branch-name inference lives in BoardModel
+/// and is display-only (D21).
+struct GhIssueRef: Codable, Equatable, Sendable {
+    var repo: String
+    var number: UInt64
+    var state: String
+    var title: String
+}
+
 /// Link back to the source's own identity for this agent (e.g. herdr pane).
 struct Attachment: Codable, Equatable, Sendable {
     var kind: String
@@ -162,6 +173,9 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     var attachment: Attachment?
     var displayName: String?
     var title: String?
+    /// Issues the agent's bound PR closes (schema v4, G23) — authoritative,
+    /// serde-defaulted on the daemon, so absent decodes as empty.
+    var issues: [GhIssueRef]
 
     enum CodingKeys: String, CodingKey {
         case agentId = "agent_id"
@@ -171,14 +185,14 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         case parentId = "parent_id"
         case host, workspace, attachment
         case displayName = "display_name"
-        case title
+        case title, issues
     }
 
     init(agentId: String, source: String = "herdr", tool: String = "claude", state: AgentState = .unknown,
          reason: String? = nil, seq: UInt64 = 0, ts: UInt64 = 0, capabilities: [String] = [],
          waitingOn: WaitingOn? = nil, cost: Double? = nil, parentId: String? = nil,
          host: String? = nil, workspace: Workspace = Workspace(), attachment: Attachment? = nil,
-         displayName: String? = nil, title: String? = nil) {
+         displayName: String? = nil, title: String? = nil, issues: [GhIssueRef] = []) {
         self.agentId = agentId
         self.source = source
         self.tool = tool
@@ -195,6 +209,7 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         self.attachment = attachment
         self.displayName = displayName
         self.title = title
+        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -215,6 +230,7 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         attachment = try c.decodeIfPresent(Attachment.self, forKey: .attachment)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         title = try c.decodeIfPresent(String.self, forKey: .title)
+        issues = try c.decodeIfPresent([GhIssueRef].self, forKey: .issues) ?? []
     }
 
     var grantedCapabilities: Set<Capability> {
@@ -222,6 +238,12 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     }
 
     var isBlocked: Bool { state == .blocked }
+
+    /// The authoritative issue-number set the D21 inference validates
+    /// against (mirrors egui's `known_issue_numbers`).
+    var knownIssueNumbers: Set<UInt64> {
+        Set(issues.map(\.number))
+    }
 }
 
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a

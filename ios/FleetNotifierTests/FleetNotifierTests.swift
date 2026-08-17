@@ -745,3 +745,203 @@ final class KeychainStorageTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Branch-name issue inference (D21, ported from egui infer.rs)
+
+final class IssueInferenceTests: XCTestCase {
+
+    /// Mirrors `parses_issue_and_hash_branch_forms` in clients/egui/src/infer.rs.
+    func testParsesIssueAndHashBranchForms() {
+        let cases: [(String, UInt64)] = [
+            ("issue-431-embed-project-management", 431),
+            ("w2/issue-17-read-tail", 17),
+            ("g24/issue-24-issue-inference", 24),
+            ("issues/24", 24),
+            ("issue/24-foo", 24),
+            ("gh-issues-24", 24),
+            ("#123", 123),
+            ("feat/#123-fix-thing", 123),
+            ("issue-007", 7),
+        ]
+        for (branch, expected) in cases {
+            XCTAssertEqual(IssueInference.issueNumber(fromBranch: branch), expected, branch)
+        }
+    }
+
+    /// Mirrors `rejects_non_issue_branch_forms` — including the `#` precedence
+    /// grammar's negative shapes.
+    func testRejectsNonIssueBranchForms() {
+        for branch in ["", "main", "w21/read-tail-roundtrip", "feat/corral-p4",
+                       "g24/issue-inference", "issue-", "issue--24", "issue-0",
+                       "issue-000", "issues-", "#", "#x", "123", "fix-24-crash",
+                       "issue-99999999999999999999999"] {
+            XCTAssertNil(IssueInference.issueNumber(fromBranch: branch), branch)
+        }
+    }
+
+    /// The `#<N>` form wins when both appear (F2 precedence, documented).
+    func testHashFormWinsOverIssueForm() {
+        XCTAssertEqual(IssueInference.issueNumber(fromBranch: "issue-5-rework-#12"), 12)
+    }
+
+    /// Mirrors `inference_validates_against_the_fetched_issue_set`.
+    func testInferenceValidatesAgainstTheFetchedIssueSet() {
+        let known: Set<UInt64> = [431]
+        let validated = IssueInference.infer(branch: "issue-431-embed-project-management", known: known)
+        XCTAssertEqual(validated, InferredIssue(number: 431, known: true))
+        XCTAssertEqual(validated?.marker, "~#431")
+
+        let flagged = IssueInference.infer(branch: "issue-999-embed-project-management", known: known)
+        XCTAssertEqual(flagged?.marker, "~#999?", "absent-in-set is flagged, never asserted")
+
+        // Pre-G23 daemon: empty fetched set → everything stays flagged.
+        XCTAssertEqual(IssueInference.infer(branch: "issue-431-x", known: [])?.marker, "~#431?")
+    }
+}
+
+// MARK: - Issue chip (line 1)
+
+final class IssueChipTests: XCTestCase {
+
+    private func agent(branch: String?, issues: [GhIssueRef] = []) -> Agent {
+        Agent(agentId: "herdr:chip", state: .working,
+              workspace: Workspace(repo: "corral", branch: branch), issues: issues)
+    }
+
+    /// Authoritative `issues` (G23) wins over branch inference.
+    func testAuthoritativeIssueWinsOverInference() {
+        let issue = GhIssueRef(repo: "corral", number: 57, state: "open", title: "board")
+        let chip = IssueChip.chip(for: agent(branch: "issue-999-x", issues: [issue]))
+        XCTAssertEqual(chip, .authoritative(57))
+        XCTAssertEqual(chip?.label, "⑂ #57")
+        XCTAssertEqual(chip?.isFlagged, false)
+    }
+
+    func testInferredChipIsFlaggedAgainstEmptyIssueSet() {
+        let chip = IssueChip.chip(for: agent(branch: "issue-431-embed-pm"))
+        XCTAssertEqual(chip, .inferred(InferredIssue(number: 431, known: false)))
+        XCTAssertEqual(chip?.label, "~#431?")
+        XCTAssertEqual(chip?.isFlagged, true)
+    }
+
+    func testNoChipWithoutBranchHintOrIssues() {
+        XCTAssertNil(IssueChip.chip(for: agent(branch: "main")))
+        XCTAssertNil(IssueChip.chip(for: agent(branch: nil)))
+    }
+
+    /// D21 pin, ported from egui's `inferred_numbers_never_reach_drive_payloads`:
+    /// chip numbers are display-only. Drive envelopes are built from agent_id +
+    /// waiting-on claims; the inferred number must never leak into the signed
+    /// canonical bytes.
+    func testInferredNumbersNeverReachDrivePayloads() {
+        let prompt = "choose"
+        let hash = "sha256:x"
+        let waiting = WaitingOn(kind: .menu, prompt: prompt, promptHash: hash,
+                                approvalId: Claim.approvalId(agentId: "herdr:a", promptHash: hash),
+                                choices: ["yes"])
+        let agent = Agent(agentId: "herdr:a", state: .blocked, waitingOn: waiting,
+                          workspace: Workspace(branch: "issue-24-widget"))
+
+        let chip = IssueChip.chip(for: agent)
+        XCTAssertEqual(chip, .inferred(InferredIssue(number: 24, known: false)))
+        XCTAssertEqual(chip?.label, "~#24?", "the ONLY surface for the number is the display marker")
+
+        let approve = CanonicalJSON.envelopeBytes(
+            requestId: "r", capability: "approve", target: agent.agentId,
+            payload: CanonicalJSON.approvePayload(approvalId: waiting.approvalId!,
+                                                  promptHash: waiting.promptHash, choice: "yes"),
+            rev: 1)
+        let promptBytes = CanonicalJSON.envelopeBytes(
+            requestId: "r", capability: "prompt", target: agent.agentId,
+            payload: CanonicalJSON.promptPayload(text: "continue"), rev: 1)
+        for bytes in [approve, promptBytes] {
+            let text = String(data: bytes, encoding: .utf8)!
+            XCTAssertFalse(text.contains("24"), "envelope must not carry the inferred number: \(text)")
+            XCTAssertFalse(text.contains("issue"), "envelope must not reference the branch hint: \(text)")
+        }
+    }
+}
+
+// MARK: - Board sections (D25 hierarchy + ordering)
+
+final class BoardModelTests: XCTestCase {
+
+    private func agent(_ id: String, state: AgentState, repo: String?,
+                       ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              workspace: Workspace(repo: repo))
+    }
+
+    func testNeedsYouIsAPromotionNotAFilter() {
+        let blocked = agent("herdr:b", state: .blocked, repo: "corral", ts: 10)
+        let working = agent("herdr:w", state: .working, repo: "corral", ts: 20)
+        let sections = BoardModel.sections([blocked, working])
+
+        XCTAssertEqual(sections.needsYou.map(\.agentId), ["herdr:b"])
+        // The blocked agent ALSO stays in its repo section (D25).
+        XCTAssertEqual(sections.repos.count, 1)
+        XCTAssertEqual(sections.repos[0].repo, "corral")
+        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["herdr:b", "herdr:w"])
+    }
+
+    func testReposSortedByNameWithOrphanBucketLast() {
+        let sections = BoardModel.sections([
+            agent("herdr:z", state: .working, repo: "zebra", ts: 1),
+            agent("herdr:o", state: .working, repo: nil, ts: 2),
+            agent("herdr:a", state: .working, repo: "alpha", ts: 3),
+        ])
+        XCTAssertEqual(sections.repos.map(\.repo), ["alpha", "zebra", nil])
+    }
+
+    func testWithinRepoRankThenTsDesc() {
+        // blocked > working > unknown; ties break ts desc (D25).
+        let sections = BoardModel.sections([
+            agent("herdr:u", state: .unknown, repo: "corral", ts: 99),
+            agent("herdr:w-old", state: .working, repo: "corral", ts: 10),
+            agent("herdr:w-new", state: .working, repo: "corral", ts: 50),
+            agent("herdr:b", state: .blocked, repo: "corral", ts: 1),
+        ])
+        XCTAssertEqual(sections.repos[0].agents.map(\.agentId),
+                       ["herdr:b", "herdr:w-new", "herdr:w-old", "herdr:u"])
+    }
+
+    func testIdleDoneCollapseIntoTheirOwnBucket() {
+        // Idle/done leave the repo sections for the collapsed bucket
+        // (D25/D28); done ranks before idle, ties ts desc.
+        let sections = BoardModel.sections([
+            agent("herdr:i", state: .idle, repo: "corral", ts: 30),
+            agent("herdr:d", state: .done, repo: "corral", ts: 20),
+            agent("herdr:w", state: .working, repo: "corral", ts: 10),
+        ])
+        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["herdr:w"])
+        XCTAssertEqual(sections.idleDone.map(\.agentId), ["herdr:d", "herdr:i"])
+    }
+
+    func testOrderingIsDeterministicOnFullTies() {
+        let sections = BoardModel.sections([
+            agent("herdr:b", state: .working, repo: "corral", ts: 5),
+            agent("herdr:a", state: .working, repo: "corral", ts: 5),
+        ])
+        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["herdr:a", "herdr:b"])
+    }
+}
+
+// MARK: - Schema v4 issues decode (G23)
+
+final class IssueDecodeTests: XCTestCase {
+
+    func testAgentDecodesAuthoritativeIssueRefs() throws {
+        let wire = #"{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"working","workspace":{},"issues":[{"repo":"jirathip-k/corral","number":57,"state":"open","title":"board"}]}"#
+        let agent = try JSONDecoder().decode(Agent.self, from: Data(wire.utf8))
+        XCTAssertEqual(agent.issues.map(\.number), [57])
+        XCTAssertEqual(agent.knownIssueNumbers, [57])
+    }
+
+    /// `issues` is serde-defaulted on the daemon — absent decodes as empty
+    /// (v3-shaped payloads still decode).
+    func testAgentIssuesDefaultToEmpty() throws {
+        let wire = #"{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","workspace":{}}"#
+        let agent = try JSONDecoder().decode(Agent.self, from: Data(wire.utf8))
+        XCTAssertEqual(agent.issues, [])
+    }
+}

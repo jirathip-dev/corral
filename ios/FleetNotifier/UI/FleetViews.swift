@@ -147,72 +147,69 @@ struct FlowLayout: Layout {
     }
 }
 
-// MARK: - Agent row
+// MARK: - Agent row (D24 3-line dense anatomy)
 
+/// One board row, D24 shape:
+///
+/// - line 1 — state dot + title (falling back to display name / id) + issue
+///   chip (`⑂ #N` authoritative / `~#N` inferred, display-only per D21) +
+///   CI glyph + tool badge;
+/// - line 2 — repo·branch·worktree basename (D26: no nesting level) with
+///   PR / dirty / `↑a↓b` trailing;
+/// - line 3 — the waiting-on claim card when blocked; hidden otherwise
+///   until the daemon grows `activity` (D22, out of this slice).
+///
+/// Idle/done rows dim and lose line 3 (D28). Row actions are limited to
+/// Approve/Deny (in the claim card), Prompt, and Tail 200 — all grant-gated
+/// (D30); Interrupt/Kill are deliberately NOT row actions (D29/D30).
 struct AgentRow: View {
     let agent: Agent
     let grants: Set<Capability>
     var onChoice: (String) -> Void
     var onCanned: (CannedChoice.Action) -> Void
     var onReadTail: () -> Void
-    var onInterrupt: () -> Void
-    var onKill: () -> Void
     var onPrompt: (String) -> Void
 
     @State private var promptText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(stateColor)
                     .frame(width: 10, height: 10)
-                Text(agent.displayName ?? agent.agentId)
-                    .font(.headline)
+                Text(agent.title ?? agent.displayName ?? agent.agentId)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
+                if let chip = IssueChip.chip(for: agent) {
+                    Text(chip.label)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(chip.isFlagged ? Color.secondary : Color.accentColor)
+                }
+                if let ci = agent.workspace.ciStatus {
+                    CiGlyph(status: ci)
+                }
                 Text(agent.tool)
                     .font(.caption2.monospaced())
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
             }
-            if let title = agent.title {
-                Text(title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            if let reason = agent.reason {
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
+            WorkspaceLine(agent: agent)
             if let waiting = agent.waitingOn, agent.isBlocked {
                 ClaimCard(agent: agent, waiting: waiting, grants: grants,
                           onChoice: onChoice, onCanned: onCanned)
             }
-            WorkspaceLine(agent: agent)
-            HStack(spacing: 8) {
-                if agent.capabilities.contains(Capability.readTail.rawValue), grants.contains(.readTail) {
-                    Button("Tail 200") { onReadTail() }
-                        .buttonStyle(.bordered)
-                        .font(.caption)
+            if !isDimmed || hasRowActions {
+                HStack(spacing: 8) {
+                    if agent.capabilities.contains(Capability.readTail.rawValue), grants.contains(.readTail) {
+                        Button("Tail 200") { onReadTail() }
+                            .buttonStyle(.bordered)
+                            .font(.caption)
+                    }
+                    Spacer()
                 }
-                if agent.capabilities.contains(Capability.interrupt.rawValue), grants.contains(.interrupt) {
-                    Button("Interrupt") { onInterrupt() }
-                        .buttonStyle(.bordered)
-                        .font(.caption)
-                        .tint(.orange)
-                }
-                if agent.capabilities.contains(Capability.kill.rawValue), grants.contains(.kill) {
-                    Button("Kill") { onKill() }
-                        .buttonStyle(.bordered)
-                        .font(.caption)
-                        .tint(.red)
-                }
-                Spacer()
             }
             if grants.contains(.prompt) && agent.capabilities.contains(Capability.prompt.rawValue) {
                 HStack {
@@ -230,7 +227,17 @@ struct AgentRow: View {
                 }
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
+        .opacity(isDimmed ? 0.55 : 1)
+    }
+
+    /// D28: idle/done rows dim (and have no line 3 by construction).
+    private var isDimmed: Bool {
+        agent.state == .idle || agent.state == .done
+    }
+
+    private var hasRowActions: Bool {
+        agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail)
     }
 
     private var stateColor: Color {
@@ -244,40 +251,51 @@ struct AgentRow: View {
     }
 }
 
+/// Line 2 (D26): repo·branch·worktree basename — no nesting level — with
+/// PR / dirty / one `↑a↓b` badge trailing (D29: not separate columns).
 struct WorkspaceLine: View {
     let agent: Agent
 
     var body: some View {
         let w = agent.workspace
-        HStack(spacing: 8) {
-            if let branch = w.branch {
-                Label(branch, systemImage: "arrow.triangle.branch")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: 6) {
+            Text(pathLine(w))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
             if let pr = w.prNumber {
-                Label("#\(pr)", systemImage: "pull-request")
+                Text("#\(pr)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-            if let ci = w.ciStatus {
-                CiPill(status: ci)
             }
             if w.dirty {
                 Text("dirty").font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
             }
             if w.ahead > 0 || w.behind > 0 {
-                Text("+\(w.ahead)/−\(w.behind)")
+                Text("↑\(w.ahead)↓\(w.behind)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
             }
-            Spacer()
         }
+    }
+
+    private func pathLine(_ w: Workspace) -> String {
+        var parts: [String] = []
+        if let repo = w.repo { parts.append(repo) }
+        if let branch = w.branch { parts.append(branch) }
+        if let basename = w.worktreePath.flatMap({ $0.split(separator: "/").last }),
+           String(basename) != w.branch {
+            parts.append(String(basename))
+        }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
 }
 
-struct CiPill: View {
+/// Line-1 CI glyph (symbol only — the dense row has no room for a label).
+struct CiGlyph: View {
     let status: CiStatus
 
     var body: some View {
@@ -287,9 +305,10 @@ struct CiPill: View {
         case .pending: (Color.orange, "clock.fill")
         case .unknown: (Color.gray, "questionmark.circle")
         }
-        Label(status.rawValue, systemImage: symbol)
-            .font(.caption2.weight(.semibold))
+        Image(systemName: symbol)
+            .font(.caption)
             .foregroundStyle(color)
+            .accessibilityLabel("CI \(status.rawValue)")
     }
 }
 
@@ -340,32 +359,57 @@ struct FleetView: View {
     }
 
     @State private var showSettings = false
+    @State private var showIdleDone = false
 
+    /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
+    /// promotion, not a filter: the same agents also appear in their repo
+    /// section) → repo sections with counts → orphan bucket → collapsed
+    /// IDLE/DONE.
     @ViewBuilder
     private var fleetList: some View {
-        let blocked = model.fleet.blockedAgents
-        let others = model.fleet.sortedAgents.filter { !$0.isBlocked }
+        let sections = BoardModel.sections(Array(model.fleet.agents.values))
         Section {
-            if blocked.isEmpty {
+            if sections.needsYou.isEmpty {
                 Text("No blocked agents")
                     .foregroundStyle(.secondary)
             }
-            ForEach(blocked) { agent in
+            ForEach(sections.needsYou) { agent in
                 agentRow(agent)
             }
         } header: {
             HStack {
-                Text("Blocked")
+                Text("Needs you (\(sections.needsYou.count))")
                 Spacer()
                 if model.fleet.connectionState != .connected, model.mode == .live {
                     connectionLabel
                 }
             }
         }
-        Section("Agents") {
-            ForEach(others) { agent in
-                agentRow(agent)
+        ForEach(sections.repos, id: \.repo) { group in
+            Section("\(group.repo ?? "(no repo)") (\(group.agents.count))") {
+                ForEach(group.agents) { agent in
+                    agentRow(agent)
+                }
             }
+        }
+        Section {
+            if showIdleDone {
+                ForEach(sections.idleDone) { agent in
+                    agentRow(agent)
+                }
+            }
+        } header: {
+            Button {
+                withAnimation { showIdleDone.toggle() }
+            } label: {
+                HStack {
+                    Text("Idle / done (\(sections.idleDone.count))")
+                    Spacer()
+                    Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -406,12 +450,6 @@ struct FleetView: View {
                             } else {
                                 model.driveReadTail(agent: agent, driveClient: driveClient)
                             }
-                        },
-                        onInterrupt: {
-                            model.driveCommand(.interrupt, agent: agent, driveClient: driveClient)
-                        },
-                        onKill: {
-                            model.driveCommand(.kill, agent: agent, driveClient: driveClient)
                         },
                         onPrompt: { text in
                             model.drivePrompt(agent: agent, text: text, driveClient: driveClient)

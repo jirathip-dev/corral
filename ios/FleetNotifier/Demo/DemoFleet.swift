@@ -43,6 +43,12 @@ enum DemoFleet {
                                  worktreePath: "~/worktrees/project-hearthwild/feat-plush-v2",
                                  prNumber: 42, ciStatus: .pending, dirty: true, ahead: 3, behind: 0),
             seq: 5, tsOffset: 30)
+        // Authoritative closing-issue ref (G23) → the `⑂ #N` chip; the other
+        // demo agents exercise the inferred `~#N?` / no-chip paths.
+        agents["herdr:demo-approve"]?.issues = [
+            GhIssueRef(repo: "project-hearthwild", number: 41, state: "open",
+                       title: "Plush catalog v2"),
+        ]
 
         // Blocked on a menu with explicit choices.
         let menuPrompt = "Select an option:\n1) Ship now\n2) Hold for review\n3) Abort"

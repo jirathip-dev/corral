@@ -45,6 +45,18 @@ pub enum StreamOutcome {
 pub const SSE_BACKOFF_BASE_MS: u64 = 500;
 pub const SSE_BACKOFF_MAX_MS: u64 = 30_000;
 
+/// G34 cost-meter poll cadence: `/cost` is a snapshot endpoint, not SSE —
+/// one poll per minute is plenty and it must never run per frame.
+pub const COST_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Per-fetch deadline for `GET /cost`. The daemon recomputes from raw
+/// session stores on every call (no caching), and reading a multi-GB
+/// claude/codex store is slow — 20-30s is typical on a busy host — so the
+/// 10s default used by the cheap snapshot/audit fetches would make the
+/// tiles permanently "unavailable" against a real daemon. 60s is generous
+/// headroom and still safely below the 60s poll cadence.
+pub const COST_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Per-chunk read deadline for the SSE stream. reqwest's `.timeout()` is a
 /// TOTAL deadline that keeps ticking through body streaming, so a long-lived
 /// SSE connection must NOT carry one (the daemon's 15s keepalive comments
@@ -112,6 +124,28 @@ pub async fn fetch_snapshot(
         .map_err(|e| format!("connect: {e}"))?;
     if !response.status().is_success() {
         return Err(format!("GET /snapshot -> {}", response.status()));
+    }
+    response.json().await.map_err(|e| format!("body: {e}"))
+}
+
+/// `GET /cost` — the G34 cost meter. Polled on an interval (see
+/// [`spawn_cost_poll`]); never fetched per frame. The daemon recomputes
+/// from raw stores, so the deadline is deliberately generous (see
+/// [`COST_FETCH_TIMEOUT`]) — a timeout degrades to "unavailable", never a
+/// panic.
+pub async fn fetch_cost(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<crate::model::CostReport, String> {
+    let url = format!("{}/cost", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .timeout(COST_FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GET /cost -> {}", response.status()));
     }
     response.json().await.map_err(|e| format!("body: {e}"))
 }
@@ -442,12 +476,52 @@ pub fn spawn_read_loop(
     });
 }
 
+/// Spawns the G34 cost-meter poll: fetch `GET /cost` once immediately,
+/// then every [`COST_POLL_INTERVAL`], delivering each outcome to the UI
+/// over the same channel snapshots arrive on. The first poll is immediate
+/// so the tiles render as soon as corrald is reachable, not a minute in.
+/// Any failure is delivered as `Err` and the tiles degrade to "unknown" —
+/// the UI never sees a panic from a missing or malformed `/cost`.
+pub fn spawn_cost_poll(
+    rt: tokio::runtime::Handle,
+    client: reqwest::Client,
+    base_url: String,
+    tx_apply: tokio::sync::mpsc::UnboundedSender<ApplyMsg>,
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    rt.spawn(async move {
+        loop {
+            if *stop_rx.borrow() {
+                return;
+            }
+            match fetch_cost(&client, &base_url).await {
+                Ok(report) => {
+                    tracing::trace!(providers = report.providers.len(), "cost meter polled");
+                    let _ = tx_apply.send(ApplyMsg::Cost(Ok(report)));
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "cost meter poll failed");
+                    let _ = tx_apply.send(ApplyMsg::Cost(Err(e)));
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(COST_POLL_INTERVAL) => {}
+                _ = stop_rx.changed() => return,
+            }
+        }
+    });
+}
+
 /// Messages from background tasks to the UI state.
 #[derive(Debug, Clone)]
 pub enum ApplyMsg {
     Sse(SseEvent),
     Conn(Live),
     ConnError(String),
+    /// G34 cost-meter poll result: the last `GET /cost` outcome. `Err`
+    /// (daemon down, non-2xx, malformed body) degrades the tiles to
+    /// "unknown" — it never panics the UI.
+    Cost(Result<crate::model::CostReport, String>),
     /// Host identity resolved (drives device-key scoping + registration).
     Fingerprint(String),
     /// Registration round-trip result: `(key_id, grants)`.

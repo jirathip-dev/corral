@@ -160,3 +160,5 @@ own R8/R9 conformance suite (W1's).
 | R8 matching approve executes | `driveApprove` + canned actions | daemon contract (W1 suite) |
 | R9 step-up | Face ID → mint → `X-Step-Up-Token` retry | live mint; destructive-mirror tests |
 | R10 audit grows only on writes | never on auth failures | live audit (2 entries) |
+
+<!-- ci-demo: touches ios/ so the path-filtered ios.yml job fires (#39 AC 5). Scratch branch, deleted after the run is linked. -->

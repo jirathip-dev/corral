@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use corrald::api::{router, AppState};
+use corrald::api::{AppState, router};
 use corrald::core::model::{Agent, AgentState, Change};
 use corrald::core::store::Store;
 use corrald::history::{HistoryEvent, HistoryRing, RotationPolicy, should_rotate};
@@ -63,7 +63,10 @@ fn segment_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("history dir")
         .map(|e| e.expect("entry").path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("seg-")))
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("seg-"))
+        })
         .collect();
     files.sort();
     files
@@ -87,13 +90,21 @@ fn dir_bytes(dir: &std::path::Path) -> u64 {
 fn in_memory_ring_ordered_and_filtered() {
     let ring = HistoryRing::in_memory(RotationPolicy::default());
     for i in 0..5 {
-        let state = if i % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+        let state = if i % 2 == 0 {
+            AgentState::Working
+        } else {
+            AgentState::Blocked
+        };
         ring.push(event(1000 + i, "a", None, state));
     }
     let all = ring.events();
     assert_eq!(all.len(), 5);
     let ts: Vec<u64> = all.iter().map(|e| e.ts).collect();
-    assert_eq!(ts, vec![1000, 1001, 1002, 1003, 1004], "insertion order preserved");
+    assert_eq!(
+        ts,
+        vec![1000, 1001, 1002, 1003, 1004],
+        "insertion order preserved"
+    );
 
     let since = ring.query(Some(1002), None);
     let ts: Vec<u64> = since.iter().map(|e| e.ts).collect();
@@ -113,7 +124,11 @@ fn oldest_drop_past_cap() {
     };
     let ring = HistoryRing::in_memory(policy);
     for i in 0..100 {
-        let state = if i % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+        let state = if i % 2 == 0 {
+            AgentState::Working
+        } else {
+            AgentState::Blocked
+        };
         ring.push(event(1000 + i, "a", None, state));
     }
     assert_eq!(ring.len(), 32, "ring capped at max_events");
@@ -127,7 +142,11 @@ fn persistent_ring_survives_restart() {
     let dir = tempfile::tempdir().expect("temp dir");
     let ring = HistoryRing::open(dir.path().to_path_buf(), RotationPolicy::default());
     for i in 0..10 {
-        let state = if i % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+        let state = if i % 2 == 0 {
+            AgentState::Working
+        } else {
+            AgentState::Blocked
+        };
         ring.push(event(1000 + i, "a", None, state));
     }
     drop(ring);
@@ -136,7 +155,11 @@ fn persistent_ring_survives_restart() {
     let events = reopened.events();
     assert_eq!(events.len(), 10, "history survives a restart");
     let ts: Vec<u64> = events.iter().map(|e| e.ts).collect();
-    assert_eq!(ts, (1000..1010).collect::<Vec<_>>(), "order preserved after reload");
+    assert_eq!(
+        ts,
+        (1000..1010).collect::<Vec<_>>(),
+        "order preserved after reload"
+    );
 }
 
 #[test]
@@ -145,7 +168,11 @@ fn torn_tail_line_skipped_on_load() {
     {
         let ring = HistoryRing::open(dir.path().to_path_buf(), RotationPolicy::default());
         for i in 0..5 {
-            let state = if i % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+            let state = if i % 2 == 0 {
+                AgentState::Working
+            } else {
+                AgentState::Blocked
+            };
             ring.push(event(1000 + i, "a", None, state));
         }
     }
@@ -179,7 +206,11 @@ fn segments_rotate_and_prune_oldest() {
     };
     let ring = HistoryRing::open(dir.path().to_path_buf(), policy);
     for i in 0..400 {
-        let state = if i % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+        let state = if i % 2 == 0 {
+            AgentState::Working
+        } else {
+            AgentState::Blocked
+        };
         ring.push(event(1000 + i, "a", None, state));
     }
     let files = segment_files(dir.path());
@@ -215,17 +246,31 @@ fn should_rotate_pure_caps() {
 #[tokio::test]
 async fn store_records_only_actual_transitions() {
     let store = Store::new();
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await; // no-op
-    store.apply(Change::upsert(agent("a", AgentState::Blocked))).await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
-    store.apply(Change::upsert(agent("a", AgentState::Blocked))).await;
-    store.apply(Change::upsert(agent("a", AgentState::Done))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await; // no-op
+    store
+        .apply(Change::upsert(agent("a", AgentState::Blocked)))
+        .await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Blocked)))
+        .await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Done)))
+        .await;
 
     let events = store.history().events();
     assert_eq!(events.len(), 5, "same-state upserts record nothing");
-    let pairs: Vec<(Option<AgentState>, AgentState)> =
-        events.iter().map(|e| (e.old_status, e.new_status)).collect();
+    let pairs: Vec<(Option<AgentState>, AgentState)> = events
+        .iter()
+        .map(|e| (e.old_status, e.new_status))
+        .collect();
     assert_eq!(
         pairs,
         vec![
@@ -246,17 +291,27 @@ async fn store_records_only_actual_transitions() {
 #[tokio::test]
 async fn store_remove_emits_no_event() {
     let store = Store::new();
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     store.apply(Change::Remove("a".to_string())).await;
-    assert_eq!(store.history().len(), 1, "removal is not a status transition");
+    assert_eq!(
+        store.history().len(),
+        1,
+        "removal is not a status transition"
+    );
 }
 
 #[tokio::test]
 async fn store_with_history_dir_persists() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::with_history_dir(dir.path().join("history"));
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
-    store.apply(Change::upsert(agent("a", AgentState::Blocked))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Blocked)))
+        .await;
     drop(store);
 
     let reopened = HistoryRing::open(dir.path().join("history"), RotationPolicy::default());
@@ -283,14 +338,23 @@ async fn app() -> (Store, axum::Router) {
 #[tokio::test]
 async fn history_endpoint_returns_ordered_events() {
     let (store, app) = app().await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     tokio::time::sleep(Duration::from_millis(5)).await;
-    store.apply(Change::upsert(agent("a", AgentState::Blocked))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Blocked)))
+        .await;
     tokio::time::sleep(Duration::from_millis(5)).await;
-    store.apply(Change::upsert(agent("a", AgentState::Working))).await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
     let events = store.history().events();
     let mid = events[1].ts;
-    assert!(events[0].ts < events[1].ts && events[1].ts < events[2].ts, "distinct ts");
+    assert!(
+        events[0].ts < events[1].ts && events[1].ts < events[2].ts,
+        "distinct ts"
+    );
 
     let res = app
         .clone()
@@ -305,7 +369,11 @@ async fn history_endpoint_returns_ordered_events() {
     assert_eq!(list[0]["new_status"], "working");
     assert_eq!(list[1]["new_status"], "blocked");
     assert_eq!(list[2]["new_status"], "working");
-    assert_eq!(list[0]["old_status"], Value::Null, "first-seen has null old");
+    assert_eq!(
+        list[0]["old_status"],
+        Value::Null,
+        "first-seen has null old"
+    );
     assert_eq!(list[1]["old_status"], "working");
     assert!(list[0]["ts"].as_u64().unwrap() <= list[1]["ts"].as_u64().unwrap());
     assert_eq!(list[0]["agent_id"], "a");
@@ -328,7 +396,11 @@ async fn history_endpoint_returns_ordered_events() {
     // ?limit= caps the page.
     let res = app
         .clone()
-        .oneshot(Request::get("/history?limit=2").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/history?limit=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = res.into_body().collect().await.unwrap().to_bytes();
@@ -338,7 +410,11 @@ async fn history_endpoint_returns_ordered_events() {
     // Malformed since is rejected.
     let res = app
         .clone()
-        .oneshot(Request::get("/history?since=garbage").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/history?since=garbage")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -378,7 +454,10 @@ fn digest_cli_offline_against_ring() {
     assert!(output.status.success(), "digest exit: {:?}", output.status);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("herdr:pane:p1"), "agent section: {text}");
-    assert!(text.contains("transitions (5): working -> blocked -> working -> blocked -> done"), "{text}");
+    assert!(
+        text.contains("transitions (5): working -> blocked -> working -> blocked -> done"),
+        "{text}"
+    );
     assert!(text.contains("blocked: 2 spans"), "{text}");
     assert!(text.contains("work by repo: corral 5"), "{text}");
 }
@@ -397,7 +476,11 @@ async fn stress_flood_stays_bounded_under_2_mib() {
         // Every apply is a real transition for its agent: state toggles per
         // agent on every cycle.
         let id = format!("agent-{}", i % 40);
-        let state = if (i / 40) % 2 == 0 { AgentState::Working } else { AgentState::Blocked };
+        let state = if (i / 40) % 2 == 0 {
+            AgentState::Working
+        } else {
+            AgentState::Blocked
+        };
         let mut a = agent(&id, state);
         a.workspace.repo = Some("corral".to_string());
         store.apply(Change::upsert(a)).await;
@@ -408,7 +491,10 @@ async fn stress_flood_stays_bounded_under_2_mib() {
         ring_len_before <= policy.max_events,
         "ring bounded by max_events: {ring_len_before}"
     );
-    assert!(ring.len() >= policy.max_events - policy.max_events_per_segment, "retention near the cap");
+    assert!(
+        ring.len() >= policy.max_events - policy.max_events_per_segment,
+        "retention near the cap"
+    );
 
     let bytes = dir_bytes(&dir.path().join("history"));
     assert!(
@@ -416,9 +502,16 @@ async fn stress_flood_stays_bounded_under_2_mib() {
         "disk bounded: {bytes} bytes (budget {})",
         policy.max_total_bytes
     );
-    assert!(bytes < 2 * MIB, "acceptance: disk under ~2 MiB, got {bytes} bytes");
+    assert!(
+        bytes < 2 * MIB,
+        "acceptance: disk under ~2 MiB, got {bytes} bytes"
+    );
     let files = segment_files(&dir.path().join("history"));
-    assert!(files.len() <= policy.max_segments, "segments pruned: {}", files.len());
+    assert!(
+        files.len() <= policy.max_segments,
+        "segments pruned: {}",
+        files.len()
+    );
     let disk_events: usize = files
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap().lines().count())
@@ -433,7 +526,11 @@ async fn stress_flood_stays_bounded_under_2_mib() {
     drop(store);
     let reopened = HistoryRing::open(dir.path().join("history"), policy);
     assert_eq!(reopened.len(), ring_len_before);
-    assert_eq!(reopened.events()[0], retained[0].clone(), "restart view matches memory");
+    assert_eq!(
+        reopened.events()[0],
+        retained[0].clone(),
+        "restart view matches memory"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +697,13 @@ async fn spawn_live_daemon() -> LiveDaemon {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(ready, "daemon did not come up on {base}");
-    LiveDaemon { child, _dir: dir, base, config_dir, herdr }
+    LiveDaemon {
+        child,
+        _dir: dir,
+        base,
+        config_dir,
+        herdr,
+    }
 }
 
 /// Poll /history?since=0 until at least `n` events exist, then return them.
@@ -685,12 +788,18 @@ async fn live_smoke_daemon_herdr_digest() {
         .expect("run corrald digest");
     assert!(output.status.success(), "digest exit: {:?}", output.status);
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(text.contains("herdr:pane:p1"), "digest has the agent: {text}");
+    assert!(
+        text.contains("herdr:pane:p1"),
+        "digest has the agent: {text}"
+    );
     assert!(
         text.contains("transitions (5): idle -> blocked -> working -> blocked -> done"),
         "digest sequence: {text}"
     );
-    assert!(text.contains("blocked: 2 spans"), "blocked durations: {text}");
+    assert!(
+        text.contains("blocked: 2 spans"),
+        "blocked durations: {text}"
+    );
     assert!(text.contains("work by repo"), "work per repo: {text}");
 
     // Restart survival against the real daemon: kill it, restart with the

@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use corrald::adapters::herdr::HerdrAdapter;
 use corrald::adapters::Adapter;
+use corrald::adapters::herdr::HerdrAdapter;
 use corrald::core::store::Store;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -95,7 +95,9 @@ async fn fake_herdr(path: PathBuf) {
                 let _ = write.shutdown().await;
             }
             _ => {
-                let mut out = json!({"id": id, "error": {"code": "method_not_found", "message": method}}).to_string();
+                let mut out =
+                    json!({"id": id, "error": {"code": "method_not_found", "message": method}})
+                        .to_string();
                 out.push('\n');
                 let _ = write.write_all(out.as_bytes()).await;
             }
@@ -122,8 +124,7 @@ async fn ingest_redacts_secrets_before_the_store_can_serialize() {
     let snap = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let snap = store.snapshot().await;
-            if snap.agents.contains_key(agent_id())
-                && snap.agents[agent_id()].waiting_on.is_some()
+            if snap.agents.contains_key(agent_id()) && snap.agents[agent_id()].waiting_on.is_some()
             {
                 break snap;
             }
@@ -142,11 +143,20 @@ async fn ingest_redacts_secrets_before_the_store_can_serialize() {
         Some("needs token [REDACTED]"),
         "title: sk-ant token stripped"
     );
-    let w = agent.waiting_on.as_ref().expect("waiting_on set while blocked");
+    let w = agent
+        .waiting_on
+        .as_ref()
+        .expect("waiting_on set while blocked");
     // D8 (W2): the stored prompt is untrimmed — the hash covers the exact
     // bytes a client echoes for the approval claim.
-    assert_eq!(w.prompt, "  Please approve [REDACTED] deploy?", "prompt: AKIA key stripped");
-    assert!(!w.prompt_hash.contains("AKIA"), "hash covers only the redacted prompt");
+    assert_eq!(
+        w.prompt, "  Please approve [REDACTED] deploy?",
+        "prompt: AKIA key stripped"
+    );
+    assert!(
+        !w.prompt_hash.contains("AKIA"),
+        "hash covers only the redacted prompt"
+    );
 
     // The serialized output (what SSE / snapshot bytes look like) must not
     // contain any of the seeded secret shapes.
@@ -161,7 +171,10 @@ async fn ingest_redacts_secrets_before_the_store_can_serialize() {
             "serialized snapshot leaked {leaked}"
         );
     }
-    assert!(serialized.contains("[REDACTED]"), "redaction marker present");
+    assert!(
+        serialized.contains("[REDACTED]"),
+        "redaction marker present"
+    );
 }
 
 #[tokio::test]
@@ -170,12 +183,10 @@ async fn redacted_text_embeds_into_json_without_leaking_or_corrupting() {
     // into the response payload (a future W1 read_tail/SSE egress path does
     // exactly this). Redaction never runs over already-serialized JSON — the
     // text must be clean before it is embedded.
-    let raw_tail = "deploy token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 and AWS AKIA1234567890ABCDEF set";
+    let raw_tail =
+        "deploy token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 and AWS AKIA1234567890ABCDEF set";
     let redacted = corrald::core::redact::redact(raw_tail).into_owned();
-    assert_eq!(
-        redacted,
-        "deploy token [REDACTED] and AWS [REDACTED] set"
-    );
+    assert_eq!(redacted, "deploy token [REDACTED] and AWS [REDACTED] set");
     let payload = json!({
         "rev": 3,
         "text": redacted,
@@ -183,8 +194,14 @@ async fn redacted_text_embeds_into_json_without_leaking_or_corrupting() {
     });
     let wire = serde_json::to_string(&payload).expect("payload serializes");
     let parsed: serde_json::Value = serde_json::from_str(&wire).expect("wire is valid JSON");
-    assert_eq!(parsed["text"], json!("deploy token [REDACTED] and AWS [REDACTED] set"));
-    for leaked in ["ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890", "AKIA1234567890ABCDEF"] {
+    assert_eq!(
+        parsed["text"],
+        json!("deploy token [REDACTED] and AWS [REDACTED] set")
+    );
+    for leaked in [
+        "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890",
+        "AKIA1234567890ABCDEF",
+    ] {
         assert!(!wire.contains(leaked), "wire leaked {leaked}");
     }
 }

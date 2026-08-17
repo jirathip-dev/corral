@@ -62,7 +62,12 @@ pub async fn refresh(now_ms: u64) {
 
 /// [`refresh`]'s core, parameterized on store paths so tests can point at
 /// fixtures without mutating process-wide env vars.
-pub async fn refresh_with_paths(now_ms: u64, opencode_path: &Path, claude_path: &Path, codex_path: &Path) {
+pub async fn refresh_with_paths(
+    now_ms: u64,
+    opencode_path: &Path,
+    claude_path: &Path,
+    codex_path: &Path,
+) {
     let start_ms = now_ms.saturating_sub(Window::Monthly.duration_ms());
     let (opencode_events, claude_events, codex_events) = tokio::join!(
         opencode::opencode_usage(opencode_path, start_ms, now_ms),
@@ -82,7 +87,9 @@ pub async fn refresh_with_paths(now_ms: u64, opencode_path: &Path, claude_path: 
 
 fn accumulate(totals: &mut HashMap<String, f64>, tool: &str, events: &[UsageEvent]) {
     for e in events {
-        let (Some(path), Some(usd)) = (&e.workspace_path, e.usd) else { continue };
+        let (Some(path), Some(usd)) = (&e.workspace_path, e.usd) else {
+            continue;
+        };
         *totals.entry(key(tool, path)).or_insert(0.0) += usd;
     }
 }
@@ -113,7 +120,10 @@ mod tests {
         let _guard = CACHE_TEST_LOCK.lock().await;
         // A key nothing has ever populated must stay None regardless of
         // what other tests in this module have refreshed.
-        assert_eq!(cumulative_cost_for("opencode", "/no/such/workspace/ever"), None);
+        assert_eq!(
+            cumulative_cost_for("opencode", "/no/such/workspace/ever"),
+            None
+        );
     }
 
     #[tokio::test]

@@ -65,10 +65,11 @@ These are the same gates hosted CI runs (`.github/workflows/rust.yml`), so
 a local pass is a good predictor of a green run — with two caveats worth
 knowing before you push:
 
-- **`cargo fmt --check` currently fails on pre-existing formatting debt.**
-  CI runs it `continue-on-error: true`, so it reports rather than blocks.
-  It becomes a real gate once the tree is reformatted in one isolated
-  commit. Do not reformat as a side effect of an unrelated PR.
+- **`cargo fmt --check` is a blocking gate** as of #40 — a formatting
+  failure fails the build, and it runs first, so an unformatted PR never
+  reaches clippy or the tests. Run it before you push. The tree was
+  reformatted in one isolated commit to get here; do not reformat as a
+  side effect of an unrelated PR.
 - **CI runs on Linux; most development here happens on macOS.** That
   difference is not cosmetic — it has already caught a test that passed on
   macOS only because `/var` is a symlink to `/private/var` while `/tmp` on

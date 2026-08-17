@@ -61,7 +61,10 @@ fn temp_root(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("corral-git-plane-{}-{nanos}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "corral-git-plane-{}-{nanos}-{tag}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -93,7 +96,16 @@ async fn temp_repo_commit_emits_events_under_second() {
     // list` resolves symlinks, e.g. /var -> /private/var), so compare
     // against the canonicalized path.
     let wt1 = wts.join("wt1");
-    git(&repo, &["worktree", "add", &wt1.to_string_lossy(), "-b", "feat/plane"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt1.to_string_lossy(),
+            "-b",
+            "feat/plane",
+        ],
+    );
     let wt1 = fs::canonicalize(&wt1).unwrap();
     assert!(
         wait_for(
@@ -136,12 +148,14 @@ async fn temp_repo_commit_emits_events_under_second() {
     git(&wt1, &["commit", "-m", "ws1 integration"]);
     let latency = wait_for(
         &mut rx,
-        |e| matches!(
-            e,
-            PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch, subject, .. })
-                if worktree == &wt1 && branch == "feat/plane"
-                    && subject.as_deref() == Some("ws1 integration")
-        ),
+        |e| {
+            matches!(
+                e,
+                PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch, subject, .. })
+                    if worktree == &wt1 && branch == "feat/plane"
+                        && subject.as_deref() == Some("ws1 integration")
+            )
+        },
         Duration::from_secs(3),
     )
     .await
@@ -187,7 +201,16 @@ async fn temp_repo_commit_emits_events_under_second() {
     // porcelain paths raw (space literal, tab literal — verified with od -c
     // and the git source), and the plane must track them, not drop them.
     let wt2 = wts.join("wt 2 with space");
-    git(&repo, &["worktree", "add", &wt2.to_string_lossy(), "-b", "feat/space"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt2.to_string_lossy(),
+            "-b",
+            "feat/space",
+        ],
+    );
     let wt2 = fs::canonicalize(&wt2).unwrap();
     assert!(
         wait_for(
@@ -203,7 +226,10 @@ async fn temp_repo_commit_emits_events_under_second() {
         "WorktreeAdded for space-path worktree {wt2:?}"
     );
     let wt3 = wts.join("wt with\ttab");
-    git(&repo, &["worktree", "add", &wt3.to_string_lossy(), "-b", "feat/tab"]);
+    git(
+        &repo,
+        &["worktree", "add", &wt3.to_string_lossy(), "-b", "feat/tab"],
+    );
     let wt3 = fs::canonicalize(&wt3).unwrap();
     assert!(
         wait_for(
@@ -244,7 +270,16 @@ async fn fresh_instance_reemits_registry_at_boot() {
     git(&repo, &["commit", "-m", "initial"]);
 
     let wt1 = wts.join("wt1");
-    git(&repo, &["worktree", "add", &wt1.to_string_lossy(), "-b", "feat/plane"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt1.to_string_lossy(),
+            "-b",
+            "feat/plane",
+        ],
+    );
     let wt1 = fs::canonicalize(&wt1).unwrap();
 
     // Generation 1: boot rescan emits the registry.
@@ -312,7 +347,8 @@ async fn fresh_instance_reemits_registry_at_boot() {
 async fn live_herdr_repo_commit_under_one_second() {
     let home = std::env::var("HOME").expect("HOME");
     let repo = PathBuf::from(
-        std::env::var("HERDR_BOARD_REPO").unwrap_or_else(|_| "/Users/jirathip/Projects/herdr-board".to_string()),
+        std::env::var("HERDR_BOARD_REPO")
+            .unwrap_or_else(|_| "/Users/jirathip/Projects/herdr-board".to_string()),
     );
     let wts_root = PathBuf::from(
         std::env::var("HERDR_WORKTREES_ROOT")
@@ -323,7 +359,14 @@ async fn live_herdr_repo_commit_under_one_second() {
 
     // Fresh start: clear leftovers of a previous (possibly failed) run.
     let _ = Command::new("git")
-        .args(["-C", repo.to_str().unwrap(), "worktree", "remove", "--force", scratch.to_str().unwrap()])
+        .args([
+            "-C",
+            repo.to_str().unwrap(),
+            "worktree",
+            "remove",
+            "--force",
+            scratch.to_str().unwrap(),
+        ])
         .output();
     let _ = Command::new("git")
         .args(["-C", repo.to_str().unwrap(), "branch", "-D", branch])
@@ -334,7 +377,17 @@ async fn live_herdr_repo_commit_under_one_second() {
     plane.start(sink);
 
     // Worktree add must be picked up as a WorktreeAdded event.
-    git(&repo, &["worktree", "add", &scratch.to_string_lossy(), "-b", branch, "ws1/git-plane"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &scratch.to_string_lossy(),
+            "-b",
+            branch,
+            "ws1/git-plane",
+        ],
+    );
     assert!(
         wait_for(
             &mut rx,
@@ -357,11 +410,13 @@ async fn live_herdr_repo_commit_under_one_second() {
     let t0 = Instant::now();
     let latency = wait_for(
         &mut rx,
-        |e| matches!(
-            e,
-            PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch: b, .. })
-                if worktree == &scratch && b == branch
-        ),
+        |e| {
+            matches!(
+                e,
+                PlaneEvent::Git(GitEvent::HeadMoved { worktree, branch: b, .. })
+                    if worktree == &scratch && b == branch
+            )
+        },
         Duration::from_secs(3),
     )
     .await
@@ -370,13 +425,22 @@ async fn live_herdr_repo_commit_under_one_second() {
     // Clean up the scratch worktree + branch before asserting, so a failure
     // never leaves the herdr repo dirtied.
     let _ = Command::new("git")
-        .args(["-C", repo.to_str().unwrap(), "worktree", "remove", "--force", scratch.to_str().unwrap()])
+        .args([
+            "-C",
+            repo.to_str().unwrap(),
+            "worktree",
+            "remove",
+            "--force",
+            scratch.to_str().unwrap(),
+        ])
         .output();
     let _ = Command::new("git")
         .args(["-C", repo.to_str().unwrap(), "branch", "-D", branch])
         .output();
 
-    println!("LIVE TEST: commit -> HeadMoved latency = {latency:?} (commit completed {t0:?} ago at measure start)");
+    println!(
+        "LIVE TEST: commit -> HeadMoved latency = {latency:?} (commit completed {t0:?} ago at measure start)"
+    );
     assert!(
         latency < Duration::from_secs(1),
         "acceptance: git event <1s after commit, got {latency:?}"

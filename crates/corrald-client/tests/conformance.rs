@@ -17,6 +17,11 @@ mod common;
 
 use std::time::Duration;
 
+use common::{
+    AGENT_ID, AGENT_PANE, FakeAgent, LiveDaemon, audit_len, raw_drive, spawn_live_daemon,
+    spawn_live_daemon_at, wait_for_agent, wait_for_dispatch_count, wait_for_head,
+    wait_for_waiting_on,
+};
 use corrald_client::approval::{approval_id_for, prompt_hash_of};
 use corrald_client::client::envelope;
 use corrald_client::drive::{DrivePayload, SignedDrive, canonical_envelope_bytes};
@@ -27,11 +32,6 @@ use corrald_client::stepup::{StepUpRequest, canonical_step_up_bytes};
 use corrald_client::{
     CorralClient, DriveClient, SseEvent,
     model::{SCHEMA_VERSION, apply_delta},
-};
-use common::{
-    AGENT_ID, AGENT_PANE, FakeAgent, LiveDaemon, audit_len, raw_drive, spawn_live_daemon,
-    spawn_live_daemon_at, wait_for_agent, wait_for_dispatch_count, wait_for_head,
-    wait_for_waiting_on,
 };
 use futures::StreamExt as _;
 use serde_json::json;
@@ -50,7 +50,12 @@ async fn client_of(daemon: &LiveDaemon) -> CorralClient {
 }
 
 /// Grant a capability to a device via the admin surface.
-async fn grant(daemon: &LiveDaemon, client: &CorralClient, key_id: &str, caps: &[corrald_client::Capability]) {
+async fn grant(
+    daemon: &LiveDaemon,
+    client: &CorralClient,
+    key_id: &str,
+    caps: &[corrald_client::Capability],
+) {
     client
         .grants_set(&daemon.admin_token, key_id, caps)
         .await
@@ -91,8 +96,15 @@ fn canonical_bytes_include_rev_in_fixed_position() {
     let literal = br#"{"request_id":"r","capability":"prompt","target":"t","payload":{"kind":"prompt","text":"go"},"rev":7}"#;
     assert_eq!(canonical_envelope_bytes(&envelope), literal);
     // None omits the field entirely.
-    let none = corrald_client::DriveEnvelope { rev: None, ..envelope };
-    assert!(!canonical_envelope_bytes(&none).windows(4).any(|w| w == b"\"rev\""));
+    let none = corrald_client::DriveEnvelope {
+        rev: None,
+        ..envelope
+    };
+    assert!(
+        !canonical_envelope_bytes(&none)
+            .windows(4)
+            .any(|w| w == b"\"rev\"")
+    );
 }
 
 /// Payload object keys serialize sorted (serde_json Map = BTreeMap), so the
@@ -114,7 +126,10 @@ fn payload_bytes_are_key_order_independent() {
         payload: serde_json::Value::Object(reversed),
         ..env1.clone()
     };
-    assert_eq!(canonical_envelope_bytes(&env1), canonical_envelope_bytes(&env2));
+    assert_eq!(
+        canonical_envelope_bytes(&env1),
+        canonical_envelope_bytes(&env2)
+    );
 }
 
 /// Step-up request bytes: fixed struct field order, `ts` last.
@@ -153,9 +168,18 @@ fn workspace_head_fields_round_trip_through_json() {
     };
     let wire = serde_json::to_string(&ws).expect("serialize");
     let back: Workspace = serde_json::from_str(&wire).expect("decode");
-    assert_eq!(back, ws, "head fields round-trip through the snapshot wire format");
-    assert!(wire.contains("\"head_sha\""), "head_sha serializes on the wire");
-    assert!(wire.contains("\"head_subject\""), "head_subject serializes on the wire");
+    assert_eq!(
+        back, ws,
+        "head fields round-trip through the snapshot wire format"
+    );
+    assert!(
+        wire.contains("\"head_sha\""),
+        "head_sha serializes on the wire"
+    );
+    assert!(
+        wire.contains("\"head_subject\""),
+        "head_subject serializes on the wire"
+    );
 
     // Unborn/empty checkout: null on the wire decodes to None.
     let ws: Workspace = serde_json::from_str(
@@ -223,7 +247,10 @@ async fn r2_read_path_and_sse_resume() {
     let agent = &snap.agents[AGENT_ID];
     assert_eq!(agent.source, "herdr");
     assert_eq!(agent.state, AgentState::Idle);
-    assert_eq!(agent.attachment.as_ref().map(|a| a.kind.as_str()), Some("herdr-pane"));
+    assert_eq!(
+        agent.attachment.as_ref().map(|a| a.kind.as_str()),
+        Some("herdr-pane")
+    );
     assert_eq!(
         agent.workspace.head_sha.as_deref(),
         Some(daemon.repo_head_sha.as_str()),
@@ -243,7 +270,10 @@ async fn r2_read_path_and_sse_resume() {
     // until the next change.
     let mut live = client.events(Some(rev0));
     let nothing = tokio::time::timeout(Duration::from_millis(700), live.next()).await;
-    assert!(nothing.is_err(), "current cursor must go straight to live (no frame)");
+    assert!(
+        nothing.is_err(),
+        "current cursor must go straight to live (no frame)"
+    );
 
     // (b) Live delta: push a status change, expect a delta with rev0+1.
     daemon.herdr.set_status(AGENT_PANE, "working").await;
@@ -286,7 +316,10 @@ async fn r2_read_path_and_sse_resume() {
     match &event {
         SseEvent::Snapshot(snap) => {
             assert_eq!(snap.schema_version, SCHEMA_VERSION);
-            let a = snap.agents.get(AGENT_ID).expect("agent in SSE snapshot frame");
+            let a = snap
+                .agents
+                .get(AGENT_ID)
+                .expect("agent in SSE snapshot frame");
             assert_eq!(
                 a.workspace.head_sha.as_deref(),
                 Some(daemon.repo_head_sha.as_str()),
@@ -321,7 +354,13 @@ async fn r3_signed_drive_executes() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Prompt]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Prompt],
+    )
+    .await;
 
     let snap = client.snapshot().await.expect("snapshot");
     let env = envelope(
@@ -360,25 +399,39 @@ async fn r4_tampered_envelope_refused() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Prompt]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Prompt],
+    )
+    .await;
 
     // Sign the original, then mutate the payload AFTER signing.
     let mut env = envelope(
         "r4-1",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "continue".into() },
+        DrivePayload::Prompt {
+            text: "continue".into(),
+        },
         None,
     );
     let signature = keypair.sign_envelope(&env);
-    env.payload = DrivePayload::Prompt { text: "continue!".into() }.to_json();
+    env.payload = DrivePayload::Prompt {
+        text: "continue!".into(),
+    }
+    .to_json();
     let signed = SignedDrive {
         key_id: dev.key_id.clone(),
         signature,
         envelope: env,
     };
 
-    let err = client.drive(&signed, None).await.expect_err("tampered must be refused");
+    let err = client
+        .drive(&signed, None)
+        .await
+        .expect_err("tampered must be refused");
     match &err {
         ApiError::Drive(refusal) => {
             assert_eq!(refusal.status, reqwest::StatusCode::UNAUTHORIZED);
@@ -389,7 +442,11 @@ async fn r4_tampered_envelope_refused() {
 
     // Zero dispatch.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(daemon.herdr.commands().len(), 0, "no dispatch for a bad signature");
+    assert_eq!(
+        daemon.herdr.commands().len(),
+        0,
+        "no dispatch for a bad signature"
+    );
     println!("R4 pass: 401 bad_signature, zero dispatch");
 }
 
@@ -414,11 +471,16 @@ async fn r5_read_only_device_denied() {
         "r5-1",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "do the thing".into() },
+        DrivePayload::Prompt {
+            text: "do the thing".into(),
+        },
         None,
     );
     let drive = DriveClient::new(client.clone(), keypair);
-    let err = drive.drive(&env, None).await.expect_err("no grants -> refused");
+    let err = drive
+        .drive(&env, None)
+        .await
+        .expect_err("no grants -> refused");
     match &err {
         ApiError::Drive(refusal) => {
             assert_eq!(refusal.status, reqwest::StatusCode::FORBIDDEN);
@@ -446,13 +508,21 @@ async fn r6_replay_is_idempotent() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Prompt]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Prompt],
+    )
+    .await;
 
     let env = envelope(
         "r6-1",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "replay me".into() },
+        DrivePayload::Prompt {
+            text: "replay me".into(),
+        },
         None,
     );
     let signed = SignedDrive {
@@ -466,21 +536,34 @@ async fn r6_replay_is_idempotent() {
     let (status2, body2) = raw_drive(&daemon.base, &signed, None).await;
     assert_eq!(status1, reqwest::StatusCode::OK);
     assert_eq!(status2, reqwest::StatusCode::OK);
-    assert_eq!(body1, body2, "replay must return the first response byte-identical");
+    assert_eq!(
+        body1, body2,
+        "replay must return the first response byte-identical"
+    );
     let first: serde_json::Value = serde_json::from_slice(&body1).unwrap();
     assert_eq!(first["ok"], true);
     assert_eq!(first["request_id"], "r6-1");
 
     // Client-side: DriveClient dedupes from its replay table, no third send.
     let drive = DriveClient::new(client.clone(), keypair);
-    let out1 = drive.drive(&signed.envelope.clone(), None).await.expect("drive");
-    let out2 = drive.drive(&signed.envelope.clone(), None).await.expect("drive");
+    let out1 = drive
+        .drive(&signed.envelope.clone(), None)
+        .await
+        .expect("drive");
+    let out2 = drive
+        .drive(&signed.envelope.clone(), None)
+        .await
+        .expect("drive");
     assert_eq!(out1, out2);
     assert_eq!(out1.request_id, "r6-1");
 
     // Exactly one dispatch across all of the above.
     wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(daemon.herdr.count_prompts_with("replay me"), 1, "exactly one dispatch");
+    assert_eq!(
+        daemon.herdr.count_prompts_with("replay me"),
+        1,
+        "exactly one dispatch"
+    );
     println!("R6 pass: byte-identical replay, 1 dispatch");
 }
 
@@ -498,7 +581,13 @@ async fn r7_stale_hash_refused() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Approve]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Approve],
+    )
+    .await;
 
     daemon
         .herdr
@@ -530,7 +619,10 @@ async fn r7_stale_hash_refused() {
         None,
     );
     let drive = DriveClient::new(client.clone(), keypair);
-    let err = drive.drive(&env, None).await.expect_err("wrong hash must be refused");
+    let err = drive
+        .drive(&env, None)
+        .await
+        .expect_err("wrong hash must be refused");
     match &err {
         ApiError::Drive(refusal) => {
             assert_eq!(refusal.status, reqwest::StatusCode::CONFLICT);
@@ -560,7 +652,13 @@ async fn r8_matching_approve_executes() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Approve]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Approve],
+    )
+    .await;
 
     daemon
         .herdr
@@ -569,7 +667,10 @@ async fn r8_matching_approve_executes() {
     let (_snap, waiting_on) = wait_for_waiting_on(&client, AGENT_ID, TIME_BUDGET).await;
     assert_eq!(waiting_on.choices, vec!["y".to_string(), "n".to_string()]);
     let approval_id = approval_id_for(AGENT_ID, &waiting_on.prompt_hash);
-    assert_eq!(waiting_on.approval_id, approval_id, "daemon attaches the same claim id");
+    assert_eq!(
+        waiting_on.approval_id, approval_id,
+        "daemon attaches the same claim id"
+    );
 
     let before = audit_len(&client, &daemon.admin_token).await;
     let env = envelope(
@@ -590,7 +691,11 @@ async fn r8_matching_approve_executes() {
 
     // Exactly one dispatch — the validated choice, to the pane.
     wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(daemon.herdr.count_approves_with("y"), 1, "exactly one approve dispatch");
+    assert_eq!(
+        daemon.herdr.count_approves_with("y"),
+        1,
+        "exactly one approve dispatch"
+    );
 
     let after = audit_len(&client, &daemon.admin_token).await;
     assert_eq!(after, before + 1, "the executed approve is audited");
@@ -612,13 +717,21 @@ async fn r9_step_up_flow() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Prompt]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Prompt],
+    )
+    .await;
 
     let env = envelope(
         "r9-1",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "rm -rf /tmp/scratch".into() },
+        DrivePayload::Prompt {
+            text: "rm -rf /tmp/scratch".into(),
+        },
         None,
     );
     let signed = SignedDrive {
@@ -631,7 +744,10 @@ async fn r9_step_up_flow() {
 
     // (a) No token -> 403 step_up_required, not audited, no dispatch.
     let drive = DriveClient::new(client.clone(), keypair.clone());
-    let err = drive.drive(&signed.envelope.clone(), None).await.expect_err("must require step-up");
+    let err = drive
+        .drive(&signed.envelope.clone(), None)
+        .await
+        .expect_err("must require step-up");
     match &err {
         ApiError::Drive(refusal) => {
             assert_eq!(refusal.status, reqwest::StatusCode::FORBIDDEN);
@@ -639,7 +755,11 @@ async fn r9_step_up_flow() {
         }
         other => panic!("expected 403 step_up_required, got {other:?}"),
     }
-    assert_eq!(audit_len(&client, &daemon.admin_token).await, before, "step-up refusal not audited");
+    assert_eq!(
+        audit_len(&client, &daemon.admin_token).await,
+        before,
+        "step-up refusal not audited"
+    );
 
     // (b) Mint via /step-up (signed proof of possession) -> retry with header -> 200.
     let request = StepUpRequest::new(&dev.key_id, "r9-nonce");
@@ -657,7 +777,11 @@ async fn r9_step_up_flow() {
         .await
         .expect("drive with step-up token");
     assert!(response.ok, "step-up drive executes: {response:?}");
-    assert_eq!(audit_len(&client, &daemon.admin_token).await, before + 1, "execution audited");
+    assert_eq!(
+        audit_len(&client, &daemon.admin_token).await,
+        before + 1,
+        "execution audited"
+    );
     wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
     assert_eq!(daemon.herdr.count_prompts_with("rm -rf /tmp/scratch"), 1);
 
@@ -666,8 +790,15 @@ async fn r9_step_up_flow() {
     assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
     let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["kind"], "step_up_failed");
-    assert_eq!(audit_len(&client, &daemon.admin_token).await, before + 1, "replay not audited");
-    println!("R9 pass: 403 -> mint -> 200 -> 401, audit {before} -> {}", before + 1);
+    assert_eq!(
+        audit_len(&client, &daemon.admin_token).await,
+        before + 1,
+        "replay not audited"
+    );
+    println!(
+        "R9 pass: 403 -> mint -> 200 -> 401, audit {before} -> {}",
+        before + 1
+    );
 }
 
 /// R10 — Audit grows only on writes: GETs, auth failures, and step-up
@@ -685,7 +816,13 @@ async fn r10_audit_grows_only_on_writes() {
         .register(&daemon.registration_token, &keypair.public_key_b64())
         .await
         .expect("register");
-    grant(&daemon, &client, &dev.key_id, &[corrald_client::Capability::Prompt]).await;
+    grant(
+        &daemon,
+        &client,
+        &dev.key_id,
+        &[corrald_client::Capability::Prompt],
+    )
+    .await;
 
     let baseline = audit_len(&client, &daemon.admin_token).await;
 
@@ -694,7 +831,11 @@ async fn r10_audit_grows_only_on_writes() {
     client.host_key().await.expect("host-key");
     let _ = client.events(None).next().await;
     client.audit(&daemon.admin_token).await.expect("audit");
-    assert_eq!(audit_len(&client, &daemon.admin_token).await, baseline, "reads are never audited");
+    assert_eq!(
+        audit_len(&client, &daemon.admin_token).await,
+        baseline,
+        "reads are never audited"
+    );
 
     // (b) Auth failures never grow the log.
     // Bad signature (tampered after signing).
@@ -702,14 +843,23 @@ async fn r10_audit_grows_only_on_writes() {
         "r10-tamper",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "tampered".into() },
+        DrivePayload::Prompt {
+            text: "tampered".into(),
+        },
         None,
     );
     let signature = keypair.sign_envelope(&env);
-    env.payload = DrivePayload::Prompt { text: "tampered!".into() }.to_json();
+    env.payload = DrivePayload::Prompt {
+        text: "tampered!".into(),
+    }
+    .to_json();
     let _ = client
         .drive(
-            &SignedDrive { key_id: dev.key_id.clone(), signature, envelope: env },
+            &SignedDrive {
+                key_id: dev.key_id.clone(),
+                signature,
+                envelope: env,
+            },
             None,
         )
         .await;
@@ -723,7 +873,9 @@ async fn r10_audit_grows_only_on_writes() {
         "r10-ro",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "nope".into() },
+        DrivePayload::Prompt {
+            text: "nope".into(),
+        },
         None,
     );
     let _ = DriveClient::new(client.clone(), read_only)
@@ -734,7 +886,9 @@ async fn r10_audit_grows_only_on_writes() {
         "r10-dest",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "rm -rf /tmp/x".into() },
+        DrivePayload::Prompt {
+            text: "rm -rf /tmp/x".into(),
+        },
         None,
     );
     let signed_destructive = SignedDrive {
@@ -755,20 +909,31 @@ async fn r10_audit_grows_only_on_writes() {
         "r10-unknown",
         corrald_client::Capability::Prompt,
         "herdr:no-such-agent",
-        DrivePayload::Prompt { text: "who?".into() },
+        DrivePayload::Prompt {
+            text: "who?".into(),
+        },
         None,
     );
     let drive = DriveClient::new(client.clone(), keypair.clone());
-    let response = drive.drive(&env_unknown, None).await.expect("dispatch-level refusal rides 200");
+    let response = drive
+        .drive(&env_unknown, None)
+        .await
+        .expect("dispatch-level refusal rides 200");
     assert!(!response.ok, "unknown agent refused at dispatch");
-    assert_eq!(audit_len(&client, &daemon.admin_token).await, baseline + 1, "dispatch refusal audited");
+    assert_eq!(
+        audit_len(&client, &daemon.admin_token).await,
+        baseline + 1,
+        "dispatch refusal audited"
+    );
 
     // (d) Executed write -> audited.
     let env_ok = envelope(
         "r10-ok",
         corrald_client::Capability::Prompt,
         AGENT_ID,
-        DrivePayload::Prompt { text: "audit me".into() },
+        DrivePayload::Prompt {
+            text: "audit me".into(),
+        },
         None,
     );
     let response = drive.drive(&env_ok, None).await.expect("executed drive");
@@ -778,8 +943,14 @@ async fn r10_audit_grows_only_on_writes() {
     assert!(audit.valid, "hash chain must verify");
     assert_eq!(audit.len(), baseline + 2);
     let entries = audit.entries;
-    assert!(entries[entries.len() - 2]["hash"].is_string(), "chained entries");
-    assert_eq!(entries[entries.len() - 1]["prev"], entries[entries.len() - 2]["hash"]);
+    assert!(
+        entries[entries.len() - 2]["hash"].is_string(),
+        "chained entries"
+    );
+    assert_eq!(
+        entries[entries.len() - 1]["prev"],
+        entries[entries.len() - 2]["hash"]
+    );
     println!("R10 pass: baseline={baseline}, reads/auth 0 growth, writes +2, chain valid");
 }
 
@@ -850,7 +1021,10 @@ async fn register_read_sign_drive_step_up_approve() {
 
     let audit = client.audit(&daemon.admin_token).await.expect("audit");
     assert!(audit.valid);
-    println!("e2e pass: register -> read -> sign -> drive -> approve, audit={}", audit.len());
+    println!(
+        "e2e pass: register -> read -> sign -> drive -> approve, audit={}",
+        audit.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -881,7 +1055,10 @@ async fn sse_resume_edge_cases() {
         .expect("frame")
         .expect("no error")
         .expect("event");
-    assert!(first.is_snapshot(), "no cursor must yield a snapshot: {first:?}");
+    assert!(
+        first.is_snapshot(),
+        "no cursor must yield a snapshot: {first:?}"
+    );
     let snap = first.as_snapshot().expect("snapshot");
     let current = snap.rev;
     drop(stream);
@@ -889,7 +1066,9 @@ async fn sse_resume_edge_cases() {
     // (2) Current cursor -> straight to live (no frame until a change).
     let mut live = client.events(Some(current));
     assert!(
-        tokio::time::timeout(Duration::from_millis(700), live.next()).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(700), live.next())
+            .await
+            .is_err(),
         "current cursor must emit nothing until the next change"
     );
 
@@ -1018,9 +1197,7 @@ async fn find_live_pr_candidate() -> Option<LivePrCandidate> {
             .map(|nodes| {
                 nodes
                     .iter()
-                    .filter_map(|n| {
-                        Some((n["number"].as_u64()?, n["state"].as_str()?.to_string()))
-                    })
+                    .filter_map(|n| Some((n["number"].as_u64()?, n["state"].as_str()?.to_string())))
                     .collect()
             })
             .unwrap_or_default();
@@ -1123,7 +1300,9 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
         return;
     }
     let Some(candidate) = find_live_pr_candidate().await else {
-        println!("R11 skip: no suitable live repo (no open PR with a fetchable head branch on a tracked repo)");
+        println!(
+            "R11 skip: no suitable live repo (no open PR with a fetchable head branch on a tracked repo)"
+        );
         return;
     };
     let tracked = candidate.tracked;
@@ -1146,7 +1325,13 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
         .join(format!("corral-r11-{}", candidate.pr_number));
     let url = format!("https://github.com/{}/{}.git", tracked.owner, tracked.repo);
     let cloned = tokio::process::Command::new("git")
-        .args(["clone", "-q", "--single-branch", "--branch", &candidate.head_branch])
+        .args([
+            "clone",
+            "-q",
+            "--single-branch",
+            "--branch",
+            &candidate.head_branch,
+        ])
         .arg(&url)
         .arg(&clone)
         .output()
@@ -1155,12 +1340,17 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
     match cloned {
         Some(output) if output.status.success() => {}
         _ => {
-            println!("R11 skip: cannot clone {url} branch {} — not a suitable live repo", candidate.head_branch);
+            println!(
+                "R11 skip: cannot clone {url} branch {} — not a suitable live repo",
+                candidate.head_branch
+            );
             return;
         }
     }
     let actual_head = git_ok(&clone, &["rev-parse", "HEAD"]).await;
-    let actual_head = String::from_utf8_lossy(&actual_head.stdout).trim().to_string();
+    let actual_head = String::from_utf8_lossy(&actual_head.stdout)
+        .trim()
+        .to_string();
     if actual_head != candidate.head_sha {
         println!(
             "R11 skip: PR head moved mid-test ({actual_head:.8} != {}); branch churn — not suitable now",
@@ -1193,10 +1383,24 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
     // (3) Pushed state: the clone HEAD equals the PR's head sha, so the
     // PRIMARY head-SHA match binds — the fallback never fires (acceptance
     // #22-3: no regression).
-    let snap = wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("head_sha"), LIVE_GH_BUDGET).await;
+    let snap = wait_for_pr_binding(
+        &client,
+        AGENT_ID,
+        candidate.pr_number,
+        Some("head_sha"),
+        LIVE_GH_BUDGET,
+    )
+    .await;
     let agent = &snap.agents[AGENT_ID];
-    assert_eq!(agent.workspace.repo.as_deref(), Some(tracked.name), "repo derived from the worktree path");
-    assert_eq!(agent.workspace.branch.as_deref(), Some(candidate.head_branch.as_str()));
+    assert_eq!(
+        agent.workspace.repo.as_deref(),
+        Some(tracked.name),
+        "repo derived from the worktree path"
+    );
+    assert_eq!(
+        agent.workspace.branch.as_deref(),
+        Some(candidate.head_branch.as_str())
+    );
     println!(
         "R11 step 3 pass: pushed head binds PR #{} via head_sha (ci={:?})",
         candidate.pr_number, agent.workspace.ci_status
@@ -1209,22 +1413,55 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
     let committed = git_ok(
         &clone,
         &[
-            "-c", "user.name=corral r11 conformance",
-            "-c", "user.email=conformance@corral.local",
-            "commit", "--allow-empty", "-m", "corral r11: committed-but-unpushed head probe",
+            "-c",
+            "user.name=corral r11 conformance",
+            "-c",
+            "user.email=conformance@corral.local",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "corral r11: committed-but-unpushed head probe",
         ],
     )
     .await;
-    assert!(committed.status.success(), "scratch commit failed: {}", String::from_utf8_lossy(&committed.stderr));
-    wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("branch"), LIVE_GH_BUDGET).await;
-    println!("R11 step 4 pass: committed-but-unpushed head re-binds PR #{} via (repo, branch)", candidate.pr_number);
+    assert!(
+        committed.status.success(),
+        "scratch commit failed: {}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    wait_for_pr_binding(
+        &client,
+        AGENT_ID,
+        candidate.pr_number,
+        Some("branch"),
+        LIVE_GH_BUDGET,
+    )
+    .await;
+    println!(
+        "R11 step 4 pass: committed-but-unpushed head re-binds PR #{} via (repo, branch)",
+        candidate.pr_number
+    );
 
     // (5) Push-state round trip: reset the clone to the PR head — the
     // primary head-SHA match must win again once the head matches.
     let reset = git_ok(&clone, &["reset", "--hard", &candidate.head_sha]).await;
-    assert!(reset.status.success(), "reset failed: {}", String::from_utf8_lossy(&reset.stderr));
-    let snap = wait_for_pr_binding(&client, AGENT_ID, candidate.pr_number, Some("head_sha"), LIVE_GH_BUDGET).await;
-    println!("R11 step 5 pass: reset head re-binds PR #{} via head_sha", candidate.pr_number);
+    assert!(
+        reset.status.success(),
+        "reset failed: {}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    let snap = wait_for_pr_binding(
+        &client,
+        AGENT_ID,
+        candidate.pr_number,
+        Some("head_sha"),
+        LIVE_GH_BUDGET,
+    )
+    .await;
+    println!(
+        "R11 step 5 pass: reset head re-binds PR #{} via head_sha",
+        candidate.pr_number
+    );
 
     // (6) Issues (issue #23): ONLY the bound PR's authoritative closing
     // refs — never the repo's recent issues, never a guess.
@@ -1235,7 +1472,10 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
             "PR with no closing refs must yield an empty issues array, got {:?}",
             agent.workspace.issues
         );
-        println!("R11 step 6 pass: PR #{} has no closing refs -> issues == [] (authoritative empty)", candidate.pr_number);
+        println!(
+            "R11 step 6 pass: PR #{} has no closing refs -> issues == [] (authoritative empty)",
+            candidate.pr_number
+        );
     } else {
         assert_eq!(
             agent.workspace.issues.len(),
@@ -1246,7 +1486,10 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
             agent.workspace.issues.iter().zip(candidate.closing.iter())
         {
             assert_eq!(actual.repo, tracked.name);
-            assert_eq!(actual.number, *number, "linkage comes only from closing refs");
+            assert_eq!(
+                actual.number, *number,
+                "linkage comes only from closing refs"
+            );
             assert_eq!(actual.title, *title, "titles come only from closing refs");
             // State: the daemon enriches from the SAME poll's repo-level
             // issues fetch (UNKNOWN when the issue is not among the recent
@@ -1259,12 +1502,17 @@ async fn r11_gh_pr_binds_by_branch_fallback_and_populates_issues() {
                 .map(|(_, s)| s.clone())
                 .unwrap_or_else(|| "UNKNOWN".to_string());
             assert!(
-                actual.state == expected || actual.state == "UNKNOWN" || actual.state == *live_state,
+                actual.state == expected
+                    || actual.state == "UNKNOWN"
+                    || actual.state == *live_state,
                 "issue #{number}: daemon state {:?} not in {{expected {expected:?}, live {live_state:?}, UNKNOWN}}",
                 actual.state
             );
         }
-        println!("R11 step 6 pass: issues[] mirrors closingIssuesReferences ({} refs)", candidate.closing.len());
+        println!(
+            "R11 step 6 pass: issues[] mirrors closingIssuesReferences ({} refs)",
+            candidate.closing.len()
+        );
     }
     println!(
         "R11 pass: real-repo branch fallback + head-SHA primary + authoritative issues on {}",

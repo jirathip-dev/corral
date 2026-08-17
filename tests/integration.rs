@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use corrald::core::events::{
-    plane_channel, GhIssueRef, GhPrState, GhRepoState, GitEvent, GitStatus, PlaneEvent,
+    GhIssueRef, GhPrState, GhRepoState, GitEvent, GitStatus, PlaneEvent, plane_channel,
 };
 use corrald::core::model::{Agent, AgentState, Change, CiStatus, Workspace};
 use corrald::core::store::Store;
@@ -89,8 +89,11 @@ fn head(worktree: &str, branch: &str, commit: &str) -> PlaneEvent {
 /// of sleeping blind.
 async fn setup() -> (Store, mpsc::Sender<PlaneEvent>) {
     let store = Store::new();
-    let integrator =
-        Integrator::new(store.clone(), PathBuf::from(REPO_ROOT), PathBuf::from(WTS_ROOT));
+    let integrator = Integrator::new(
+        store.clone(),
+        PathBuf::from(REPO_ROOT),
+        PathBuf::from(WTS_ROOT),
+    );
     let (sink, rx) = plane_channel();
     tokio::spawn(async move { integrator.run(rx).await });
     (store, sink)
@@ -117,7 +120,9 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
     assert_eq!(store.flush().await.expect("seed").rev, 1);
 
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
         worktree: PathBuf::from(WT_A),
         status: GitStatus {
@@ -146,7 +151,11 @@ async fn git_facts_merge_and_batch_into_one_rev() {
     assert_eq!(delta.rev, 2);
     assert_eq!(delta.upd.len(), 1, "one record per batch, not per event");
     assert_eq!(delta.upd[0].workspace.ci_status, None, "no gh facts yet");
-    assert_eq!(delta.upd[0].workspace.head_sha.as_deref(), Some("abc123"), "delta carries head facts");
+    assert_eq!(
+        delta.upd[0].workspace.head_sha.as_deref(),
+        Some("abc123"),
+        "delta carries head facts"
+    );
 }
 
 #[tokio::test]
@@ -156,29 +165,55 @@ async fn gh_facts_map_pr_and_ci_and_reset_when_pr_leaves_the_open_set() {
     store.flush().await;
 
     // Git head first: the agent's commit is the PR-matching key.
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
 
     // PR 42's head SHA matches the agent's commit -> pr_number + ci_status,
     // match source = head-SHA (primary, never the fallback).
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "SUCCESS")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "SUCCESS")],
+    )))
+    .await
+    .unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
     assert_eq!(a.workspace.ci_status, Some(CiStatus::Success));
     assert_eq!(a.workspace.pr_match_source.as_deref(), Some("head_sha"));
-    assert!(a.workspace.issues.is_empty(), "PR 42 links no issues -> empty");
+    assert!(
+        a.workspace.issues.is_empty(),
+        "PR 42 links no issues -> empty"
+    );
 
     // The agent commits locally (HEAD moves); the gh cache still carries the
     // OLD head SHA with a FAILURE verdict. PR 42 is still OPEN and its head
     // branch still equals the agent's branch, so the #22 (repo, branch)
     // fallback re-binds it instead of flashing to None.
-    sink.send(head(WT_A, "ws2/gh-plane", "def456")).await.unwrap();
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "FAILURE")]))).await.unwrap();
-    let a = wait_for(&store, "a", |a| a.workspace.ci_status == Some(CiStatus::Failure)).await;
-    assert_eq!(a.workspace.pr_number, Some(42), "branch fallback keeps the committed-but-unpushed PR bound");
+    sink.send(head(WT_A, "ws2/gh-plane", "def456"))
+        .await
+        .unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr_with_branch(42, "abc123", "ws2/gh-plane", "FAILURE")],
+    )))
+    .await
+    .unwrap();
+    let a = wait_for(&store, "a", |a| {
+        a.workspace.ci_status == Some(CiStatus::Failure)
+    })
+    .await;
+    assert_eq!(
+        a.workspace.pr_number,
+        Some(42),
+        "branch fallback keeps the committed-but-unpushed PR bound"
+    );
     assert_eq!(a.workspace.pr_match_source.as_deref(), Some("branch"));
 
     // The PR leaves the open set -> pr/ci reset, git facts untouched.
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new()))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new())))
+        .await
+        .unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
     assert_eq!(a.workspace.ci_status, None);
     assert_eq!(a.workspace.pr_match_source, None);
@@ -203,7 +238,9 @@ async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
     let state = gh_state("herdr-board", vec![bound]);
 
     // Head-SHA binding carries the PR's authoritative closing refs (#23).
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
     sink.send(PlaneEvent::Gh(state.clone())).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
@@ -224,15 +261,29 @@ async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
     }];
     sink.send(PlaneEvent::Gh(repo_with_more)).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
-    assert_eq!(a.workspace.issues.len(), 1, "repo-level issues never populate the agent");
+    assert_eq!(
+        a.workspace.issues.len(),
+        1,
+        "repo-level issues never populate the agent"
+    );
 
     // A binding to a PR with NO closing refs -> empty array, no guess.
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr_with_branch(9, "abc123", "ws2/gh-plane", "PENDING")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr_with_branch(9, "abc123", "ws2/gh-plane", "PENDING")],
+    )))
+    .await
+    .unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(9)).await;
-    assert!(a.workspace.issues.is_empty(), "no closing refs -> empty, never a heuristic");
+    assert!(
+        a.workspace.issues.is_empty(),
+        "no closing refs -> empty, never a heuristic"
+    );
 
     // Unbound (PR leaves the open set) -> issues reset to empty.
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new()))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state("herdr-board", Vec::new())))
+        .await
+        .unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
     assert!(a.workspace.issues.is_empty());
     assert_eq!(a.workspace.pr_match_source, None);
@@ -242,7 +293,9 @@ async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
 async fn converges_when_agent_appears_after_facts_were_cached() {
     let (store, sink) = setup().await;
     // Facts arrive while NO agent matches the path: cached, nothing applied.
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
         worktree: PathBuf::from(WT_A),
         status: GitStatus {
@@ -258,12 +311,17 @@ async fn converges_when_agent_appears_after_facts_were_cached() {
     // cached fact set (path-keyed convergence).
     store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
     store.flush().await;
-    sink.send(head(WT_A, "ws2/gh-plane", "def456")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "def456"))
+        .await
+        .unwrap();
 
     let a = wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
     assert_eq!(a.workspace.branch.as_deref(), Some("ws2/gh-plane"));
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
-    assert!(a.workspace.dirty, "cached dirty fact applied on first match");
+    assert!(
+        a.workspace.dirty,
+        "cached dirty fact applied on first match"
+    );
     assert_eq!(a.workspace.ahead, 3);
 }
 
@@ -274,9 +332,13 @@ async fn agent_appears_with_zero_subsequent_plane_events_still_converges() {
     // plane events afterwards — the store change signal alone must apply the
     // cached facts.
     let (store, sink) = setup().await;
-    store.apply(Change::upsert(agent("sentinel", Some(WT_A)))).await;
+    store
+        .apply(Change::upsert(agent("sentinel", Some(WT_A))))
+        .await;
     store.flush().await;
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
         worktree: PathBuf::from(WT_A),
         status: GitStatus {
@@ -296,7 +358,10 @@ async fn agent_appears_with_zero_subsequent_plane_events_still_converges() {
 
     let late = wait_for(&store, "late", |a| a.workspace.repo.is_some()).await;
     assert_eq!(late.workspace.branch.as_deref(), Some("ws2/gh-plane"));
-    assert!(late.workspace.dirty, "cached dirty fact applied without any plane event");
+    assert!(
+        late.workspace.dirty,
+        "cached dirty fact applied without any plane event"
+    );
     assert_eq!((late.workspace.ahead, late.workspace.behind), (1, 2));
 }
 
@@ -310,7 +375,9 @@ async fn other_repo_worktrees_merge_fleet_wide() {
     store.apply(Change::upsert(agent("ph", Some(&wt_ph)))).await;
     store.flush().await;
 
-    sink.send(head(&wt_ph, "feat/plush-visual-fidelity", "abc123")).await.unwrap();
+    sink.send(head(&wt_ph, "feat/plush-visual-fidelity", "abc123"))
+        .await
+        .unwrap();
     sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
         worktree: PathBuf::from(&wt_ph),
         status: GitStatus {
@@ -321,11 +388,19 @@ async fn other_repo_worktrees_merge_fleet_wide() {
     .await
     .unwrap();
     wait_for(&store, "ph", |a| a.workspace.dirty).await;
-    sink.send(PlaneEvent::Gh(gh_state("project-hearthwild", vec![pr(9, "abc123", "SUCCESS")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "project-hearthwild",
+        vec![pr(9, "abc123", "SUCCESS")],
+    )))
+    .await
+    .unwrap();
 
     let ph = wait_for(&store, "ph", |a| a.workspace.pr_number == Some(9)).await;
     assert_eq!(ph.workspace.repo.as_deref(), Some("project-hearthwild"));
-    assert_eq!(ph.workspace.branch.as_deref(), Some("feat/plush-visual-fidelity"));
+    assert_eq!(
+        ph.workspace.branch.as_deref(),
+        Some("feat/plush-visual-fidelity")
+    );
     assert_eq!(ph.workspace.ci_status, Some(CiStatus::Success));
 }
 
@@ -337,21 +412,41 @@ async fn worktree_removed_resets_git_derived_fields_and_pr_binding() {
     store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
     store.flush().await;
 
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "PENDING")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr(42, "abc123", "PENDING")],
+    )))
+    .await
+    .unwrap();
     wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
 
-    sink.send(PlaneEvent::Git(GitEvent::WorktreeRemoved { worktree: PathBuf::from(WT_A) })).await.unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::WorktreeRemoved {
+        worktree: PathBuf::from(WT_A),
+    }))
+    .await
+    .unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number.is_none()).await;
     assert_eq!(a.workspace.branch, None, "git-derived branch reset");
     assert!(!a.workspace.dirty, "git-derived dirty reset");
     assert_eq!((a.workspace.ahead, a.workspace.behind), (0, 0));
     assert_eq!(a.workspace.ci_status, None, "PR binding dropped");
-    assert_eq!(a.workspace.head_sha, None, "head facts dropped with the worktree (G21)");
+    assert_eq!(
+        a.workspace.head_sha, None,
+        "head facts dropped with the worktree (G21)"
+    );
     assert_eq!(a.workspace.head_subject, None);
-    assert_eq!(a.workspace.pr_match_source, None, "match source dropped with the binding");
-    assert!(a.workspace.issues.is_empty(), "issues dropped with the binding");
+    assert_eq!(
+        a.workspace.pr_match_source, None,
+        "match source dropped with the binding"
+    );
+    assert!(
+        a.workspace.issues.is_empty(),
+        "issues dropped with the binding"
+    );
     // repo is path-derived, not git-fact-derived: it survives the reset.
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
 }
@@ -364,12 +459,18 @@ async fn detached_head_normalizes_branch_to_none() {
     store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
     store.flush().await;
 
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "a", |a| a.workspace.branch.is_some()).await;
 
     sink.send(head(WT_A, "HEAD", "def456")).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.branch.is_none()).await;
-    assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"), "repo unaffected");
+    assert_eq!(
+        a.workspace.repo.as_deref(),
+        Some("herdr-board"),
+        "repo unaffected"
+    );
 }
 
 #[tokio::test]
@@ -382,10 +483,19 @@ async fn facts_fan_out_to_every_matching_agent() {
     }
     store.flush().await;
 
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
-    sink.send(head(WT_B, "feat/corral-p2", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
+    sink.send(head(WT_B, "feat/corral-p2", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "b2", |a| a.workspace.branch.is_some()).await;
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "PENDING")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr(42, "abc123", "PENDING")],
+    )))
+    .await
+    .unwrap();
 
     for id in ["a1", "a2", "b1", "b2"] {
         let a = wait_for(&store, id, |a| a.workspace.pr_number == Some(42)).await;
@@ -397,12 +507,18 @@ async fn facts_fan_out_to_every_matching_agent() {
 #[tokio::test]
 async fn main_checkout_derives_repo_from_root_name() {
     let (store, sink) = setup().await;
-    store.apply(Change::upsert(agent("main", Some(REPO_ROOT)))).await;
+    store
+        .apply(Change::upsert(agent("main", Some(REPO_ROOT))))
+        .await;
     store.flush().await;
 
     sink.send(head(REPO_ROOT, "main", "abc123")).await.unwrap();
     let a = wait_for(&store, "main", |a| a.workspace.repo.is_some()).await;
-    assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"), "main checkout repo = root dir name");
+    assert_eq!(
+        a.workspace.repo.as_deref(),
+        Some("herdr-board"),
+        "main checkout repo = root dir name"
+    );
     assert_eq!(a.workspace.branch.as_deref(), Some("main"));
 }
 
@@ -412,20 +528,37 @@ async fn topology_events_never_create_or_remove_agents() {
     store.apply(Change::upsert(agent("a", Some(WT_A)))).await;
     store.flush().await;
 
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "a", |a| a.workspace.repo.is_some()).await;
 
     // Topology facts carry no read-model payload: nothing to map.
-    sink.send(PlaneEvent::Git(GitEvent::WorktreeRemoved { worktree: PathBuf::from(WT_A) })).await.unwrap();
-    sink.send(PlaneEvent::Git(GitEvent::WorktreeAdded { worktree: PathBuf::from(WT_A) })).await.unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::WorktreeRemoved {
+        worktree: PathBuf::from(WT_A),
+    }))
+    .await
+    .unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::WorktreeAdded {
+        worktree: PathBuf::from(WT_A),
+    }))
+    .await
+    .unwrap();
 
     // Facts flow again for the re-added worktree (cache rebuilt).
     sink.send(head(WT_A, "feat/x", "def456")).await.unwrap();
-    let a = wait_for(&store, "a", |a| a.workspace.branch.as_deref() == Some("feat/x")).await;
+    let a = wait_for(&store, "a", |a| {
+        a.workspace.branch.as_deref() == Some("feat/x")
+    })
+    .await;
     assert_eq!(a.workspace.repo.as_deref(), Some("herdr-board"));
 
     let snap = store.snapshot().await;
-    assert_eq!(snap.agents.len(), 1, "topology facts never create synthetic agents");
+    assert_eq!(
+        snap.agents.len(),
+        1,
+        "topology facts never create synthetic agents"
+    );
 }
 
 #[tokio::test]
@@ -437,17 +570,31 @@ async fn unchanged_facts_produce_no_delta() {
     store.flush().await;
 
     // Converge both agents (same commit), then bind them to PR 42.
-    sink.send(head(WT_A, "ws2/gh-plane", "abc123")).await.unwrap();
-    sink.send(head(WT_B, "feat/corral-p2", "abc123")).await.unwrap();
+    sink.send(head(WT_A, "ws2/gh-plane", "abc123"))
+        .await
+        .unwrap();
+    sink.send(head(WT_B, "feat/corral-p2", "abc123"))
+        .await
+        .unwrap();
     wait_for(&store, "b", |a| a.workspace.branch.is_some()).await;
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "SUCCESS")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr(42, "abc123", "SUCCESS")],
+    )))
+    .await
+    .unwrap();
     wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
     store.flush().await; // rev 2
 
     // The SAME gh state re-arrives (e.g. a dedupe miss upstream), followed
     // by a real change to agent b only. The duplicate must not re-upsert a:
     // the flush carries exactly one record.
-    sink.send(PlaneEvent::Gh(gh_state("herdr-board", vec![pr(42, "abc123", "SUCCESS")]))).await.unwrap();
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![pr(42, "abc123", "SUCCESS")],
+    )))
+    .await
+    .unwrap();
     sink.send(PlaneEvent::Git(GitEvent::DirtyChanged {
         worktree: PathBuf::from(WT_B),
         status: GitStatus {
@@ -458,7 +605,11 @@ async fn unchanged_facts_produce_no_delta() {
     .await
     .unwrap();
     let b = wait_for(&store, "b", |a| a.workspace.dirty).await;
-    assert_eq!(b.workspace.pr_number, Some(42), "duplicate gh re-apply left b's PR intact");
+    assert_eq!(
+        b.workspace.pr_number,
+        Some(42),
+        "duplicate gh re-apply left b's PR intact"
+    );
 
     let delta = store.flush().await.expect("batch with b's dirty change");
     assert_eq!(delta.rev, 3);
@@ -495,7 +646,11 @@ async fn head_subject_egresses_redacted_not_raw() {
         !a.workspace.head_subject.is_some_and(|s| s.contains(GHP)),
         "no raw PAT may reach the snapshot source"
     );
-    assert_eq!(a.workspace.head_sha.as_deref(), Some("abc123"), "the sha stays raw (identity)");
+    assert_eq!(
+        a.workspace.head_sha.as_deref(),
+        Some("abc123"),
+        "the sha stays raw (identity)"
+    );
 
     // The delta carrying the record is equally redacted.
     let delta = store.flush().await.expect("head-facts delta");

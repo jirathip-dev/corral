@@ -398,7 +398,10 @@ mod tests {
             panic!("stalled stream must surface a timeout error, got {item:?}");
         };
         assert!(error.contains("timed out"), "{error}");
-        assert!(next.body.is_none(), "stalled connection must be dropped for reconnect");
+        assert!(
+            next.body.is_none(),
+            "stalled connection must be dropped for reconnect"
+        );
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "the read deadline must fire promptly"

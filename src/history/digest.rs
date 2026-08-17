@@ -218,11 +218,7 @@ impl Digest {
 }
 
 fn span_word(n: usize) -> &'static str {
-    if n == 1 {
-        "span"
-    } else {
-        "spans"
-    }
+    if n == 1 { "span" } else { "spans" }
 }
 
 /// Status label matching the serde snake_case names (never assume a serial
@@ -388,9 +384,11 @@ mod tests {
                 ("herdr-board".to_string(), 1),
             ])
         );
-        assert!(digest
-            .render()
-            .contains("work by repo: (no repo) 1, corral 2, herdr-board 1"));
+        assert!(
+            digest
+                .render()
+                .contains("work by repo: (no repo) 1, corral 2, herdr-board 1")
+        );
     }
 
     #[test]

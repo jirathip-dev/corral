@@ -10,7 +10,7 @@ use base64::Engine;
 use ed25519_dalek::Signer;
 use sha2::{Digest, Sha256};
 
-use crate::drive::{canonical_envelope_bytes, DriveEnvelope};
+use crate::drive::{DriveEnvelope, canonical_envelope_bytes};
 
 /// Prefix + truncated SHA-256 of the public key — the daemon's key-id
 /// scheme (`dev_<hex(sha256(pubkey)[..16])>`).

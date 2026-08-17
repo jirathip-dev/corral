@@ -17,17 +17,17 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use axum::routing::{get, post};
-use axum::Router;
 
 use crate::api::AppState;
 
+use super::registry::RegistryMutationError;
 use super::step_up::{StepUpRequest, canonical_step_up_bytes};
 use super::{STEP_UP_TTL, b64_decode_array_32, decode_b64, now_secs};
-use super::registry::RegistryMutationError;
 
 pub const STEP_UP_HEADER: &str = "X-Step-Up-Token";
 /// Max accepted skew between a signed step-up request's `ts` and the host
@@ -71,7 +71,10 @@ async fn register(
         return json_err(StatusCode::BAD_REQUEST, "missing public_key");
     };
     let Some(public_key) = b64_decode_array_32(pubkey_b64) else {
-        return json_err(StatusCode::BAD_REQUEST, "public_key must be base64 of 32 bytes");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "public_key must be base64 of 32 bytes",
+        );
     };
     match state
         .auth
@@ -93,12 +96,14 @@ async fn register(
             super::RegisterError::BadToken => {
                 json_err(StatusCode::UNAUTHORIZED, "bad registration token")
             }
-            super::RegisterError::BadPublicKey => {
-                json_err(StatusCode::BAD_REQUEST, "public_key is not a valid Ed25519 point")
-            }
-            super::RegisterError::Persist(err) => {
-                json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("registry persist failed: {err}"))
-            }
+            super::RegisterError::BadPublicKey => json_err(
+                StatusCode::BAD_REQUEST,
+                "public_key is not a valid Ed25519 point",
+            ),
+            super::RegisterError::Persist(err) => json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("registry persist failed: {err}"),
+            ),
         },
     }
 }
@@ -114,16 +119,20 @@ async fn step_up(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let request: StepUpRequest = match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
-        Ok(r) => r,
-        Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed step-up request"),
-    };
+    let request: StepUpRequest =
+        match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
+            Ok(r) => r,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed step-up request"),
+        };
     if request.purpose != "destructive" {
         return json_err(StatusCode::BAD_REQUEST, "unknown step-up purpose");
     }
     // Freshness: reject replayed or stale signed requests (F14).
     if now_secs().abs_diff(request.ts) > STEP_UP_MAX_SKEW_SECS {
-        return json_err(StatusCode::BAD_REQUEST, "stale step-up request: |now - ts| > 60s");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "stale step-up request: |now - ts| > 60s",
+        );
     }
     let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
         Some(s) => s,
@@ -198,7 +207,10 @@ async fn grants(
             // string — a typo'd grant must fail loudly, never silently
             // produce an empty/partial set.
             let Some(list) = body.get("grants").and_then(|v| v.as_array()) else {
-                return json_err(StatusCode::BAD_REQUEST, "grants must be an array of capability strings");
+                return json_err(
+                    StatusCode::BAD_REQUEST,
+                    "grants must be an array of capability strings",
+                );
             };
             let mut grants = Vec::with_capacity(list.len());
             for g in list {
@@ -221,13 +233,24 @@ async fn grants(
             state.auth.registry.set_grants(key_id, grants)
         }
         Some("revoke") => {
-            let revoked = body.get("revoked").and_then(|v| v.as_bool()).unwrap_or(true);
+            let revoked = body
+                .get("revoked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             state.auth.registry.set_revoked(key_id, revoked)
         }
-        other => return json_err(StatusCode::BAD_REQUEST, &format!("unknown action: {other:?}")),
+        other => {
+            return json_err(
+                StatusCode::BAD_REQUEST,
+                &format!("unknown action: {other:?}"),
+            );
+        }
     };
     match result {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true, "key_id": key_id }))),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "key_id": key_id })),
+        ),
         Err(e) => match e {
             // F8: unknown key vs persist failure are distinct, typed paths.
             RegistryMutationError::UnknownKey(k) => {

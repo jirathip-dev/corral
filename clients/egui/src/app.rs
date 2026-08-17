@@ -11,7 +11,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::drive::{DriveEndpoint, DriveIntent, DriveOutcome};
 use crate::keys::{DeviceKey, KeyStore};
 use crate::protocol::{self, ApplyMsg};
-use crate::state::{AuditMsg, ConnState, DriveMsg, Fleet, GrantLedger, Level, RegistrationRecord, Toast};
+use crate::state::{
+    AuditMsg, ConnState, DriveMsg, Fleet, GrantLedger, Level, RegistrationRecord, Toast,
+};
 use crate::theme;
 
 /// The three top-level views.
@@ -168,16 +170,18 @@ impl CorralApp {
             audit_loading: false,
             audit_last_refresh: std::time::Instant::now(),
             tab: Tab::Board,
-            screenshot_path: std::env::var("CORRAL_UI_SCREENSHOT").ok().map(PathBuf::from),
+            screenshot_path: std::env::var("CORRAL_UI_SCREENSHOT")
+                .ok()
+                .map(PathBuf::from),
             screenshot_sent: false,
             screenshot_deadline: std::env::var("CORRAL_UI_SCREENSHOT_DELAY_MS")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
                 .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms))
                 .or_else(|| {
-                    std::env::var("CORRAL_UI_SCREENSHOT").ok().map(|_| {
-                        std::time::Instant::now() + std::time::Duration::from_secs(6)
-                    })
+                    std::env::var("CORRAL_UI_SCREENSHOT")
+                        .ok()
+                        .map(|_| std::time::Instant::now() + std::time::Duration::from_secs(6))
                 }),
         };
 
@@ -186,13 +190,11 @@ impl CorralApp {
         let tx_apply_clone = tx_apply.clone();
         let rt_handle = app.rt.clone();
         rt_handle.spawn(async move {
-            let fingerprint =
-                match protocol::fetch_host_key(&client_for_fp, &host_url_for_fp).await {
-                    Ok(host) => {
-                        crate::keys::host_fingerprint(Some(&host.public_key), &host_url_for_fp)
-                    }
-                    Err(_) => crate::keys::host_fingerprint(None, &host_url_for_fp),
-                };
+            let fingerprint = match protocol::fetch_host_key(&client_for_fp, &host_url_for_fp).await
+            {
+                Ok(host) => crate::keys::host_fingerprint(Some(&host.public_key), &host_url_for_fp),
+                Err(_) => crate::keys::host_fingerprint(None, &host_url_for_fp),
+            };
             let _ = tx_apply_clone.send(ApplyMsg::Fingerprint(fingerprint));
         });
 
@@ -322,8 +324,7 @@ impl CorralApp {
     fn on_drive(&mut self, msg: DriveMsg) {
         let capability = msg.capability.clone();
         let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
-        self.fleet
-            .remember_drive(&msg.agent_id, state.clone());
+        self.fleet.remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
             DriveOutcome::Ok { rev, .. } => {
                 self.ledger.note_success(&capability);
@@ -530,7 +531,8 @@ impl CorralApp {
             crate::ui::register::Request::Connect => {
                 let url = self.settings.host_url.trim().to_string();
                 if url.is_empty() {
-                    self.settings.notice = Some((Level::Error, "host URL must not be empty".into()));
+                    self.settings.notice =
+                        Some((Level::Error, "host URL must not be empty".into()));
                     return;
                 }
                 if url != self.config.host_url {
@@ -548,8 +550,8 @@ impl CorralApp {
             crate::ui::register::Request::Register => {
                 let token = self.settings.token_input.trim().to_string();
                 if token.is_empty() {
-                    self.settings
-                        .notice = Some((Level::Error, "registration token required".into()));
+                    self.settings.notice =
+                        Some((Level::Error, "registration token required".into()));
                 } else {
                     self.register(token, false);
                 }
@@ -868,7 +870,11 @@ impl eframe::App for CorralApp {
 
 fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("corral fleet").strong().color(theme::ui::ACCENT));
+        ui.label(
+            RichText::new("corral fleet")
+                .strong()
+                .color(theme::ui::ACCENT),
+        );
         ui.separator();
         let host = app.config.host_url.clone();
         ui.label(

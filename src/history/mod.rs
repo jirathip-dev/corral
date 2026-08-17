@@ -57,4 +57,4 @@ pub mod digest;
 pub mod ring;
 
 pub use digest::Digest;
-pub use ring::{should_rotate, HistoryEvent, HistoryRing, RotationPolicy};
+pub use ring::{HistoryEvent, HistoryRing, RotationPolicy, should_rotate};

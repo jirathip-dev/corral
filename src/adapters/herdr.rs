@@ -47,17 +47,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::core::model::{
-    Agent, AgentState, Attachment, Change, WaitingOn, WaitingOnKind, Workspace, CAPABILITIES,
+    Agent, AgentState, Attachment, CAPABILITIES, Change, WaitingOn, WaitingOnKind, Workspace,
 };
 use crate::core::redact::redact;
 use crate::core::store::Store;
@@ -313,11 +313,17 @@ impl RpcClient {
 /// bootstrap and drive commands only (both rare) — herdr closes idle API
 /// connections and turns subscribed ones push-only, so a persistent control
 /// connection is not viable.
-async fn rpc_call(socket_path: &std::path::Path, method: &str, params: Value) -> Result<Value, RpcError> {
-    let stream = UnixStream::connect(socket_path).await.map_err(|e| RpcError::Server {
-        code: "connect".to_string(),
-        message: e.to_string(),
-    })?;
+async fn rpc_call(
+    socket_path: &std::path::Path,
+    method: &str,
+    params: Value,
+) -> Result<Value, RpcError> {
+    let stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|e| RpcError::Server {
+            code: "connect".to_string(),
+            message: e.to_string(),
+        })?;
     let (client, _events) = RpcClient::new(stream);
     client.call(method, params).await
 }
@@ -461,7 +467,8 @@ impl HerdrAdapter {
         loop {
             match sink_rx.recv().await {
                 Some(SinkFrame::Event { kind, data, .. }) => {
-                    self.handle_event(&kind, &data, sink_tx.clone(), store).await;
+                    self.handle_event(&kind, &data, sink_tx.clone(), store)
+                        .await;
                 }
                 Some(SinkFrame::Closed { key }) => {
                     match key {
@@ -470,25 +477,17 @@ impl HerdrAdapter {
                             // to reconcile (dropping ghost agents whose panes
                             // closed while the stream was down), then reopen.
                             info!("main event stream closed, re-bootstrapping");
-                            let list =
-                                rpc_call(&self.socket_path, "agent.list", json!({})).await?;
-                            let list: AgentListWire = serde_json::from_value(list).map_err(
-                                |e| RpcError::Server {
+                            let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
+                            let list: AgentListWire =
+                                serde_json::from_value(list).map_err(|e| RpcError::Server {
                                     code: "decode".to_string(),
                                     message: e.to_string(),
-                                },
-                            )?;
+                                })?;
                             self.reconcile_against_list(&list, store).await;
                             self.spawn_event_stream(StreamKey::Global, sink_tx.clone());
                         }
                         StreamKey::Pane(pane) => {
-                            if self
-                                .state
-                                .lock()
-                                .unwrap()
-                                .subscribed_panes
-                                .contains(&pane)
-                            {
+                            if self.state.lock().unwrap().subscribed_panes.contains(&pane) {
                                 // Respawn with a delay (not at full speed) so
                                 // a persistently rejecting pane cannot spin.
                                 let socket_path = self.socket_path.clone();
@@ -514,18 +513,14 @@ impl HerdrAdapter {
     async fn reconcile_against_list(&self, list: &AgentListWire, store: &Store) {
         let removals: Vec<String> = {
             let mut state = self.state.lock().unwrap();
-            let present: HashSet<String> =
-                list.agents.iter().map(|a| a.pane_id.clone()).collect();
+            let present: HashSet<String> = list.agents.iter().map(|a| a.pane_id.clone()).collect();
             let stale: Vec<String> = state
                 .pane_agents
                 .keys()
                 .filter(|pane| !present.contains(*pane))
                 .cloned()
                 .collect();
-            stale
-                .iter()
-                .filter_map(|pane| state.remove(pane))
-                .collect()
+            stale.iter().filter_map(|pane| state.remove(pane)).collect()
         };
         for agent_id in removals {
             info!(agent_id, "agent removed: pane absent from fresh agent.list");
@@ -552,9 +547,12 @@ impl HerdrAdapter {
                 let socket_path = self.socket_path.clone();
                 let subs = self.global_subscriptions();
                 tokio::spawn(async move {
-                    if !run_event_stream(socket_path, subs, sink.clone(), StreamKey::Global).await
-                    {
-                        let _ = sink.send(SinkFrame::Closed { key: StreamKey::Global }).await;
+                    if !run_event_stream(socket_path, subs, sink.clone(), StreamKey::Global).await {
+                        let _ = sink
+                            .send(SinkFrame::Closed {
+                                key: StreamKey::Global,
+                            })
+                            .await;
                     }
                 });
             }
@@ -583,7 +581,10 @@ impl HerdrAdapter {
     }
 
     async fn apply_agent_info(&self, agent: &AgentInfoWire, store: &Store) {
-        let session_value = agent.agent_session.as_ref().and_then(|s| s.value.as_deref());
+        let session_value = agent
+            .agent_session
+            .as_ref()
+            .and_then(|s| s.value.as_deref());
         let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&agent.pane_id, session_value);
@@ -753,16 +754,18 @@ impl HerdrAdapter {
         data: &Value,
         sink: mpsc::Sender<SinkFrame>,
         store: &Store,
-    ) {        match kind {
+    ) {
+        match kind {
             "pane_updated" => {
-                let pane: PaneInfoWire =
-                    match serde_json::from_value(data.get("pane").cloned().unwrap_or(Value::Null)) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!(error = %e, "pane.updated decode failed");
-                            return;
-                        }
-                    };
+                let pane: PaneInfoWire = match serde_json::from_value(
+                    data.get("pane").cloned().unwrap_or(Value::Null),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(error = %e, "pane.updated decode failed");
+                        return;
+                    }
+                };
                 self.handle_pane_updated(&pane, sink.clone(), store).await;
             }
             "pane_agent_status_changed" => {
@@ -1037,7 +1040,11 @@ async fn run_event_stream(
         loop {
             match rx.recv().await {
                 Some(EventFrame { kind, data }) => {
-                    if forwarder_sink.send(SinkFrame::Event { kind, data }).await.is_err() {
+                    if forwarder_sink
+                        .send(SinkFrame::Event { kind, data })
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -1225,10 +1232,9 @@ impl Adapter for HerdrAdapter {
             // receives the choice text, exactly as if the human had typed it.
             // Live-verified: an opencode agent blocked on a y/n menu executed
             // the choice submitted this way.
-            DriveCommand::Approve { choice } => (
-                "agent.prompt",
-                json!({"target": target, "text": choice}),
-            ),
+            DriveCommand::Approve { choice } => {
+                ("agent.prompt", json!({"target": target, "text": choice}))
+            }
             DriveCommand::Kill => return Err(DriveError::NotImplemented("kill")),
             DriveCommand::Attach => return Err(DriveError::NotImplemented("attach")),
         };
@@ -1280,7 +1286,11 @@ impl Adapter for HerdrAdapter {
     }
 
     fn knows_agent(&self, agent_id: &str) -> bool {
-        self.state.lock().unwrap().agent_panes.contains_key(agent_id)
+        self.state
+            .lock()
+            .unwrap()
+            .agent_panes
+            .contains_key(agent_id)
     }
 }
 
@@ -1385,7 +1395,8 @@ mod tests {
         let claude: AgentInfoWire = serde_json::from_value(fixture_claude()).unwrap();
         adapter.apply_agent_info(&claude, &store).await;
 
-        let opencode: AgentInfoWire = serde_json::from_value(fixture_opencode_no_session()).unwrap();
+        let opencode: AgentInfoWire =
+            serde_json::from_value(fixture_opencode_no_session()).unwrap();
         adapter.apply_agent_info(&opencode, &store).await;
 
         let snap = store.snapshot().await;
@@ -1411,7 +1422,10 @@ mod tests {
         assert_eq!(c.capabilities, CAPABILITIES);
 
         // No session: pane-derived fallback id, reused across events.
-        let o = snap.agents.get("herdr:pane:w1D:p1").expect("pane fallback id");
+        let o = snap
+            .agents
+            .get("herdr:pane:w1D:p1")
+            .expect("pane fallback id");
         assert_eq!(o.tool, "opencode");
         assert_eq!(o.state, AgentState::Working);
         assert!(o.attachment.is_some());
@@ -1441,7 +1455,10 @@ mod tests {
         .unwrap();
         adapter.handle_status_changed(&status, &store).await;
 
-        let blocked = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
+        let blocked = store
+            .get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
+            .await
+            .unwrap();
         assert_eq!(blocked.state, AgentState::Blocked);
         assert_eq!(blocked.reason.as_deref(), Some("waiting_for_input"));
         assert!(blocked.waiting_on.is_none());
@@ -1462,8 +1479,14 @@ mod tests {
         .unwrap();
         adapter.handle_output_matched(&matched, &store).await;
 
-        let after = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
-        let w = after.waiting_on.as_ref().expect("waiting_on set while blocked");
+        let after = store
+            .get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
+            .await
+            .unwrap();
+        let w = after
+            .waiting_on
+            .as_ref()
+            .expect("waiting_on set while blocked");
         assert_eq!(w.kind, WaitingOnKind::AnswerQuestion);
         // P3 D8: the prompt is the EXACT matched line — never trimmed — and
         // the hash covers those exact bytes (a trimmed re-hash would not
@@ -1495,7 +1518,10 @@ mod tests {
         }))
         .unwrap();
         adapter.handle_status_changed(&working, &store).await;
-        let cleared = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
+        let cleared = store
+            .get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
+            .await
+            .unwrap();
         assert_eq!(cleared.state, AgentState::Working);
         assert!(cleared.waiting_on.is_none());
     }
@@ -1525,14 +1551,20 @@ mod tests {
         assert_ne!(spaced.prompt_hash, a.prompt_hash);
         let mut hasher = Sha256::new();
         hasher.update(b"  Approve this change?  ");
-        assert_eq!(spaced.prompt_hash, format!("sha256:{}", hex(&hasher.finalize())));
+        assert_eq!(
+            spaced.prompt_hash,
+            format!("sha256:{}", hex(&hasher.finalize()))
+        );
     }
 
     #[test]
     fn extract_choices_detects_menus() {
         assert_eq!(extract_choices("[y/n]"), vec!["y", "n"]);
         let text = "1. Approve\n2. Reject and comment\n3. Edit files";
-        assert_eq!(extract_choices(text), vec!["Approve", "Reject and comment", "Edit files"]);
+        assert_eq!(
+            extract_choices(text),
+            vec!["Approve", "Reject and comment", "Edit files"]
+        );
         assert!(extract_choices("nothing here").is_empty());
     }
 
@@ -1542,7 +1574,10 @@ mod tests {
         // hash must cover the REDACTED form — the exact bytes a client sees.
         let w = classify_waiting_on("Approve deploy with token ghp_yyy?", "");
         assert_eq!(w.prompt, "Approve deploy with token [REDACTED]?");
-        assert_eq!(w.prompt_hash, classify_waiting_on("Approve deploy with token [REDACTED]?", "").prompt_hash);
+        assert_eq!(
+            w.prompt_hash,
+            classify_waiting_on("Approve deploy with token [REDACTED]?", "").prompt_hash
+        );
 
         // Choice buffer is pane output too.
         let w = classify_waiting_on("Which env?", "1. prod: API_KEY=abc\n2. staging\n");
@@ -1566,7 +1601,10 @@ mod tests {
     #[test]
     fn reason_and_title_redact_pane_derived_text() {
         let mut labels = HashMap::new();
-        labels.insert("waiting_for_approval".to_string(), "run ghp_zzz now".to_string());
+        labels.insert(
+            "waiting_for_approval".to_string(),
+            "run ghp_zzz now".to_string(),
+        );
         assert_eq!(
             reason_from_labels(&labels).as_deref(),
             Some("waiting_for_approval: run [REDACTED] now")
@@ -1605,7 +1643,10 @@ mod tests {
         .unwrap();
         adapter.handle_output_matched(&matched, &store).await;
 
-        let record = store.get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784").await.unwrap();
+        let record = store
+            .get("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
+            .await
+            .unwrap();
         assert_eq!(
             record.title.as_deref(),
             Some("Setup AWS key [REDACTED] now"),
@@ -1615,7 +1656,10 @@ mod tests {
         // D8 (W2): the stored prompt is UNTRIMMED — the hash covers the exact
         // bytes a client echoes; leading whitespace is part of the claim.
         assert_eq!(w.prompt, "  Approve with [REDACTED]?");
-        assert!(!w.prompt_hash.contains("sk-ant"), "hash covers the redacted prompt only");
+        assert!(
+            !w.prompt_hash.contains("sk-ant"),
+            "hash covers the redacted prompt only"
+        );
     }
 
     #[tokio::test]
@@ -1650,7 +1694,10 @@ mod tests {
         let (sink, _rx) = mpsc::channel(16);
         adapter.handle_pane_updated(&updated, sink, &store).await;
 
-        assert!(adapter.drive_target("herdr:pane:wY:p1").is_err(), "old id is gone");
+        assert!(
+            adapter.drive_target("herdr:pane:wY:p1").is_err(),
+            "old id is gone"
+        );
         assert_eq!(
             adapter.drive_target("herdr:ses_migrated").unwrap(),
             "wY:p1",
@@ -1667,8 +1714,15 @@ mod tests {
             .register_agent_pane("uX:p1", "opencode", AgentState::Unknown, &store)
             .await;
         let snap = store.snapshot().await;
-        let agent = snap.agents.get("herdr:pane:uX:p1").expect("detected agent record");
-        assert_eq!(agent.state, AgentState::Unknown, "Unknown is a first-class state");
+        let agent = snap
+            .agents
+            .get("herdr:pane:uX:p1")
+            .expect("detected agent record");
+        assert_eq!(
+            agent.state,
+            AgentState::Unknown,
+            "Unknown is a first-class state"
+        );
         assert!(adapter.knows_agent(&agent.agent_id));
     }
 
@@ -1680,17 +1734,26 @@ mod tests {
             .register_agent_pane("uX:p1", "opencode", AgentState::Unknown, &store)
             .await;
         let snap = store.snapshot().await;
-        let agent = snap.agents.get("herdr:pane:uX:p1").expect("detected agent record");
+        let agent = snap
+            .agents
+            .get("herdr:pane:uX:p1")
+            .expect("detected agent record");
         assert_eq!(agent.state, AgentState::Unknown);
 
         // A tracked pane in Unknown state is drivable (drive gates on the
         // pane mapping, not the state): Ok, never a crash. The spawned rpc
         // task fails to connect to /nonexistent.sock and only logs.
         let result = adapter.drive(&agent.agent_id, DriveCommand::Prompt { text: "hi".into() });
-        assert!(result.is_ok(), "drive on an unknown-state agent must be Ok: {result:?}");
+        assert!(
+            result.is_ok(),
+            "drive on an unknown-state agent must be Ok: {result:?}"
+        );
 
         // An agent with no pane mapping gets the typed error.
-        let err = adapter.drive("herdr:pane:absent", DriveCommand::Prompt { text: "hi".into() });
+        let err = adapter.drive(
+            "herdr:pane:absent",
+            DriveCommand::Prompt { text: "hi".into() },
+        );
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "herdr:pane:absent"));
     }
 
@@ -1761,7 +1824,10 @@ mod tests {
         assert_eq!(tail.len(), READ_TAIL_MAX_LINES as usize, "line bound (D5)");
         assert_eq!(tail[0], "line 000 deploy [REDACTED]");
         let wire = tail.join("\n");
-        assert!(!wire.contains("sk-ant"), "redaction (D9) before bytes leave");
+        assert!(
+            !wire.contains("sk-ant"),
+            "redaction (D9) before bytes leave"
+        );
         assert!(wire.contains("[REDACTED]"));
     }
 
@@ -1785,7 +1851,14 @@ mod tests {
         // Ordinary prose survives byte-identical (redaction is display-safe).
         let text = "  1. Continue\n  2. Abort\n  → Waiting on your decision…\n";
         let tail = bounded_redacted_tail(text, 200);
-        assert_eq!(tail, vec!["  1. Continue", "  2. Abort", "  → Waiting on your decision…"]);
+        assert_eq!(
+            tail,
+            vec![
+                "  1. Continue",
+                "  2. Abort",
+                "  → Waiting on your decision…"
+            ]
+        );
         // No output -> empty lines, never an error.
         assert!(bounded_redacted_tail("", 200).is_empty());
     }
@@ -1828,16 +1901,28 @@ mod tests {
         adapter
             .register_agent_pane("p1", "opencode", AgentState::Working, &store)
             .await;
-        let tail = adapter.read_tail("herdr:pane:p1", 200).await.expect("read_tail");
+        let tail = adapter
+            .read_tail("herdr:pane:p1", 200)
+            .await
+            .expect("read_tail");
         let (req, _) = server.await.unwrap();
 
         assert_eq!(req["method"], "agent.read");
         assert_eq!(req["params"]["source"], "recent_unwrapped");
         assert_eq!(req["params"]["lines"], 200);
-        assert_eq!(req["params"]["target"], "p1", "target resolves to the pane/name");
-        assert_eq!(tail, vec!["line one", "deploy token [REDACTED] now", "tail three"]);
+        assert_eq!(
+            req["params"]["target"], "p1",
+            "target resolves to the pane/name"
+        );
+        assert_eq!(
+            tail,
+            vec!["line one", "deploy token [REDACTED] now", "tail three"]
+        );
         let wire = serde_json::to_string(&tail).unwrap();
-        assert!(!wire.contains("ghp_"), "no secret-shaped span leaves the machine");
+        assert!(
+            !wire.contains("ghp_"),
+            "no secret-shaped span leaves the machine"
+        );
     }
 
     #[tokio::test]
@@ -1852,7 +1937,10 @@ mod tests {
         adapter
             .register_agent_pane("p1", "opencode", AgentState::Working, &store)
             .await;
-        let tail = adapter.read_tail("herdr:pane:p1", 200).await.expect("read_tail");
+        let tail = adapter
+            .read_tail("herdr:pane:p1", 200)
+            .await
+            .expect("read_tail");
         server.await.unwrap();
         assert!(tail.is_empty(), "no output -> clean empty lines");
     }
@@ -1888,10 +1976,26 @@ mod ac2_live_tests {
     /// hashed EXACTLY as delivered — untrimmed — which is the D8 contract.
     fn ac2_matched_line(read_text: &str) -> Option<&str> {
         let phrases = [
-            "approve", "approval", "permission", "allow this", "confirm",
-            "proceed?", "continue?", "do you want", "should i", "are you sure",
-            "is that", "is this", "waiting for", "select", "choose",
-            "[y/n]", "(y/n)", "yes/no", "please review", "need your input",
+            "approve",
+            "approval",
+            "permission",
+            "allow this",
+            "confirm",
+            "proceed?",
+            "continue?",
+            "do you want",
+            "should i",
+            "are you sure",
+            "is that",
+            "is this",
+            "waiting for",
+            "select",
+            "choose",
+            "[y/n]",
+            "(y/n)",
+            "yes/no",
+            "please review",
+            "need your input",
             "your decision",
         ];
         let lines: Vec<&str> = read_text.lines().collect();
@@ -1925,7 +2029,11 @@ mod ac2_live_tests {
     }
 
     fn ac2_evidence(name: &str, value: &impl serde::Serialize) {
-        println!("AC2_EVIDENCE {} {}", name, serde_json::to_string(value).unwrap());
+        println!(
+            "AC2_EVIDENCE {} {}",
+            name,
+            serde_json::to_string(value).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1935,7 +2043,9 @@ mod ac2_live_tests {
         };
 
         // 1. Bootstrap over the real socket: agent.list.
-        let list = rpc_call(&socket, "agent.list", json!({})).await.expect("agent.list");
+        let list = rpc_call(&socket, "agent.list", json!({}))
+            .await
+            .expect("agent.list");
         let list: AgentListWire = serde_json::from_value(list).expect("agent list decode");
         let info = list
             .agents
@@ -1958,7 +2068,10 @@ mod ac2_live_tests {
                 .cloned()
                 .expect("pane registered by bootstrap")
         };
-        ac2_evidence("bootstrap-agent", &json!({ "agent_id": agent_id, "pane_id": pane }));
+        ac2_evidence(
+            "bootstrap-agent",
+            &json!({ "agent_id": agent_id, "pane_id": pane }),
+        );
 
         // 2. Status change to blocked (mirrors the real event stream).
         let status = StatusChangedWire {
@@ -1996,15 +2109,23 @@ mod ac2_live_tests {
         let matched = OutputMatchedWire {
             pane_id: pane.clone(),
             matched_line: Some(matched_line.to_string()),
-            read: Some(OutputReadWire { text: Some(read_text.clone()) }),
+            read: Some(OutputReadWire {
+                text: Some(read_text.clone()),
+            }),
         };
         adapter.handle_output_matched(&matched, &store).await;
 
         // 4. The live claim, emitted by the production path.
         let agent = store.get(&agent_id).await.expect("agent record");
-        let w = agent.waiting_on.as_ref().expect("waiting_on set while blocked");
+        let w = agent
+            .waiting_on
+            .as_ref()
+            .expect("waiting_on set while blocked");
         let claim = claim_for(&agent_id, w);
-        assert_eq!(claim.approval_id, w.approval_id, "derived claim == stored claim");
+        assert_eq!(
+            claim.approval_id, w.approval_id,
+            "derived claim == stored claim"
+        );
         assert_eq!(claim.prompt_hash, w.prompt_hash);
         ac2_evidence("approval-claim", &claim);
 
@@ -2045,7 +2166,12 @@ mod ac2_live_tests {
         .expect("matching claim executes");
         ac2_evidence("approved", &approved);
         adapter
-            .drive(&agent_id, DriveCommand::Approve { choice: approved.choice.clone() })
+            .drive(
+                &agent_id,
+                DriveCommand::Approve {
+                    choice: approved.choice.clone(),
+                },
+            )
             .expect("approve dispatch accepted");
 
         // 7. The agent receives the input and leaves blocked (agent.wait is
@@ -2070,7 +2196,10 @@ mod ac2_live_tests {
             state_labels: HashMap::new(),
         };
         adapter.handle_status_changed(&working, &store).await;
-        let after = store.get(&agent_id).await.expect("agent record after approve");
+        let after = store
+            .get(&agent_id)
+            .await
+            .expect("agent record after approve");
         assert!(
             after.waiting_on.is_none(),
             "a consumed approval must not stay live in the record"
@@ -2176,7 +2305,10 @@ mod review_tests {
         assert_eq!(snap.agents.len(), 1, "ghost agent must be removed");
         assert!(snap.agents.contains_key("herdr:ses-live"));
         assert!(!snap.agents.contains_key("herdr:pane:wG:p1"));
-        assert!(!adapter.knows_agent("herdr:pane:wG:p1"), "state must forget the ghost too");
+        assert!(
+            !adapter.knows_agent("herdr:pane:wG:p1"),
+            "state must forget the ghost too"
+        );
     }
 
     #[test]
@@ -2190,6 +2322,9 @@ mod review_tests {
         b.insert("focus_lost".to_string(), "user switched pane".to_string());
         b.insert("waiting_for_approval".to_string(), "".to_string());
         assert_eq!(reason_from_labels(&a), reason_from_labels(&b));
-        assert_eq!(reason_from_labels(&a).as_deref(), Some("focus_lost: user switched pane"));
+        assert_eq!(
+            reason_from_labels(&a).as_deref(),
+            Some("focus_lost: user switched pane")
+        );
     }
 }

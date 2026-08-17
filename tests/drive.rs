@@ -7,20 +7,20 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use corrald::adapters::{Adapter, DriveCommand, DriveError};
 use corrald::api::drive::ReplayTable;
-use corrald::api::{router, AppState};
+use corrald::api::{AppState, router};
+use corrald::auth::AuthPlane;
 use corrald::auth::audit::ChainEntry;
 use corrald::auth::test_support;
-use corrald::auth::AuthPlane;
 use corrald::core::store::Store;
 use corrald::drive::{AuditOutcome, Capability};
 use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,15 @@ impl Harness {
         payload: Value,
         rev: Option<u64>,
     ) -> String {
-        self.body_from(&self.signing, self.pubkey, request_id, capability, target, payload, rev)
+        self.body_from(
+            &self.signing,
+            self.pubkey,
+            request_id,
+            capability,
+            target,
+            payload,
+            rev,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -220,8 +228,7 @@ impl Harness {
             rev,
         };
         let token = self.auth.registry.registration_token();
-        let signed =
-            test_support::signed(&self.auth.registry, &token, signing, pubkey, &envelope);
+        let signed = test_support::signed(&self.auth.registry, &token, signing, pubkey, &envelope);
         serde_json::to_string(&signed).expect("signed body serializes")
     }
 
@@ -299,7 +306,13 @@ async fn prompt_dispatches_with_typed_command_and_current_rev() {
 
     let (status, value) = post(
         &h.app,
-        h.body("req-1", Capability::Prompt, "herdr:abc", prompt_payload("continue"), Some(3)),
+        h.body(
+            "req-1",
+            Capability::Prompt,
+            "herdr:abc",
+            prompt_payload("continue"),
+            Some(3),
+        ),
     )
     .await;
 
@@ -307,7 +320,11 @@ async fn prompt_dispatches_with_typed_command_and_current_rev() {
     assert_eq!(value["ok"], true);
     assert_eq!(value["request_id"], "req-1");
     let rev = h.store.snapshot().await.rev;
-    assert_eq!(value["rev"].as_u64(), Some(rev), "response carries the store rev");
+    assert_eq!(
+        value["rev"].as_u64(),
+        Some(rev),
+        "response carries the store rev"
+    );
     assert_eq!(
         h.adapter.commands(),
         vec![(
@@ -329,11 +346,7 @@ async fn command_only_capabilities_need_no_payload() {
     ] {
         let h = harness();
         h.adapter.knows("herdr:a");
-        let (status, value) = post(
-            &h.app,
-            h.body("req", cap, "herdr:a", Value::Null, None),
-        )
-        .await;
+        let (status, value) = post(&h.app, h.body("req", cap, "herdr:a", Value::Null, None)).await;
         assert_eq!(status, StatusCode::OK, "{capability}");
         assert_eq!(value["ok"], true, "{capability}");
         let commands = h.adapter.commands();
@@ -347,12 +360,23 @@ async fn command_only_capability_with_payload_is_refused() {
     let h = harness();
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Interrupt, "herdr:a", json!({ "kind": "interrupt" }), None),
+        h.body(
+            "req",
+            Capability::Interrupt,
+            "herdr:a",
+            json!({ "kind": "interrupt" }),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(value["kind"], "payload");
-    assert!(value["message"].as_str().unwrap().contains("no payload expected"));
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("no payload expected")
+    );
     assert_eq!(h.adapter.dispatch_count(), 0);
 }
 
@@ -414,7 +438,9 @@ async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
         title: None,
     };
     let store2 = store.clone();
-    store2.apply(corrald::core::model::Change::upsert(agent)).await;
+    store2
+        .apply(corrald::core::model::Change::upsert(agent))
+        .await;
 }
 
 #[tokio::test]
@@ -441,16 +467,31 @@ async fn approve_with_stale_hash_is_refused_without_dispatch_or_audit() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(value["kind"], "hash_mismatch", "wrong-question race must be typed distinctly");
-    assert!(h.adapter.commands().is_empty(), "stale hash must not dispatch");
-    assert_eq!(h.audit_entries().len(), 0, "refused approval is not a write (AC5)");
+    assert_eq!(
+        value["kind"], "hash_mismatch",
+        "wrong-question race must be typed distinctly"
+    );
+    assert!(
+        h.adapter.commands().is_empty(),
+        "stale hash must not dispatch"
+    );
+    assert_eq!(
+        h.audit_entries().len(),
+        0,
+        "refused approval is not a write (AC5)"
+    );
 }
 
 #[tokio::test]
 async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() {
     let h = harness();
     h.adapter.knows(W2_AGENT);
-    seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into(), "no".into()]).await;
+    seed_blocked_agent(
+        &h.store,
+        "Do you want to proceed?",
+        vec!["yes".into(), "no".into()],
+    )
+    .await;
 
     let body = json!({
         "kind": "approve",
@@ -458,14 +499,27 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
         "prompt_hash": W2_HASH,
         "choice": "yes"
     });
-    let (status, _) = post(&h.app, h.body("req-ok", Capability::Approve, W2_AGENT, body, None)).await;
+    let (status, _) = post(
+        &h.app,
+        h.body("req-ok", Capability::Approve, W2_AGENT, body, None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         h.adapter.commands(),
-        vec![(W2_AGENT.to_string(), DriveCommand::Approve { choice: "yes".to_string() })],
+        vec![(
+            W2_AGENT.to_string(),
+            DriveCommand::Approve {
+                choice: "yes".to_string()
+            }
+        )],
         "validated choice must dispatch exactly once"
     );
-    assert_eq!(h.audit_entries().len(), 1, "executed approval is one write (AC5)");
+    assert_eq!(
+        h.audit_entries().len(),
+        1,
+        "executed approval is one write (AC5)"
+    );
 
     // Replay of the same request_id returns the stored response, no double
     // send.
@@ -475,13 +529,13 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
         "prompt_hash": W2_HASH,
         "choice": "yes"
     });
-    let (status, _) = post(&h.app, h.body("req-ok", Capability::Approve, W2_AGENT, body, None)).await;
+    let (status, _) = post(
+        &h.app,
+        h.body("req-ok", Capability::Approve, W2_AGENT, body, None),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        h.adapter.commands().len(),
-        1,
-        "replay must not double-send"
-    );
+    assert_eq!(h.adapter.commands().len(), 1, "replay must not double-send");
 }
 
 // ---------------------------------------------------------------------------
@@ -494,11 +548,19 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
 #[tokio::test]
 async fn read_tail_result_carries_lines_and_audits_executed() {
     let h = harness();
-    h.adapter.knows("herdr:abc").tail(vec!["line one".into(), "line two".into()]);
+    h.adapter
+        .knows("herdr:abc")
+        .tail(vec!["line one".into(), "line two".into()]);
 
     let (status, value) = post(
         &h.app,
-        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail", "lines": 200 }), None),
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+            None,
+        ),
     )
     .await;
 
@@ -512,7 +574,10 @@ async fn read_tail_result_carries_lines_and_audits_executed() {
     // path: exactly one dispatch, zero drive() commands, the requested
     // line count passed through.
     assert_eq!(h.adapter.dispatch_count(), 1);
-    assert!(h.adapter.commands().is_empty(), "read_tail must not reach drive()");
+    assert!(
+        h.adapter.commands().is_empty(),
+        "read_tail must not reach drive()"
+    );
     assert_eq!(*h.adapter.tail_requests.lock().unwrap(), vec![200]);
 
     // Audit: one Executed entry, capability read_tail, fields unchanged.
@@ -531,13 +596,23 @@ async fn read_tail_with_no_output_is_ok_with_empty_lines() {
 
     let (status, value) = post(
         &h.app,
-        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail" }), None),
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], true);
-    assert_eq!(value["result"]["lines"], json!([]), "no output -> clean empty lines");
+    assert_eq!(
+        value["result"]["lines"],
+        json!([]),
+        "no output -> clean empty lines"
+    );
     assert_eq!(h.adapter.dispatch_count(), 1);
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
@@ -551,11 +626,21 @@ async fn read_tail_transport_failure_is_typed_and_audited_failed() {
 
     let (status, value) = post(
         &h.app,
-        h.body("req-tail", Capability::ReadTail, "herdr:abc", json!({ "kind": "read_tail" }), None),
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "dispatch outcomes ride the DriveResponse");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dispatch outcomes ride the DriveResponse"
+    );
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"], "transport error: boom");
     assert!(value.get("result").is_none());
@@ -569,7 +654,13 @@ async fn read_tail_unknown_agent_is_typed_refusal() {
     let h = harness();
     let (status, value) = post(
         &h.app,
-        h.body("req-tail", Capability::ReadTail, "herdr:ghost", json!({ "kind": "read_tail" }), None),
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:ghost",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
 
@@ -616,12 +707,23 @@ async fn payload_kind_mismatch_is_typed_refusal() {
     let h = harness();
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Prompt, "herdr:a", json!({ "kind": "read_tail" }), None),
+        h.body(
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(value["kind"], "payload");
-    assert!(value["message"].as_str().unwrap().contains("bad payload for prompt"));
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("bad payload for prompt")
+    );
     assert_eq!(h.adapter.dispatch_count(), 0);
     assert_eq!(h.audit_entries().len(), 0);
 }
@@ -661,15 +763,29 @@ async fn unknown_agent_is_typed_refusal_at_dispatch() {
     let h = harness();
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Prompt, "herdr:ghost", prompt_payload("x"), None),
+        h.body(
+            "req",
+            Capability::Prompt,
+            "herdr:ghost",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "dispatch outcomes ride the DriveResponse");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dispatch outcomes ride the DriveResponse"
+    );
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"], "unknown agent: herdr:ghost");
     assert_eq!(value["request_id"], "req");
     assert_eq!(h.adapter.dispatch_count(), 1);
-    assert_eq!(h.audit_entries().len(), 1, "typed refusal at dispatch is audited");
+    assert_eq!(
+        h.audit_entries().len(),
+        1,
+        "typed refusal at dispatch is audited"
+    );
 }
 
 #[tokio::test]
@@ -678,7 +794,13 @@ async fn not_implemented_and_transport_are_typed() {
     h.adapter.mode(Mode::NotImplemented);
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body(
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -699,7 +821,10 @@ async fn not_implemented_and_transport_are_typed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"], "transport error: boom");
-    assert!(matches!(&h.audit_entries()[0].outcome, AuditOutcome::Failed(_)));
+    assert!(matches!(
+        &h.audit_entries()[0].outcome,
+        AuditOutcome::Failed(_)
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +837,13 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
     h.adapter.knows("herdr:a");
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Prompt, "herdr:a", prompt_payload("go"), None),
+        h.body(
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("go"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -735,14 +866,24 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
         .to_string(),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "empty signature on a registered key is a bad signature");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "empty signature on a registered key is a bad signature"
+    );
     assert_eq!(value["kind"], "bad_signature");
     assert_eq!(h.adapter.dispatch_count(), 0);
     assert_eq!(h.audit_entries().len(), 0);
 
     // Bad signature (tampered payload after signing): typed 401.
     let h = harness();
-    let body = h.body("req", Capability::Prompt, "herdr:a", prompt_payload("go"), None);
+    let body = h.body(
+        "req",
+        Capability::Prompt,
+        "herdr:a",
+        prompt_payload("go"),
+        None,
+    );
     let mut tampered: Value = serde_json::from_str(&body).unwrap();
     tampered["envelope"]["payload"]["text"] = json!("go AND rm -rf /");
     let (status, value) = post(&h.app, tampered.to_string()).await;
@@ -781,7 +922,15 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
         .expect("revoke");
     let (status, value) = post(
         &h.app,
-        h.body_from(&other_signing, other_pubkey, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body_from(
+            &other_signing,
+            other_pubkey,
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -805,7 +954,15 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     let (status, value) = post(
         &h.app,
-        h.body_from(&other_signing, pubkey_other, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body_from(
+            &other_signing,
+            pubkey_other,
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -817,13 +974,25 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
     let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
     let (status, value) = post(
         &h.app,
-        h.body_from(&other_signing, other_pubkey, "req", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body_from(
+            &other_signing,
+            other_pubkey,
+            "req",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(value["kind"], "not_granted");
     assert_eq!(h.adapter.dispatch_count(), 0);
-    assert_eq!(h.audit_entries().len(), 0, "auth failures are never audited (AC5)");
+    assert_eq!(
+        h.audit_entries().len(),
+        0,
+        "auth failures are never audited (AC5)"
+    );
 }
 
 #[tokio::test]
@@ -836,16 +1005,29 @@ async fn step_up_gate_blocks_destructive_payloads_and_recovers_with_token() {
 
     let (status, value) = post(
         &h.app,
-        h.body("req-destr", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None),
+        h.body(
+            "req-destr",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("rm -rf /tmp/x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(value["kind"], "step_up_required");
     assert_eq!(h.adapter.dispatch_count(), 0, "no dispatch without step-up");
-    assert_eq!(h.audit_entries().len(), 0, "step-up failures are not audited (AC5)");
+    assert_eq!(
+        h.audit_entries().len(),
+        0,
+        "step-up failures are not audited (AC5)"
+    );
 
     // Mint a token for the harness device and retry with the header.
-    let token = h.auth.step_up.mint(&h.key_id, std::time::Duration::from_secs(300));
+    let token = h
+        .auth
+        .step_up
+        .mint(&h.key_id, std::time::Duration::from_secs(300));
     let res = h
         .app
         .clone()
@@ -853,14 +1035,28 @@ async fn step_up_gate_blocks_destructive_payloads_and_recovers_with_token() {
             Request::post("/drive")
                 .header("content-type", "application/json")
                 .header("X-Step-Up-Token", token.clone())
-                .body(Body::from(h.body("req-destr3", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None)))
+                .body(Body::from(h.body(
+                    "req-destr3",
+                    Capability::Prompt,
+                    "herdr:a",
+                    prompt_payload("rm -rf /tmp/x"),
+                    None,
+                )))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "minted token unlocks the destructive payload");
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "minted token unlocks the destructive payload"
+    );
     assert_eq!(h.adapter.dispatch_count(), 1, "exactly one dispatch");
-    assert_eq!(h.audit_entries().len(), 1, "executed write is audited exactly once");
+    assert_eq!(
+        h.audit_entries().len(),
+        1,
+        "executed write is audited exactly once"
+    );
 
     // Token replay is refused (single-use).
     let res = h
@@ -870,19 +1066,35 @@ async fn step_up_gate_blocks_destructive_payloads_and_recovers_with_token() {
             Request::post("/drive")
                 .header("content-type", "application/json")
                 .header("X-Step-Up-Token", token)
-                .body(Body::from(h.body("req-destr4", Capability::Prompt, "herdr:a", prompt_payload("rm -rf /tmp/x"), None)))
+                .body(Body::from(h.body(
+                    "req-destr4",
+                    Capability::Prompt,
+                    "herdr:a",
+                    prompt_payload("rm -rf /tmp/x"),
+                    None,
+                )))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "replayed step-up token refused");
+    assert_eq!(
+        res.status(),
+        StatusCode::UNAUTHORIZED,
+        "replayed step-up token refused"
+    );
 }
 
 #[tokio::test]
 async fn audit_grows_only_on_writes() {
     // Auth failure: no audit.
     let h = harness();
-    let body = h.body("r1", Capability::Prompt, "herdr:a", prompt_payload("x"), None);
+    let body = h.body(
+        "r1",
+        Capability::Prompt,
+        "herdr:a",
+        prompt_payload("x"),
+        None,
+    );
     let mut tampered: Value = serde_json::from_str(&body).unwrap();
     tampered["envelope"]["payload"]["text"] = json!("tampered");
     let (status, _) = post(&h.app, tampered.to_string()).await;
@@ -893,7 +1105,13 @@ async fn audit_grows_only_on_writes() {
     let h = harness();
     post(
         &h.app,
-        h.body("r2", Capability::Prompt, "herdr:a", json!({ "kind": "read_tail" }), None),
+        h.body(
+            "r2",
+            Capability::Prompt,
+            "herdr:a",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
     assert_eq!(h.audit_entries().len(), 0);
@@ -904,7 +1122,13 @@ async fn audit_grows_only_on_writes() {
     h.adapter.knows("herdr:a");
     post(
         &h.app,
-        h.body("r3", Capability::Prompt, "herdr:a", prompt_payload("go"), None),
+        h.body(
+            "r3",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("go"),
+            None,
+        ),
     )
     .await;
     let entries = h.audit_entries();
@@ -920,7 +1144,13 @@ async fn audit_grows_only_on_writes() {
     h.adapter.mode(Mode::NotImplemented);
     post(
         &h.app,
-        h.body("r4", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body(
+            "r4",
+            Capability::Prompt,
+            "herdr:a",
+            prompt_payload("x"),
+            None,
+        ),
     )
     .await;
     let entries = h.audit_entries();

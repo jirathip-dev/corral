@@ -65,35 +65,83 @@ const CLAUDE_RATES: &[(&str, ModelRate)] = &[
 const CODEX_RATES: &[(&str, ModelRate)] = &[
     (
         "gpt-5.6-sol",
-        ModelRate { input: per_mtok(5.00), output: per_mtok(30.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.50) },
+        ModelRate {
+            input: per_mtok(5.00),
+            output: per_mtok(30.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.50),
+        },
     ),
     (
         "gpt-5.6-terra",
-        ModelRate { input: per_mtok(2.00), output: per_mtok(12.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.20) },
+        ModelRate {
+            input: per_mtok(2.00),
+            output: per_mtok(12.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.20),
+        },
     ),
     (
         "gpt-5.6-luna",
-        ModelRate { input: per_mtok(0.20), output: per_mtok(1.20), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.02) },
+        ModelRate {
+            input: per_mtok(0.20),
+            output: per_mtok(1.20),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.02),
+        },
     ),
     (
         "gpt-5.5",
-        ModelRate { input: per_mtok(5.00), output: per_mtok(30.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.50) },
+        ModelRate {
+            input: per_mtok(5.00),
+            output: per_mtok(30.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.50),
+        },
     ),
     (
         "gpt-5.4",
-        ModelRate { input: per_mtok(2.50), output: per_mtok(15.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.25) },
+        ModelRate {
+            input: per_mtok(2.50),
+            output: per_mtok(15.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.25),
+        },
     ),
     (
         "gpt-5.3-codex",
-        ModelRate { input: per_mtok(1.75), output: per_mtok(14.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.175) },
+        ModelRate {
+            input: per_mtok(1.75),
+            output: per_mtok(14.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.175),
+        },
     ),
     (
         "gpt-5-mini",
-        ModelRate { input: per_mtok(0.25), output: per_mtok(2.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.025) },
+        ModelRate {
+            input: per_mtok(0.25),
+            output: per_mtok(2.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.025),
+        },
     ),
     (
         "gpt-5",
-        ModelRate { input: per_mtok(1.25), output: per_mtok(10.00), cache_write_5m: 0.0, cache_write_1h: 0.0, cache_read: per_mtok(0.125) },
+        ModelRate {
+            input: per_mtok(1.25),
+            output: per_mtok(10.00),
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+            cache_read: per_mtok(0.125),
+        },
     ),
 ];
 

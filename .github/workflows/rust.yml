@@ -51,14 +51,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
-      # cargo fmt --check currently FAILS on pre-existing formatting debt
-      # across the whole tree (hundreds of hunks). Reformatting the repo here
-      # would make this PR unreviewable and violates the additive-only
-      # constraint, so this step is report-only (continue-on-error) and must
-      # become a required gate only after a dedicated formatting commit lands
-      # in a follow-up. clippy/build/test below are the blocking gates.
-      - name: cargo fmt --check (report-only until formatting follow-up)
-        continue-on-error: true
+      # Blocking as of #40. It was report-only while the tree carried ~613
+      # pre-existing diff sites; that debt was cleared in one mechanical
+      # `cargo fmt` commit in this PR, so the gate can now hold the line.
+      - name: cargo fmt --check
         run: cargo fmt --check
 
       - name: clippy

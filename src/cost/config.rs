@@ -19,8 +19,8 @@
 
 use std::collections::HashMap;
 
-use super::windows::Window;
 use super::Provider;
+use super::windows::Window;
 
 /// Order-of-magnitude placeholder caps (USD), roughly shaped like a
 /// $20-$200/mo-class subscription spread across the three windows. NOT
@@ -55,16 +55,25 @@ impl CostConfig {
                     provider.as_str().to_ascii_uppercase(),
                     window_env_segment(window),
                 );
-                let (usd, is_placeholder) = match std::env::var(&var).ok().and_then(|v| v.parse::<f64>().ok()) {
-                    Some(v) if v > 0.0 => (v, false),
-                    _ => (placeholder_cap_usd(window), true),
-                };
+                let (usd, is_placeholder) =
+                    match std::env::var(&var).ok().and_then(|v| v.parse::<f64>().ok()) {
+                        Some(v) if v > 0.0 => (v, false),
+                        _ => (placeholder_cap_usd(window), true),
+                    };
                 caps_usd.insert((provider, window), (usd, is_placeholder));
             }
         }
-        let alert_threshold_pct = env_pct("CORRAL_COST_ALERT_THRESHOLD_PCT", DEFAULT_ALERT_THRESHOLD_PCT);
-        let warn_threshold_pct = env_pct("CORRAL_COST_WARN_THRESHOLD_PCT", DEFAULT_WARN_THRESHOLD_PCT);
-        Self { caps_usd, alert_threshold_pct, warn_threshold_pct }
+        let alert_threshold_pct = env_pct(
+            "CORRAL_COST_ALERT_THRESHOLD_PCT",
+            DEFAULT_ALERT_THRESHOLD_PCT,
+        );
+        let warn_threshold_pct =
+            env_pct("CORRAL_COST_WARN_THRESHOLD_PCT", DEFAULT_WARN_THRESHOLD_PCT);
+        Self {
+            caps_usd,
+            alert_threshold_pct,
+            warn_threshold_pct,
+        }
     }
 
     /// `(cap_usd, is_placeholder)` for a provider/window. Always `Some`-like

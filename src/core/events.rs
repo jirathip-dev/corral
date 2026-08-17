@@ -178,16 +178,20 @@ mod tests {
     fn git_status_dirty_semantics() {
         let clean = GitStatus::default();
         assert!(!clean.is_dirty());
-        assert!(GitStatus {
-            dirty_index: true,
-            ..Default::default()
-        }
-        .is_dirty());
-        assert!(GitStatus {
-            dirty_worktree: true,
-            ..Default::default()
-        }
-        .is_dirty());
+        assert!(
+            GitStatus {
+                dirty_index: true,
+                ..Default::default()
+            }
+            .is_dirty()
+        );
+        assert!(
+            GitStatus {
+                dirty_worktree: true,
+                ..Default::default()
+            }
+            .is_dirty()
+        );
         assert!(
             !GitStatus {
                 ahead: 3,

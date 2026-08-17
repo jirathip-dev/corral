@@ -38,7 +38,10 @@ pub async fn codex_usage(dir: &Path, start_ms: u64, end_ms: u64) -> Vec<UsageEve
 }
 
 async fn is_dir(path: &Path) -> bool {
-    fs::metadata(path).await.map(|m| m.is_dir()).unwrap_or(false)
+    fs::metadata(path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
 }
 
 async fn rollout_files_since(root: &Path, margin_ms: u64) -> Vec<PathBuf> {
@@ -46,10 +49,14 @@ async fn rollout_files_since(root: &Path, margin_ms: u64) -> Vec<PathBuf> {
     let mut queue = VecDeque::new();
     queue.push_back(root.to_path_buf());
     while let Some(dir) = queue.pop_front() {
-        let Ok(mut rd) = fs::read_dir(&dir).await else { continue };
+        let Ok(mut rd) = fs::read_dir(&dir).await else {
+            continue;
+        };
         while let Ok(Some(entry)) = rd.next_entry().await {
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else { continue };
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
             if meta.is_dir() {
                 queue.push_back(path);
                 continue;
@@ -75,7 +82,9 @@ async fn rollout_files_since(root: &Path, margin_ms: u64) -> Vec<PathBuf> {
 }
 
 async fn scan_rollout_file(path: &Path, start_ms: u64, end_ms: u64, out: &mut Vec<UsageEvent>) {
-    let Ok(file) = fs::File::open(path).await else { return };
+    let Ok(file) = fs::File::open(path).await else {
+        return;
+    };
     let mut lines = BufReader::new(file).lines();
     let mut model: Option<String> = None;
     let mut workspace_path: Option<String> = None;
@@ -84,8 +93,12 @@ async fn scan_rollout_file(path: &Path, start_ms: u64, end_ms: u64, out: &mut Ve
         if line.is_empty() {
             continue;
         }
-        let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(kind) = record.get("type").and_then(Value::as_str) else { continue };
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(kind) = record.get("type").and_then(Value::as_str) else {
+            continue;
+        };
         let payload = record.get("payload");
 
         if kind == "turn_context" {
@@ -130,7 +143,12 @@ async fn scan_rollout_file(path: &Path, start_ms: u64, end_ms: u64, out: &mut Ve
 
 fn price_delta(model: &str, last_token_usage: &Value) -> Option<f64> {
     let rate = codex_model_rate(model)?;
-    let tok = |key: &str| last_token_usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let tok = |key: &str| {
+        last_token_usage
+            .get(key)
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
     let cached = tok("cached_input_tokens");
     let total_input = tok("input_tokens");
     let uncached_input = total_input.saturating_sub(cached) as f64;
@@ -201,7 +219,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].workspace_path.as_deref(), Some("/repo"));
         let rate = codex_model_rate("gpt-5.6-sol").unwrap();
-        let expected = (19010.0 - 11008.0) * rate.input + 11008.0 * rate.cache_read + 246.0 * rate.output;
+        let expected =
+            (19010.0 - 11008.0) * rate.input + 11008.0 * rate.cache_read + 246.0 * rate.output;
         assert!((events[0].usd.unwrap() - expected).abs() < 1e-9);
     }
 

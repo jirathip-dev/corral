@@ -53,7 +53,7 @@ use crate::core::store::Store;
 
 use self::config::Config;
 use self::payload::{blocked_payload, done_payload};
-use self::provider::{token_hash, ApnsProvider, PushError};
+use self::provider::{ApnsProvider, PushError, token_hash};
 
 /// How long a single provider call may take before the notifier gives up
 /// and treats it as transient (Apple's own guidance: fail fast, retry
@@ -144,16 +144,14 @@ impl Notifier {
                 return None;
             }
         };
-        let provider: Arc<dyn ApnsProvider> = match provider::RealApnsProvider::new(
-            config.clone(),
-            signing_key,
-        ) {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                warn!(error = %e, "push notifier disabled: apns provider init failed");
-                return None;
-            }
-        };
+        let provider: Arc<dyn ApnsProvider> =
+            match provider::RealApnsProvider::new(config.clone(), signing_key) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    warn!(error = %e, "push notifier disabled: apns provider init failed");
+                    return None;
+                }
+            };
         info!(
             endpoint = ?config.endpoint,
             topic = %config.topic,
@@ -278,8 +276,7 @@ impl Notifier {
             if delivered
                 && let Some(s) = shadow.get_mut(&agent_id)
                 && s.state == agent.state
-                && s.blocked_hash
-                    == agent.waiting_on.as_ref().map(|w| w.prompt_hash.clone())
+                && s.blocked_hash == agent.waiting_on.as_ref().map(|w| w.prompt_hash.clone())
             {
                 s.delivered_ok = true;
             }
@@ -309,10 +306,7 @@ impl Notifier {
         };
         let push = match agent.state {
             AgentState::Blocked => {
-                let hash = agent
-                    .waiting_on
-                    .as_ref()
-                    .map(|w| w.prompt_hash.clone());
+                let hash = agent.waiting_on.as_ref().map(|w| w.prompt_hash.clone());
                 let is_new = force
                     || match prev {
                         Some(p) => p.state != AgentState::Blocked || p.blocked_hash != hash,
@@ -404,7 +398,8 @@ impl Notifier {
             let token = device.device_token.clone().expect("filtered above");
             let payload = payload.clone();
             handles.push(tokio::spawn(async move {
-                match deliver_with_retry(provider.as_ref(), &token, &payload, registry.as_ref()).await
+                match deliver_with_retry(provider.as_ref(), &token, &payload, registry.as_ref())
+                    .await
                 {
                     Ok(()) => true,
                     Err(e) => {
@@ -473,7 +468,7 @@ async fn deliver_with_retry(
                 return Err(PushError::Retryable {
                     status: None,
                     reason: "provider call timed out".to_string(),
-                })
+                });
             }
         }
     }
@@ -707,21 +702,33 @@ mod tests {
         notifier.ready().await;
 
         store
-            .apply(Change::upsert(blocked_agent("herdr:ses-4", "sha256:1", "first?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:ses-4",
+                "sha256:1",
+                "first?",
+            )))
             .await;
         let (_, p1) = received.recv().await.unwrap();
         assert_eq!(p1["prompt_hash"], "sha256:1");
 
         // A NEW prompt while blocked: a fresh claim, a fresh push.
         store
-            .apply(Change::upsert(blocked_agent("herdr:ses-4", "sha256:2", "second?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:ses-4",
+                "sha256:2",
+                "second?",
+            )))
             .await;
         let (_, p2) = received.recv().await.unwrap();
         assert_eq!(p2["prompt_hash"], "sha256:2");
 
         // Re-upserts of the second prompt do not re-push.
         store
-            .apply(Change::upsert(blocked_agent("herdr:ses-4", "sha256:2", "second?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:ses-4",
+                "sha256:2",
+                "second?",
+            )))
             .await;
         store.flush().await;
         assert!(
@@ -756,7 +763,9 @@ mod tests {
         notifier.ready().await;
 
         for _ in 0..5 {
-            store.apply(Change::upsert(done_agent("herdr:ses-d1"))).await;
+            store
+                .apply(Change::upsert(done_agent("herdr:ses-d1")))
+                .await;
             store.flush().await;
         }
 
@@ -859,7 +868,13 @@ mod tests {
         tokio::spawn(async move { coalescer.run_coalescer().await });
         notifier.clone().start();
 
-        store.apply(Change::upsert(blocked_agent("herdr:ses-5", "sha256:ddd", "go?"))).await;
+        store
+            .apply(Change::upsert(blocked_agent(
+                "herdr:ses-5",
+                "sha256:ddd",
+                "go?",
+            )))
+            .await;
 
         assert!(
             tokio::time::timeout(Duration::from_millis(500), received.recv())
@@ -900,7 +915,11 @@ mod tests {
         let (store, registry, notifier, mut received) = harness();
         device_with_token(&registry);
         store
-            .apply(Change::upsert(blocked_agent("herdr:ses-boot", "sha256:boot", "boot?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:ses-boot",
+                "sha256:boot",
+                "boot?",
+            )))
             .await;
         notifier.clone().start();
         notifier.ready().await;
@@ -962,12 +981,12 @@ mod tests {
                 self.in_flight
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let _permit = self.gate.acquire().await.expect("gate never closed");
-                self.tx.send((token.to_string(), payload.clone())).map_err(|_| {
-                    PushError::Rejected {
+                self.tx
+                    .send((token.to_string(), payload.clone()))
+                    .map_err(|_| PushError::Rejected {
                         status: 500,
                         reason: "mock receiver dropped".to_string(),
-                    }
-                })
+                    })
             })
         }
     }
@@ -994,7 +1013,11 @@ mod tests {
 
         // First block parks the watcher inside delivery (gate closed).
         store
-            .apply(Change::upsert(blocked_agent("herdr:lag-1", "sha256:lag", "go?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:lag-1",
+                "sha256:lag",
+                "go?",
+            )))
             .await;
         store.flush().await;
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1055,7 +1078,11 @@ mod tests {
         let mut shadow = HashMap::new();
 
         store
-            .apply(Change::upsert(blocked_agent("herdr:n4", "sha256:n4", "go?")))
+            .apply(Change::upsert(blocked_agent(
+                "herdr:n4",
+                "sha256:n4",
+                "go?",
+            )))
             .await;
         notifier.reconcile(&mut shadow).await;
 

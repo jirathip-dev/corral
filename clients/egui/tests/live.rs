@@ -43,8 +43,7 @@ async fn live_register_read_drive_audit() {
         .await
         .expect("GET /host-key");
     assert_eq!(host.algorithm, "X25519");
-    let _fingerprint =
-        corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
+    let _fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
 
     // A FRESH ephemeral keypair per run: the probe must always observe
     // the read-only default, which re-registering the GUI's persistent
@@ -68,8 +67,7 @@ async fn live_register_read_drive_audit() {
     // --- R1: register -> empty grants (read-only default) -------------
     let pubkey_b64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(device.signing.verifying_key().to_bytes())
+        base64::engine::general_purpose::STANDARD.encode(device.signing.verifying_key().to_bytes())
     };
     let (key_id, grants) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
         .await
@@ -81,8 +79,16 @@ async fn live_register_read_drive_audit() {
     let snapshot = protocol::fetch_snapshot(&client, &base_url)
         .await
         .expect("snapshot");
-    assert!(snapshot.schema_version >= 3, "schema {}", snapshot.schema_version);
-    println!("snapshot rev={} agents={}", snapshot.rev, snapshot.agents.len());
+    assert!(
+        snapshot.schema_version >= 3,
+        "schema {}",
+        snapshot.schema_version
+    );
+    println!(
+        "snapshot rev={} agents={}",
+        snapshot.rev,
+        snapshot.agents.len()
+    );
     let first_agent = snapshot
         .agents
         .keys()
@@ -94,7 +100,11 @@ async fn live_register_read_drive_audit() {
     let events = protocol::open_events(&client, &base_url, Some(snapshot.rev))
         .await
         .expect("SSE connect with Last-Event-ID");
-    assert!(events.status().is_success(), "SSE status {}", events.status());
+    assert!(
+        events.status().is_success(),
+        "SSE status {}",
+        events.status()
+    );
     println!("SSE connect ok (Last-Event-ID: {})", snapshot.rev);
 
     // --- drive endpoint = the same struct the GUI builds on tap -------
@@ -140,7 +150,11 @@ async fn live_register_read_drive_audit() {
         .send()
         .await
         .expect("POST /grants");
-    assert!(response.status().is_success(), "grants: {}", response.status());
+    assert!(
+        response.status().is_success(),
+        "grants: {}",
+        response.status()
+    );
     println!("granted read_tail");
 
     // --- R3: signed drive executes against a real agent ----------------
@@ -164,7 +178,10 @@ async fn live_register_read_drive_audit() {
         replay, outcome,
         "same request_id must replay the stored response byte-identical"
     );
-    println!("idempotent replay verified (request_id {})", intent.request_id);
+    println!(
+        "idempotent replay verified (request_id {})",
+        intent.request_id
+    );
 
     // --- R10: audit grew by exactly one executed entry ------------------
     let after_drive = audit_len(&client, &base_url, &admin_token).await;
@@ -228,21 +245,18 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     let fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
     let token = corrald_ui::keys::read_daemon_registration_token()
         .expect("registration token (scratch CORRAL_CONFIG_DIR)");
-    let admin_token =
-        corrald_ui::keys::read_daemon_admin_token().expect("admin token");
+    let admin_token = corrald_ui::keys::read_daemon_admin_token().expect("admin token");
 
     // The persistent device key (created under the scratch UI config dir).
     let key = corrald_ui::keys::load_or_create_key(&fingerprint).expect("device key");
     let seed_before = key.signing.to_bytes();
     let pubkey_b64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(key.signing.verifying_key().to_bytes())
+        base64::engine::general_purpose::STANDARD.encode(key.signing.verifying_key().to_bytes())
     };
-    let (key_id, _) =
-        protocol::register_device(&client, &base_url, &token, &pubkey_b64)
-            .await
-            .expect("register the persistent key");
+    let (key_id, _) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+        .await
+        .expect("register the persistent key");
     println!("registered persistent key key_id={key_id}");
 
     // Host grants read_tail so the OLD key can still drive afterwards.
@@ -258,7 +272,11 @@ async fn live_reregister_failure_preserves_key_and_registration() {
         .send()
         .await
         .expect("POST /grants");
-    assert!(response.status().is_success(), "grants: {}", response.status());
+    assert!(
+        response.status().is_success(),
+        "grants: {}",
+        response.status()
+    );
 
     // Simulate the app's RE-REGISTER path with a BAD token: the daemon
     // refuses before registering anything, and the seed rotation must not
@@ -268,13 +286,20 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     let new_signing = ed25519_dalek::SigningKey::from_bytes(&new_seed);
     let new_pubkey_b64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(new_signing.verifying_key().to_bytes())
+        base64::engine::general_purpose::STANDARD.encode(new_signing.verifying_key().to_bytes())
     };
-    let failed = protocol::register_device(&client, &base_url, "definitely-not-the-token", &new_pubkey_b64)
-        .await;
+    let failed = protocol::register_device(
+        &client,
+        &base_url,
+        "definitely-not-the-token",
+        &new_pubkey_b64,
+    )
+    .await;
     assert!(failed.is_err(), "bad registration token must be refused");
-    println!("re-register with bad token refused: {}", failed.unwrap_err());
+    println!(
+        "re-register with bad token refused: {}",
+        failed.unwrap_err()
+    );
 
     // The PERSISTED seed must be unchanged (rotation happens only after a
     // successful registration).
@@ -314,10 +339,9 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     // F3 primitive: re-registering the SAME key re-fetches the host's
     // CURRENT grant set (the Settings "refresh grants" action) — a grant
     // the host added after registration surfaces without a new key.
-    let (_, refreshed_grants) =
-        protocol::register_device(&client, &base_url, &token, &pubkey_b64)
-            .await
-            .expect("refresh grants (same key)");
+    let (_, refreshed_grants) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+        .await
+        .expect("refresh grants (same key)");
     assert!(
         refreshed_grants.iter().any(|g| g == "read_tail"),
         "refresh grants must surface the host's current set: {refreshed_grants:?}"
@@ -351,8 +375,7 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
     let old_seed = old_key.signing.to_bytes();
     let old_pubkey_b64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(old_key.signing.verifying_key().to_bytes())
+        base64::engine::general_purpose::STANDARD.encode(old_key.signing.verifying_key().to_bytes())
     };
     let (old_key_id, _) = protocol::register_device(&client, &base_url, &token, &old_pubkey_b64)
         .await
@@ -369,7 +392,11 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         .send()
         .await
         .expect("POST /grants");
-    assert!(response.status().is_success(), "grants: {}", response.status());
+    assert!(
+        response.status().is_success(),
+        "grants: {}",
+        response.status()
+    );
     println!("registered old key key_id={old_key_id} + granted read_tail");
 
     // The app's ReRegister flow (register(token, true)): fresh seed in
@@ -380,13 +407,15 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
     let new_signing = ed25519_dalek::SigningKey::from_bytes(&new_seed);
     let new_pubkey_b64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .encode(new_signing.verifying_key().to_bytes())
+        base64::engine::general_purpose::STANDARD.encode(new_signing.verifying_key().to_bytes())
     };
     let (new_key_id, _) = protocol::register_device(&client, &base_url, &token, &new_pubkey_b64)
         .await
         .expect("register the rotated key");
-    assert_ne!(new_key_id, old_key_id, "rotation must produce a fresh key_id");
+    assert_ne!(
+        new_key_id, old_key_id,
+        "rotation must produce a fresh key_id"
+    );
     corrald_ui::keys::rotate_key(&fingerprint, &new_seed).expect("persist rotation");
     // The rotated key starts read-only (empty grants); grant read_tail so
     // the post-rotation drive is an execution, not a refusal.
@@ -401,7 +430,11 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         .send()
         .await
         .expect("POST /grants (new key)");
-    assert!(response.status().is_success(), "grants (new key): {}", response.status());
+    assert!(
+        response.status().is_success(),
+        "grants (new key): {}",
+        response.status()
+    );
     println!("re-registered with new key key_id={new_key_id} + granted read_tail");
 
     // The fix: `handle_register_result` reloads the in-memory signing key
@@ -448,11 +481,9 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         key_id: new_key_id,
         signing: ed25519_dalek::SigningKey::from_bytes(&old_seed),
     };
-    let outcome = corrald_ui::drive::execute_drive(
-        &mismatched,
-        &DriveIntent::read_tail(&first_agent, None),
-    )
-    .await;
+    let outcome =
+        corrald_ui::drive::execute_drive(&mismatched, &DriveIntent::read_tail(&first_agent, None))
+            .await;
     assert!(
         matches!(
             outcome,

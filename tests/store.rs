@@ -1,9 +1,9 @@
 //! Store contract tests: monotonic rev, coalescing ticks, resume semantics,
 //! bounded history.
 
+use corrald::core::model::Resume;
 use corrald::core::model::{Agent, AgentState, Change};
 use corrald::core::store::Store;
-use corrald::core::model::Resume;
 
 fn agent(id: &str) -> Agent {
     Agent {
@@ -69,7 +69,9 @@ async fn background_tick_coalesces_at_2s_when_unwatched() {
     let snap = store.snapshot().await;
     assert_eq!(snap.rev, 1, "5 changes coalesced into one background batch");
     assert_eq!(snap.agents.len(), 5);
-    assert!(start.elapsed() >= std::time::Duration::from_secs(2) - std::time::Duration::from_millis(50));
+    assert!(
+        start.elapsed() >= std::time::Duration::from_secs(2) - std::time::Duration::from_millis(50)
+    );
 }
 
 #[tokio::test]
@@ -87,7 +89,10 @@ async fn foreground_tick_coalesces_at_250ms_when_watched() {
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     let snap = store.snapshot().await;
     assert_eq!(snap.rev, 1);
-    assert!(start.elapsed() < std::time::Duration::from_secs(2), "foreground tick must be fast");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "foreground tick must be fast"
+    );
 }
 
 #[tokio::test]
@@ -100,7 +105,10 @@ async fn resume_fresh_cursor_replays_deltas_only() {
     assert_eq!(store.snapshot().await.rev, 5);
 
     match store.resume_from(Some(2)).await {
-        Resume::Deltas { deltas, live_from_rev } => {
+        Resume::Deltas {
+            deltas,
+            live_from_rev,
+        } => {
             assert_eq!(live_from_rev, 5);
             let revs: Vec<u64> = deltas.iter().map(|d| d.rev).collect();
             assert_eq!(revs, vec![3, 4, 5]);
@@ -129,10 +137,16 @@ async fn resume_current_rev_goes_live() {
     let store = Store::new();
     store.apply(Change::upsert(agent("a"))).await;
     store.flush().await;
-    assert!(matches!(store.resume_from(Some(1)).await, Resume::Live { rev: 1 }));
+    assert!(matches!(
+        store.resume_from(Some(1)).await,
+        Resume::Live { rev: 1 }
+    ));
     // Cursor strictly ahead of current is a dead epoch (daemon restart):
     // the client must re-anchor on a full snapshot, not go live.
-    assert!(matches!(store.resume_from(Some(99)).await, Resume::Snapshot(_)));
+    assert!(matches!(
+        store.resume_from(Some(99)).await,
+        Resume::Snapshot(_)
+    ));
 }
 
 #[tokio::test]
@@ -149,12 +163,15 @@ async fn resume_future_cursor_after_restart_resnapshots() {
 
     let restarted = Store::new();
     assert_eq!(restarted.snapshot().await.rev, 0);
-    assert!(matches!(
-        restarted.resume_from(Some(5)).await,
-        Resume::Snapshot(_)
-    ), "future cursor after restart must resnapshot");
+    assert!(
+        matches!(restarted.resume_from(Some(5)).await, Resume::Snapshot(_)),
+        "future cursor after restart must resnapshot"
+    );
     // A client already at the fresh daemon's rev goes live.
-    assert!(matches!(restarted.resume_from(Some(0)).await, Resume::Live { rev: 0 }));
+    assert!(matches!(
+        restarted.resume_from(Some(0)).await,
+        Resume::Live { rev: 0 }
+    ));
 }
 
 #[tokio::test]
@@ -176,7 +193,10 @@ async fn pending_upserts_dedupe_within_one_window() {
     assert!(d.upd.is_empty());
     assert!(d.del.contains(&"b".to_string()));
     let snap = store.snapshot().await;
-    assert!(!snap.agents.contains_key("b"), "removed agent must not linger");
+    assert!(
+        !snap.agents.contains_key("b"),
+        "removed agent must not linger"
+    );
     assert_eq!(snap.agents.len(), 1, "only the earlier 'a' remains");
 }
 

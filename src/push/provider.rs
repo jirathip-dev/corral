@@ -36,13 +36,13 @@
 //! caches one and refreshes it after [`TOKEN_REFRESH`] to bound the signing
 //! cost while never presenting a token older than Apple's limit.
 
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use p256::ecdsa::{signature::Signer as _, SigningKey};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use p256::ecdsa::{SigningKey, signature::Signer as _};
 use p256::pkcs8::DecodePrivateKey as _;
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -182,7 +182,10 @@ impl RealApnsProvider {
         }));
         let signing_input = format!("{header}.{claims}");
         let signature: p256::ecdsa::Signature = key.sign(signing_input.as_bytes());
-        let jwt = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        let jwt = format!(
+            "{signing_input}.{}",
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
         *self.token.lock().expect("token lock poisoned") = CachedToken {
             jwt: jwt.clone(),
             minted_at: now,
@@ -204,7 +207,8 @@ impl RealApnsProvider {
         let key = Config::load_signing_key(&self.config.auth_key_path)?;
         {
             let token = self.token.lock().expect("token lock poisoned");
-            if !token.jwt.is_empty() && now_elapsed().saturating_sub(token.minted_at) < TOKEN_REFRESH
+            if !token.jwt.is_empty()
+                && now_elapsed().saturating_sub(token.minted_at) < TOKEN_REFRESH
             {
                 return Ok(token.jwt.clone());
             }
@@ -258,11 +262,7 @@ impl ApnsProvider for RealApnsProvider {
             // retryable — clock skew heals, a bad key (InvalidProviderToken)
             // does not and stays Configuration.
             if is_expired_provider_token(status.as_u16(), &reason) {
-                self.token
-                    .lock()
-                    .expect("token lock poisoned")
-                    .jwt
-                    .clear();
+                self.token.lock().expect("token lock poisoned").jwt.clear();
                 return Err(PushError::Retryable {
                     status: Some(403),
                     reason: "ExpiredProviderToken (cached token invalidated; retry re-mints)"

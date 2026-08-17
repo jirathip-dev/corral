@@ -13,10 +13,7 @@ use crate::state::{ConnState, Level};
 /// kinds, CI verdicts).
 pub fn badge(ui: &mut Ui, text: &str, color: Color32) {
     let font = FontId::monospace(11.0);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(0.0, 0.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
     let painter = ui.painter();
     let galley = painter.layout_no_wrap(text.to_string(), font, color);
     let size = galley.size() + egui::vec2(12.0, 6.0);
@@ -37,20 +34,28 @@ pub fn connection_pill(ui: &mut Ui, state: ConnState) {
     let (color, label) = match state {
         ConnState::Connected => (crate::theme::ui::GOOD, "live".to_string()),
         ConnState::Connecting => (crate::theme::ui::WARN, "connecting".to_string()),
-        ConnState::Reconnecting { backoff_ms } => {
-            (crate::theme::ui::WARN, format!("reconnecting ({backoff_ms}ms)"))
-        }
+        ConnState::Reconnecting { backoff_ms } => (
+            crate::theme::ui::WARN,
+            format!("reconnecting ({backoff_ms}ms)"),
+        ),
         ConnState::Down => (crate::theme::ui::BAD, "down".to_string()),
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.circle_filled(rect.center(), 3.5, color);
     ui.add_space(4.0);
-    ui.label(RichText::new(label).monospace().color(crate::theme::ui::TEXT_MUTED));
+    ui.label(
+        RichText::new(label)
+            .monospace()
+            .color(crate::theme::ui::TEXT_MUTED),
+    );
 }
 
 /// Render queued toasts (errors/warnings/info) in the top-right corner.
-pub fn toast_area(ctx: &egui::Context, toasts: &mut std::collections::VecDeque<crate::state::Toast>) {
+pub fn toast_area(
+    ctx: &egui::Context,
+    toasts: &mut std::collections::VecDeque<crate::state::Toast>,
+) {
     const LIFETIME: std::time::Duration = std::time::Duration::from_secs(10);
     toasts.retain(|t| t.at.elapsed() < LIFETIME);
     if toasts.is_empty() {
@@ -61,21 +66,21 @@ pub fn toast_area(ctx: &egui::Context, toasts: &mut std::collections::VecDeque<c
         .show(ctx, |ui| {
             ui.set_max_width(420.0);
             for toast in toasts.iter() {
-            let color = match toast.level {
-                Level::Info => crate::theme::ui::GOOD,
-                Level::Warn => crate::theme::ui::WARN,
-                Level::Error => crate::theme::ui::BAD,
-            };
-            egui::Frame::popup(ui.style())
-                .fill(Color32::from_rgb(0x1c, 0x21, 0x28))
-                .stroke(Stroke::new(1.0, color))
-                .corner_radius(CornerRadius::same(6))
-                .show(ui, |ui| {
-                    ui.label(RichText::new(&toast.text).color(crate::theme::ui::TEXT_STRONG));
-                });
-            ui.add_space(4.0);
-        }
-    });
+                let color = match toast.level {
+                    Level::Info => crate::theme::ui::GOOD,
+                    Level::Warn => crate::theme::ui::WARN,
+                    Level::Error => crate::theme::ui::BAD,
+                };
+                egui::Frame::popup(ui.style())
+                    .fill(Color32::from_rgb(0x1c, 0x21, 0x28))
+                    .stroke(Stroke::new(1.0, color))
+                    .corner_radius(CornerRadius::same(6))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(&toast.text).color(crate::theme::ui::TEXT_STRONG));
+                    });
+                ui.add_space(4.0);
+            }
+        });
 }
 
 /// Helper for a disabled-with-reason capability button.

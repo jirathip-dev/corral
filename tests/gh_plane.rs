@@ -12,10 +12,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use corrald::adapters::gh_plane::{GhPlane, GhPlaneConfig, GhTransport, TrackedRepo, TRACKED_REPOS};
-use corrald::core::events::{plane_channel, GhRepoState, Plane, PlaneEvent};
+use corrald::adapters::gh_plane::{
+    GhPlane, GhPlaneConfig, GhTransport, TRACKED_REPOS, TrackedRepo,
+};
+use corrald::core::events::{GhRepoState, Plane, PlaneEvent, plane_channel};
 use corrald::core::store::Store;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Canned GraphQL success body shaped like GitHub's real response.
 fn canned_response() -> Value {
@@ -90,8 +92,10 @@ impl GhTransport for MockTransport {
         _url: &'a str,
         token: &'a str,
         _body: Value,
-    ) -> corrald::adapters::gh_plane::BoxFuture<'a, Result<Value, corrald::adapters::gh_plane::GhError>>
-    {
+    ) -> corrald::adapters::gh_plane::BoxFuture<
+        'a,
+        Result<Value, corrald::adapters::gh_plane::GhError>,
+    > {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.times.lock().unwrap().push(std::time::Instant::now());
@@ -218,9 +222,11 @@ async fn background_cadence_after_all_subscribers_disconnect() {
     .await;
     drop(subscriber);
 
-    wait_until("foreground poll already scheduled fires", Duration::from_secs(1), || {
-        mock.call_count() >= 2
-    })
+    wait_until(
+        "foreground poll already scheduled fires",
+        Duration::from_secs(1),
+        || mock.call_count() >= 2,
+    )
     .await;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -254,11 +260,16 @@ async fn reconnect_during_background_sleep_triggers_immediate_fetch() {
     // Join -> immediate fetch; drop -> the scheduled foreground poll fires,
     // then the plane is on the 600ms background sleep until T2+600.
     let subscriber = store.subscribe();
-    wait_until("first fetch", Duration::from_secs(1), || mock.call_count() >= 1).await;
-    drop(subscriber);
-    wait_until("scheduled poll after disconnect", Duration::from_secs(1), || {
-        mock.call_count() >= 2
+    wait_until("first fetch", Duration::from_secs(1), || {
+        mock.call_count() >= 1
     })
+    .await;
+    drop(subscriber);
+    wait_until(
+        "scheduled poll after disconnect",
+        Duration::from_secs(1),
+        || mock.call_count() >= 2,
+    )
     .await;
 
     // Reconnect ~200ms into the 600ms background sleep: the fetch must come
@@ -287,7 +298,11 @@ async fn sustained_failures_back_off_then_recover() {
     let mut changed = canned_response();
     {
         let data = changed["data"].as_object_mut().unwrap();
-        let herdr_board = data.get_mut("q5").expect("herdr-board alias").as_object_mut().unwrap();
+        let herdr_board = data
+            .get_mut("q5")
+            .expect("herdr-board alias")
+            .as_object_mut()
+            .unwrap();
         herdr_board.insert(
             "pullRequests".to_string(),
             json!({ "nodes": [
@@ -308,7 +323,12 @@ async fn sustained_failures_back_off_then_recover() {
         );
     }
     let failing = json!({ "data": null, "errors": [{ "message": "boom" }] });
-    let mock = Arc::new(MockTransport::new(vec![canned_response(), failing.clone(), failing, changed]));
+    let mock = Arc::new(MockTransport::new(vec![
+        canned_response(),
+        failing.clone(),
+        failing,
+        changed,
+    ]));
     let plane = Arc::new(GhPlane::with_config(
         store.clone(),
         mock.clone(),
@@ -318,11 +338,27 @@ async fn sustained_failures_back_off_then_recover() {
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
-    wait_until("initial poll", Duration::from_secs(1), || mock.call_count() >= 1).await;
-    assert_eq!(drain_gh_events(&mut rx).len(), TRACKED_REPOS.len(), "initial poll emits all repos");
-    wait_until("first failure", Duration::from_secs(2), || mock.call_count() >= 2).await;
-    wait_until("backoff retry", Duration::from_secs(2), || mock.call_count() >= 3).await;
-    wait_until("recovery poll", Duration::from_secs(2), || mock.call_count() >= 4).await;
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
+    assert_eq!(
+        drain_gh_events(&mut rx).len(),
+        TRACKED_REPOS.len(),
+        "initial poll emits all repos"
+    );
+    wait_until("first failure", Duration::from_secs(2), || {
+        mock.call_count() >= 2
+    })
+    .await;
+    wait_until("backoff retry", Duration::from_secs(2), || {
+        mock.call_count() >= 3
+    })
+    .await;
+    wait_until("recovery poll", Duration::from_secs(2), || {
+        mock.call_count() >= 4
+    })
+    .await;
 
     // Backoff grows: the third call waits longer after the second than the
     // second did after the first (foreground cadence 150ms -> backoff 30ms).
@@ -331,9 +367,18 @@ async fn sustained_failures_back_off_then_recover() {
     let gap23 = times[2].duration_since(times[1]);
     let gap34 = times[3].duration_since(times[2]);
     eprintln!("gaps: 12={gap12:?} 23={gap23:?} 34={gap34:?}");
-    assert!(gap12 >= Duration::from_millis(100), "cadence-gap poll: {gap12:?}");
-    assert!(gap23 < gap12, "backoff gap ({gap23:?}) must be below the cadence gap ({gap12:?})");
-    assert!(gap34 >= gap23, "backoff grows across failures: {gap34:?} >= {gap23:?}");
+    assert!(
+        gap12 >= Duration::from_millis(100),
+        "cadence-gap poll: {gap12:?}"
+    );
+    assert!(
+        gap23 < gap12,
+        "backoff gap ({gap23:?}) must be below the cadence gap ({gap12:?})"
+    );
+    assert!(
+        gap34 >= gap23,
+        "backoff grows across failures: {gap34:?} >= {gap23:?}"
+    );
 
     // The recovery poll emits only the changed repo.
     let ev = tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -358,7 +403,11 @@ async fn maps_all_repos_and_emits_only_changes() {
     let mut changed = canned_response();
     {
         let data = changed["data"].as_object_mut().unwrap();
-        let herdr_board = data.get_mut("q5").expect("herdr-board alias").as_object_mut().unwrap();
+        let herdr_board = data
+            .get_mut("q5")
+            .expect("herdr-board alias")
+            .as_object_mut()
+            .unwrap();
         herdr_board.insert(
             "pullRequests".to_string(),
             json!({ "nodes": [
@@ -391,7 +440,11 @@ async fn maps_all_repos_and_emits_only_changes() {
             ]}),
         );
     }
-    let mock = Arc::new(MockTransport::new(vec![canned_response(), canned_response(), changed]));
+    let mock = Arc::new(MockTransport::new(vec![
+        canned_response(),
+        canned_response(),
+        changed,
+    ]));
     let plane = Arc::new(GhPlane::with_config(
         store.clone(),
         mock.clone(),
@@ -402,19 +455,32 @@ async fn maps_all_repos_and_emits_only_changes() {
     plane.start(sink);
 
     // Poll 1 (immediate, subscriber already present): all 8 repos emitted.
-    wait_until("initial poll", Duration::from_secs(1), || mock.call_count() >= 1).await;
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
     let states = drain_gh_events(&mut rx);
-    assert_eq!(states.len(), TRACKED_REPOS.len(), "first poll emits every repo");
+    assert_eq!(
+        states.len(),
+        TRACKED_REPOS.len(),
+        "first poll emits every repo"
+    );
     for (i, state) in states.iter().enumerate() {
         assert_eq!(state.repo, TRACKED_REPOS[i].name);
         assert_eq!(state.default_branch, "main");
-        assert_eq!(state.ahead, 0, "ahead/behind are local tracking info (WS1), 0 from gh");
+        assert_eq!(
+            state.ahead, 0,
+            "ahead/behind are local tracking info (WS1), 0 from gh"
+        );
         assert_eq!(state.behind, 0);
         assert_eq!(state.prs.len(), 1);
         assert_eq!(state.prs[0].pr_number, 7);
         assert_eq!(state.prs[0].ci_status, "SUCCESS");
         assert_eq!(state.prs[0].head_sha, "abc123");
-        assert_eq!(state.prs[0].head_branch, "ws2/gh-plane", "#22 fragment field mapped");
+        assert_eq!(
+            state.prs[0].head_branch, "ws2/gh-plane",
+            "#22 fragment field mapped"
+        );
         // #23: the closing ref's state is enriched from the SAME poll's
         // repo-level issues fetch (issue 4 is among the recent ones).
         assert_eq!(state.prs[0].closing_issues.len(), 1);
@@ -428,14 +494,20 @@ async fn maps_all_repos_and_emits_only_changes() {
     }
 
     // Poll 2 (same payload): dedupe — nothing re-emitted into the sink.
-    wait_until("second poll", Duration::from_secs(2), || mock.call_count() >= 2).await;
+    wait_until("second poll", Duration::from_secs(2), || {
+        mock.call_count() >= 2
+    })
+    .await;
     assert!(
         drain_gh_events(&mut rx).is_empty(),
         "unchanged state must not be re-emitted"
     );
 
     // Poll 3 (herdr-board gained a PR): exactly one event, for that repo.
-    wait_until("third poll", Duration::from_secs(2), || mock.call_count() >= 3).await;
+    wait_until("third poll", Duration::from_secs(2), || {
+        mock.call_count() >= 3
+    })
+    .await;
     let ev = tokio::time::timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("change event within the window")
@@ -461,7 +533,11 @@ async fn failed_poll_emits_nothing() {
     let store = Arc::new(Store::new());
     let _subscriber = store.subscribe();
     let failing = json!({ "data": null, "errors": [{ "message": "boom" }] });
-    let mock = Arc::new(MockTransport::new(vec![canned_response(), failing, canned_response()]));
+    let mock = Arc::new(MockTransport::new(vec![
+        canned_response(),
+        failing,
+        canned_response(),
+    ]));
     let plane = Arc::new(GhPlane::with_config(
         store.clone(),
         mock.clone(),
@@ -471,16 +547,25 @@ async fn failed_poll_emits_nothing() {
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
-    wait_until("initial poll", Duration::from_secs(1), || mock.call_count() >= 1).await;
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
     assert_eq!(drain_gh_events(&mut rx).len(), TRACKED_REPOS.len());
 
-    wait_until("failing poll", Duration::from_secs(2), || mock.call_count() >= 2).await;
+    wait_until("failing poll", Duration::from_secs(2), || {
+        mock.call_count() >= 2
+    })
+    .await;
     assert!(
         drain_gh_events(&mut rx).is_empty(),
         "failed poll emits nothing"
     );
 
-    wait_until("recovered poll", Duration::from_secs(2), || mock.call_count() >= 3).await;
+    wait_until("recovered poll", Duration::from_secs(2), || {
+        mock.call_count() >= 3
+    })
+    .await;
     assert!(
         drain_gh_events(&mut rx).is_empty(),
         "recovered poll unchanged vs last success -> still deduped"
@@ -494,7 +579,10 @@ async fn one_bad_repo_does_not_poison_the_round_trip() {
     let store = Arc::new(Store::new());
     let _subscriber = store.subscribe();
     let mut response = canned_response();
-    response["data"].as_object_mut().unwrap().insert("q3".to_string(), Value::Null);
+    response["data"]
+        .as_object_mut()
+        .unwrap()
+        .insert("q3".to_string(), Value::Null);
     let mock = Arc::new(MockTransport::new(vec![response]));
     let plane = Arc::new(GhPlane::with_config(
         store.clone(),
@@ -505,13 +593,19 @@ async fn one_bad_repo_does_not_poison_the_round_trip() {
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
-    wait_until("initial poll", Duration::from_secs(1), || mock.call_count() >= 1).await;
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
     let names: HashSet<String> = drain_gh_events(&mut rx)
         .into_iter()
         .map(|s| s.repo)
         .collect();
     assert_eq!(names.len(), TRACKED_REPOS.len() - 1);
-    assert!(!names.contains("dotfiles"), "null alias emits nothing for that repo");
+    assert!(
+        !names.contains("dotfiles"),
+        "null alias emits nothing for that repo"
+    );
     assert!(names.contains("herdr-board"));
 }
 
@@ -592,7 +686,11 @@ async fn live_round_trip_all_repos() {
     }
     let names: HashSet<&str> = states.iter().map(|s| s.repo.as_str()).collect();
     for repo in TRACKED_REPOS {
-        assert!(names.contains(repo.name), "round-trip missing repo {}", repo.name);
+        assert!(
+            names.contains(repo.name),
+            "round-trip missing repo {}",
+            repo.name
+        );
     }
     // Budget: criterion 1 targets <2s for the single round-trip; observed
     // 1.3-2.0s with token resolution excluded. Assert at 3s so server-side

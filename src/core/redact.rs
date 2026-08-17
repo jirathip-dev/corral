@@ -297,12 +297,20 @@ mod tests {
     #[test]
     fn anthropic_keys_are_redacted() {
         assert_eq!(redacted(SK_ANT), "[REDACTED]");
-        assert_eq!(redacted("sk-ant-xxx"), "[REDACTED]", "short form still a key");
+        assert_eq!(
+            redacted("sk-ant-xxx"),
+            "[REDACTED]",
+            "short form still a key"
+        );
         assert_eq!(
             redacted(&format!("use {SK_ANT} in the call")),
             "use [REDACTED] in the call"
         );
-        assert_eq!(redacted("sk-ant-"), "sk-ant-", "bare prefix is not a secret");
+        assert_eq!(
+            redacted("sk-ant-"),
+            "sk-ant-",
+            "bare prefix is not a secret"
+        );
         assert_eq!(
             redacted("mysk-ant-abc"),
             "mysk-ant-abc",
@@ -340,7 +348,11 @@ mod tests {
     #[test]
     fn aws_access_key_ids_are_redacted() {
         assert_eq!(redacted(AKIA), "[REDACTED]");
-        assert_eq!(redacted("AKIAZZZZ"), "[REDACTED]", "short form still a key id");
+        assert_eq!(
+            redacted("AKIAZZZZ"),
+            "[REDACTED]",
+            "short form still a key id"
+        );
         assert_eq!(
             redacted(&format!("access key {AKIA} for the account")),
             "access key [REDACTED] for the account"
@@ -350,7 +362,10 @@ mod tests {
 
     #[test]
     fn the_live_test_shape_redacts_all_three_prefixes() {
-        assert_eq!(redacted("sk-ant-xxx ghp_yyy AKIAZZZZ"), "[REDACTED] [REDACTED] [REDACTED]");
+        assert_eq!(
+            redacted("sk-ant-xxx ghp_yyy AKIAZZZZ"),
+            "[REDACTED] [REDACTED] [REDACTED]"
+        );
     }
 
     #[test]
@@ -400,38 +415,84 @@ mod tests {
             "SHA256_KEY=[REDACTED]",
             "ALL-CAPS with underscore is env-shaped even when short"
         );
-        assert_eq!(redacted("run with API_KEY=abc123 now"), "run with API_KEY=[REDACTED]");
-        assert_eq!(redacted("PASSWORD="), "PASSWORD=", "empty value has nothing to redact");
+        assert_eq!(
+            redacted("run with API_KEY=abc123 now"),
+            "run with API_KEY=[REDACTED]"
+        );
+        assert_eq!(
+            redacted("PASSWORD="),
+            "PASSWORD=",
+            "empty value has nothing to redact"
+        );
         // F5 (re-review): the shape gate. Bare all-caps names and lowercase
         // names qualify only via a long value; short ones pass through.
-        assert_eq!(redacted("KEY1=abc"), "KEY1=abc", "no underscore, short value");
-        assert_eq!(redacted("KEY1=abcdefgh"), "KEY1=[REDACTED]", "long value qualifies");
-        assert_eq!(redacted("TOKEN=abcdefgh"), "TOKEN=[REDACTED]", "long value qualifies");
-        assert_eq!(redacted("api_key=abc123"), "api_key=abc123", "lowercase name, short value (accepted trade)");
-        assert_eq!(redacted("key=abcdefgh"), "key=[REDACTED]", "long value qualifies");
+        assert_eq!(
+            redacted("KEY1=abc"),
+            "KEY1=abc",
+            "no underscore, short value"
+        );
+        assert_eq!(
+            redacted("KEY1=abcdefgh"),
+            "KEY1=[REDACTED]",
+            "long value qualifies"
+        );
+        assert_eq!(
+            redacted("TOKEN=abcdefgh"),
+            "TOKEN=[REDACTED]",
+            "long value qualifies"
+        );
+        assert_eq!(
+            redacted("api_key=abc123"),
+            "api_key=abc123",
+            "lowercase name, short value (accepted trade)"
+        );
+        assert_eq!(
+            redacted("key=abcdefgh"),
+            "key=[REDACTED]",
+            "long value qualifies"
+        );
     }
 
     #[test]
     fn env_rule_does_not_swallow_ordinary_prose() {
         // F5 (re-review): these are prose, not .env files.
-        assert_eq!(redacted("set debug key=false to continue"), "set debug key=false to continue");
+        assert_eq!(
+            redacted("set debug key=false to continue"),
+            "set debug key=false to continue"
+        );
         assert_eq!(redacted("?token=abc&a=1"), "?token=abc&a=1");
-        assert_eq!(redacted("the key=value pair syntax is handy"), "the key=value pair syntax is handy");
-        assert_eq!(redacted("pass=1s the ball to the wing"), "pass=1s the ball to the wing");
+        assert_eq!(
+            redacted("the key=value pair syntax is handy"),
+            "the key=value pair syntax is handy"
+        );
+        assert_eq!(
+            redacted("pass=1s the ball to the wing"),
+            "pass=1s the ball to the wing"
+        );
     }
 
     #[test]
     fn env_shaped_non_secrets_pass_through() {
         assert_eq!(redacted("LOG_LEVEL=debug"), "LOG_LEVEL=debug");
-        assert_eq!(redacted("DATABASE_URL=postgres://u:p@h/db"), "DATABASE_URL=postgres://u:p@h/db");
-        assert_eq!(redacted("MONKEY=banana"), "MONKEY=banana", "'key' inside a word is not a marker");
+        assert_eq!(
+            redacted("DATABASE_URL=postgres://u:p@h/db"),
+            "DATABASE_URL=postgres://u:p@h/db"
+        );
+        assert_eq!(
+            redacted("MONKEY=banana"),
+            "MONKEY=banana",
+            "'key' inside a word is not a marker"
+        );
         assert_eq!(redacted("NODE_ENV=production"), "NODE_ENV=production");
     }
 
     #[test]
     fn multiline_text_is_processed_line_by_line() {
         let text = "API_KEY=abc\nLOG_LEVEL=debug\nGITHUB_TOKEN=xyz";
-        assert_eq!(redacted(text), "API_KEY=[REDACTED]\nLOG_LEVEL=debug\nGITHUB_TOKEN=[REDACTED]");
+        assert_eq!(
+            redacted(text),
+            "API_KEY=[REDACTED]\nLOG_LEVEL=debug\nGITHUB_TOKEN=[REDACTED]"
+        );
         let prose = "first line\nsecond: ghp_qrstuv\nthird";
         assert_eq!(redacted(prose), "first line\nsecond: [REDACTED]\nthird");
     }
@@ -446,7 +507,10 @@ mod tests {
             "no secret matched: must not allocate"
         );
         assert_eq!(redacted(""), "");
-        assert_eq!(redacted("192.168.1.1 /Users/jirathip/Projects/herdr-board"), "192.168.1.1 /Users/jirathip/Projects/herdr-board");
+        assert_eq!(
+            redacted("192.168.1.1 /Users/jirathip/Projects/herdr-board"),
+            "192.168.1.1 /Users/jirathip/Projects/herdr-board"
+        );
     }
 
     #[test]

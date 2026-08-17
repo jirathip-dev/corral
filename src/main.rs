@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use corrald::adapters::Adapter;
 use corrald::adapters::gh_plane::GhPlane;
 use corrald::adapters::git_plane::GitPlane;
 use corrald::adapters::herdr::HerdrAdapter;
-use corrald::adapters::Adapter;
-use corrald::api::drive::ReplayTable;
 use corrald::api::AppState;
+use corrald::api::drive::ReplayTable;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
@@ -125,7 +125,8 @@ fn run_digest(args: &[String]) {
         i += 1;
     }
     let dir = dir.unwrap_or_else(config_dir);
-    let since = since.unwrap_or_else(|| now_millis().saturating_sub(DIGEST_DEFAULT_WINDOW.as_millis() as u64));
+    let since = since
+        .unwrap_or_else(|| now_millis().saturating_sub(DIGEST_DEFAULT_WINDOW.as_millis() as u64));
     let ring = HistoryRing::open(dir.join("history"), RotationPolicy::default());
     let events = ring.query(Some(since), None);
     let digest = Digest::compute(&events, since, now_millis());
@@ -272,7 +273,10 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                 port = iter.next().and_then(|p| p.parse().ok());
             }
             "--bind" | "-b" => {
-                bind = iter.next().cloned().unwrap_or_else(|| DEFAULT_BIND.to_string());
+                bind = iter
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| DEFAULT_BIND.to_string());
             }
             "--help" | "-h" => {
                 println!(
@@ -365,8 +369,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     // CORRAL_APNS_* inside it made every API test read the ambient env and
     // race the config tests). Disabled (unconfigured / bad p8) -> the
     // daemon runs exactly as before, with a startup warning.
-    if let Some(notifier) =
-        corrald::push::Notifier::from_env(store.clone(), auth.registry.clone())
+    if let Some(notifier) = corrald::push::Notifier::from_env(store.clone(), auth.registry.clone())
     {
         notifier.start();
     } else {
@@ -388,9 +391,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         config_dir = %config_dir().display(),
         "corrald listening (loopback only); auth plane live: GET /host-key, POST /register"
     );
-    axum::serve(listener, app)
-        .await
-        .expect("axum server");
+    axum::serve(listener, app).await.expect("axum server");
 }
 
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr

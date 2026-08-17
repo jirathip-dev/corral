@@ -1288,7 +1288,27 @@ mod tests {
             "symlinked spelling matches"
         );
         assert!(plane.watches(&fs::canonicalize(&repo).unwrap()), "main checkout matches");
-        assert!(!plane.watches(&wts.join("elsewhere")), "out-of-scope path does not match");
+
+        // Out-of-scope check. This previously used `wts.join("elsewhere")`,
+        // a NON-existent path under the worktrees root, and asserted it did
+        // not match. That passed on macOS for the wrong reason and failed on
+        // Linux under hosted CI: `canonicalize` fails on a missing path, so
+        // the raw spelling is compared against canonicalized roots — and on
+        // macOS `temp_dir()` is `/var/...` while the roots resolve to
+        // `/private/var/...`, so nothing ever matched. On Linux `/tmp` is
+        // real, both spellings agree, and `watches()` answered `true` —
+        // correctly, since that path IS under the worktrees root.
+        //
+        // The missing-path divergence is a genuine `watches()` bug (issue
+        // #43); it is deliberately NOT asserted here in either direction.
+        // This test pins only what is platform-independent: a directory that
+        // EXISTS and is under neither root does not match.
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        assert!(
+            !plane.watches(&outside),
+            "out-of-scope path does not match"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

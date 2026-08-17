@@ -38,7 +38,30 @@ plane is the sanctioned exception, poll-by-design at one round-trip
 per poll).
 
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
-before any bytes leave the machine.
+before any bytes leave the machine. The APNs path re-redacts anyway — see
+[Trust boundaries](#trust-boundaries).
+
+### Side readers (not part of the store)
+
+Two subsystems answer from outside the agent read model, because their
+inputs are files on disk rather than plane events:
+
+- **Cost meter** (`src/cost/`, `GET /cost`) — reads each provider's own
+  session store directly: `opencode.db` (SQLite, read-only, bounded — the
+  file runs to double-digit GB, so no unbounded scans), Claude Code JSONL
+  transcripts, and codex rollouts. Usage is aggregated from the stores'
+  own timestamps into rolling 5h / weekly / monthly windows, then divided
+  by a per-provider cap to produce a percentage and an `ok`/`warning`/
+  `problem` status. A missing store yields `store_found: false`, never a
+  zero that would read as "nothing spent". **Caps and the claude/codex
+  pricing table are placeholders** until real plan limits are supplied;
+  synthetic caps are flagged `cap_is_placeholder: true` so no client can
+  present them as fact.
+- **Fleet registry** (`src/fleet/`, `corrald fleet list|check`) — parses
+  and validates the `fleets.json` control-plane registry. Read-only in
+  this phase: no mutation, no process control, and the daemon runtime path
+  never touches it (the subcommands dispatch before the tokio runtime is
+  built).
 
 ## Write side: the signed drive plane
 
@@ -109,16 +132,44 @@ dispatch.
 - Key material is persisted `0600` under a `0700` dir; secrets are never
   logged; the release binary exposes no secret accessors.
 
+### Trust boundaries
+
+Four places where data crosses a trust line, and what guards each:
+
+1. **herdr / git / gh → the read model.** Adapter output is untrusted text
+   (agent panes contain whatever an agent printed). Redaction runs at the
+   adapter boundary *before* facts enter the store — `sk-ant-*`, `ghp_*`,
+   `AKIA*`, high-entropy strings, `.env`-shaped content.
+2. **Device → daemon (writes).** Loopback is not authentication. Every
+   `POST /drive` is Ed25519-signed over a canonical envelope, checked
+   against a registered, unexpired, unrevoked key, then against that key's
+   grants, then against the step-up gate for destructive payloads.
+3. **Daemon → Apple (APNs egress).** This is the only path where fleet
+   content leaves the machine. Payloads are re-redacted at build time —
+   the adapter's redaction is not trusted to have been sufficient — and
+   bounded to the APNs size limit.
+4. **Lock screen → daemon.** A canned reply carries the `prompt_hash` of
+   the notification it came from; the daemon refuses it if the live prompt
+   has moved on. Destructive payloads still require biometric step-up, and
+   the check is server-side — a compromised client cannot skip it.
+
+The session stores the cost meter reads (`opencode.db`, claude JSONL,
+codex rollouts) are opened **read-only and bounded**; they are inputs, and
+corral never writes to another tool's state.
+
 ## Clients
 
-- `crates/corrald-client` (on `main`) — shared client layer: typed read
-  model, reconnecting SSE with resume, signed drive with idempotent
-  retries, step-up flow, approval claims. No GUI.
-- `clients/egui` (`corrald-ui`, branch `w2/egui-desktop`, **unmerged**) —
-  desktop fleet board (egui/wgpu), macOS + Linux. Device keys in the OS
-  keychain; auto-register on localhost; drive buttons rendered from
-  `agent.capabilities` + the device grant ledger.
-- iOS "Fleet Notifier" — branch `w3/ios-fleet-notifier` (P4 W3, SwiftUI).
+- `crates/corrald-client` — shared client layer: typed read model,
+  reconnecting SSE with resume, signed drive with idempotent retries,
+  step-up flow, approval claims. No GUI.
+- `clients/egui` (`corrald-ui`) — desktop fleet board (egui/wgpu), macOS +
+  Linux. Device keys in the OS keychain; auto-register on localhost; drive
+  buttons rendered from `agent.capabilities` + the device grant ledger;
+  the COST column and per-provider cost tiles.
+- `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive,
+  APNs registration, and canned lock-screen replies bound to
+  `prompt_hash`. See the README's Status section for what is and is not
+  verified on hardware.
 
 ## Layout on main
 
@@ -135,9 +186,17 @@ src/drive/           frozen P3 contract: capabilities, envelope, signing,
 src/approve/         claim-based approvals (prompt_hash checks)
 src/auth/            host identity, device registry, authorizer, step-up,
                      hash-chained audit, HTTP routes
-src/api/             router, /snapshot /events /history /healthz, POST /drive
+src/api/             router, /snapshot /events /history /cost /healthz,
+                     POST /drive, POST /device-token
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
+src/cost/            per-provider spend readers (opencode.db, claude JSONL,
+                     codex rollouts), rolling windows, pricing, caps
+src/fleet/           fleets.json registry: parse + validate (read-only)
+src/push/            APNs provider, payload build + redaction, transition
+                     notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
+clients/egui/        corrald-ui desktop board (board, cost tiles, audit)
+ios/FleetNotifier/   iOS client: SSE, drive, APNs, lock-screen replies
 tests/               integration tests per module
 ```
 

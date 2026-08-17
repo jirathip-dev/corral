@@ -29,16 +29,25 @@ Register a device (routing token + device public key; defaults to
 read-only), then grant it a capability and check the audit log:
 
 ```sh
+# The public key must be a real Ed25519 point — 32 random bytes are refused.
+openssl genpkey -algorithm ED25519 -out /tmp/corral-dev-key.pem
+PUBKEY=$(openssl pkey -in /tmp/corral-dev-key.pem -pubout -outform DER | tail -c 32 | base64)
 TOKEN=$(cat /tmp/corral-dev/registration-token)
+
 curl -s -X POST http://127.0.0.1:8474/register \
-  -d "{\"token\":\"$TOKEN\",\"public_key\":\"<base64 32-byte Ed25519 pubkey>\"}"
+  -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$TOKEN\",\"public_key\":\"$PUBKEY\"}"
 # → { "key_id": "dev_...", "grants": [], ... }
-curl -s -H "Authorization: Bearer $(cat /tmp/corral-dev/admin-token)" \
-  -X POST http://127.0.0.1:8474/grants \
+
+ADMIN=$(cat /tmp/corral-dev/admin-token)
+curl -s -X POST http://127.0.0.1:8474/grants \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $ADMIN" \
   -d '{"action":"set_grants","key_id":"dev_...","grants":["read_tail"]}'
-curl -s -H "Authorization: Bearer $(cat /tmp/corral-dev/admin-token)" \
-  http://127.0.0.1:8474/audit
+curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
 ```
+
+`Content-Type: application/json` is required on both POSTs — without it the
+daemon refuses the body outright.
 
 Every command above was run against a throwaway daemon and verified —
 full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
@@ -73,7 +82,8 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 - **Fleet registry** — `corrald fleet list` / `corrald fleet check` read the
   `fleets.json` registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's
   repo, worktree dir, workers and per-role models. Read-only in this phase;
-  see [docs/corral/G35-registry.md](docs/corral/G35-registry.md).
+  full schema in `docs/corral/G35-registry.md`, which lands with the
+  registry PR.
 - **APNs notifier (iOS)** — blocked/done transitions push to a registered
   device, with canned lock-screen replies bound to the prompt's
   `prompt_hash` and a biometric step-up on destructive payloads. Armed with

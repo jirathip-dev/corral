@@ -29,7 +29,9 @@ Result: `target/release/corrald`.
 `corrald` binds loopback only (default `127.0.0.1:8474`) and refuses any
 routable `--bind`. Use a throwaway config dir for the first run — the
 daemon mints `admin-token`, `host-key`, `registration-token`,
-`registry.json`, `audit.log` (all `0600` under a `0700` dir) there:
+`audit.log` (all `0600` under a `0700` dir) plus a `history/` directory
+there. `registry.json` appears on the **first device registration**, not at
+startup:
 
 ```sh
 CORRAL_CONFIG_DIR=/tmp/corral-dev ./target/release/corrald \
@@ -65,7 +67,7 @@ The read plane is credential-free on loopback:
 curl -s http://127.0.0.1:8474/snapshot
 ```
 
-`{"schema_version":3,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
+`{"schema_version":4,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
 entry per agent with state, waiting_on, capabilities, and workspace
 facts. Live updates (resume from a `rev` via `Last-Event-ID`):
 
@@ -153,21 +155,23 @@ entry carries `prev` + `hash`; `valid` is the chain integrity verdict.
 
 ## 8. The desktop UI (`corrald-ui`)
 
-Not on `main` yet: P4 W2, branch `w2/egui-desktop`, unmerged. Build/run
-instructions live in the branch's own README (read-only):
+On `main` as the `clients/egui` workspace member:
 
 ```sh
-git show origin/w2/egui-desktop:clients/egui/README.md
+cargo run -p corrald-ui --release
 ```
 
-The UI is a dark-dashboard fleet board speaking corrald's HTTP/SSE
-surface directly, with signed drive controls, keychain-stored device keys
-(macOS), and an audit view. macOS dev builds need one ad-hoc re-sign to
-stop Keychain re-prompts — [OPERATIONS.md](docs/OPERATIONS.md) has the
-how-to.
+A dark-dashboard fleet board speaking corrald's HTTP/SSE surface directly,
+with signed drive controls, keychain-stored device keys (macOS), an audit
+view, and the per-provider cost tiles. It **auto-registers on localhost**
+by reading the daemon's `registration-token` for the same user, so steps 4
+and 5 above are only needed for other clients.
+
+macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
+[OPERATIONS.md](OPERATIONS.md) has the how-to.
 
 ## Next
 
-- Security model and device lifecycle: [docs/OPERATIONS.md](docs/OPERATIONS.md)
-- Wire contract for client authors: [docs/corral/P4-conformance.md](docs/corral/P4-conformance.md)
-- Hacking on the daemon: [docs/DEVELOPING.md](docs/DEVELOPING.md)
+- Security model and device lifecycle: [OPERATIONS.md](OPERATIONS.md)
+- Wire contract for client authors: [corral/P4-conformance.md](corral/P4-conformance.md)
+- Hacking on the daemon: [DEVELOPING.md](DEVELOPING.md)

@@ -31,7 +31,7 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
 ```
 
 Every adapter normalizes into the canonical `Agent` record
-(`src/core/model.rs`, `schema_version` 3, additive-only). The herdr
+(`src/core/model.rs`, `schema_version` 4, additive-only). The herdr
 adapter is push-only — it subscribes once and converges on pushed
 `pane_*` events, never a poll loop (grep-able standing rule; the gh
 plane is the sanctioned exception, poll-by-design at one round-trip

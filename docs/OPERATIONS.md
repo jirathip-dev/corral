@@ -176,7 +176,7 @@ one fleet failed `check`, **2** usage or parse/validation error. Validation
 is strict on purpose — unknown fields, empty required fields, whitespace
 inside `name`/`gh_repo`, a `gh_repo` that is not `owner/repo`, a `local`
 starting with a bare `~`, and duplicate names all fail loudly. Full schema:
-[corral/G35-registry.md](corral/G35-registry.md).
+`docs/corral/G35-registry.md`, which lands with the registry PR.
 
 ## Security model summary
 

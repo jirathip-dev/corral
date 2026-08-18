@@ -49,19 +49,19 @@ if [[ "$REVOKE" != "1" && -z "$CAPS" ]]; then
   echo "need --caps <list> to grant, or --revoke" >&2; exit 2
 fi
 
+# Build the whole JSON body in python3 — safe for both --key and --caps
+# (no shell-side splicing; a malicious value is inert data, the daemon's
+# grant validation is the real gate).
 if [[ "$REVOKE" == "1" ]]; then
-  BODY="{\"action\":\"revoke\",\"key_id\":\"$KEY\",\"revoked\":true}"
+  BODY="$(python3 -c 'import json,sys; print(json.dumps({"action":"revoke","key_id":sys.argv[1],"revoked":True}))' "$KEY")"
   echo ">> revoking $KEY"
 else
-  # --caps is a comma list; build a proper JSON array (python3 is present on
-  # macOS + CI runners; no jq dependency)
-  ARR="$(python3 -c 'import json,sys; print(json.dumps([c.strip() for c in sys.argv[1].split(",") if c.strip()]))' "$CAPS")"
-  BODY="{\"action\":\"set_grants\",\"key_id\":\"$KEY\",\"grants\":$ARR}"
+  BODY="$(python3 -c 'import json,sys; k,c=sys.argv[1],sys.argv[2]; print(json.dumps({"action":"set_grants","key_id":k,"grants":[x.strip() for x in c.split(",") if x.strip()]}))' "$KEY" "$CAPS")"
   echo ">> granting $KEY: $CAPS"
 fi
 
-curl -sS -X POST "$BASE/grants" \
+curl -fsS -X POST "$BASE/grants" \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $ADMIN" \
-  -d "$BODY"
+  -d "$BODY" || { echo "!! grants request failed (HTTP error)" >&2; exit 1; }
 echo

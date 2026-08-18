@@ -12,7 +12,7 @@ name = "corrald"
 version = "0.1.0"
 edition = "2024"
 description = "Corral host daemon: tool-agnostic agent-fleet control plane (P1: canonical agent model + herdr adapter + snapshot/SSE)"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [features]
 # Test/signing helpers for the integration test suite and the live

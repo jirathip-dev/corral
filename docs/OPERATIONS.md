@@ -11,7 +11,7 @@ For a new machine / public install, two scripts make the daemon turnkey:
 ### `scripts/setup-corrald.sh`
 
 Builds the release binary, creates `~/.config/corral` (keys, tokens), and
-installs a **launchd agent** (`com.jirathip.corrald`) so the daemon runs at
+installs a **launchd agent** (`com.corral.corrald`) so the daemon runs at
 login and stays up (KeepAlive). Idempotent; safe to re-run.
 
 ```sh
@@ -20,9 +20,10 @@ scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (need
 scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps config)
 ```
 
-`launchctl bootstrap` is intentionally NOT run from inside the Hermes gateway
-(same reason as herdr-server): run the script from your own Terminal, or if
-the daemon is already up under launchd, `launchctl kickstart -k` reloads it.
+`launchctl bootstrap` is intentionally NOT run from inside an automation
+gateway (same reason as the herdr-server agent): run the script from your
+own Terminal, or if the daemon is already up under launchd,
+`launchctl kickstart -k` reloads it.
 
 ### `scripts/corrald-grant.sh`
 

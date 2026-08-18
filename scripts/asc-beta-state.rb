@@ -33,7 +33,9 @@ def api_get(path, bearer)
   { code: res.code.to_i, body: (JSON.parse(res.body) rescue { "raw" => res.body }) }
 end
 
-APP_ID = "6802181286"
+# The ASC app id is env-overridable (CORRAL_ASC_APP_ID) so a stranger can
+# point this at their own app; the hardcoded value is the corral one.
+APP_ID = ENV.fetch("CORRAL_ASC_APP_ID", "6802181286")
 
 bg = api_get("/v1/betaGroups?filter[app]=#{APP_ID}&limit=20", bearer)
 puts "=== betaGroups (http #{bg[:code]}) ==="

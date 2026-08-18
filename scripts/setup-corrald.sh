@@ -25,7 +25,15 @@ while [[ $i -lt ${#args[@]} ]]; do
   case "${args[$i]}" in
     --bind)
       i=$((i+1))
-      BIND="${args[$i]:-127.0.0.1}"
+      if [[ $i -ge ${#args[@]} || -z "${args[$i]}" ]]; then
+        echo "!! --bind requires a value (IPv4/IPv6)" >&2; exit 2
+      fi
+      BIND="${args[$i]}"
+      # Validate: IPv4 dotted-quad, IPv6 hex/colon, or hostname — prevents
+      # XML injection into the plist heredoc and typo'd garbage.
+      if ! [[ "$BIND" =~ ^[0-9a-fA-F:.]+$ ]] && ! [[ "$BIND" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        echo "!! invalid --bind address: $BIND" >&2; exit 2
+      fi
       ;;
     --uninstall) UNINSTALL=1 ;;
     -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
@@ -37,8 +45,8 @@ done
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$REPO_DIR/target/release/corrald"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
-PLIST="$HOME/Library/LaunchAgents/com.jirathip.corrald.plist"
-LABEL="com.jirathip.corrald"
+PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
+LABEL="com.corral.corrald"
 LOG="$CONFIG_DIR/corrald-launchd.log"
 
 if [[ "$UNINSTALL" == "1" ]]; then
@@ -55,6 +63,10 @@ cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
 mkdir -p "$CONFIG_DIR"
 
 echo ">> Installing launchd agent: $PLIST"
+# bootout any previously-loaded job FIRST — launchd does NOT re-read a
+# rewritten plist on kickstart, so a re-run with changed --bind would
+# silently restart the old config. bootout + bootstrap applies the new file.
+launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -83,23 +95,23 @@ PLIST_EOF
 plutil -lint "$PLIST" >/dev/null
 
 echo ">> Loading under launchd..."
-# If the agent is already loaded (re-run), kickstart -k reloads it with the
-# NEW plist args (e.g. changed --bind) instead of silently keeping the old
-# process. If not loaded, bootstrap it.
-if launchctl list 2>/dev/null | grep -q "$LABEL"; then
-  echo "   (already loaded — reloading with new config)"
-  launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
-else
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || \
-    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
-fi
+# bootstrap is the only way to apply a (possibly changed) plist; a genuine
+# failure must be fatal, not swallowed.
+launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1 || { echo "!! launchctl bootstrap failed — see output above" >&2; exit 1; }
 
-sleep 2
 echo ">> Health check:"
-if curl -fsS "http://$BIND:$PORT/healthz" >/dev/null 2>&1; then
+ok=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS "http://$BIND:$PORT/healthz" >/dev/null 2>&1; then
+    ok=1; break
+  fi
+  sleep 1
+done
+if [[ "$ok" == "1" ]]; then
   echo "   ✓ corrald is UP at http://$BIND:$PORT/healthz"
 else
-  echo "   ⚠ could not reach http://$BIND:$PORT/healthz — check $LOG"
+  echo "   ✗ could not reach http://$BIND:$PORT/healthz — check $LOG" >&2
+  exit 1
 fi
 
 echo

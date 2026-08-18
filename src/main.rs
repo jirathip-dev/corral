@@ -196,7 +196,8 @@ fn print_fleet_help() {
          \torch orch-<name>, workers empty, models inherited from the\n\
          \tfirst existing fleet (or required via --models on an empty\n\
          \tregistry). The registry file must exist — bootstrap one\n\
-         \twith: echo '{{\"fleets\": []}}' > <path>\n\
+         \twith: mkdir -p ~/.config/corral && echo '{{\"fleets\": []}}'\n\
+         \t> <path> (a fresh machine lacks the parent dir, #66)\n\
          remove   atomically drop exactly one fleet by name\n\
          pause    set paused:true on exactly one fleet; pausing an\n\
          \talready-paused fleet is a no-op success (exit 0)\n\
@@ -1021,6 +1022,14 @@ mod tests {
             "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", // just below fc00::/7
             "fe80::1", // link-local: outside fc00::/7
             "169.254.1.1", // v4 link-local
+            // #78 (#75 round-2 vectors): IPv4-mapped IPv6 forms are
+            // refused WHOLESALE — v6 loopback/ULA checks see the mapped
+            // form as neither, which fails closed. Bind literals must
+            // use the plain v4 spelling.
+            "::ffff:8.8.8.8",   // mapped public v4
+            "::ffff:127.0.0.1", // mapped loopback — still refused (fail closed)
+            "172.15.255.255",   // just below 172.16/12
+            "192.169.0.0",      // just above 192.168/16
         ] {
             assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
         }

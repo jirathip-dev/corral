@@ -1,7 +1,8 @@
 # Corral Architecture
 
 `corrald` is a Rust daemon that collapses the herdr agent fleet into a
-snapshot read model (served over loopback HTTP + SSE) and exposes a
+snapshot read model (served over HTTP + SSE — loopback by default,
+tailnet/private interfaces allowlisted, never public) and exposes a
 signed, capability-gated write plane (`POST /drive`). Design
 authority: `docs/corral/DECISIONS.md` (D1–D14).
 
@@ -89,8 +90,9 @@ inputs are files on disk rather than plane events:
   pricing table are placeholders** until real plan limits are supplied;
   synthetic caps are flagged `cap_is_placeholder: true` so no client can
   present them as fact.
-- **Fleet registry** (`src/fleet/`, `corrald fleet list|check|add|remove`)
-  — parses, validates and (slice 1) atomically rewrites the `fleets.json`
+- **Fleet registry** (`src/fleet/`,
+  `corrald fleet list|check|add|remove|pause|resume|models`)
+  — parses, validates and atomically rewrites the `fleets.json`
   control-plane registry. No process control, and the daemon runtime path
   never touches it (the subcommands dispatch before the tokio runtime is
   built).

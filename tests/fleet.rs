@@ -2206,6 +2206,12 @@ fn models_with_unchanged_values_is_an_idempotent_no_op() {
     let after_first = std::fs::read(&path).expect("read");
 
     let changes = corrald::fleet::ops::models(&path, "corral", &update).expect("second run");
+    // R2-1 (#78): pin the shape, not just the all() predicate — an empty
+    // change list (a regression skipping the fleet) would pass `all()`
+    // vacuously, and a both-sides-wrong stamp would pass before==after.
+    assert_eq!(changes.len(), 1, "exactly the one targeted fleet reported");
+    assert_eq!(changes[0].before.review, "opus");
+    assert_eq!(changes[0].after.review, "opus");
     assert!(
         changes.iter().all(|c| c.before == c.after),
         "second run is a no-op"

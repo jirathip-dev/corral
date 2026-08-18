@@ -54,7 +54,10 @@ stderr note when it is taken) exists.
 - All `models.*` slots (required and alt) must be whitespace-free — the
   required three feed the whitespace-delimited `fleet list` line; the alt
   slots follow the same rule for consistency.
-- `paused` — optional bool, defaults to `false` when absent.
+- `paused` — optional bool, defaults to `false` when absent. Set/cleared
+  by `fleet pause`/`resume` (slice 2). The skip rule: `false` is never
+  serialized — a resumed fleet omits the key entirely (this is the rule
+  the pause/resume section refers to).
 - `local` may start with `~/` — expanded against `$HOME`.
 - Unknown fields anywhere (top level, fleet, models) → hard error, not silent
   acceptance. Duplicate fleet names → hard error.

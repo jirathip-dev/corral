@@ -16,7 +16,7 @@ login and stays up (KeepAlive). Idempotent; safe to re-run.
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
-scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (needs #65)
+scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP
 scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps config)
 ```
 

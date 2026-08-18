@@ -3,11 +3,16 @@
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
 
 **Corral is a control plane for fleets of AI coding agents.** If you run
-several coding agents (Claude Code, Codex CLI, OpenCode) in git worktrees,
-each with its own terminal, you need: one live board of what every agent is
-doing, signed remote control from your phone (devices connect over
-loopback today; tailnet binds land with #65), and cost visibility before a
-provider bill surprises you. Corral gives you that.
+several coding agents in git worktrees — Claude Code, Codex CLI, OpenCode,
+or any other agent harness — each with its own terminal, you need: one live
+board of what every agent is doing, signed remote control from your phone
+(devices connect over loopback today; tailnet binds land with #65), and
+cost visibility before a provider bill surprises you. Corral gives you
+that.
+
+Corral is **harness-agnostic**: it treats any coding agent as the same
+canonical record, so the board, the signed drive plane, and the cost meter
+work the same no matter which harness an agent runs on.
 
 Corral reads every worktree / agent / PR / CI fact into a snapshot read
 model served over loopback HTTP + SSE, and lets a registered device drive
@@ -15,12 +20,17 @@ the agents with typed, signed commands — prompt, interrupt, approve,
 read_tail, kill, attach. The daemon is `corrald`, with a desktop fleet
 board (`corrald-ui`, egui) and an iOS notifier app alongside it.
 
-**Runtime note:** agents are currently supervised by
-[herdr](https://github.com/herdrdev/herdr) (the runtime that spawns
-them in panes/worktrees). Corral's core model, drive plane, and HTTP
-surface are runtime-neutral — see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#stack-terminology-model--harness--runtime--control-plane)
-for the model→harness→runtime→control-plane layering.
+## Requirements
+
+- **Rust toolchain** (pinned by `rust-toolchain.toml`).
+- **A runtime that supervises the agents.** Today that is
+  [herdr](https://github.com/herdrdev/herdr) — the layer that spawns
+  agents in panes/worktrees. Corral's core model, drive plane, and HTTP
+  surface are runtime-neutral; the herdr adapter is what feeds the live
+  agent state (see
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#stack-terminology-model--harness--runtime--control-plane)
+  for the model→harness→runtime→control-plane layering). Without herdr,
+  `corrald` still serves HTTP but shows no agents.
 
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)

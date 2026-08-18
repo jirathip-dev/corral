@@ -141,9 +141,15 @@ fn models_without_alt_slots_round_trip_without_growing_them() {
 #[test]
 fn add_rewrite_preserves_alt_slots_on_untouched_fleet() {
     // The data-loss pin (#56): `fleet add` rewrites the whole file, so an
-    // untouched fleet's present impl_alt / impl_alt2 must survive.
+    // untouched fleet's present impl_alt / impl_alt2 must survive. The
+    // fixture's FIRST fleet has no alt slots, so inheritance (which takes
+    // the first fleet) cannot manufacture the asserted strings — the only
+    // fleet carrying them is the untouched second one.
     let dir = tempfile::tempdir().expect("temp dir");
-    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_B}, {VALID_ALT}] }}"#),
+    );
     let opts = add_options("newfleet", "jirathip-k/corral");
     corrald::fleet::ops::add(
         &path,
@@ -155,13 +161,16 @@ fn add_rewrite_preserves_alt_slots_on_untouched_fleet() {
     .expect("add succeeds");
 
     let text = std::fs::read_to_string(&path).expect("read written registry");
-    assert!(
-        text.contains("\"impl_alt\": \"opencode-go/deepseek-v4-flash\""),
-        "impl_alt survives the rewrite: {text}"
+    assert_eq!(
+        text.matches("\"impl_alt\": \"opencode-go/deepseek-v4-flash\"")
+            .count(),
+        1,
+        "exactly the untouched fleet carries impl_alt: {text}"
     );
-    assert!(
-        text.contains("\"impl_alt2\": \"dsh\""),
-        "impl_alt2 survives: {text}"
+    assert_eq!(
+        text.matches("\"impl_alt2\": \"dsh\"").count(),
+        1,
+        "exactly the untouched fleet carries impl_alt2: {text}"
     );
     let registry = load(&path).expect("re-parses");
     let corral = registry
@@ -175,6 +184,38 @@ fn add_rewrite_preserves_alt_slots_on_untouched_fleet() {
         "impl_alt value lands after rewrite"
     );
     assert_eq!(corral.models.impl_alt2.as_deref(), Some("dsh"));
+    let newfleet = registry
+        .fleets
+        .iter()
+        .find(|f| f.name == "newfleet")
+        .expect("added fleet present");
+    assert_eq!(
+        newfleet.models.impl_alt, None,
+        "inherits from the FIRST fleet (no alt slots), not the alt-carrying one"
+    );
+}
+
+#[test]
+fn add_inherits_alt_slots_from_the_first_fleet_when_present() {
+    // DELIBERATE (#56 review F1): omitting --models inherits the first
+    // fleet's WHOLE model map, alt slots included. Pinned so a refactor
+    // cannot silently flip it either way.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+    let added = corrald::fleet::ops::add(
+        &path,
+        &add_options("inheritor", "jirathip-k/corral"),
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+    assert_eq!(
+        added.models.impl_alt.as_deref(),
+        Some("opencode-go/deepseek-v4-flash"),
+        "alt slots inherit with the rest of the model map"
+    );
+    assert_eq!(added.models.impl_alt2.as_deref(), Some("dsh"));
 }
 
 #[test]

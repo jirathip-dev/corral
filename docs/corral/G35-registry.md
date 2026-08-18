@@ -36,8 +36,9 @@ Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
 - `workers` — required array of strings; may be empty.
 - `models` — required object with required string keys `orch`, `impl`, `review`
   and optional string keys `impl_alt` (fallback implementer) and `impl_alt2`
-  (last-resort backend). Absent alt keys stay absent through any rewrite; a
-  present key must be non-empty and whitespace-free, like the other model slots.
+  (last-resort backend). Absent alt keys stay absent through any rewrite (an explicit `null` is
+  read as absent and is not written back); a present key must be non-empty
+  and whitespace-free, like the other model slots.
 - `paused` — optional bool, defaults to `false` when absent.
 - `local` may start with `~/` — expanded against `$HOME`.
 - Unknown fields anywhere (top level, fleet, models) → hard error, not silent
@@ -87,7 +88,9 @@ corrald fleet remove <name> [--registry <path>]
 for `--worktree` — both spellings match the legacy fleet CLI. Defaults:
 `local` → `~/Projects/<name>`, `worktree_dir` → `<name>`, `orch` →
 `orch-<name>`, `workers` → empty, `models` inherited from the **first**
-fleet in the registry (an empty registry requires `--models`). The repo
+fleet in the registry — `impl_alt`/`impl_alt2` included (an empty registry
+requires `--models`). The alt slots are not settable from `--models`; they
+inherit, or are edited in the registry directly. The repo
 must resolve via `gh repo view <owner/repo>` before anything is written;
 the candidate registry is validated with the same rules `load()` applies;
 the write is a PID-suffixed temp file in the registry's directory,

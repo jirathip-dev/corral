@@ -144,7 +144,9 @@ impl Registry {
                     });
                 }
             }
-            // The alt-model slots get the same whitespace rule when present.
+            // The alt-model slots get the same whitespace rule when present —
+            // for CONSISTENCY with the required slots, not for the `fleet
+            // list` contract (they are deliberately absent from that line).
             for (field, value) in [
                 ("models.impl_alt", fleet.models.impl_alt.as_deref()),
                 ("models.impl_alt2", fleet.models.impl_alt2.as_deref()),

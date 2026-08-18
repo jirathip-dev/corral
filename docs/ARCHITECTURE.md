@@ -3,8 +3,7 @@
 `corrald` is a Rust daemon that collapses the herdr agent fleet into a
 snapshot read model (served over loopback HTTP + SSE) and exposes a
 signed, capability-gated write plane (`POST /drive`). Design
-authority: `~/Projects/hermes-brain/plans/corral/DECISIONS.md`
-(D1–D14).
+authority: `docs/corral/DECISIONS.md` (D1–D14).
 
 ## Stack terminology (model → harness → runtime → control plane)
 
@@ -13,7 +12,7 @@ Precise terms matter when discussing "agnosticism". Four layers, bottom up:
 | Layer | What it is | Examples | Corral's relationship |
 |---|---|---|---|
 | **Model** | the LLM itself | deepseek-v4-flash, fable, opus | configured, not coupled |
-| **Harness** | the wrapper that gives a model tools (shell, files, browser) | **Claude Code, Codex CLI, OpenCode** | **interchangeable** — the adapter normalizes claude/codex/opencode agent kinds uniformly via `apply_agent_info`; core model has a `tool` label, no harness logic |
+| **Harness** | the wrapper that gives a model tools (shell, files, browser) | **Claude Code, Codex CLI, OpenCode** | **interchangeable** — the adapter passes harness kinds through verbatim (`tool: tool.unwrap_or("unknown")`); no per-harness logic exists, which is the stronger form of agnosticism |
 | **Runtime** | the layer that spawns/supervises harnesses in panes/worktrees | **herdr** | **the coupling point** — `src/adapters/herdr.rs` reads the herdr unix socket for the live agent feed |
 | **Control plane** | the daemon on top | **corrald** | this repo |
 

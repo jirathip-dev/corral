@@ -22,8 +22,10 @@ scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps c
 
 `launchctl bootstrap` is intentionally NOT run from inside an automation
 gateway (same reason as the herdr-server agent): run the script from your
-own Terminal, or if the daemon is already up under launchd,
-`launchctl kickstart -k` reloads it.
+own Terminal. If the daemon is already up under launchd, the script's
+`bootout` + `bootstrap` applies a changed config (a plain `launchctl
+kickstart -k` only restarts the process; it does not re-read a rewritten
+plist).
 
 ### `scripts/corrald-grant.sh`
 

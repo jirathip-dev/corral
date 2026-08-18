@@ -29,10 +29,11 @@ while [[ $i -lt ${#args[@]} ]]; do
         echo "!! --bind requires a value (IPv4/IPv6)" >&2; exit 2
       fi
       BIND="${args[$i]}"
-      # Validate: IPv4 dotted-quad, IPv6 hex/colon, or hostname — prevents
-      # XML injection into the plist heredoc and typo'd garbage.
-      if ! [[ "$BIND" =~ ^[0-9a-fA-F:.]+$ ]] && ! [[ "$BIND" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-        echo "!! invalid --bind address: $BIND" >&2; exit 2
+      # Validate: IPv4 dotted-quad or IPv6 (the daemon parses --bind as
+      # IpAddr and PANICS on a hostname — reject anything that isn't an
+      # IP so a typo can't crash-loop under KeepAlive).
+      if ! [[ "$BIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! [[ "$BIND" =~ ^[0-9a-fA-F:]+$ ]]; then
+        echo "!! invalid --bind address (IPv4 or IPv6 only): $BIND" >&2; exit 2
       fi
       ;;
     --uninstall) UNINSTALL=1 ;;
@@ -96,21 +97,30 @@ plutil -lint "$PLIST" >/dev/null
 
 echo ">> Loading under launchd..."
 # bootstrap is the only way to apply a (possibly changed) plist; a genuine
-# failure must be fatal, not swallowed.
-launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1 || { echo "!! launchctl bootstrap failed — see output above" >&2; exit 1; }
+# failure must be fatal, not swallowed. bootout can return before launchd
+# finishes teardown on some macOS builds, so retry once after 1s.
+launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1 \
+  || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1; } \
+  || { echo "!! launchctl bootstrap failed — see output above" >&2; exit 1; }
 
 echo ">> Health check:"
 ok=0
+# IPv6 needs brackets in a URL: http://[::1]:8474/healthz
+if [[ "$BIND" == *:* ]]; then
+  URL="http://[$BIND]:$PORT/healthz"
+else
+  URL="http://$BIND:$PORT/healthz"
+fi
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS "http://$BIND:$PORT/healthz" >/dev/null 2>&1; then
+  if curl -fsS "$URL" >/dev/null 2>&1; then
     ok=1; break
   fi
   sleep 1
 done
 if [[ "$ok" == "1" ]]; then
-  echo "   ✓ corrald is UP at http://$BIND:$PORT/healthz"
+  echo "   ✓ corrald is UP at $URL"
 else
-  echo "   ✗ could not reach http://$BIND:$PORT/healthz — check $LOG" >&2
+  echo "   ✗ could not reach $URL — check $LOG" >&2
   exit 1
 fi
 

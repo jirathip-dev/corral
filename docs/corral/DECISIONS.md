@@ -1,11 +1,4 @@
-# Corral DECISIONS.md — in-worktree mirror (G34 only)
-
-The authoritative DECISIONS.md lives in `hermes-brain/plans/corral/` (see the
-P2/P3/P4 briefs) — outside this worktree, and the G34 brief forbids touching
-anything outside it. This file is a **local mirror of the one new entry**
-G34 needs, so the decision is captured somewhere in-repo instead of only in
-a commit message. **Action for Guy/orchestrator: fold D34 below into the
-real `hermes-brain/plans/corral/DECISIONS.md`.**
+# Corral DECISIONS.md (G34 + D34)
 
 ## D34 (2026-08-17, G34 implementer) — cost/usage-% meter design
 
@@ -61,7 +54,7 @@ number) rather than guessing. Older/deprecated Claude aliases
 (`claude-opus-4-5`, `-4-1`, `-3-*`, etc.) are intentionally absent from the
 table for the same reason.
 
-**Caps are placeholders — open question for Guy.** Real opencode-go /
+**Caps are placeholders — open question.** Real opencode-go /
 claude / codex plan limits are unknown to this workstream. `src/cost/config.rs`
 ships order-of-magnitude placeholder caps ($5 / $35 / $140 for 5h/weekly/
 monthly) so the % and alert machinery is demonstrably functional out of the

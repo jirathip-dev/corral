@@ -183,7 +183,7 @@ exhaustion both come from the same meter.
 
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) — prerequisites, run the daemon, register a device, read the fleet
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — read model, signed drive plane, security boundaries
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, grants, macOS keychain how-to, audit log, troubleshooting
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, grants, remote access from iOS (Tailscale Serve), macOS keychain how-to, audit log, troubleshooting
 - [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, module map, quality gates, how to add a capability
 - [docs/corral/P4-conformance.md](docs/corral/P4-conformance.md) — normative wire contract, scenarios R1–R10
 - [docs/corral/P1-brief.md](docs/corral/P1-brief.md), [P2](docs/corral/P2-brief.md), [P3](docs/corral/P3-brief.md) — historical phase briefs

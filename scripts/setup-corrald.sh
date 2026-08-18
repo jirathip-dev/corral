@@ -7,7 +7,9 @@
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
-#   scripts/setup-corrald.sh --bind 100.67.222.5   # bind a Tailscale/private IP (needs #65)
+#   scripts/setup-corrald.sh --bind 100.67.222.5   # Tailscale/private IP (desktop/daemon
+#                                                   # only; iOS needs Tailscale Serve —
+#                                                   # see docs/OPERATIONS.md)
 #   scripts/setup-corrald.sh --uninstall
 #
 # Prereqs: rustup (pinned toolchain auto-installs), herdr running (optional;

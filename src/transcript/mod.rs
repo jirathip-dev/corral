@@ -1353,8 +1353,18 @@ mod tests {
         assert_eq!(Cursor::decode(&b.encode()).expect("bytes roundtrip"), b);
 
         for bad in [
-            "", "x.1.aa", "oc.", "oc.12", "oc.12.abc", "oc.nan.abcd", "oc.12.zz", "oc.12.é1",
-            "b.", "b.-1", "b.nan", "oc.12.61ff",
+            "",
+            "x.1.aa",
+            "oc.",
+            "oc.12",
+            "oc.12.abc",
+            "oc.nan.abcd",
+            "oc.12.zz",
+            "oc.12.é1",
+            "b.",
+            "b.-1",
+            "b.nan",
+            "oc.12.61ff",
         ] {
             match Cursor::decode(bad) {
                 Err(TranscriptError::BadCursor) => {}

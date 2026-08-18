@@ -57,20 +57,31 @@ pub struct TranscriptQuery {
 
 #[derive(Debug)]
 pub enum TranscriptApiError {
-    BadRequest { message: String },
-    Auth { error: AuthError },
-    UnknownAgent { agent_id: String },
-    NoSession { worktree: String },
-    Ambiguous { worktree: String, candidates: Vec<Candidate> },
-    Read { error: TranscriptError },
+    BadRequest {
+        message: String,
+    },
+    Auth {
+        error: AuthError,
+    },
+    UnknownAgent {
+        agent_id: String,
+    },
+    NoSession {
+        worktree: String,
+    },
+    Ambiguous {
+        worktree: String,
+        candidates: Vec<Candidate>,
+    },
+    Read {
+        error: TranscriptError,
+    },
 }
 
 impl IntoResponse for TranscriptApiError {
     fn into_response(self) -> Response {
         let (status, kind, message, candidates) = match self {
-            Self::BadRequest { message } => {
-                (StatusCode::BAD_REQUEST, "bad_request", message, None)
-            }
+            Self::BadRequest { message } => (StatusCode::BAD_REQUEST, "bad_request", message, None),
             Self::Auth { error } => {
                 // Same status/kind mapping as the drive plane (AC1): 401
                 // bad signature, 404 unknown key, 403 the rest.
@@ -204,11 +215,14 @@ pub async fn transcript(
         .transpose()
         .map_err(|error| TranscriptApiError::Read { error })?;
 
-    let agent = state.store.get(&params.agent).await.ok_or_else(|| {
-        TranscriptApiError::UnknownAgent {
-            agent_id: params.agent.clone(),
-        }
-    })?;
+    let agent =
+        state
+            .store
+            .get(&params.agent)
+            .await
+            .ok_or_else(|| TranscriptApiError::UnknownAgent {
+                agent_id: params.agent.clone(),
+            })?;
     let Some(worktree) = agent.workspace.worktree_path.clone() else {
         return Err(TranscriptApiError::NoSession {
             worktree: "(agent has no known worktree)".to_string(),

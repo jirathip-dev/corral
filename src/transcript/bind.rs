@@ -131,10 +131,7 @@ impl std::error::Error for BindError {
 /// exists but fails to read only surfaces as the error when NO candidate
 /// was found elsewhere (a readable match beats an unreadable maybe —
 /// stated in the docs as a deliberate choice).
-pub async fn bind_worktree(
-    worktree: &str,
-    roots: &TranscriptRoots,
-) -> Result<StoreRef, BindError> {
+pub async fn bind_worktree(worktree: &str, roots: &TranscriptRoots) -> Result<StoreRef, BindError> {
     let mut candidates = Vec::new();
     let mut first_error: Option<BindError> = None;
 
@@ -170,7 +167,11 @@ pub fn choose(mut candidates: Vec<Candidate>, worktree: &str) -> Result<StoreRef
             worktree: worktree.to_string(),
         });
     }
-    candidates.sort_by(|a, b| b.recency_ms.cmp(&a.recency_ms).then(a.label().cmp(&b.label())));
+    candidates.sort_by(|a, b| {
+        b.recency_ms
+            .cmp(&a.recency_ms)
+            .then(a.label().cmp(&b.label()))
+    });
     if candidates.len() > 1 && candidates[1].recency_ms == candidates[0].recency_ms {
         return Err(BindError::Ambiguous {
             worktree: worktree.to_string(),
@@ -206,10 +207,7 @@ fn opencode_session_sql(worktree: &str) -> String {
     )
 }
 
-async fn opencode_candidates(
-    db_path: &Path,
-    worktree: &str,
-) -> Result<Vec<Candidate>, BindError> {
+async fn opencode_candidates(db_path: &Path, worktree: &str) -> Result<Vec<Candidate>, BindError> {
     if !db_path.exists() {
         return Ok(Vec::new());
     }
@@ -426,7 +424,10 @@ mod tests {
         let sql = opencode_session_sql("/w/o'brien/");
         assert!(sql.contains("'/w/o''brien'"), "{sql}");
         assert!(sql.contains("RTRIM(s.directory, '/')"), "{sql}");
-        assert!(!sql.contains("brien/'"), "trailing slash must be trimmed: {sql}");
+        assert!(
+            !sql.contains("brien/'"),
+            "trailing slash must be trimmed: {sql}"
+        );
     }
 
     #[test]
@@ -484,6 +485,10 @@ mod tests {
         assert_eq!(found.len(), 2);
 
         // No project dir at all: clean empty, not an error.
-        assert!(claude_candidates(dir.path(), "/wt/missing").expect("empty").is_empty());
+        assert!(
+            claude_candidates(dir.path(), "/wt/missing")
+                .expect("empty")
+                .is_empty()
+        );
     }
 }

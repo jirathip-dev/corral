@@ -185,6 +185,10 @@ before expiry.
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.
+- `GET /transcript` is NOT part of the credential-free read plane: it
+  requires the `read_tail` grant (transcripts are a superset of tail
+  content — same trust decision, same device registry). See "Transcript
+  read-path" below.
 - Grant/replace the whole set (verified):
 
 ```sh
@@ -278,6 +282,44 @@ corrald digest                          # last 24h
 corrald digest --since 1784210400000    # explicit window
 corrald digest --config-dir <path>      # non-default config dir
 ```
+
+## Transcript read-path (#63)
+
+`GET /transcript?agent=<id>&cursor=<c>&limit=<n>` returns one
+newest-first page of the agent's session transcript, redacted (D-083)
+before it leaves the transcript module. It is an on-demand VIEW fetch —
+never pushed (D5 stays intact), and the phone client does not call it in
+this phase (D16: phone stays bounded-tail only).
+
+Auth is the drive plane's `read_tail` trust decision on a GET: put the
+exact `SignedDrive` JSON you would POST to `/drive` (capability
+`read_tail`, `target` = the agent id) into the `x-corral-drive` header.
+Because a transcript read is idempotent there is no replay-table claim
+and no step-up — signature, key registry, expiry/revocation, and the
+grant check are identical to `/drive`.
+
+```sh
+curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:orch-corral&limit=20' \
+  -H "x-corral-drive: $SIGNED_ENVELOPE_JSON"
+# → {"agent":"...","store":"opencode","entries":[{"role":"assistant","text":"...","ts":1723...}],
+#    "next_cursor":"oc.1723...9.6d73675f3031","skipped":0}
+```
+
+Follow `next_cursor` (opaque string) for older pages; `null` means the
+store is exhausted. `skipped` counts torn rows/lines in the page's range
+(honesty counter). Errors are typed: `bad_cursor` 400, `unknown_agent` /
+`no_session` 404, `ambiguous_session` 409 **with the candidate list**
+(the daemon never guesses between sessions that tie on recency),
+`store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
+`store_shape` 502.
+
+Session binding is by worktree: the agent's `workspace.worktree_path` is
+matched against opencode `session.directory`, the Claude Code project
+dir encoding under `~/.claude/projects`, and codex rollouts' first-line
+`payload.cwd`; the most recent match wins. Store locations honour the
+same env overrides as the cost meter (`$CORRAL_OPENCODE_DB`,
+`$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
+(opencode via `sqlite3 -readonly`).
 
 ## Cost / usage meter
 

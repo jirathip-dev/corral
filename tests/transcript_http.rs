@@ -194,8 +194,12 @@ async fn refused_without_header_and_without_grant() {
     // A registered device WITHOUT the read_tail grant: 403 not_granted —
     // the same trust decision as the drive plane's read_tail.
     let (other_signing, other_pubkey) = h.register_other_device(&[Capability::Prompt]);
-    let header =
-        h.auth_header_from(&other_signing, other_pubkey, Capability::ReadTail, "herdr:a1");
+    let header = h.auth_header_from(
+        &other_signing,
+        other_pubkey,
+        Capability::ReadTail,
+        "herdr:a1",
+    );
     let (status, body) = get(&h.app, "/transcript?agent=herdr:a1", Some(&header)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["kind"], "not_granted");
@@ -352,7 +356,8 @@ async fn typed_misses_bad_cursor_unknown_agent_no_session() {
     assert_eq!(body["kind"], "no_session");
 
     // Known agent, worktree with no session store: 404 no_session too.
-    h.seed_agent("herdr:elsewhere", Some("/nowhere/at/all")).await;
+    h.seed_agent("herdr:elsewhere", Some("/nowhere/at/all"))
+        .await;
     let header = h.auth_header(Capability::ReadTail, "herdr:elsewhere");
     let (status, body) = get(&h.app, "/transcript?agent=herdr:elsewhere", Some(&header)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");

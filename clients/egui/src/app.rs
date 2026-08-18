@@ -103,6 +103,8 @@ pub struct CorralApp {
     tx_drive: UnboundedSender<DriveMsg>,
     tx_audit: UnboundedSender<AuditMsg>,
     rx_audit: UnboundedReceiver<AuditMsg>,
+    tx_transcript: UnboundedSender<crate::transcript::TranscriptMsg>,
+    rx_transcript: UnboundedReceiver<crate::transcript::TranscriptMsg>,
     stop_read: Option<tokio::sync::watch::Sender<bool>>,
 
     // Audit view.
@@ -138,6 +140,7 @@ impl CorralApp {
         let (tx_apply, rx_apply) = tokio::sync::mpsc::unbounded_channel();
         let (tx_drive, rx_drive) = tokio::sync::mpsc::unbounded_channel();
         let (tx_audit, rx_audit) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_transcript, rx_transcript) = tokio::sync::mpsc::unbounded_channel();
         let client_for_fp = client.clone();
 
         let mut app = CorralApp {
@@ -165,6 +168,8 @@ impl CorralApp {
             tx_drive,
             tx_audit: tx_audit.clone(),
             rx_audit,
+            tx_transcript,
+            rx_transcript,
             stop_read: None,
             audit: None,
             audit_loading: false,
@@ -352,6 +357,88 @@ impl CorralApp {
                 }
             }
         }
+    }
+
+    /// #64: one transcript page arrived (or failed). A stale cursor —
+    /// the daemon rebound to a newer session mid-walk — spends the
+    /// pane's single automatic reload: drop pages, refetch from newest.
+    /// A second stale cursor in a row surfaces as the error instead of
+    /// looping.
+    fn on_transcript(&mut self, msg: crate::transcript::TranscriptMsg) {
+        let agent_id = msg.agent_id.clone();
+        let reload = {
+            let pane = self.fleet.transcript_pane_mut(&agent_id);
+            match msg.outcome {
+                Ok(page) => {
+                    pane.apply_page(page);
+                    false
+                }
+                Err(failure) if failure.is_stale_cursor() && !pane.auto_reloaded => {
+                    pane.auto_reloaded = true;
+                    pane.reset();
+                    true
+                }
+                Err(failure) => {
+                    pane.apply_failure(failure);
+                    false
+                }
+            }
+        };
+        if reload {
+            self.toast(
+                Level::Info,
+                "transcript session changed — reloading from newest".to_string(),
+            );
+            self.request_transcript_page(crate::transcript::TranscriptRequest {
+                agent_id,
+                cursor: None,
+            });
+        }
+    }
+
+    /// #64: spawn one signed `GET /transcript` page fetch. `cursor: None`
+    /// resets the pane and loads the newest page; `Some` extends with an
+    /// older one. No registration/device key is a pane-level error, not a
+    /// toast storm — the pane renders it in place.
+    fn request_transcript_page(&mut self, request: crate::transcript::TranscriptRequest) {
+        let (Some(reg), Some(signing)) = (
+            self.registration.clone(),
+            self.device_key.as_ref().map(|k| k.signing.clone()),
+        ) else {
+            let pane = self.fleet.transcript_pane_mut(&request.agent_id);
+            pane.apply_failure(crate::transcript::TranscriptFailure {
+                kind: "not_registered".to_string(),
+                message: "register this device (Settings) to read transcripts".to_string(),
+                candidates: Vec::new(),
+            });
+            return;
+        };
+        {
+            let pane = self.fleet.transcript_pane_mut(&request.agent_id);
+            if request.cursor.is_none() && !pane.loading {
+                // Explicit newest-page loads reset; the auto-reload path
+                // has already reset (and set loading) before we get here.
+                pane.user_reset();
+            }
+            pane.loading = true;
+        }
+        let header = crate::drive::transcript_auth_header(&reg.key_id, &signing, &request.agent_id);
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_transcript.clone();
+        let agent_id = request.agent_id.clone();
+        self.rt.spawn(async move {
+            let outcome = crate::protocol::fetch_transcript(
+                &client,
+                &base_url,
+                &header,
+                &agent_id,
+                request.cursor.as_deref(),
+                crate::transcript::PAGE_LIMIT,
+            )
+            .await;
+            let _ = tx.send(crate::transcript::TranscriptMsg { agent_id, outcome });
+        });
     }
 
     /// Persist the ledger's demoted capabilities alongside the
@@ -678,6 +765,10 @@ impl eframe::App for CorralApp {
             self.audit_loading = false;
             self.audit = Some(msg.view);
         }
+        while let Ok(msg) = self.rx_transcript.try_recv() {
+            got_messages = true;
+            self.on_transcript(msg);
+        }
         if got_messages {
             ctx.request_repaint();
         }
@@ -760,6 +851,7 @@ impl eframe::App for CorralApp {
                 let tx_drive = self.tx_drive.clone();
                 let rt = self.rt.clone();
                 let mut pending: Vec<DriveIntent> = Vec::new();
+                let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 crate::ui::cost::show(ui, &self.cost.report);
                 ui.add_space(6.0);
                 ui.separator();
@@ -769,8 +861,12 @@ impl eframe::App for CorralApp {
                     &allowed,
                     &mut crate::ui::board::BoardActions {
                         drive: &mut |intent| pending.push(intent),
+                        transcript: &mut |request| pending_transcripts.push(request),
                     },
                 );
+                for request in pending_transcripts {
+                    self.request_transcript_page(request);
+                }
                 // Dispatch after board::show returns (no overlapping
                 // borrows of fleet/toasts).
                 for intent in pending {

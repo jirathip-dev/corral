@@ -34,9 +34,13 @@ const NO_REPO_LABEL: &str = "(no repo)";
 /// egui temp-memory key for the flat-list toggle (default: grouped).
 const FLAT_VIEW: &str = "corral-ui-board-flat";
 
-/// Callbacks the board issues to the app (drive dispatch).
+/// Callbacks the board issues to the app (drive dispatch + #64
+/// transcript page fetches). Both are the deferred-action pattern: the
+/// board renders against `&Fleet`, so the app collects intents and acts
+/// after `show` returns.
 pub struct BoardActions<'a> {
     pub drive: &'a mut dyn FnMut(DriveIntent),
+    pub transcript: &'a mut dyn FnMut(crate::transcript::TranscriptRequest),
 }
 
 /// Render the fleet board.
@@ -176,7 +180,7 @@ fn board_row(
         toggles.push(id.to_string());
     }
     if is_expanded {
-        detail(ui, agent, fleet);
+        detail(ui, agent, fleet, actions);
     }
     ui.separator();
 }
@@ -586,7 +590,7 @@ fn prompt_widget(ui: &mut Ui, agent: &Agent, rev: Option<u64>, drive: &mut dyn F
     }
 }
 
-fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
+fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions) {
     egui::Frame::group(ui.style())
         .fill(Color32::from_rgb(0x10, 0x15, 0x1c))
         .show(ui, |ui| {
@@ -687,6 +691,7 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                         .color(theme::ui::TEXT_MUTED),
                 );
             }
+            transcript_section(ui, agent, fleet, actions);
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
@@ -704,6 +709,197 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet) {
                 }
             }
         });
+}
+
+/// #64: the lazy-paged full-transcript section inside the row detail.
+/// Collapsed by default; opening it (or tapping load/reload) pushes a
+/// [`TranscriptRequest`](crate::transcript::TranscriptRequest) through
+/// `actions.transcript` — never a fetch during render. Rows are
+/// virtualized (`show_rows`, uniform height): each entry renders as one
+/// truncated line; clicking selects it and the full wrapped text shows
+/// in a bounded area below, so a 5MB page set never lays out per frame.
+fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions) {
+    use crate::transcript::TranscriptRequest;
+    ui.add_space(4.0);
+    let pane = fleet.transcripts.get(&agent.agent_id);
+    let title = match pane {
+        Some(p) if !p.session.is_empty() => format!("transcript — {}", p.session),
+        _ => "transcript".to_string(),
+    };
+    egui::CollapsingHeader::new(RichText::new(title).small())
+        .id_salt(("corral-ui-transcript", &agent.agent_id))
+        .default_open(false)
+        .show(ui, |ui| {
+            let Some(pane) = pane else {
+                if ui.small_button("load transcript").clicked() {
+                    (actions.transcript)(TranscriptRequest {
+                        agent_id: agent.agent_id.clone(),
+                        cursor: None,
+                    });
+                }
+                return;
+            };
+
+            // Status line: bind provenance + honesty counters. Paging is
+            // audited server-side (read_tail:transcript) — say so.
+            ui.horizontal_wrapped(|ui| {
+                if !pane.store.is_empty() {
+                    detail_kv(ui, "store", &pane.store);
+                    detail_kv(ui, "bind", &pane.bind);
+                }
+                if pane.skipped > 0 {
+                    ui.label(
+                        RichText::new(format!("{} torn lines skipped", pane.skipped))
+                            .small()
+                            .color(theme::ui::WARN),
+                    );
+                }
+                if !pane.stores_unavailable.is_empty() {
+                    ui.label(
+                        RichText::new(format!(
+                            "stores unavailable: {}",
+                            pane.stores_unavailable.join(", ")
+                        ))
+                        .small()
+                        .color(theme::ui::WARN),
+                    )
+                    .on_hover_text(
+                        "a session store errored during binding — this view may not be \
+                         the agent's newest session",
+                    );
+                }
+                ui.label(
+                    RichText::new("reads are audited")
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+            });
+
+            if let Some(error) = &pane.error {
+                ui.label(
+                    RichText::new(transcript_error_text(error))
+                        .small()
+                        .color(theme::ui::BAD),
+                );
+                for candidate in &error.candidates {
+                    ui.label(
+                        RichText::new(format!("  candidate: {candidate}"))
+                            .monospace()
+                            .small(),
+                    );
+                }
+            }
+
+            let selected_id = egui::Id::new(("corral-ui-transcript-sel", &agent.agent_id));
+            let mut selected: Option<usize> =
+                ui.memory_mut(|m| m.data.get_temp(selected_id)).flatten();
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            ScrollArea::vertical()
+                .id_salt(("corral-ui-transcript-rows", &agent.agent_id))
+                .max_height(240.0)
+                .auto_shrink([false, true])
+                .show_rows(ui, row_height, pane.entries.len(), |ui, range| {
+                    for index in range {
+                        let entry = &pane.entries[index];
+                        let line = transcript_row_text(index, entry);
+                        let is_selected = selected == Some(index);
+                        if ui
+                            .selectable_label(is_selected, RichText::new(line).monospace().small())
+                            .clicked()
+                        {
+                            selected = if is_selected { None } else { Some(index) };
+                        }
+                    }
+                });
+            ui.memory_mut(|m| m.data.insert_temp(selected_id, selected));
+
+            if let Some(index) = selected
+                && let Some(entry) = pane.entries.get(index)
+            {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            entry.role,
+                            entry.ts.map(crate::model::clock_of).unwrap_or_default()
+                        ))
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                    );
+                    ScrollArea::vertical()
+                        .id_salt(("corral-ui-transcript-full", &agent.agent_id))
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(
+                                RichText::new(&entry.text).monospace().small(),
+                            ));
+                        });
+                });
+            }
+
+            ui.horizontal(|ui| {
+                if pane.loading {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("loading…")
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
+                }
+                if pane.can_load_older() && ui.small_button("load older").clicked() {
+                    (actions.transcript)(TranscriptRequest {
+                        agent_id: agent.agent_id.clone(),
+                        cursor: pane.next_cursor.clone(),
+                    });
+                }
+                if pane.at_cap() && pane.next_cursor.is_some() {
+                    ui.label(
+                        RichText::new(format!(
+                            "page cap reached ({} pages held) — reload to start over",
+                            crate::transcript::MAX_PAGES
+                        ))
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                    );
+                }
+                if pane.next_cursor.is_none() && !pane.loading && pane.error.is_none() {
+                    ui.label(
+                        RichText::new("start of transcript")
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
+                }
+                if !pane.loading && ui.small_button("reload").clicked() {
+                    (actions.transcript)(TranscriptRequest {
+                        agent_id: agent.agent_id.clone(),
+                        cursor: None,
+                    });
+                }
+            });
+        });
+}
+
+/// One virtualized row: index-stable, single line, truncated. Pure so
+/// the format is testable.
+pub fn transcript_row_text(index: usize, entry: &crate::transcript::TranscriptEntry) -> String {
+    let first_line = entry.text.lines().next().unwrap_or("");
+    let mut shown: String = first_line.chars().take(120).collect();
+    if shown.len() < first_line.len() || entry.text.lines().nth(1).is_some() {
+        shown.push('\u{2026}');
+    }
+    format!("{index:>4} {:>9}  {shown}", entry.role)
+}
+
+/// Pure error copy per typed kind — testable, and the not_granted case
+/// names the grant the operator must issue.
+pub fn transcript_error_text(error: &crate::transcript::TranscriptFailure) -> String {
+    match error.kind.as_str() {
+        "not_granted" => "needs the read_tail grant (host: corrald-grant.sh)".to_string(),
+        "ambiguous_session" => format!("{} — candidates:", error.message),
+        "bad_cursor" => "session changed again while paging — reload to continue".to_string(),
+        "no_session" => "no session store found for this agent's worktree".to_string(),
+        _ => format!("{}: {}", error.kind, error.message),
+    }
 }
 
 fn detail_kv(ui: &mut Ui, key: &str, value: &str) {
@@ -981,5 +1177,57 @@ mod tests {
         assert_eq!(cost_text(Some(5.0)), "$5.00");
         assert_eq!(cost_text(Some(0.0)), "$0.00");
         assert_eq!(cost_text(None), "—");
+    }
+
+    /// #64: virtualized rows are one line, truncated, index-stable —
+    /// a multiline or over-long body gets an ellipsis, never a second
+    /// layout line (uniform show_rows height depends on it).
+    #[test]
+    fn transcript_row_text_is_single_line_and_truncated() {
+        let short = crate::transcript::TranscriptEntry {
+            role: "user".into(),
+            text: "hello".into(),
+            ts: None,
+        };
+        assert_eq!(transcript_row_text(3, &short), "   3      user  hello");
+
+        let multiline = crate::transcript::TranscriptEntry {
+            role: "assistant".into(),
+            text: "first line\nsecond".into(),
+            ts: Some(1),
+        };
+        let row = transcript_row_text(0, &multiline);
+        assert!(row.ends_with('\u{2026}'), "{row:?}");
+        assert!(!row.contains('\n'), "single layout line");
+
+        let long = crate::transcript::TranscriptEntry {
+            role: "assistant".into(),
+            text: "x".repeat(500),
+            ts: None,
+        };
+        let row = transcript_row_text(12, &long);
+        assert!(row.chars().count() < 140, "truncated: {}", row.len());
+        assert!(row.ends_with('\u{2026}'));
+    }
+
+    /// #64: typed error copy — the grant refusal names the fix; a stale
+    /// cursor after the one auto-reload tells the user what happened.
+    #[test]
+    fn transcript_error_text_maps_kinds() {
+        let f = |kind: &str, message: &str| crate::transcript::TranscriptFailure {
+            kind: kind.into(),
+            message: message.into(),
+            candidates: vec![],
+        };
+        assert!(transcript_error_text(&f("not_granted", "x")).contains("read_tail grant"));
+        assert!(transcript_error_text(&f("bad_cursor", "x")).contains("reload"));
+        assert!(transcript_error_text(&f("no_session", "x")).contains("no session store"));
+        assert!(
+            transcript_error_text(&f("ambiguous_session", "more than one")).contains("candidates")
+        );
+        assert_eq!(
+            transcript_error_text(&f("query_timeout", "slow")),
+            "query_timeout: slow"
+        );
     }
 }

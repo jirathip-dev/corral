@@ -18,6 +18,8 @@ use serde::Deserialize;
 
 /// Page cap: 20 pages × ≤50 entries = ≤1000 entries held per agent.
 pub const MAX_PAGES: usize = 20;
+/// Entries requested per page (the daemon clamps to its own cap of 50).
+pub const PAGE_LIMIT: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TranscriptEntry {
@@ -213,8 +215,10 @@ mod tests {
     /// metadata reflects the latest page; skipped accumulates.
     #[test]
     fn pages_append_and_cursor_advances() {
-        let mut pane = TranscriptPane::default();
-        pane.loading = true;
+        let mut pane = TranscriptPane {
+            loading: true,
+            ..TranscriptPane::default()
+        };
         pane.apply_page(page_json(2, Some("b.100.aa")));
         assert!(!pane.loading);
         assert_eq!(pane.entries.len(), 2);
@@ -310,7 +314,10 @@ mod tests {
         ));
         assert!(!pane.loading);
         assert_eq!(pane.entries.len(), 2, "entries survive a failed page");
-        assert_eq!(pane.error.as_ref().map(|e| e.kind.as_str()), Some("query_timeout"));
+        assert_eq!(
+            pane.error.as_ref().map(|e| e.kind.as_str()),
+            Some("query_timeout")
+        );
         assert!(!pane.can_load_older(), "no retry spam while errored");
     }
 }

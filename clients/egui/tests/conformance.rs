@@ -264,3 +264,45 @@ fn refusal_kinds_match_the_conformance_table() {
         );
     }
 }
+
+/// #64: the transcript auth header the client mints is the exact
+/// SignedDrive wire form the daemon's `/transcript` handler parses and
+/// verifies — capability read_tail, target bound to the agent, signature
+/// valid against the real authorizer.
+#[test]
+fn my_transcript_header_passes_the_daemon_authorizer() {
+    let (registry, authorizer, token, _dir) = daemon_support::setup();
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let pubkey = signing.verifying_key().to_bytes();
+    let rec = registry
+        .register(&token, pubkey, std::time::Duration::from_secs(3600))
+        .expect("register");
+    registry
+        .set_grants(&rec.key_id, vec![corrald::drive::Capability::ReadTail])
+        .expect("grant read_tail");
+
+    let header = corrald_ui::drive::transcript_auth_header(&rec.key_id, &signing, "herdr:agent-a");
+    // The daemon parses the header value with serde into ITS SignedDrive
+    // (src/api/transcript.rs authorize()) — same parse here.
+    let daemon_signed: corrald::drive::SignedDrive =
+        serde_json::from_str(&header).expect("header parses daemon-side");
+    assert_eq!(
+        daemon_signed.envelope.capability,
+        corrald::drive::Capability::ReadTail
+    );
+    assert_eq!(daemon_signed.envelope.target, "herdr:agent-a");
+    assert!(
+        daemon_signed
+            .envelope
+            .request_id
+            .starts_with("corrald-ui:transcript:"),
+        "audit-traceable request id"
+    );
+    authorizer
+        .verify(&daemon_signed)
+        .expect("signature + grant verify against the real authorizer");
+
+    // A header minted for agent A must fail the daemon's target binding
+    // for agent B — the client cannot accidentally reuse one.
+    assert_ne!(daemon_signed.envelope.target, "herdr:agent-b");
+}

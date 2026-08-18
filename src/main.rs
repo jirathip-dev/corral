@@ -856,24 +856,37 @@ fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<S
     // (same F9 principle as the exit status): a truncated buffer fails
     // to parse and retries; a complete one is used. The no-hang
     // property (round-1 F4) is unchanged — every wait stays bounded.
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    // Round-2 N8: accumulate BYTES and decode once at take time — a
+    // per-chunk from_utf8_lossy silently replaced any multi-byte char
+    // straddling an 8KiB boundary with U+FFFD, which is legal inside a
+    // JSON string, so the corrupted listing PARSED and a live
+    // orchestrator could read as MISSING (reviewer-reproduced with a
+    // one-byte control). Interrupted reads retry instead of truncating.
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     let writer = buffer.clone();
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
-        while let Ok(n) = stdout.read(&mut chunk) {
-            if n == 0 {
-                break;
-            }
-            if let Ok(mut out) = writer.lock() {
-                out.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut out) = writer.lock() {
+                        out.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
             }
         }
         let _ = tx.send(());
     });
     let deadline = std::time::Instant::now() + timeout;
-    let take_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<String>>| {
-        buffer.lock().ok().map(|out| out.clone())
+    let take_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+        buffer
+            .lock()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out).into_owned())
     };
     loop {
         match child.try_wait() {

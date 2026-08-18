@@ -2427,16 +2427,36 @@ fn fleet_watch_bad_registry_alerts_on_stdout_exit_1() {
 #[test]
 fn watch_survives_a_grandchild_holding_stdout() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    // Round-2 N9: an UNPAUSED fleet, so the per-fleet checks actually
+    // consume the listing content — the healthy verdict below then
+    // depends on name/status/cwd surviving the pipe intact, which also
+    // pins round-2 N8 (the listing is padded past 8KiB with a non-ASCII
+    // char parked at the old chunk boundary; a per-chunk lossy decode
+    // corrupted it and produced a false MISSING).
+    let unpaused = VALID_A.replace(r#""paused": true,"#, "");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{unpaused}] }}"#));
 
     // Hermetic herdr shim: valid listing, exit 0, fd-holder outliving
     // the 5s EOF grace (but not the test runner).
     let shim_dir = dir.path().join("bin");
     std::fs::create_dir(&shim_dir).expect("mkdir");
     let shim = shim_dir.join("herdr");
+    // Pad so a two-byte UTF-8 char (é) straddles the reader's 8KiB
+    // boundary: everything before the agents array is ASCII filler
+    // sized so the é inside the first cwd lands at bytes 8191/8192.
+    let mut listing = String::from("{\"result\":{\"pad\":\"");
+    let prefix_after_pad =
+        "\",\"agents\":[{\"name\":\"orch-corral\",\"agent_status\":\"working\",\"cwd\":\"/repos/é-";
+    // Place é's FIRST byte exactly at offset 8191 so 0xC3|0xA9 straddle
+    // the reader's 8KiB chunk boundary (the N8 repro geometry).
+    let e_off = prefix_after_pad.find('é').expect("é in prefix");
+    let pad = 8191usize.saturating_sub(listing.len() + e_off);
+    listing.push_str(&"a".repeat(pad));
+    listing.push_str(prefix_after_pad);
+    listing.push_str("corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}");
     std::fs::write(
         &shim,
-        "#!/bin/sh\n( sleep 8 ) &\necho '{\"result\":{\"agents\":[{\"name\":\"orch-corral\",\"agent_status\":\"working\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}'\nexit 0\n",
+        format!("#!/bin/sh\n( sleep 8 ) &\necho '{listing}'\nexit 0\n"),
     )
     .expect("write shim");
     #[cfg(unix)]
@@ -2473,7 +2493,13 @@ fn watch_survives_a_grandchild_holding_stdout() {
         !stdout.contains("NOT reachable"),
         "a complete answer with a held fd must not be a false server-down: {stdout}"
     );
-    // VALID_A is paused:true, so the healthy outcome is ALL HEALTHY.
+    // Unpaused fleet + intact listing content (orch working, both
+    // workers present, non-ASCII cwd surviving the chunk boundary — N8)
+    // = genuinely healthy.
+    assert!(
+        !stdout.contains("MISSING"),
+        "listing content must survive the pipe byte-for-byte (N8): {stdout}"
+    );
     assert!(stdout.contains("ALL HEALTHY"), "{stdout}");
     assert!(out.status.success(), "exit 0 on healthy: {stdout}");
 }

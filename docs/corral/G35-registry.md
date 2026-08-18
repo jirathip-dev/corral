@@ -124,8 +124,9 @@ every stalled flavor (informational, at the cost of an extra output flap
 when the network blips). Legacy CHECKS not ported in this slice (fresh
 review N2/N4 — both were added to legacy v3 after production misses, and
 both remain gaps until a later slice or the legacy watcher's retirement):
-stall ESCALATION (legacy re-notifies at 30/60/120min while a stall
-persists; corrald's dedup-friendly stable output notifies once) and
+stall ESCALATION (legacy re-notifies at 30m/2h/6h/24h — four buckets,
+capped at 4 re-fires per stall — while corrald's dedup-friendly stable
+output notifies once) and
 UNSHIPPED-WORK detection (local commits with no remote branch/PR read as
 a plain stall here, not as the "work never left the machine" alarm).
 

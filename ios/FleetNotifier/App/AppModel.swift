@@ -102,7 +102,6 @@ final class AppModel: ObservableObject {
     func startLive() {
         guard let hostURL else { return }
         let client = CorraldClient(host: hostURL)
-        let driveClient = DriveClient(host: hostURL)
         fleet.onNewlyBlocked = { [weak self] agentId in
             Task { @MainActor in self?.notifyBlocked(agentId: agentId) }
         }
@@ -129,8 +128,13 @@ final class AppModel: ObservableObject {
         notifier = LocalNotifier()
         Task { await notifier?.requestAuthorization() }
         notifier?.registerCategories()
+        // R-N1: the reply handler must NOT capture a host-bound client —
+        // after "Reset device identity" + re-registration this closure
+        // survives (once-per-process guard), and a captured client would
+        // send a SIGNED drive to the PREVIOUS host. It resolves the
+        // current hostURL at reply time instead.
         notifier?.onReply = { [weak self] payload, action in
-            self?.handleNotificationReply(payload: payload, action: action, driveClient: driveClient)
+            self?.handleNotificationReply(payload: payload, action: action)
         }
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
@@ -191,10 +195,14 @@ final class AppModel: ObservableObject {
     /// `hash_mismatch`). Simple approve/deny/continue replies never carry
     /// free text, so the lock-screen surface cannot trip the destructive
     /// step-up gate; destructive drives happen in-app where Face ID runs.
-    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
-                                 driveClient: DriveClient) {
+    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action) {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            // R-N1: bind to the CURRENT host at reply time — never a
+            // client captured at startLive() time (it can be stale after
+            // a device reset + re-registration).
+            guard let hostURL = self.hostURL else { return }
+            let driveClient = DriveClient(host: hostURL)
             let live = await self.resolveLiveAgent(payload: payload)
             switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
             case .failure(.stale):
@@ -393,6 +401,10 @@ final class AppModel: ObservableObject {
         keyId = nil
         grants = []
         hostURL = nil
+        // R-N1: the next registration is (potentially) a NEW host — the
+        // notification/APNs half of startLive() must re-run so the APNs
+        // token reaches the new daemon and the reply path re-arms.
+        notificationsConfigured = false
         mode = .needsSetup
     }
 }

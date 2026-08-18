@@ -196,13 +196,20 @@ final class FleetStore: ObservableObject {
         }
     }
 
-    /// One frame off the wire. A SINGLE main-actor hop per frame (review
-    /// F6): decode happens inside the hop, so frames are enqueued in
-    /// arrival order and an error cannot be re-ordered after the good
-    /// frame that follows it. Testable without a network (review F5).
-    nonisolated func ingest(_ frame: SSEFrame) {
-        Task { @MainActor in
-            switch CorraldClient.decode(frame) {
+    /// One frame off the wire: decode OFF-main (round-3 R-N4 — a large
+    /// resnapshot must not become main-thread work), then a single
+    /// main-actor hop applies the outcome. Frames still get one
+    /// unstructured task each, so cross-frame execution order is not
+    /// guaranteed by the language (round-3 R-N3: in practice main-actor
+    /// enqueue at equal priority behaves FIFO; a mis-ordered error is
+    /// corrected by the next applied frame). Returns the hop so tests
+    /// await it deterministically (round-3 R-N5). Testable without a
+    /// network (review F5).
+    @discardableResult
+    nonisolated func ingest(_ frame: SSEFrame) -> Task<Void, Never> {
+        let outcome = CorraldClient.decode(frame)
+        return Task { @MainActor in
+            switch outcome {
             case .event(let event):
                 self.apply(event, previous: &self.streamSeen)
             case .ignored:

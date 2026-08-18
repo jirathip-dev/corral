@@ -314,18 +314,16 @@ final class SSETests: XCTestCase {
     @MainActor
     func testTornFrameThroughIngestSurfacesErrorThenRecovers() async {
         let store = FleetStore()
-        store.ingest(SSEFrame(kind: .delta, id: 1, data: "{\"nope\":"))
-        await Task.yield()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // Deterministic (round-3 R-N5): await the returned hop — no
+        // sleeps, no timing race.
+        await store.ingest(SSEFrame(kind: .delta, id: 1, data: "{\"nope\":")).value
         guard case .error(let message) = store.connectionState else {
             return XCTFail("torn frame via ingest must surface .error, got \(store.connectionState)")
         }
         XCTAssertTrue(message.contains("undecodable"), message)
 
         let good = "{\"schema_version\":3,\"rev\":9,\"generated_at\":0,\"agents\":{}}"
-        store.ingest(SSEFrame(kind: .snapshot, id: 9, data: good))
-        await Task.yield()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await store.ingest(SSEFrame(kind: .snapshot, id: 9, data: good)).value
         XCTAssertEqual(store.connectionState, .connected,
                        "a good frame recovers the connection state")
     }

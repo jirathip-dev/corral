@@ -261,6 +261,7 @@ fn harness() -> Harness {
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
+        ..Default::default()
     });
     Harness {
         store,

@@ -10,6 +10,10 @@
 //!   per window (`ok`/`warning`/`problem`) dashboard tiles render as the
 //!   before-exhaustion alert.
 //! - `GET /healthz` — liveness.
+//! - `GET /transcript` — #63: grant-gated (`read_tail`) on-demand
+//!   transcript pages for one agent, newest first, redacted at the module
+//!   boundary (see [`crate::api::transcript`]). The ONLY grant-gated GET:
+//!   the signed drive envelope rides the `x-corral-drive` header.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
 //!   destructive payloads (see [`crate::api::drive`]).
@@ -31,6 +35,7 @@
 //! provisioning inputs (the `.p8` push key is Guy's).
 
 pub mod drive;
+pub mod transcript;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -71,6 +76,11 @@ pub struct AppState {
     pub adapter: Arc<dyn Adapter>,
     /// Idempotency table keyed by request_id (bounded, LRU-ish).
     pub replay: Arc<ReplayTable>,
+    /// #63: where `/transcript` looks for the three session stores.
+    /// `main.rs` passes [`TranscriptRoots::from_env`]; tests point this at
+    /// fixtures — the Default is hermetic (a throwaway temp dir, so no
+    /// test accidentally reads live stores).
+    pub transcript_roots: crate::transcript::bind::TranscriptRoots,
 }
 
 impl Default for AppState {
@@ -84,12 +94,20 @@ impl Default for AppState {
             std::process::id(),
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let auth = Arc::new(AuthPlane::load_or_create(dir).expect("default auth plane"));
+        let auth = Arc::new(AuthPlane::load_or_create(dir.clone()).expect("default auth plane"));
         Self {
             store: Store::new(),
             auth,
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
+            // Hermetic: nonexistent paths under the throwaway dir, so a
+            // default-built state can never read this machine's live
+            // session stores (mirrors the N6 no-ambient-env discipline).
+            transcript_roots: crate::transcript::bind::TranscriptRoots {
+                opencode_db: dir.join("opencode.db"),
+                claude_dir: dir.join("claude-projects"),
+                codex_dir: dir.join("codex-sessions"),
+            },
         }
     }
 }
@@ -105,6 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(events))
         .route("/history", get(history))
         .route("/cost", get(cost))
+        .route("/transcript", get(self::transcript::transcript))
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
         .merge(crate::auth::http::auth_routes())

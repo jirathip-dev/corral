@@ -294,6 +294,7 @@ async fn http_app() -> (Arc<AuthPlane>, tempfile::TempDir, axum::Router) {
         auth: auth.clone(),
         adapter,
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
+        ..Default::default()
     });
     (auth, dir, app)
 }

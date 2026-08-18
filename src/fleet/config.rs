@@ -51,7 +51,7 @@ pub struct Fleet {
 /// last-resort backend, #56) are optional; `skip_serializing_if` omits them
 /// from the written JSON when absent, so an unrelated rewrite never grows
 /// `"impl_alt": null` into a registry that did not have them.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
     pub orch: String,
@@ -360,6 +360,10 @@ pub enum ConfigError {
     AddNeedsModels,
     /// A `fleet remove <name>` named a fleet that is not in the registry.
     RemoveNotFound { name: String },
+    /// `fleet pause`/`resume`/`models` named a fleet that is not in the
+    /// registry (or `models` used a name other than the legacy `all` while
+    /// applying per-fleet). Refusal, exit 1, like [`ConfigError::RemoveNotFound`].
+    FleetNotFound { name: String },
     /// The registry file could not be replaced atomically.
     Write {
         path: PathBuf,
@@ -378,6 +382,7 @@ impl ConfigError {
             | ConfigError::AddRepoUnresolved { .. }
             | ConfigError::AddNeedsModels
             | ConfigError::RemoveNotFound { .. }
+            | ConfigError::FleetNotFound { .. }
             | ConfigError::Write { .. } => 1,
             ConfigError::Io { .. }
             | ConfigError::Parse { .. }
@@ -449,6 +454,9 @@ impl fmt::Display for ConfigError {
             ConfigError::RemoveNotFound { name } => {
                 write!(f, "no fleet named {name:?} in the registry")
             }
+            ConfigError::FleetNotFound { name } => {
+                write!(f, "no fleet named {name:?} in the registry")
+            }
             ConfigError::Write { path, source } => {
                 write!(
                     f,
@@ -473,7 +481,8 @@ impl std::error::Error for ConfigError {
             | ConfigError::DuplicateFleet { .. }
             | ConfigError::AddRepoUnresolved { .. }
             | ConfigError::AddNeedsModels
-            | ConfigError::RemoveNotFound { .. } => None,
+            | ConfigError::RemoveNotFound { .. }
+            | ConfigError::FleetNotFound { .. } => None,
         }
     }
 }

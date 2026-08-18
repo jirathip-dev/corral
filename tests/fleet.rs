@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use corrald::fleet::config::{ConfigError, Fleet, Models, Registry, load, write_atomic};
+use corrald::fleet::config::{load, write_atomic, ConfigError, Fleet, Models, Registry};
 use corrald::fleet::ops::{AddOptions, RepoResolver};
 
 const VALID_A: &str = r#"{
@@ -1124,6 +1124,8 @@ fn written_file_reparses_through_load() {
     opts.models = Some(Models {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
         review: "opus".to_string(),
         impl_alt: None,
         impl_alt2: None,
@@ -1151,6 +1153,8 @@ fn impl_serializes_back_to_json_key_impl_not_impl_underscore() {
     opts.models = Some(Models {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
         review: "opus".to_string(),
         impl_alt: None,
         impl_alt2: None,
@@ -1268,6 +1272,8 @@ fn whitespace_in_models_is_a_hard_error() {
     opts.models = Some(Models {
         orch: "claude opus 5".to_string(),
         impl_: "i".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
         review: "r".to_string(),
         impl_alt: None,
         impl_alt2: None,

@@ -227,10 +227,12 @@ fn opencode_page_sql(session_id: &str, cursor: Option<(i64, &str)>, limit: usize
         "SELECT m.id AS id, m.role AS role, m.time_created AS time_created, \
                 m.data AS msg_data, \
                 (SELECT group_concat(t, char(10)) FROM \
-                   (SELECT json_extract(p.data, '$.text') AS t FROM part p \
+                   (SELECT CASE WHEN json_valid(p.data) \
+                           THEN json_extract(p.data, '$.text') END AS t \
+                    FROM part p \
                     WHERE p.message_id = m.id AND p.type = 'text' \
-                      AND json_extract(p.data, '$.text') IS NOT NULL \
-                    ORDER BY p.id)) AS text \
+                    ORDER BY p.id) \
+                 WHERE t IS NOT NULL) AS text \
          FROM message m \
          WHERE m.session_id = '{sid}' {cursor_clause} \
          ORDER BY m.time_created DESC, m.id DESC LIMIT {limit}"
@@ -255,6 +257,9 @@ async fn read_opencode_page(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // A timed-out scanner must DIE, not keep grinding the 13GB store
+        // after we returned QueryTimeout (round-2 N5).
+        .kill_on_drop(true)
         .output();
     // Wall-clock cap, same discipline as the cost reader: the busy timeout
     // only covers lock waits, not a long scan (review F5).
@@ -362,7 +367,8 @@ fn normalize_role(raw: Option<&str>) -> String {
         Some("user" | "human") => "user",
         Some("assistant" | "ai") => "assistant",
         Some("system") => "system",
-        Some("tool" | "tool_result" | "tool_use") => "tool",
+        Some("tool" | "tool_result" | "tool_use" | "function") => "tool",
+        Some("developer") => "developer",
         Some("summary") => "summary",
         _ => "unknown",
     }
@@ -782,6 +788,7 @@ mod tests {
             INSERT INTO part VALUES ('p2c','m2','text','{"text":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 leaked"}');
             INSERT INTO message VALUES ('m2t','ses1','assistant',250,'{}');
             INSERT INTO part VALUES ('p2t','m2t','reasoning','{"summary":"thinking only"}');
+            INSERT INTO part VALUES ('ptorn','m2','text','{"text": torn-not-json');
             INSERT INTO message VALUES ('m3','ses2','user',300,'{}');
             INSERT INTO part VALUES ('p3','m3','text','{"text":"other session"}');
         "#;
@@ -814,9 +821,15 @@ mod tests {
         // order, as ONE entry (same one-entry-per-message shape as the
         // JSONL readers) — and redacted.
         let text = &p1.entries[0].text;
+        // N1: the torn part row (ptorn) must degrade to nothing — never
+        // abort the statement and brick every page of the session.
         assert!(
             text.starts_with("part A of the answer"),
             "part order: {text}"
+        );
+        assert!(
+            !text.contains("torn-not-json"),
+            "torn part excluded: {text}"
         );
         assert!(text.contains('\n'), "parts joined with newline: {text}");
         assert!(!text.contains("ghp_abcdefgh"), "redacted: {text}");

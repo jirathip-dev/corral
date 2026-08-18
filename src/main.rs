@@ -214,7 +214,10 @@ fn print_fleet_help() {
          \tserver reachability, missing orchestrators, stall flavors\n\
          \t(open PRs / workers still working / plain), missing workers;\n\
          \tprints PROBLEM lines or ALL HEALTHY; exit 0 healthy /\n\
-         \t1 problems / 2 usage-parse (cron-able, like digest)\n\n\
+         \t1 problems (an unreadable/invalid registry is itself a\n\
+         \tPROBLEM line with exit 1 — NOT check's exit 2, so a cron\n\
+         \tmonitor still alerts) / 2 usage error (cron-able, like\n\
+         \tdigest)\n\n\
          add/remove/pause/resume/models exit codes: 0 = written (or an\n\
          \tidempotent no-op — already paused/resumed, models unchanged);\n\
          \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
@@ -686,8 +689,9 @@ fn run_fleet_models(args: &[String]) {
 
 /// `corrald fleet watch`: one read-only health pass over the registry's
 /// fleets — herdr reachability, missing orchestrators, stall flavors,
-/// missing workers (see [`fleet::watch`]). Exit 0 healthy / 1 problems /
-/// 2 usage-parse-registry, matching `check`.
+/// missing workers (see [`fleet::watch`]). Exit 0 healthy / 1 problems —
+/// an unreadable/invalid registry is itself a PROBLEM line with exit 1
+/// (monitor safety; deliberately NOT `check`'s exit-2) / 2 usage errors.
 fn run_fleet_watch(args: &[String]) {
     let mut registry: Option<PathBuf> = None;
     let mut i = 0;
@@ -725,7 +729,8 @@ fn run_fleet_watch(args: &[String]) {
 
     let home = std::env::var("HOME").unwrap_or_default();
     let agents = herdr_agents_with_retry();
-    // One gh call per distinct repo, only for fleets that can stall.
+    // One gh call per distinct unpaused-fleet repo (serial, up to 30s
+    // each) — cheaper than proving which fleets can stall before asking.
     let mut prs = fleet::watch::PrCounts::new();
     if agents.is_some() {
         let mut repos: Vec<&str> = registry
@@ -756,9 +761,13 @@ fn run_fleet_watch(args: &[String]) {
 /// a transient socket hiccup must not read as "every agent missing" (a
 /// legacy-proven false-alarm mode). `None` = the CALL failed or was
 /// unparseable after the retry; `Some(empty)` = healthy zero-agent
-/// answer (review F3). Stdout is parsed regardless of the child's exit
-/// status — the parse decides (review F9).
+/// answer (review F3). An EMPTY first answer also gets the 10s retry
+/// (review R1): legacy grants a just-restarted server that grace before
+/// declaring every agent gone — only a second empty answer is returned
+/// as the healthy `Some(empty)`, never as server-down. Stdout is parsed
+/// regardless of the child's exit status — the parse decides (review F9).
 fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
+    let mut saw_empty_answer = false;
     for attempt in 0..2 {
         if attempt == 1 {
             std::thread::sleep(Duration::from_secs(10));
@@ -767,43 +776,21 @@ fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
         else {
             continue;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) else {
+        let Some(map) = fleet::watch::parse_agent_listing(&stdout) else {
             continue;
         };
-        let Some(list) = value
-            .get("result")
-            .and_then(|r| r.get("agents"))
-            .and_then(|a| a.as_array())
-        else {
-            continue;
-        };
-        let mut map = std::collections::BTreeMap::new();
-        for a in list {
-            let Some(name) = a.get("name").and_then(|n| n.as_str()) else {
-                continue;
-            };
-            map.insert(
-                name.to_string(),
-                fleet::watch::AgentInfo {
-                    status: a
-                        .get("agent_status")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    cwd: a
-                        .get("cwd")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                },
-            );
+        if !map.is_empty() || attempt == 1 {
+            return Some(map);
         }
-        // A successful listing with ZERO agents is a healthy answer (the
-        // steady state when every fleet is parked) — Some(empty), never a
-        // retry and never a server-down signal (review F3).
-        return Some(map);
+        saw_empty_answer = true;
     }
-    None
+    // First answer was a successful empty, but the retry's CALL failed:
+    // we still HAVE one good answer — report it, not server-down.
+    if saw_empty_answer {
+        Some(std::collections::BTreeMap::new())
+    } else {
+        None
+    }
 }
 
 /// Open-PR count for one repo via `gh`, 30s timeout. `None` = the check
@@ -871,7 +858,6 @@ fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<S
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = rx.recv_timeout(Duration::from_millis(200));
                 return None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),

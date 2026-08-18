@@ -112,8 +112,10 @@ healthy / 1 problems / 2 usage-parse. A corrupt/unreadable registry is
 itself a `PROBLEM:` line on stdout with exit 1 (monitor safety: the
 watchdog alerts on the failure that stops it watching). Fleet-worker
 attribution matches by the fleet's own `workers[]` names or by
-component-exact cwd anchored at the fleet's `local` (two+ components
-below `$HOME`, or outside it) and `$HOME/.herdr/worktrees/<worktree_dir>`
+component-exact cwd anchored at the fleet's `local` (usable only when at
+least two path components deep, below `$HOME` or outside it — legacy
+rejected out-of-home locals entirely; we accept them under the same
+depth rule) and `$HOME/.herdr/worktrees/<worktree_dir>`
 — another fleet's `corral-x` worktree can never count for `corral`.
 
 Declared deviations from the legacy `fleet-watch.py` (beyond the checks

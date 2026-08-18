@@ -2,13 +2,16 @@
 //! registry's fleets, cron-able like `corrald digest`, READ-ONLY end to
 //! end (never writes the registry, never prompts or kills an agent).
 //!
-//! The rules mirror the legacy `fleet-watch.py` verbatim, per unpaused
-//! fleet (paused fleets are skipped ENTIRELY — orchestrator and worker
-//! checks both, so pausing genuinely silences the watchdog for a fleet):
+//! The rules mirror the legacy `fleet-watch.py`, with the deviations
+//! enumerated in docs/corral/G35-registry.md, per unpaused fleet (paused
+//! fleets are skipped ENTIRELY — orchestrator and worker checks both, so
+//! pausing genuinely silences the watchdog for a fleet):
 //!
-//! 1. herdr server unreachable — the agent listing failed or came back
-//!    empty after one retry. Reported once; every per-fleet agent check is
-//!    then suppressed (they would all false-alarm as MISSING).
+//! 1. herdr server unreachable — the agent listing CALL failed or was
+//!    unparseable after one retry. A successful listing with ZERO agents
+//!    is a healthy answer, never server-down. Reported once; every
+//!    per-fleet agent check is then suppressed (they would all
+//!    false-alarm as MISSING).
 //! 2. orchestrator MISSING — the fleet's `orch` name is not in the listing.
 //! 3. orchestrator STALLED — status != "working", three flavors in
 //!    priority order: with open PRs; while fleet workers are working
@@ -162,12 +165,47 @@ fn local_authorized(local: &str, home: &str) -> bool {
         return local.split('/').filter(|c| !c.is_empty()).count() >= 3;
     }
     let Some(rest) = local.strip_prefix(&format!("{home}/")) else {
-        // A local OUTSIDE home (e.g. /opt/board) has no depth hazard
-        // relative to home; keep it, matching legacy's home-relative rule
-        // scope.
-        return local != home && !local.is_empty();
+        // A local OUTSIDE home (e.g. /opt/board). Legacy rejects these
+        // outright (relpath from home starts with ".."); accepting them is
+        // a declared deviation (G35-registry.md) — but the SAME two-plus
+        // component depth rule applies, so a misconfigured "/Users" or
+        // "/opt" cannot authorize every cwd on the box (review R3).
+        return local != home && local.split('/').filter(|c| !c.is_empty()).count() >= 2;
     };
     rest.split('/').filter(|c| !c.is_empty()).count() >= 2
+}
+
+/// Parse `herdr agent list` JSON stdout into the watchdog's view. The
+/// field names are the herdr wire contract — `result.agents[].name`,
+/// `.agent_status`, `.cwd` — pinned by unit test here because a silent
+/// herdr rename would otherwise parse every agent as status "unknown"
+/// and stall-alarm every fleet at once (review R4). `None` = not a valid
+/// listing (the caller treats it like a failed call and retries).
+pub fn parse_agent_listing(stdout: &str) -> Option<BTreeMap<String, AgentInfo>> {
+    let value = serde_json::from_str::<serde_json::Value>(stdout).ok()?;
+    let list = value.get("result")?.get("agents")?.as_array()?;
+    let mut map = BTreeMap::new();
+    for a in list {
+        let Some(name) = a.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        map.insert(
+            name.to_string(),
+            AgentInfo {
+                status: a
+                    .get("agent_status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                cwd: a
+                    .get("cwd")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+        );
+    }
+    Some(map)
 }
 
 #[cfg(test)]
@@ -493,6 +531,54 @@ mod tests {
             "corral",
             "/Users/x"
         ));
+        // R3: the depth rule holds OUTSIDE home too — a misconfigured
+        // one-component local must not authorize every cwd under it.
+        assert!(!cwd_in_fleet(
+            "/Users/other/anything",
+            "/Users",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(!cwd_in_fleet("/opt/anything", "/opt", "corral", "/Users/x"));
+        assert!(!cwd_in_fleet("/anything", "/", "corral", "/Users/x"));
+    }
+
+    /// R4: the herdr wire contract — `result.agents[].name` /
+    /// `.agent_status` / `.cwd`. A field rename must fail loudly here,
+    /// not parse as status "unknown" and stall-alarm every fleet.
+    #[test]
+    fn agent_listing_parse_pins_field_names() {
+        let listing = r#"{ "result": { "agents": [
+            { "name": "orch-corral", "agent_status": "working", "cwd": "/repos/corral" },
+            { "name": "w1", "agent_status": "idle", "cwd": "/repos/corral" },
+            { "agent_status": "working", "cwd": "/no/name/skipped" }
+        ] } }"#;
+        let map = parse_agent_listing(listing).expect("valid listing parses");
+        assert_eq!(
+            map.get("orch-corral"),
+            Some(&agent("working", "/repos/corral"))
+        );
+        assert_eq!(map.get("w1"), Some(&agent("idle", "/repos/corral")));
+        assert_eq!(map.len(), 2, "nameless entries skipped: {map:?}");
+
+        // A healthy zero-agent answer parses as Some(empty), not None.
+        assert_eq!(
+            parse_agent_listing(r#"{ "result": { "agents": [] } }"#),
+            Some(BTreeMap::new())
+        );
+        // Not a listing at all → None (caller retries, then server-down).
+        assert_eq!(parse_agent_listing("not json"), None);
+        assert_eq!(parse_agent_listing(r#"{ "result": {} }"#), None);
+        assert_eq!(parse_agent_listing(r#"{ "agents": [] }"#), None);
+        // A renamed status field degrades to "unknown" — visible here so
+        // the degradation is a CHOICE, not an accident.
+        let renamed = r#"{ "result": { "agents": [
+            { "name": "a", "status": "working", "cwd": "/x/y" }
+        ] } }"#;
+        assert_eq!(
+            parse_agent_listing(renamed).expect("parses").get("a"),
+            Some(&agent("unknown", "/x/y"))
+        );
     }
 
     #[test]

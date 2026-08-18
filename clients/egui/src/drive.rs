@@ -395,6 +395,28 @@ pub fn sign_step_up(signing: &SigningKey, request: &StepUpRequest) -> String {
     base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
 }
 
+/// #64: the signed `x-corral-drive` header value for a `GET /transcript`
+/// page — the exact `SignedDrive` JSON `/drive` takes as a body, with
+/// capability `read_tail` and `target` = the agent id (the daemon
+/// refuses a target that does not match `?agent`). A fresh `request_id`
+/// per page: the daemon audits one `read_tail:transcript` entry per
+/// served page keyed by it, so pages stay distinguishable in the trail.
+pub fn transcript_auth_header(key_id: &str, signing: &SigningKey, target: &str) -> String {
+    let envelope = DriveEnvelope {
+        request_id: new_request_id("transcript"),
+        capability: Capability::ReadTail,
+        target: target.to_string(),
+        payload: serde_json::Value::Null,
+        rev: None,
+    };
+    let signed = SignedDrive {
+        key_id: key_id.to_string(),
+        signature: sign_envelope(signing, &envelope),
+        envelope,
+    };
+    serde_json::to_string(&signed).expect("signed envelope serializes")
+}
+
 /// Fresh `request_id` for a logical action: stable per action, unique per
 /// tap. Retries reuse it; the daemon dedupes on it.
 pub fn new_request_id(what: &str) -> String {

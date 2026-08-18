@@ -95,6 +95,10 @@ pub struct Fleet {
     pub recent_drives: HashMap<String, VecDeque<DriveState>>,
     /// read_tail content per agent (only ever fetched on tap; bounded).
     pub tails: HashMap<String, Vec<String>>,
+    /// #64: transcript pane per agent (fetched on demand; the pane holds
+    /// at most MAX_PAGES pages, and at most 64 agents are cached here —
+    /// same bound discipline as `tails`).
+    pub transcripts: HashMap<String, crate::transcript::TranscriptPane>,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
 }
@@ -113,6 +117,7 @@ impl Fleet {
         for id in &delta.del {
             self.agents.remove(id);
             self.tails.remove(id);
+            self.transcripts.remove(id);
             self.recent_drives.remove(id);
             self.expanded.retain(|e| e != id);
         }
@@ -144,6 +149,22 @@ impl Fleet {
             self.tails.remove(&oldest);
         }
         self.tails.insert(agent_id.to_string(), tail);
+    }
+
+    /// #64: the transcript pane for an agent, creating it bounded the
+    /// same way as `remember_tail` — at 64 cached agents an arbitrary
+    /// other pane is evicted before a NEW agent gets one.
+    pub fn transcript_pane_mut(
+        &mut self,
+        agent_id: &str,
+    ) -> &mut crate::transcript::TranscriptPane {
+        if self.transcripts.len() >= 64
+            && !self.transcripts.contains_key(agent_id)
+            && let Some(oldest) = self.transcripts.keys().next().cloned()
+        {
+            self.transcripts.remove(&oldest);
+        }
+        self.transcripts.entry(agent_id.to_string()).or_default()
     }
 
     pub fn remember_drive(&mut self, agent_id: &str, state: DriveState) {
@@ -319,6 +340,9 @@ mod tests {
         fleet.apply_snapshot(&snap);
         fleet.expanded.push("a".into());
         fleet.tails.insert("a".into(), vec!["line".into()]);
+        fleet
+            .transcripts
+            .insert("a".into(), crate::transcript::TranscriptPane::default());
         fleet.apply_delta(&Delta {
             rev: 2,
             upd: vec![],
@@ -326,7 +350,24 @@ mod tests {
         });
         assert!(fleet.agents.is_empty());
         assert!(fleet.tails.is_empty());
+        assert!(fleet.transcripts.is_empty(), "#64 pane cleaned up too");
         assert!(fleet.expanded.is_empty());
+    }
+
+    /// #64: the transcript pane cache is bounded like the tail cache —
+    /// a 65th agent evicts one, an EXISTING agent's pane never does.
+    #[test]
+    fn transcript_pane_cache_is_bounded() {
+        let mut fleet = Fleet::default();
+        for i in 0..64 {
+            let _ = fleet.transcript_pane_mut(&format!("agent-{i}"));
+        }
+        assert_eq!(fleet.transcripts.len(), 64);
+        let _ = fleet.transcript_pane_mut("agent-0");
+        assert_eq!(fleet.transcripts.len(), 64, "existing agent: no evict");
+        let _ = fleet.transcript_pane_mut("agent-new");
+        assert_eq!(fleet.transcripts.len(), 64, "new agent evicts one");
+        assert!(fleet.transcripts.contains_key("agent-new"));
     }
 
     #[test]

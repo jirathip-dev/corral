@@ -239,6 +239,70 @@ pub async fn fetch_audit(
     response.json().await.map_err(|e| format!("body: {e}"))
 }
 
+/// #64: one `GET /transcript` page. Auth rides the `x-corral-drive`
+/// header (see [`crate::drive::transcript_auth_header`]). Non-200 bodies
+/// are the endpoint's typed `{kind, message}` contract — parsed into
+/// [`TranscriptFailure`](crate::transcript::TranscriptFailure) so the
+/// pane can branch on `kind` (stale cursor, ambiguity, grant refusals).
+pub async fn fetch_transcript(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_header: &str,
+    agent_id: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<crate::transcript::TranscriptPage, crate::transcript::TranscriptFailure> {
+    let mut url = format!(
+        "{}/transcript?agent={}&limit={limit}",
+        base_url.trim_end_matches('/'),
+        urlencode(agent_id),
+    );
+    if let Some(cursor) = cursor {
+        url.push_str("&cursor=");
+        url.push_str(&urlencode(cursor));
+    }
+    let transport = |message: String| crate::transcript::TranscriptFailure {
+        kind: "transport".to_string(),
+        message,
+        candidates: Vec::new(),
+    };
+    let response = client
+        .get(&url)
+        .header("x-corral-drive", auth_header)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| transport(format!("connect: {e}")))?;
+    let status = response.status();
+    if status.is_success() {
+        return response
+            .json()
+            .await
+            .map_err(|e| transport(format!("body: {e}")));
+    }
+    let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+    Err(crate::transcript::TranscriptFailure::from_response(
+        status.as_u16(),
+        &body,
+    ))
+}
+
+/// Minimal query-value percent-encoding (agent ids carry `:`; cursors
+/// are dot/hex). Everything unreserved passes through; the rest is
+/// percent-encoded byte-wise — no new dependency for a URL crate.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Drain one SSE byte stream to the `on_event` callback. Returns
 /// `StreamOutcome::Closed` on a clean EOF and `Error` on transport/parse
 /// trouble — the caller owns reconnect/backoff. Each read carries a

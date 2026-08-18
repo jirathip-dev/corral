@@ -427,6 +427,57 @@ mod tests {
         assert!(!pane.auto_reloaded, "an explicit reload re-arms it");
     }
 
+    /// Round-3 gap: an ABSOLUTE selection must resolve to the SAME
+    /// message before and after a window slide (the relative-index bug
+    /// slipped through once — review R1).
+    #[test]
+    fn absolute_selection_survives_a_window_slide() {
+        let mut pane = TranscriptPane::default();
+        // Fill to the cap with distinctly-labeled entries.
+        let full: Vec<TranscriptPage> = (0..(MAX_ENTRIES / 100))
+            .map(|p| {
+                let mut page = page(0, Some("b.1.aa"));
+                page.entries = (0..100)
+                    .map(|i| TranscriptEntry {
+                        role: "user".into(),
+                        text: format!("abs-{}", p * 100 + i),
+                        ts: None,
+                    })
+                    .collect();
+                page
+            })
+            .collect();
+        for page in full {
+            pane.apply_page(page);
+        }
+        // Select absolute index 250 (the resolution the UI performs).
+        let absolute = 250usize;
+        let before = pane.entries[absolute - pane.base_offset].text.clone();
+        assert_eq!(before, "abs-250");
+
+        // A further page slides the window.
+        let mut older = page(0, Some("b.2.aa"));
+        older.entries = (0..100)
+            .map(|i| TranscriptEntry {
+                role: "user".into(),
+                text: format!("abs-{}", MAX_ENTRIES + i),
+                ts: None,
+            })
+            .collect();
+        pane.apply_page(older);
+        assert!(pane.base_offset > 0, "the window slid");
+
+        let after = absolute
+            .checked_sub(pane.base_offset)
+            .and_then(|i| pane.entries.get(i))
+            .map(|e| e.text.clone());
+        assert_eq!(
+            after.as_deref(),
+            Some(before.as_str()),
+            "an absolute selection resolves to the same message across a slide"
+        );
+    }
+
     /// Failure parsing: the typed contract, the ambiguous candidate
     /// list, and the non-JSON transport fallback.
     #[test]

@@ -849,14 +849,21 @@ fn transcript_section(
                         // pinned by test).
                         let desired = egui::vec2(ui.available_width(), row_height);
                         let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-                        // R2: a content-anchored id salt — the row body
-                        // consumes auto ids, which would otherwise shift
-                        // with the scroll offset and lose a
-                        // press-scroll-release click.
+                        // R2 (round-3 correction): an EXPLICIT child id —
+                        // id_salt anchors only the child Ui's id, while
+                        // the label's auto-id seeds from the parent
+                        // counter and would still shift with scroll.
+                        // IdSource::Explicit makes the seed derive from
+                        // this id alone; (agent, absolute) is unique
+                        // within the frame.
                         let mut row_ui = ui.new_child(
                             egui::UiBuilder::new()
                                 .max_rect(rect)
-                                .id_salt(absolute)
+                                .id(egui::Id::new((
+                                    "corral-ui-transcript-row",
+                                    &agent.agent_id,
+                                    absolute,
+                                )))
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
                         if row_ui
@@ -1359,7 +1366,7 @@ mod tests {
         // a second line — pinned with a long line in a deliberately
         // NARROW rect using the exact render structure (exact-size
         // allocation + left_to_right child, whose wrap mode is Extend).
-        let mut narrow_height: Option<f32> = None;
+        let mut narrow: Option<(f32, f32)> = None;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
@@ -1375,19 +1382,20 @@ mod tests {
             let mut row_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
-                    .id_salt(7usize)
+                    .id(egui::Id::new(("corral-ui-transcript-row", "test", 7usize)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let response = row_ui.selectable_label(false, egui::RichText::new(line).monospace());
-            narrow_height = Some((pitch, response.rect.height()).1.min(f32::MAX));
-            assert!(
-                response.rect.height() <= pitch,
-                "a long line in a narrow rect must not wrap: row {} > pitch {pitch}",
-                response.rect.height()
-            );
+            narrow = Some((pitch, response.rect.height()));
         });
+        // Clear BEFORE asserting: a failed assert must not double-panic
+        // through the TexturesDelta drop guard.
         output.textures_delta.clear();
-        narrow_height.expect("narrow row rendered");
+        let (pitch, height) = narrow.expect("narrow row rendered");
+        assert!(
+            height <= pitch,
+            "a long line in a narrow rect must not wrap: row {height} > pitch {pitch}"
+        );
     }
 
     /// #64 review F4: the selected-entry detail lays out a BOUNDED slice

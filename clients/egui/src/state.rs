@@ -461,6 +461,36 @@ mod tests {
         );
     }
 
+    /// #64 review R8/round-3: a reconnect snapshot that dropped an
+    /// agent prunes its transcript pane (delta deletion already did).
+    #[test]
+    fn snapshot_prunes_orphan_transcript_panes() {
+        let mut fleet = Fleet::default();
+        let mut snap = crate::model::Snapshot {
+            schema_version: 3,
+            rev: 1,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        snap.agents.insert("a".into(), agent("a"));
+        fleet.apply_snapshot(&snap);
+        let _ = fleet.transcript_pane_mut("a");
+        assert!(fleet.transcripts.contains_key("a"));
+
+        // Reconnect: a fresh snapshot without the agent.
+        let empty = crate::model::Snapshot {
+            schema_version: 3,
+            rev: 2,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        fleet.apply_snapshot(&empty);
+        assert!(
+            fleet.transcripts.is_empty(),
+            "orphan pane pruned on reconnect snapshot"
+        );
+    }
+
     fn msg(
         agent: &str,
         generation: u64,

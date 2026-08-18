@@ -39,6 +39,9 @@ Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
   (last-resort backend). Absent alt keys stay absent through any rewrite (an explicit `null` is
   read as absent and is not written back); a present key must be non-empty
   and whitespace-free, like the other model slots.
+- All `models.*` slots (required and alt) must be whitespace-free — the
+  required three feed the whitespace-delimited `fleet list` line; the alt
+  slots follow the same rule for consistency.
 - `paused` — optional bool, defaults to `false` when absent.
 - `local` may start with `~/` — expanded against `$HOME`.
 - Unknown fields anywhere (top level, fleet, models) → hard error, not silent

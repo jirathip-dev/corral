@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use corrald::fleet::config::{load, write_atomic, ConfigError, Fleet, Models, Registry};
+use corrald::fleet::config::{ConfigError, Fleet, Models, Registry, load, write_atomic};
 use corrald::fleet::ops::{AddOptions, ModelUpdate, RepoResolver};
 
 const VALID_A: &str = r#"{
@@ -1614,28 +1614,27 @@ fn write_preserves_the_registry_file_mode() {
 /// optional alt slots populated on `corral`, so the "preserves the others"
 /// assertions have something real to preserve.
 fn two_fleet_registry_body() -> String {
-    format!(
-        r#"{{ "fleets": [
-        {{
+    r#"{"fleets": [
+        {
             "name": "corral",
             "gh_repo": "jirathip-k/corral",
             "local": "~/Projects/corral",
             "worktree_dir": "corral",
             "orch": "orch-corral",
             "workers": ["p4-w1"],
-            "models": {{ "orch": "fable", "impl": "opencode-go/deepseek-v4-flash", "impl_alt": "alt-a", "impl_alt2": "alt-b", "review": "opus" }}
-        }},
-        {{
+            "models": { "orch": "fable", "impl": "opencode-go/deepseek-v4-flash", "impl_alt": "alt-a", "impl_alt2": "alt-b", "review": "opus" }
+        },
+        {
             "name": "board",
             "gh_repo": "jirathip-k/herdr-board",
             "local": "/opt/board",
             "worktree_dir": "board",
             "orch": "orch-board",
             "workers": [],
-            "models": {{ "orch": "fable", "impl": "sonnet", "review": "opus" }}
-        }}
-    ] }}"#
-    )
+            "models": { "orch": "fable", "impl": "sonnet", "review": "opus" }
+        }
+    ]}"#
+    .to_string()
 }
 
 #[test]
@@ -1670,15 +1669,13 @@ fn pause_sets_paused_true_in_written_file() {
 fn resume_clears_paused_and_omits_the_false_per_skip_rule() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Start paused.
-    let body = format!(
-        r#"{{ "fleets": [
-            {{ "name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+    let body = r#"{"fleets": [
+            { "name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
                "worktree_dir": "corral", "orch": "o", "workers": [],
                "paused": true,
-               "models": {{"orch": "f", "impl": "i", "impl_alt": "a", "impl_alt2": "b", "review": "r"}} }}
-        ] }}"#
-    );
-    let path = write_registry(dir.path(), &body);
+               "models": {"orch": "f", "impl": "i", "impl_alt": "a", "impl_alt2": "b", "review": "r"} }
+        ]}"#;
+    let path = write_registry(dir.path(), body);
 
     let changed = corrald::fleet::ops::resume(&path, "corral").expect("resume succeeds");
     assert!(changed, "resume changed the registry");

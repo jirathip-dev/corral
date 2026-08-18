@@ -144,7 +144,9 @@ fn run_digest(args: &[String]) {
 /// touches a running daemon or the herdr socket.
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
-        eprintln!("corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models (see --help)");
+        eprintln!(
+            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models (see --help)"
+        );
         std::process::exit(2);
     };
     if matches!(sub, "--help" | "-h") {
@@ -603,7 +605,11 @@ fn run_fleet_models(args: &[String]) {
     let Some(name) = name else {
         usage("fleet models: need a fleet name (or `all`)");
     };
-    if orch.is_none() && impl_.is_none() && impl_alt.is_none() && impl_alt2.is_none() && review.is_none()
+    if orch.is_none()
+        && impl_.is_none()
+        && impl_alt.is_none()
+        && impl_alt2.is_none()
+        && review.is_none()
     {
         usage("fleet models: pass at least one of --orch/--impl/--impl-alt/--impl-alt2/--review");
     }

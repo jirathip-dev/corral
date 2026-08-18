@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-use crate::fleet::config::{load, write_atomic, ConfigError, Fleet, Models};
+use crate::fleet::config::{ConfigError, Fleet, Models, load, write_atomic};
 
 /// Everything `fleet add` needs to build the new entry.
 pub struct AddOptions {
@@ -256,13 +256,13 @@ pub fn models(
         ("impl", update.impl_.as_deref()),
         ("review", update.review.as_deref()),
     ] {
-        if let Some(value) = value {
-            if value.is_empty() {
-                return Err(ConfigError::Empty {
-                    fleet: "request".to_string(),
-                    field: format!("models.{field}"),
-                });
-            }
+        if let Some(value) = value
+            && value.is_empty()
+        {
+            return Err(ConfigError::Empty {
+                fleet: "request".to_string(),
+                field: format!("models.{field}"),
+            });
         }
     }
 

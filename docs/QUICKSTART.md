@@ -174,6 +174,8 @@ macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
 
 ## Next
 
+- One-shot setup (build + launchd + first run):
+  `scripts/setup-corrald.sh` — see [OPERATIONS.md](OPERATIONS.md#one-shot-setup)
 - Security model and device lifecycle: [OPERATIONS.md](OPERATIONS.md)
 - Wire contract for client authors: [corral/P4-conformance.md](corral/P4-conformance.md)
 - Hacking on the daemon: [DEVELOPING.md](DEVELOPING.md)

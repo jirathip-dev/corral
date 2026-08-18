@@ -92,7 +92,7 @@ pub struct WindowUsage {
 pub struct ProviderUsage {
     pub provider: Provider,
     /// Whether the provider's session store was found at all (a fresh
-    /// install, or a provider Guy doesn't use, is "no data", not an error).
+    /// install, or a provider that isn't used, is "no data", not an error).
     pub store_found: bool,
     pub windows: Vec<WindowUsage>,
 }

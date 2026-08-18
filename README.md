@@ -1,11 +1,26 @@
 # Corral
 
-Corral is the control plane for the herdr agent fleet: it reads every
-worktree / agent / PR / CI fact into a snapshot read model served over
-loopback HTTP + SSE, and lets a registered device drive the agents with
-typed, signed commands — prompt, interrupt, approve, read_tail, kill,
-attach. The daemon is `corrald`, with a desktop fleet board (`corrald-ui`,
-egui) and an iOS notifier app alongside it.
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
+
+**Corral is a control plane for fleets of AI coding agents.** If you run
+several coding agents (Claude Code, Codex CLI, OpenCode) in git worktrees,
+each with its own terminal, you need: one live board of what every agent is
+doing, signed remote control from your phone (devices connect over
+loopback today; tailnet binds land with #65), and cost visibility before a
+provider bill surprises you. Corral gives you that.
+
+Corral reads every worktree / agent / PR / CI fact into a snapshot read
+model served over loopback HTTP + SSE, and lets a registered device drive
+the agents with typed, signed commands — prompt, interrupt, approve,
+read_tail, kill, attach. The daemon is `corrald`, with a desktop fleet
+board (`corrald-ui`, egui) and an iOS notifier app alongside it.
+
+**Runtime note:** agents are currently supervised by
+[herdr](https://github.com/herdrdev/herdr) (the runtime that spawns
+them in panes/worktrees). Corral's core model, drive plane, and HTTP
+surface are runtime-neutral — see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#stack-terminology-model--harness--runtime--control-plane)
+for the model→harness→runtime→control-plane layering.
 
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)
@@ -54,7 +69,9 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Security posture
 
-- **Loopback only** — `corrald` refuses to bind any routable interface.
+- **Loopback by default, public refused** — `corrald` binds `127.0.0.1`
+  by default and refuses public/routable binds. Private/tailnet
+  (100.x/10.x) binds are planned via #65.
 - **Signed writes, default deny** — every `POST /drive` carries an
   Ed25519 device signature; a registered device has zero grants until the
   host promotes capabilities. No auto-approve.
@@ -106,7 +123,7 @@ bare `cargo clippy`/`build`/`test` at the root covers all three crates.
 Module map, conventions (zero polling in the herdr adapter, additive-only
 schema), and how to add a capability: [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-## Status
+## Development status
 
 On `main`: P1–P3 (read model, data planes, drive plane, device-keypair
 auth), P4 (shared `corrald-client` crate with R1–R10 conformance, the
@@ -157,3 +174,18 @@ exhaustion both come from the same meter.
 - [docs/corral/P4-conformance.md](docs/corral/P4-conformance.md) — normative wire contract, scenarios R1–R10
 - [docs/corral/P1-brief.md](docs/corral/P1-brief.md), [P2](docs/corral/P2-brief.md), [P3](docs/corral/P3-brief.md) — historical phase briefs
 - [docs/corral/P4-brief.md](docs/corral/P4-brief.md) — current phase brief (client stack)
+
+> The P1–P4 briefs are historical internal process documents; they document
+> *how* the design evolved, not how to use the current system.
+
+## Status
+
+**Pre-1.0, macOS-first.** The daemon and egui client run on macOS (and the
+daemon on Linux); the iOS notifier requires an Apple developer account for
+TestFlight. The launchd setup script, Keychain integration, and iOS app are
+macOS stories. Linux support is partial (the `keyring` crate covers it) but
+not the primary target.
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE).

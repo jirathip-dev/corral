@@ -1192,8 +1192,6 @@ fn written_file_reparses_through_load() {
     opts.models = Some(Models {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
-        impl_alt: None,
-        impl_alt2: None,
         review: "opus".to_string(),
         impl_alt: None,
         impl_alt2: None,
@@ -1221,8 +1219,6 @@ fn impl_serializes_back_to_json_key_impl_not_impl_underscore() {
     opts.models = Some(Models {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
-        impl_alt: None,
-        impl_alt2: None,
         review: "opus".to_string(),
         impl_alt: None,
         impl_alt2: None,
@@ -1340,8 +1336,6 @@ fn whitespace_in_models_is_a_hard_error() {
     opts.models = Some(Models {
         orch: "claude opus 5".to_string(),
         impl_: "i".to_string(),
-        impl_alt: None,
-        impl_alt2: None,
         review: "r".to_string(),
         impl_alt: None,
         impl_alt2: None,
@@ -1605,6 +1599,9 @@ fn write_preserves_the_registry_file_mode() {
 
     let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "mode preserved through the replace");
+}
+
+// ---------------------------------------------------------------------------
 // Write path (slice 2): `fleet pause` / `resume` / `models` — idempotent
 // pauses, per-slot model updates, `all` semantics, alt-slot clearing, and
 // byte-identical-on-refusal.
@@ -1797,7 +1794,7 @@ fn models_with_empty_required_value_is_usage_exit_2() {
     let err =
         corrald::fleet::ops::models(&path, "corral", &update).expect_err("empty orch refused");
     assert!(
-        matches!(err, ConfigError::Empty { ref field, .. } if field == "models.orch"),
+        matches!(err, ConfigError::ModelsRequest { ref field } if field == "models.orch"),
         "kind: {err:?}"
     );
     assert_eq!(err.exit_code(), 2, "usage error exits 2");
@@ -1963,12 +1960,14 @@ fn pause_resume_models_usage_errors_exit_2_and_help_documents_them() {
 
     let no_name = Command::new(bin)
         .args(["fleet", "pause"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
         .output()
         .expect("run");
     assert_eq!(no_name.status.code(), Some(2), "pause without name exits 2");
 
     let two_names = Command::new(bin)
         .args(["fleet", "resume", "a", "b"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
         .output()
         .expect("run");
     assert_eq!(
@@ -1979,6 +1978,7 @@ fn pause_resume_models_usage_errors_exit_2_and_help_documents_them() {
 
     let models_no_flags = Command::new(bin)
         .args(["fleet", "models", "corral"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
         .output()
         .expect("run");
     assert_eq!(
@@ -1989,6 +1989,7 @@ fn pause_resume_models_usage_errors_exit_2_and_help_documents_them() {
 
     let models_no_name = Command::new(bin)
         .args(["fleet", "models", "--orch", "x"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
         .output()
         .expect("run");
     assert_eq!(
@@ -1999,6 +2000,7 @@ fn pause_resume_models_usage_errors_exit_2_and_help_documents_them() {
 
     let help = Command::new(bin)
         .args(["fleet", "--help"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
         .output()
         .expect("run");
     assert!(help.status.success(), "help exits 0");
@@ -2084,5 +2086,168 @@ fn pause_exit_0_with_already_paused_message() {
     assert!(
         rtext.contains("resumed fleet corral"),
         "resume message: {rtext}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Slice-2 review round: `all` reservation, empty-registry refusal, models
+// idempotence, impl_alt2 clearing (findings 1, 2, 7, 10a/10c).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fleet_named_all_is_refused_by_validate() {
+    // `all` is the `fleet models` wildcard — a fleet by that name would be
+    // unreachable (models) and misleading (pause/resume), so it is reserved.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &fleet_body("all", "o/r", "/tmp/x", "[]", MODELS),
+    );
+    let err = load(&path).expect_err("reserved name must fail");
+    assert!(
+        matches!(err, ConfigError::ReservedFleetName { ref name } if name == "all"),
+        "kind: {err:?}"
+    );
+    assert_eq!(err.exit_code(), 2, "validation failure class");
+
+    // And end-to-end: `fleet add all` is refused before any write.
+    let empty = write_registry(&dir.path().join_and_create("e"), r#"{"fleets": []}"#);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args([
+            "fleet",
+            "add",
+            "all",
+            "--gh",
+            "o/r",
+            "--models",
+            "orch=a,impl=b,review=c",
+        ])
+        .args(["--registry", empty.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "reserved name is a validation refusal"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("reserved"),
+        "names the reservation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Helper: create a subdirectory and return it joined (tempdir fixtures
+/// need distinct dirs for distinct registries).
+trait JoinAndCreate {
+    fn join_and_create(&self, sub: &str) -> PathBuf;
+}
+impl JoinAndCreate for std::path::Path {
+    fn join_and_create(&self, sub: &str) -> PathBuf {
+        let dir = self.join(sub);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+}
+
+#[test]
+fn models_all_on_empty_registry_is_a_refusal_not_silent_success() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), r#"{"fleets": []}"#);
+    let before = std::fs::read(&path).expect("read registry");
+
+    let update = corrald::fleet::ops::ModelUpdate {
+        orch: None,
+        impl_: Some("x".to_string()),
+        impl_alt: None,
+        impl_alt2: None,
+        review: None,
+    };
+    let err = corrald::fleet::ops::models(&path, "all", &update)
+        .expect_err("zero-fleet bulk update must refuse");
+    assert!(matches!(err, ConfigError::NoFleets), "kind: {err:?}");
+    assert_eq!(err.exit_code(), 1, "operational refusal");
+    assert_eq!(
+        std::fs::read(&path).expect("read registry"),
+        before,
+        "file byte-identical — no pointless rewrite"
+    );
+
+    // Binary-level: exit 1, and stderr says what happened.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "models", "all", "--impl", "x"])
+        .args(["--registry", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no fleets"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn models_with_unchanged_values_is_an_idempotent_no_op() {
+    // Same discipline as pause/resume (review finding 7): nothing moved →
+    // nothing written, and the binary says so instead of printing x -> x.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+
+    // First run normalises formatting (a real write).
+    let update = corrald::fleet::ops::ModelUpdate {
+        orch: None,
+        impl_: None,
+        impl_alt: None,
+        impl_alt2: None,
+        review: Some("opus".to_string()),
+    };
+    corrald::fleet::ops::models(&path, "corral", &update).expect("first run");
+    let after_first = std::fs::read(&path).expect("read");
+
+    let changes = corrald::fleet::ops::models(&path, "corral", &update).expect("second run");
+    assert!(
+        changes.iter().all(|c| c.before == c.after),
+        "second run is a no-op"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read"),
+        after_first,
+        "no-op writes nothing — byte-identical"
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "models", "corral", "--review", "opus"])
+        .args(["--registry", path.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("nothing to do"),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn impl_alt2_empty_value_clears_the_slot_from_written_json() {
+    // 10a: the two alt slots are separate match arms — pin the second one
+    // so a copy-paste slip clearing the WRONG slot cannot pass.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+
+    let update = corrald::fleet::ops::ModelUpdate {
+        orch: None,
+        impl_: None,
+        impl_alt: None,
+        impl_alt2: Some(String::new()),
+        review: None,
+    };
+    corrald::fleet::ops::models(&path, "corral", &update).expect("clear impl_alt2");
+    let text = std::fs::read_to_string(&path).expect("read");
+    assert!(!text.contains("impl_alt2"), "impl_alt2 cleared: {text}");
+    assert!(
+        text.contains("\"impl_alt\""),
+        "impl_alt (the OTHER slot) survives: {text}"
     );
 }

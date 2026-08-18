@@ -200,10 +200,13 @@ fn print_fleet_help() {
          resume   clear paused on exactly one fleet; resuming an\n\
          \tunpaused fleet is a no-op success (exit 0)\n\
          models   update only the model slots named; <name> may be\n\
-         \t`all` to apply to every fleet. --impl-alt '' / --impl-alt2 ''\n\
-         \tCLEAR that optional slot; an empty value for the required\n\
-         \torch/impl/review slots is a usage error\n\n\
-         add/remove/pause/resume/models exit codes: 0 = written;\n\
+         \t`all` to apply to every fleet (models only — pause/resume\n\
+         \ttake a real fleet name; `all` is reserved as a fleet name).\n\
+         \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
+         \tempty value for the required orch/impl/review slots is a\n\
+         \tusage error\n\n\
+         add/remove/pause/resume/models exit codes: 0 = written (or an\n\
+         \tidempotent no-op — already paused/resumed, models unchanged);\n\
          \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
          \twrite failed — the registry is left byte-identical;\n\
          \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
@@ -613,6 +616,18 @@ fn run_fleet_models(args: &[String]) {
     {
         usage("fleet models: pass at least one of --orch/--impl/--impl-alt/--impl-alt2/--review");
     }
+    // Empty values are usage errors for the REQUIRED slots (only the
+    // optional --impl-alt/--impl-alt2 accept '' to clear). Caught here so
+    // the message is a plain usage refusal, not a registry-shaped error.
+    for (flag, value) in [("--orch", &orch), ("--impl", &impl_), ("--review", &review)] {
+        if let Some(value) = value
+            && value.is_empty()
+        {
+            usage(&format!(
+                "fleet models: {flag} must be non-empty (only --impl-alt/--impl-alt2 accept '' to clear)"
+            ));
+        }
+    }
     let path = registry.unwrap_or_else(fleet::config::default_path);
 
     let update = fleet::ops::ModelUpdate {
@@ -629,6 +644,13 @@ fn run_fleet_models(args: &[String]) {
             std::process::exit(error.exit_code());
         }
     };
+    // Idempotent no-op (ops wrote nothing): say so instead of printing
+    // misleading `x -> x` lines.
+    if changes.iter().all(|c| c.before == c.after) {
+        let names: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
+        println!("models unchanged for {} — nothing to do", names.join(", "));
+        return;
+    }
     // Print what changed (old -> new), per fleet, so the operator can see
     // exactly which slots moved and confirm the untouched ones did not.
     for change in &changes {
@@ -671,7 +693,8 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
                 // settable from --models — they inherit or are registry-edited.
                 return Err(format!(
                     "--models {key:?} is not settable here; alt slots inherit \
-                     from the first fleet or are edited in the registry directly"
+                     from the first fleet — set them after add with \
+                     `corrald fleet models <name> --impl-alt <model>`"
                 ));
             }
             other => {
@@ -684,8 +707,6 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
     Ok(fleet::config::Models {
         orch: orch.ok_or_else(|| "--models must set orch".to_string())?,
         impl_: impl_.ok_or_else(|| "--models must set impl".to_string())?,
-        impl_alt: None,
-        impl_alt2: None,
         review: review.ok_or_else(|| "--models must set review".to_string())?,
         impl_alt: None,
         impl_alt2: None,

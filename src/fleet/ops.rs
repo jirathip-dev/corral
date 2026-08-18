@@ -95,6 +95,13 @@ pub fn add(
 ) -> Result<Fleet, ConfigError> {
     let mut registry = load(path)?;
 
+    // `all` is the `fleet models` wildcard — refuse it as a name here,
+    // before the resolver round-trip (validate() would also catch it).
+    if opts.name == "all" {
+        return Err(ConfigError::ReservedFleetName {
+            name: opts.name.clone(),
+        });
+    }
     if registry.fleets.iter().any(|f| f.name == opts.name) {
         return Err(ConfigError::DuplicateFleet {
             name: opts.name.clone(),
@@ -240,14 +247,12 @@ pub fn models(
     name: &str,
     update: &ModelUpdate,
 ) -> Result<Vec<ModelsChange>, ConfigError> {
-    let mut registry = load(path)?;
-
-    // Validate the caller's request shape BEFORE mutating anything: the
+    // Validate the caller's request shape BEFORE touching the registry —
+    // even an unreadable file must not mask a malformed request: the
     // required slots must not be cleared, and an empty request is a usage
-    // error even when the registry is healthy.
+    // error. (The CLI pre-checks these too; this is the ops-layer contract.)
     if update.is_empty() {
-        return Err(ConfigError::Empty {
-            fleet: "request".to_string(),
+        return Err(ConfigError::ModelsRequest {
             field: "models".to_string(),
         });
     }
@@ -259,14 +264,23 @@ pub fn models(
         if let Some(value) = value
             && value.is_empty()
         {
-            return Err(ConfigError::Empty {
-                fleet: "request".to_string(),
+            return Err(ConfigError::ModelsRequest {
                 field: format!("models.{field}"),
             });
         }
     }
 
+    let mut registry = load(path)?;
+
     let apply: Vec<String> = if name == "all" {
+        // `all` is a reserved wildcard (validate() refuses it as a fleet
+        // name), so this expansion can never shadow a real fleet. An empty
+        // registry is a refusal, not a silent no-op: `models all` exists
+        // for bulk mutation, and "updated zero fleets" exiting 0 would let
+        // a bootstrap script march on believing every fleet was switched.
+        if registry.fleets.is_empty() {
+            return Err(ConfigError::NoFleets);
+        }
         registry.fleets.iter().map(|f| f.name.clone()).collect()
     } else {
         if !registry.fleets.iter().any(|f| f.name == name) {
@@ -309,6 +323,13 @@ pub fn models(
             before,
             name: fleet.name.clone(),
         });
+    }
+
+    // Idempotence, same discipline as pause/resume: when nothing moved,
+    // nothing is written — no pointless rename widening the documented
+    // no-lock race window. Callers see it via `before == after`.
+    if changes.iter().all(|c| c.before == c.after) {
+        return Ok(changes);
     }
 
     registry.validate()?;

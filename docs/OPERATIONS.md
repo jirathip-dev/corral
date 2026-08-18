@@ -229,7 +229,8 @@ purpose — unknown fields, empty required fields, whitespace inside
 `owner/repo`, a `local` starting with a bare `~`, and duplicate names all
 fail loudly. Model map: required `orch`/`impl`/`review`, optional
 `impl_alt`/`impl_alt2` fallback slots that `fleet models` can set or clear
-(`--impl-alt ''`). Full schema and the per-command exit-code table:
+(`--impl-alt ''`; `models all` applies to every fleet — `all` is a
+reserved fleet name). Full schema and the per-command exit-code table:
 `docs/corral/G35-registry.md`.
 
 ## Security model summary

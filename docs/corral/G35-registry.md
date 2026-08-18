@@ -126,8 +126,13 @@ required (usage error, exit 2, otherwise). Empty values for the required
 `orch`/`impl`/`review` slots are a usage error (exit 2); empty values for
 the optional slots CLEAR them: `--impl-alt ''` removes `impl_alt` from the
 written JSON, `--impl-alt2 ''` removes `impl_alt2`. `<name>` may be `all`
-— the update applies to every fleet (legacy semantics). Each affected
-fleet's change is printed on success:
+— the update applies to every fleet (legacy semantics; `models` only —
+`pause`/`resume` take a real fleet name). `all` is therefore a RESERVED
+fleet name: `validate()` refuses a registry containing it, so the wildcard
+can never shadow a real fleet. `models all` against a registry with no
+fleets is a refusal (exit 1), not a silent success. `models` is idempotent
+like pause/resume: when every value already matches, nothing is written and
+the command says so. Each affected fleet's change is printed on success:
 
 ```
 board models changed: orch fable -> fable; impl sonnet -> gpt-5.6-luna; impl_alt - -> -; impl_alt2 - -> -; review opus -> opus
@@ -135,7 +140,7 @@ board models changed: orch fable -> fable; impl sonnet -> gpt-5.6-luna; impl_alt
 
 All three refuse an unknown fleet name (exit 1, `FleetNotFound`) writing
 nothing, validate the candidate registry before writing, and leave the
-file byte-identical on any refusal or write failure.
+file byte-identical on any refusal, no-op, or write failure.
 
 ## Exit codes
 

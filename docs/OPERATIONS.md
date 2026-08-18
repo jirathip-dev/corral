@@ -100,8 +100,8 @@ tailscale status --json | grep -i certdomains   # empty before, populated after
 
 ### The working setup
 
-On the iPhone first (F3 of the review — `curl` from the host passes
-even when the phone is not on the tailnet, so this is easy to miss):
+On the iPhone first (`curl` from the host passes even when the phone
+is not on the tailnet, so this is easy to miss):
 install the Tailscale app, sign into the SAME tailnet, and leave it
 connected. MagicDNS must be on for `<host>.<tailnet>.ts.net` to resolve
 on the device (it is required for HTTPS certs anyway).
@@ -120,10 +120,6 @@ tailscale cert <host>.<tailnet>.ts.net
 #    use /Applications/Tailscale.app/Contents/MacOS/Tailscale)
 tailscale serve --bg --https=443 http://127.0.0.1:8474
 
-# inspect / undo at any time
-tailscale serve status
-tailscale serve reset
-
 # 4. verify a valid chain (no -k)
 curl -s -o /dev/null -w '%{http_code} verify=%{ssl_verify_result}\n' \
   https://<host>.<tailnet>.ts.net/healthz     # -> 200 verify=0
@@ -137,12 +133,21 @@ port:
 https://<host>.<tailnet>.ts.net
 ```
 
+To inspect or tear down the Serve config later (do NOT run these as
+part of the setup — `reset` undoes step 3):
+
+```sh
+tailscale serve status
+tailscale serve reset
+```
+
 Include the `https://` scheme — the app assumes `http://` when the
 scheme is omitted, which lands on the ATS error above. Verified on a
 live tailnet with `curl` (`200 verify=0`); the iOS DEVICE leg —
 registration plus holding the `/events` SSE stream through the Serve
 proxy — is pending the first TestFlight verification round (with #79),
-and this section will be wrong in interesting ways only there.
+any inaccuracy in this section will surface at that device leg, not
+in the curl-verified part above.
 
 ## Device lifecycle
 
@@ -172,10 +177,11 @@ before expiry.
 ### Grants model
 
 - Registered device: read plane only (`/healthz`, `/snapshot`, `/events`,
-  `/history`, `/cost` — credential-free; on a non-loopback bind the
-  tailnet/private network itself is the read boundary, so bind beyond
-  loopback only on networks whose every device may see fleet state — a
-  plain LAN offers no device auth, prefer a tailnet).
+  `/history`, `/cost` — credential-free; on a non-loopback bind — or a
+  loopback bind fronted by Tailscale Serve — the tailnet/private network
+  itself is the read boundary, so expose it only on networks whose every
+  device may see fleet state — a plain LAN offers no device auth, prefer
+  a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.

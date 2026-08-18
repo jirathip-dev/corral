@@ -37,8 +37,8 @@ on a network (ideally a tailnet) whose devices may all see fleet state.
 loopback daemon with real TLS via Tailscale Serve, which exposes the
 read plane to the same tailnet-wide audience as a tailnet bind: see
 "Remote access from iOS (Tailscale Serve)" in docs/OPERATIONS.md.)
-Use a throwaway config dir for the first run — the
-daemon mints `admin-token`, `host-key`, `registration-token`,
+Use a throwaway config dir for the first run — the daemon mints
+`admin-token`, `host-key`, `registration-token`,
 `audit.log` (all `0600` under a `0700` dir) plus a `history/` directory
 there. `registry.json` appears on the **first device registration**, not at
 startup:

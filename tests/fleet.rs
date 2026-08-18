@@ -1499,16 +1499,21 @@ fn write_through_symlinked_registry_preserves_the_link() {
     let link = dir.path().join("fleets.json");
     std::os::unix::fs::symlink(&target, &link).expect("symlink registry");
 
+    let before = std::fs::read(&target).expect("target before");
     let registry = load(&link).expect("loads through the link");
     write_atomic(&link, &registry).expect("writes through the link");
 
     let meta = std::fs::symlink_metadata(&link).expect("stat link");
     assert!(meta.is_symlink(), "the link survives the rewrite");
-    let written = std::fs::read_to_string(&target).expect("target updated");
-    assert!(
-        written.contains("\"board\""),
-        "the TARGET file received the write: {written}"
+    // Non-vacuous: write_atomic normalises formatting, so the target's
+    // bytes MUST change if (and only where) the write landed on it.
+    let written = std::fs::read(&target).expect("target after");
+    assert_ne!(
+        written, before,
+        "the TARGET file received the (re-formatted) write"
     );
+    let text = String::from_utf8(written).expect("utf8");
+    assert!(text.contains("\"board\""), "content survives: {text}");
 }
 
 /// R2b: the registry's file mode survives the temp-file+rename replace —

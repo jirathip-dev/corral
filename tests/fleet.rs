@@ -2433,7 +2433,13 @@ fn watch_survives_a_grandchild_holding_stdout() {
     // pins round-2 N8 (the listing is padded past 8KiB with a non-ASCII
     // char parked at the old chunk boundary; a per-chunk lossy decode
     // corrupted it and produced a false MISSING).
-    let unpaused = VALID_A.replace(r#""paused": true,"#, "");
+    // Round-3 N9-residual: the boundary-straddling char lives in the
+    // orchestrator NAME — the one field the healthy verdict actually
+    // reads (registry lookup) — so a per-chunk decode regression turns
+    // this test red (false MISSING), not just the comment.
+    let unpaused = VALID_A
+        .replace(r#""paused": true,"#, "")
+        .replace(r#""orch": "orch-corral""#, r#""orch": "orch-corralé""#);
     let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{unpaused}] }}"#));
 
     // Hermetic herdr shim: valid listing, exit 0, fd-holder outliving
@@ -2445,15 +2451,15 @@ fn watch_survives_a_grandchild_holding_stdout() {
     // boundary: everything before the agents array is ASCII filler
     // sized so the é inside the first cwd lands at bytes 8191/8192.
     let mut listing = String::from("{\"result\":{\"pad\":\"");
-    let prefix_after_pad =
-        "\",\"agents\":[{\"name\":\"orch-corral\",\"agent_status\":\"working\",\"cwd\":\"/repos/é-";
+    let prefix_after_pad = "\",\"agents\":[{\"name\":\"orch-corralé";
     // Place é's FIRST byte exactly at offset 8191 so 0xC3|0xA9 straddle
-    // the reader's 8KiB chunk boundary (the N8 repro geometry).
+    // the reader's 8KiB chunk boundary (the N8 repro geometry) — INSIDE
+    // the name the registry lookup reads (round-3 N9-residual).
     let e_off = prefix_after_pad.find('é').expect("é in prefix");
     let pad = 8191usize.saturating_sub(listing.len() + e_off);
     listing.push_str(&"a".repeat(pad));
     listing.push_str(prefix_after_pad);
-    listing.push_str("corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}");
+    listing.push_str("\",\"agent_status\":\"working\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}");
     std::fs::write(
         &shim,
         format!("#!/bin/sh\n( sleep 8 ) &\necho '{listing}'\nexit 0\n"),

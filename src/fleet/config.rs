@@ -47,7 +47,10 @@ pub struct Fleet {
 /// Per-role model map. JSON key `impl` (a Rust keyword) maps to [`Self::impl_`]
 /// in both directions: serde's `rename` round-trips `impl_` back to the JSON
 /// key `impl` on write, so a written registry is byte-compatible with what
-/// `load()` parses.
+/// `load()` parses. `impl_alt` / `impl_alt2` (fallback implementer and
+/// last-resort backend, #56) are optional; `skip_serializing_if` omits them
+/// from the written JSON when absent, so an unrelated rewrite never grows
+/// `"impl_alt": null` into a registry that did not have them.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
@@ -55,6 +58,10 @@ pub struct Models {
     #[serde(rename = "impl")]
     pub impl_: String,
     pub review: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_alt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_alt2: Option<String>,
 }
 
 /// `paused` is `#[serde(default)]` and intentionally SKIPPED when false, so a
@@ -96,6 +103,22 @@ impl Registry {
                     });
                 }
             }
+            // `impl_alt` / `impl_alt2` are optional (absent stays fine) but a
+            // PRESENT value is held to the same non-empty rule as the required
+            // model slots.
+            for (field, value) in [
+                ("models.impl_alt", fleet.models.impl_alt.as_deref()),
+                ("models.impl_alt2", fleet.models.impl_alt2.as_deref()),
+            ] {
+                if let Some(value) = value
+                    && value.trim().is_empty()
+                {
+                    return Err(ConfigError::Empty {
+                        fleet: fleet_locator(index, fleet, field),
+                        field: field.to_string(),
+                    });
+                }
+            }
             for (worker_index, worker) in fleet.workers.iter().enumerate() {
                 if worker.trim().is_empty() {
                     return Err(ConfigError::Empty {
@@ -115,6 +138,22 @@ impl Registry {
                 ("models.review", &fleet.models.review),
             ] {
                 if value.chars().any(char::is_whitespace) {
+                    return Err(ConfigError::Whitespace {
+                        fleet: fleet_locator(index, fleet, field),
+                        field: field.to_string(),
+                    });
+                }
+            }
+            // The alt-model slots get the same whitespace rule when present —
+            // for CONSISTENCY with the required slots, not for the `fleet
+            // list` contract (they are deliberately absent from that line).
+            for (field, value) in [
+                ("models.impl_alt", fleet.models.impl_alt.as_deref()),
+                ("models.impl_alt2", fleet.models.impl_alt2.as_deref()),
+            ] {
+                if let Some(value) = value
+                    && value.chars().any(char::is_whitespace)
+                {
                     return Err(ConfigError::Whitespace {
                         fleet: fleet_locator(index, fleet, field),
                         field: field.to_string(),

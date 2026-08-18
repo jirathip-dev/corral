@@ -31,6 +31,20 @@ const VALID_B: &str = r#"{
     "models": { "orch": "fable", "impl": "sonnet", "review": "opus" }
 }"#;
 
+/// Like `VALID_A` but with the #56 optional alt-model slots present, mirroring
+/// the live registry's `impl_alt` / `impl_alt2` additions.
+const VALID_ALT: &str = r#"{
+    "name": "corral",
+    "gh_repo": "jirathip-k/corral",
+    "local": "~/Projects/corral",
+    "worktree_dir": "corral",
+    "orch": "orch-corral",
+    "workers": [],
+    "models": { "orch": "fable", "impl": "opencode-go/deepseek-v4-flash",
+                "review": "opus", "impl_alt": "opencode-go/deepseek-v4-flash",
+                "impl_alt2": "dsh" }
+}"#;
+
 /// A healthy `models` object used by the validation-failure fixtures below.
 const MODELS: &str = r#"{"orch": "f", "impl": "i", "review": "r"}"#;
 
@@ -86,6 +100,173 @@ fn models_impl_key_lands_in_impl_field() {
     assert_eq!(models.impl_, "opencode-go/deepseek-v4-flash");
     assert_eq!(models.orch, "fable");
     assert_eq!(models.review, "opus");
+    assert_eq!(models.impl_alt, None, "absent alt slots default to None");
+    assert_eq!(models.impl_alt2, None, "absent alt2 slots default to None");
+}
+
+#[test]
+fn models_alt_slots_land_when_present() {
+    let registry = registry(&format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+    let models: &Models = &registry.fleets[0].models;
+    assert_eq!(
+        models.impl_alt.as_deref(),
+        Some("opencode-go/deepseek-v4-flash")
+    );
+    assert_eq!(models.impl_alt2.as_deref(), Some("dsh"));
+    assert_eq!(models.orch, "fable");
+    assert_eq!(models.impl_, "opencode-go/deepseek-v4-flash");
+    assert_eq!(models.review, "opus");
+}
+
+#[test]
+fn models_without_alt_slots_round_trip_without_growing_them() {
+    // Back-compat pin (#56): a registry that predates the alt slots must load,
+    // and an unrelated rewrite must NOT introduce `impl_alt` / `impl_alt2`.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let registry = load(&path).expect("pre-alt registry loads");
+    assert_eq!(registry.fleets[0].models.impl_alt, None);
+    write_atomic(&path, &registry).expect("rewrite");
+    let text = std::fs::read_to_string(&path).expect("read back");
+    assert!(
+        !text.contains("impl_alt"),
+        "absent key must not grow: {text}"
+    );
+    assert!(
+        !text.contains("impl_alt2"),
+        "absent key must not grow: {text}"
+    );
+}
+
+#[test]
+fn add_rewrite_preserves_alt_slots_on_untouched_fleet() {
+    // The data-loss pin (#56): `fleet add` rewrites the whole file, so an
+    // untouched fleet's present impl_alt / impl_alt2 must survive. The
+    // fixture's FIRST fleet has no alt slots, so inheritance (which takes
+    // the first fleet) cannot manufacture the asserted strings — the only
+    // fleet carrying them is the untouched second one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_B}, {VALID_ALT}] }}"#),
+    );
+    let opts = add_options("newfleet", "jirathip-k/corral");
+    corrald::fleet::ops::add(
+        &path,
+        &opts,
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+
+    let text = std::fs::read_to_string(&path).expect("read written registry");
+    assert_eq!(
+        text.matches("\"impl_alt\": \"opencode-go/deepseek-v4-flash\"")
+            .count(),
+        1,
+        "exactly the untouched fleet carries impl_alt: {text}"
+    );
+    assert_eq!(
+        text.matches("\"impl_alt2\": \"dsh\"").count(),
+        1,
+        "exactly the untouched fleet carries impl_alt2: {text}"
+    );
+    let registry = load(&path).expect("re-parses");
+    let corral = registry
+        .fleets
+        .iter()
+        .find(|f| f.name == "corral")
+        .expect("untouched fleet survives");
+    assert_eq!(
+        corral.models.impl_alt.as_deref(),
+        Some("opencode-go/deepseek-v4-flash"),
+        "impl_alt value lands after rewrite"
+    );
+    assert_eq!(corral.models.impl_alt2.as_deref(), Some("dsh"));
+    let newfleet = registry
+        .fleets
+        .iter()
+        .find(|f| f.name == "newfleet")
+        .expect("added fleet present");
+    assert_eq!(
+        newfleet.models.impl_alt, None,
+        "inherits from the FIRST fleet (no alt slots), not the alt-carrying one"
+    );
+}
+
+#[test]
+fn add_inherits_alt_slots_from_the_first_fleet_when_present() {
+    // DELIBERATE (#56 review F1): omitting --models inherits the first
+    // fleet's WHOLE model map, alt slots included. Pinned so a refactor
+    // cannot silently flip it either way.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+    let added = corrald::fleet::ops::add(
+        &path,
+        &add_options("inheritor", "jirathip-k/corral"),
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+    assert_eq!(
+        added.models.impl_alt.as_deref(),
+        Some("opencode-go/deepseek-v4-flash"),
+        "alt slots inherit with the rest of the model map"
+    );
+    assert_eq!(added.models.impl_alt2.as_deref(), Some("dsh"));
+}
+
+#[test]
+fn typoed_alt_key_is_a_hard_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+            "worktree_dir": "corral", "orch": "o", "workers": [],
+            "models": {"orch": "f", "impl": "i", "review": "r", "imp1_alt": "x"}}]}"#,
+    );
+    let err = load(&path).expect_err("typo'd alt key must fail");
+    assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
+    assert!(
+        err.to_string().contains("imp1_alt"),
+        "names the typo field: {err}"
+    );
+}
+
+#[test]
+fn empty_or_whitespace_impl_alt_is_refused_by_validate() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (field, models) in [
+        (
+            "models.impl_alt",
+            r#"{"orch": "f", "impl": "i", "review": "r", "impl_alt": ""}"#,
+        ),
+        (
+            "models.impl_alt",
+            r#"{"orch": "f", "impl": "i", "review": "r", "impl_alt": "  "}"#,
+        ),
+        (
+            "models.impl_alt2",
+            r#"{"orch": "f", "impl": "i", "review": "r", "impl_alt2": "deep seek"}"#,
+        ),
+    ] {
+        let path = write_registry(
+            dir.path(),
+            &fleet_body("corral", "x/y", "~/p", "[]", models),
+        );
+        let err = load(&path).expect_err("bad alt slot must fail");
+        let msg = err.to_string();
+        assert!(
+            matches!(
+                err,
+                ConfigError::Empty { .. } | ConfigError::Whitespace { .. }
+            ),
+            "kind: {err:?}"
+        );
+        assert!(msg.contains(field), "names {field}: {msg}");
+    }
 }
 
 #[test]
@@ -354,6 +535,46 @@ fn fleet_list_prints_one_greppable_line_per_fleet() {
         lines[1].contains("paused=false"),
         "default paused: {}",
         lines[1]
+    );
+}
+
+#[test]
+fn fleet_list_line_is_unchanged_when_alt_slots_are_present() {
+    // #56 spec point 4: the greppable `fleet list` line keeps exactly
+    // orch/impl/review — consumers split on whitespace, so appending the alt
+    // slots would break them. A registry WITH impl_alt/impl_alt2 must list
+    // exactly the same shape as one without.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_ALT}] }}"#));
+    let output = Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "list", "--registry"])
+        .arg(&path)
+        .output()
+        .expect("run corrald fleet list");
+    assert!(output.status.success(), "list exit: {:?}", output.status);
+    let text = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "one line per fleet: {text}");
+    assert!(
+        lines[0].starts_with("corral jirathip-k/corral"),
+        "line: {}",
+        lines[0]
+    );
+    assert!(lines[0].contains("orch=fable"), "orch model: {}", lines[0]);
+    assert!(
+        lines[0].contains("impl=opencode-go/deepseek-v4-flash"),
+        "impl model: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("review=opus"),
+        "review model: {}",
+        lines[0]
+    );
+    assert!(
+        !lines[0].contains("impl_alt"),
+        "alt slots are NOT appended: {}",
+        lines[0]
     );
 }
 
@@ -899,6 +1120,8 @@ fn written_file_reparses_through_load() {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
         review: "opus".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
     });
     corrald::fleet::ops::add(
         &path,
@@ -924,6 +1147,8 @@ fn impl_serializes_back_to_json_key_impl_not_impl_underscore() {
         orch: "fable".to_string(),
         impl_: "deepseek-v4-flash".to_string(),
         review: "opus".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
     });
     corrald::fleet::ops::add(
         &path,
@@ -1039,6 +1264,8 @@ fn whitespace_in_models_is_a_hard_error() {
         orch: "claude opus 5".to_string(),
         impl_: "i".to_string(),
         review: "r".to_string(),
+        impl_alt: None,
+        impl_alt2: None,
     });
     let err = corrald::fleet::ops::add(
         &path,

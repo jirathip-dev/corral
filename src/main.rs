@@ -460,6 +460,14 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
             "orch" => orch = Some(value.to_string()),
             "impl" => impl_ = Some(value.to_string()),
             "review" => review = Some(value.to_string()),
+            key @ ("impl_alt" | "impl_alt2") => {
+                // Deliberate (#56): the alt slots are schema fields but not
+                // settable from --models — they inherit or are registry-edited.
+                return Err(format!(
+                    "--models {key:?} is not settable here; alt slots inherit \
+                     from the first fleet or are edited in the registry directly"
+                ));
+            }
             other => {
                 return Err(format!(
                     "--models unknown key {other:?} (want orch, impl, review)"
@@ -471,6 +479,8 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
         orch: orch.ok_or_else(|| "--models must set orch".to_string())?,
         impl_: impl_.ok_or_else(|| "--models must set impl".to_string())?,
         review: review.ok_or_else(|| "--models must set review".to_string())?,
+        impl_alt: None,
+        impl_alt2: None,
     })
 }
 

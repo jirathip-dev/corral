@@ -414,7 +414,31 @@ pub fn transcript_auth_header(key_id: &str, signing: &SigningKey, target: &str) 
         signature: sign_envelope(signing, &envelope),
         envelope,
     };
-    serde_json::to_string(&signed).expect("signed envelope serializes")
+    let json = serde_json::to_string(&signed).expect("signed envelope serializes");
+    // Review F9: HTTP header values must be visible ASCII, but the
+    // target is a herdr-supplied string serde_json emits as raw UTF-8.
+    // \uXXXX-escape anything non-ASCII (valid JSON, byte-identical
+    // meaning daemon-side) so an exotic agent id fails with the
+    // daemon's typed answer instead of a client "builder error".
+    ascii_escape_json(&json)
+}
+
+/// Escape every non-ASCII char of a JSON document as `\uXXXX` (UTF-16
+/// units, surrogate pairs included) — the output parses to the same
+/// value and is legal in an HTTP header.
+fn ascii_escape_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for unit in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    out
 }
 
 /// Fresh `request_id` for a logical action: stable per action, unique per
@@ -1053,5 +1077,23 @@ mod tests {
             parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
             vec!["a", "b"]
         );
+    }
+
+    /// #64 review F9: the minted header value is pure ASCII even for an
+    /// exotic agent id (herdr session values are not charset-validated),
+    /// and the escaping round-trips to the identical envelope.
+    #[test]
+    fn transcript_header_is_ascii_and_roundtrips_non_ascii_targets() {
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let target = "herdr:sesi\u{f3}n-\u{3c0}-\u{1F40E}";
+        let header = transcript_auth_header("dev_x", &signing, target);
+        assert!(header.is_ascii(), "header must be legal in HTTP");
+        let parsed: serde_json::Value = serde_json::from_str(&header).expect("still valid JSON");
+        assert_eq!(
+            parsed["envelope"]["target"].as_str().expect("target"),
+            target,
+            "escaping preserves the exact value (surrogate pairs incl.)"
+        );
+        assert_eq!(parsed["envelope"]["capability"], "read_tail");
     }
 }

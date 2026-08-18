@@ -306,3 +306,50 @@ fn my_transcript_header_passes_the_daemon_authorizer() {
     // for agent B — the client cannot accidentally reuse one.
     assert_ne!(daemon_signed.envelope.target, "herdr:agent-b");
 }
+
+/// #64 review F13: the client's `TranscriptPage` must deserialize the
+/// body the DAEMON actually builds — `corrald::api::transcript::page_body`
+/// is the one place the 200 shape is written, so this pins drift that a
+/// hand-copied golden cannot.
+#[test]
+fn daemon_transcript_body_parses_into_the_client_page() {
+    let store = corrald::transcript::StoreRef::Claude {
+        jsonl_path: std::path::PathBuf::from("/p/2d5e5911.jsonl"),
+    };
+    let outcome = corrald::transcript::bind::BindOutcome {
+        store: store.clone(),
+        unavailable: vec!["opencode".to_string()],
+        rung: "worktree",
+    };
+    let page = corrald::transcript::TranscriptPage {
+        entries: vec![
+            corrald::transcript::Entry {
+                role: "assistant".to_string(),
+                text: "newest".to_string(),
+                ts: Some(1_723_000_000_123),
+            },
+            corrald::transcript::Entry {
+                role: "user".to_string(),
+                text: "older".to_string(),
+                ts: None,
+            },
+        ],
+        next_cursor: Some(corrald::transcript::Cursor::Bytes { offset: 4096 }),
+        skipped: 2,
+    };
+    let body = corrald::api::transcript::page_body("herdr:a1", &outcome, &page);
+
+    let parsed: corrald_ui::transcript::TranscriptPage =
+        serde_json::from_value(body).expect("client parses the daemon's own body shape");
+    assert_eq!(parsed.agent, "herdr:a1");
+    assert_eq!(parsed.store, "claude");
+    assert_eq!(parsed.session, "claude:2d5e5911.jsonl");
+    assert_eq!(parsed.bind, "worktree");
+    assert_eq!(parsed.stores_unavailable, vec!["opencode".to_string()]);
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].text, "newest");
+    assert_eq!(parsed.entries[0].ts, Some(1_723_000_000_123));
+    assert_eq!(parsed.entries[1].ts, None, "string-timestamp stores → null");
+    assert!(parsed.next_cursor.is_some(), "opaque cursor passes through");
+    assert_eq!(parsed.skipped, 2);
+}

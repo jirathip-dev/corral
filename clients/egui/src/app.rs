@@ -134,6 +134,11 @@ impl CorralApp {
 
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
+            // #64 review F6: the corrald API never redirects, and a
+            // redirect would forward the signed x-corral-drive header (a
+            // replayable read credential) to wherever a hostile 302
+            // points — reqwest only strips Authorization-class headers.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client");
 
@@ -359,47 +364,47 @@ impl CorralApp {
         }
     }
 
-    /// #64: one transcript page arrived (or failed). A stale cursor —
-    /// the daemon rebound to a newer session mid-walk — spends the
-    /// pane's single automatic reload: drop pages, refetch from newest.
-    /// A second stale cursor in a row surfaces as the error instead of
-    /// looping.
+    /// #64: one transcript page arrived (or failed). Correlation and
+    /// state transitions live in [`crate::state::Fleet::fold_transcript`]
+    /// (review F1 — pure, generation-checked, never resurrects a deleted
+    /// pane); this handler only acts on the outcome: refetch on the
+    /// one-shot stale-cursor reload, and keep the grant ledger honest
+    /// (review F5 — a transcript `not_granted` demotes read_tail exactly
+    /// like a drive refusal; a served page proves the grant and clears
+    /// the demotion).
     fn on_transcript(&mut self, msg: crate::transcript::TranscriptMsg) {
+        use crate::transcript::FoldOutcome;
         let agent_id = msg.agent_id.clone();
-        let reload = {
-            let pane = self.fleet.transcript_pane_mut(&agent_id);
-            match msg.outcome {
-                Ok(page) => {
-                    pane.apply_page(page);
-                    false
-                }
-                Err(failure) if failure.is_stale_cursor() && !pane.auto_reloaded => {
-                    pane.auto_reloaded = true;
-                    pane.reset();
-                    true
-                }
-                Err(failure) => {
-                    pane.apply_failure(failure);
-                    false
-                }
+        match self.fleet.fold_transcript(msg) {
+            FoldOutcome::Dropped | FoldOutcome::Applied => {}
+            FoldOutcome::AppliedOk => {
+                self.ledger.note_success("read_tail");
+                self.persist_ledger();
             }
-        };
-        if reload {
-            self.toast(
-                Level::Info,
-                "transcript session changed — reloading from newest".to_string(),
-            );
-            self.request_transcript_page(crate::transcript::TranscriptRequest {
-                agent_id,
-                cursor: None,
-            });
+            FoldOutcome::NotGranted => {
+                self.ledger.note_denied("read_tail");
+                self.persist_ledger();
+            }
+            FoldOutcome::NeedsReload => {
+                self.toast(
+                    Level::Info,
+                    "transcript session changed — reloading from newest".to_string(),
+                );
+                self.request_transcript_page(crate::transcript::TranscriptRequest {
+                    agent_id,
+                    cursor: None,
+                });
+            }
         }
     }
 
-    /// #64: spawn one signed `GET /transcript` page fetch. `cursor: None`
-    /// resets the pane and loads the newest page; `Some` extends with an
-    /// older one. No registration/device key is a pane-level error, not a
-    /// toast storm — the pane renders it in place.
+    /// #64: spawn one signed `GET /transcript` page fetch, stamped with
+    /// the pane's generation (review F1) so a late response can be
+    /// dropped. `cursor: None` resets the pane and loads the newest
+    /// page; `Some` extends with an older one (or retries the same
+    /// cursor after a transient failure — review F7: dispatch clears
+    /// the error so the spinner shows). No registration/device key is a
+    /// pane-level error, not a toast storm.
     fn request_transcript_page(&mut self, request: crate::transcript::TranscriptRequest) {
         let (Some(reg), Some(signing)) = (
             self.registration.clone(),
@@ -413,15 +418,20 @@ impl CorralApp {
             });
             return;
         };
-        {
+        let generation = {
             let pane = self.fleet.transcript_pane_mut(&request.agent_id);
             if request.cursor.is_none() && !pane.loading {
-                // Explicit newest-page loads reset; the auto-reload path
-                // has already reset (and set loading) before we get here.
-                pane.user_reset();
+                // Explicit newest-page loads reset under a fresh
+                // generation (touched == the fleet clock the pane_mut
+                // call just stamped, so it is new and unique); the
+                // auto-reload path has already reset before we get here.
+                let fresh = pane.touched;
+                pane.user_reset(fresh);
             }
             pane.loading = true;
-        }
+            pane.error = None;
+            pane.generation
+        };
         let header = crate::drive::transcript_auth_header(&reg.key_id, &signing, &request.agent_id);
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
@@ -437,7 +447,11 @@ impl CorralApp {
                 crate::transcript::PAGE_LIMIT,
             )
             .await;
-            let _ = tx.send(crate::transcript::TranscriptMsg { agent_id, outcome });
+            let _ = tx.send(crate::transcript::TranscriptMsg {
+                agent_id,
+                generation,
+                outcome,
+            });
         });
     }
 

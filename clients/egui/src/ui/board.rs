@@ -180,7 +180,7 @@ fn board_row(
         toggles.push(id.to_string());
     }
     if is_expanded {
-        detail(ui, agent, fleet, actions);
+        detail(ui, agent, fleet, allowed, actions);
     }
     ui.separator();
 }
@@ -590,7 +590,13 @@ fn prompt_widget(ui: &mut Ui, agent: &Agent, rev: Option<u64>, drive: &mut dyn F
     }
 }
 
-fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions) {
+fn detail(
+    ui: &mut Ui,
+    agent: &Agent,
+    fleet: &Fleet,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
     egui::Frame::group(ui.style())
         .fill(Color32::from_rgb(0x10, 0x15, 0x1c))
         .show(ui, |ui| {
@@ -691,7 +697,7 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions)
                         .color(theme::ui::TEXT_MUTED),
                 );
             }
-            transcript_section(ui, agent, fleet, actions);
+            transcript_section(ui, agent, fleet, allowed, actions);
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
@@ -712,31 +718,44 @@ fn detail(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions)
 }
 
 /// #64: the lazy-paged full-transcript section inside the row detail.
-/// Collapsed by default; opening it (or tapping load/reload) pushes a
-/// [`TranscriptRequest`](crate::transcript::TranscriptRequest) through
-/// `actions.transcript` — never a fetch during render. Rows are
-/// virtualized (`show_rows`, uniform height): each entry renders as one
-/// truncated line; clicking selects it and the full wrapped text shows
-/// in a bounded area below, so a 5MB page set never lays out per frame.
-fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut BoardActions) {
+/// Collapsed by default; OPENING it triggers the newest-page fetch
+/// (review F11 — the brief's "open at the newest page"); "load older"
+/// follows the cursor. Gated on the read_tail grant like every other
+/// capability surface (review F5). Rows are virtualized (`show_rows`
+/// with a pitch measured from what is actually drawn — review F3);
+/// clicking a row shows a BOUNDED slice of its text below (review F4 —
+/// a ScrollArea clips but does not virtualize a label, so an unbounded
+/// galley would hang the UI thread on a multi-MB entry).
+fn transcript_section(
+    ui: &mut Ui,
+    agent: &Agent,
+    fleet: &Fleet,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
     use crate::transcript::TranscriptRequest;
     ui.add_space(4.0);
+    if !allowed("read_tail") {
+        ui.label(
+            RichText::new("transcript needs the read_tail grant")
+                .small()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        return;
+    }
     let pane = fleet.transcripts.get(&agent.agent_id);
     let title = match pane {
         Some(p) if !p.session.is_empty() => format!("transcript — {}", p.session),
         _ => "transcript".to_string(),
     };
-    egui::CollapsingHeader::new(RichText::new(title).small())
+    let header = egui::CollapsingHeader::new(RichText::new(title).small())
         .id_salt(("corral-ui-transcript", &agent.agent_id))
         .default_open(false)
         .show(ui, |ui| {
             let Some(pane) = pane else {
-                if ui.small_button("load transcript").clicked() {
-                    (actions.transcript)(TranscriptRequest {
-                        agent_id: agent.agent_id.clone(),
-                        cursor: None,
-                    });
-                }
+                // First open this frame: the fetch is dispatched below
+                // (the pane exists from the next frame on).
+                ui.spinner();
                 return;
             };
 
@@ -757,15 +776,26 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                 if !pane.stores_unavailable.is_empty() {
                     ui.label(
                         RichText::new(format!(
-                            "stores unavailable: {}",
+                            "stores unavailable during this walk: {}",
                             pane.stores_unavailable.join(", ")
                         ))
                         .small()
                         .color(theme::ui::WARN),
                     )
                     .on_hover_text(
-                        "a session store errored during binding — this view may not be \
+                        "a session store errored while binding — this view may not be \
                          the agent's newest session",
+                    );
+                }
+                if pane.base_offset > 0 {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} newest entries slid out of the window — reload to return \
+                             to the top",
+                            pane.base_offset
+                        ))
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
                     );
                 }
                 ui.label(
@@ -790,10 +820,14 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                 }
             }
 
-            let selected_id = egui::Id::new(("corral-ui-transcript-sel", &agent.agent_id));
+            // Selection is salted with the pane GENERATION (review F10):
+            // a reload rebuilds entries, so an index into the old pane
+            // must not silently select a different message in the new one.
+            let selected_id =
+                egui::Id::new(("corral-ui-transcript-sel", &agent.agent_id, pane.generation));
             let mut selected: Option<usize> =
                 ui.memory_mut(|m| m.data.get_temp(selected_id)).flatten();
-            let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            let row_height = transcript_row_pitch(ui);
             ScrollArea::vertical()
                 .id_salt(("corral-ui-transcript-rows", &agent.agent_id))
                 .max_height(240.0)
@@ -801,10 +835,22 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                 .show_rows(ui, row_height, pane.entries.len(), |ui, range| {
                     for index in range {
                         let entry = &pane.entries[index];
-                        let line = transcript_row_text(index, entry);
+                        let line = transcript_row_text(pane.base_offset + index, entry);
                         let is_selected = selected == Some(index);
-                        if ui
-                            .selectable_label(is_selected, RichText::new(line).monospace().small())
+                        // Review F3: each row occupies EXACTLY the pitch
+                        // show_rows was given — uniform height holds by
+                        // construction, not by coincidence of two style
+                        // values (the pitch is sized to fit the label;
+                        // pinned by test).
+                        let desired = egui::vec2(ui.available_width(), row_height);
+                        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+                        let mut row_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        if row_ui
+                            .selectable_label(is_selected, RichText::new(line).monospace())
                             .clicked()
                         {
                             selected = if is_selected { None } else { Some(index) };
@@ -826,14 +872,19 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                     );
+                    // Review F4: lay out a BOUNDED slice, never the whole
+                    // entry (the daemon exempts a page's first entry from
+                    // its budget, so a single row can be many MB).
+                    let (shown, truncated) = transcript_detail_text(&entry.text);
                     ScrollArea::vertical()
                         .id_salt(("corral-ui-transcript-full", &agent.agent_id))
                         .max_height(160.0)
                         .show(ui, |ui| {
-                            ui.add(egui::Label::new(
-                                RichText::new(&entry.text).monospace().small(),
-                            ));
+                            ui.add(egui::Label::new(RichText::new(shown).monospace().small()));
                         });
+                    if let Some(note) = truncated {
+                        ui.label(RichText::new(note).small().color(theme::ui::WARN));
+                    }
                 });
             }
 
@@ -852,15 +903,13 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                         cursor: pane.next_cursor.clone(),
                     });
                 }
-                if pane.at_cap() && pane.next_cursor.is_some() {
-                    ui.label(
-                        RichText::new(format!(
-                            "page cap reached ({} pages held) — reload to start over",
-                            crate::transcript::MAX_PAGES
-                        ))
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                    );
+                // Review F7: a transient failure keeps the cursor — retry
+                // re-issues it instead of throwing the walk away.
+                if pane.can_retry() && ui.small_button("retry").clicked() {
+                    (actions.transcript)(TranscriptRequest {
+                        agent_id: agent.agent_id.clone(),
+                        cursor: pane.next_cursor.clone(),
+                    });
                 }
                 if pane.next_cursor.is_none() && !pane.loading && pane.error.is_none() {
                     ui.label(
@@ -877,17 +926,62 @@ fn transcript_section(ui: &mut Ui, agent: &Agent, fleet: &Fleet, actions: &mut B
                 }
             });
         });
+
+    // Review F11: opening the header IS the fetch trigger — no pane yet
+    // and the body is open means this is the first look. One request:
+    // the pane exists (loading) from this same frame's dispatch on.
+    if pane.is_none() && header.body_returned.is_some() {
+        (actions.transcript)(TranscriptRequest {
+            agent_id: agent.agent_id.clone(),
+            cursor: None,
+        });
+    }
 }
 
-/// One virtualized row: index-stable, single line, truncated. Pure so
-/// the format is testable.
+/// Review F3: the virtualized-row pitch. Every row is ALLOCATED at
+/// exactly this height (see the show_rows body), so show_rows' uniform
+/// assumption holds by construction; this only has to be big enough to
+/// fit the row's label without clipping — pinned by a test that renders
+/// a real row and asserts pitch >= its natural height.
+pub fn transcript_row_pitch(ui: &Ui) -> f32 {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let galley = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    (galley + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
+}
+
+/// Review F4: the bounded detail slice — at most 64 KiB is ever laid
+/// out; the note says what was withheld.
+pub fn transcript_detail_text(text: &str) -> (&str, Option<String>) {
+    const DETAIL_MAX_BYTES: usize = 64 * 1024;
+    if text.len() <= DETAIL_MAX_BYTES {
+        return (text, None);
+    }
+    let mut end = DETAIL_MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (
+        &text[..end],
+        Some(format!(
+            "… truncated for display ({end} of {} bytes shown)",
+            text.len()
+        )),
+    )
+}
+
+/// One virtualized row: absolute-index labeled, single line, truncated.
+/// Pure so the format is testable. The role is truncated client-side
+/// (review F12): the daemon normalizes onto a short closed set, but the
+/// row's uniform-height invariant must not depend on the other side of
+/// the wire.
 pub fn transcript_row_text(index: usize, entry: &crate::transcript::TranscriptEntry) -> String {
     let first_line = entry.text.lines().next().unwrap_or("");
     let mut shown: String = first_line.chars().take(120).collect();
     if shown.len() < first_line.len() || entry.text.lines().nth(1).is_some() {
         shown.push('\u{2026}');
     }
-    format!("{index:>4} {:>9}  {shown}", entry.role)
+    let role: String = entry.role.chars().take(12).collect();
+    format!("{index:>4} {role:>9}  {shown}")
 }
 
 /// Pure error copy per typed kind — testable, and the not_granted case
@@ -1208,6 +1302,60 @@ mod tests {
         let row = transcript_row_text(12, &long);
         assert!(row.chars().count() < 140, "truncated: {}", row.len());
         assert!(row.ends_with('\u{2026}'));
+    }
+
+    /// #64 review F3: rows are allocated at exactly the pitch, so the
+    /// pitch must FIT a real rendered row — measured against a real
+    /// selectable_label in a real egui pass with the app's spacing. A
+    /// theme change that would clip row text fails here, not on screen.
+    #[test]
+    fn transcript_row_pitch_matches_a_rendered_row() {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(crate::theme::dark_dashboard());
+        let mut measured: Option<(f32, f32)> = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // The app's board spacing (app.rs sets these per frame).
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+            let pitch = transcript_row_pitch(ui);
+            let entry = crate::transcript::TranscriptEntry {
+                role: "assistant".into(),
+                text: "measured row".into(),
+                ts: None,
+            };
+            let line = transcript_row_text(0, &entry);
+            let response = ui.selectable_label(false, egui::RichText::new(line).monospace());
+            measured = Some((pitch, response.rect.height()));
+        });
+        // A headless pass never uploads textures; acknowledge the delta
+        // so its drop guard stays quiet.
+        output.textures_delta.clear();
+        let (pitch, actual) = measured.expect("rendered");
+        assert!(
+            pitch >= actual,
+            "pitch {pitch} must fit the rendered row height {actual} (no clipping)"
+        );
+        assert!(
+            pitch <= actual + 8.0,
+            "pitch {pitch} should not be wildly larger than the row {actual} (dead space)"
+        );
+    }
+
+    /// #64 review F4: the selected-entry detail lays out a BOUNDED slice
+    /// — a multi-MB entry yields a capped slice plus an honest note.
+    #[test]
+    fn transcript_detail_text_is_bounded() {
+        let (shown, note) = transcript_detail_text("short");
+        assert_eq!(shown, "short");
+        assert!(note.is_none());
+
+        let big = "é".repeat(200_000); // 2 bytes/char: boundary-safe slice
+        let (shown, note) = transcript_detail_text(&big);
+        assert!(shown.len() <= 64 * 1024);
+        assert!(shown.len() >= 64 * 1024 - 4, "cap honored tightly");
+        let note = note.expect("truncation is announced");
+        assert!(note.contains("truncated"), "{note}");
+        assert!(note.contains("400000"), "names the full size: {note}");
     }
 
     /// #64: typed error copy — the grant refusal names the fix; a stale

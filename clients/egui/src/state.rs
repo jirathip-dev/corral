@@ -95,10 +95,13 @@ pub struct Fleet {
     pub recent_drives: HashMap<String, VecDeque<DriveState>>,
     /// read_tail content per agent (only ever fetched on tap; bounded).
     pub tails: HashMap<String, Vec<String>>,
-    /// #64: transcript pane per agent (fetched on demand; the pane holds
-    /// at most MAX_PAGES pages, and at most 64 agents are cached here —
-    /// same bound discipline as `tails`).
+    /// #64: transcript pane per agent (fetched on demand; each pane is a
+    /// bounded sliding window, and at most 64 agents are cached here —
+    /// LRU-evicted by `transcript_clock`).
     pub transcripts: HashMap<String, crate::transcript::TranscriptPane>,
+    /// Monotonic clock stamping pane generations (response correlation,
+    /// review F1) and last-touch order (real LRU eviction, review F14).
+    pub transcript_clock: u64,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
 }
@@ -151,20 +154,79 @@ impl Fleet {
         self.tails.insert(agent_id.to_string(), tail);
     }
 
-    /// #64: the transcript pane for an agent, creating it bounded the
-    /// same way as `remember_tail` — at 64 cached agents an arbitrary
-    /// other pane is evicted before a NEW agent gets one.
+    /// #64: the transcript pane for an agent, creating it under a fresh
+    /// generation if absent. Bounded at 64 cached agents with REAL LRU
+    /// eviction (least-recently-touched — review F14: for transcripts a
+    /// wrong eviction throws away pages the user paged to by hand, each
+    /// an audited read, so "arbitrary map order" is not good enough).
     pub fn transcript_pane_mut(
         &mut self,
         agent_id: &str,
     ) -> &mut crate::transcript::TranscriptPane {
+        self.transcript_clock += 1;
+        let clock = self.transcript_clock;
         if self.transcripts.len() >= 64
             && !self.transcripts.contains_key(agent_id)
-            && let Some(oldest) = self.transcripts.keys().next().cloned()
+            && let Some(lru) = self
+                .transcripts
+                .iter()
+                .min_by_key(|(_, pane)| pane.touched)
+                .map(|(id, _)| id.clone())
         {
-            self.transcripts.remove(&oldest);
+            self.transcripts.remove(&lru);
         }
-        self.transcripts.entry(agent_id.to_string()).or_default()
+        let pane = self
+            .transcripts
+            .entry(agent_id.to_string())
+            .or_insert_with(|| crate::transcript::TranscriptPane {
+                generation: clock,
+                ..Default::default()
+            });
+        pane.touched = clock;
+        pane
+    }
+
+    /// #64 review F1: fold one fetch outcome into the pane it belongs
+    /// to — or refuse. Pure and unit-tested: a response whose
+    /// generation does not match the CURRENT pane (reset, evicted, or
+    /// recreated since the request left) is DROPPED, and a response for
+    /// a pane that no longer exists (agent deleted) never resurrects it
+    /// (`get_mut`, not `transcript_pane_mut`). A first-strike stale
+    /// cursor resets the pane under a new generation and asks the
+    /// caller to refetch.
+    pub fn fold_transcript(
+        &mut self,
+        msg: crate::transcript::TranscriptMsg,
+    ) -> crate::transcript::FoldOutcome {
+        use crate::transcript::FoldOutcome;
+        self.transcript_clock += 1;
+        let clock = self.transcript_clock;
+        let Some(pane) = self.transcripts.get_mut(&msg.agent_id) else {
+            return FoldOutcome::Dropped;
+        };
+        if msg.generation != pane.generation {
+            return FoldOutcome::Dropped;
+        }
+        match msg.outcome {
+            Ok(page) => {
+                pane.apply_page(page);
+                FoldOutcome::AppliedOk
+            }
+            Err(failure) if failure.is_stale_cursor() && !pane.auto_reloaded => {
+                pane.auto_reloaded = true;
+                pane.reset(clock);
+                FoldOutcome::NeedsReload
+            }
+            Err(failure) => {
+                let not_granted = failure.is_not_granted();
+                pane.apply_failure(failure);
+                if not_granted {
+                    FoldOutcome::NotGranted
+                } else {
+                    FoldOutcome::Applied
+                }
+            }
+        }
     }
 
     pub fn remember_drive(&mut self, agent_id: &str, state: DriveState) {
@@ -230,6 +292,16 @@ impl GrantLedger {
 
     pub fn note_success(&mut self, capability: &str) {
         self.denied.retain(|c| c != capability);
+    }
+
+    /// #64 review F5: a typed `not_granted` from a non-drive surface
+    /// (the transcript GET) demotes the capability the same way a drive
+    /// refusal does — the board must not keep claiming read_tail works
+    /// after the daemon just refused it.
+    pub fn note_denied(&mut self, capability: &str) {
+        if !self.is_denied(capability) {
+            self.denied.push(capability.to_string());
+        }
     }
 }
 
@@ -354,20 +426,145 @@ mod tests {
         assert!(fleet.expanded.is_empty());
     }
 
-    /// #64: the transcript pane cache is bounded like the tail cache —
-    /// a 65th agent evicts one, an EXISTING agent's pane never does.
+    /// #64: the transcript pane cache is bounded — a 65th agent evicts
+    /// the LEAST-RECENTLY-TOUCHED pane (review F14: real LRU, never the
+    /// one the user is actively reading), and an existing agent's pane
+    /// never evicts.
     #[test]
-    fn transcript_pane_cache_is_bounded() {
+    fn transcript_pane_cache_is_bounded_lru() {
         let mut fleet = Fleet::default();
         for i in 0..64 {
-            let _ = fleet.transcript_pane_mut(&format!("agent-{i}"));
+            let _ = fleet.transcript_pane_mut(&format!("agent-{i:02}"));
         }
         assert_eq!(fleet.transcripts.len(), 64);
-        let _ = fleet.transcript_pane_mut("agent-0");
+        let _ = fleet.transcript_pane_mut("agent-00");
         assert_eq!(fleet.transcripts.len(), 64, "existing agent: no evict");
+        // agent-01 is now the least-recently-touched — it must be the
+        // one to go, and the just-touched agent-00 must survive.
         let _ = fleet.transcript_pane_mut("agent-new");
         assert_eq!(fleet.transcripts.len(), 64, "new agent evicts one");
         assert!(fleet.transcripts.contains_key("agent-new"));
+        assert!(
+            fleet.transcripts.contains_key("agent-00"),
+            "LRU spares the active pane"
+        );
+        assert!(
+            !fleet.transcripts.contains_key("agent-01"),
+            "LRU evicts the stalest"
+        );
+    }
+
+    fn msg(
+        agent: &str,
+        generation: u64,
+        outcome: Result<crate::transcript::TranscriptPage, crate::transcript::TranscriptFailure>,
+    ) -> crate::transcript::TranscriptMsg {
+        crate::transcript::TranscriptMsg {
+            agent_id: agent.into(),
+            generation,
+            outcome,
+        }
+    }
+
+    fn a_page() -> crate::transcript::TranscriptPage {
+        serde_json::from_value(serde_json::json!({
+            "agent": "a", "store": "claude", "session": "claude:s.jsonl",
+            "bind": "worktree", "stores_unavailable": [],
+            "entries": [{"role": "user", "text": "hi", "ts": null}],
+            "next_cursor": "b.5.aa", "skipped": 0,
+        }))
+        .expect("parses")
+    }
+
+    fn stale_cursor() -> crate::transcript::TranscriptFailure {
+        crate::transcript::TranscriptFailure {
+            kind: "bad_cursor".into(),
+            message: "stale".into(),
+            candidates: vec![],
+        }
+    }
+
+    /// #64 review F1: response correlation. A late response from a
+    /// superseded generation is dropped; a response for a pane that no
+    /// longer exists (deleted agent) never resurrects it.
+    #[test]
+    fn fold_transcript_drops_stale_generations_and_never_resurrects() {
+        use crate::transcript::FoldOutcome;
+        let mut fleet = Fleet::default();
+        let generation = fleet.transcript_pane_mut("a").generation;
+
+        // In-flight response, then the user reloads (new generation):
+        // the late response must be DROPPED, not appended to the fresh
+        // pane.
+        let tick = fleet.transcript_clock + 1;
+        fleet.transcript_clock = tick;
+        fleet
+            .transcripts
+            .get_mut("a")
+            .expect("pane")
+            .user_reset(tick);
+        assert_eq!(
+            fleet.fold_transcript(msg("a", generation, Ok(a_page()))),
+            FoldOutcome::Dropped,
+            "late page from the old generation is refused"
+        );
+        assert!(
+            fleet.transcripts.get("a").expect("pane").entries.is_empty(),
+            "the fresh pane stays clean"
+        );
+
+        // Current generation folds fine.
+        let current = fleet.transcripts.get("a").expect("pane").generation;
+        assert_eq!(
+            fleet.fold_transcript(msg("a", current, Ok(a_page()))),
+            FoldOutcome::AppliedOk
+        );
+
+        // Delete the agent: the in-flight response must NOT resurrect
+        // the pane.
+        fleet.transcripts.remove("a");
+        assert_eq!(
+            fleet.fold_transcript(msg("a", current, Ok(a_page()))),
+            FoldOutcome::Dropped
+        );
+        assert!(!fleet.transcripts.contains_key("a"), "no resurrection");
+    }
+
+    /// #64 review F1/F7: a first stale cursor resets under a NEW
+    /// generation and asks for a reload; a second surfaces as the error;
+    /// a not_granted failure is routed to the ledger.
+    #[test]
+    fn fold_transcript_stale_cursor_once_and_not_granted_routing() {
+        use crate::transcript::FoldOutcome;
+        let mut fleet = Fleet::default();
+        let g0 = fleet.transcript_pane_mut("a").generation;
+        assert_eq!(
+            fleet.fold_transcript(msg("a", g0, Err(stale_cursor()))),
+            FoldOutcome::NeedsReload,
+            "first strike reloads"
+        );
+        let pane = fleet.transcripts.get("a").expect("pane");
+        assert_ne!(pane.generation, g0, "reset minted a new generation");
+        assert!(pane.loading);
+
+        let g1 = pane.generation;
+        assert_eq!(
+            fleet.fold_transcript(msg("a", g1, Err(stale_cursor()))),
+            FoldOutcome::Applied,
+            "second strike surfaces the error"
+        );
+
+        let g2 = fleet.transcripts.get("a").expect("pane").generation;
+        let denied = crate::transcript::TranscriptFailure {
+            kind: "not_granted".into(),
+            message: "read_tail not granted".into(),
+            candidates: vec![],
+        };
+        assert_eq!(
+            fleet.fold_transcript(msg("a", g2, Err(denied))),
+            FoldOutcome::NotGranted,
+            "grant refusals reach the ledger"
+        );
     }
 
     #[test]

@@ -2,22 +2,32 @@
 //! parsing for the lazy-paged `GET /transcript` viewer.
 //!
 //! The daemon serves NEWEST-FIRST pages; the pane appends each fetched
-//! page, so `entries[0]` is the newest message and "load older" extends
-//! the tail. Bounded by construction: at most [`MAX_PAGES`] pages are
-//! ever held (transcripts can be 100MB+ — the pane never holds the whole
-//! thing); at the cap the pane stops offering older pages and says so,
-//! rather than silently dropping what the user already scrolled
-//! (drop-oldest would evict the NEWEST messages here, which is the wrong
-//! end to lose).
+//! page, so the walk extends toward older content. Bounds (review F2 —
+//! a SLIDING WINDOW, not a dead end): the pane holds at most
+//! [`MAX_ENTRIES`] entries / ~[`MAX_TEXT_BYTES`] of text; past that the
+//! NEWEST-loaded entries fall out of the window (`base_offset` counts
+//! them, the UI says so) while the walk continues unbounded toward the
+//! start of the transcript — a reader paging backwards is reading the
+//! old end, so the pages they scrolled past are the right ones to drop.
+//! "Reload" returns to the top at any time. The whole transcript is
+//! therefore REACHABLE (#27 AC1) while memory stays bounded.
 //!
-//! Everything in this module is pure (JSON in, state out) so the paging
-//! rules are unit-tested without a daemon; fetching lives in
-//! `protocol.rs`, wiring in `app.rs`, rendering in `ui/board.rs`.
+//! Concurrency (review F1): every request is stamped with the pane's
+//! `generation`; a response whose generation does not match the CURRENT
+//! pane is dropped on the floor — a late page can never fold into a
+//! pane that was reset, evicted, or recreated since the request left.
+//! Correlation lives in [`crate::state::Fleet::fold_transcript`] so it
+//! is unit-testable without the app.
+//!
+//! Everything in this module is pure (JSON in, state out); fetching
+//! lives in `protocol.rs`, wiring in `app.rs`, rendering in
+//! `ui/board.rs`.
 
 use serde::Deserialize;
 
-/// Page cap: 20 pages × ≤50 entries = ≤1000 entries held per agent.
-pub const MAX_PAGES: usize = 20;
+/// Sliding-window caps: entries and (approximate) held text bytes.
+pub const MAX_ENTRIES: usize = 1000;
+pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 /// Entries requested per page (the daemon clamps to its own cap of 50).
 pub const PAGE_LIMIT: usize = 50;
 
@@ -94,18 +104,35 @@ impl TranscriptFailure {
     pub fn is_stale_cursor(&self) -> bool {
         self.kind == "bad_cursor"
     }
+
+    pub fn is_not_granted(&self) -> bool {
+        self.kind == "not_granted"
+    }
 }
 
-/// Per-agent pane state: the fetched pages (flattened, newest first),
-/// the resume cursor, and the last outcome.
+/// Per-agent pane state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TranscriptPane {
+    /// The held window, newest-first. `entries[0]` is absolute index
+    /// `base_offset` of the walk (0 = the transcript's newest message).
     pub entries: Vec<TranscriptEntry>,
+    /// How many NEWEST-loaded entries the sliding window has dropped —
+    /// nonzero means "reload to return to the top" (review F2).
+    pub base_offset: usize,
+    /// Approximate held text bytes (maintained incrementally).
+    pub held_bytes: usize,
     pub next_cursor: Option<String>,
     pub pages: usize,
     pub session: String,
     pub store: String,
+    /// The WEAKEST bind provenance seen across the walk (review F8):
+    /// once any page answered from the worktree heuristic, the pane
+    /// stays labeled best-effort.
     pub bind: String,
+    /// UNION of every page's unavailable-store report (review F8): a
+    /// store that failed during page 1's bind stays reported even if a
+    /// later page found it healthy — the held content may still derive
+    /// from the degraded bind.
     pub stores_unavailable: Vec<String>,
     /// Sum of the daemon's per-page torn-data counters.
     pub skipped: usize,
@@ -115,36 +142,61 @@ pub struct TranscriptPane {
     /// One automatic reload has already been spent on a stale cursor —
     /// a second stale cursor surfaces as an error instead of looping.
     pub auto_reloaded: bool,
+    /// Response-correlation stamp (review F1): minted from the fleet
+    /// clock at creation and every reset; requests carry it, responses
+    /// must match it.
+    pub generation: u64,
+    /// Fleet-clock value at last access — real LRU eviction (review
+    /// F14), not arbitrary map order.
+    pub touched: u64,
 }
 
 impl TranscriptPane {
-    /// True when "load older" should be offered.
+    /// True when "load older" should be offered (errors offer "retry"
+    /// instead — review F7 — never both).
     pub fn can_load_older(&self) -> bool {
-        !self.loading && self.error.is_none() && self.next_cursor.is_some() && !self.at_cap()
+        !self.loading && self.error.is_none() && self.next_cursor.is_some()
     }
 
-    /// The page cap is a STOP, not an eviction (module doc).
-    pub fn at_cap(&self) -> bool {
-        self.pages >= MAX_PAGES
+    /// A transient failure keeps `next_cursor`, so the SAME cursor can
+    /// be retried without throwing the walk away (review F7).
+    pub fn can_retry(&self) -> bool {
+        !self.loading && self.error.as_ref().is_some_and(|e| !e.is_stale_cursor())
     }
 
-    /// Fold one fetched page in. A page-1 fetch (no pages held yet, or
-    /// after `reset`) REPLACES state; a cursor fetch appends older
-    /// entries. The daemon's `session`/`bind` metadata always reflects
-    /// the latest response — a mid-walk metadata change cannot happen
-    /// without a `bad_cursor` first (the cursor is store-fingerprinted),
-    /// so overwrite is safe.
+    /// Fold one fetched page in and slide the window (review F2).
     pub fn apply_page(&mut self, page: TranscriptPage) {
         self.loading = false;
         self.error = None;
         self.session = page.session;
         self.store = page.store;
-        self.bind = page.bind;
-        self.stores_unavailable = page.stores_unavailable;
+        // Weakest-bind-wins (review F8): "worktree" is sticky.
+        if self.bind.is_empty() || page.bind == "worktree" {
+            self.bind = page.bind;
+        }
+        for store in page.stores_unavailable {
+            if !self.stores_unavailable.contains(&store) {
+                self.stores_unavailable.push(store);
+            }
+        }
         self.skipped += page.skipped;
         self.next_cursor = page.next_cursor;
+        for entry in &page.entries {
+            self.held_bytes += entry.text.len();
+        }
         self.entries.extend(page.entries);
         self.pages += 1;
+        // Slide: drop the NEWEST-loaded entries past the caps. At least
+        // one entry is always kept, so a single over-cap entry (the
+        // daemon exempts a page's first entry from its text budget)
+        // still renders rather than emptying the pane.
+        while self.entries.len() > 1
+            && (self.entries.len() > MAX_ENTRIES || self.held_bytes > MAX_TEXT_BYTES)
+        {
+            let dropped = self.entries.remove(0);
+            self.held_bytes = self.held_bytes.saturating_sub(dropped.text.len());
+            self.base_offset += 1;
+        }
     }
 
     pub fn apply_failure(&mut self, failure: TranscriptFailure) {
@@ -152,21 +204,29 @@ impl TranscriptPane {
         self.error = Some(failure);
     }
 
-    /// Back to empty (a fresh page-1 fetch follows). Keeps
-    /// `auto_reloaded` — that flag guards the reload loop, so only an
-    /// explicit user action clears it (see [`TranscriptPane::user_reset`]).
-    pub fn reset(&mut self) {
+    /// Back to empty under a NEW generation (a fresh page-1 fetch
+    /// follows; in-flight responses from the old generation are dropped
+    /// by the correlation check). Keeps `auto_reloaded` — that flag
+    /// guards the reload loop; only [`TranscriptPane::user_reset`]
+    /// re-arms it.
+    pub fn reset(&mut self, generation: u64) {
         let auto_reloaded = self.auto_reloaded;
+        let touched = self.touched;
         *self = Self {
             auto_reloaded,
             loading: true,
+            generation,
+            touched,
             ..Self::default()
         };
     }
 
-    pub fn user_reset(&mut self) {
+    pub fn user_reset(&mut self, generation: u64) {
+        let touched = self.touched;
         *self = Self {
             loading: true,
+            generation,
+            touched,
             ..Self::default()
         };
     }
@@ -178,27 +238,47 @@ impl TranscriptPane {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptRequest {
     pub agent_id: String,
-    /// `None` = (re)load the newest page; `Some` = load older.
+    /// `None` = (re)load the newest page; `Some` = load older (or retry
+    /// the same cursor after a transient failure).
     pub cursor: Option<String>,
 }
 
-/// The async fetch outcome delivered back to the UI thread.
+/// The async fetch outcome delivered back to the UI thread. Carries the
+/// generation the request was stamped with (review F1).
 #[derive(Debug)]
 pub struct TranscriptMsg {
     pub agent_id: String,
+    pub generation: u64,
     pub outcome: Result<TranscriptPage, TranscriptFailure>,
+}
+
+/// What [`crate::state::Fleet::fold_transcript`] decided — the app acts
+/// on it (toast + re-fetch for `NeedsReload`, ledger for `NotGranted`),
+/// tests assert on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FoldOutcome {
+    /// Failure folded into the live pane.
+    Applied,
+    /// Served page folded — the read_tail grant is proven live.
+    AppliedOk,
+    /// Stale generation or no such pane (deleted agent): ignored.
+    Dropped,
+    /// Stale cursor, first strike: the pane was reset — refetch newest.
+    NeedsReload,
+    /// The daemon refused the grant — the ledger should hear about it.
+    NotGranted,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn page_json(n_entries: usize, cursor: Option<&str>) -> TranscriptPage {
+    pub(crate) fn page(n_entries: usize, cursor: Option<&str>) -> TranscriptPage {
         serde_json::from_value(serde_json::json!({
             "agent": "herdr:a1",
             "store": "claude",
             "session": "claude:s1.jsonl",
-            "bind": "worktree",
+            "bind": "session_id",
             "stores_unavailable": [],
             "entries": (0..n_entries).map(|i| serde_json::json!({
                 "role": if i % 2 == 0 { "assistant" } else { "user" },
@@ -212,59 +292,129 @@ mod tests {
     }
 
     /// Paging appends older entries with no gaps and tracks the cursor;
-    /// metadata reflects the latest page; skipped accumulates.
+    /// skipped accumulates.
     #[test]
     fn pages_append_and_cursor_advances() {
         let mut pane = TranscriptPane {
             loading: true,
             ..TranscriptPane::default()
         };
-        pane.apply_page(page_json(2, Some("b.100.aa")));
+        pane.apply_page(page(2, Some("b.100.aa")));
         assert!(!pane.loading);
         assert_eq!(pane.entries.len(), 2);
         assert_eq!(pane.next_cursor.as_deref(), Some("b.100.aa"));
         assert!(pane.can_load_older());
 
-        pane.apply_page(page_json(2, None));
+        pane.apply_page(page(2, None));
         assert_eq!(pane.entries.len(), 4, "older page appended");
         assert_eq!(pane.next_cursor, None, "exhausted");
         assert_eq!(pane.skipped, 2, "torn-data counters accumulate");
         assert!(!pane.can_load_older(), "no cursor -> nothing to load");
     }
 
-    /// The page cap STOPS paging (visible, not an eviction): the newest
-    /// entries the user already has must never be silently dropped.
+    /// F2: the window SLIDES — newest-loaded entries drop (counted in
+    /// base_offset), the walk continues past the cap, nothing dead-ends.
     #[test]
-    fn page_cap_stops_offering_older_pages() {
+    fn window_slides_past_the_entry_cap_and_the_walk_continues() {
         let mut pane = TranscriptPane::default();
-        for _ in 0..MAX_PAGES {
-            pane.apply_page(page_json(1, Some("b.1.aa")));
+        let per_page = 100;
+        for _ in 0..(MAX_ENTRIES / per_page) {
+            pane.apply_page(page(per_page, Some("b.1.aa")));
         }
-        assert!(pane.at_cap());
-        assert!(pane.next_cursor.is_some(), "the store has more");
-        assert!(!pane.can_load_older(), "cap is a stop");
-        assert_eq!(pane.entries.len(), MAX_PAGES, "nothing evicted");
+        assert_eq!(pane.entries.len(), MAX_ENTRIES);
+        assert_eq!(pane.base_offset, 0);
+
+        pane.apply_page(page(per_page, Some("b.2.aa")));
+        assert_eq!(pane.entries.len(), MAX_ENTRIES, "window holds the cap");
+        assert_eq!(pane.base_offset, per_page, "NEWEST-loaded dropped, counted");
+        assert!(pane.can_load_older(), "the walk is NOT a dead end (F2)");
     }
 
-    /// A stale fingerprinted cursor (daemon rebound between pages) is
-    /// recognized for the drop-and-reload path, once.
+    /// F2: the byte cap slides too, and a single over-cap entry is kept
+    /// rather than emptying the pane.
     #[test]
-    fn stale_cursor_resets_once_then_surfaces() {
-        let failure = TranscriptFailure::from_response(
-            400,
-            &serde_json::json!({ "kind": "bad_cursor", "message": "cursor does not match" }),
-        );
-        assert!(failure.is_stale_cursor());
-
+    fn window_slides_on_bytes_and_keeps_a_lone_giant_entry() {
         let mut pane = TranscriptPane::default();
-        pane.apply_page(page_json(3, Some("b.5.aa")));
-        assert!(!pane.auto_reloaded);
+        let giant = TranscriptPage {
+            entries: vec![TranscriptEntry {
+                role: "assistant".into(),
+                text: "x".repeat(MAX_TEXT_BYTES + 1),
+                ts: None,
+            }],
+            ..page(0, Some("b.9.aa"))
+        };
+        pane.apply_page(giant);
+        assert_eq!(pane.entries.len(), 1, "lone giant survives");
+
+        pane.apply_page(page(3, Some("b.10.aa")));
+        assert!(
+            pane.held_bytes <= MAX_TEXT_BYTES,
+            "the giant slid out once smaller content arrived"
+        );
+        assert!(pane.base_offset >= 1);
+    }
+
+    /// F8: bind provenance is weakest-wins and unavailable stores union
+    /// across the walk — honesty signals never silently disappear.
+    #[test]
+    fn bind_is_weakest_wins_and_unavailable_unions() {
+        let mut pane = TranscriptPane::default();
+        let mut degraded = page(1, Some("b.1.aa"));
+        degraded.bind = "worktree".into();
+        degraded.stores_unavailable = vec!["opencode".into()];
+        pane.apply_page(degraded);
+        assert_eq!(pane.bind, "worktree");
+        assert_eq!(pane.stores_unavailable, vec!["opencode".to_string()]);
+
+        let healthy = page(1, Some("b.2.aa")); // bind: session_id, none unavailable
+        pane.apply_page(healthy);
+        assert_eq!(pane.bind, "worktree", "weakest bind is sticky");
+        assert_eq!(
+            pane.stores_unavailable,
+            vec!["opencode".to_string()],
+            "the warning survives a later healthy page"
+        );
+    }
+
+    /// F7: a transient failure keeps the cursor and offers retry; a
+    /// stale-cursor failure routes to reload instead.
+    #[test]
+    fn transient_failure_is_retryable_with_the_same_cursor() {
+        let mut pane = TranscriptPane::default();
+        pane.apply_page(page(2, Some("b.9.aa")));
+        pane.loading = true;
+        pane.apply_failure(TranscriptFailure::from_response(
+            503,
+            &serde_json::json!({ "kind": "query_timeout", "message": "slow store" }),
+        ));
+        assert!(!pane.loading);
+        assert_eq!(pane.entries.len(), 2, "entries survive a failed page");
+        assert!(!pane.can_load_older(), "no load-older while errored");
+        assert!(pane.can_retry(), "retry offered");
+        assert_eq!(pane.next_cursor.as_deref(), Some("b.9.aa"), "cursor kept");
+
+        pane.apply_failure(TranscriptFailure::from_response(
+            400,
+            &serde_json::json!({ "kind": "bad_cursor", "message": "stale" }),
+        ));
+        assert!(!pane.can_retry(), "stale cursor is reload, not retry");
+    }
+
+    /// F1: reset mints a NEW generation so in-flight responses from the
+    /// old one can be recognized and dropped; the auto-reload guard
+    /// survives reset and only user_reset re-arms it.
+    #[test]
+    fn reset_advances_generation_and_keeps_the_loop_guard() {
+        let mut pane = TranscriptPane::default();
+        pane.apply_page(page(3, Some("b.5.aa")));
         pane.auto_reloaded = true;
-        pane.reset();
+        pane.reset(7);
         assert!(pane.entries.is_empty(), "reload starts clean");
         assert!(pane.loading);
+        assert_eq!(pane.generation, 7);
         assert!(pane.auto_reloaded, "reset keeps the loop guard");
-        pane.user_reset();
+        pane.user_reset(9);
+        assert_eq!(pane.generation, 9);
         assert!(!pane.auto_reloaded, "an explicit reload re-arms it");
     }
 
@@ -298,26 +448,7 @@ mod tests {
             403,
             &serde_json::json!({ "kind": "not_granted", "message": "read_tail not granted" }),
         );
+        assert!(no_grant.is_not_granted());
         assert!(!no_grant.is_stale_cursor());
-    }
-
-    /// A failure never clears already-fetched entries — the user keeps
-    /// what they have, with the error alongside.
-    #[test]
-    fn failure_keeps_fetched_entries() {
-        let mut pane = TranscriptPane::default();
-        pane.apply_page(page_json(2, Some("b.9.aa")));
-        pane.loading = true;
-        pane.apply_failure(TranscriptFailure::from_response(
-            503,
-            &serde_json::json!({ "kind": "query_timeout", "message": "slow store" }),
-        ));
-        assert!(!pane.loading);
-        assert_eq!(pane.entries.len(), 2, "entries survive a failed page");
-        assert_eq!(
-            pane.error.as_ref().map(|e| e.kind.as_str()),
-            Some("query_timeout")
-        );
-        assert!(!pane.can_load_older(), "no retry spam while errored");
     }
 }

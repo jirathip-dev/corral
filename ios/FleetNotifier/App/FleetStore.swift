@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Observation
 
 /// Thread-safe cursor for the SSE reconnect closure (the stream task reads
@@ -44,7 +45,17 @@ final class FleetStore: ObservableObject {
     /// while staying done) — the completion-notification hook (D16).
     var onNewlyDone: (@MainActor @Sendable (String) -> Void)?
 
+    /// Review F2: the decode-failure hook — AppModel routes this into
+    /// the dismissible, text-selectable banner so the reason is READABLE
+    /// on device, where the acceptance gate runs.
+    var onDecodeFailure: (@MainActor @Sendable (String) -> Void)?
+
+    private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
+
     private var streamTask: Task<Void, Never>?
+    /// Blocked-transition shadow for the live stream (was a closure-local;
+    /// stored so `ingest` is a plain testable method — review F5).
+    private var streamSeen: [String: WaitingOn] = [:]
     private let cursorBox = CursorBox()
     /// Shadow of last-seen agent states for done-transition detection.
     private var previousStates: [String: AgentState] = [:]
@@ -175,38 +186,46 @@ final class FleetStore: ObservableObject {
         guard streamTask == nil else { return }
         connectionState = .connecting
         cursorBox.write(lastEventId)
-        var seen: [String: WaitingOn] = [:]
+        streamSeen = [:]
         streamTask = Task { [weak self] in
             await client.stream(lastEventId: { [weak self] in
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
-                guard let self else { return }
-                switch CorraldClient.decode(frame) {
-                case .event(let event):
-                    Task { @MainActor in
-                        self.apply(event, previous: &seen)
-                    }
-                case .ignored:
-                    break
-                case .failed(let reason):
-                    // #79 defect 2: an undecodable frame used to be
-                    // swallowed silently — the spinner spun forever with
-                    // no diagnostic. Surface it: the connection banner
-                    // renders .error, and a later good frame's apply()
-                    // returns the state to .connected (one torn frame is
-                    // visible but not fatal to the stream).
-                    Task { @MainActor in
-                        self.noteDecodeFailure(reason)
-                    }
-                }
+                self?.ingest(frame)
             })
         }
     }
 
-    /// #79: visible decode-failure state (never a silent spinner).
+    /// One frame off the wire. A SINGLE main-actor hop per frame (review
+    /// F6): decode happens inside the hop, so frames are enqueued in
+    /// arrival order and an error cannot be re-ordered after the good
+    /// frame that follows it. Testable without a network (review F5).
+    nonisolated func ingest(_ frame: SSEFrame) {
+        Task { @MainActor in
+            switch CorraldClient.decode(frame) {
+            case .event(let event):
+                self.apply(event, previous: &self.streamSeen)
+            case .ignored:
+                break
+            case .failed(let reason):
+                // #79 defect 2: an undecodable/unrecognized frame used
+                // to vanish silently — the spinner spun forever with no
+                // diagnostic. Surface it; a later good frame's apply()
+                // returns the state to .connected (one torn frame is
+                // visible, not fatal to the stream).
+                self.noteDecodeFailure(reason)
+            }
+        }
+    }
+
+    /// #79: visible + diagnosable decode-failure state (never a silent
+    /// spinner). Review F2: os.Logger (retrievable from a detached
+    /// TestFlight build via Console/sysdiagnose — print is not), plus a
+    /// callback the owner routes to the full-width, copyable banner.
     func noteDecodeFailure(_ reason: String) {
-        print("[FleetStore] frame decode failed: \(reason)")
+        Self.log.error("frame decode failed: \(reason, privacy: .public)")
         connectionState = .error("stream frame undecodable — \(reason)")
+        onDecodeFailure?(reason)
     }
 
     /// Backgrounded = no connection (D5). Last-Event-ID is persisted by the

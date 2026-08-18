@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
+    /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
+    private var notificationsConfigured = false
     private var driveTask: Task<Void, Never>?
     /// In-flight notification-reply validation (cold-start snapshot fetch).
     private var notificationTask: Task<Void, Never>?
@@ -85,9 +87,9 @@ final class AppModel: ObservableObject {
             // #79 defect 1: registration used to leave .live with NO
             // stream — the only startLive() call sites were the .active
             // scene transition (already fired) and the demo toggle.
-            // startLive() is idempotent here: it guards on hostURL (just
-            // set) and FleetStore.connect() no-ops while streamTask is
-            // live, so a scene-driven connect cannot double-stream.
+            // connect() is idempotent (streamTask guard), so a
+            // scene-driven connect cannot double-stream; startLive()'s
+            // notification half is guarded once-per-process (review F4).
             startLive()
             banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
         } catch {
@@ -107,7 +109,23 @@ final class AppModel: ObservableObject {
         fleet.onNewlyDone = { [weak self] agentId in
             Task { @MainActor in self?.notifyDone(agentId: agentId) }
         }
+        // #79 review F2: a decode failure lands in the full-width,
+        // dismissible, text-selectable banner — readable/copyable on
+        // device, where diagnosis actually happens — in addition to the
+        // .error connection state and the os.Logger line.
+        fleet.onDecodeFailure = { [weak self] reason in
+            self?.banner = .error("stream_decode", reason)
+        }
         fleet.connect(client: client)
+        // #79 review F4: only connect() is idempotent by itself (its
+        // streamTask guard). The notification/APNs setup below is NOT —
+        // re-running it allocates a fresh LocalNotifier (dropping the
+        // installed delegate) and re-fires APNs registration + a signed
+        // /device-token post — and startLive() now legitimately runs
+        // more than once per launch (RootView task, .active transition,
+        // register()). Guard it to once per process.
+        guard !notificationsConfigured else { return }
+        notificationsConfigured = true
         notifier = LocalNotifier()
         Task { await notifier?.requestAuthorization() }
         notifier?.registerCategories()

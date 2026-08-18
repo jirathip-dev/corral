@@ -77,10 +77,15 @@ struct CorraldClient: Sendable {
     }
 
     /// What one SSE frame decoded to. `#79` defect 2: the old
-    /// `FleetEvent?` shape collapsed "heartbeat/comment, ignore" and
-    /// "undecodable frame" into the same `nil`, so a schema drift was a
-    /// SILENT infinite spinner. `failed` carries the underlying decode
-    /// error so the UI can surface it and a log line can name it.
+    /// `FleetEvent?` shape collapsed everything into one silent `nil`,
+    /// so a schema drift was a SILENT infinite spinner. `failed` carries
+    /// the underlying reason so the UI can surface it and a log line can
+    /// name it. Review F1: SSE keep-alives are COMMENT lines — the
+    /// parser never frames them — so any `.message` frame that reaches
+    /// decode carries data under an event name this client does not
+    /// recognize; that is protocol drift and is REPORTED, not ignored.
+    /// `.ignored` remains only for the defensively-unreachable
+    /// empty-data case.
     enum DecodeOutcome {
         case event(FleetEvent)
         case ignored
@@ -110,7 +115,10 @@ struct CorraldClient: Sendable {
                 return .failed("delta frame undecodable: \(error)")
             }
         case .message:
-            return .ignored
+            guard !raw.isEmpty else { return .ignored }
+            let name = frame.eventName ?? "<none>"
+            return .failed(
+                "unrecognized event '\(name)' with \(raw.count) bytes of data — protocol drift?")
         }
     }
 }

@@ -9,13 +9,19 @@
 //! Store disciplines:
 //! - **opencode** (`opencode.db`, 13GB+ in steady state): the same
 //!   sqlite3-CLI pattern as [`crate::cost::opencode`] — `-readonly`, busy
-//!   timeout, JSON output, every query bounded in SQL by session id and a
-//!   `(time_created, id)` cursor. Never a full scan, never a write, and no
-//!   sqlite crate (the system `sqlite3` binary is the documented trade;
-//!   its absence is a typed error, not a panic). The schema coded against
-//!   is the one the cost reader feature-detects (`message` rows with a
-//!   `data` JSON blob; `part` rows carrying text); slice 2 revalidates
-//!   against live stores before anything user-facing depends on it.
+//!   timeout, JSON output, every query bounded in SQL by session id, a
+//!   `(time_created, id)` cursor, LIMIT, and a per-message `substr` text
+//!   cap (fresh-review R2). Never a write, and no sqlite crate (the
+//!   system `sqlite3` binary is the documented trade; its absence is a
+//!   typed error, not a panic). Honesty (fresh-review R3/R5): the schema
+//!   facts used here (`message.{id,session_id,time_created,data}`,
+//!   `part.{id,message_id,type,data}`) go BEYOND the single column the
+//!   cost reader probes, and role deliberately comes from the `data`
+//!   JSON only (no `m.role` — its existence is unprobed). Bounded row
+//!   EXAMINATION additionally depends on the live store carrying indexes
+//!   on `message(session_id, time_created)` and `part(message_id)` —
+//!   without them the plan degrades to a per-page table scan; the
+//!   sargable shape is pinned by test, the index presence cannot be.
 //! - **claude / codex** (JSONL transcripts, 100MB+): read BACKWARDS from a
 //!   byte-offset cursor in bounded chunks, parse only the requested page.
 //!   Opening the newest page of a huge file reads at most a few chunks
@@ -35,13 +41,18 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::core::redact::redact;
 
 /// Hard page caps: at most this many entries AND at most this much entry
-/// text per page, whichever bites first. Callers may ask for less.
+/// text per page, whichever bites first — including a page's FIRST
+/// entry, which is truncated to the budget with [`TRUNCATED_MARKER`]
+/// rather than admitted whole (fresh-review R2). Callers may ask for
+/// less.
 pub const MAX_PAGE_ENTRIES: usize = 50;
 pub const MAX_PAGE_TEXT_BYTES: usize = 256 * 1024;
 
-/// How much of a JSONL file tail is read per disk round-trip while
-/// assembling a page. Bounded-read guarantee: a page consumes at most
-/// enough chunks to fill its caps, regardless of file size.
+/// Sizing unit for the bounded tail read: one `read_exact` of at most
+/// `MAX_PAGE_TEXT_BYTES + 4 * JSONL_CHUNK_BYTES` covers a page (there is
+/// no per-chunk loop — fresh-review R8: the read is bounded, not
+/// chunked). Regardless of file size, a page never reads more than that
+/// window from the tail.
 const JSONL_CHUNK_BYTES: u64 = 64 * 1024;
 
 /// The explicit store to read. Slice 1 takes fully-resolved references —
@@ -94,6 +105,22 @@ pub struct TranscriptPage {
     pub entries: Vec<Entry>,
     pub next_cursor: Option<Cursor>,
     pub skipped: usize,
+}
+
+/// Fresh-review R2: appended to an entry whose text was truncated to the
+/// page budget — the cap is a CONTRACT ("whichever bites first"), so an
+/// oversized entry (even the page's first) is truncated with an explicit
+/// marker rather than admitted whole.
+pub const TRUNCATED_MARKER: &str = "\n… [truncated: entry exceeded the page text budget]";
+
+/// Truncate `text` to `budget` bytes on a char boundary and append the
+/// marker. Only called when `text.len() > budget`.
+fn truncate_to_budget(text: &str, budget: usize) -> String {
+    let mut end = budget;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{TRUNCATED_MARKER}", &text[..end])
 }
 
 /// Wall-clock cap on one sqlite3 invocation (mirrors the cost reader's
@@ -223,16 +250,25 @@ fn opencode_page_sql(session_id: &str, cursor: Option<(i64, &str)>, limit: usize
         ),
         None => String::new(),
     };
+    // R2: substr caps a message's assembled text IN SQL (budget + one
+    // byte so the Rust side can detect and mark the truncation) — one
+    // giant message can no longer make a page unbounded (the old ceiling
+    // was SQLITE_MAX_LENGTH, ~1GB). R3: role comes from msg_data's JSON
+    // only — `m.role` was an unprobed schema assumption (the cost
+    // reader's fixtures declare `message` without it; an absent column
+    // would hard-fail EVERY page, and the old NULL-fallback protected
+    // against the wrong failure).
+    let cap = MAX_PAGE_TEXT_BYTES + 1;
     format!(
-        "SELECT m.id AS id, m.role AS role, m.time_created AS time_created, \
+        "SELECT m.id AS id, m.time_created AS time_created, \
                 m.data AS msg_data, \
-                (SELECT group_concat(t, char(10)) FROM \
+                substr((SELECT group_concat(t, char(10)) FROM \
                    (SELECT CASE WHEN json_valid(p.data) \
                            THEN json_extract(p.data, '$.text') END AS t \
                     FROM part p \
                     WHERE p.message_id = m.id AND p.type = 'text' \
                     ORDER BY p.id) \
-                 WHERE t IS NOT NULL) AS text \
+                 WHERE t IS NOT NULL), 1, {cap}) AS text \
          FROM message m \
          WHERE m.session_id = '{sid}' {cursor_clause} \
          ORDER BY m.time_created DESC, m.id DESC LIMIT {limit}"
@@ -256,7 +292,9 @@ async fn read_opencode_page(
         .args(opencode_sqlite_args(db_path, &sql))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        // R4: keep sqlite's own diagnostic — "no such column: …" must
+        // not be reported as "the binary is unavailable".
+        .stderr(std::process::Stdio::piped())
         // A timed-out scanner must DIE, not keep grinding the 13GB store
         // after we returned QueryTimeout (round-2 N5).
         .kill_on_drop(true)
@@ -268,21 +306,49 @@ async fn read_opencode_page(
         .map_err(|_| TranscriptError::QueryTimeout)?
         .map_err(|_| TranscriptError::Sqlite3Unavailable)?;
     if !output.status.success() {
-        return Err(TranscriptError::Sqlite3Unavailable);
+        // R4: a non-zero sqlite3 exit is a STORE problem (schema drift,
+        // lock/corruption, missing JSON1) with a real diagnostic — not
+        // a missing binary. Carried via StoreUnreadable so the message
+        // reaches the operator.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TranscriptError::StoreUnreadable {
+            path: db_path.to_path_buf(),
+            source: std::io::Error::other(format!(
+                "sqlite3 exited {}: {}",
+                output.status,
+                stderr.trim()
+            )),
+        });
     }
     let rows: Vec<Value> = if output.stdout.iter().all(u8::is_ascii_whitespace) {
         Vec::new()
     } else {
-        serde_json::from_slice(&output.stdout).map_err(|_| TranscriptError::Sqlite3Unavailable)?
+        serde_json::from_slice(&output.stdout).map_err(|_| TranscriptError::StoreShape)?
     };
 
+    // Fresh-review R6: assembly runs redact() over up to a full page of
+    // text — CPU-bound, off the reactor thread.
+    tokio::task::spawn_blocking(move || assemble_opencode_page(rows, limit))
+        .await
+        .map_err(|_| TranscriptError::StoreShape)?
+}
+
+/// The sync page-assembly half of the opencode reader (R6).
+fn assemble_opencode_page(
+    rows: Vec<Value>,
+    limit: usize,
+) -> Result<TranscriptPage, TranscriptError> {
     let mut entries = Vec::new();
     let mut skipped = 0usize;
     let mut text_budget = MAX_PAGE_TEXT_BYTES;
-    // Cursor advances over EVERY row we passed (accepted, empty, or
-    // malformed) — a cursor keyed only to accepted rows would re-fetch and
-    // double-count skipped rows, and an all-malformed page would read as
-    // exhaustion (review F6).
+    // Cursor advances over every KEYABLE row we passed (accepted or
+    // empty). A malformed row cannot advance it — its id/time failed to
+    // extract, which is what made it malformed — so a page tail of
+    // unkeyable rows is re-read (and re-counted in `skipped`) next page
+    // until a keyable row moves the cursor; an ALL-unkeyable full page
+    // raises StoreShape rather than stalling (review F6; honesty per
+    // fresh-review R7 — `skipped` can inflate across pages on a store
+    // with persistent unkeyable rows).
     let mut last_row_key: Option<(i64, String)> = None;
     let mut stopped_early = false;
     let full_rows = rows.len();
@@ -307,23 +373,28 @@ async fn read_opencode_page(
             continue;
         }
         if text.len() > text_budget && !entries.is_empty() {
-            // Budget hit: stop BEFORE this row; the cursor resumes at the
-            // previous row so this one is re-read next page.
+            // Budget hit: stop BEFORE this row; the cursor resumes at
+            // the previous row so this one is re-read next page.
             stopped_early = true;
             break;
         }
+        // R2: the page's FIRST entry is not exempt from the budget — an
+        // oversized message is truncated with an explicit marker (the
+        // SQL already caps what it hands us; this holds the documented
+        // per-page contract exactly).
+        let text = if text.len() > text_budget {
+            truncate_to_budget(&text, text_budget)
+        } else {
+            text
+        };
+        // R3: role is read from msg_data's JSON only — the one schema
+        // surface the cost reader's probe already establishes.
         let msg_role = row
             .get("msg_data")
             .and_then(Value::as_str)
             .and_then(|d| serde_json::from_str::<Value>(d).ok())
             .and_then(|d| d.get("role").and_then(Value::as_str).map(str::to_string));
-        let role = normalize_role(
-            row.get("role")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or(msg_role)
-                .as_deref(),
-        );
+        let role = normalize_role(msg_role.as_deref());
         text_budget = text_budget.saturating_sub(text.len());
         last_row_key = Some((t, id.to_string()));
         entries.push(Entry {
@@ -419,6 +490,21 @@ async fn read_jsonl_page(
         .map_err(unreadable)?;
     file.read_exact(&mut buf).await.map_err(unreadable)?;
 
+    // Fresh-review R6: parsing + redaction of up to the full window is
+    // CPU-bound work — off the reactor thread. The IO above stays async.
+    tokio::task::spawn_blocking(move || assemble_jsonl_page(buf, lower, end, limit))
+        .await
+        .map_err(|_| TranscriptError::StoreShape)?
+}
+
+/// The sync page-assembly half of the JSONL reader (see the R6 note at
+/// the call site).
+fn assemble_jsonl_page(
+    buf: Vec<u8>,
+    lower: u64,
+    end: u64,
+    limit: usize,
+) -> Result<TranscriptPage, TranscriptError> {
     // Split into lines with ABSOLUTE start offsets. When the range does
     // not begin at the file start, the first segment is (potentially) a
     // partial line and is never consumed — the resume cursor lands on the
@@ -455,6 +541,12 @@ async fn read_jsonl_page(
             oldest_consumed_start = Some(*line_start);
             continue;
         };
+        let mut entry = entry;
+        if entry.text.len() > text_budget && entries.is_empty() {
+            // R2: the first entry is truncated to the budget with a
+            // marker, never admitted whole.
+            entry.text = truncate_to_budget(&entry.text, text_budget);
+        }
         if entry.text.len() > text_budget && !entries.is_empty() {
             stopped_early = true;
             break;
@@ -539,10 +631,12 @@ fn jsonl_entry(value: &Value) -> Option<Entry> {
     if text.is_empty() {
         return None;
     }
+    // R9: fall back when "ts" is present-but-not-numeric too (claude
+    // records carry a string "timestamp"; codex may carry numeric "ts").
     let ts = value
         .get("ts")
-        .or_else(|| value.get("timestamp"))
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        .or_else(|| value.get("timestamp").and_then(Value::as_u64));
     Some(Entry {
         role,
         text: redact(&text).into_owned(),
@@ -758,6 +852,15 @@ mod tests {
         assert!(sql.contains("'id''y'"), "cursor id escaped: {sql}");
         assert!(sql.contains("LIMIT 7"), "bounded in SQL: {sql}");
         assert!(sql.contains("ORDER BY m.time_created DESC, m.id DESC"));
+        // R2: the per-message text cap is IN the SQL (budget + 1 so the
+        // Rust side detects and marks the truncation).
+        assert!(
+            sql.contains(&format!(", 1, {})", MAX_PAGE_TEXT_BYTES + 1)),
+            "substr text cap missing: {sql}"
+        );
+        assert!(sql.contains("substr("), "{sql}");
+        // R3: no unprobed m.role in the SELECT.
+        assert!(!sql.contains("m.role"), "{sql}");
     }
 
     fn have_sqlite3() -> bool {
@@ -777,19 +880,23 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("temp dir");
         let db = dir.path().join("opencode.db");
+        // R3: the fixture schema deliberately has NO `role` column —
+        // matching the cost reader's fixtures — proving the reader takes
+        // role from msg_data's JSON alone (an unprobed `m.role` SELECT
+        // would hard-fail every page against such a store).
         let seed = r#"
-            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
-            INSERT INTO message VALUES ('m1','ses1','user',100,'{}');
+            INSERT INTO message VALUES ('m1','ses1',100,'{"role":"user"}');
             INSERT INTO part VALUES ('p1','m1','text','{"text":"first question"}');
-            INSERT INTO message VALUES ('m2','ses1','assistant',200,'{}');
+            INSERT INTO message VALUES ('m2','ses1',200,'{"role":"assistant"}');
             INSERT INTO part VALUES ('p2a','m2','text','{"text":"part A of the answer"}');
             INSERT INTO part VALUES ('p2b','m2','tool','{"summary":"ran a tool"}');
             INSERT INTO part VALUES ('p2c','m2','text','{"text":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 leaked"}');
-            INSERT INTO message VALUES ('m2t','ses1','assistant',250,'{}');
+            INSERT INTO message VALUES ('m2t','ses1',250,'{"role":"assistant"}');
             INSERT INTO part VALUES ('p2t','m2t','reasoning','{"summary":"thinking only"}');
             INSERT INTO part VALUES ('ptorn','m2','text','{"text": torn-not-json');
-            INSERT INTO message VALUES ('m3','ses2','user',300,'{}');
+            INSERT INTO message VALUES ('m3','ses2',300,'{"role":"user"}');
             INSERT INTO part VALUES ('p3','m3','text','{"text":"other session"}');
         "#;
         let status = std::process::Command::new("sqlite3")
@@ -919,5 +1026,131 @@ mod tests {
         let page = read_page(&store, None, 10).await.expect("page");
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].role, "unknown", "unknown roles collapse");
+    }
+
+    /// Fresh-review R2: a page's FIRST entry is NOT exempt from the text
+    /// budget — an oversized line is truncated to the cap with the
+    /// explicit marker, and the walk still advances.
+    #[tokio::test]
+    async fn first_entry_is_truncated_to_the_budget_not_exempt() {
+        let big = "x".repeat(MAX_PAGE_TEXT_BYTES + 50_000);
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": big}]}
+        })
+        .to_string();
+        let small = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "before"}]}
+        })
+        .to_string();
+        let f = write_jsonl(&[small, line]);
+        let store = StoreRef::Claude {
+            jsonl_path: f.path().to_path_buf(),
+        };
+        let page = read_page(&store, None, 10).await.expect("page");
+        assert_eq!(page.entries.len(), 1, "the oversized entry fills the page");
+        let text = &page.entries[0].text;
+        assert!(
+            text.ends_with(TRUNCATED_MARKER),
+            "truncation must be marked"
+        );
+        assert!(
+            text.len() <= MAX_PAGE_TEXT_BYTES + TRUNCATED_MARKER.len(),
+            "budget held: {}",
+            text.len()
+        );
+        assert!(
+            page.next_cursor.is_some(),
+            "the walk continues past the oversized entry"
+        );
+    }
+
+    /// Fresh-review R2 (opencode): one giant message is capped in SQL
+    /// and truncated with the marker — never returned whole.
+    #[tokio::test]
+    async fn opencode_giant_message_is_capped_not_unbounded() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        let big = "y".repeat(MAX_PAGE_TEXT_BYTES + 100_000);
+        let seed = format!(
+            r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{{"role":"assistant"}}');
+            INSERT INTO part VALUES ('p1','m1','text','{{"text":"{big}"}}');
+        "#
+        );
+        let script = dir.path().join("seed.sql");
+        std::fs::write(&script, &seed).expect("write seed");
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(format!(".read {}", script.display()))
+            .status()
+            .expect("seed");
+        assert!(status.success());
+
+        let store = StoreRef::Opencode {
+            db_path: db,
+            session_id: "ses1".to_string(),
+        };
+        let page = read_page(&store, None, 10).await.expect("page");
+        assert_eq!(page.entries.len(), 1);
+        let text = &page.entries[0].text;
+        assert!(
+            text.len() <= MAX_PAGE_TEXT_BYTES + TRUNCATED_MARKER.len(),
+            "opencode entry must be capped, got {}",
+            text.len()
+        );
+        assert!(text.ends_with(TRUNCATED_MARKER), "truncation marked");
+    }
+
+    /// Fresh-review R5: against an INDEXED store (the shape a sane live
+    /// store has) the page query's plan is a SEARCH, not a full scan of
+    /// `message` — the sargability the AC3 claim depends on. (Index
+    /// PRESENCE in the live store cannot be pinned from here; the module
+    /// doc says so.)
+    #[tokio::test]
+    async fn opencode_page_query_plan_uses_indexes_when_present() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        let seed = r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            CREATE INDEX ix_m ON message(session_id, time_created);
+            CREATE INDEX ix_p ON part(message_id);
+            INSERT INTO message VALUES ('m1','ses1',100,'{"role":"user"}');
+            INSERT INTO part VALUES ('p1','m1','text','{"text":"hello"}');
+        "#;
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(seed)
+            .status()
+            .expect("seed");
+        assert!(status.success());
+
+        let sql = format!(
+            "EXPLAIN QUERY PLAN {}",
+            opencode_page_sql("ses1", Some((100, "m1")), 5)
+        );
+        let out = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(&sql)
+            .output()
+            .expect("eqp");
+        let plan = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !plan.contains("SCAN message"),
+            "page query must not full-scan message when indexed: {plan}"
+        );
+        assert!(plan.contains("USING INDEX"), "{plan}");
     }
 }

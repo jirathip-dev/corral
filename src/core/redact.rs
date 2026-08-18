@@ -98,6 +98,15 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
     // matchers are unaffected: both reject interior positions in O(1) via
     // their word-boundary checks.
     let mut entropy_cleared_until = 0usize;
+    // #62 fresh-review R1: the non-env branch of `env_value_at` scans to
+    // the first whitespace. In a whitespace-free run dense with
+    // secret-ish `name=` idents (a URL query string — the most common
+    // whitespace-free run in real transcripts) that scan restarted from
+    // every candidate, keeping redact O(run²) (measured 2.46s at the
+    // 256KiB page cap). One watermark memoizes the run's next-whitespace
+    // position and kind — the same trick `entropy_cleared_until` plays
+    // for the entropy rule — making every interior candidate O(1).
+    let mut ws_memo = WsMemo::default();
     while i < bytes.len() {
         // A token abutting a previous match starts at a real word boundary
         // even though the char before it is a token char (e.g. an AKIA id
@@ -108,7 +117,7 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
             i = end;
             continue;
         }
-        if let Some((start, end)) = env_value_at(input, i) {
+        if let Some((start, end)) = env_value_at(input, i, &mut ws_memo) {
             spans.push((start, end));
             i = end;
             continue;
@@ -220,7 +229,20 @@ enum PrefixKind {
 /// the value must be a ≥ 8-char token (no whitespace: real .env values are
 /// single tokens, while prose "values" run to end-of-line with spaces).
 /// Trade (accepted): lowercase `api_key=xyz` passes through.
-fn env_value_at(input: &str, i: usize) -> Option<(usize, usize)> {
+/// R1 memo: the position of the next whitespace at-or-after any scanned
+/// point, and whether it ends the value acceptably (newline/EOF) or
+/// rejects it (interior space/tab). Valid for any query position <= `at`
+/// once set; a query past `at` rescans and refreshes it.
+#[derive(Default)]
+struct WsMemo {
+    /// Position of the memoized whitespace (or input length for EOF).
+    at: usize,
+    /// True when the terminator is `\n` or EOF — the accept side.
+    hard_end: bool,
+    set: bool,
+}
+
+fn env_value_at(input: &str, i: usize, ws_memo: &mut WsMemo) -> Option<(usize, usize)> {
     let bytes = input.as_bytes();
     if !is_ident_start(bytes[i]) || (i > 0 && is_ident_char(bytes[i - 1])) {
         return None;
@@ -249,14 +271,29 @@ fn env_value_at(input: &str, i: usize) -> Option<(usize, usize)> {
         }
         return (k > j + 1).then_some((j + 1, k));
     }
-    let mut k = j + 1;
-    while k < bytes.len() && !bytes[k].is_ascii_whitespace() {
-        k += 1;
-    }
-    if k < bytes.len() && bytes[k] != b'\n' {
+    // R1: consult the run watermark before scanning — inside a
+    // whitespace-free run every candidate shares the same terminating
+    // whitespace, so one scan answers all of them.
+    let (k, hard_end) = if ws_memo.set && j < ws_memo.at {
+        (ws_memo.at, ws_memo.hard_end)
+    } else {
+        let mut k = j + 1;
+        while k < bytes.len() && !bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        let hard_end = k >= bytes.len() || bytes[k] == b'\n';
+        *ws_memo = WsMemo {
+            at: k,
+            hard_end,
+            set: true,
+        };
+        (k, hard_end)
+    };
+    if !hard_end {
         // Whitespace before end-of-line: the rest-of-line value the old
         // scan would have built contains whitespace — reject, having read
-        // only up to the first space.
+        // only up to the first space (O(1) via the memo for every
+        // interior candidate of the same run — R1).
         return None;
     }
     let value = &input[j + 1..k];
@@ -617,5 +654,35 @@ mod perf_tests {
         // The rule still fires where it should.
         assert!(redact("API_KEY=supersecretvalue").contains("[REDACTED]"));
         assert!(redact("token=abcdefghijklmnopqrstuv").contains("[REDACTED]"));
+    }
+
+    /// Fresh-review R1: the WHITESPACE-FREE dense-ident shape (a URL
+    /// query string — `key=1&key=2&…` with the terminating whitespace
+    /// far away) kept the non-env scan quadratic; the prose-shaped pin
+    /// above structurally cannot see it (its whitespace follows every
+    /// value). One 256KiB page-cap-sized run must redact in linear-ish
+    /// time, in both the reject shape (trailing space) and the accept
+    /// shape (EOF terminator).
+    #[test]
+    fn whitespace_free_query_string_redacts_in_linear_time() {
+        // Reject shape: terminator is an interior space.
+        let run = format!("{} tail", "key=1&".repeat(43 * 1024)); // ~258KiB run
+        let t = std::time::Instant::now();
+        let _ = redact(&run);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "whitespace-free run went quadratic again (reject shape): {:?}",
+            t.elapsed()
+        );
+
+        // Accept shape: run ends at EOF (hard end) — same watermark path.
+        let run = "key=1&".repeat(43 * 1024);
+        let t = std::time::Instant::now();
+        let _ = redact(&run);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "whitespace-free run went quadratic again (accept shape): {:?}",
+            t.elapsed()
+        );
     }
 }

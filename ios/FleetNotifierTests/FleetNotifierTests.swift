@@ -263,7 +263,7 @@ final class SSETests: XCTestCase {
           "workspace":{"branch":"main"}}}}
         """
         let frame = SSEFrame(kind: .snapshot, id: 12, data: snapshotJSON)
-        guard case .snapshot(let snapshot) = CorraldClient.decode(frame) else {
+        guard case .event(.snapshot(let snapshot)) = CorraldClient.decode(frame) else {
             return XCTFail("expected snapshot")
         }
         XCTAssertEqual(snapshot.schemaVersion, 3)
@@ -274,6 +274,46 @@ final class SSETests: XCTestCase {
         XCTAssertEqual(agent?.waitingOn?.approvalId, "herdr:a:sha256:ab")
         XCTAssertEqual(agent?.waitingOn?.choices, ["y", "n"])
         XCTAssertEqual(agent?.workspace.branch, "main")
+    }
+
+    /// #79 defect 2: an undecodable frame must be a REPORTED failure
+    /// (with the underlying error in the reason), never a silent nil —
+    /// and heartbeat/message frames must stay silently ignored so a
+    /// keepalive can never masquerade as an error.
+    func testDecodeSurfacesFailuresAndIgnoresMessages() {
+        let torn = SSEFrame(kind: .snapshot, id: 1, data: "{\"rev\": ")
+        guard case .failed(let reason) = CorraldClient.decode(torn) else {
+            return XCTFail("torn snapshot must be .failed")
+        }
+        XCTAssertTrue(reason.contains("snapshot"), reason)
+
+        let badDelta = SSEFrame(kind: .delta, id: 2, data: "{\"nope\":true}")
+        guard case .failed = CorraldClient.decode(badDelta) else {
+            return XCTFail("undecodable delta must be .failed")
+        }
+
+        let heartbeat = SSEFrame(kind: .message, id: 3, data: "ping")
+        guard case .ignored = CorraldClient.decode(heartbeat) else {
+            return XCTFail("message/heartbeat frames must be silently ignored")
+        }
+    }
+
+    /// #79: a surfaced decode failure resolves the spinner to a VISIBLE
+    /// error state, and a subsequent good frame returns the store to
+    /// connected — one torn frame is diagnosable, not fatal.
+    @MainActor
+    func testDecodeFailureResolvesSpinnerToVisibleError() {
+        let store = FleetStore()
+        store.noteDecodeFailure("delta frame undecodable: test")
+        guard case .error(let message) = store.connectionState else {
+            return XCTFail("decode failure must surface as .error, got \(store.connectionState)")
+        }
+        XCTAssertTrue(message.contains("undecodable"), message)
+
+        let snapshot = Snapshot(schemaVersion: 3, rev: 9, generatedAt: 0, agents: [:])
+        store.apply(.snapshot(snapshot))
+        XCTAssertEqual(store.connectionState, .connected,
+                       "an applied frame recovers the connection state")
     }
 }
 

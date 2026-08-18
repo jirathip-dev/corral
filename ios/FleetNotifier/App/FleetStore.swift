@@ -181,12 +181,32 @@ final class FleetStore: ObservableObject {
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
                 guard let self else { return }
-                guard let event = CorraldClient.decode(frame) else { return }
-                Task { @MainActor in
-                    self.apply(event, previous: &seen)
+                switch CorraldClient.decode(frame) {
+                case .event(let event):
+                    Task { @MainActor in
+                        self.apply(event, previous: &seen)
+                    }
+                case .ignored:
+                    break
+                case .failed(let reason):
+                    // #79 defect 2: an undecodable frame used to be
+                    // swallowed silently — the spinner spun forever with
+                    // no diagnostic. Surface it: the connection banner
+                    // renders .error, and a later good frame's apply()
+                    // returns the state to .connected (one torn frame is
+                    // visible but not fatal to the stream).
+                    Task { @MainActor in
+                        self.noteDecodeFailure(reason)
+                    }
                 }
             })
         }
+    }
+
+    /// #79: visible decode-failure state (never a silent spinner).
+    func noteDecodeFailure(_ reason: String) {
+        print("[FleetStore] frame decode failed: \(reason)")
+        connectionState = .error("stream frame undecodable — \(reason)")
     }
 
     /// Backgrounded = no connection (D5). Last-Event-ID is persisted by the

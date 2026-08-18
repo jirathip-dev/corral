@@ -82,6 +82,13 @@ final class AppModel: ObservableObject {
             defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
             fleet.restoreCursor()
             mode = .live
+            // #79 defect 1: registration used to leave .live with NO
+            // stream — the only startLive() call sites were the .active
+            // scene transition (already fired) and the demo toggle.
+            // startLive() is idempotent here: it guards on hostURL (just
+            // set) and FleetStore.connect() no-ops while streamTask is
+            // live, so a scene-driven connect cannot double-stream.
+            startLive()
             banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
         } catch {
             banner = .error("register_failed", error.localizedDescription)

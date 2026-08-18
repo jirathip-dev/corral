@@ -76,21 +76,41 @@ struct CorraldClient: Sendable {
         }
     }
 
-    /// Decode a parsed SSE frame into a fleet event, keyed by the current
-    /// agents dictionary so delta application lives here, unit-testable.
-    static func decode(_ frame: SSEFrame) -> FleetEvent? {
+    /// What one SSE frame decoded to. `#79` defect 2: the old
+    /// `FleetEvent?` shape collapsed "heartbeat/comment, ignore" and
+    /// "undecodable frame" into the same `nil`, so a schema drift was a
+    /// SILENT infinite spinner. `failed` carries the underlying decode
+    /// error so the UI can surface it and a log line can name it.
+    enum DecodeOutcome {
+        case event(FleetEvent)
+        case ignored
+        case failed(String)
+    }
+
+    /// Decode a parsed SSE frame into a fleet event, unit-testable.
+    /// Errors are REPORTED, never swallowed (#79 acceptance: a malformed
+    /// frame must be visible, not an endless spinner).
+    static func decode(_ frame: SSEFrame) -> DecodeOutcome {
         let decoder = JSONDecoder()
         let raw = frame.data
-        guard let data = raw.data(using: .utf8) else { return nil }
+        guard let data = raw.data(using: .utf8) else {
+            return .failed("frame data is not UTF-8 (\(raw.count) chars)")
+        }
         switch frame.kind {
         case .snapshot:
-            guard let snapshot = try? decoder.decode(Snapshot.self, from: data) else { return nil }
-            return .snapshot(snapshot)
+            do {
+                return .event(.snapshot(try decoder.decode(Snapshot.self, from: data)))
+            } catch {
+                return .failed("snapshot frame undecodable: \(error)")
+            }
         case .delta:
-            guard let delta = try? decoder.decode(Delta.self, from: data) else { return nil }
-            return .delta(delta)
+            do {
+                return .event(.delta(try decoder.decode(Delta.self, from: data)))
+            } catch {
+                return .failed("delta frame undecodable: \(error)")
+            }
         case .message:
-            return nil
+            return .ignored
         }
     }
 }

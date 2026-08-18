@@ -1,7 +1,8 @@
 //! #35 phase 1 test suite: fleet registry config (parse, validate,
 //! `local_path` expansion, atomic write) and the `corrald fleet list|check`
-//! plus slice-1 `add|remove` CLI surface, exercised with the real binary
-//! against temp-dir fixtures. The `gh` repo check is injectable
+//! plus write-side `add|remove` (slice 1) and `pause|resume|models`
+//! (slice 2) CLI surface, exercised with the real binary against
+//! temp-dir fixtures. The `gh` repo check is injectable
 //! ([`RepoResolver`]), so the add/remove write-path tests run offline.
 
 use std::path::PathBuf;
@@ -2192,26 +2193,39 @@ fn models_with_unchanged_values_is_an_idempotent_no_op() {
     // Same discipline as pause/resume (review finding 7): nothing moved →
     // nothing written, and the binary says so instead of printing x -> x.
     let dir = tempfile::tempdir().expect("temp dir");
-    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    // Two fleets (g78 review F6): a regression ignoring `name` and
+    // stamping every fleet must fail the len==1 + name pins below.
+    let path = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_B}] }}"#),
+    );
 
-    // First run normalises formatting (a real write).
+    // First run is a REAL write (g78 review F4): the fixture holds
+    // review "opus", the update sets a different value — so the
+    // byte-identical assertion below guards the write→no-op transition
+    // instead of comparing the untouched fixture to itself.
     let update = corrald::fleet::ops::ModelUpdate {
         orch: None,
         impl_: None,
         impl_alt: None,
         impl_alt2: None,
-        review: Some("opus".to_string()),
+        review: Some("gpt-5.6-luna".to_string()),
     };
-    corrald::fleet::ops::models(&path, "corral", &update).expect("first run");
+    let first = corrald::fleet::ops::models(&path, "corral", &update).expect("first run");
+    assert_eq!(first.len(), 1, "only the targeted fleet");
+    assert_eq!(first[0].name, "corral");
+    assert_eq!(first[0].before.review, "opus");
+    assert_eq!(first[0].after.review, "gpt-5.6-luna");
     let after_first = std::fs::read(&path).expect("read");
 
     let changes = corrald::fleet::ops::models(&path, "corral", &update).expect("second run");
     // R2-1 (#78): pin the shape, not just the all() predicate — an empty
     // change list (a regression skipping the fleet) would pass `all()`
-    // vacuously, and a both-sides-wrong stamp would pass before==after.
+    // vacuously.
     assert_eq!(changes.len(), 1, "exactly the one targeted fleet reported");
-    assert_eq!(changes[0].before.review, "opus");
-    assert_eq!(changes[0].after.review, "opus");
+    assert_eq!(changes[0].name, "corral");
+    assert_eq!(changes[0].before.review, "gpt-5.6-luna");
+    assert_eq!(changes[0].after.review, "gpt-5.6-luna");
     assert!(
         changes.iter().all(|c| c.before == c.after),
         "second run is a no-op"
@@ -2223,7 +2237,7 @@ fn models_with_unchanged_values_is_an_idempotent_no_op() {
     );
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
-        .args(["fleet", "models", "corral", "--review", "opus"])
+        .args(["fleet", "models", "corral", "--review", "gpt-5.6-luna"])
         .args(["--registry", path.to_str().expect("utf8")])
         .output()
         .expect("run");

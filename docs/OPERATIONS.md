@@ -323,6 +323,7 @@ corrald fleet list                    # one greppable line per fleet
 corrald fleet check                   # validate + verify each local checkout
 corrald fleet add <name> --gh <o/r>   # insert a fleet (WRITES the registry)
 corrald fleet remove <name>           # drop a fleet (WRITES the registry)
+corrald fleet watch                   # read-only health pass (cron-able)
 corrald fleet pause <name>            # set paused (WRITES; idempotent)
 corrald fleet resume <name>           # clear paused (WRITES; idempotent)
 corrald fleet models <name> --impl m  # update only the model slots named
@@ -346,10 +347,13 @@ writing, so a missing parent dir surfaces as the plain
 `mkdir -p ~/.config/corral` followed by
 `echo '{"fleets": []}' > ~/.config/corral/fleets.json`.
 Exit codes: **0** all good, **1** an operation failed — a fleet failed
-`check`, or a write command (`add`/`remove`/`pause`/`resume`/`models`)
+`check`, a write command (`add`/`remove`/`pause`/`resume`/`models`)
 refused (duplicate name, unresolvable repo, unknown name, no models to
-inherit) or could not write, leaving the registry byte-identical;
-**2** usage error or an unreadable/unparseable/invalid registry.
+inherit) or could not write (registry left byte-identical), or `watch`
+found problems — for `watch` this INCLUDES an unreadable/invalid
+registry, reported as a `PROBLEM:` line with exit 1 (monitor safety);
+**2** usage error, or (every subcommand except `watch`) an
+unreadable/unparseable/invalid registry.
 Validation is strict on
 purpose — unknown fields, empty required fields, whitespace inside
 `name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not

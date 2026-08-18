@@ -67,6 +67,7 @@ stderr note when it is taken) exists.
 ```
 corrald fleet list [--registry <path>]
 corrald fleet check [--registry <path>]
+corrald fleet watch [--registry <path>]
 ```
 
 `list` — one greppable line per fleet:
@@ -92,6 +93,42 @@ worktree) — both count as resolved.
 
 Both `ok` and `FAIL` lines go to **stdout**, deliberately, so `check` output
 stays one greppable stream; the exit code is what a script should branch on.
+
+`watch` (the #35 watchdog parity item) is READ-ONLY: one health pass over
+the UNPAUSED fleets — herdr server reachability (one retry, so a
+transient socket hiccup never reads as every agent missing), missing
+orchestrators, three stall flavors in priority order (open PRs → fleet
+workers still working → plain, naming the status; a failed gh check is
+stated as unavailable, never treated as zero), and missing workers.
+Paused fleets are skipped entirely — pausing genuinely silences the
+watchdog. Output is sorted `PROBLEM:` lines or `ALL HEALTHY`; exit 0
+healthy / 1 problems / 2 usage error. A corrupt/unreadable registry is
+itself a `PROBLEM:` line on stdout with exit 1 (monitor safety: the
+watchdog alerts on the failure that stops it watching). Fleet-worker
+attribution matches by the fleet's own `workers[]` names or by
+component-exact cwd anchored at the fleet's `local` (usable only when at
+least two path components deep, below `$HOME` or outside it — legacy
+rejected out-of-home locals entirely; we accept them under the same
+depth rule) and `$HOME/.herdr/worktrees/<worktree_dir>`
+— another fleet's `corral-x` worktree can never count for `corral`.
+
+Declared deviations from the legacy `fleet-watch.py` (beyond the checks
+themselves): one `PROBLEM:` line per problem instead of one joined line;
+worker lines carry the fleet prefix; the server-down text names the
+failed listing call rather than a launchd label; exit 1 when problems
+exist (legacy always exited 0 — cron wrappers treating non-zero as
+script failure need `|| true`); a successful zero-agent listing is
+healthy, never server-down; worker names count per-fleet, not globally;
+the orca-era workspaces leg is dropped; gh unavailability is stated on
+every stalled flavor (informational, at the cost of an extra output flap
+when the network blips). Legacy CHECKS not ported in this slice (fresh
+review N2/N4 — both were added to legacy v3 after production misses, and
+both remain gaps until a later slice or the legacy watcher's retirement):
+stall ESCALATION (legacy re-notifies at 30m/2h/6h/24h — four buckets,
+capped at 4 re-fires per stall — while corrald's dedup-friendly stable
+output notifies once) and
+UNSHIPPED-WORK detection (local commits with no remote branch/PR read as
+a plain stall here, not as the "work never left the machine" alarm).
 
 ## Write commands (slice 1: add/remove)
 
@@ -161,12 +198,13 @@ file byte-identical on any refusal, no-op, or write failure.
 | Code | Meaning |
 |------|---------|
 | 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove`/`pause`/`resume`/`models` wrote the registry (or were an idempotent no-op) |
-| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical |
-| 2    | usage error, unreadable/unparseable registry, or validation failure |
+| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical; `watch`: problems found — INCLUDING an unreadable/invalid registry, which `watch` reports as a `PROBLEM:` line with exit 1 (monitor safety) |
+| 2    | usage error; for every subcommand EXCEPT `watch`: also an unreadable/unparseable registry or validation failure |
 
 ## Phase boundary (explicitly out of scope)
 
 - No `fleet switch`, and no ops half of pause/resume (halting working
   agents, auth-gated model-switch re-arm) — later phases.
-- No status/watch/reap/prune consolidation — later phases.
+- No status/reap/prune consolidation — later phases (`watch` shipped
+  with this slice; see the watch section above).
 - No change to the running agent, session, or `src/drive/` contract.

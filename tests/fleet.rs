@@ -2351,3 +2351,161 @@ fn default_registry_path_is_corral_owned_with_legacy_fallback() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// #35 watchdog CLI (review F12): the hermetic paths — everything that
+// returns before any shell-out.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fleet_watch_usage_and_help_are_hermetic() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let bogus = Command::new(bin)
+        .args(["fleet", "watch", "--bogus"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
+        .output()
+        .expect("run");
+    assert_eq!(bogus.status.code(), Some(2), "unknown flag is usage");
+
+    let help = Command::new(bin)
+        .args(["fleet", "watch", "--help"])
+        .output()
+        .expect("run");
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("watch"),
+        "help documents watch"
+    );
+}
+
+/// Review F1/F2: a corrupt or missing registry is a PROBLEM line on
+/// STDOUT with exit 1 — the monitor must alert on the failure that stops
+/// it watching, never die silently to stderr with an ambiguous code.
+#[test]
+fn fleet_watch_bad_registry_alerts_on_stdout_exit_1() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    // Missing file.
+    let missing = Command::new(bin)
+        .args(["fleet", "watch", "--registry"])
+        .arg(dir.path().join("nope.json"))
+        .output()
+        .expect("run");
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&missing.stdout).contains("PROBLEM: fleet registry"),
+        "stdout: {}",
+        String::from_utf8_lossy(&missing.stdout)
+    );
+
+    // Validation failure that maps to exit 1 at load (duplicate name) —
+    // watch must still be 1-with-PROBLEM, not a bare refusal.
+    let dup = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_A}] }}"#),
+    );
+    let out = Command::new(bin)
+        .args(["fleet", "watch", "--registry"])
+        .arg(&dup)
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PROBLEM: fleet registry") && stdout.contains("duplicate"),
+        "names the corruption: {stdout}"
+    );
+}
+
+/// Fresh-review N1: a herdr child that answers COMPLETELY and exits 0,
+/// but leaves a background process holding the stdout write end, must
+/// NOT read as "server NOT reachable" — the reader publishes as it
+/// goes, the grace expiry returns the buffer, and the parse decides.
+/// (The old EOF-only reader threw the complete listing away and
+/// suppressed every per-fleet check behind a false server-down line.)
+#[test]
+fn watch_survives_a_grandchild_holding_stdout() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Round-2 N9: an UNPAUSED fleet, so the per-fleet checks actually
+    // consume the listing content — the healthy verdict below then
+    // depends on name/status/cwd surviving the pipe intact, which also
+    // pins round-2 N8 (the listing is padded past 8KiB with a non-ASCII
+    // char parked at the old chunk boundary; a per-chunk lossy decode
+    // corrupted it and produced a false MISSING).
+    // Round-3 N9-residual: the boundary-straddling char lives in the
+    // orchestrator NAME — the one field the healthy verdict actually
+    // reads (registry lookup) — so a per-chunk decode regression turns
+    // this test red (false MISSING), not just the comment.
+    let unpaused = VALID_A
+        .replace(r#""paused": true,"#, "")
+        .replace(r#""orch": "orch-corral""#, r#""orch": "orch-corralé""#);
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{unpaused}] }}"#));
+
+    // Hermetic herdr shim: valid listing, exit 0, fd-holder outliving
+    // the 5s EOF grace (but not the test runner).
+    let shim_dir = dir.path().join("bin");
+    std::fs::create_dir(&shim_dir).expect("mkdir");
+    let shim = shim_dir.join("herdr");
+    // Pad so a two-byte UTF-8 char (é) straddles the reader's 8KiB
+    // boundary: everything before the agents array is ASCII filler
+    // sized so the é inside the first cwd lands at bytes 8191/8192.
+    let mut listing = String::from("{\"result\":{\"pad\":\"");
+    let prefix_after_pad = "\",\"agents\":[{\"name\":\"orch-corralé";
+    // Place é's FIRST byte exactly at offset 8191 so 0xC3|0xA9 straddle
+    // the reader's 8KiB chunk boundary (the N8 repro geometry) — INSIDE
+    // the name the registry lookup reads (round-3 N9-residual).
+    let e_off = prefix_after_pad.find('é').expect("é in prefix");
+    let pad = 8191usize.saturating_sub(listing.len() + e_off);
+    listing.push_str(&"a".repeat(pad));
+    listing.push_str(prefix_after_pad);
+    listing.push_str("\",\"agent_status\":\"working\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}");
+    std::fs::write(
+        &shim,
+        format!("#!/bin/sh\n( sleep 8 ) &\necho '{listing}'\nexit 0\n"),
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    // Stub gh too so a stall arm could never hang on the network (the
+    // fleet is healthy here, so gh is never called — N7 — but belt and
+    // braces for a hermetic test).
+    std::fs::write(shim_dir.join("gh"), "#!/bin/sh\necho 0\n").expect("write gh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(shim_dir.join("gh"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod gh");
+    }
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "watch", "--registry", path.to_str().expect("utf8")])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                shim_dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("HOME", dir.path().to_str().expect("utf8"))
+        .output()
+        .expect("watch runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("NOT reachable"),
+        "a complete answer with a held fd must not be a false server-down: {stdout}"
+    );
+    // Unpaused fleet + intact listing content (orch working, both
+    // workers present, non-ASCII cwd surviving the chunk boundary — N8)
+    // = genuinely healthy.
+    assert!(
+        !stdout.contains("MISSING"),
+        "listing content must survive the pipe byte-for-byte (N8): {stdout}"
+    );
+    assert!(stdout.contains("ALL HEALTHY"), "{stdout}");
+    assert!(out.status.success(), "exit 0 on healthy: {stdout}");
+}

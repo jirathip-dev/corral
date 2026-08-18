@@ -148,7 +148,7 @@ fn run_digest(args: &[String]) {
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!(
-            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models (see --help)"
+            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models | watch (see --help)"
         );
         std::process::exit(2);
     };
@@ -163,6 +163,7 @@ fn run_fleet(args: &[String]) {
         "pause" => run_fleet_pause_resume("pause", &args[1..]),
         "resume" => run_fleet_pause_resume("resume", &args[1..]),
         "models" => run_fleet_models(&args[1..]),
+        "watch" => run_fleet_watch(&args[1..]),
         other => {
             eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
             std::process::exit(2);
@@ -181,6 +182,7 @@ fn print_fleet_help() {
          \t(<name> may also be passed as --name; --worktree-dir is an\n\
          \talias for --worktree — both match the legacy fleet CLI)\n\
          USAGE: corrald fleet remove <name> [--registry <path>]\n\
+         USAGE: corrald fleet watch [--registry <path>]\n\
          USAGE: corrald fleet pause <name> [--registry <path>]\n\
          USAGE: corrald fleet resume <name> [--registry <path>]\n\
          USAGE: corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]\n\
@@ -209,7 +211,15 @@ fn print_fleet_help() {
          \ttake a real fleet name; `all` is reserved as a fleet name).\n\
          \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
          \tempty value for the required orch/impl/review slots is a\n\
-         \tusage error\n\n\
+         \tusage error\n\
+         watch    one READ-ONLY health pass over unpaused fleets: herdr\n\
+         \tserver reachability, missing orchestrators, stall flavors\n\
+         \t(open PRs / workers still working / plain), missing workers;\n\
+         \tprints PROBLEM lines or ALL HEALTHY; exit 0 healthy /\n\
+         \t1 problems (an unreadable/invalid registry is itself a\n\
+         \tPROBLEM line with exit 1 — NOT check's exit 2, so a cron\n\
+         \tmonitor still alerts) / 2 usage error (cron-able, like\n\
+         \tdigest)\n\n\
          add/remove/pause/resume/models exit codes: 0 = written (or an\n\
          \tidempotent no-op — already paused/resumed, models unchanged);\n\
          \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
@@ -676,6 +686,230 @@ fn run_fleet_models(args: &[String]) {
             change.before.review,
             change.after.review
         );
+    }
+}
+
+/// `corrald fleet watch`: one read-only health pass over the registry's
+/// fleets — herdr reachability, missing orchestrators, stall flavors,
+/// missing workers (see [`fleet::watch`]). Exit 0 healthy / 1 problems —
+/// an unreadable/invalid registry is itself a PROBLEM line with exit 1
+/// (monitor safety; deliberately NOT `check`'s exit-2) / 2 usage errors.
+fn run_fleet_watch(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet watch: --registry needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => usage(&format!("fleet watch: unknown argument: {other}")),
+        }
+        i += 1;
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let registry = match fleet::config::load(&path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            // Monitor safety (legacy-hardened behavior, review F1): the
+            // watchdog must ALERT on the failure that stops it watching,
+            // on STDOUT where the cron consumer looks — never die
+            // silently to stderr. Exit 1 = "problems found" (the invalid
+            // registry IS the problem), keeping the 0/1/2 contract
+            // unambiguous (review F2).
+            println!("PROBLEM: fleet registry unreadable or corrupt: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let agents = herdr_agents_with_retry();
+    // Fresh-review N7: only fleets whose orchestrator is PRESENT and not
+    // working can reach a stall arm (the exact predicate problems()
+    // applies), and only stall arms read PR counts — so the healthy
+    // steady state makes ZERO gh calls instead of one per repo (up to
+    // 30s each, serial). A fleet that skips the query here can never
+    // have its count read, so the pr_note semantics are unchanged.
+    let mut prs = fleet::watch::PrCounts::new();
+    if let Some(agents) = &agents {
+        let mut repos: Vec<&str> = registry
+            .fleets
+            .iter()
+            .filter(|f| !f.paused)
+            .filter(|f| {
+                agents
+                    .get(&f.orch)
+                    .is_some_and(|orch| orch.status != "working")
+            })
+            .map(|f| f.gh_repo.as_str())
+            .collect();
+        repos.sort_unstable();
+        repos.dedup();
+        for repo in repos {
+            prs.insert(repo.to_string(), open_pr_count(repo));
+        }
+    }
+
+    let problems = fleet::watch::problems(&registry, &agents, &prs, &home);
+    if problems.is_empty() {
+        println!("ALL HEALTHY");
+        return;
+    }
+    for problem in &problems {
+        println!("PROBLEM: {problem}");
+    }
+    std::process::exit(1);
+}
+
+/// `herdr agent list` (JSON) with a 60s timeout and ONE retry after 10s —
+/// a transient socket hiccup must not read as "every agent missing" (a
+/// legacy-proven false-alarm mode). `None` = the CALL failed or was
+/// unparseable after the retry; `Some(empty)` = healthy zero-agent
+/// answer (review F3). An EMPTY first answer also gets the 10s retry
+/// (review R1): legacy grants a just-restarted server that grace before
+/// declaring every agent gone — only a second empty answer is returned
+/// as the healthy `Some(empty)`, never as server-down. Stdout is parsed
+/// regardless of the child's exit status — the parse decides (review F9).
+fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
+    // The invariant: the LAST successful answer wins; server-down (None)
+    // only when no answer was ever obtained (review R1/S1a).
+    let mut last_good: fleet::watch::AgentsView = None;
+    for attempt in 0..2 {
+        if attempt == 1 {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+        let Some(stdout) = run_with_timeout("herdr", &["agent", "list"], Duration::from_secs(60))
+        else {
+            continue;
+        };
+        let Some(map) = fleet::watch::parse_agent_listing(&stdout) else {
+            continue;
+        };
+        if !map.is_empty() || attempt == 1 {
+            return Some(map);
+        }
+        // An empty first answer: hold it (it IS a good answer), but grant
+        // the retry before reporting — the server may just be restarting.
+        last_good = Some(map);
+    }
+    last_good
+}
+
+/// Open-PR count for one repo via `gh`, 30s timeout. `None` = the check
+/// was unavailable (network/auth) — surfaced in the stall wording, never
+/// silently treated as zero.
+fn open_pr_count(repo: &str) -> Option<u64> {
+    let stdout = run_with_timeout(
+        "gh",
+        &[
+            "pr", "list", "--repo", repo, "--state", "open", "--json", "number", "--jq", "length",
+        ],
+        Duration::from_secs(30),
+    )?;
+    stdout.trim().parse().ok()
+}
+
+/// Run a command with a wall-clock timeout (std has none): spawn with a
+/// dedicated reader thread draining stdout (so a child producing more
+/// than the pipe buffer can still exit), poll `try_wait`, kill on expiry.
+///
+/// EVERY wait on the reader is itself deadline-bounded via a channel
+/// (review F4): killing the child does NOT guarantee the pipe closes —
+/// a grandchild that inherited the write end can hold it open — and an
+/// unbounded `join()` would hang the watchdog, the worst failure mode
+/// for a cron monitor. A stuck reader thread is abandoned (detached);
+/// the process exits shortly after anyway.
+///
+/// `None` on spawn failure or timeout. The child's exit STATUS is
+/// deliberately ignored (review F9, matching legacy): a complete stdout
+/// next to a warning exit code is still usable — the caller's parse
+/// decides.
+fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read as _;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        // No pipe handle (should not happen): don't leak a zombie.
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    // Fresh-review N1: the reader PUBLISHES into shared state as it
+    // reads, instead of sending one String only at EOF. A persistent
+    // grandchild holding the pipe's write end means EOF never comes —
+    // the old shape then threw away a complete, valid listing sitting
+    // in the reader's local buffer and reported a FALSE server-down
+    // (which suppresses every true per-fleet problem). Now the grace
+    // expiry returns whatever has been read and the PARSE decides
+    // (same F9 principle as the exit status): a truncated buffer fails
+    // to parse and retries; a complete one is used. The no-hang
+    // property (round-1 F4) is unchanged — every wait stays bounded.
+    // Round-2 N8: accumulate BYTES and decode once at take time — a
+    // per-chunk from_utf8_lossy silently replaced any multi-byte char
+    // straddling an 8KiB boundary with U+FFFD, which is legal inside a
+    // JSON string, so the corrupted listing PARSED and a live
+    // orchestrator could read as MISSING (reviewer-reproduced with a
+    // one-byte control). Interrupted reads retry instead of truncating.
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let writer = buffer.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut out) = writer.lock() {
+                        out.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(());
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let take_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+        buffer
+            .lock()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out).into_owned())
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Give a well-behaved pipe a moment to reach EOF after
+                // child exit, but never block past a short grace even if
+                // a grandchild holds the write end open — and return the
+                // buffer EITHER WAY (N1).
+                let _ = rx.recv_timeout(Duration::from_secs(5));
+                return take_buffer(&buffer);
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
     }
 }
 

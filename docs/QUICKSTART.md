@@ -28,8 +28,11 @@ Result: `target/release/corrald`.
 
 ## 2. Run the daemon
 
-`corrald` binds loopback only (default `127.0.0.1:8474`) and refuses any
-routable `--bind`. Use a throwaway config dir for the first run — the
+`corrald` binds loopback by default (`127.0.0.1:8474`); `--bind` also
+accepts tailnet (100.64/10), RFC 1918 private, and IPv6 unique-local
+addresses (#65) — public IPs and `0.0.0.0` are refused. Reads are
+credential-free on whatever interface you bind, so go beyond loopback only
+on a network (ideally a tailnet) whose devices may all see fleet state. Use a throwaway config dir for the first run — the
 daemon mints `admin-token`, `host-key`, `registration-token`,
 `audit.log` (all `0600` under a `0700` dir) plus a `history/` directory
 there. `registry.json` appears on the **first device registration**, not at
@@ -46,7 +49,7 @@ Flags (`corrald --help`):
 |---|---|---|
 | `--socket`, `-s` | `~/.config/herdr/herdr.sock` | herdr API unix socket |
 | `--port`, `-p` | `8474` | HTTP port |
-| `--bind`, `-b` | `127.0.0.1` | bind address (loopback only) |
+| `--bind`, `-b` | `127.0.0.1` | bind address (loopback / tailnet / private / IPv6 ULA; public and 0.0.0.0 refused) |
 
 Default config dirs: daemon `$HOME/.config/corral`, client
 `$HOME/.config/corral/ui` — override with `CORRAL_CONFIG_DIR` /

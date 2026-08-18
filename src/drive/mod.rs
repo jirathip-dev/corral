@@ -7,7 +7,8 @@
 //!   [`ApprovePayload`] prompt_hash check (never trim the prompt).
 //! - W3 (device signatures) implements [`DriveAuthorizer`] + [`AuditLog`];
 //!   the authorizer gates every drive write before W1 dispatches.
-//! - W4 (hardening) audits the boundary (redaction, loopback-only, audit
+//! - W4 (hardening) audits the boundary (redaction, the non-public bind
+//!   allowlist, audit
 //!   growth on writes only).
 //!
 //! Contract rules:

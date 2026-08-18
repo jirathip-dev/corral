@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Observation
 
 /// Thread-safe cursor for the SSE reconnect closure (the stream task reads
@@ -44,7 +45,17 @@ final class FleetStore: ObservableObject {
     /// while staying done) — the completion-notification hook (D16).
     var onNewlyDone: (@MainActor @Sendable (String) -> Void)?
 
+    /// Review F2: the decode-failure hook — AppModel routes this into
+    /// the dismissible, text-selectable banner so the reason is READABLE
+    /// on device, where the acceptance gate runs.
+    var onDecodeFailure: (@MainActor @Sendable (String) -> Void)?
+
+    private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
+
     private var streamTask: Task<Void, Never>?
+    /// Blocked-transition shadow for the live stream (was a closure-local;
+    /// stored so `ingest` is a plain testable method — review F5).
+    private var streamSeen: [String: WaitingOn] = [:]
     private let cursorBox = CursorBox()
     /// Shadow of last-seen agent states for done-transition detection.
     private var previousStates: [String: AgentState] = [:]
@@ -175,18 +186,53 @@ final class FleetStore: ObservableObject {
         guard streamTask == nil else { return }
         connectionState = .connecting
         cursorBox.write(lastEventId)
-        var seen: [String: WaitingOn] = [:]
+        streamSeen = [:]
         streamTask = Task { [weak self] in
             await client.stream(lastEventId: { [weak self] in
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
-                guard let self else { return }
-                guard let event = CorraldClient.decode(frame) else { return }
-                Task { @MainActor in
-                    self.apply(event, previous: &seen)
-                }
+                self?.ingest(frame)
             })
         }
+    }
+
+    /// One frame off the wire: decode OFF-main (round-3 R-N4 — a large
+    /// resnapshot must not become main-thread work), then a single
+    /// main-actor hop applies the outcome. Frames still get one
+    /// unstructured task each, so cross-frame execution order is not
+    /// guaranteed by the language (round-3 R-N3: in practice main-actor
+    /// enqueue at equal priority behaves FIFO; a mis-ordered error is
+    /// corrected by the next applied frame). Returns the hop so tests
+    /// await it deterministically (round-3 R-N5). Testable without a
+    /// network (review F5).
+    @discardableResult
+    nonisolated func ingest(_ frame: SSEFrame) -> Task<Void, Never> {
+        let outcome = CorraldClient.decode(frame)
+        return Task { @MainActor in
+            switch outcome {
+            case .event(let event):
+                self.apply(event, previous: &self.streamSeen)
+            case .ignored:
+                break
+            case .failed(let reason):
+                // #79 defect 2: an undecodable/unrecognized frame used
+                // to vanish silently — the spinner spun forever with no
+                // diagnostic. Surface it; a later good frame's apply()
+                // returns the state to .connected (one torn frame is
+                // visible, not fatal to the stream).
+                self.noteDecodeFailure(reason)
+            }
+        }
+    }
+
+    /// #79: visible + diagnosable decode-failure state (never a silent
+    /// spinner). Review F2: os.Logger (retrievable from a detached
+    /// TestFlight build via Console/sysdiagnose — print is not), plus a
+    /// callback the owner routes to the full-width, copyable banner.
+    func noteDecodeFailure(_ reason: String) {
+        Self.log.error("frame decode failed: \(reason, privacy: .public)")
+        connectionState = .error("stream frame undecodable — \(reason)")
+        onDecodeFailure?(reason)
     }
 
     /// Backgrounded = no connection (D5). Last-Event-ID is persisted by the

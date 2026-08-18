@@ -32,8 +32,13 @@ Result: `target/release/corrald`.
 accepts tailnet (100.64/10), RFC 1918 private, and IPv6 unique-local
 addresses (#65) — public IPs and `0.0.0.0` are refused. Reads are
 credential-free on whatever interface you bind, so go beyond loopback only
-on a network (ideally a tailnet) whose devices may all see fleet state. Use a throwaway config dir for the first run — the
-daemon mints `admin-token`, `host-key`, `registration-token`,
+on a network (ideally a tailnet) whose devices may all see fleet state.
+(For the iOS client, don't bind beyond loopback at all — front the
+loopback daemon with real TLS via Tailscale Serve, which exposes the
+read plane to the same tailnet-wide audience as a tailnet bind: see
+"Remote access from iOS (Tailscale Serve)" in docs/OPERATIONS.md.)
+Use a throwaway config dir for the first run — the daemon mints
+`admin-token`, `host-key`, `registration-token`,
 `audit.log` (all `0600` under a `0700` dir) plus a `history/` directory
 there. `registry.json` appears on the **first device registration**, not at
 startup:

@@ -7,7 +7,9 @@
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
-#   scripts/setup-corrald.sh --bind 100.67.222.5   # bind a Tailscale/private IP
+#   scripts/setup-corrald.sh --bind 100.67.222.5   # Tailscale/private IP (desktop/daemon
+#                                                  # only; iOS needs Tailscale Serve —
+#                                                  # see docs/OPERATIONS.md)
 #   scripts/setup-corrald.sh --uninstall
 #
 # Prereqs: rustup (pinned toolchain auto-installs), herdr running (optional;
@@ -37,7 +39,7 @@ while [[ $i -lt ${#args[@]} ]]; do
       fi
       ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown arg: ${args[$i]}" >&2; exit 2 ;;
   esac
   i=$((i+1))

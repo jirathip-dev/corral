@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
+    /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
+    private var notificationsConfigured = false
     private var driveTask: Task<Void, Never>?
     /// In-flight notification-reply validation (cold-start snapshot fetch).
     private var notificationTask: Task<Void, Never>?
@@ -82,6 +84,13 @@ final class AppModel: ObservableObject {
             defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
             fleet.restoreCursor()
             mode = .live
+            // #79 defect 1: registration used to leave .live with NO
+            // stream — the only startLive() call sites were the .active
+            // scene transition (already fired) and the demo toggle.
+            // connect() is idempotent (streamTask guard), so a
+            // scene-driven connect cannot double-stream; startLive()'s
+            // notification half is guarded once-per-process (review F4).
+            startLive()
             banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
         } catch {
             banner = .error("register_failed", error.localizedDescription)
@@ -93,19 +102,39 @@ final class AppModel: ObservableObject {
     func startLive() {
         guard let hostURL else { return }
         let client = CorraldClient(host: hostURL)
-        let driveClient = DriveClient(host: hostURL)
         fleet.onNewlyBlocked = { [weak self] agentId in
             Task { @MainActor in self?.notifyBlocked(agentId: agentId) }
         }
         fleet.onNewlyDone = { [weak self] agentId in
             Task { @MainActor in self?.notifyDone(agentId: agentId) }
         }
+        // #79 review F2: a decode failure lands in the full-width,
+        // dismissible, text-selectable banner — readable/copyable on
+        // device, where diagnosis actually happens — in addition to the
+        // .error connection state and the os.Logger line.
+        fleet.onDecodeFailure = { [weak self] reason in
+            self?.banner = .error("stream_decode", reason)
+        }
         fleet.connect(client: client)
+        // #79 review F4: only connect() is idempotent by itself (its
+        // streamTask guard). The notification/APNs setup below is NOT —
+        // re-running it allocates a fresh LocalNotifier (dropping the
+        // installed delegate) and re-fires APNs registration + a signed
+        // /device-token post — and startLive() now legitimately runs
+        // more than once per launch (RootView task, .active transition,
+        // register()). Guard it to once per process.
+        guard !notificationsConfigured else { return }
+        notificationsConfigured = true
         notifier = LocalNotifier()
         Task { await notifier?.requestAuthorization() }
         notifier?.registerCategories()
+        // R-N1: the reply handler must NOT capture a host-bound client —
+        // after "Reset device identity" + re-registration this closure
+        // survives (once-per-process guard), and a captured client would
+        // send a SIGNED drive to the PREVIOUS host. It resolves the
+        // current hostURL at reply time instead.
         notifier?.onReply = { [weak self] payload, action in
-            self?.handleNotificationReply(payload: payload, action: action, driveClient: driveClient)
+            self?.handleNotificationReply(payload: payload, action: action)
         }
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
@@ -166,10 +195,14 @@ final class AppModel: ObservableObject {
     /// `hash_mismatch`). Simple approve/deny/continue replies never carry
     /// free text, so the lock-screen surface cannot trip the destructive
     /// step-up gate; destructive drives happen in-app where Face ID runs.
-    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
-                                 driveClient: DriveClient) {
+    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action) {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            // R-N1: bind to the CURRENT host at reply time — never a
+            // client captured at startLive() time (it can be stale after
+            // a device reset + re-registration).
+            guard let hostURL = self.hostURL else { return }
+            let driveClient = DriveClient(host: hostURL)
             let live = await self.resolveLiveAgent(payload: payload)
             switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
             case .failure(.stale):
@@ -368,6 +401,10 @@ final class AppModel: ObservableObject {
         keyId = nil
         grants = []
         hostURL = nil
+        // R-N1: the next registration is (potentially) a NEW host — the
+        // notification/APNs half of startLive() must re-run so the APNs
+        // token reaches the new daemon and the reply path re-arms.
+        notificationsConfigured = false
         mode = .needsSetup
     }
 }

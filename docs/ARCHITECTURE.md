@@ -154,9 +154,11 @@ dispatch.
   0.0.0.0 are hard refusals. The WRITE plane is device-signed everywhere.
   The READ plane — `/healthz`, `/snapshot`, `/events`, `/history`, and
   `/cost` (fleet state, transition history, provider spend) — is
-  credential-free: on loopback that is process-local trust; on a tailnet
-  bind the boundary is the tailnet itself (WireGuard device auth) — bind a
-  tailnet IP only on tailnets whose every device may see fleet state. An
+  credential-free: on loopback that is process-local trust — unless the
+  loopback daemon is fronted by Tailscale Serve, where the boundary is
+  the tailnet again; on a tailnet bind the boundary is the tailnet
+  itself (WireGuard device auth) — expose the read plane (by bind OR by
+  Serve) only on tailnets whose every device may see fleet state. An
   RFC 1918 bind has NO comparable boundary (any LAN device reads fleet
   state): permitted for lab setups, but prefer tailnet or loopback.
 - **Three credentials, never one** (D13): registration token (routing

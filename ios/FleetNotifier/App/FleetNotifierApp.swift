@@ -40,5 +40,16 @@ struct RootView: View {
 
     var body: some View {
         FleetView(model: model)
+            // #79 defect 1: a cold launch with a restored registration
+            // must connect without waiting for a scenePhase transition
+            // (registering while already foregrounded never fired
+            // .active, leaving the board offline). Idempotent: mode
+            // gate + startLive's hostURL guard + connect's streamTask
+            // guard — a later .active transition is then a no-op.
+            .task {
+                if model.mode == .live {
+                    model.startLive()
+                }
+            }
     }
 }

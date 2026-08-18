@@ -1,7 +1,8 @@
 # Corral Operations
 
-Running and maintaining `corrald`: device lifecycle, grants, the macOS
-Keychain how-to, audit semantics, and troubleshooting. Commands marked
+Running and maintaining `corrald`: device lifecycle, grants, remote
+access from iOS (Tailscale Serve), the macOS Keychain how-to, audit
+semantics, and troubleshooting. Commands marked
 "verified" were run against a throwaway daemon on 2026-08-16.
 
 ## One-shot setup (scripts/)
@@ -16,9 +17,14 @@ login and stays up (KeepAlive). Idempotent; safe to re-run.
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
-scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP
+scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (desktop/daemon only)
 scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps config)
 ```
+
+`--bind <tailnet-ip>` serves DESKTOP clients on the tailnet; the iOS
+client cannot use it (ATS refuses plain HTTP to the CGNAT range) — for
+iOS, keep the daemon loopback-only and use Tailscale Serve instead: see
+"Remote access from iOS (Tailscale Serve)" below.
 
 `launchctl bootstrap` is intentionally NOT run from inside an automation
 gateway (same reason as the herdr-server agent): run the script from your
@@ -39,6 +45,109 @@ scripts/corrald-grant.sh --key dev_<id> --revoke
 ```
 
 `CORRAL_BASE` overrides the daemon base URL (default `http://127.0.0.1:8474`).
+
+## Remote access from iOS (Tailscale Serve)
+
+The supported way to reach the daemon from the iOS client outside the
+LAN is **real TLS via Tailscale Serve fronting a loopback-only daemon**
+— not `--bind`. Serve improves CONFIDENTIALITY (real TLS; the daemon
+process never listens beyond loopback), and it is the path ATS accepts
+with no certificate plumbing of your own. It does NOT narrow exposure:
+`tailscale serve` publishes to the WHOLE tailnet, and corral's read
+plane (`/snapshot`, `/events`, `/history`, `/cost`) is credential-free
+— every device on the tailnet can read full fleet state, exactly as
+with a tailnet `--bind`. Use it only on a tailnet whose every device
+may see fleet state (same rule as binding beyond loopback).
+
+### Why `--bind <tailnet-ip>` cannot work for iOS
+
+ATS classifies Tailscale's 100.64.0.0/10 (CGNAT) addresses as public
+internet — `NSAllowsLocalNetworking` covers `.local` and RFC 1918, not
+the tailnet — so a plain-HTTP daemon on a tailnet IP is refused:
+
+```
+[register_failed] The resource could not be loaded because the App
+Transport Security policy requires the use of a secure connection.
+```
+
+An `NSExceptionDomains` carve-out for `ts.net` does NOT fix it — iOS
+still forces a TLS upgrade for the MagicDNS hostname:
+
+```
+[register_failed] A TLS error caused the secure connection to fail.
+```
+
+(The build-3 carve-out that tried this is gone; the generated
+Info.plist ships with no insecure-HTTP exception.)
+
+### One-time tailnet prerequisite: enable HTTPS Certificates
+
+`tailscale cert` fails (and `tailscale serve` hangs) until HTTPS
+Certificates is enabled for the tailnet:
+
+```
+500 Internal Server Error: your Tailscale account does not support
+getting TLS certs
+```
+
+Enable it in the Tailscale **admin console → DNS → HTTPS Certificates**
+(tailnet-wide, one-time, admin-console-only — there is no CLI
+equivalent). Verify:
+
+```sh
+tailscale status --json | grep -i certdomains   # empty before, populated after
+```
+
+### The working setup
+
+On the iPhone first (`curl` from the host passes even when the phone
+is not on the tailnet, so this is easy to miss):
+install the Tailscale app, sign into the SAME tailnet, and leave it
+connected. MagicDNS must be on for `<host>.<tailnet>.ts.net` to resolve
+on the device (it is required for HTTPS certs anyway).
+
+```sh
+# 1. one-time, in the Tailscale admin console: DNS -> enable HTTPS Certificates
+
+# 2. (optional) issue the cert — run OUTSIDE the repo checkout: it
+#    writes an unencrypted private .key next to you. Serve provisions
+#    the cert itself on first request; this step mainly turns the
+#    missing-HTTPS-certs failure into an immediate, legible error.
+tailscale cert <host>.<tailnet>.ts.net
+
+# 3. front the loopback daemon with real TLS (--bg needs Tailscale
+#    >= 1.58; the Mac App Store build does not put `tailscale` on PATH —
+#    use /Applications/Tailscale.app/Contents/MacOS/Tailscale)
+tailscale serve --bg --https=443 http://127.0.0.1:8474
+
+# 4. verify a valid chain (no -k)
+curl -s -o /dev/null -w '%{http_code} verify=%{ssl_verify_result}\n' \
+  https://<host>.<tailnet>.ts.net/healthz     # -> 200 verify=0
+```
+
+The daemon stays **loopback-only** (plain `scripts/setup-corrald.sh`,
+no `--bind`). In the app, the host is the plain HTTPS origin with no
+port:
+
+```
+https://<host>.<tailnet>.ts.net
+```
+
+To inspect or tear down the Serve config later (do NOT run these as
+part of the setup — `reset` undoes step 3):
+
+```sh
+tailscale serve status
+tailscale serve reset
+```
+
+Include the `https://` scheme — the app assumes `http://` when the
+scheme is omitted, which lands on the ATS error above. Verified on a
+live tailnet with `curl` (`200 verify=0`); the iOS DEVICE leg —
+registration plus holding the `/events` SSE stream through the Serve
+proxy — is pending the first TestFlight verification round (with #79),
+any inaccuracy in this section will surface at that device leg, not
+in the curl-verified part above.
 
 ## Device lifecycle
 
@@ -68,10 +177,11 @@ before expiry.
 ### Grants model
 
 - Registered device: read plane only (`/healthz`, `/snapshot`, `/events`,
-  `/history`, `/cost` — credential-free; on a non-loopback bind the
-  tailnet/private network itself is the read boundary, so bind beyond
-  loopback only on networks whose every device may see fleet state — a
-  plain LAN offers no device auth, prefer a tailnet).
+  `/history`, `/cost` — credential-free; on a non-loopback bind — or a
+  loopback bind fronted by Tailscale Serve — the tailnet/private network
+  itself is the read boundary, so expose it only on networks whose every
+  device may see fleet state — a plain LAN offers no device auth, prefer
+  a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.
@@ -273,6 +383,8 @@ reserved fleet name). Full schema and the per-command exit-code table:
 
 | Symptom | Cause / fix |
 |---|---|
+| `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
+| `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
 | Daemon won't start, `failed to bind` | port already in use — pick another `--port`; `lsof -nP -iTCP:<port> -sTCP:LISTEN` to see who owns it |

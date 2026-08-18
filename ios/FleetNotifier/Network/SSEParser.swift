@@ -12,6 +12,12 @@ struct SSEFrame: Sendable {
     var kind: Kind
     var id: UInt64?
     var data: String
+    /// #79 review F1: the raw `event:` name, so an unrecognized
+    /// data-bearing event can be REPORTED by name instead of vanishing
+    /// (SSE keep-alives are comment lines and never produce a frame at
+    /// all — a `.message` frame with data is always protocol drift).
+    /// Defaulted so existing frame constructions stay valid.
+    var eventName: String? = nil
 
     var eventType: String {
         switch kind {
@@ -29,6 +35,7 @@ struct SSEFrame: Sendable {
 struct SSEParser {
     private var buffer = ""
     private var event = SSEFrame.Kind.message
+    private var eventName: String?
     private var id: UInt64?
     private var dataLines: [String] = []
 
@@ -70,6 +77,7 @@ struct SSEParser {
         if field.hasPrefix("event:") {
             let value = String(field.dropFirst(6)).trimmingCharacters(in: .whitespaces)
             event = value == "snapshot" ? .snapshot : value == "delta" ? .delta : .message
+            eventName = value
         } else if field.hasPrefix("id:") {
             id = UInt64(String(field.dropFirst(3)).trimmingCharacters(in: .whitespaces))
         } else if field.hasPrefix("data:") {
@@ -82,11 +90,14 @@ struct SSEParser {
     private mutating func take() -> SSEFrame? {
         guard !dataLines.isEmpty else {
             event = .message
+            eventName = nil
             id = nil
             return nil
         }
-        let frame = SSEFrame(kind: event, id: id, data: dataLines.joined(separator: "\n"))
+        let frame = SSEFrame(
+            kind: event, id: id, data: dataLines.joined(separator: "\n"), eventName: eventName)
         event = .message
+        eventName = nil
         id = nil
         dataLines = []
         return frame

@@ -29,6 +29,7 @@ targets:
         CFBundleDisplayName: "Corral: Agent Fleet"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown

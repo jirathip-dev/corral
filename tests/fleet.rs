@@ -2217,6 +2217,10 @@ fn models_with_unchanged_values_is_an_idempotent_no_op() {
     assert_eq!(first[0].before.review, "opus");
     assert_eq!(first[0].after.review, "gpt-5.6-luna");
     let after_first = std::fs::read(&path).expect("read");
+    let mtime_first = std::fs::metadata(&path)
+        .expect("stat")
+        .modified()
+        .expect("mtime");
 
     let changes = corrald::fleet::ops::models(&path, "corral", &update).expect("second run");
     // R2-1 (#78): pin the shape, not just the all() predicate — an empty
@@ -2234,6 +2238,17 @@ fn models_with_unchanged_values_is_an_idempotent_no_op() {
         std::fs::read(&path).expect("read"),
         after_first,
         "no-op writes nothing — byte-identical"
+    );
+    // g78 review R2-1: byte-identical alone cannot see an always-rewrite
+    // regression (a rewrite of canonical JSON is byte-identical too) —
+    // the mtime pin proves the no-op never touched the file at all.
+    assert_eq!(
+        std::fs::metadata(&path)
+            .expect("stat")
+            .modified()
+            .expect("mtime"),
+        mtime_first,
+        "no-op does not rewrite the file at all"
     );
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))

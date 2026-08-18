@@ -238,9 +238,9 @@ writing, so a missing parent dir surfaces as the plain
 Exit codes: **0** all good, **1** an operation failed — a fleet failed
 `check`, or a write command (`add`/`remove`/`pause`/`resume`/`models`)
 refused (duplicate name, unresolvable repo, unknown name, no models to
-inherit) or could not write, leaving the registry byte-identical; **2**
-usage error or
-an unreadable/unparseable/invalid registry. Validation is strict on
+inherit) or could not write, leaving the registry byte-identical;
+**2** usage error or an unreadable/unparseable/invalid registry.
+Validation is strict on
 purpose — unknown fields, empty required fields, whitespace inside
 `name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
 `owner/repo`, a `local` starting with a bare `~`, and duplicate names all

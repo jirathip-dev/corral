@@ -661,8 +661,9 @@ mod perf_tests {
     /// far away) kept the non-env scan quadratic; the prose-shaped pin
     /// above structurally cannot see it (its whitespace follows every
     /// value). One 256KiB page-cap-sized run must redact in linear-ish
-    /// time, in both the reject shape (trailing space) and the accept
-    /// shape (EOF terminator).
+    /// time. The REJECT shape (trailing space) is the one that was
+    /// quadratic (S7 — the accept/EOF shape was already linear via the
+    /// caller advancing past matches; asserted anyway as a guard).
     #[test]
     fn whitespace_free_query_string_redacts_in_linear_time() {
         // Reject shape: terminator is an interior space.

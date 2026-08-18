@@ -43,8 +43,9 @@ use crate::core::redact::redact;
 /// Hard page caps: at most this many entries AND at most this much entry
 /// text per page, whichever bites first — including a page's FIRST
 /// entry, which is truncated to the budget with [`TRUNCATED_MARKER`]
-/// rather than admitted whole (fresh-review R2). Callers may ask for
-/// less.
+/// rather than admitted whole (fresh-review R2; the marker itself rides
+/// ON TOP of the budget, so a truncated page can exceed it by the
+/// marker's length — S8). Callers may ask for less.
 pub const MAX_PAGE_ENTRIES: usize = 50;
 pub const MAX_PAGE_TEXT_BYTES: usize = 256 * 1024;
 
@@ -241,7 +242,12 @@ fn opencode_sqlite_args(db_path: &Path, sql: &str) -> Vec<std::ffi::OsString> {
 /// sqlite3-CLI has no bind parameters; the values come from our own
 /// cursor/store structs, and doubling `'` is the complete quoting rule for
 /// SQLite string literals.
-fn opencode_page_sql(session_id: &str, cursor: Option<(i64, &str)>, limit: usize) -> String {
+fn opencode_page_sql(
+    session_id: &str,
+    cursor: Option<(i64, &str)>,
+    limit: usize,
+    has_role_column: bool,
+) -> String {
     let sid = session_id.replace('\'', "''");
     let cursor_clause = match cursor {
         Some((t, id)) => format!(
@@ -258,9 +264,20 @@ fn opencode_page_sql(session_id: &str, cursor: Option<(i64, &str)>, limit: usize
     // reader's fixtures declare `message` without it; an absent column
     // would hard-fail EVERY page, and the old NULL-fallback protected
     // against the wrong failure).
+    // S6: substr counts CHARS, so the intermediate can overshoot the
+    // byte budget by up to 4x on multi-byte text (and group_concat still
+    // materialises the full concatenation inside the sqlite3 child,
+    // bounded only by SQLITE_MAX_LENGTH); the final entry is byte-capped
+    // in Rust. The +1 makes the cap detectable for S1's seam handling.
     let cap = MAX_PAGE_TEXT_BYTES + 1;
+    // S3: `m.role` appears only when the probe found the column.
+    let role_select = if has_role_column {
+        "m.role AS role, "
+    } else {
+        ""
+    };
     format!(
-        "SELECT m.id AS id, m.time_created AS time_created, \
+        "SELECT m.id AS id, {role_select}m.time_created AS time_created, \
                 m.data AS msg_data, \
                 substr((SELECT group_concat(t, char(10)) FROM \
                    (SELECT CASE WHEN json_valid(p.data) \
@@ -287,7 +304,29 @@ async fn read_opencode_page(
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such store"),
         });
     }
-    let sql = opencode_page_sql(session_id, cursor, limit);
+    // S3: probe whether `message.role` exists (the same PRAGMA shape
+    // cost::opencode uses for `data`) — when it does, the page SQL
+    // selects it and role resolution prefers the column over the
+    // data-JSON fallback; when it doesn't, the column never appears in
+    // the SQL. Both schema shapes are real (the cost fixtures lack the
+    // column); neither is assumed any more.
+    let has_role_column = {
+        let probe = "SELECT count(*) AS n FROM pragma_table_info('message') WHERE name = 'role'";
+        let out = tokio::process::Command::new("sqlite3")
+            .args(opencode_sqlite_args(db_path, probe))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(OPENCODE_QUERY_TIMEOUT, out).await {
+            Ok(Ok(o)) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).contains("\"n\":1")
+            }
+            _ => false,
+        }
+    };
+    let sql = opencode_page_sql(session_id, cursor, limit, has_role_column);
     let fut = tokio::process::Command::new("sqlite3")
         .args(opencode_sqlite_args(db_path, &sql))
         .stdin(std::process::Stdio::null())
@@ -310,34 +349,43 @@ async fn read_opencode_page(
         // lock/corruption, missing JSON1) with a real diagnostic — not
         // a missing binary. Carried via StoreUnreadable so the message
         // reaches the operator.
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // S2: sqlite3's stderr can echo the SQL literal (which embeds
+        // the session id) on prepare errors — redact it and bound it
+        // before it crosses the module boundary inside the error.
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let stderr_bounded: String = stderr_raw.chars().take(2048).collect();
+        let stderr = redact(stderr_bounded.trim());
         return Err(TranscriptError::StoreUnreadable {
             path: db_path.to_path_buf(),
-            source: std::io::Error::other(format!(
-                "sqlite3 exited {}: {}",
-                output.status,
-                stderr.trim()
-            )),
+            source: std::io::Error::other(format!("sqlite3 exited {}: {}", output.status, stderr)),
         });
     }
-    let rows: Vec<Value> = if output.stdout.iter().all(u8::is_ascii_whitespace) {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&output.stdout).map_err(|_| TranscriptError::StoreShape)?
-    };
-
-    // Fresh-review R6: assembly runs redact() over up to a full page of
-    // text — CPU-bound, off the reactor thread.
-    tokio::task::spawn_blocking(move || assemble_opencode_page(rows, limit))
+    // Fresh-review R6/S5: the JSON parse (up to megabytes of stdout —
+    // the SQL cap counts CHARS, so multi-byte text can be ~4x the byte
+    // budget per row, S6) AND the redact-heavy assembly both run off
+    // the reactor thread. A panic in assembly is reported as the store
+    // being unreadable (with its path), not as a schema mismatch.
+    let stdout = output.stdout;
+    let path_for_err = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || assemble_opencode_page(stdout, limit))
         .await
-        .map_err(|_| TranscriptError::StoreShape)?
+        .map_err(|_| TranscriptError::StoreUnreadable {
+            path: path_for_err,
+            source: std::io::Error::other("page assembly panicked"),
+        })?
 }
 
-/// The sync page-assembly half of the opencode reader (R6).
+/// The sync page-assembly half of the opencode reader (R6/S5): parses
+/// the sqlite3 stdout and assembles the redacted page.
 fn assemble_opencode_page(
-    rows: Vec<Value>,
+    stdout: Vec<u8>,
     limit: usize,
 ) -> Result<TranscriptPage, TranscriptError> {
+    let rows: Vec<Value> = if stdout.iter().all(u8::is_ascii_whitespace) {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&stdout).map_err(|_| TranscriptError::StoreShape)?
+    };
     let mut entries = Vec::new();
     let mut skipped = 0usize;
     let mut text_budget = MAX_PAGE_TEXT_BYTES;
@@ -360,11 +408,26 @@ fn assemble_opencode_page(
             skipped += 1;
             continue;
         };
-        let text = row
-            .get("text")
-            .and_then(Value::as_str)
-            .map(|t| redact(t).into_owned())
-            .unwrap_or_default();
+        // S1: the SQL substr cap cuts BEFORE redaction, so a secret
+        // severed at the seam could arrive too short for rule 4's
+        // length threshold and leak a cleartext prefix. A capped string
+        // (exactly cap chars — SQL returns cap = budget+1 chars when the
+        // message is longer) is trimmed back to its last whitespace
+        // BEFORE redact() so the redactor never sees a severed token; a
+        // whitespace-free capped string keeps only the marker.
+        let raw = row.get("text").and_then(Value::as_str).unwrap_or_default();
+        // Cheap pre-filter: chars <= bytes, so a string under budget+1
+        // BYTES cannot be at the char cap; only then count chars.
+        let sql_capped =
+            raw.len() > MAX_PAGE_TEXT_BYTES && raw.chars().count() == MAX_PAGE_TEXT_BYTES + 1;
+        let text = if sql_capped {
+            match raw.rfind(|c: char| c.is_ascii_whitespace()) {
+                Some(cut) => format!("{}{TRUNCATED_MARKER}", redact(&raw[..cut])),
+                None => TRUNCATED_MARKER.trim_start().to_string(),
+            }
+        } else {
+            redact(raw).into_owned()
+        };
         if text.is_empty() {
             // A message with no text parts (tool/reasoning-only) — a
             // normal record, not torn data: passed over without an entry
@@ -387,14 +450,20 @@ fn assemble_opencode_page(
         } else {
             text
         };
-        // R3: role is read from msg_data's JSON only — the one schema
-        // surface the cost reader's probe already establishes.
+        // R3/S3: the role column is used only when the probe found it;
+        // msg_data's JSON is the fallback for either shape.
         let msg_role = row
             .get("msg_data")
             .and_then(Value::as_str)
             .and_then(|d| serde_json::from_str::<Value>(d).ok())
             .and_then(|d| d.get("role").and_then(Value::as_str).map(str::to_string));
-        let role = normalize_role(msg_role.as_deref());
+        let role = normalize_role(
+            row.get("role")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(msg_role)
+                .as_deref(),
+        );
         text_budget = text_budget.saturating_sub(text.len());
         last_row_key = Some((t, id.to_string()));
         entries.push(Entry {
@@ -491,10 +560,16 @@ async fn read_jsonl_page(
     file.read_exact(&mut buf).await.map_err(unreadable)?;
 
     // Fresh-review R6: parsing + redaction of up to the full window is
-    // CPU-bound work — off the reactor thread. The IO above stays async.
+    // CPU-bound work — off the reactor thread. The IO above stays async;
+    // the fd is released before the blocking hop (S5).
+    drop(file);
+    let path_for_err = path.to_path_buf();
     tokio::task::spawn_blocking(move || assemble_jsonl_page(buf, lower, end, limit))
         .await
-        .map_err(|_| TranscriptError::StoreShape)?
+        .map_err(|_| TranscriptError::StoreUnreadable {
+            path: path_for_err,
+            source: std::io::Error::other("page assembly panicked"),
+        })?
 }
 
 /// The sync page-assembly half of the JSONL reader (see the R6 note at
@@ -847,7 +922,7 @@ mod tests {
     /// of the literal.
     #[test]
     fn opencode_sql_escapes_quotes_and_bounds_the_query() {
-        let sql = opencode_page_sql("ses'--x", Some((42, "id'y")), 7);
+        let sql = opencode_page_sql("ses'--x", Some((42, "id'y")), 7, false);
         assert!(sql.contains("'ses''--x'"), "session id escaped: {sql}");
         assert!(sql.contains("'id''y'"), "cursor id escaped: {sql}");
         assert!(sql.contains("LIMIT 7"), "bounded in SQL: {sql}");
@@ -1106,7 +1181,68 @@ mod tests {
             "opencode entry must be capped, got {}",
             text.len()
         );
+        // S1: a WHITESPACE-FREE capped blob keeps only the marker — the
+        // redactor must never see (or emit) a severed token.
+        assert_eq!(
+            text.as_str(),
+            TRUNCATED_MARKER.trim_start(),
+            "whitespace-free capped text reduces to the marker alone"
+        );
+    }
+
+    /// Fresh-review S1: the SQL cap cuts BEFORE redaction — a rule-4
+    /// secret severed at the seam must NOT leak a cleartext prefix; the
+    /// capped text is trimmed back to whitespace before the redactor
+    /// runs, so the severed token is dropped entirely.
+    #[tokio::test]
+    async fn sql_capped_secret_at_the_seam_does_not_leak_a_prefix() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        let secret = "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3A"; // rule-4 shape, 41 chars
+        // ASCII filler of space-separated words, sized so the secret
+        // STRADDLES the substr cap (cap = MAX+1 chars == bytes here).
+        let filler_len = MAX_PAGE_TEXT_BYTES + 1 - 22; // cut lands 22 chars into the secret
+        let word = "wordy ";
+        let mut body = word.repeat(filler_len / word.len() + 1);
+        body.truncate(filler_len);
+        body.push_str(secret);
+        body.push_str(" trailing tail beyond the cap");
+        let seed = format!(
+            r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{{"role":"assistant"}}');
+            INSERT INTO part VALUES ('p1','m1','text','{{"text":"{body}"}}');
+        "#
+        );
+        let script = dir.path().join("seed.sql");
+        std::fs::write(&script, &seed).expect("write seed");
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(format!(".read {}", script.display()))
+            .status()
+            .expect("seed");
+        assert!(status.success());
+
+        let store = StoreRef::Opencode {
+            db_path: db,
+            session_id: "ses1".to_string(),
+        };
+        let page = read_page(&store, None, 10).await.expect("page");
+        assert_eq!(page.entries.len(), 1);
+        let text = &page.entries[0].text;
+        for n in (8..=22).rev() {
+            assert!(
+                !text.contains(&secret[..n]),
+                "a {n}-char cleartext prefix of the severed secret leaked"
+            );
+        }
         assert!(text.ends_with(TRUNCATED_MARKER), "truncation marked");
+        assert!(text.starts_with("wordy "), "trimmed content survives");
     }
 
     /// Fresh-review R5: against an INDEXED store (the shape a sane live
@@ -1139,7 +1275,7 @@ mod tests {
 
         let sql = format!(
             "EXPLAIN QUERY PLAN {}",
-            opencode_page_sql("ses1", Some((100, "m1")), 5)
+            opencode_page_sql("ses1", Some((100, "m1")), 5, false)
         );
         let out = std::process::Command::new("sqlite3")
             .arg(&db)
@@ -1147,10 +1283,17 @@ mod tests {
             .output()
             .expect("eqp");
         let plan = String::from_utf8_lossy(&out.stdout);
+        // S4: EQP names the ALIAS `m`, and "USING INDEX" appears even
+        // in the worst plan (part's autoindex used FOR the scan) — only
+        // SEARCH-vs-SCAN on the alias discriminates (verified: fails on
+        // an unindexed store, passes on an indexed one).
         assert!(
-            !plan.contains("SCAN message"),
-            "page query must not full-scan message when indexed: {plan}"
+            plan.contains("SEARCH m USING INDEX"),
+            "message must be SEARCHed, not scanned: {plan}"
         );
-        assert!(plan.contains("USING INDEX"), "{plan}");
+        assert!(
+            plan.contains("SEARCH p USING INDEX"),
+            "part must be SEARCHed per message: {plan}"
+        );
     }
 }

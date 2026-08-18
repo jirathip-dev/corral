@@ -767,7 +767,9 @@ fn run_fleet_watch(args: &[String]) {
 /// as the healthy `Some(empty)`, never as server-down. Stdout is parsed
 /// regardless of the child's exit status — the parse decides (review F9).
 fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
-    let mut saw_empty_answer = false;
+    // The invariant: the LAST successful answer wins; server-down (None)
+    // only when no answer was ever obtained (review R1/S1a).
+    let mut last_good: fleet::watch::AgentsView = None;
     for attempt in 0..2 {
         if attempt == 1 {
             std::thread::sleep(Duration::from_secs(10));
@@ -782,15 +784,11 @@ fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
         if !map.is_empty() || attempt == 1 {
             return Some(map);
         }
-        saw_empty_answer = true;
+        // An empty first answer: hold it (it IS a good answer), but grant
+        // the retry before reporting — the server may just be restarting.
+        last_good = Some(map);
     }
-    // First answer was a successful empty, but the retry's CALL failed:
-    // we still HAVE one good answer — report it, not server-down.
-    if saw_empty_answer {
-        Some(std::collections::BTreeMap::new())
-    } else {
-        None
-    }
+    last_good
 }
 
 /// Open-PR count for one repo via `gh`, 30s timeout. `None` = the check

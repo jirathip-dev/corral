@@ -176,10 +176,12 @@ fn local_authorized(local: &str, home: &str) -> bool {
 }
 
 /// Parse `herdr agent list` JSON stdout into the watchdog's view. The
-/// field names are the herdr wire contract — `result.agents[].name`,
-/// `.agent_status`, `.cwd` — pinned by unit test here because a silent
-/// herdr rename would otherwise parse every agent as status "unknown"
-/// and stall-alarm every fleet at once (review R4). `None` = not a valid
+/// field names this parser depends on — `result.agents[].name`,
+/// `.agent_status`, `.cwd` — are pinned by unit test so they cannot
+/// drift silently under refactoring (review R4). Note the test cannot
+/// catch an UPSTREAM herdr rename: that degrades every agent to status
+/// "unknown" (stall-alarming each fleet) — a documented choice, made
+/// visible in the test rather than prevented by it. `None` = not a valid
 /// listing (the caller treats it like a failed call and retries).
 pub fn parse_agent_listing(stdout: &str) -> Option<BTreeMap<String, AgentInfo>> {
     let value = serde_json::from_str::<serde_json::Value>(stdout).ok()?;
@@ -544,8 +546,10 @@ mod tests {
     }
 
     /// R4: the herdr wire contract — `result.agents[].name` /
-    /// `.agent_status` / `.cwd`. A field rename must fail loudly here,
-    /// not parse as status "unknown" and stall-alarm every fleet.
+    /// `.agent_status` / `.cwd`. Pins the field names THIS parser
+    /// depends on (refactoring drift fails here); an upstream herdr
+    /// rename still degrades to "unknown" — asserted below so that
+    /// degradation stays a visible choice, not an accident.
     #[test]
     fn agent_listing_parse_pins_field_names() {
         let listing = r#"{ "result": { "agents": [

@@ -108,7 +108,7 @@ workers still working → plain, naming the status; a failed gh check is
 stated as unavailable, never treated as zero), and missing workers.
 Paused fleets are skipped entirely — pausing genuinely silences the
 watchdog. Output is sorted `PROBLEM:` lines or `ALL HEALTHY`; exit 0
-healthy / 1 problems / 2 usage-parse. A corrupt/unreadable registry is
+healthy / 1 problems / 2 usage error. A corrupt/unreadable registry is
 itself a `PROBLEM:` line on stdout with exit 1 (monitor safety: the
 watchdog alerts on the failure that stops it watching). Fleet-worker
 attribution matches by the fleet's own `workers[]` names or by

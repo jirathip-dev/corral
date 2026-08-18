@@ -25,3 +25,8 @@ fastlane/.env
 *.p12
 *.mobileprovision
 *.cer
+
+# TLS material a misplaced `tailscale cert` run would drop (see
+# docs/OPERATIONS.md remote-access section: run it OUTSIDE the repo).
+*.key
+*.crt

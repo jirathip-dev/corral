@@ -1005,8 +1005,13 @@ final class BoardModelTests: XCTestCase {
 
 final class RowActionTests: XCTestCase {
 
-    private func agent(_ id: String, state: AgentState, capabilities: [String]) -> Agent {
-        Agent(agentId: id, state: state, capabilities: capabilities)
+    private func agent(_ id: String, state: AgentState, capabilities: [String],
+                       waiting: Bool = true) -> Agent {
+        let waitingOn = (state == .blocked && waiting)
+            ? WaitingOn(kind: .approveTool, prompt: "p", promptHash: "sha256:x")
+            : nil
+        return Agent(agentId: id, state: state, capabilities: capabilities,
+                     waitingOn: waitingOn)
     }
 
     /// The D30 whitelist — `RowAction` has exactly these three cases. The
@@ -1027,8 +1032,10 @@ final class RowActionTests: XCTestCase {
         }
     }
 
-    /// Only three action kinds exist at all — a future enum case is a
-    /// compile error on the exhaustive switch rather than a silent button.
+    /// Only three action kinds exist, and a maximally-capable blocked agent
+    /// gets exactly all three. (This pins the model's output; keeping the
+    /// VIEW free of buttons outside this list is review discipline — see
+    /// the `RowAction` doc comment.)
     func testRowActionKindsAreExhaustive() {
         let actions = BoardModel.rowActions(
             agent: agent("herdr:x", state: .blocked,
@@ -1039,16 +1046,33 @@ final class RowActionTests: XCTestCase {
 
     /// Both the agent capability and the device grant must hold (D30).
     func testActionsRequireCapabilityAndGrant() {
+        // Capability present and grant present: all three.
         let capable = agent("herdr:x", state: .blocked, capabilities: ["read_tail", "prompt", "approve"])
-        // Grant present but capability absent: no action.
         XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: [.prompt, .readTail]),
                        [.approveDeny, .prompt, .tail])
-        // No grants: read-only device sees only the approveDeny claim card
-        // (which itself hides its buttons via the approve grant).
+        // Grant present but capability ABSENT: no prompt/tail action — a
+        // broad grant set must not offer actions the tool cannot take.
+        let incapable = agent("herdr:y", state: .blocked, capabilities: [])
+        XCTAssertEqual(BoardModel.rowActions(agent: incapable, grants: [.prompt, .readTail]),
+                       [.approveDeny])
+        // Capability present but no grants: read-only device sees only the
+        // approveDeny claim card (which itself hides its buttons via the
+        // approve grant).
         XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: []), [.approveDeny])
         // Working agent with no claim: no approveDeny.
         let working = agent("herdr:w", state: .working, capabilities: ["prompt", "read_tail"])
         XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]), [.prompt, .tail])
+    }
+
+    /// The model and the view agree about `.approveDeny`: a blocked agent
+    /// with NO live claim (waiting_on nil) renders no claim card, so
+    /// `rowActions` must not report one.
+    func testBlockedWithoutClaimGetsNoApproveDeny() {
+        let claimless = agent("herdr:z", state: .blocked,
+                              capabilities: ["prompt", "read_tail"], waiting: false)
+        XCTAssertEqual(BoardModel.rowActions(agent: claimless,
+                                             grants: [.prompt, .readTail]),
+                       [.prompt, .tail])
     }
 }
 

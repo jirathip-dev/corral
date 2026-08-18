@@ -135,12 +135,16 @@ enum IssueChip: Equatable {
 
 // MARK: - D30 row actions (the ONLY actions a row may render)
 
-/// The exhaustive set of row actions the board is allowed to render (D30
-/// pin). Approve/Deny live inside the blocked claim card; Prompt and Tail
-/// 200 are the bare row controls. Interrupt/Kill are deliberately ABSENT —
-/// D29/D30 cut kill-on-phone, and the row view renders exclusively from
-/// this list, so no future capabilities/grants combination can re-add a
-/// button without the switch over this enum failing to compile.
+/// The set of row actions the board is allowed to render (D30 pin).
+/// Approve/Deny live inside the blocked claim card; Prompt and Tail 200
+/// are the bare row controls. Interrupt/Kill are deliberately ABSENT —
+/// D29/D30 cut kill-on-phone. What the pin actually guarantees: the row
+/// view renders ONLY from `rowActions`' output, and `RowActionTests` pin
+/// that interrupt/kill never appear in that output for any
+/// capabilities/grants combination. It does NOT make a rogue direct
+/// `Button` in the view a compile error — keeping the view free of its own
+/// capability checks is review discipline, enforced by this comment and
+/// the one on `AgentRow.actions`.
 enum RowAction: Equatable, Sendable {
     case approveDeny
     case prompt
@@ -246,7 +250,10 @@ enum BoardModel {
     /// here by design (D29/D30) regardless of capabilities/grants.
     static func rowActions(agent: Agent, grants: Set<Capability>) -> [RowAction] {
         var actions: [RowAction] = []
-        if agent.isBlocked {
+        // The claim card needs a live claim to render, so `.approveDeny`
+        // requires waiting_on, not just the blocked state — this list and
+        // the view must agree exactly.
+        if agent.isBlocked && agent.waitingOn != nil {
             actions.append(.approveDeny)
         }
         if agent.capabilities.contains(Capability.prompt.rawValue) && grants.contains(.prompt) {

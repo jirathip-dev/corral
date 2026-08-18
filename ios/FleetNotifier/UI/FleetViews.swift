@@ -151,10 +151,14 @@ struct FlowLayout: Layout {
 // MARK: - Prompt drafts (R2-B: keystrokes must not invalidate the board)
 
 /// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and the
-/// repo-section row of the same blocked agent share one draft. Held in its
-/// own ObservableObject so typing a draft invalidates only the rows that
-/// observe it — `FleetView.body` is NOT re-run and `BoardModel.sections` is
-/// not re-computed on every keystroke (round-2 finding R2-B).
+/// repo-section row of the same blocked agent share one draft (R2-B).
+///
+/// Ownership vs observation: `FleetView` holds this object in `@State`
+/// (stable identity, NO subscription — `@State` ignores `ObservableObject`
+/// conformance), and each `AgentRow` observes it via `@ObservedObject`. So
+/// a keystroke re-renders the rows — cheap bodies — while
+/// `FleetView.body`, and with it `BoardModel.sections`, re-runs only on
+/// fleet snapshot/delta changes.
 @MainActor
 final class PromptDrafts: ObservableObject {
     @Published private(set) var drafts: [String: String] = [:]
@@ -170,10 +174,12 @@ final class PromptDrafts: ObservableObject {
         drafts[agentId] = nil
     }
 
-    /// R2-F: drop drafts for agents that left the snapshot.
+    /// R2-F: drop drafts for agents that left the snapshot — one copy and
+    /// one publish regardless of how many drafts are dropped.
     func prune(to agentIds: Set<String>) {
-        for id in drafts.keys where !agentIds.contains(id) {
-            drafts[id] = nil
+        let kept = drafts.filter { agentIds.contains($0.key) }
+        if kept.count != drafts.count {
+            drafts = kept
         }
     }
 }
@@ -196,10 +202,11 @@ final class PromptDrafts: ObservableObject {
 struct AgentRow: View {
     let agent: Agent
     let grants: Set<Capability>
-    /// Draft prompt text, shared with every other row rendering the same
-    /// agent (a blocked agent appears in both NEEDS YOU and its repo
-    /// section — the two rows must not hold divergent drafts).
-    @Binding var promptText: String
+    /// The shared draft store (R2-B): the ROW observes it, so keystrokes
+    /// re-render rows without touching `FleetView.body`. Rows of the same
+    /// agent share one draft (a blocked agent appears in both NEEDS YOU
+    /// and its repo section).
+    @ObservedObject var drafts: PromptDrafts
     /// The row actions to render (D30 pin) — computed by the pure
     /// `BoardModel.rowActions(agent:grants:)`; this view renders ONLY this
     /// list, never its own capability/grants checks.
@@ -262,15 +269,15 @@ struct AgentRow: View {
             }
             if actions.contains(.prompt) {
                 HStack {
-                    TextField("Send a prompt…", text: $promptText)
+                    TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                     Button("Send") {
-                        let text = promptText
-                        promptText = ""
+                        let text = drafts.drafts[agent.agentId] ?? ""
+                        drafts.clear(agent.agentId)
                         onPrompt(text)
                     }
-                    .disabled(promptText.isEmpty)
+                    .disabled((drafts.drafts[agent.agentId] ?? "").isEmpty)
                     .buttonStyle(.borderedProminent)
                     .font(.caption)
                 }
@@ -398,6 +405,30 @@ struct CiGlyph: View {
     }
 }
 
+// MARK: - Pinned section header (R2-A)
+
+/// The backing every pinned `.plain`-list section header in this List gets
+/// (board sections AND the registration sections share it — a pinned header
+/// with no backing overlaps scrolling content). `.bar` is a translucent
+/// Material, deliberately: it stays legible over cards while keeping the
+/// scroll context visible; it is NOT fully opaque. `listRowInsets` is
+/// zeroed so the backing spans the full row, and the horizontal padding
+/// matches the default row content inset so header text aligns with row
+/// content instead of sitting one notch deeper (round-1 finding F4).
+struct PinnedHeader<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 20)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar, ignoresSafeAreaEdges: [])
+            .listRowInsets(EdgeInsets())
+    }
+}
+
 // MARK: - Fleet list
 
 struct FleetView: View {
@@ -422,9 +453,10 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
-            // R2-F: drop drafts for agents that left the snapshot whenever
-            // the agent set changes (cheap — runs on snapshot/delta, which
-            // keystrokes no longer trigger).
+            // R2-F: drop drafts for agents that left the snapshot. This
+            // body (and the Set below) re-evaluates on fleet
+            // snapshot/delta changes — the exact moments a prune can
+            // matter — and not on keystrokes (see promptDrafts above).
             .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
                 promptDrafts.prune(to: agentIds)
             }
@@ -455,11 +487,12 @@ struct FleetView: View {
 
     @State private var showSettings = false
     @State private var showIdleDone = false
-    /// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and
-    /// the repo-section row of the same blocked agent share one draft. Held
-    /// in their own ObservableObject (R2-B): typing a draft re-renders only
-    /// the rows that observe it, NOT `FleetView.body`.
-    @StateObject private var promptDrafts = PromptDrafts()
+    /// Per-agent prompt drafts (R2-B). Held in `@State`, DELIBERATELY not
+    /// `@StateObject`: `@State` keeps the object's identity across renders
+    /// but does not subscribe to `objectWillChange`, so keystrokes do not
+    /// re-run this body. The rows observe the object (`@ObservedObject`)
+    /// and re-render themselves.
+    @State private var promptDrafts = PromptDrafts()
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
@@ -524,18 +557,9 @@ struct FleetView: View {
         }
     }
 
-    /// R2-A: the opaque/bar backing for pinned section headers, with sane
-    /// padding so pinned headers are legible over scrolling content. A
-    /// `.bar` Material reads as the system background in light and dark
-    /// mode and gives pinned headers a solid surface.
     @ViewBuilder
-    private func pinnedHeader<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.bar, ignoresSafeAreaEdges: [])
+    private func pinnedHeader<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
+        PinnedHeader(content: content)
     }
 
     @ViewBuilder
@@ -554,7 +578,7 @@ struct FleetView: View {
         let grants = Set(model.grants.compactMap(Capability.init(rawValue:)))
         return AgentRow(agent: agent,
                         grants: grants,
-                        promptText: promptDrafts.binding(for: agent.agentId),
+                        drafts: promptDrafts,
                         actions: BoardModel.rowActions(agent: agent, grants: grants),
                         onChoice: { choice in
                             if model.mode == .demo {
@@ -627,7 +651,7 @@ struct RegistrationView: View {
     @State private var registering = false
 
     var body: some View {
-        Section("Connect") {
+        Section {
             TextField("Host (Tailscale host or loopback)", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
@@ -657,8 +681,10 @@ struct RegistrationView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+        } header: {
+            PinnedHeader { Text("Connect") }
         }
-        Section("Demo") {
+        Section {
             Button("Try demo fleet (no daemon)") {
                 model.enterDemo()
             }
@@ -666,6 +692,8 @@ struct RegistrationView: View {
             Text("Seeded fake fleet for App Review 4.2 (minimal functionality).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } header: {
+            PinnedHeader { Text("Demo") }
         }
     }
 }

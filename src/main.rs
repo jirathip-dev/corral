@@ -712,11 +712,18 @@ fn run_fleet_watch(args: &[String]) {
     let registry = match fleet::config::load(&path) {
         Ok(registry) => registry,
         Err(error) => {
-            eprintln!("corrald fleet watch: {error}");
-            std::process::exit(error.exit_code());
+            // Monitor safety (legacy-hardened behavior, review F1): the
+            // watchdog must ALERT on the failure that stops it watching,
+            // on STDOUT where the cron consumer looks — never die
+            // silently to stderr. Exit 1 = "problems found" (the invalid
+            // registry IS the problem), keeping the 0/1/2 contract
+            // unambiguous (review F2).
+            println!("PROBLEM: fleet registry unreadable or corrupt: {error}");
+            std::process::exit(1);
         }
     };
 
+    let home = std::env::var("HOME").unwrap_or_default();
     let agents = herdr_agents_with_retry();
     // One gh call per distinct repo, only for fleets that can stall.
     let mut prs = fleet::watch::PrCounts::new();
@@ -734,7 +741,7 @@ fn run_fleet_watch(args: &[String]) {
         }
     }
 
-    let problems = fleet::watch::problems(&registry, &agents, &prs);
+    let problems = fleet::watch::problems(&registry, &agents, &prs, &home);
     if problems.is_empty() {
         println!("ALL HEALTHY");
         return;
@@ -747,7 +754,10 @@ fn run_fleet_watch(args: &[String]) {
 
 /// `herdr agent list` (JSON) with a 60s timeout and ONE retry after 10s —
 /// a transient socket hiccup must not read as "every agent missing" (a
-/// legacy-proven false-alarm mode). `None` = server unreachable.
+/// legacy-proven false-alarm mode). `None` = the CALL failed or was
+/// unparseable after the retry; `Some(empty)` = healthy zero-agent
+/// answer (review F3). Stdout is parsed regardless of the child's exit
+/// status — the parse decides (review F9).
 fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
     for attempt in 0..2 {
         if attempt == 1 {
@@ -788,9 +798,10 @@ fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
                 },
             );
         }
-        if !map.is_empty() {
-            return Some(map);
-        }
+        // A successful listing with ZERO agents is a healthy answer (the
+        // steady state when every fleet is parked) — Some(empty), never a
+        // retry and never a server-down signal (review F3).
+        return Some(map);
     }
     None
 }
@@ -812,7 +823,18 @@ fn open_pr_count(repo: &str) -> Option<u64> {
 /// Run a command with a wall-clock timeout (std has none): spawn with a
 /// dedicated reader thread draining stdout (so a child producing more
 /// than the pipe buffer can still exit), poll `try_wait`, kill on expiry.
-/// `None` on spawn failure, non-zero exit, or timeout.
+///
+/// EVERY wait on the reader is itself deadline-bounded via a channel
+/// (review F4): killing the child does NOT guarantee the pipe closes —
+/// a grandchild that inherited the write end can hold it open — and an
+/// unbounded `join()` would hang the watchdog, the worst failure mode
+/// for a cron monitor. A stuck reader thread is abandoned (detached);
+/// the process exits shortly after anyway.
+///
+/// `None` on spawn failure or timeout. The child's exit STATUS is
+/// deliberately ignored (review F9, matching legacy): a complete stdout
+/// next to a warning exit code is still usable — the caller's parse
+/// decides.
 fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
     use std::io::Read as _;
     let mut child = std::process::Command::new(program)
@@ -822,31 +844,40 @@ fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<S
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let Some(mut stdout) = child.stdout.take() else {
+        // No pipe handle (should not happen): don't leak a zombie.
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
         let mut out = String::new();
         let _ = stdout.read_to_string(&mut out);
-        out
+        let _ = tx.send(out);
     });
     let deadline = std::time::Instant::now() + timeout;
+    let recv_bounded = |rx: &std::sync::mpsc::Receiver<String>| {
+        // Give a well-behaved pipe a moment to flush after child exit,
+        // but never block past a short grace even if a grandchild holds
+        // the write end open.
+        rx.recv_timeout(Duration::from_secs(5)).ok()
+    };
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = reader.join().ok()?;
-                return status.success().then_some(out);
+            Ok(Some(_status)) => {
+                return recv_bounded(&rx);
             }
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                // Killing closes the pipe; the reader thread finishes.
-                let _ = reader.join();
+                let _ = rx.recv_timeout(Duration::from_millis(200));
                 return None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = reader.join();
                 return None;
             }
         }

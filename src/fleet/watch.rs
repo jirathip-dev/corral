@@ -30,8 +30,10 @@ pub struct AgentInfo {
     pub cwd: String,
 }
 
-/// The herdr agent listing: `None` = the server did not answer (after the
-/// caller's retry); `Some(map)` = name → info.
+/// The herdr agent listing: `None` = the CALL failed or was unparseable
+/// (after the caller's retry) — genuine unreachability. `Some(map)` = the
+/// server answered; an EMPTY map is a healthy answer (the steady state
+/// when every fleet is parked), never a server-down signal (review F3).
 pub type AgentsView = Option<BTreeMap<String, AgentInfo>>;
 
 /// Open-PR count per `gh_repo`: `None` = the gh check was unavailable
@@ -42,14 +44,20 @@ pub type PrCounts = BTreeMap<String, Option<u64>>;
 /// The pure decision layer: every problem line for this registry given
 /// this world-view, SORTED (stable, diffable output — the legacy watcher
 /// sorts too).
-pub fn problems(registry: &Registry, agents: &AgentsView, prs: &PrCounts) -> Vec<String> {
+pub fn problems(
+    registry: &Registry,
+    agents: &AgentsView,
+    prs: &PrCounts,
+    home: &str,
+) -> Vec<String> {
     let mut out = Vec::new();
     let Some(agents) = agents else {
-        // Server down: one line, and no per-fleet spam — every agent
-        // check below would false-alarm.
-        return vec![
-            "herdr server NOT reachable (agent list failed/empty after retry)".to_string(),
-        ];
+        // The CALL failed (after retry): one line, and no per-fleet spam —
+        // every agent check below would false-alarm. An EMPTY listing does
+        // NOT land here (review F3): that is a healthy answer, and the
+        // per-fleet checks below then report the truthful, actionable
+        // MISSING lines (or nothing at all when every fleet is paused).
+        return vec!["herdr server NOT reachable (agent list call failed after retry)".to_string()];
     };
 
     for fleet in &registry.fleets {
@@ -67,23 +75,29 @@ pub fn problems(registry: &Registry, agents: &AgentsView, prs: &PrCounts) -> Vec
                 let workers_working = agents.iter().any(|(name, a)| {
                     a.status == "working"
                         && (fleet.workers.iter().any(|w| w == name)
-                            || cwd_in_fleet(&a.cwd, &local_str, &fleet.worktree_dir))
+                            || cwd_in_fleet(&a.cwd, &local_str, &fleet.worktree_dir, home))
                 });
+                // The PR count being UNAVAILABLE is stated on every stalled
+                // flavor (review F5): a gh failure must never silently
+                // relabel a with-open-PRs stall as something else — which
+                // is the exact legacy defect this deviation exists to fix,
+                // and it is likeliest during a stalled wave.
+                let pr_note = if matches!(prs.get(&fleet.gh_repo), Some(None) | None) {
+                    "; open-PR check unavailable"
+                } else {
+                    ""
+                };
                 match prs.get(&fleet.gh_repo) {
                     Some(Some(n)) if *n > 0 => out.push(format!(
                         "{}: {} STALLED with {n} open PR(s)",
                         fleet.name, fleet.orch
                     )),
                     _ if workers_working => out.push(format!(
-                        "{}: {} STALLED while worker(s) working — wave spawned, not collecting",
+                        "{}: {} STALLED while worker(s) working — wave spawned, not collecting{pr_note}",
                         fleet.name, fleet.orch
                     )),
-                    Some(None) => out.push(format!(
-                        "{}: {} STALLED (status={}; open-PR check unavailable)",
-                        fleet.name, fleet.orch, orch.status
-                    )),
                     _ => out.push(format!(
-                        "{}: {} STALLED (status={})",
+                        "{}: {} STALLED (status={}{pr_note})",
                         fleet.name, fleet.orch, orch.status
                     )),
                 }
@@ -104,28 +118,56 @@ pub fn problems(registry: &Registry, agents: &AgentsView, prs: &PrCounts) -> Vec
 }
 
 /// Component-exact path membership: does `cwd` sit inside the fleet's
-/// local checkout or its herdr worktree directory? Component-exact on
-/// purpose — a prefix match would let `~/w/corral-x` count as inside
-/// `~/w/corral` and another fleet's workers false-trigger the stall
-/// heuristics (the legacy fleet_matcher's S5 rule).
-pub fn cwd_in_fleet(cwd: &str, local: &str, worktree_dir: &str) -> bool {
+/// local checkout or its herdr worktree directory? Ports all three legacy
+/// fleet_matcher rules:
+/// - S5: component-exact — a prefix match would let `~/w/corral-x` count
+///   as inside `~/w/corral`;
+/// - M1/S4: the worktree leg is ANCHORED at `<home>/.herdr/worktrees/` —
+///   a nested or foreign `.herdr/worktrees` anywhere else on disk never
+///   matches (review F6). The legacy orca-era `~/orca/workspaces` leg is
+///   deliberately dropped (orca is retired — declared deviation);
+/// - M2: a `local` shallower than two components below `<home>` is
+///   ignored — `~/Projects` or `<home>` itself must not authorize every
+///   main-checkout cwd on the machine (review F7). Trailing slashes are
+///   normalized first (review F10).
+pub fn cwd_in_fleet(cwd: &str, local: &str, worktree_dir: &str, home: &str) -> bool {
     if cwd.is_empty() {
         return false;
     }
-    if !local.is_empty() && (cwd == local || cwd.starts_with(&format!("{local}/"))) {
+    let local = local.trim_end_matches('/');
+    if local_authorized(local, home) && (cwd == local || cwd.starts_with(&format!("{local}/"))) {
         return true;
     }
-    if worktree_dir.is_empty() {
+    if worktree_dir.is_empty() || home.is_empty() {
         return false;
     }
-    let marker = format!("/.herdr/worktrees/{worktree_dir}");
-    match cwd.find(&marker) {
-        Some(idx) => {
-            let after = &cwd[idx + marker.len()..];
-            after.is_empty() || after.starts_with('/')
-        }
-        None => false,
+    let root = format!(
+        "{}/.herdr/worktrees/{worktree_dir}",
+        home.trim_end_matches('/')
+    );
+    cwd == root || cwd.starts_with(&format!("{root}/"))
+}
+
+/// Legacy `local_ok` (M2): a usable `local` sits at least two path
+/// components below `home`. Anything shallower — `/`, home itself,
+/// `~/Projects` — would let one fleet claim every checkout on the box.
+fn local_authorized(local: &str, home: &str) -> bool {
+    if local.is_empty() {
+        return false;
     }
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        // No home to judge depth against: require an absolute path with
+        // at least three components as a conservative stand-in.
+        return local.split('/').filter(|c| !c.is_empty()).count() >= 3;
+    }
+    let Some(rest) = local.strip_prefix(&format!("{home}/")) else {
+        // A local OUTSIDE home (e.g. /opt/board) has no depth hazard
+        // relative to home; keep it, matching legacy's home-relative rule
+        // scope.
+        return local != home && !local.is_empty();
+    };
+    rest.split('/').filter(|c| !c.is_empty()).count() >= 2
 }
 
 #[cfg(test)]
@@ -184,15 +226,51 @@ mod tests {
 
     #[test]
     fn healthy_fleet_reports_nothing() {
-        let out = problems(&registry(false), &Some(healthy_agents()), &no_prs());
+        let out = problems(
+            &registry(false),
+            &Some(healthy_agents()),
+            &no_prs(),
+            "/Users/x",
+        );
         assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]
     fn server_down_is_one_line_with_no_per_fleet_spam() {
-        let out = problems(&registry(false), &None, &no_prs());
+        let out = problems(&registry(false), &None, &no_prs(), "/Users/x");
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].contains("herdr server NOT reachable"));
+    }
+
+    /// F3: a SUCCESSFUL empty listing is a healthy answer — never a
+    /// server-down false alarm; per-fleet checks stay truthful.
+    #[test]
+    fn empty_listing_is_not_server_down() {
+        let paused = problems(
+            &registry(true),
+            &Some(BTreeMap::new()),
+            &no_prs(),
+            "/Users/x",
+        );
+        // corral paused (silent); board's missing orch is the only line.
+        assert_eq!(
+            paused,
+            vec!["board: orchestrator orch-board MISSING".to_string()]
+        );
+        let out = problems(
+            &registry(false),
+            &Some(BTreeMap::new()),
+            &no_prs(),
+            "/Users/x",
+        );
+        assert!(
+            out.iter().all(|l| !l.contains("NOT reachable")),
+            "empty listing must not claim the server is down: {out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|l| l.contains("orchestrator orch-corral MISSING"))
+        );
     }
 
     #[test]
@@ -201,7 +279,7 @@ mod tests {
         // board still checked.
         let mut agents = BTreeMap::new();
         agents.insert("orch-board".to_string(), agent("working", "/repos/board"));
-        let out = problems(&registry(true), &Some(agents), &no_prs());
+        let out = problems(&registry(true), &Some(agents), &no_prs(), "/Users/x");
         assert!(out.is_empty(), "paused fleet fully silenced: {out:?}");
     }
 
@@ -210,7 +288,7 @@ mod tests {
         let mut agents = healthy_agents();
         agents.remove("orch-corral");
         agents.remove("w2");
-        let out = problems(&registry(false), &Some(agents), &no_prs());
+        let out = problems(&registry(false), &Some(agents), &no_prs(), "/Users/x");
         assert_eq!(
             out,
             vec![
@@ -230,7 +308,7 @@ mod tests {
             ("o/corral".to_string(), Some(3)),
             ("o/board".to_string(), Some(0)),
         ]);
-        let out = problems(&registry(false), &Some(agents.clone()), &prs);
+        let out = problems(&registry(false), &Some(agents.clone()), &prs, "/Users/x");
         assert_eq!(
             out,
             vec!["corral: orch-corral STALLED with 3 open PR(s)".to_string()]
@@ -238,15 +316,41 @@ mod tests {
 
         // 2) Workers working (by name) comes next.
         agents.insert("w1".to_string(), agent("working", "/elsewhere"));
-        let out = problems(&registry(false), &Some(agents.clone()), &no_prs());
+        let out = problems(
+            &registry(false),
+            &Some(agents.clone()),
+            &no_prs(),
+            "/Users/x",
+        );
         assert_eq!(
             out,
             vec!["corral: orch-corral STALLED while worker(s) working — wave spawned, not collecting".to_string()]
         );
 
+        // 2b) F5: gh unavailable is stated on the wave-spawned flavor too.
+        let prs_unavailable_all = BTreeMap::from([
+            ("o/corral".to_string(), None),
+            ("o/board".to_string(), Some(0)),
+        ]);
+        let out = problems(
+            &registry(false),
+            &Some(agents.clone()),
+            &prs_unavailable_all,
+            "/Users/x",
+        );
+        assert_eq!(
+            out,
+            vec!["corral: orch-corral STALLED while worker(s) working — wave spawned, not collecting; open-PR check unavailable".to_string()]
+        );
+
         // 3) Plain stall with the status named.
         agents.insert("w1".to_string(), agent("idle", "/repos/corral"));
-        let out = problems(&registry(false), &Some(agents.clone()), &no_prs());
+        let out = problems(
+            &registry(false),
+            &Some(agents.clone()),
+            &no_prs(),
+            "/Users/x",
+        );
         assert_eq!(
             out,
             vec!["corral: orch-corral STALLED (status=idle)".to_string()]
@@ -257,7 +361,12 @@ mod tests {
             ("o/corral".to_string(), None),
             ("o/board".to_string(), Some(0)),
         ]);
-        let out = problems(&registry(false), &Some(agents), &prs_unavailable);
+        let out = problems(
+            &registry(false),
+            &Some(agents),
+            &prs_unavailable,
+            "/Users/x",
+        );
         assert_eq!(
             out,
             vec![
@@ -275,7 +384,12 @@ mod tests {
             "g99-1".to_string(),
             agent("working", "/Users/x/.herdr/worktrees/corral/g99-fix"),
         );
-        let out = problems(&registry(false), &Some(agents.clone()), &no_prs());
+        let out = problems(
+            &registry(false),
+            &Some(agents.clone()),
+            &no_prs(),
+            "/Users/x",
+        );
         assert!(
             out[0].contains("wave spawned"),
             "cwd-matched worker counts: {out:?}"
@@ -286,7 +400,7 @@ mod tests {
             "g99-1".to_string(),
             agent("working", "/Users/x/.herdr/worktrees/corral-x/g99-fix"),
         );
-        let out = problems(&registry(false), &Some(agents), &no_prs());
+        let out = problems(&registry(false), &Some(agents), &no_prs(), "/Users/x");
         assert_eq!(
             out,
             vec!["corral: orch-corral STALLED (status=idle)".to_string()],
@@ -296,30 +410,109 @@ mod tests {
 
     #[test]
     fn cwd_matcher_edges() {
-        assert!(cwd_in_fleet("/repos/corral", "/repos/corral", "corral"));
-        assert!(cwd_in_fleet("/repos/corral/sub", "/repos/corral", "corral"));
-        assert!(!cwd_in_fleet("/repos/corral-x", "/repos/corral", "corral"));
-        assert!(cwd_in_fleet("/u/.herdr/worktrees/corral", "", "corral"));
-        assert!(cwd_in_fleet("/u/.herdr/worktrees/corral/wt1", "", "corral"));
+        assert!(cwd_in_fleet(
+            "/repos/corral",
+            "/repos/corral",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(cwd_in_fleet(
+            "/repos/corral/sub",
+            "/repos/corral",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(!cwd_in_fleet(
+            "/repos/corral-x",
+            "/repos/corral",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(cwd_in_fleet(
+            "/u/.herdr/worktrees/corral",
+            "",
+            "corral",
+            "/u"
+        ));
+        assert!(cwd_in_fleet(
+            "/u/.herdr/worktrees/corral/wt1",
+            "",
+            "corral",
+            "/u"
+        ));
         assert!(!cwd_in_fleet(
             "/u/.herdr/worktrees/corral-x/wt1",
             "",
-            "corral"
+            "corral",
+            "/u"
         ));
-        assert!(!cwd_in_fleet("", "/repos/corral", "corral"));
-        assert!(!cwd_in_fleet("/anything", "", ""));
+        assert!(!cwd_in_fleet("", "/repos/corral", "corral", "/Users/x"));
+        assert!(!cwd_in_fleet("/anything", "", "", "/Users/x"));
+        // F6: worktree leg anchored at <home>/.herdr/worktrees.
+        assert!(!cwd_in_fleet(
+            "/Users/x/Projects/sandbox/.herdr/worktrees/corral/wt",
+            "",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(!cwd_in_fleet(
+            "/Users/other/.herdr/worktrees/corral/wt",
+            "",
+            "corral",
+            "/Users/x"
+        ));
+        // F7: shallow locals authorize nothing.
+        assert!(!cwd_in_fleet(
+            "/Users/x/Projects/anything",
+            "/Users/x/Projects",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(!cwd_in_fleet(
+            "/Users/x/whatever",
+            "/Users/x",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(cwd_in_fleet(
+            "/Users/x/Projects/corral/sub",
+            "/Users/x/Projects/corral",
+            "corral",
+            "/Users/x"
+        ));
+        assert!(cwd_in_fleet(
+            "/opt/board/x",
+            "/opt/board",
+            "board",
+            "/Users/x"
+        ));
+        // F10: trailing slash on local must not disable the leg.
+        assert!(cwd_in_fleet(
+            "/Users/x/Projects/corral",
+            "/Users/x/Projects/corral/",
+            "corral",
+            "/Users/x"
+        ));
     }
 
     #[test]
     fn output_is_sorted_and_stable() {
-        let out = problems(&registry(false), &Some(BTreeMap::new()), &no_prs());
-        let mut sorted = out.clone();
-        sorted.sort();
-        assert_eq!(out, sorted);
+        // Exact expected vector: pins the ordering CONTRACT, not just
+        // that some sort happened (review F12b).
+        let out = problems(
+            &registry(false),
+            &Some(BTreeMap::new()),
+            &no_prs(),
+            "/Users/x",
+        );
         assert_eq!(
-            out.len(),
-            4,
-            "both orchs + both corral workers missing: {out:?}"
+            out,
+            vec![
+                "board: orchestrator orch-board MISSING".to_string(),
+                "corral: orchestrator orch-corral MISSING".to_string(),
+                "corral: worker w1 MISSING (server restart?)".to_string(),
+                "corral: worker w2 MISSING (server restart?)".to_string(),
+            ]
         );
     }
 }

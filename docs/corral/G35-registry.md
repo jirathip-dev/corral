@@ -108,9 +108,24 @@ workers still working → plain, naming the status; a failed gh check is
 stated as unavailable, never treated as zero), and missing workers.
 Paused fleets are skipped entirely — pausing genuinely silences the
 watchdog. Output is sorted `PROBLEM:` lines or `ALL HEALTHY`; exit 0
-healthy / 1 problems / 2 usage-parse. Fleet-worker attribution matches by
-name or component-exact cwd (another fleet's `corral-x` worktree can
-never count for `corral`).
+healthy / 1 problems / 2 usage-parse. A corrupt/unreadable registry is
+itself a `PROBLEM:` line on stdout with exit 1 (monitor safety: the
+watchdog alerts on the failure that stops it watching). Fleet-worker
+attribution matches by the fleet's own `workers[]` names or by
+component-exact cwd anchored at the fleet's `local` (two+ components
+below `$HOME`, or outside it) and `$HOME/.herdr/worktrees/<worktree_dir>`
+— another fleet's `corral-x` worktree can never count for `corral`.
+
+Declared deviations from the legacy `fleet-watch.py` (beyond the checks
+themselves): one `PROBLEM:` line per problem instead of one joined line;
+worker lines carry the fleet prefix; the server-down text names the
+failed listing call rather than a launchd label; exit 1 when problems
+exist (legacy always exited 0 — cron wrappers treating non-zero as
+script failure need `|| true`); a successful zero-agent listing is
+healthy, never server-down; worker names count per-fleet, not globally;
+the orca-era workspaces leg is dropped; gh unavailability is stated on
+every stalled flavor (informational, at the cost of an extra output flap
+when the network blips).
 
 `<name>` may also be passed as `--name`, and `--worktree-dir` is an alias
 for `--worktree` — both spellings match the legacy fleet CLI. Defaults:

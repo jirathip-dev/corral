@@ -2316,3 +2316,69 @@ fn default_registry_path_is_corral_owned_with_legacy_fallback() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// #35 watchdog CLI (review F12): the hermetic paths — everything that
+// returns before any shell-out.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fleet_watch_usage_and_help_are_hermetic() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let bogus = Command::new(bin)
+        .args(["fleet", "watch", "--bogus"])
+        .env("CORRAL_FLEETS_PATH", "/nonexistent/never-touched.json")
+        .output()
+        .expect("run");
+    assert_eq!(bogus.status.code(), Some(2), "unknown flag is usage");
+
+    let help = Command::new(bin)
+        .args(["fleet", "watch", "--help"])
+        .output()
+        .expect("run");
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("watch"),
+        "help documents watch"
+    );
+}
+
+/// Review F1/F2: a corrupt or missing registry is a PROBLEM line on
+/// STDOUT with exit 1 — the monitor must alert on the failure that stops
+/// it watching, never die silently to stderr with an ambiguous code.
+#[test]
+fn fleet_watch_bad_registry_alerts_on_stdout_exit_1() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    // Missing file.
+    let missing = Command::new(bin)
+        .args(["fleet", "watch", "--registry"])
+        .arg(dir.path().join("nope.json"))
+        .output()
+        .expect("run");
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&missing.stdout).contains("PROBLEM: fleet registry"),
+        "stdout: {}",
+        String::from_utf8_lossy(&missing.stdout)
+    );
+
+    // Validation failure that maps to exit 1 at load (duplicate name) —
+    // watch must still be 1-with-PROBLEM, not a bare refusal.
+    let dup = write_registry(
+        dir.path(),
+        &format!(r#"{{ "fleets": [{VALID_A}, {VALID_A}] }}"#),
+    );
+    let out = Command::new(bin)
+        .args(["fleet", "watch", "--registry"])
+        .arg(&dup)
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PROBLEM: fleet registry") && stdout.contains("duplicate"),
+        "names the corruption: {stdout}"
+    );
+}

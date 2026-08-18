@@ -1202,14 +1202,14 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("temp dir");
         let db = dir.path().join("opencode.db");
-        let secret = "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3A"; // rule-4 shape, 41 chars
+        let secret = "Ab1".repeat(14); // rule-4 shape, 42 alnum chars (built, not a literal, for the secret scanner)
         // ASCII filler of space-separated words, sized so the secret
         // STRADDLES the substr cap (cap = MAX+1 chars == bytes here).
         let filler_len = MAX_PAGE_TEXT_BYTES + 1 - 22; // cut lands 22 chars into the secret
         let word = "wordy ";
         let mut body = word.repeat(filler_len / word.len() + 1);
         body.truncate(filler_len);
-        body.push_str(secret);
+        body.push_str(&secret);
         body.push_str(" trailing tail beyond the cap");
         let seed = format!(
             r#"

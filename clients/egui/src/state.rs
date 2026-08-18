@@ -111,6 +111,12 @@ impl Fleet {
         self.agents = snap.agents.clone();
         self.rev = Some(snap.rev);
         self.generated_at = Some(snap.generated_at);
+        // #64 review R8: a reconnect snapshot that dropped an agent must
+        // not leave an orphan transcript pane (a stale-cursor auto-reload
+        // against it would burn an audited unknown_agent fetch). `tails`
+        // has the same pre-existing gap; pruning it is out of #64's scope.
+        let agents = &self.agents;
+        self.transcripts.retain(|id, _| agents.contains_key(id));
     }
 
     pub fn apply_delta(&mut self, delta: &crate::model::Delta) {
@@ -428,7 +434,8 @@ mod tests {
 
     /// #64: the transcript pane cache is bounded — a 65th agent evicts
     /// the LEAST-RECENTLY-TOUCHED pane (review F14: real LRU, never the
-    /// one the user is actively reading), and an existing agent's pane
+    /// one most recently fetched for — R5: pure reading does not stamp
+    /// the clock), and an existing agent's pane
     /// never evicts.
     #[test]
     fn transcript_pane_cache_is_bounded_lru() {
@@ -446,7 +453,7 @@ mod tests {
         assert!(fleet.transcripts.contains_key("agent-new"));
         assert!(
             fleet.transcripts.contains_key("agent-00"),
-            "LRU spares the active pane"
+            "LRU spares the most recently fetched-for pane"
         );
         assert!(
             !fleet.transcripts.contains_key("agent-01"),

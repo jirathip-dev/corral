@@ -138,6 +138,11 @@ impl CorralApp {
             // redirect would forward the signed x-corral-drive header (a
             // replayable read credential) to wherever a hostile 302
             // points — reqwest only strips Authorization-class headers.
+            // DELIBERATELY GLOBAL (R6): this is the shared client, so
+            // every endpoint (/snapshot, /events, /drive, /audit) stops
+            // following redirects too — a redirecting proxy in front of
+            // corrald now fails loudly as HTTP 3xx everywhere instead of
+            // silently forwarding credentials.
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client");

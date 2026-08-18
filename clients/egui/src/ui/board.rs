@@ -835,8 +835,13 @@ fn transcript_section(
                 .show_rows(ui, row_height, pane.entries.len(), |ui, range| {
                     for index in range {
                         let entry = &pane.entries[index];
-                        let line = transcript_row_text(pane.base_offset + index, entry);
-                        let is_selected = selected == Some(index);
+                        // R1: selection is ABSOLUTE (base_offset + index)
+                        // — the window slides under relative indices and
+                        // a slid selection would silently highlight a
+                        // different message.
+                        let absolute = pane.base_offset + index;
+                        let line = transcript_row_text(absolute, entry);
+                        let is_selected = selected == Some(absolute);
                         // Review F3: each row occupies EXACTLY the pitch
                         // show_rows was given — uniform height holds by
                         // construction, not by coincidence of two style
@@ -844,23 +849,30 @@ fn transcript_section(
                         // pinned by test).
                         let desired = egui::vec2(ui.available_width(), row_height);
                         let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+                        // R2: a content-anchored id salt — the row body
+                        // consumes auto ids, which would otherwise shift
+                        // with the scroll offset and lose a
+                        // press-scroll-release click.
                         let mut row_ui = ui.new_child(
                             egui::UiBuilder::new()
                                 .max_rect(rect)
+                                .id_salt(absolute)
                                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
                         if row_ui
                             .selectable_label(is_selected, RichText::new(line).monospace())
                             .clicked()
                         {
-                            selected = if is_selected { None } else { Some(index) };
+                            selected = if is_selected { None } else { Some(absolute) };
                         }
                     }
                 });
             ui.memory_mut(|m| m.data.insert_temp(selected_id, selected));
 
-            if let Some(index) = selected
-                && let Some(entry) = pane.entries.get(index)
+            if let Some(absolute) = selected
+                && let Some(entry) = absolute
+                    .checked_sub(pane.base_offset)
+                    .and_then(|i| pane.entries.get(i))
             {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.label(
@@ -988,6 +1000,9 @@ pub fn transcript_row_text(index: usize, entry: &crate::transcript::TranscriptEn
 /// names the grant the operator must issue.
 pub fn transcript_error_text(error: &crate::transcript::TranscriptFailure) -> String {
     match error.kind.as_str() {
+        // Defensive: after F5's gating a refusal demotes the ledger and
+        // the section is replaced next frame — this copy renders only in
+        // the frame(s) before that propagates. Kept deliberately.
         "not_granted" => "needs the read_tail grant (host: corrald-grant.sh)".to_string(),
         "ambiguous_session" => format!("{} — candidates:", error.message),
         "bad_cursor" => "session changed again while paging — reload to continue".to_string(),
@@ -1339,6 +1354,40 @@ mod tests {
             pitch <= actual + 8.0,
             "pitch {pitch} should not be wildly larger than the row {actual} (dead space)"
         );
+
+        // R7: the load-bearing invariant is that a row can NEVER wrap to
+        // a second line — pinned with a long line in a deliberately
+        // NARROW rect using the exact render structure (exact-size
+        // allocation + left_to_right child, whose wrap mode is Extend).
+        let mut narrow_height: Option<f32> = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+            let pitch = transcript_row_pitch(ui);
+            let entry = crate::transcript::TranscriptEntry {
+                role: "assistant".into(),
+                text: "w".repeat(300),
+                ts: None,
+            };
+            let line = transcript_row_text(7, &entry);
+            let desired = egui::vec2(80.0, pitch);
+            let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+            let mut row_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .id_salt(7usize)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let response = row_ui.selectable_label(false, egui::RichText::new(line).monospace());
+            narrow_height = Some((pitch, response.rect.height()).1.min(f32::MAX));
+            assert!(
+                response.rect.height() <= pitch,
+                "a long line in a narrow rect must not wrap: row {} > pitch {pitch}",
+                response.rect.height()
+            );
+        });
+        output.textures_delta.clear();
+        narrow_height.expect("narrow row rendered");
     }
 
     /// #64 review F4: the selected-entry detail lays out a BOUNDED slice

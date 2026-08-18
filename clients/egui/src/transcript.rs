@@ -189,13 +189,22 @@ impl TranscriptPane {
         // Slide: drop the NEWEST-loaded entries past the caps. At least
         // one entry is always kept, so a single over-cap entry (the
         // daemon exempts a page's first entry from its text budget)
-        // still renders rather than emptying the pane.
-        while self.entries.len() > 1
-            && (self.entries.len() > MAX_ENTRIES || self.held_bytes > MAX_TEXT_BYTES)
+        // still renders rather than emptying the pane. Known cliff
+        // (review R4, accepted): one such giant arriving can slide out
+        // EVERYTHING held before it — honestly counted in base_offset,
+        // and display-side layout is bounded regardless.
+        let mut drop = 0;
+        let mut bytes = self.held_bytes;
+        while self.entries.len() - drop > 1
+            && (self.entries.len() - drop > MAX_ENTRIES || bytes > MAX_TEXT_BYTES)
         {
-            let dropped = self.entries.remove(0);
-            self.held_bytes = self.held_bytes.saturating_sub(dropped.text.len());
-            self.base_offset += 1;
+            bytes = bytes.saturating_sub(self.entries[drop].text.len());
+            drop += 1;
+        }
+        if drop > 0 {
+            self.entries.drain(0..drop);
+            self.held_bytes = bytes;
+            self.base_offset += drop;
         }
     }
 

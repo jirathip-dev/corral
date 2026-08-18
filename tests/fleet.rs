@@ -2249,6 +2249,8 @@ fn impl_alt2_empty_value_clears_the_slot_from_written_json() {
     assert!(
         text.contains("\"impl_alt\""),
         "impl_alt (the OTHER slot) survives: {text}"
+    );
+}
 
 // ---------------------------------------------------------------------------
 // #66: registry default path — corral-owned, legacy fallback.
@@ -2267,6 +2269,7 @@ fn default_registry_path_is_corral_owned_with_legacy_fallback() {
         .args(["fleet", "list"])
         .env("HOME", fresh.path())
         .env_remove("CORRAL_FLEETS_PATH")
+        .env_remove("CORRAL_CONFIG_DIR")
         .output()
         .expect("run");
     assert_eq!(out.status.code(), Some(2), "missing registry is exit 2");
@@ -2293,6 +2296,7 @@ fn default_registry_path_is_corral_owned_with_legacy_fallback() {
         .args(["fleet", "list"])
         .env("HOME", legacy_home.path())
         .env_remove("CORRAL_FLEETS_PATH")
+        .env_remove("CORRAL_CONFIG_DIR")
         .output()
         .expect("run");
     assert!(

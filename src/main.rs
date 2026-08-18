@@ -214,8 +214,10 @@ fn print_fleet_help() {
          \twrite failed — the registry is left byte-identical;\n\
          \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
          \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
-         \tor ~/.config/corral/fleets.json; a pre-existing legacy\n\
-         \t~/.hermes/scripts/fleets.json is used as a fallback)"
+         \tor $CORRAL_CONFIG_DIR/fleets.json, default\n\
+         \t~/.config/corral/fleets.json; a pre-existing legacy\n\
+         \t~/.hermes/scripts/fleets.json is used as a fallback,\n\
+         \twith a stderr note)"
     );
 }
 

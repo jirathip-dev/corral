@@ -226,14 +226,17 @@ impl Fleet {
 
 /// The registry file to use when the CLI gets no `--registry` (#66):
 ///
-/// 1. `$CORRAL_FLEETS_PATH`, when set — always wins.
-/// 2. `$HOME/.config/corral/fleets.json` — the corral-owned default,
-///    next to the rest of the config dir — when it exists OR when the
-///    legacy path does not (so a fresh machine gets the corral path).
+/// 1. `$CORRAL_FLEETS_PATH`, when set and non-empty — always wins.
+/// 2. `<config dir>/fleets.json` — the corral-owned default, where the
+///    config dir honours `$CORRAL_CONFIG_DIR` (falling back to
+///    `$HOME/.config/corral`) like every other consumer of the config
+///    dir — when it exists OR when the legacy path does not (so a fresh
+///    machine gets the corral path).
 /// 3. `$HOME/.hermes/scripts/fleets.json` — the pre-#66 legacy location,
-///    honoured as a migration fallback ONLY when it exists and the
-///    corral-owned file does not. Machines that predate the move keep
-///    working untouched; nothing is copied or migrated implicitly.
+///    honoured as a migration fallback ONLY while the corral-owned file
+///    does not exist, announced by a stderr note each time. Machines that
+///    predate the move keep working untouched; nothing is copied or
+///    migrated implicitly.
 pub fn default_path() -> PathBuf {
     // Empty-but-set env vars fall through like unset ones — `export
     // CORRAL_FLEETS_PATH=` in a profile must not produce a path-less error.

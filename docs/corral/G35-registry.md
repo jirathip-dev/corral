@@ -2,12 +2,14 @@
 
 Issue #35 (fleet control-plane consolidation): corrald reads the fleet
 registry — `fleets.json`, today the single source of truth for the separate
-fleet tooling — and, as of slice 1, also WRITES it. `list` / `check` are
-read-only views; **`add` / `remove` mutate the registry** behind a
-repo-resolves check, candidate validation, and an atomic temp-file+rename
-write that leaves the original byte-identical on any refusal or failure.
-Nothing touches a running agent. Pause/resume, model switching, spawning,
-watchdogs, reaping and worktree pruning land in later phases of #35.
+fleet tooling — and, as of slices 1–2, also WRITES it. `list` / `check` are
+read-only views; **`add` / `remove`** (slice 1) and **`pause` / `resume` /
+`models`** (slice 2) mutate the registry behind candidate validation and an
+atomic temp-file+rename write that leaves the original byte-identical on any
+refusal or failure. Nothing touches a running agent — pause/resume here are
+pure registry mutations; the auth-gated ops half (halting working agents,
+the model-switch re-arm) is a later #35 slice. Spawning, watchdogs, reaping
+and worktree pruning land in later phases of #35 too.
 
 ## Registry schema
 
@@ -78,7 +80,7 @@ worktree) — both count as resolved.
 Both `ok` and `FAIL` lines go to **stdout**, deliberately, so `check` output
 stays one greppable stream; the exit code is what a script should branch on.
 
-## Write commands (slice 1)
+## Write commands (slice 1: add/remove)
 
 ```
 corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
@@ -103,16 +105,49 @@ file must already exist — bootstrap one with `echo '{"fleets": []}' >
 the legacy tooling) can lose the load→rename race; single-writer
 discipline is assumed during the migration window.
 
+## Write commands (slice 2: pause/resume/models)
+
+```
+corrald fleet pause <name> [--registry <path>]
+corrald fleet resume <name> [--registry <path>]
+corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]
+    [--impl-alt2 M] [--review M] [--registry <path>]
+```
+
+`pause` sets `"paused": true` on exactly one fleet; `resume` clears it.
+Both are **idempotent**: pausing an already-paused fleet (or resuming an
+unpaused one) is a no-op SUCCESS — nothing is written, exit 0, and the
+message says so ("already paused"). Per the schema's skip rule, a resumed
+fleet omits `paused` entirely (false is never written).
+
+`models` updates **only the flags given**, leaving every other slot —
+including the optional alt slots — untouched. At least one flag is
+required (usage error, exit 2, otherwise). Empty values for the required
+`orch`/`impl`/`review` slots are a usage error (exit 2); empty values for
+the optional slots CLEAR them: `--impl-alt ''` removes `impl_alt` from the
+written JSON, `--impl-alt2 ''` removes `impl_alt2`. `<name>` may be `all`
+— the update applies to every fleet (legacy semantics). Each affected
+fleet's change is printed on success:
+
+```
+board models changed: orch fable -> fable; impl sonnet -> gpt-5.6-luna; impl_alt - -> -; impl_alt2 - -> -; review opus -> opus
+```
+
+All three refuse an unknown fleet name (exit 1, `FleetNotFound`) writing
+nothing, validate the candidate registry before writing, and leave the
+file byte-identical on any refusal or write failure.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove` wrote the registry |
-| 1    | `check`: at least one fleet failed verification; `add`/`remove`: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical |
+| 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove`/`pause`/`resume`/`models` wrote the registry (or were an idempotent no-op) |
+| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical |
 | 2    | usage error, unreadable/unparseable registry, or validation failure |
 
 ## Phase boundary (explicitly out of scope)
 
-- No `fleet pause/resume/models/switch` — later phases.
+- No `fleet switch`, and no ops half of pause/resume (halting working
+  agents, auth-gated model-switch re-arm) — later phases.
 - No status/watch/reap/prune consolidation — later phases.
 - No change to the running agent, session, or `src/drive/` contract.

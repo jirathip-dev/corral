@@ -147,9 +147,13 @@ dispatch.
 ## Security model
 
 - **Loopback by default, public refused.** `corrald` binds `127.0.0.1`
-  by default and refuses public/routable binds. The read plane is
-  credential-free *because* it is loopback-local; private/tailnet binds
-  (#65) will still sit behind the full device-signature + grants plane.
+  by default; `--bind` also accepts private (RFC 1918), Tailscale/CGNAT
+  (100.64/10), and IPv6 unique-local addresses (#65) — public IPs and
+  0.0.0.0 are hard refusals. The WRITE plane is device-signed everywhere.
+  The READ plane (`/snapshot`, `/events`) is credential-free: on loopback
+  that is process-local trust; on a tailnet bind the boundary is the
+  tailnet itself (WireGuard device auth) — bind a tailnet IP only on
+  tailnets whose every device may see fleet state.
 - **Three credentials, never one** (D13): registration token (routing
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
   writes; host identity is X25519, published by `GET /host-key`), and
@@ -208,7 +212,7 @@ corral never writes to another tool's state.
 ## Layout on main
 
 ```
-src/main.rs          binary: arg parsing (loopback enforced), auth plane,
+src/main.rs          binary: arg parsing (non-public bind allowlist), auth plane,
                      planes supervisor, axum serve
 src/lib.rs           library surface
 src/adapters/        herdr (push), git_plane, gh_plane, Adapter trait

@@ -68,7 +68,9 @@ before expiry.
 ### Grants model
 
 - Registered device: read plane only (`/snapshot`, `/events` —
-  loopback-local, credential-free).
+  credential-free; on a non-loopback bind the tailnet/private network
+  itself is the read boundary, so bind beyond loopback only on networks
+  whose every device may see fleet state).
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.
@@ -225,7 +227,9 @@ fail loudly. Full schema and the per-command exit-code table:
 
 ## Security model summary
 
-- Loopback-only binding; `corrald` exits if asked to bind a routable
+- Non-public binds only (loopback default; private/RFC 1918, Tailscale
+  100.64/10, and IPv6 unique-local permitted — #65); `corrald` exits if
+  asked to bind a public/routable
   address.
 - Three credentials, never one: registration token (routing only),
   per-device Ed25519 keypair (authenticates writes; host identity is
@@ -246,7 +250,7 @@ fail loudly. Full schema and the per-command exit-code table:
 
 | Symptom | Cause / fix |
 |---|---|
-| `refusing to bind <addr>` | `--bind` must be loopback (`127.0.0.1`); this is a hard refusal |
+| `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
 | Daemon won't start, `failed to bind` | port already in use — pick another `--port`; `lsof -nP -iTCP:<port> -sTCP:LISTEN` to see who owns it |
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |

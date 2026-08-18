@@ -565,7 +565,11 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                      USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\n\
                      --socket  herdr API socket (default ~/.config/herdr/herdr.sock)\n\
                      --port    HTTP port (default {DEFAULT_PORT})\n\
-                     --bind    loopback bind address (default {DEFAULT_BIND})"
+                     --bind    bind address (default {DEFAULT_BIND}); loopback,\n\
+                     private (RFC 1918), Tailscale/CGNAT 100.64/10, and IPv6\n\
+                     unique-local are permitted — public IPs and 0.0.0.0 are\n\
+                     refused (the auth plane is the boundary on permitted\n\
+                     interfaces)"
                 );
                 std::process::exit(0);
             }
@@ -584,17 +588,39 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
             .expect("invalid --bind address"),
         port.unwrap_or(DEFAULT_PORT),
     ));
-    // Security baseline: loopback only until P3 device signatures. Refuse
-    // anything routable rather than silently exposing unauthenticated agent
-    // state to the network.
-    if !addr.ip().is_loopback() {
+    // Security baseline (#65): non-public interfaces only. The P3 auth
+    // plane (per-device Ed25519 signatures, grants, step-up, audit) is the
+    // trust boundary on those interfaces; public/unspecified binds stay
+    // refused — corrald is not an internet-facing service.
+    if !bind_permitted(&addr.ip()) {
         eprintln!(
-            "refusing to bind {addr}: P1 corrald has no auth and must stay on \
-             loopback until P3 device signatures land"
+            "refusing to bind {addr}: only loopback, private (RFC 1918), \
+             Tailscale/CGNAT (100.64.0.0/10), and IPv6 unique-local (RFC 4193) \
+             addresses are permitted — never public interfaces or 0.0.0.0"
         );
         std::process::exit(2);
     }
     (socket_path, addr)
+}
+
+/// #65: which interfaces `--bind` may use. Loopback (the default), RFC 1918
+/// private ranges, the CGNAT block Tailscale assigns from (100.64.0.0/10),
+/// and IPv6 unique-local (RFC 4193, fc00::/7). Explicitly NOT permitted:
+/// the unspecified addresses (0.0.0.0 / ::, which would bind every
+/// interface) and public routable space. The auth plane is the boundary on
+/// permitted interfaces; this guard keeps the daemon off the open internet
+/// regardless.
+fn bind_permitted(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            // fc00::/7 — unique-local (Tailscale also assigns fd7a:115c::/48).
+            v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
 }
 
 async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
@@ -665,11 +691,17 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
+    let scope = if addr.ip().is_loopback() {
+        "loopback"
+    } else {
+        "tailnet/private interface"
+    };
     tracing::info!(
         %addr,
+        scope,
         socket = %socket_path.display(),
         config_dir = %config_dir().display(),
-        "corrald listening (loopback only); auth plane live: GET /host-key, POST /register"
+        "corrald listening; auth plane live: GET /host-key, POST /register"
     );
     axum::serve(listener, app).await.expect("axum server");
 }
@@ -709,5 +741,51 @@ async fn supervise_planes(store: Store, repo_root: PathBuf, worktrees_root: Path
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(INTEGRATOR_RECONNECT_MAX);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_permitted;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().expect("test ip parses")
+    }
+
+    /// #65: the bind allowlist — loopback, RFC 1918, Tailscale/CGNAT
+    /// 100.64/10, IPv6 unique-local in; public and unspecified out.
+    #[test]
+    fn bind_allowlist_accepts_non_public_and_refuses_public() {
+        for allowed in [
+            "127.0.0.1",
+            "127.0.0.53",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.10",
+            "100.64.0.1",      // CGNAT range start
+            "100.67.222.5",    // a typical tailnet address
+            "100.127.255.254", // CGNAT range end
+            "::1",
+            "fd7a:115c:a1e0::1", // Tailscale IPv6 ULA
+            "fc00::1",
+        ] {
+            assert!(bind_permitted(&ip(allowed)), "should permit {allowed}");
+        }
+        for refused in [
+            "0.0.0.0",        // every interface — never
+            "::",             // every interface (v6) — never
+            "203.0.113.5",    // public (TEST-NET-3)
+            "8.8.8.8",        // public
+            "100.63.255.255", // just below the CGNAT block
+            "100.128.0.0",    // just above the CGNAT block
+            "172.32.0.1",     // just outside 172.16/12
+            "2001:db8::1",    // public v6 (doc range)
+            "fe80::1",        // link-local: needs a zone, not supported
+            "169.254.1.1",    // v4 link-local
+        ] {
+            assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
+        }
     }
 }

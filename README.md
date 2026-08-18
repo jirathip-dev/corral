@@ -6,7 +6,7 @@
 several coding agents in git worktrees — Claude Code, Codex CLI, OpenCode,
 or any other agent harness — each with its own terminal, you need: one live
 board of what every agent is doing, signed remote control from your phone
-(devices connect over loopback today; tailnet binds land with #65), and
+(devices connect over loopback or a tailnet/private bind — #65), and
 cost visibility before a provider bill surprises you. Corral gives you
 that.
 

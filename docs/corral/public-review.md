@@ -111,7 +111,7 @@ never printed. No secrets are logged. Two real issues:
    `File.basename(env.fetch("ASC_KEY_PATH"))` against `fastlane/` — i.e. it
    assumes the `.p8` lives **inside** `fastlane/`. But `fastlane/.env.example:6-7`
    says the key lives "OUTSIDE this repo — never copy the key itself in here."
-   With a compliant `.env` (`ASC_KEY_PATH=/Users/me/keys/AuthKey_X.p8`) this
+   With a compliant `.env` (`ASC_KEY_PATH` set to `/Users/me/keys/AuthKey_X.p8`) this
    script — and the identical pattern at `Fastfile:25` and `Fastfile:161` — looks
    for `fastlane/AuthKey_X.p8` and fails. One of the two stories is wrong; a
    stranger following the docs hits this immediately. Either honor the absolute

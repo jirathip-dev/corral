@@ -25,7 +25,8 @@ Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
       "orch": "orch-corral",
       "workers": ["p4-w1", "p4-w1-reviewer"],
       "paused": true,
-      "models": { "orch": "fable", "impl": "opencode-go/deepseek-v4-flash", "review": "opus" }
+      "models": { "orch": "fable", "impl": "opencode-go/deepseek-v4-flash", "review": "opus",
+                  "impl_alt": "opencode-go/deepseek-v4-flash", "impl_alt2": "dsh" }
     }
   ]
 }
@@ -33,7 +34,10 @@ Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
 
 - `name`, `gh_repo`, `local`, `worktree_dir`, `orch` — required, non-empty strings.
 - `workers` — required array of strings; may be empty.
-- `models` — required object with required string keys `orch`, `impl`, `review`.
+- `models` — required object with required string keys `orch`, `impl`, `review`
+  and optional string keys `impl_alt` (fallback implementer) and `impl_alt2`
+  (last-resort backend). Absent alt keys stay absent through any rewrite; a
+  present key must be non-empty and whitespace-free, like the other model slots.
 - `paused` — optional bool, defaults to `false` when absent.
 - `local` may start with `~/` — expanded against `$HOME`.
 - Unknown fields anywhere (top level, fleet, models) → hard error, not silent

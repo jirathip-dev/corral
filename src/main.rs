@@ -471,6 +471,8 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
         orch: orch.ok_or_else(|| "--models must set orch".to_string())?,
         impl_: impl_.ok_or_else(|| "--models must set impl".to_string())?,
         review: review.ok_or_else(|| "--models must set review".to_string())?,
+        impl_alt: None,
+        impl_alt2: None,
     })
 }
 

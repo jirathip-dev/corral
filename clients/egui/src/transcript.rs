@@ -187,9 +187,12 @@ impl TranscriptPane {
         self.entries.extend(page.entries);
         self.pages += 1;
         // Slide: drop the NEWEST-loaded entries past the caps. At least
-        // one entry is always kept, so a single over-cap entry (the
-        // daemon exempts a page's first entry from its text budget)
-        // still renders rather than emptying the pane. Known cliff
+        // one entry is always kept, so a single over-cap entry still
+        // renders rather than emptying the pane. (Since #86 the daemon
+        // truncates every entry — first included — to its ~256KiB page
+        // budget, so such an entry is capped, not unbounded; keep-one
+        // remains as defense against a cap-sized entry alone exceeding
+        // the pane's own byte cap.) Known cliff
         // (review R4, accepted): one such giant arriving can slide out
         // EVERYTHING held before it — honestly counted in base_offset,
         // and display-side layout is bounded regardless.

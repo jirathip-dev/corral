@@ -892,8 +892,10 @@ fn transcript_section(
                         .color(theme::ui::TEXT_MUTED),
                     );
                     // Review F4: lay out a BOUNDED slice, never the whole
-                    // entry (the daemon exempts a page's first entry from
-                    // its budget, so a single row can be many MB).
+                    // entry. Since #86 the daemon truncates every entry to
+                    // its page budget (first entry included), but that cap
+                    // is ~256KiB — still far too big to lay out — and the
+                    // client should not trust the server's cap anyway.
                     let (shown, truncated) = transcript_detail_text(&entry.text);
                     ScrollArea::vertical()
                         .id_salt(("corral-ui-transcript-full", &agent.agent_id))

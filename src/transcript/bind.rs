@@ -46,8 +46,11 @@
 //! Path comparisons go through the integrator's `paths_match` (raw, then
 //! canonical — review F8): a symlinked `$HOME` or `/tmp` must not split
 //! herdr's raw cwd from the store's recorded spelling. All filesystem
-//! scanning runs under `spawn_blocking` with a wall-clock cap (review F6)
-//! — a huge `~/.codex/sessions` cannot pin the async runtime.
+//! scanning runs under `spawn_blocking` with a wall-clock cap (review
+//! F6), and a per-entry [`ScanBudget`] (deadline + file cap — review R3)
+//! stops the walk ITSELF on expiry, not just the response — a huge
+//! `~/.codex/sessions` can neither pin the async runtime nor grind on as
+//! detached work after its request has 503'd.
 //!
 //! A store that fails mid-bind is carried in
 //! [`BindOutcome::unavailable`] even when another store matched (review
@@ -530,15 +533,11 @@ async fn opencode_by_id(
         .map(|c| c.store))
 }
 
-/// Fallback rung: sessions whose `session.directory` matches the
-/// worktree. Sargable `IN` over the realistic spellings (raw + canonical,
-/// each with and without a trailing slash) so an index on `directory`
-/// stays usable, plus LIMIT — never a function-wrapped full scan (review
-/// F10). Recency = the session's last message time (0 for message-less
-/// sessions — still a candidate).
 /// The fallback-rung SQL — factored so a test can pin the F10 fix's
-/// actual shape (bare, sargable `s.directory IN`, LIMIT-bounded, no
-/// function wrapping the column) and the quote escaping (review R6).
+/// actual shape (bare, sargable `s.directory IN` over the realistic
+/// spellings — raw + canonical, each with and without a trailing slash —
+/// LIMIT-bounded, no function wrapping the column) and the quote
+/// escaping (review R6).
 fn opencode_fallback_sql(worktree: &str) -> String {
     let mut spellings: Vec<String> = Vec::new();
     let trimmed = worktree.trim_end_matches('/');
@@ -568,6 +567,9 @@ fn opencode_fallback_sql(worktree: &str) -> String {
     )
 }
 
+/// Fallback rung: sessions whose `session.directory` matches the
+/// worktree. Recency = the session's last message time (0 for
+/// message-less sessions — still a candidate).
 async fn opencode_candidates(
     db_path: &Path,
     worktree: &str,

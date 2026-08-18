@@ -122,9 +122,19 @@ pub fn store_fingerprint(store: &StoreRef) -> u64 {
     // state (a canonicalize failure between pages would invalidate a
     // logically-valid cursor).
     match store {
-        StoreRef::Opencode { session_id, .. } => {
-            fnv64(fnv64(FNV_OFFSET, b"oc:"), session_id.as_bytes())
-        }
+        // db_path is chained too (review C2): the same session id in a
+        // DIFFERENT database (a $CORRAL_OPENCODE_DB switch between
+        // pages) must not accept the old cursor.
+        StoreRef::Opencode {
+            db_path,
+            session_id,
+        } => fnv64(
+            fnv64(
+                fnv64(FNV_OFFSET, b"oc:"),
+                db_path.to_string_lossy().as_bytes(),
+            ),
+            session_id.as_bytes(),
+        ),
         StoreRef::Claude { jsonl_path } => fnv64(
             fnv64(FNV_OFFSET, b"cl:"),
             jsonl_path.to_string_lossy().as_bytes(),
@@ -1461,5 +1471,49 @@ mod tests {
                 other => panic!("{bad:?} must be BadCursor, got {other:?}"),
             }
         }
+    }
+
+    /// C4: the fingerprint hashes the RAW spelling (R7) — a symlinked
+    /// alias of the same real file must hash DISTINCTLY (a
+    /// canonicalizing implementation would collapse them and this would
+    /// fail), and the value must not depend on live filesystem state.
+    #[test]
+    fn store_fingerprint_uses_raw_spelling_not_canonical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).expect("mkdir");
+        let real = real_dir.join("s.jsonl");
+        std::fs::write(&real, "{}\n").expect("write");
+        let alias_dir = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real_dir, &alias_dir).expect("symlink");
+        let alias = alias_dir.join("s.jsonl");
+        assert!(alias.is_file(), "alias resolves to the same file");
+
+        let fp_real = store_fingerprint(&StoreRef::Claude {
+            jsonl_path: real.clone(),
+        });
+        let fp_alias = store_fingerprint(&StoreRef::Claude {
+            jsonl_path: alias.clone(),
+        });
+        assert_ne!(fp_real, fp_alias, "raw spellings hash distinctly");
+
+        // No filesystem dependence: identical after the file vanishes.
+        std::fs::remove_file(&real).expect("rm");
+        assert_eq!(
+            fp_alias,
+            store_fingerprint(&StoreRef::Claude { jsonl_path: alias })
+        );
+
+        // C2: same opencode session id, different database → different
+        // fingerprint (a db switch between pages invalidates cursors).
+        let a = StoreRef::Opencode {
+            db_path: PathBuf::from("/a/opencode.db"),
+            session_id: "ses_x".to_string(),
+        };
+        let b = StoreRef::Opencode {
+            db_path: PathBuf::from("/b/opencode.db"),
+            session_id: "ses_x".to_string(),
+        };
+        assert_ne!(store_fingerprint(&a), store_fingerprint(&b));
     }
 }

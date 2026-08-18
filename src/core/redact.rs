@@ -232,17 +232,35 @@ fn env_value_at(input: &str, i: usize) -> Option<(usize, usize)> {
     if j >= bytes.len() || bytes[j] != b'=' || !name_is_secret(&input[i..j]) {
         return None;
     }
+    // #62 perf: the old code scanned to end-of-line for EVERY secret-ish
+    // name and only then applied the gates, making a prose line of
+    // `key=a key=a …` O(line²). The accept set is unchanged below, but the
+    // scans are shaped so a reject costs O(token), not O(line):
+    // - env-shaped names accept the full rest-of-line value (and a match
+    //   advances the caller past it, so the line is scanned once);
+    // - other names only accept a WHITESPACE-FREE value, so scanning can
+    //   stop at the first whitespace — if that stop is mid-line, the
+    //   full-line value would have contained whitespace and the old code
+    //   rejected it too.
+    if name_is_env_shaped(&input[i..j]) {
+        let mut k = j + 1;
+        while k < bytes.len() && bytes[k] != b'\n' {
+            k += 1;
+        }
+        return (k > j + 1).then_some((j + 1, k));
+    }
     let mut k = j + 1;
-    while k < bytes.len() && bytes[k] != b'\n' {
+    while k < bytes.len() && !bytes[k].is_ascii_whitespace() {
         k += 1;
     }
-    let value = &input[j + 1..k];
-    if !name_is_env_shaped(&input[i..j])
-        && !(value.len() >= ENV_VALUE_MIN_LEN && !value.bytes().any(|b| b.is_ascii_whitespace()))
-    {
+    if k < bytes.len() && bytes[k] != b'\n' {
+        // Whitespace before end-of-line: the rest-of-line value the old
+        // scan would have built contains whitespace — reject, having read
+        // only up to the first space.
         return None;
     }
-    (k > j + 1).then_some((j + 1, k))
+    let value = &input[j + 1..k];
+    (value.len() >= ENV_VALUE_MIN_LEN).then_some((j + 1, k))
 }
 
 /// Rule 5's name test: any underscore-separated segment (trailing digits
@@ -575,5 +593,29 @@ mod perf_tests {
             redact(&secretish).contains("[REDACTED]"),
             "entropy rule still fires"
         );
+    }
+
+    /// #62 F3 pin: the env-value rule must also be linear on a prose line
+    /// of many secret-ish names ("key=a key=a …" — each name passes the
+    /// segment test but the value gate rejects). Pre-fix this shape was
+    /// O(line²) and unchanged by the entropy memoization.
+    #[test]
+    fn env_shaped_prose_line_redacts_in_linear_time() {
+        let line = "key=a ".repeat(24 * 1024); // one ~144KiB line
+        let t = std::time::Instant::now();
+        let out = redact(&line);
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "no match expected"
+        );
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "env-value scan went quadratic again: {:?}",
+            t.elapsed()
+        );
+
+        // The rule still fires where it should.
+        assert!(redact("API_KEY=supersecretvalue").contains("[REDACTED]"));
+        assert!(redact("token=abcdefghijklmnopqrstuv").contains("[REDACTED]"));
     }
 }

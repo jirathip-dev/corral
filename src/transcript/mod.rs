@@ -96,6 +96,10 @@ pub struct TranscriptPage {
     pub skipped: usize,
 }
 
+/// Wall-clock cap on one sqlite3 invocation (mirrors the cost reader's
+/// discipline — the busy timeout only covers lock waits, not a scan).
+const OPENCODE_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Why a page could not be read.
 #[derive(Debug)]
 pub enum TranscriptError {
@@ -109,6 +113,12 @@ pub enum TranscriptError {
     Sqlite3Unavailable,
     /// The cursor does not belong to this store kind or is out of range.
     BadCursor,
+    /// The opencode query exceeded the wall-clock cap.
+    QueryTimeout,
+    /// The store answered, but every row in a full page failed extraction —
+    /// the schema does not match what this reader codes against. Surfaced
+    /// as an error (never as a silent empty/exhausted transcript).
+    StoreShape,
 }
 
 impl std::fmt::Display for TranscriptError {
@@ -124,6 +134,15 @@ impl std::fmt::Display for TranscriptError {
                 )
             }
             TranscriptError::BadCursor => write!(f, "cursor does not match this store"),
+            TranscriptError::QueryTimeout => {
+                write!(f, "opencode query exceeded its wall-clock timeout")
+            }
+            TranscriptError::StoreShape => {
+                write!(
+                    f,
+                    "the store's rows do not match the expected schema (no usable rows in a full page)"
+                )
+            }
         }
     }
 }
@@ -132,16 +151,21 @@ impl std::error::Error for TranscriptError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             TranscriptError::StoreUnreadable { source, .. } => Some(source),
-            TranscriptError::Sqlite3Unavailable | TranscriptError::BadCursor => None,
+            TranscriptError::Sqlite3Unavailable
+            | TranscriptError::BadCursor
+            | TranscriptError::QueryTimeout
+            | TranscriptError::StoreShape => None,
         }
     }
 }
 
 /// Read one newest-first page from `store`, starting at `cursor` (or the
-/// newest content when `None`). `limit` is clamped to
-/// [`MAX_PAGE_ENTRIES`]; the [`MAX_PAGE_TEXT_BYTES`] budget applies on
-/// top, truncating the page early (with a cursor that resumes exactly
-/// where it stopped) rather than dropping entries silently.
+/// newest content when `None`). `limit` is clamped into
+/// `1..=MAX_PAGE_ENTRIES` (a `limit` of 0 reads one entry — a zero-entry
+/// page would be indistinguishable from exhaustion); the
+/// [`MAX_PAGE_TEXT_BYTES`] budget applies on top, truncating the page
+/// early (with a cursor that resumes exactly where it stopped) rather
+/// than dropping entries silently.
 pub async fn read_page(
     store: &StoreRef,
     cursor: Option<&Cursor>,
@@ -168,19 +192,24 @@ pub async fn read_page(
 /// The exact sqlite3 argv for one opencode page query — factored out so a
 /// test can pin the read-only discipline (`-readonly`, busy timeout,
 /// bounded SQL) without needing the binary.
-fn opencode_sqlite_args(db_path: &Path, sql: &str) -> Vec<String> {
+fn opencode_sqlite_args(db_path: &Path, sql: &str) -> Vec<std::ffi::OsString> {
     vec![
-        "-readonly".to_string(),
-        "-json".to_string(),
-        "-cmd".to_string(),
-        ".timeout 2000".to_string(),
-        db_path.display().to_string(),
-        sql.to_string(),
+        "-readonly".into(),
+        "-json".into(),
+        "-cmd".into(),
+        ".timeout 2000".into(),
+        db_path.as_os_str().to_os_string(),
+        sql.into(),
     ]
 }
 
 /// The page SQL: newest-first within one session, strictly older than the
-/// cursor, joined to text parts, LIMIT-bounded in SQL (never in Rust).
+/// cursor, ONE ROW PER MESSAGE — text parts are aggregated in SQL with a
+/// deterministic order (`p.id`) via an ordered subselect, so the keyset
+/// key `(m.time_created, m.id)` is genuinely unique over the result rows
+/// (a LEFT JOIN would emit one row per part and a page boundary inside a
+/// multi-part message would silently drop its tail — review F2). Non-text
+/// parts never contribute (F7). LIMIT-bounded in SQL, never in Rust.
 /// `session_id` and cursor id are embedded via SQL single-quote escaping —
 /// sqlite3-CLI has no bind parameters; the values come from our own
 /// cursor/store structs, and doubling `'` is the complete quoting rule for
@@ -196,8 +225,13 @@ fn opencode_page_sql(session_id: &str, cursor: Option<(i64, &str)>, limit: usize
     };
     format!(
         "SELECT m.id AS id, m.role AS role, m.time_created AS time_created, \
-                p.data AS part_data, m.data AS msg_data \
-         FROM message m LEFT JOIN part p ON p.message_id = m.id \
+                m.data AS msg_data, \
+                (SELECT group_concat(t, char(10)) FROM \
+                   (SELECT json_extract(p.data, '$.text') AS t FROM part p \
+                    WHERE p.message_id = m.id AND p.type = 'text' \
+                      AND json_extract(p.data, '$.text') IS NOT NULL \
+                    ORDER BY p.id)) AS text \
+         FROM message m \
          WHERE m.session_id = '{sid}' {cursor_clause} \
          ORDER BY m.time_created DESC, m.id DESC LIMIT {limit}"
     )
@@ -216,13 +250,17 @@ async fn read_opencode_page(
         });
     }
     let sql = opencode_page_sql(session_id, cursor, limit);
-    let output = tokio::process::Command::new("sqlite3")
+    let fut = tokio::process::Command::new("sqlite3")
         .args(opencode_sqlite_args(db_path, &sql))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()
+        .output();
+    // Wall-clock cap, same discipline as the cost reader: the busy timeout
+    // only covers lock waits, not a long scan (review F5).
+    let output = tokio::time::timeout(OPENCODE_QUERY_TIMEOUT, fut)
         .await
+        .map_err(|_| TranscriptError::QueryTimeout)?
         .map_err(|_| TranscriptError::Sqlite3Unavailable)?;
     if !output.status.success() {
         return Err(TranscriptError::Sqlite3Unavailable);
@@ -236,9 +274,14 @@ async fn read_opencode_page(
     let mut entries = Vec::new();
     let mut skipped = 0usize;
     let mut text_budget = MAX_PAGE_TEXT_BYTES;
-    let mut last_key: Option<(i64, String)> = None;
+    // Cursor advances over EVERY row we passed (accepted, empty, or
+    // malformed) — a cursor keyed only to accepted rows would re-fetch and
+    // double-count skipped rows, and an all-malformed page would read as
+    // exhaustion (review F6).
+    let mut last_row_key: Option<(i64, String)> = None;
+    let mut stopped_early = false;
     let full_rows = rows.len();
-    for row in rows {
+    for row in &rows {
         let (Some(id), Some(t)) = (
             row.get("id").and_then(Value::as_str),
             row.get("time_created").and_then(Value::as_i64),
@@ -246,44 +289,57 @@ async fn read_opencode_page(
             skipped += 1;
             continue;
         };
-        let role = row
-            .get("role")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                row.get("msg_data")
-                    .and_then(Value::as_str)
-                    .and_then(|d| serde_json::from_str::<Value>(d).ok())
-                    .and_then(|d| d.get("role").and_then(Value::as_str).map(str::to_string))
-            })
-            .unwrap_or_else(|| "unknown".to_string());
         let text = row
-            .get("part_data")
+            .get("text")
             .and_then(Value::as_str)
-            .and_then(|d| serde_json::from_str::<Value>(d).ok())
-            .and_then(|d| d.get("text").and_then(Value::as_str).map(str::to_string))
+            .map(|t| redact(t).into_owned())
             .unwrap_or_default();
-        let text = redact(&text).into_owned();
+        if text.is_empty() {
+            // A message with no text parts (tool/reasoning-only) — a
+            // normal record, not torn data: passed over without an entry
+            // and without polluting the honesty counter (review F7/F8).
+            last_row_key = Some((t, id.to_string()));
+            continue;
+        }
         if text.len() > text_budget && !entries.is_empty() {
-            // Budget hit: stop BEFORE this entry; the cursor resumes at it.
+            // Budget hit: stop BEFORE this row; the cursor resumes at the
+            // previous row so this one is re-read next page.
+            stopped_early = true;
             break;
         }
+        let msg_role = row
+            .get("msg_data")
+            .and_then(Value::as_str)
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .and_then(|d| d.get("role").and_then(Value::as_str).map(str::to_string));
+        let role = normalize_role(
+            row.get("role")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(msg_role)
+                .as_deref(),
+        );
         text_budget = text_budget.saturating_sub(text.len());
-        last_key = Some((t, id.to_string()));
+        last_row_key = Some((t, id.to_string()));
         entries.push(Entry {
             role,
             text,
-            ts: Some(t as u64),
+            ts: u64::try_from(t).ok(),
         });
         if entries.len() >= limit {
+            stopped_early = true;
             break;
         }
     }
-    // More rows may exist iff the query returned a full LIMIT worth or we
-    // stopped early on budget; exhaustion = the query underfilled AND we
-    // consumed every row.
-    let consumed_all = entries.len() + skipped == full_rows;
-    let next_cursor = match (&last_key, full_rows == limit || !consumed_all) {
+    if full_rows == limit && entries.is_empty() && skipped == full_rows {
+        // Every row of a full page failed extraction: the schema does not
+        // match this reader. An error, never a silent empty transcript.
+        return Err(TranscriptError::StoreShape);
+    }
+    // More rows may exist iff the query filled its LIMIT or we stopped
+    // early; an underfilled, fully-consumed page is exhaustion.
+    let more_possible = stopped_early || full_rows == limit;
+    let next_cursor = match (&last_row_key, more_possible) {
         (Some((t, id)), true) => Some(Cursor::Opencode {
             time_created: *t,
             id: id.clone(),
@@ -295,6 +351,22 @@ async fn read_opencode_page(
         next_cursor,
         skipped,
     })
+}
+
+/// Role strings come from externally-written stores — untrusted input,
+/// not a closed enum. Normalising onto a closed set both bounds the field
+/// (no unredacted/unbudgeted attacker text rides out on `role` — review
+/// F4) and gives the UI a stable vocabulary.
+fn normalize_role(raw: Option<&str>) -> String {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("user" | "human") => "user",
+        Some("assistant" | "ai") => "assistant",
+        Some("system") => "system",
+        Some("tool" | "tool_result" | "tool_use") => "tool",
+        Some("summary") => "summary",
+        _ => "unknown",
+    }
+    .to_string()
 }
 
 /// Backwards-paged JSONL reader shared by the claude and codex stores.
@@ -365,11 +437,15 @@ async fn read_jsonl_page(
             oldest_consumed_start = Some(*line_start);
             continue;
         }
-        let parsed: Option<Entry> = serde_json::from_slice::<Value>(line)
-            .ok()
-            .and_then(|v| jsonl_entry(&v));
-        let Some(entry) = parsed else {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            // Genuinely torn line: this is what `skipped` means.
             skipped += 1;
+            oldest_consumed_start = Some(*line_start);
+            continue;
+        };
+        let Some(entry) = jsonl_entry(&value) else {
+            // Well-formed non-transcript record (summary, tool-only turn):
+            // normal content, passed over silently (review F8).
             oldest_consumed_start = Some(*line_start);
             continue;
         };
@@ -396,6 +472,18 @@ async fn read_jsonl_page(
     } else {
         None
     };
+    // The walk MUST make progress: a degenerate range (a single line
+    // longer than the scan cap — review F1/F9) would otherwise hand back
+    // the cursor it was given and loop the caller forever. Stride the
+    // window down instead and say so via `skipped`: the oversized line is
+    // unreadable by this reader (documented cap), counted, never a stall.
+    let resume = match resume {
+        Some(r) if r >= end => {
+            skipped += 1;
+            Some(lower)
+        }
+        other => other,
+    };
     let next_cursor = resume
         .filter(|r| *r > 0)
         .map(|offset| Cursor::Bytes { offset });
@@ -408,18 +496,20 @@ async fn read_jsonl_page(
 
 /// Decode one JSONL object into an [`Entry`], tolerating the claude
 /// (`{type, message:{role, content:[{type:"text",text}...]}}`) and codex
-/// rollout (`{role?, text?/content?}`) shapes. `None` = not a
-/// transcript-bearing line (metadata records are normal, counted as
-/// skipped by the caller only when unparseable — a parseable non-message
-/// line is silently ignored... no: counted skipped too, so pages stay
-/// honest about what they passed over).
+/// rollout (`{role?, text?/content?}`) shapes.
+///
+/// `None` = a well-formed record that carries no transcript text
+/// (summaries, tool_use/tool_result-only turns, file snapshots). Those
+/// are NORMAL in healthy stores and are passed over without touching the
+/// `skipped` counter — `skipped` counts only unparseable lines, so a
+/// nonzero value really does mean torn data (review F8).
 fn jsonl_entry(value: &Value) -> Option<Entry> {
     let msg = value.get("message").unwrap_or(value);
-    let role = msg
+    let raw_role = msg
         .get("role")
         .and_then(Value::as_str)
-        .or_else(|| value.get("type").and_then(Value::as_str))?
-        .to_string();
+        .or_else(|| value.get("type").and_then(Value::as_str))?;
+    let role = normalize_role(Some(raw_role));
     let text = match msg.get("content") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(parts)) => {
@@ -459,11 +549,15 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    fn claude_line(role: &str, text: &str, ts: u64) -> String {
+    /// The REAL claude transcript record shape: `timestamp` is an
+    /// ISO-8601 STRING (so `Entry.ts` is `None` — the deliberate slice-1
+    /// deviation), and ordering must therefore be asserted on entry TEXT,
+    /// which is what a real caller sees.
+    fn claude_line(role: &str, text: &str, seq: u64) -> String {
         serde_json::json!({
             "type": role,
             "message": {"role": role, "content": [{"type": "text", "text": text}]},
-            "ts": ts,
+            "timestamp": format!("2026-08-18T12:00:{:02}.000Z", seq % 60),
         })
         .to_string()
     }
@@ -512,9 +606,20 @@ mod tests {
         assert_eq!(all.len(), 120, "no gaps");
         assert!(pages >= 3, "walk actually paged");
         assert_eq!(skipped, 0);
-        let ts: Vec<u64> = all.iter().map(|e| e.ts.expect("ts")).collect();
-        let mut expected: Vec<u64> = (0..120).rev().collect();
-        assert_eq!(ts, expected.as_mut_slice(), "newest-first, no duplicates");
+        let texts: Vec<String> = all.iter().map(|e| e.text.clone()).collect();
+        let expected: Vec<String> = (0..120)
+            .rev()
+            .map(|i| format!("message number {i}"))
+            .collect();
+        assert_eq!(texts, expected, "newest-first, no duplicates");
+        assert!(
+            all.iter().all(|e| e.ts.is_none()),
+            "ISO timestamps yield ts: None in slice 1"
+        );
+        assert!(
+            all.iter().all(|e| e.role == "assistant"),
+            "roles normalized"
+        );
     }
 
     /// The text budget truncates a page WITHOUT losing entries: the cursor
@@ -628,8 +733,14 @@ mod tests {
     fn opencode_invocation_is_readonly_json_and_time_bounded() {
         let args = opencode_sqlite_args(Path::new("/tmp/x.db"), "SELECT 1");
         assert_eq!(args[0], "-readonly", "read-only is the FIRST flag");
-        assert!(args.contains(&"-json".to_string()));
-        assert!(args.iter().any(|a| a.starts_with(".timeout")));
+        assert!(args.contains(&std::ffi::OsString::from("-json")));
+        assert!(
+            args.iter()
+                .any(|a| a.to_string_lossy().starts_with(".timeout")),
+            "busy timeout present"
+        );
+        // F11: the db path rides as an OsString, never through lossy Display.
+        assert_eq!(args[4], Path::new("/tmp/x.db").as_os_str());
     }
 
     /// SQL quoting: a session id carrying a single quote cannot break out
@@ -647,7 +758,7 @@ mod tests {
         std::process::Command::new("sqlite3")
             .arg("-version")
             .output()
-            .is_ok()
+            .is_ok_and(|o| o.status.success())
     }
 
     /// Fixture-driven opencode paging + redaction, skipped cleanly when the
@@ -666,7 +777,11 @@ mod tests {
             INSERT INTO message VALUES ('m1','ses1','user',100,'{}');
             INSERT INTO part VALUES ('p1','m1','text','{"text":"first question"}');
             INSERT INTO message VALUES ('m2','ses1','assistant',200,'{}');
-            INSERT INTO part VALUES ('p2','m2','text','{"text":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 leaked"}');
+            INSERT INTO part VALUES ('p2a','m2','text','{"text":"part A of the answer"}');
+            INSERT INTO part VALUES ('p2b','m2','tool','{"summary":"ran a tool"}');
+            INSERT INTO part VALUES ('p2c','m2','text','{"text":"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 leaked"}');
+            INSERT INTO message VALUES ('m2t','ses1','assistant',250,'{}');
+            INSERT INTO part VALUES ('p2t','m2t','reasoning','{"summary":"thinking only"}');
             INSERT INTO message VALUES ('m3','ses2','user',300,'{}');
             INSERT INTO part VALUES ('p3','m3','text','{"text":"other session"}');
         "#;
@@ -681,15 +796,35 @@ mod tests {
             db_path: db.clone(),
             session_id: "ses1".to_string(),
         };
-        // Page size 1: newest first, then the cursor walks older.
-        let p1 = read_page(&store, None, 1).await.expect("page 1");
+        // Page size 1: newest first, then the cursor walks older. The
+        // newest message (m2t) is reasoning-only: it is passed over WITHOUT
+        // an entry and WITHOUT a skipped count — the page is empty but its
+        // cursor advances (no stall).
+        let p0 = read_page(&store, None, 1).await.expect("page 0");
+        assert!(p0.entries.is_empty(), "tool-only message yields no entry");
+        assert_eq!(p0.skipped, 0, "tool-only message is not torn data");
+        let p0_cursor = p0.next_cursor.expect("cursor advances past it");
+
+        let p1 = read_page(&store, Some(&p0_cursor), 1)
+            .await
+            .expect("page 1");
         assert_eq!(p1.entries.len(), 1);
         assert_eq!(p1.entries[0].role, "assistant");
+        // F2: ALL text parts of the multi-part message arrive, in p.id
+        // order, as ONE entry (same one-entry-per-message shape as the
+        // JSONL readers) — and redacted.
+        let text = &p1.entries[0].text;
         assert!(
-            !p1.entries[0].text.contains("ghp_abcdefgh"),
-            "opencode pages are redacted: {}",
-            p1.entries[0].text
+            text.starts_with("part A of the answer"),
+            "part order: {text}"
         );
+        assert!(text.contains('\n'), "parts joined with newline: {text}");
+        assert!(!text.contains("ghp_abcdefgh"), "redacted: {text}");
+        assert!(
+            !text.contains("ran a tool"),
+            "non-text parts excluded: {text}"
+        );
+
         let p2 = read_page(&store, p1.next_cursor.as_ref(), 1)
             .await
             .expect("page 2");
@@ -699,5 +834,77 @@ mod tests {
             p2.entries[0].role, "user",
             "other sessions never leak into the page"
         );
+        assert!(
+            read_page(&store, p2.next_cursor.as_ref(), 1)
+                .await
+                .expect("page 3")
+                .entries
+                .is_empty(),
+            "walk exhausts cleanly"
+        );
+    }
+
+    /// F1/F9 regression: a line larger than the scan cap must not stall
+    /// the walk — it is passed over (counted in `skipped`) and every
+    /// OLDER entry stays reachable.
+    #[tokio::test]
+    async fn jsonl_walk_strides_past_an_oversized_line() {
+        let giant = claude_line("assistant", &"z".repeat(600 * 1024), 5);
+        let mut lines: Vec<String> = (0..5)
+            .map(|i| claude_line("user", &format!("old {i}"), i))
+            .collect();
+        lines.push(giant);
+        for i in 0..3 {
+            lines.push(claude_line("user", &format!("new {i}"), 10 + i));
+        }
+        let f = write_jsonl(&lines);
+        let store = StoreRef::Claude {
+            jsonl_path: f.path().to_path_buf(),
+        };
+        let (all, _, skipped) = walk(&store, 50).await;
+        let texts: Vec<&str> = all.iter().map(|e| e.text.as_str()).collect();
+        assert!(
+            texts.contains(&"new 2") && texts.contains(&"old 0"),
+            "entries on BOTH sides of the oversized line are reachable: {texts:?}"
+        );
+        assert_eq!(all.len(), 8, "only the oversized line is lost");
+        assert!(skipped >= 1, "the loss is counted, never silent");
+    }
+
+    /// F8: well-formed non-transcript records (summaries, tool-only
+    /// turns) are passed over WITHOUT polluting the torn-data counter.
+    #[tokio::test]
+    async fn jsonl_valid_non_message_records_are_not_counted_skipped() {
+        let lines = vec![
+            serde_json::json!({"type": "summary", "summary": "compacted"}).to_string(),
+            claude_line("user", "real content", 1),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "tool_use", "name": "Bash"}]}})
+            .to_string(),
+        ];
+        let f = write_jsonl(&lines);
+        let store = StoreRef::Claude {
+            jsonl_path: f.path().to_path_buf(),
+        };
+        let (all, _, skipped) = walk(&store, 50).await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(skipped, 0, "healthy records never read as torn data");
+    }
+
+    /// F4: role is a closed vocabulary — attacker-shaped role strings
+    /// cannot ride out of the module unredacted/unbounded.
+    #[tokio::test]
+    async fn roles_are_normalized_to_a_closed_set() {
+        let hostile = serde_json::json!({
+            "type": "x", "message": {"role": "sk-ant-api03-".to_string() + &"A".repeat(4096),
+            "content": [{"type": "text", "text": "hello"}]}})
+        .to_string();
+        let f = write_jsonl(&[hostile]);
+        let store = StoreRef::Claude {
+            jsonl_path: f.path().to_path_buf(),
+        };
+        let page = read_page(&store, None, 10).await.expect("page");
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].role, "unknown", "unknown roles collapse");
     }
 }

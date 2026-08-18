@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Kind badges (distinct: ApproveTool / AnswerQuestion / Menu / Crash)
 
@@ -147,6 +148,36 @@ struct FlowLayout: Layout {
     }
 }
 
+// MARK: - Prompt drafts (R2-B: keystrokes must not invalidate the board)
+
+/// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and the
+/// repo-section row of the same blocked agent share one draft. Held in its
+/// own ObservableObject so typing a draft invalidates only the rows that
+/// observe it — `FleetView.body` is NOT re-run and `BoardModel.sections` is
+/// not re-computed on every keystroke (round-2 finding R2-B).
+@MainActor
+final class PromptDrafts: ObservableObject {
+    @Published private(set) var drafts: [String: String] = [:]
+
+    /// A two-way binding into the shared draft for `agentId`.
+    func binding(for agentId: String) -> Binding<String> {
+        Binding(get: { [weak self] in self?.drafts[agentId] ?? "" },
+                set: { [weak self] in self?.drafts[agentId] = $0 })
+    }
+
+    /// Send cleared the shared draft for both rows of the agent.
+    func clear(_ agentId: String) {
+        drafts[agentId] = nil
+    }
+
+    /// R2-F: drop drafts for agents that left the snapshot.
+    func prune(to agentIds: Set<String>) {
+        for id in drafts.keys where !agentIds.contains(id) {
+            drafts[id] = nil
+        }
+    }
+}
+
 // MARK: - Agent row (D24 3-line dense anatomy)
 
 /// One board row, D24 shape:
@@ -169,6 +200,10 @@ struct AgentRow: View {
     /// agent (a blocked agent appears in both NEEDS YOU and its repo
     /// section — the two rows must not hold divergent drafts).
     @Binding var promptText: String
+    /// The row actions to render (D30 pin) — computed by the pure
+    /// `BoardModel.rowActions(agent:grants:)`; this view renders ONLY this
+    /// list, never its own capability/grants checks.
+    let actions: [RowAction]
     var onChoice: (String) -> Void
     var onCanned: (CannedChoice.Action) -> Void
     var onReadTail: () -> Void
@@ -183,14 +218,19 @@ struct AgentRow: View {
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+                    // Line-1 emphasis (R2-E): the task TITLE wins under
+                    // compression, so it gets the higher layoutPriority;
+                    // the secondary identity truncates first.
+                    .layoutPriority(1)
                 // Session identity must survive on the row even when a
-                // title is shown — two agents can share a title.
-                if agent.title != nil, let name = agent.displayName {
-                    Text(name)
+                // title is shown — two agents can share a title. Falls back
+                // to the agent id when the session has no display name
+                // (R2-D).
+                if agent.title != nil {
+                    Text(agent.displayName ?? agent.agentId)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .layoutPriority(1)
                 }
                 Spacer()
                 ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
@@ -208,11 +248,11 @@ struct AgentRow: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
             }
             WorkspaceLine(agent: agent)
-            if let waiting = agent.waitingOn, agent.isBlocked {
+            if actions.contains(.approveDeny), let waiting = agent.waitingOn {
                 ClaimCard(agent: agent, waiting: waiting, grants: grants,
                           onChoice: onChoice, onCanned: onCanned)
             }
-            if hasTailAction {
+            if actions.contains(.tail) {
                 HStack(spacing: 8) {
                     Button("Tail 200") { onReadTail() }
                         .buttonStyle(.bordered)
@@ -220,7 +260,7 @@ struct AgentRow: View {
                     Spacer()
                 }
             }
-            if grants.contains(.prompt) && agent.capabilities.contains(Capability.prompt.rawValue) {
+            if actions.contains(.prompt) {
                 HStack {
                     TextField("Send a prompt…", text: $promptText)
                         .textFieldStyle(.roundedBorder)
@@ -243,12 +283,6 @@ struct AgentRow: View {
     /// D28: idle/done rows dim (and have no line 3 by construction).
     private var isDimmed: Bool {
         agent.state == .idle || agent.state == .done
-    }
-
-    /// The Tail 200 button is the only bare row button (D30); Approve/Deny
-    /// live in the claim card and Prompt in the field below.
-    private var hasTailAction: Bool {
-        agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail)
     }
 
     private var stateColor: Color {
@@ -327,7 +361,10 @@ struct WorkspaceLine: View {
     /// The worktree basename (D26), suppressed when it just restates the
     /// branch: herdr derives worktree dirs from branch names with `/`
     /// flattened to `-`, so `g57/board-d24-d25` → `g57-board-d24-d25`
-    /// carries no extra information and only forces truncation.
+    /// carries no extra information and only forces truncation. R2-C: only
+    /// equality-after-flattening (or a basename that is merely a PREFIX of
+    /// the flattened branch) is suppressed — a basename that EXTENDS the
+    /// branch adds tokens and must be kept.
     static func worktreeBasename(_ w: Workspace) -> String? {
         guard let raw = w.worktreePath?.split(separator: "/").last else {
             return nil
@@ -336,7 +373,7 @@ struct WorkspaceLine: View {
         guard let branch = w.branch else { return basename }
         let flattened = branch.replacingOccurrences(of: "/", with: "-")
         if basename == branch || basename == flattened
-            || flattened.hasPrefix(basename) || basename.hasPrefix(flattened) {
+            || flattened.hasPrefix(basename) {
             return nil
         }
         return basename
@@ -385,6 +422,12 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
+            // R2-F: drop drafts for agents that left the snapshot whenever
+            // the agent set changes (cheap — runs on snapshot/delta, which
+            // keystrokes no longer trigger).
+            .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
+                promptDrafts.prune(to: agentIds)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -413,8 +456,10 @@ struct FleetView: View {
     @State private var showSettings = false
     @State private var showIdleDone = false
     /// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and
-    /// the repo-section row of the same blocked agent share one draft.
-    @State private var promptDrafts: [String: String] = [:]
+    /// the repo-section row of the same blocked agent share one draft. Held
+    /// in their own ObservableObject (R2-B): typing a draft re-renders only
+    /// the rows that observe it, NOT `FleetView.body`.
+    @StateObject private var promptDrafts = PromptDrafts()
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
@@ -433,18 +478,26 @@ struct FleetView: View {
                 agentRow(agent)
             }
         } header: {
-            HStack {
-                Text("Needs you (\(sections.needsYou.count))")
-                Spacer()
-                if model.fleet.connectionState != .connected, model.mode == .live {
-                    connectionLabel
+            pinnedHeader {
+                HStack {
+                    Text("Needs you (\(sections.needsYou.count))")
+                    Spacer()
+                    if model.fleet.connectionState != .connected, model.mode == .live {
+                        connectionLabel
+                    }
                 }
             }
         }
         ForEach(sections.repos, id: \.repo) { group in
-            Section("\(group.repo ?? "(no repo)") (\(group.countLabel))") {
+            Section {
                 ForEach(group.agents) { agent in
                     agentRow(agent)
+                }
+            } header: {
+                // R2-A: pinned headers need an opaque backing or the header
+                // text overlaps scrolling rows at every section boundary.
+                pinnedHeader {
+                    Text("\(group.repo ?? "(no repo)") (\(group.countLabel))")
                 }
             }
         }
@@ -455,18 +508,34 @@ struct FleetView: View {
                 }
             }
         } header: {
-            Button {
-                withAnimation { showIdleDone.toggle() }
-            } label: {
-                HStack {
-                    Text("Idle / done (\(sections.idleDone.count))")
-                    Spacer()
-                    Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
+            pinnedHeader {
+                Button {
+                    withAnimation { showIdleDone.toggle() }
+                } label: {
+                    HStack {
+                        Text("Idle / done (\(sections.idleDone.count))")
+                        Spacer()
+                        Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                    }
                 }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    /// R2-A: the opaque/bar backing for pinned section headers, with sane
+    /// padding so pinned headers are legible over scrolling content. A
+    /// `.bar` Material reads as the system background in light and dark
+    /// mode and gives pinned headers a solid surface.
+    @ViewBuilder
+    private func pinnedHeader<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar, ignoresSafeAreaEdges: [])
     }
 
     @ViewBuilder
@@ -480,17 +549,13 @@ struct FleetView: View {
         }
     }
 
-    /// One draft per agent id, shared by every row rendering that agent.
-    private func promptBinding(_ agentId: String) -> Binding<String> {
-        Binding(get: { promptDrafts[agentId] ?? "" },
-                set: { promptDrafts[agentId] = $0 })
-    }
-
     private func agentRow(_ agent: Agent) -> some View {
         let driveClient = DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+        let grants = Set(model.grants.compactMap(Capability.init(rawValue:)))
         return AgentRow(agent: agent,
-                        grants: Set(model.grants.compactMap(Capability.init(rawValue:))),
-                        promptText: promptBinding(agent.agentId),
+                        grants: grants,
+                        promptText: promptDrafts.binding(for: agent.agentId),
+                        actions: BoardModel.rowActions(agent: agent, grants: grants),
                         onChoice: { choice in
                             if model.mode == .demo {
                                 model.driveDemo(capability: .approve, agent: agent, choice: choice)
@@ -515,6 +580,9 @@ struct FleetView: View {
                             }
                         },
                         onPrompt: { text in
+                            // Send clears the SHARED draft, so both rows of
+                            // the agent (NEEDS YOU + repo section) reset.
+                            promptDrafts.clear(agent.agentId)
                             model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
                         })
     }

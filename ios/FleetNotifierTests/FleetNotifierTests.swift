@@ -1001,6 +1001,95 @@ final class BoardModelTests: XCTestCase {
     }
 }
 
+// MARK: - D30 row actions (approve/deny, prompt, tail — NEVER interrupt/kill)
+
+final class RowActionTests: XCTestCase {
+
+    private func agent(_ id: String, state: AgentState, capabilities: [String]) -> Agent {
+        Agent(agentId: id, state: state, capabilities: capabilities)
+    }
+
+    /// The D30 whitelist — `RowAction` has exactly these three cases. The
+    /// interrupt/kill pin works two ways: the enum has no `.interrupt` /
+    /// `.kill` cases to render from (a future addition must first compile),
+    /// AND `rowActions` must never emit anything outside this set even
+    /// given every capability and every grant.
+    func testInterruptAndKillNeverAppearRegardlessOfCapabilitiesAndGrants() {
+        let whitelist: Set<RowAction> = [.approveDeny, .prompt, .tail]
+        let everything = Capability.allCases.map(\.rawValue)
+        let allGrants = Set(Capability.allCases)
+        for state in AgentState.allCases {
+            let actions = BoardModel.rowActions(agent: agent("herdr:x", state: state,
+                                                             capabilities: everything),
+                                                grants: allGrants)
+            XCTAssertTrue(Set(actions).isSubset(of: whitelist),
+                          "interrupt/kill must never be row actions (D29/D30), state=\(state.rawValue)")
+        }
+    }
+
+    /// Only three action kinds exist at all — a future enum case is a
+    /// compile error on the exhaustive switch rather than a silent button.
+    func testRowActionKindsAreExhaustive() {
+        let actions = BoardModel.rowActions(
+            agent: agent("herdr:x", state: .blocked,
+                         capabilities: Capability.allCases.map(\.rawValue)),
+            grants: Set(Capability.allCases))
+        XCTAssertEqual(actions, [.approveDeny, .prompt, .tail])
+    }
+
+    /// Both the agent capability and the device grant must hold (D30).
+    func testActionsRequireCapabilityAndGrant() {
+        let capable = agent("herdr:x", state: .blocked, capabilities: ["read_tail", "prompt", "approve"])
+        // Grant present but capability absent: no action.
+        XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: [.prompt, .readTail]),
+                       [.approveDeny, .prompt, .tail])
+        // No grants: read-only device sees only the approveDeny claim card
+        // (which itself hides its buttons via the approve grant).
+        XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: []), [.approveDeny])
+        // Working agent with no claim: no approveDeny.
+        let working = agent("herdr:w", state: .working, capabilities: ["prompt", "read_tail"])
+        XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]), [.prompt, .tail])
+    }
+}
+
+// MARK: - Prompt drafts (R2-B shared per agent, R2-F pruning)
+
+final class PromptDraftsTests: XCTestCase {
+
+    @MainActor
+    func testDraftSharedAcrossRowsOfTheSameAgent() {
+        let drafts = PromptDrafts()
+        var first: String = ""
+        var second: String = ""
+        let b1 = drafts.binding(for: "herdr:a")
+        let b2 = drafts.binding(for: "herdr:a")
+        b1.wrappedValue = "continue"
+        first = b1.wrappedValue
+        second = b2.wrappedValue
+        XCTAssertEqual(first, "continue")
+        XCTAssertEqual(second, "continue", "rows of the SAME agent share one draft")
+        XCTAssertEqual(drafts.binding(for: "herdr:b").wrappedValue, "", "other agents stay independent")
+    }
+
+    @MainActor
+    func testSendClearsTheSharedDraftForBothRows() {
+        let drafts = PromptDrafts()
+        drafts.binding(for: "herdr:a").wrappedValue = "continue"
+        drafts.clear("herdr:a")
+        XCTAssertEqual(drafts.binding(for: "herdr:a").wrappedValue, "")
+        XCTAssertEqual(drafts.drafts, [:])
+    }
+
+    @MainActor
+    func testPruneDropsDraftsForAgentsThatLeftTheSnapshot() {
+        let drafts = PromptDrafts()
+        drafts.binding(for: "herdr:a").wrappedValue = "continue"
+        drafts.binding(for: "herdr:b").wrappedValue = "wait"
+        drafts.prune(to: ["herdr:a"])
+        XCTAssertEqual(drafts.drafts, ["herdr:a": "continue"], "only the departed agent's draft is pruned")
+    }
+}
+
 // MARK: - Line 2 (D26 worktree basename rule)
 
 final class WorkspaceLineTests: XCTestCase {
@@ -1019,6 +1108,20 @@ final class WorkspaceLineTests: XCTestCase {
                                      worktreePath: "~/worktrees/synergy-costing/fix-migration")
         XCTAssertNil(WorkspaceLine.worktreeBasename(truncatedDir),
                      "dir that is a prefix of the branch is redundant")
+    }
+
+    /// R2-C: a basename that EXTENDS the branch adds tokens and must be
+    /// kept — the old rule over-suppressed two worktrees of one branch.
+    func testBasenameThatExtendsTheBranchSurvives() {
+        let extending = Workspace(branch: "g57/board-d24-d25",
+                                  worktreePath: "~/worktrees/corral/g57-board-d24-d25-extra")
+        XCTAssertEqual(WorkspaceLine.worktreeBasename(extending), "g57-board-d24-d25-extra",
+                       "basename extends the flattened branch → kept (R2-C)")
+
+        let branchWithSuffix = Workspace(branch: "issue-431-x",
+                                         worktreePath: "~/worktrees/corral/issue-431-x-shared")
+        XCTAssertEqual(WorkspaceLine.worktreeBasename(branchWithSuffix), "issue-431-x-shared",
+                       "suffix tokens identify which of several worktrees")
     }
 
     func testDistinctBasenameSurvives() {

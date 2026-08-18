@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Kind badges (distinct: ApproveTool / AnswerQuestion / Menu / Crash)
 
@@ -147,6 +148,42 @@ struct FlowLayout: Layout {
     }
 }
 
+// MARK: - Prompt drafts (R2-B: keystrokes must not invalidate the board)
+
+/// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and the
+/// repo-section row of the same blocked agent share one draft (R2-B).
+///
+/// Ownership vs observation: `FleetView` holds this object in `@State`
+/// (stable identity, NO subscription — `@State` ignores `ObservableObject`
+/// conformance), and each `AgentRow` observes it via `@ObservedObject`. So
+/// a keystroke re-renders the rows — cheap bodies — while
+/// `FleetView.body`, and with it `BoardModel.sections`, re-runs only on
+/// fleet snapshot/delta changes.
+@MainActor
+final class PromptDrafts: ObservableObject {
+    @Published private(set) var drafts: [String: String] = [:]
+
+    /// A two-way binding into the shared draft for `agentId`.
+    func binding(for agentId: String) -> Binding<String> {
+        Binding(get: { [weak self] in self?.drafts[agentId] ?? "" },
+                set: { [weak self] in self?.drafts[agentId] = $0 })
+    }
+
+    /// Send cleared the shared draft for both rows of the agent.
+    func clear(_ agentId: String) {
+        drafts[agentId] = nil
+    }
+
+    /// R2-F: drop drafts for agents that left the snapshot — one copy and
+    /// one publish regardless of how many drafts are dropped.
+    func prune(to agentIds: Set<String>) {
+        let kept = drafts.filter { agentIds.contains($0.key) }
+        if kept.count != drafts.count {
+            drafts = kept
+        }
+    }
+}
+
 // MARK: - Agent row (D24 3-line dense anatomy)
 
 /// One board row, D24 shape:
@@ -165,10 +202,15 @@ struct FlowLayout: Layout {
 struct AgentRow: View {
     let agent: Agent
     let grants: Set<Capability>
-    /// Draft prompt text, shared with every other row rendering the same
-    /// agent (a blocked agent appears in both NEEDS YOU and its repo
-    /// section — the two rows must not hold divergent drafts).
-    @Binding var promptText: String
+    /// The shared draft store (R2-B): the ROW observes it, so keystrokes
+    /// re-render rows without touching `FleetView.body`. Rows of the same
+    /// agent share one draft (a blocked agent appears in both NEEDS YOU
+    /// and its repo section).
+    @ObservedObject var drafts: PromptDrafts
+    /// The row actions to render (D30 pin) — computed by the pure
+    /// `BoardModel.rowActions(agent:grants:)`; this view renders ONLY this
+    /// list, never its own capability/grants checks.
+    let actions: [RowAction]
     var onChoice: (String) -> Void
     var onCanned: (CannedChoice.Action) -> Void
     var onReadTail: () -> Void
@@ -183,14 +225,19 @@ struct AgentRow: View {
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+                    // Line-1 emphasis (R2-E): the task TITLE wins under
+                    // compression, so it gets the higher layoutPriority;
+                    // the secondary identity truncates first.
+                    .layoutPriority(1)
                 // Session identity must survive on the row even when a
-                // title is shown — two agents can share a title.
-                if agent.title != nil, let name = agent.displayName {
-                    Text(name)
+                // title is shown — two agents can share a title. Falls back
+                // to the agent id when the session has no display name
+                // (R2-D).
+                if agent.title != nil {
+                    Text(agent.displayName ?? agent.agentId)
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .layoutPriority(1)
                 }
                 Spacer()
                 ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
@@ -208,11 +255,11 @@ struct AgentRow: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
             }
             WorkspaceLine(agent: agent)
-            if let waiting = agent.waitingOn, agent.isBlocked {
+            if actions.contains(.approveDeny), let waiting = agent.waitingOn {
                 ClaimCard(agent: agent, waiting: waiting, grants: grants,
                           onChoice: onChoice, onCanned: onCanned)
             }
-            if hasTailAction {
+            if actions.contains(.tail) {
                 HStack(spacing: 8) {
                     Button("Tail 200") { onReadTail() }
                         .buttonStyle(.bordered)
@@ -220,17 +267,17 @@ struct AgentRow: View {
                     Spacer()
                 }
             }
-            if grants.contains(.prompt) && agent.capabilities.contains(Capability.prompt.rawValue) {
+            if actions.contains(.prompt) {
                 HStack {
-                    TextField("Send a prompt…", text: $promptText)
+                    TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
                     Button("Send") {
-                        let text = promptText
-                        promptText = ""
+                        let text = drafts.drafts[agent.agentId] ?? ""
+                        drafts.clear(agent.agentId)
                         onPrompt(text)
                     }
-                    .disabled(promptText.isEmpty)
+                    .disabled((drafts.drafts[agent.agentId] ?? "").isEmpty)
                     .buttonStyle(.borderedProminent)
                     .font(.caption)
                 }
@@ -243,12 +290,6 @@ struct AgentRow: View {
     /// D28: idle/done rows dim (and have no line 3 by construction).
     private var isDimmed: Bool {
         agent.state == .idle || agent.state == .done
-    }
-
-    /// The Tail 200 button is the only bare row button (D30); Approve/Deny
-    /// live in the claim card and Prompt in the field below.
-    private var hasTailAction: Bool {
-        agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail)
     }
 
     private var stateColor: Color {
@@ -327,7 +368,10 @@ struct WorkspaceLine: View {
     /// The worktree basename (D26), suppressed when it just restates the
     /// branch: herdr derives worktree dirs from branch names with `/`
     /// flattened to `-`, so `g57/board-d24-d25` → `g57-board-d24-d25`
-    /// carries no extra information and only forces truncation.
+    /// carries no extra information and only forces truncation. R2-C: only
+    /// equality-after-flattening (or a basename that is merely a PREFIX of
+    /// the flattened branch) is suppressed — a basename that EXTENDS the
+    /// branch adds tokens and must be kept.
     static func worktreeBasename(_ w: Workspace) -> String? {
         guard let raw = w.worktreePath?.split(separator: "/").last else {
             return nil
@@ -336,7 +380,7 @@ struct WorkspaceLine: View {
         guard let branch = w.branch else { return basename }
         let flattened = branch.replacingOccurrences(of: "/", with: "-")
         if basename == branch || basename == flattened
-            || flattened.hasPrefix(basename) || basename.hasPrefix(flattened) {
+            || flattened.hasPrefix(basename) {
             return nil
         }
         return basename
@@ -358,6 +402,30 @@ struct CiGlyph: View {
             .font(.caption)
             .foregroundStyle(color)
             .accessibilityLabel("CI \(status.rawValue)")
+    }
+}
+
+// MARK: - Pinned section header (R2-A)
+
+/// The backing every pinned `.plain`-list section header in this List gets
+/// (board sections AND the registration sections share it — a pinned header
+/// with no backing overlaps scrolling content). `.bar` is a translucent
+/// Material, deliberately: it stays legible over cards while keeping the
+/// scroll context visible; it is NOT fully opaque. `listRowInsets` is
+/// zeroed so the backing spans the full row, and the horizontal padding
+/// matches the default row content inset so header text aligns with row
+/// content instead of sitting one notch deeper (round-1 finding F4).
+struct PinnedHeader<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 20)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar, ignoresSafeAreaEdges: [])
+            .listRowInsets(EdgeInsets())
     }
 }
 
@@ -385,6 +453,13 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
+            // R2-F: drop drafts for agents that left the snapshot. This
+            // body (and the Set below) re-evaluates on fleet
+            // snapshot/delta changes — the exact moments a prune can
+            // matter — and not on keystrokes (see promptDrafts above).
+            .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
+                promptDrafts.prune(to: agentIds)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -412,9 +487,12 @@ struct FleetView: View {
 
     @State private var showSettings = false
     @State private var showIdleDone = false
-    /// Per-agent prompt drafts, keyed by agent id so the NEEDS YOU row and
-    /// the repo-section row of the same blocked agent share one draft.
-    @State private var promptDrafts: [String: String] = [:]
+    /// Per-agent prompt drafts (R2-B). Held in `@State`, DELIBERATELY not
+    /// `@StateObject`: `@State` keeps the object's identity across renders
+    /// but does not subscribe to `objectWillChange`, so keystrokes do not
+    /// re-run this body. The rows observe the object (`@ObservedObject`)
+    /// and re-render themselves.
+    @State private var promptDrafts = PromptDrafts()
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
@@ -433,18 +511,26 @@ struct FleetView: View {
                 agentRow(agent)
             }
         } header: {
-            HStack {
-                Text("Needs you (\(sections.needsYou.count))")
-                Spacer()
-                if model.fleet.connectionState != .connected, model.mode == .live {
-                    connectionLabel
+            pinnedHeader {
+                HStack {
+                    Text("Needs you (\(sections.needsYou.count))")
+                    Spacer()
+                    if model.fleet.connectionState != .connected, model.mode == .live {
+                        connectionLabel
+                    }
                 }
             }
         }
         ForEach(sections.repos, id: \.repo) { group in
-            Section("\(group.repo ?? "(no repo)") (\(group.countLabel))") {
+            Section {
                 ForEach(group.agents) { agent in
                     agentRow(agent)
+                }
+            } header: {
+                // R2-A: pinned headers need an opaque backing or the header
+                // text overlaps scrolling rows at every section boundary.
+                pinnedHeader {
+                    Text("\(group.repo ?? "(no repo)") (\(group.countLabel))")
                 }
             }
         }
@@ -455,18 +541,25 @@ struct FleetView: View {
                 }
             }
         } header: {
-            Button {
-                withAnimation { showIdleDone.toggle() }
-            } label: {
-                HStack {
-                    Text("Idle / done (\(sections.idleDone.count))")
-                    Spacer()
-                    Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
+            pinnedHeader {
+                Button {
+                    withAnimation { showIdleDone.toggle() }
+                } label: {
+                    HStack {
+                        Text("Idle / done (\(sections.idleDone.count))")
+                        Spacer()
+                        Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                    }
                 }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    @ViewBuilder
+    private func pinnedHeader<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
+        PinnedHeader(content: content)
     }
 
     @ViewBuilder
@@ -480,17 +573,13 @@ struct FleetView: View {
         }
     }
 
-    /// One draft per agent id, shared by every row rendering that agent.
-    private func promptBinding(_ agentId: String) -> Binding<String> {
-        Binding(get: { promptDrafts[agentId] ?? "" },
-                set: { promptDrafts[agentId] = $0 })
-    }
-
     private func agentRow(_ agent: Agent) -> some View {
         let driveClient = DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+        let grants = Set(model.grants.compactMap(Capability.init(rawValue:)))
         return AgentRow(agent: agent,
-                        grants: Set(model.grants.compactMap(Capability.init(rawValue:))),
-                        promptText: promptBinding(agent.agentId),
+                        grants: grants,
+                        drafts: promptDrafts,
+                        actions: BoardModel.rowActions(agent: agent, grants: grants),
                         onChoice: { choice in
                             if model.mode == .demo {
                                 model.driveDemo(capability: .approve, agent: agent, choice: choice)
@@ -515,6 +604,9 @@ struct FleetView: View {
                             }
                         },
                         onPrompt: { text in
+                            // Send clears the SHARED draft, so both rows of
+                            // the agent (NEEDS YOU + repo section) reset.
+                            promptDrafts.clear(agent.agentId)
                             model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
                         })
     }
@@ -559,7 +651,7 @@ struct RegistrationView: View {
     @State private var registering = false
 
     var body: some View {
-        Section("Connect") {
+        Section {
             TextField("Host (Tailscale host or loopback)", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
@@ -589,8 +681,10 @@ struct RegistrationView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+        } header: {
+            PinnedHeader { Text("Connect") }
         }
-        Section("Demo") {
+        Section {
             Button("Try demo fleet (no daemon)") {
                 model.enterDemo()
             }
@@ -598,6 +692,8 @@ struct RegistrationView: View {
             Text("Seeded fake fleet for App Review 4.2 (minimal functionality).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } header: {
+            PinnedHeader { Text("Demo") }
         }
     }
 }

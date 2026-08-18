@@ -133,6 +133,24 @@ enum IssueChip: Equatable {
     }
 }
 
+// MARK: - D30 row actions (the ONLY actions a row may render)
+
+/// The set of row actions the board is allowed to render (D30 pin).
+/// Approve/Deny live inside the blocked claim card; Prompt and Tail 200
+/// are the bare row controls. Interrupt/Kill are deliberately ABSENT —
+/// D29/D30 cut kill-on-phone. What the pin actually guarantees: the row
+/// view renders ONLY from `rowActions`' output, and `RowActionTests` pin
+/// that interrupt/kill never appear in that output for any
+/// capabilities/grants combination. It does NOT make a rogue direct
+/// `Button` in the view a compile error — keeping the view free of its own
+/// capability checks is review discipline, enforced by this comment and
+/// the one on `AgentRow.actions`.
+enum RowAction: Equatable, Sendable {
+    case approveDeny
+    case prompt
+    case tail
+}
+
 // MARK: - D25 hierarchy (sections + within-repo ordering)
 
 /// The D25 board shape, computed as a pure function of the agent set so it
@@ -221,5 +239,29 @@ enum BoardModel {
                 }
             }
         return Sections(needsYou: needsYou, repos: repos, idleDone: idleDone)
+    }
+
+    /// D30: the row actions for one agent, as a pure function of its
+    /// capabilities and the device's grants — both must hold (agent
+    /// capability + device grant). The row view renders EXACTLY this list:
+    /// prompt shows only when `prompt` and the grant both hold; tail when
+    /// `read_tail` and its grant hold; the claim card (approveDeny) shows
+    /// only while the agent is blocked. Interrupt/Kill have no row action
+    /// here by design (D29/D30) regardless of capabilities/grants.
+    static func rowActions(agent: Agent, grants: Set<Capability>) -> [RowAction] {
+        var actions: [RowAction] = []
+        // The claim card needs a live claim to render, so `.approveDeny`
+        // requires waiting_on, not just the blocked state — this list and
+        // the view must agree exactly.
+        if agent.isBlocked && agent.waitingOn != nil {
+            actions.append(.approveDeny)
+        }
+        if agent.capabilities.contains(Capability.prompt.rawValue) && grants.contains(.prompt) {
+            actions.append(.prompt)
+        }
+        if agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail) {
+            actions.append(.tail)
+        }
+        return actions
     }
 }

@@ -213,6 +213,7 @@ corrald fleet list                    # one greppable line per fleet
 corrald fleet check                   # validate + verify each local checkout
 corrald fleet add <name> --gh <o/r>   # insert a fleet (WRITES the registry)
 corrald fleet remove <name>           # drop a fleet (WRITES the registry)
+corrald fleet watch                   # read-only health pass (cron-able)
 corrald fleet pause <name>            # set paused (WRITES; idempotent)
 corrald fleet resume <name>           # clear paused (WRITES; idempotent)
 corrald fleet models <name> --impl m  # update only the model slots named

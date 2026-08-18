@@ -97,7 +97,20 @@ corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
     [--orch <agent>] [--workers a,b,c] [--models orch=..,impl=..,review=..]
     [--registry <path>]
 corrald fleet remove <name> [--registry <path>]
+corrald fleet watch [--registry <path>]
 ```
+
+`watch` (the #35 watchdog parity item) is READ-ONLY: one health pass over
+the UNPAUSED fleets — herdr server reachability (one retry, so a
+transient socket hiccup never reads as every agent missing), missing
+orchestrators, three stall flavors in priority order (open PRs → fleet
+workers still working → plain, naming the status; a failed gh check is
+stated as unavailable, never treated as zero), and missing workers.
+Paused fleets are skipped entirely — pausing genuinely silences the
+watchdog. Output is sorted `PROBLEM:` lines or `ALL HEALTHY`; exit 0
+healthy / 1 problems / 2 usage-parse. Fleet-worker attribution matches by
+name or component-exact cwd (another fleet's `corral-x` worktree can
+never count for `corral`).
 
 `<name>` may also be passed as `--name`, and `--worktree-dir` is an alias
 for `--worktree` — both spellings match the legacy fleet CLI. Defaults:

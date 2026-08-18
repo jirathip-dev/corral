@@ -148,7 +148,7 @@ fn run_digest(args: &[String]) {
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!(
-            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models (see --help)"
+            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models | watch (see --help)"
         );
         std::process::exit(2);
     };
@@ -163,6 +163,7 @@ fn run_fleet(args: &[String]) {
         "pause" => run_fleet_pause_resume("pause", &args[1..]),
         "resume" => run_fleet_pause_resume("resume", &args[1..]),
         "models" => run_fleet_models(&args[1..]),
+        "watch" => run_fleet_watch(&args[1..]),
         other => {
             eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
             std::process::exit(2);
@@ -181,6 +182,7 @@ fn print_fleet_help() {
          \t(<name> may also be passed as --name; --worktree-dir is an\n\
          \talias for --worktree — both match the legacy fleet CLI)\n\
          USAGE: corrald fleet remove <name> [--registry <path>]\n\
+         USAGE: corrald fleet watch [--registry <path>]\n\
          USAGE: corrald fleet pause <name> [--registry <path>]\n\
          USAGE: corrald fleet resume <name> [--registry <path>]\n\
          USAGE: corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]\n\
@@ -207,7 +209,12 @@ fn print_fleet_help() {
          \ttake a real fleet name; `all` is reserved as a fleet name).\n\
          \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
          \tempty value for the required orch/impl/review slots is a\n\
-         \tusage error\n\n\
+         \tusage error\n\
+         watch    one READ-ONLY health pass over unpaused fleets: herdr\n\
+         \tserver reachability, missing orchestrators, stall flavors\n\
+         \t(open PRs / workers still working / plain), missing workers;\n\
+         \tprints PROBLEM lines or ALL HEALTHY; exit 0 healthy /\n\
+         \t1 problems / 2 usage-parse (cron-able, like digest)\n\n\
          add/remove/pause/resume/models exit codes: 0 = written (or an\n\
          \tidempotent no-op — already paused/resumed, models unchanged);\n\
          \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
@@ -674,6 +681,175 @@ fn run_fleet_models(args: &[String]) {
             change.before.review,
             change.after.review
         );
+    }
+}
+
+/// `corrald fleet watch`: one read-only health pass over the registry's
+/// fleets — herdr reachability, missing orchestrators, stall flavors,
+/// missing workers (see [`fleet::watch`]). Exit 0 healthy / 1 problems /
+/// 2 usage-parse-registry, matching `check`.
+fn run_fleet_watch(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet watch: --registry needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => usage(&format!("fleet watch: unknown argument: {other}")),
+        }
+        i += 1;
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let registry = match fleet::config::load(&path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("corrald fleet watch: {error}");
+            std::process::exit(error.exit_code());
+        }
+    };
+
+    let agents = herdr_agents_with_retry();
+    // One gh call per distinct repo, only for fleets that can stall.
+    let mut prs = fleet::watch::PrCounts::new();
+    if agents.is_some() {
+        let mut repos: Vec<&str> = registry
+            .fleets
+            .iter()
+            .filter(|f| !f.paused)
+            .map(|f| f.gh_repo.as_str())
+            .collect();
+        repos.sort_unstable();
+        repos.dedup();
+        for repo in repos {
+            prs.insert(repo.to_string(), open_pr_count(repo));
+        }
+    }
+
+    let problems = fleet::watch::problems(&registry, &agents, &prs);
+    if problems.is_empty() {
+        println!("ALL HEALTHY");
+        return;
+    }
+    for problem in &problems {
+        println!("PROBLEM: {problem}");
+    }
+    std::process::exit(1);
+}
+
+/// `herdr agent list` (JSON) with a 60s timeout and ONE retry after 10s —
+/// a transient socket hiccup must not read as "every agent missing" (a
+/// legacy-proven false-alarm mode). `None` = server unreachable.
+fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
+    for attempt in 0..2 {
+        if attempt == 1 {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+        let Some(stdout) = run_with_timeout("herdr", &["agent", "list"], Duration::from_secs(60))
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) else {
+            continue;
+        };
+        let Some(list) = value
+            .get("result")
+            .and_then(|r| r.get("agents"))
+            .and_then(|a| a.as_array())
+        else {
+            continue;
+        };
+        let mut map = std::collections::BTreeMap::new();
+        for a in list {
+            let Some(name) = a.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            map.insert(
+                name.to_string(),
+                fleet::watch::AgentInfo {
+                    status: a
+                        .get("agent_status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    cwd: a
+                        .get("cwd")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                },
+            );
+        }
+        if !map.is_empty() {
+            return Some(map);
+        }
+    }
+    None
+}
+
+/// Open-PR count for one repo via `gh`, 30s timeout. `None` = the check
+/// was unavailable (network/auth) — surfaced in the stall wording, never
+/// silently treated as zero.
+fn open_pr_count(repo: &str) -> Option<u64> {
+    let stdout = run_with_timeout(
+        "gh",
+        &[
+            "pr", "list", "--repo", repo, "--state", "open", "--json", "number", "--jq", "length",
+        ],
+        Duration::from_secs(30),
+    )?;
+    stdout.trim().parse().ok()
+}
+
+/// Run a command with a wall-clock timeout (std has none): spawn with a
+/// dedicated reader thread draining stdout (so a child producing more
+/// than the pipe buffer can still exit), poll `try_wait`, kill on expiry.
+/// `None` on spawn failure, non-zero exit, or timeout.
+fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read as _;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = reader.join().ok()?;
+                return status.success().then_some(out);
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Killing closes the pipe; the reader thread finishes.
+                let _ = reader.join();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
+        }
     }
 }
 

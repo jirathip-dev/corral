@@ -2251,3 +2251,68 @@ fn impl_alt2_empty_value_clears_the_slot_from_written_json() {
         "impl_alt (the OTHER slot) survives: {text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #66: registry default path — corral-owned, legacy fallback.
+// ---------------------------------------------------------------------------
+
+/// End-to-end (#66): with no env override, a fresh HOME resolves to
+/// `~/.config/corral/fleets.json` (the error names it), and a HOME carrying
+/// only the legacy `~/.hermes/scripts/fleets.json` still works.
+#[test]
+fn default_registry_path_is_corral_owned_with_legacy_fallback() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+
+    // Fresh HOME: the missing-file error must point at the corral path.
+    let fresh = tempfile::tempdir().expect("temp home");
+    let out = Command::new(bin)
+        .args(["fleet", "list"])
+        .env("HOME", fresh.path())
+        .env_remove("CORRAL_FLEETS_PATH")
+        .env_remove("CORRAL_CONFIG_DIR")
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "missing registry is exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(".config/corral/fleets.json"),
+        "fresh machines get the corral-owned default: {stderr}"
+    );
+    assert!(
+        !stderr.contains(".hermes"),
+        "no legacy path leaks on a fresh machine: {stderr}"
+    );
+
+    // Legacy HOME: only ~/.hermes/scripts/fleets.json exists — list works.
+    let legacy_home = tempfile::tempdir().expect("temp home");
+    let legacy_dir = legacy_home.path().join(".hermes/scripts");
+    std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy");
+    std::fs::write(
+        legacy_dir.join("fleets.json"),
+        format!(r#"{{ "fleets": [{VALID_B}] }}"#),
+    )
+    .expect("write legacy registry");
+    let out = Command::new(bin)
+        .args(["fleet", "list"])
+        .env("HOME", legacy_home.path())
+        .env_remove("CORRAL_FLEETS_PATH")
+        .env_remove("CORRAL_CONFIG_DIR")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "legacy fallback still works: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("board"),
+        "lists the legacy registry's fleet"
+    );
+    // The fallback is LOUD (#66 review F5): a stderr note announces the
+    // legacy path so a split-brain migration cannot stay silent.
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("legacy registry"),
+        "the fallback announces itself: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

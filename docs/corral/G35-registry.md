@@ -1,19 +1,29 @@
 # Corral fleet registry — corrald registry surface (#35)
 
 Issue #35 (fleet control-plane consolidation): corrald reads the fleet
-registry — `fleets.json`, today the single source of truth for the separate
-fleet tooling — and, as of slices 1–2, also WRITES it. `list` / `check` are
-read-only views; **`add` / `remove`** (slice 1) and **`pause` / `resume` /
-`models`** (slice 2) mutate the registry behind candidate validation and an
-atomic temp-file+rename write that leaves the original byte-identical on any
-refusal or failure. Nothing touches a running agent — pause/resume here are
-pure registry mutations; the auth-gated ops half (halting working agents,
-the model-switch re-arm) is a later #35 slice. Spawning, watchdogs, reaping
-and worktree pruning land in later phases of #35 too.
+registry — `fleets.json` — a format corral is taking ownership of from the
+legacy fleet tooling (which still writes the legacy-path file, hence the
+migration fallback below) — and, as of slices 1–2, also WRITES it. `list` /
+`check` are read-only views; **`add` / `remove`** (slice 1) and **`pause` /
+`resume` / `models`** (slice 2) mutate the registry behind candidate
+validation and an atomic temp-file+rename write that leaves the original
+byte-identical on any refusal or failure. Nothing touches a running agent —
+pause/resume here are pure registry mutations; the auth-gated ops half
+(halting working agents, the model-switch re-arm) is a later #35 slice.
+Spawning, watchdogs, reaping and worktree pruning land in later phases of
+#35 too.
 
 ## Registry schema
 
-Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
+Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
+`$HOME/.config/corral/fleets.json`; a pre-existing legacy
+`$HOME/.hermes/scripts/fleets.json` is honoured as a migration fallback
+when — and only when — the corral-owned file does not exist (#66); the
+corral-owned dir honours `$CORRAL_CONFIG_DIR` like every other consumer
+of the config dir. Corral is taking ownership of the schema: it
+originated in the legacy fleet tooling, which still writes the
+legacy-path file today — that is exactly why the fallback (and the loud
+stderr note when it is taken) exists.
 (any command accepts `--registry <path>` to override).
 
 ```json
@@ -100,7 +110,8 @@ must resolve via `gh repo view <owner/repo>` before anything is written;
 the candidate registry is validated with the same rules `load()` applies;
 the write is a PID-suffixed temp file in the registry's directory,
 fsynced, then renamed over the (symlink-resolved) target. The registry
-file must already exist — bootstrap one with `echo '{"fleets": []}' >
+file must already exist, and on a fresh machine its parent dir may not —
+bootstrap with `mkdir -p ~/.config/corral && echo '{"fleets": []}' >
 <path>`. There is no cross-process lock: concurrent writers (corrald or
 the legacy tooling) can lose the load→rename race; single-writer
 discipline is assumed during the migration window.

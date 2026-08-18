@@ -1,8 +1,9 @@
 //! #35 phase 1: fleet registry config — parse, validate, default path, write.
 //!
-//! The registry is the `fleets.json` file that the separate fleet tooling
-//! already treats as its single source of truth; corrald adopts that format
-//! unchanged. `load()` parses and validates, and validation fails loudly
+//! The registry is the `fleets.json` file corral is TAKING ownership of
+//! (#35/#66): the format originated in the separate legacy fleet tooling,
+//! which still writes the legacy-path file today — hence `default_path`'s
+//! migration fallback. corrald adopts the format unchanged. `load()` parses and validates, and validation fails loudly
 //! (hard error, not silent acceptance) on unknown fields anywhere, empty
 //! required fields, whitespace inside `name`/`gh_repo`, a `gh_repo` that is
 //! not a single `owner/repo`, a `local` that begins with a bare `~`, and
@@ -223,15 +224,135 @@ impl Fleet {
     }
 }
 
-/// The registry file to use when the CLI gets no `--registry`:
-/// `$CORRAL_FLEETS_PATH` if set, else `$HOME/.hermes/scripts/fleets.json`.
+/// The registry file to use when the CLI gets no `--registry` (#66):
+///
+/// 1. `$CORRAL_FLEETS_PATH`, when set and non-empty — always wins.
+/// 2. `<config dir>/fleets.json` — the corral-owned default, where the
+///    config dir honours `$CORRAL_CONFIG_DIR` (falling back to
+///    `$HOME/.config/corral`) like every other consumer of the config
+///    dir — when it exists OR when the legacy path does not (so a fresh
+///    machine gets the corral path).
+/// 3. `$HOME/.hermes/scripts/fleets.json` — the pre-#66 legacy location,
+///    honoured as a migration fallback ONLY while the corral-owned file
+///    does not exist, announced by a stderr note each time. Machines that
+///    predate the move keep working untouched; nothing is copied or
+///    migrated implicitly.
 pub fn default_path() -> PathBuf {
-    std::env::var("CORRAL_FLEETS_PATH")
+    // Empty-but-set env vars fall through like unset ones — `export
+    // CORRAL_FLEETS_PATH=` in a profile must not produce a path-less error.
+    let fleets_env = std::env::var("CORRAL_FLEETS_PATH")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let config_dir_env = std::env::var("CORRAL_CONFIG_DIR")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let resolved = default_path_in(
+        Path::new(&home),
+        fleets_env.as_deref(),
+        config_dir_env.as_deref(),
+    );
+    // The legacy fallback is deliberately LOUD: a silent fallback would let
+    // a cp-instead-of-mv migration split the registry in two with no clue.
+    // The note disappears the moment the corral-owned file exists.
+    if resolved.ends_with(".hermes/scripts/fleets.json") {
+        eprintln!(
+            "note: using legacy registry {} (#66: move it to the corral config \
+             dir — see docs/OPERATIONS.md)",
+            resolved.display()
+        );
+    }
+    resolved
+}
+
+/// The resolution core, parameterised over `$HOME` and both env overrides
+/// so tests can exercise the ladder against temp dirs without mutating
+/// process-wide environment (test threads run in parallel).
+///
+/// Ladder: `$CORRAL_FLEETS_PATH` → `<config dir>/fleets.json` (where the
+/// config dir honours `$CORRAL_CONFIG_DIR`, matching every other consumer
+/// of the corral config dir) when it exists or nothing else does → the
+/// legacy `~/.hermes/scripts/fleets.json` while it alone exists.
+fn default_path_in(home: &Path, fleets_env: Option<&str>, config_dir_env: Option<&str>) -> PathBuf {
+    if let Some(env) = fleets_env {
+        return PathBuf::from(env);
+    }
+    let config_dir = config_dir_env
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".hermes/scripts/fleets.json")
-        })
+        .unwrap_or_else(|| home.join(".config/corral"));
+    let corral = config_dir.join("fleets.json");
+    if corral.exists() {
+        return corral;
+    }
+    let legacy = home.join(".hermes/scripts/fleets.json");
+    if legacy.exists() {
+        return legacy;
+    }
+    corral
+}
+
+#[cfg(test)]
+mod default_path_tests {
+    use super::default_path_in;
+
+    /// #66: env override wins; corral-owned path when present or on a
+    /// fresh machine; legacy honoured only while the corral file is absent.
+    #[test]
+    fn default_path_prefers_corral_then_legacy_then_corral_for_fresh() {
+        let home = tempfile::tempdir().expect("temp home");
+        let corral = home.path().join(".config/corral/fleets.json");
+        let legacy = home.path().join(".hermes/scripts/fleets.json");
+
+        // Fresh machine: neither exists -> the corral-owned path.
+        assert_eq!(default_path_in(home.path(), None, None), corral);
+
+        // Legacy machine: only the old file exists -> fallback honoured.
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        assert_eq!(default_path_in(home.path(), None, None), legacy);
+
+        // Migrated machine: corral file exists -> it wins over legacy.
+        std::fs::create_dir_all(corral.parent().unwrap()).unwrap();
+        std::fs::write(&corral, "{}").unwrap();
+        assert_eq!(default_path_in(home.path(), None, None), corral);
+
+        // Env override beats everything.
+        assert_eq!(
+            default_path_in(home.path(), Some("/x/y.json"), None),
+            std::path::PathBuf::from("/x/y.json")
+        );
+    }
+
+    /// F2: the registry follows a relocated config dir exactly like every
+    /// other consumer of `$CORRAL_CONFIG_DIR` (setup script, daemon keys).
+    #[test]
+    fn default_path_honours_the_config_dir_override() {
+        let home = tempfile::tempdir().expect("temp home");
+        let alt = tempfile::tempdir().expect("alt config dir");
+        let relocated = alt.path().join("fleets.json");
+
+        // Relocated dir, no file yet: still the relocated path (fresh).
+        assert_eq!(
+            default_path_in(home.path(), None, alt.path().to_str()),
+            relocated
+        );
+
+        // Legacy exists but the relocated file also exists -> relocated wins.
+        let legacy = home.path().join(".hermes/scripts/fleets.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        std::fs::write(&relocated, "{}").unwrap();
+        assert_eq!(
+            default_path_in(home.path(), None, alt.path().to_str()),
+            relocated
+        );
+
+        // CORRAL_FLEETS_PATH still beats the config-dir override.
+        assert_eq!(
+            default_path_in(home.path(), Some("/x/y.json"), alt.path().to_str()),
+            std::path::PathBuf::from("/x/y.json")
+        );
+    }
 }
 
 /// Read + parse + validate a registry. Errors carry the offending fleet and

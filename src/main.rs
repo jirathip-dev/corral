@@ -140,7 +140,9 @@ fn run_digest(args: &[String]) {
 /// side: `list`, `check`. Write side (slice 1): `add`, `remove`; (slice 2):
 /// `pause`, `resume`, `models` — all behind atomic-write discipline and
 /// validation in [`crate::fleet::ops`]. All accept `--registry <path>` to
-/// override `$CORRAL_FLEETS_PATH` / `~/.hermes/scripts/fleets.json`.
+/// override `$CORRAL_FLEETS_PATH` / `$CORRAL_CONFIG_DIR/fleets.json`
+/// (default `~/.config/corral/fleets.json`; legacy
+/// `~/.hermes/scripts/fleets.json` honoured as a fallback — #66).
 /// Everything here runs before the tokio runtime is built; no subcommand
 /// touches a running daemon or the herdr socket.
 fn run_fleet(args: &[String]) {
@@ -212,7 +214,10 @@ fn print_fleet_help() {
          \twrite failed — the registry is left byte-identical;\n\
          \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
          \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
-         \tor ~/.hermes/scripts/fleets.json)"
+         \tor $CORRAL_CONFIG_DIR/fleets.json, default\n\
+         \t~/.config/corral/fleets.json; a pre-existing legacy\n\
+         \t~/.hermes/scripts/fleets.json is used as a fallback,\n\
+         \twith a stderr note)"
     );
 }
 

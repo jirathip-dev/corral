@@ -222,7 +222,18 @@ corrald fleet list --registry <path>  # override the default
 ```
 
 The registry path is `$CORRAL_FLEETS_PATH`, else
-`~/.hermes/scripts/fleets.json`. Exit codes: **0** all good, **1** an
+`$CORRAL_CONFIG_DIR/fleets.json` (default `~/.config/corral/fleets.json`);
+a pre-existing legacy `~/.hermes/scripts/fleets.json` is honoured as a
+fallback while the corral-owned file does not exist, with a stderr note
+each time the fallback is taken (#66). Migrating a legacy machine: stop
+anything that writes the registry first, then
+`mkdir -p ~/.config/corral && mv ~/.hermes/scripts/fleets.json
+~/.config/corral/fleets.json` — **`mv`, not `cp`**: a copy leaves the
+legacy tooling writing one file while corrald reads the other, and the
+two silently diverge. Every write command loads the registry before
+writing, so a missing parent dir surfaces as the plain
+`cannot read fleet registry <path>` error — bootstrap with
+`mkdir -p ~/.config/corral && echo '{"fleets": []}' > ~/.config/corral/fleets.json`. Exit codes: **0** all good, **1** an
 operation failed — a fleet failed `check`, or `add`/`remove` refused
 (duplicate name, unresolvable repo, unknown name, no models to inherit) or
 could not write, leaving the registry byte-identical; **2** usage error or

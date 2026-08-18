@@ -89,6 +89,15 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
     let bytes = input.as_bytes();
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
+    // #62 perf: `high_entropy_at` walks the whole alphanumeric run at `i`.
+    // Re-scanning that run from every interior position made redaction
+    // O(run²) — 35s on a 64KiB unbroken blob, exactly the shape transcript
+    // pages carry. A failed run can never match from an interior start
+    // (a suffix is shorter and has a subset of the run's character
+    // classes), so one failed scan clears the whole run. The other two
+    // matchers are unaffected: both reject interior positions in O(1) via
+    // their word-boundary checks.
+    let mut entropy_cleared_until = 0usize;
     while i < bytes.len() {
         // A token abutting a previous match starts at a real word boundary
         // even though the char before it is a token char (e.g. an AKIA id
@@ -104,10 +113,17 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
             i = end;
             continue;
         }
-        if let Some((start, end)) = high_entropy_at(input, i) {
-            spans.push((start, end));
-            i = end;
-            continue;
+        if i >= entropy_cleared_until {
+            if let Some((start, end)) = high_entropy_at(input, i) {
+                spans.push((start, end));
+                i = end;
+                continue;
+            }
+            let mut run_end = i;
+            while run_end < bytes.len() && bytes[run_end].is_ascii_alphanumeric() {
+                run_end += 1;
+            }
+            entropy_cleared_until = run_end.max(i + 1);
         }
         // ASCII-only patterns: one-byte steps are safe through UTF-8.
         i += 1;
@@ -527,5 +543,37 @@ mod tests {
             let once = redacted(t);
             assert_eq!(redacted(&once), once, "second pass must be a no-op: {t}");
         }
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::redact;
+
+    /// #62 regression pin: a 64KiB unbroken alphanumeric blob (the shape
+    /// transcript pages carry) must redact in linear time. Pre-fix this
+    /// took ~35s in debug; the bound below is generous enough for any CI
+    /// machine while catching an O(n²) regression by orders of magnitude.
+    #[test]
+    fn unbroken_blob_redacts_in_linear_time() {
+        let big = "x".repeat(64 * 1024);
+        let t = std::time::Instant::now();
+        let out = redact(&big);
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "no match expected"
+        );
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "redact went quadratic again: {:?}",
+            t.elapsed()
+        );
+
+        // And a run that DOES match still matches after the memoization.
+        let secretish = format!("prefix {} suffix", "Ab1".repeat(20));
+        assert!(
+            redact(&secretish).contains("[REDACTED]"),
+            "entropy rule still fires"
+        );
     }
 }

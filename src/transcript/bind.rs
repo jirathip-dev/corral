@@ -8,14 +8,24 @@
 //!    every agent herdr resolved one for (claude → the jsonl's uuid
 //!    filename, opencode → `session.id`, codex → the uuid in the rollout
 //!    filename); only `herdr:pane:<id>` fallbacks lack one. When the hint
-//!    names a session in a store, that session IS the transcript — no
-//!    heuristic, no ambiguity, and no way to land on a co-resident
-//!    agent's session. Tried against the agent's own tool's store first.
+//!    names a session in a store, that session IS the transcript. The
+//!    claude/opencode rungs are exact matches (filename / primary-key
+//!    equality); the codex rung anchors on `-<id>.jsonl` and routes
+//!    multiple hits through [`choose`] (review R2). Cross-store direct
+//!    hits stay exact because the id SHAPES are globally distinctive
+//!    (uuid / `ses_…`) — a property of the ids, not enforced here.
+//!    Tried against the agent's own tool's store first.
 //! 2. **Worktree fallback**, for pane-derived ids or a hint no store
 //!    knows: sessions whose recorded cwd matches the agent's
 //!    `workspace.worktree_path`, RESTRICTED to the agent's tool's store
-//!    when the tool maps to one (a codex implementer can never bind a
-//!    claude reviewer's file — review F1). Multiple matches tie-break by
+//!    when herdr reports a recognized tool (a codex implementer can
+//!    never bind a claude reviewer's file — review F1; an UNRECOGNIZED
+//!    tool string consults all three stores, the pre-F1 default).
+//!    Honest limit (review R1): two co-resident agents of the SAME tool
+//!    that both lack session-id hints still share this rung's candidate
+//!    set and get the newest-by-recency pick — which is why the HTTP
+//!    body carries `bind` provenance, so a client can see a worktree
+//!    match is best-effort, not exact. Multiple matches tie-break by
 //!    recency; a tie AT the maximum is a typed [`BindError::Ambiguous`]
 //!    carrying the full candidate list — never a guess.
 //!
@@ -52,9 +62,11 @@ use crate::integrate::paths_match;
 /// Wall-clock cap on each filesystem discovery pass (review F6). The
 /// opencode SQL side has its own [`super::OPENCODE_QUERY_TIMEOUT`].
 const FS_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Upper bound on files visited by the codex walk (review F6) — past this
-/// the store is reported unavailable rather than ground through.
-const CODEX_WALK_MAX_FILES: usize = 20_000;
+/// Upper bound on files/entries one scan may visit (review F6/R3) — past
+/// this the store is reported unavailable rather than ground through,
+/// and that is now TRUE: budget exhaustion is an error, never a silent
+/// truncation. Shared by the codex walk AND the claude scans.
+const SCAN_MAX_FILES: usize = 20_000;
 const CODEX_WALK_MAX_DEPTH: usize = 6;
 /// At most this much of a JSONL file is read while looking for its
 /// recorded cwd (first line for codex; first few lines for claude).
@@ -143,6 +155,10 @@ impl Candidate {
 pub struct BindOutcome {
     pub store: StoreRef,
     pub unavailable: Vec<String>,
+    /// Which ladder rung answered (review R1): `"session_id"` = exact,
+    /// `"worktree"` = best-effort heuristic — surfaced to clients so a
+    /// fallback match is never mistaken for an exact one.
+    pub rung: &'static str,
 }
 
 /// Why no single store could be bound.
@@ -239,8 +255,8 @@ pub async fn bind_agent(
     };
 
     // Rung 1: exact session-id binding (review F1). Tool's own store
-    // first, then the others — ids are globally distinctive (uuid /
-    // `ses_…`), so a cross-store hit is still exact, never a guess.
+    // first, then the others — the id SHAPES are globally distinctive
+    // (uuid / `ses_…`), so a cross-store hit is still exact.
     if let Some(hint) = session_hint(agent_id) {
         let mut kinds = ["opencode", "claude", "codex"];
         if let Some(first) = tool_store_kind(tool)
@@ -250,26 +266,46 @@ pub async fn bind_agent(
         }
         for kind in kinds {
             let found = match kind {
-                "opencode" => opencode_by_id(&roots.opencode_db, hint).await,
-                "claude" => {
-                    run_fs_scan(roots.claude_dir.clone(), {
-                        let hint = hint.to_string();
-                        move |dir| claude_by_id(&dir, &hint)
-                    })
+                "opencode" => opencode_by_id(&roots.opencode_db, hint)
                     .await
-                }
-                _ => {
-                    run_fs_scan(roots.codex_dir.clone(), {
-                        let hint = hint.to_string();
-                        move |dir| Ok(codex_by_id(&dir, &hint))
-                    })
-                    .await
-                }
+                    .map_err(BindError::Store),
+                "claude" => run_fs_scan(roots.claude_dir.clone(), {
+                    let hint = hint.to_string();
+                    move |dir, mut budget| claude_by_id(&dir, &hint, &mut budget)
+                })
+                .await
+                .map_err(BindError::Store),
+                _ => run_fs_scan(roots.codex_dir.clone(), {
+                    let hint = hint.to_string();
+                    move |dir, mut budget| codex_by_id(&dir, &hint, &mut budget)
+                })
+                .await
+                .map_err(BindError::Store)
+                .and_then(|matches| {
+                    // R2: several rollouts can share a resumed session's
+                    // uuid — route through choose() so a tie surfaces as
+                    // Ambiguous instead of a silent newest-by-mtime pick.
+                    if matches.is_empty() {
+                        Ok(None)
+                    } else {
+                        choose(matches, worktree).map(Some)
+                    }
+                }),
             };
             match found {
-                Ok(Some(store)) => return Ok(BindOutcome { store, unavailable }),
+                Ok(Some(store)) => {
+                    return Ok(BindOutcome {
+                        store,
+                        unavailable,
+                        rung: "session_id",
+                    });
+                }
                 Ok(None) => {}
-                Err(error) => note_failure(kind, error, &mut unavailable, &mut first_error),
+                Err(ambiguous @ BindError::Ambiguous { .. }) => return Err(ambiguous),
+                Err(BindError::Store(error)) => {
+                    note_failure(kind, error, &mut unavailable, &mut first_error);
+                }
+                Err(BindError::NoSession { .. }) => {}
             }
         }
     }
@@ -290,14 +326,14 @@ pub async fn bind_agent(
             "claude" => {
                 run_fs_scan(roots.claude_dir.clone(), {
                     let worktree = worktree.to_string();
-                    move |dir| claude_candidates(&dir, &worktree)
+                    move |dir, mut budget| claude_candidates(&dir, &worktree, &mut budget)
                 })
                 .await
             }
             _ => {
                 run_fs_scan(roots.codex_dir.clone(), {
                     let worktree = worktree.to_string();
-                    move |dir| codex_candidates(&dir, &worktree)
+                    move |dir, mut budget| codex_candidates(&dir, &worktree, &mut budget)
                 })
                 .await
             }
@@ -309,7 +345,11 @@ pub async fn bind_agent(
     }
 
     match choose(candidates, worktree) {
-        Ok(store) => Ok(BindOutcome { store, unavailable }),
+        Ok(store) => Ok(BindOutcome {
+            store,
+            unavailable,
+            rung: "worktree",
+        }),
         Err(BindError::NoSession { worktree }) => match first_error {
             // Nothing matched AND a store was unreadable: report the
             // failure, not a confident "no session".
@@ -320,16 +360,65 @@ pub async fn bind_agent(
     }
 }
 
+/// Cooperative budget threaded through every filesystem scan (review
+/// R3): the async-side timeout alone bounds only the RESPONSE — a
+/// dropped `spawn_blocking` handle does not cancel the closure, so
+/// without this a timed-out walk would keep grinding on a detached
+/// blocking thread (and retries would stack until the pool is full).
+/// `spend()` is checked per entry; exhaustion (deadline OR file count)
+/// stops the work itself.
+pub(crate) struct ScanBudget {
+    deadline: std::time::Instant,
+    files_left: usize,
+}
+
+impl ScanBudget {
+    fn new(deadline: std::time::Instant) -> Self {
+        Self {
+            deadline,
+            files_left: SCAN_MAX_FILES,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self::new(std::time::Instant::now() + FS_SCAN_TIMEOUT)
+    }
+
+    /// Account one entry. `false` = budget exhausted: stop scanning and
+    /// report the store unavailable (never a silent partial answer).
+    fn spend(&mut self) -> bool {
+        if self.files_left == 0 || std::time::Instant::now() >= self.deadline {
+            return false;
+        }
+        self.files_left -= 1;
+        true
+    }
+
+    fn exhausted_error(root: &Path) -> TranscriptError {
+        TranscriptError::StoreUnreadable {
+            path: root.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "store scan budget exhausted (deadline or file cap)",
+            ),
+        }
+    }
+}
+
 /// Run one blocking filesystem discovery pass off the async runtime
-/// (review F6), bounded by [`FS_SCAN_TIMEOUT`]. Timeout or a lost worker
+/// (review F6), bounded by [`FS_SCAN_TIMEOUT`]. The same deadline is
+/// threaded INTO the closure as a [`ScanBudget`] (review R3), so a
+/// timeout stops the walk itself — not just the response. A lost worker
 /// reports the store unreadable — never a hang, never a runtime stall.
 async fn run_fs_scan<T, F>(root: PathBuf, scan: F) -> Result<T, TranscriptError>
 where
     T: Send + 'static,
-    F: FnOnce(PathBuf) -> Result<T, TranscriptError> + Send + 'static,
+    F: FnOnce(PathBuf, ScanBudget) -> Result<T, TranscriptError> + Send + 'static,
 {
     let path_for_error = root.clone();
-    let task = tokio::task::spawn_blocking(move || scan(root));
+    let deadline = std::time::Instant::now() + FS_SCAN_TIMEOUT;
+    let task = tokio::task::spawn_blocking(move || scan(root, ScanBudget::new(deadline)));
     match tokio::time::timeout(FS_SCAN_TIMEOUT, task).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) | Err(_) => Err(TranscriptError::StoreUnreadable {
@@ -416,6 +505,15 @@ fn opencode_row_candidate(db_path: &Path, row: &serde_json::Value) -> Option<Can
     })
 }
 
+/// The direct-rung SQL — factored so a test can pin the escaping and the
+/// PK-equality shape (review R6). No length guard here, unlike the two
+/// filename rungs: exact `=` equality cannot over-match on a short hint,
+/// so a guard would only hide sessions with unusual ids.
+fn opencode_id_sql(session_id: &str) -> String {
+    let sid = session_id.replace('\'', "''");
+    format!("SELECT s.id AS id, 0 AS recency FROM session s WHERE s.id = '{sid}' LIMIT 1")
+}
+
 /// Direct rung: `session.id` primary-key lookup.
 async fn opencode_by_id(
     db_path: &Path,
@@ -424,9 +522,7 @@ async fn opencode_by_id(
     if !db_path.exists() {
         return Ok(None);
     }
-    let sid = session_id.replace('\'', "''");
-    let sql =
-        format!("SELECT s.id AS id, 0 AS recency FROM session s WHERE s.id = '{sid}' LIMIT 1");
+    let sql = opencode_id_sql(session_id);
     let rows = run_bind_sql(db_path, &sql).await?;
     Ok(rows
         .first()
@@ -440,13 +536,10 @@ async fn opencode_by_id(
 /// stays usable, plus LIMIT — never a function-wrapped full scan (review
 /// F10). Recency = the session's last message time (0 for message-less
 /// sessions — still a candidate).
-async fn opencode_candidates(
-    db_path: &Path,
-    worktree: &str,
-) -> Result<Vec<Candidate>, TranscriptError> {
-    if !db_path.exists() {
-        return Ok(Vec::new());
-    }
+/// The fallback-rung SQL — factored so a test can pin the F10 fix's
+/// actual shape (bare, sargable `s.directory IN`, LIMIT-bounded, no
+/// function wrapping the column) and the quote escaping (review R6).
+fn opencode_fallback_sql(worktree: &str) -> String {
     let mut spellings: Vec<String> = Vec::new();
     let trimmed = worktree.trim_end_matches('/');
     for base in [
@@ -466,13 +559,23 @@ async fn opencode_candidates(
         .map(|s| format!("'{}'", s.replace('\'', "''")))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!(
+    format!(
         "SELECT s.id AS id, \
                 COALESCE((SELECT MAX(m.time_created) FROM message m \
                           WHERE m.session_id = s.id), 0) AS recency \
          FROM session s WHERE s.directory IN ({in_list}) \
          LIMIT {OPENCODE_FALLBACK_LIMIT}"
-    );
+    )
+}
+
+async fn opencode_candidates(
+    db_path: &Path,
+    worktree: &str,
+) -> Result<Vec<Candidate>, TranscriptError> {
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let sql = opencode_fallback_sql(worktree);
     let rows = run_bind_sql(db_path, &sql).await?;
     Ok(rows
         .iter()
@@ -492,7 +595,11 @@ fn mtime_ms(path: &Path) -> u64 {
 /// Direct rung: a claude session id names its jsonl file. Scanned across
 /// ALL project dirs (one `read_dir` + one stat per project) — the id is
 /// unique, so this sidesteps the lossy dir encoding entirely.
-fn claude_by_id(claude_dir: &Path, session_id: &str) -> Result<Option<StoreRef>, TranscriptError> {
+fn claude_by_id(
+    claude_dir: &Path,
+    session_id: &str,
+    budget: &mut ScanBudget,
+) -> Result<Option<StoreRef>, TranscriptError> {
     if session_id.len() < 8 || !claude_dir.is_dir() {
         // Too-short hints (never a claude uuid) must not stat around.
         return Ok(None);
@@ -504,6 +611,9 @@ fn claude_by_id(claude_dir: &Path, session_id: &str) -> Result<Option<StoreRef>,
         })?;
     let file_name = format!("{session_id}.jsonl");
     for project in projects.flatten() {
+        if !budget.spend() {
+            return Err(ScanBudget::exhausted_error(claude_dir));
+        }
         let candidate = project.path().join(&file_name);
         if candidate.is_file() {
             return Ok(Some(StoreRef::Claude {
@@ -516,26 +626,39 @@ fn claude_by_id(claude_dir: &Path, session_id: &str) -> Result<Option<StoreRef>,
 
 /// Direct rung: codex rollout filenames embed the session uuid
 /// (`rollout-<timestamp>-<uuid>.jsonl`) — matched on the NAME only, no
-/// file opens. Short hints never match (guard against matching
-/// everything).
-fn codex_by_id(codex_dir: &Path, session_id: &str) -> Option<StoreRef> {
-    if session_id.len() < 8 {
-        return None;
+/// file opens, ANCHORED at `-<id>.jsonl` (review R2: an unanchored
+/// substring would let a date-shaped hint match every rollout of that
+/// day). Short hints never match. Multiple hits (a resumed session
+/// writing several segments) are returned for the caller to route
+/// through [`choose`], so a tie surfaces instead of a silent pick.
+fn codex_by_id(
+    codex_dir: &Path,
+    session_id: &str,
+    budget: &mut ScanBudget,
+) -> Result<Vec<Candidate>, TranscriptError> {
+    if session_id.len() < 8 || !codex_dir.is_dir() {
+        return Ok(Vec::new());
     }
-    let mut newest: Option<(u64, PathBuf)> = None;
-    walk_codex(codex_dir, &mut |path| {
+    let suffix = format!("-{session_id}.jsonl");
+    let mut matches = Vec::new();
+    let completed = walk_codex(codex_dir, budget, &mut |path| {
         if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.contains(session_id))
+            .is_some_and(|n| n.ends_with(&suffix))
         {
-            let mtime = mtime_ms(path);
-            if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                newest = Some((mtime, path.to_path_buf()));
-            }
+            matches.push(Candidate {
+                recency_ms: mtime_ms(path),
+                store: StoreRef::Codex {
+                    rollout_path: path.to_path_buf(),
+                },
+            });
         }
     });
-    newest.map(|(_, rollout_path)| StoreRef::Codex { rollout_path })
+    if !completed {
+        return Err(ScanBudget::exhausted_error(codex_dir));
+    }
+    Ok(matches)
 }
 
 /// Fallback rung: every jsonl in the ENCODED project dir whose recorded
@@ -545,7 +668,11 @@ fn codex_by_id(codex_dir: &Path, session_id: &str) -> Option<StoreRef> {
 /// (torn/summary-only tails — availability over a collision this narrow).
 /// Both the raw and canonical worktree spellings are probed for the dir
 /// name (review F8).
-fn claude_candidates(claude_dir: &Path, worktree: &str) -> Result<Vec<Candidate>, TranscriptError> {
+fn claude_candidates(
+    claude_dir: &Path,
+    worktree: &str,
+    budget: &mut ScanBudget,
+) -> Result<Vec<Candidate>, TranscriptError> {
     let mut dirs: Vec<String> = vec![encode_claude_project_dir(worktree)];
     let canon = crate::integrate::canon_best_effort(Path::new(worktree.trim_end_matches('/')));
     let canon_encoded = encode_claude_project_dir(&canon.to_string_lossy());
@@ -564,6 +691,9 @@ fn claude_candidates(claude_dir: &Path, worktree: &str) -> Result<Vec<Candidate>
                 source,
             })?;
         for entry in entries.flatten() {
+            if !budget.spend() {
+                return Err(ScanBudget::exhausted_error(claude_dir));
+            }
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "jsonl")
                 && path.is_file()
@@ -609,17 +739,21 @@ fn claude_file_matches_cwd(path: &Path, worktree: &str) -> bool {
     true
 }
 
-/// Bounded walk over the codex sessions tree: depth-capped, file-count
-/// capped, dirs identified WITHOUT following symlinks (a symlink cycle
-/// cannot multiply the walk — review F6/answers).
-fn walk_codex(codex_dir: &Path, visit: &mut dyn FnMut(&Path)) {
-    let mut visited_files = 0usize;
+/// Bounded walk over the codex sessions tree: depth-capped, budgeted per
+/// entry (deadline + file cap — review R3), dirs identified WITHOUT
+/// following symlinks (a symlink cycle cannot multiply the walk).
+/// Returns `false` when the budget ran out — the caller reports the
+/// store unavailable rather than acting on a silently-partial walk.
+fn walk_codex(codex_dir: &Path, budget: &mut ScanBudget, visit: &mut dyn FnMut(&Path)) -> bool {
     let mut stack = vec![(codex_dir.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            if !budget.spend() {
+                return false;
+            }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -629,21 +763,22 @@ fn walk_codex(codex_dir: &Path, visit: &mut dyn FnMut(&Path)) {
                     stack.push((path, depth + 1));
                 }
             } else if file_type.is_file() && path.extension().is_some_and(|e| e == "jsonl") {
-                visited_files += 1;
-                if visited_files > CODEX_WALK_MAX_FILES {
-                    return;
-                }
                 visit(&path);
             }
         }
     }
+    true
 }
 
 /// Fallback rung: rollouts whose FIRST line records `payload.cwd`
 /// matching the worktree (raw-then-canonical — review F8). The root
 /// being unreadable is an error; individually unreadable/torn files are
 /// skipped — one bad rollout must not hide every other candidate.
-fn codex_candidates(codex_dir: &Path, worktree: &str) -> Result<Vec<Candidate>, TranscriptError> {
+fn codex_candidates(
+    codex_dir: &Path,
+    worktree: &str,
+    budget: &mut ScanBudget,
+) -> Result<Vec<Candidate>, TranscriptError> {
     if !codex_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -655,7 +790,7 @@ fn codex_candidates(codex_dir: &Path, worktree: &str) -> Result<Vec<Candidate>, 
     }
     let want = worktree.trim_end_matches('/');
     let mut found = Vec::new();
-    walk_codex(codex_dir, &mut |path| {
+    let completed = walk_codex(codex_dir, budget, &mut |path| {
         if codex_rollout_cwd(path)
             .is_some_and(|cwd| paths_match(Path::new(cwd.trim_end_matches('/')), Path::new(want)))
         {
@@ -667,6 +802,9 @@ fn codex_candidates(codex_dir: &Path, worktree: &str) -> Result<Vec<Candidate>, 
             });
         }
     });
+    if !completed {
+        return Err(ScanBudget::exhausted_error(codex_dir));
+    }
     Ok(found)
 }
 
@@ -879,7 +1017,8 @@ mod tests {
         )
         .expect("write");
 
-        let found = claude_candidates(&claude_dir, "/wt/a/b").expect("scan");
+        let found =
+            claude_candidates(&claude_dir, "/wt/a/b", &mut ScanBudget::for_test()).expect("scan");
         let labels: Vec<String> = found.iter().map(Candidate::label).collect();
         assert_eq!(found.len(), 2, "{labels:?}");
         assert!(!labels.iter().any(|l| l.contains("22222222")), "{labels:?}");
@@ -1014,21 +1153,33 @@ INSERT INTO message VALUES ('m1', 'ses_wt', 111, 'assistant', '{}');
             "{\"payload\":{\"cwd\":\"/wt/other\"}}\n",
         )
         .expect("write");
-        let found = codex_candidates(dir.path(), "/wt/target").expect("walk");
+        let found =
+            codex_candidates(dir.path(), "/wt/target", &mut ScanBudget::for_test()).expect("walk");
         assert_eq!(found.len(), 1);
         assert!(matches!(
             &found[0].store,
             StoreRef::Codex { rollout_path } if rollout_path.to_string_lossy().contains("deadbeef")
         ));
 
-        // Direct rung matches by filename, and short hints never match.
-        let direct = codex_by_id(dir.path(), "cafebabe-2222").expect("found");
+        // Direct rung: ANCHORED at -<id>.jsonl (R2) — a date-shaped hint
+        // that appears in every rollout name matches nothing.
+        let direct =
+            codex_by_id(dir.path(), "cafebabe-2222", &mut ScanBudget::for_test()).expect("scan");
+        assert_eq!(direct.len(), 1);
         assert!(matches!(
-            direct,
-            StoreRef::Codex { ref rollout_path } if rollout_path.to_string_lossy().contains("cafebabe")
+            &direct[0].store,
+            StoreRef::Codex { rollout_path } if rollout_path.to_string_lossy().contains("cafebabe")
         ));
         assert!(
-            codex_by_id(dir.path(), "cafe").is_none(),
+            codex_by_id(dir.path(), "2026-08-18", &mut ScanBudget::for_test())
+                .expect("scan")
+                .is_empty(),
+            "unanchored date-substring must not match (R2)"
+        );
+        assert!(
+            codex_by_id(dir.path(), "cafe", &mut ScanBudget::for_test())
+                .expect("scan")
+                .is_empty(),
             "short hint guarded"
         );
     }
@@ -1039,16 +1190,79 @@ INSERT INTO message VALUES ('m1', 'ses_wt', 111, 'assistant', '{}');
         let p = dir.path().join("-any-project");
         std::fs::create_dir_all(&p).expect("mkdir");
         std::fs::write(p.join("abcd1234-x.jsonl"), "{}\n").expect("write");
+        let mut b = ScanBudget::for_test();
         assert!(
-            claude_by_id(dir.path(), "abcd1234-x")
+            claude_by_id(dir.path(), "abcd1234-x", &mut b)
                 .expect("scan")
                 .is_some()
         );
         assert!(
-            claude_by_id(dir.path(), "missing-uuid")
+            claude_by_id(dir.path(), "missing-uuid", &mut b)
                 .expect("scan")
                 .is_none()
         );
-        assert!(claude_by_id(dir.path(), "ab").expect("scan").is_none());
+        assert!(
+            claude_by_id(dir.path(), "ab", &mut b)
+                .expect("scan")
+                .is_none()
+        );
+    }
+
+    /// R3: budget exhaustion is an ERROR, never a silent partial answer —
+    /// the walk stops instead of grinding past the cap or the deadline.
+    #[test]
+    fn exhausted_scan_budget_is_an_error_not_a_truncation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("rollout-{i}-aaaa1111.jsonl")),
+                "{\"payload\":{\"cwd\":\"/wt/x\"}}\n",
+            )
+            .expect("write");
+        }
+        let mut tiny = ScanBudget {
+            deadline: std::time::Instant::now() + FS_SCAN_TIMEOUT,
+            files_left: 2,
+        };
+        match codex_candidates(dir.path(), "/wt/x", &mut tiny) {
+            Err(TranscriptError::StoreUnreadable { .. }) => {}
+            other => panic!("expected budget-exhausted error, got {other:?}"),
+        }
+        let mut expired = ScanBudget {
+            deadline: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            files_left: SCAN_MAX_FILES,
+        };
+        match codex_candidates(dir.path(), "/wt/x", &mut expired) {
+            Err(TranscriptError::StoreUnreadable { .. }) => {}
+            other => panic!("expected deadline-exhausted error, got {other:?}"),
+        }
+    }
+
+    /// R6: the two bind queries' SHAPE is pinned — sargable bare
+    /// `s.directory IN`, LIMIT-bounded, PK equality on the direct rung,
+    /// quotes escaped, and no function ever wraps the column again.
+    #[test]
+    fn bind_sql_shape_and_escaping_are_pinned() {
+        let id_sql = opencode_id_sql("ses_o'brien");
+        assert!(id_sql.contains("WHERE s.id = 'ses_o''brien'"), "{id_sql}");
+        assert!(id_sql.contains("LIMIT 1"), "{id_sql}");
+
+        let fb = opencode_fallback_sql("/w/o'brien/");
+        assert!(fb.contains("s.directory IN ("), "{fb}");
+        assert!(fb.contains("'/w/o''brien'"), "{fb}");
+        assert!(
+            fb.contains("'/w/o''brien/'"),
+            "trailing-slash spelling: {fb}"
+        );
+        assert!(
+            fb.contains(&format!("LIMIT {OPENCODE_FALLBACK_LIMIT}")),
+            "{fb}"
+        );
+        for sql in [&id_sql, &fb] {
+            assert!(
+                !sql.contains("RTRIM") && !sql.contains("rtrim"),
+                "F10 regression — function-wrapped column: {sql}"
+            );
+        }
     }
 }

@@ -252,7 +252,7 @@ curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
 
 - Grows on **drive writes** (executions and typed refusals at dispatch)
   and on **served `/transcript` pages** (#63 — one entry per page,
-  capability `read_tail`, the agent as target). Authentication failures
+  capability `read_tail:transcript`, the agent as target). Authentication failures
   and step-up failures are never appended.
 - `valid` is the live chain-integrity verdict: any tampered or inserted
   line breaks the chain. Known limit: a wholesale truncation of trailing
@@ -304,7 +304,7 @@ grant check are identical to `/drive`.
 curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:ses_abc123&limit=20' \
   -H "x-corral-drive: $SIGNED_ENVELOPE_JSON"
 # → {"agent":"...","store":"opencode","session":"opencode:ses_abc123",
-#    "stores_unavailable":[],
+#    "bind":"session_id","stores_unavailable":[],
 #    "entries":[{"role":"assistant","text":"...","ts":1723...}],
 #    "next_cursor":"oc.1723...9.6d73675f3031.9f2ab4c1d0e37a55","skipped":0}
 ```
@@ -316,7 +316,10 @@ started), the stale cursor is a `bad_cursor` 400, never a silent
 continuation in the wrong file. `limit` is clamped to 1..=50 regardless
 of what is asked (asking for 500 yields 50). `skipped` counts torn
 rows/lines in the page's range; `session` names the bound session so a
-client can pin it; `stores_unavailable` lists store kinds that errored
+client can pin it; `bind` says which rung answered (`session_id` =
+exact, `worktree` = best-effort — same-tool agents sharing a worktree
+without session-id hints share that rung); `stores_unavailable` lists
+store kinds that errored
 during binding (a complete-looking page from one store does not prove
 the others were consultable).
 
@@ -330,8 +333,10 @@ candidate list** (the daemon never guesses between sessions that tie on
 recency), `store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
 `store_shape` 502.
 
-Every SERVED page appends an audit entry (capability `read_tail`, the
-agent as target) to the same hash-chained log as drive writes — check
+Every SERVED page appends an audit entry (capability
+`read_tail:transcript` — distinguishable from a bounded `/drive`
+`read_tail` — the agent as target) to the same hash-chained log as drive
+writes — check
 `GET /audit` for the read trail. Auth failures are never audited.
 
 ### Grant scope — recorded decision (#63)

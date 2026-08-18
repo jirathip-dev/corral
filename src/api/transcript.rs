@@ -319,7 +319,11 @@ async fn serve(
         ts: now_millis(),
         key_id: signed.key_id.clone(),
         request_id: signed.envelope.request_id.clone(),
-        capability: format!("{}", Capability::ReadTail),
+        // R4: distinguishable from a bounded /drive read_tail entry — an
+        // operator must be able to tell "40 full-history pages" from "40
+        // 32KiB tails". The capability field is a String; this is the
+        // additive spelling (`<grant>:<surface>`).
+        capability: format!("{}:transcript", Capability::ReadTail),
         target: agent_id.clone(),
         outcome: AuditOutcome::Executed,
     };
@@ -347,6 +351,10 @@ async fn serve(
         // Review F15: the bound session's identity, so a client can
         // detect a rebind or a wrong bind instead of trusting silence.
         "session": session_label,
+        // Review R1: which ladder rung answered — "session_id" is exact,
+        // "worktree" is best-effort (same-tool co-residents without
+        // session-id hints share that rung's candidate set).
+        "bind": outcome.rung,
         // Review F9: store kinds that errored during binding — a
         // complete-looking answer must not hide a store we could not ask.
         "stores_unavailable": outcome.unavailable,

@@ -247,6 +247,9 @@ async fn page_shape_is_stable_and_redacted_end_to_end() {
     assert_eq!(body["store"], "claude");
     // F15: the bound session is named, so a client can pin the bind.
     assert_eq!(body["session"], "claude:s1.jsonl");
+    // R1: worktree rung declared as best-effort provenance ("a1" is not
+    // a session id, so the heuristic answered).
+    assert_eq!(body["bind"], "worktree");
     // F9: no store failed, and the field says so explicitly.
     assert_eq!(body["stores_unavailable"], json!([]));
     assert_eq!(body["skipped"], 0);
@@ -394,7 +397,10 @@ async fn served_pages_are_audited_and_auth_failures_are_not() {
     let chain = h.auth.audit.chain().0;
     assert_eq!(chain.len(), before + 1, "one audit entry per served page");
     let last = chain.last().expect("entry");
-    assert_eq!(last.capability, "read_tail");
+    assert_eq!(
+        last.capability, "read_tail:transcript",
+        "distinguishable from a bounded /drive read_tail entry (R4)"
+    );
     assert_eq!(last.target, "herdr:a1");
 }
 
@@ -610,6 +616,7 @@ INSERT INTO part VALUES ('p2', 'm2', 'text', '{{"type":"text","text":"answer wit
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["store"], "opencode");
     assert_eq!(body["session"], "opencode:ses_fix");
+    assert_eq!(body["bind"], "session_id", "the direct rung answered (R1)");
     let entries = body["entries"].as_array().expect("entries");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["role"], "assistant", "newest first");

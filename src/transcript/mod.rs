@@ -115,21 +115,23 @@ pub fn store_fingerprint(store: &StoreRef) -> u64 {
         hash
     }
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    // RAW path spelling, deliberately un-canonicalized (review R7): the
+    // binder derives paths deterministically, so raw is stable across
+    // pages — while `fs::canonicalize` is a blocking syscall on the
+    // async path AND makes the fingerprint depend on live filesystem
+    // state (a canonicalize failure between pages would invalidate a
+    // logically-valid cursor).
     match store {
         StoreRef::Opencode { session_id, .. } => {
             fnv64(fnv64(FNV_OFFSET, b"oc:"), session_id.as_bytes())
         }
         StoreRef::Claude { jsonl_path } => fnv64(
             fnv64(FNV_OFFSET, b"cl:"),
-            crate::integrate::canon_best_effort(jsonl_path)
-                .to_string_lossy()
-                .as_bytes(),
+            jsonl_path.to_string_lossy().as_bytes(),
         ),
         StoreRef::Codex { rollout_path } => fnv64(
             fnv64(FNV_OFFSET, b"cx:"),
-            crate::integrate::canon_best_effort(rollout_path)
-                .to_string_lossy()
-                .as_bytes(),
+            rollout_path.to_string_lossy().as_bytes(),
         ),
     }
 }

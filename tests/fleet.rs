@@ -1071,10 +1071,15 @@ fn failed_operation_leaves_file_byte_identical_and_no_temp_file() {
 }
 
 #[test]
-fn mid_write_failure_cleans_up_the_temp_file() {
+fn temp_path_collision_refuses_and_leaves_file_byte_identical() {
     // Fail the write after load/validate succeed: pre-create a DIRECTORY at
     // the temp path so `File::create` fails, and assert the original is
     // byte-identical (the cleanup closure tolerates the unremovable dir).
+    // REVIEWED GAP (accepted): the write_all/sync_all failure branches are
+    // not portably reachable on macOS (no /dev/full), so the cleanup
+    // closure's post-create path rests on code reading; both create-failure
+    // paths are pinned here and in
+    // failed_operation_leaves_file_byte_identical_and_no_temp_file.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
     let before = std::fs::read(&path).expect("read registry");
@@ -1418,4 +1423,112 @@ fn fleet_add_accepts_the_legacy_positional_name_shape() {
         Some(2),
         "two positional names is usage"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #60 follow-ups from the #58/#67 reviews: binary-level exit-1 pin,
+// symlink/permission regression tests, --models alt-slot refusal e2e.
+// ---------------------------------------------------------------------------
+
+/// R1: the end-to-end exit-code contract for a refusal — automation branches
+/// on this, and the unit-level `exit_code()` test cannot prove main.rs calls
+/// it. `RemoveNotFound` needs no gh, no network, no write.
+#[test]
+fn fleet_remove_unknown_name_exits_1_not_2() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let out = Command::new(bin)
+        .args([
+            "fleet",
+            "remove",
+            "no-such-fleet",
+            "--registry",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "unknown name is a refusal (1), not a usage error (2): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no fleet named"),
+        "names the refusal: {stderr}"
+    );
+}
+
+/// N1 (#67 round 2): the alt-slot `--models` refusal is a user-facing string
+/// with a dedicated match arm — pin both the exit code and the message so a
+/// refactor cannot let `impl_alt` fall through to the generic unknown-key arm.
+#[test]
+fn fleet_add_models_alt_slot_refusal_exits_2_with_the_dedicated_message() {
+    let bin = env!("CARGO_BIN_EXE_corrald");
+    let out = Command::new(bin)
+        .args([
+            "fleet",
+            "add",
+            "x",
+            "--gh",
+            "o/r",
+            "--models",
+            "orch=a,impl=b,review=c,impl_alt=d",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "parse refusal is usage (2)");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not settable here"),
+        "the dedicated alt-slot message, not the unknown-key one: {stderr}"
+    );
+}
+
+/// R2a: a symlinked registry is followed — the write replaces the TARGET
+/// file and the link survives (the dotfiles-checkout arrangement).
+#[cfg(unix)]
+#[test]
+fn write_through_symlinked_registry_preserves_the_link() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target_dir = dir.path().join("dotfiles");
+    std::fs::create_dir(&target_dir).expect("create target dir");
+    let target = write_registry(&target_dir, &format!(r#"{{ "fleets": [{VALID_B}] }}"#));
+    let link = dir.path().join("fleets.json");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink registry");
+
+    let before = std::fs::read(&target).expect("target before");
+    let registry = load(&link).expect("loads through the link");
+    write_atomic(&link, &registry).expect("writes through the link");
+
+    let meta = std::fs::symlink_metadata(&link).expect("stat link");
+    assert!(meta.is_symlink(), "the link survives the rewrite");
+    // Non-vacuous: write_atomic normalises formatting, so the target's
+    // bytes MUST change if (and only where) the write landed on it.
+    let written = std::fs::read(&target).expect("target after");
+    assert_ne!(
+        written, before,
+        "the TARGET file received the (re-formatted) write"
+    );
+    let text = String::from_utf8(written).expect("utf8");
+    assert!(text.contains("\"board\""), "content survives: {text}");
+}
+
+/// R2b: the registry's file mode survives the temp-file+rename replace —
+/// a `chmod 600` registry must not silently widen to 0644.
+#[cfg(unix)]
+#[test]
+fn write_preserves_the_registry_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
+
+    let registry = load(&path).expect("loads");
+    write_atomic(&path, &registry).expect("writes");
+
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "mode preserved through the replace");
 }

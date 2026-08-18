@@ -376,6 +376,12 @@ fn run_fleet_add(args: &[String]) {
         workers,
         models,
     };
+    // The resolver is deliberately NOT injectable at the CLI layer (reviewed,
+    // deferred): the refusal paths are covered through `ops::add` with a stub
+    // resolver and the parse-layer refusals are covered e2e; the `fleet add`
+    // SUCCESS path through the real binary (resolve → write → success print)
+    // remains uncovered end-to-end because it would need the real `gh`.
+    // Revisit if the resolver ever becomes injectable here.
     let fleet = match fleet::ops::add(&path, &opts, &fleet::ops::GhCli) {
         Ok(fleet) => fleet,
         Err(error) => {

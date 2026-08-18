@@ -212,12 +212,16 @@ corrald fleet list --registry <path>  # override the default
 ```
 
 The registry path is `$CORRAL_FLEETS_PATH`, else
-`~/.hermes/scripts/fleets.json`. Exit codes: **0** all good, **1** at least
-one fleet failed `check`, **2** usage or parse/validation error. Validation
-is strict on purpose — unknown fields, empty required fields, whitespace
-inside `name`/`gh_repo`, a `gh_repo` that is not `owner/repo`, a `local`
-starting with a bare `~`, and duplicate names all fail loudly. Full schema:
-`docs/corral/G35-registry.md`, which lands with the registry PR.
+`~/.hermes/scripts/fleets.json`. Exit codes: **0** all good, **1** an
+operation failed — a fleet failed `check`, or `add`/`remove` refused
+(duplicate name, unresolvable repo, unknown name, no models to inherit) or
+could not write, leaving the registry byte-identical; **2** usage error or
+an unreadable/unparseable/invalid registry. Validation is strict on
+purpose — unknown fields, empty required fields, whitespace inside
+`name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
+`owner/repo`, a `local` starting with a bare `~`, and duplicate names all
+fail loudly. Full schema and the per-command exit-code table:
+`docs/corral/G35-registry.md`.
 
 ## Security model summary
 

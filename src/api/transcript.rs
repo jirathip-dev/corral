@@ -3,26 +3,52 @@
 //!
 //! ## Auth: the drive plane's trust decision, on a GET
 //!
-//! Transcripts are a superset of tail content, so the gate is the SAME
-//! grant the drive plane's `read_tail` uses — same [`Capability`], same
-//! [`DriveAuthorizer::verify`](crate::drive::DriveAuthorizer::verify)
-//! call, same device registry, host-key surface unchanged. There is no
-//! grant-gated GET precedent in this API, so the envelope rides a header:
-//! the client puts the exact `SignedDrive` JSON it would POST to `/drive`
-//! (capability `read_tail`, `target` = the agent id) into
-//! [`TRANSCRIPT_AUTH_HEADER`]. Two deliberate differences from `/drive`,
-//! both consequences of this being an idempotent READ:
-//! - no replay-table claim: replaying a read returns the same page and
-//!   mutates nothing, so `request_id` idempotency buys nothing here;
+//! Transcripts are gated by the `read_tail` grant — same [`Capability`],
+//! same [`DriveAuthorizer::verify`](crate::drive::DriveAuthorizer::verify)
+//! call, same device registry, host-key surface unchanged. This is a
+//! DELIBERATE, RECORDED scope decision (see "Grant scope" in
+//! docs/OPERATIONS.md): a transcript page is strictly more than the D5
+//! tail bound the grant originally covered, and every already-issued
+//! `read_tail` device gains it — operators who granted `read_tail` under
+//! the old meaning must re-review their grants. The issue spec (#63)
+//! mandates this shape ("requires the `read_tail` grant — same trust
+//! decision"); the alternative (a new `read_transcript` capability) is
+//! recorded in the review file for the merge decision.
+//!
+//! There is no grant-gated GET precedent in this API, so the envelope
+//! rides a header: the client puts the exact `SignedDrive` JSON it would
+//! POST to `/drive` (capability `read_tail`, `target` = the agent id)
+//! into [`TRANSCRIPT_AUTH_HEADER`]. Differences from `/drive`, each
+//! deliberate:
+//! - no replay-table claim. Honestly stated consequence (review): a
+//!   captured header can be replayed for LIVE current content until the
+//!   key expires or is revoked (checked per call) — unlike a replayed
+//!   `/drive` `read_tail`, which returns the cached original response.
+//!   The mitigations are revocation, the 90-day key TTL, and the audit
+//!   trail below.
 //! - no step-up: reads are never destructive.
+//! - every SERVED page appends an [`AuditEntry`] (capability
+//!   `read_tail`, the agent as target, outcome `Executed`) — the deepest
+//!   read surface must not be the invisible one (review F3). Auth
+//!   FAILURES are still never audited (AC5).
+//!
+//! Responses (success and error) carry `Cache-Control: no-store` and
+//! `Vary: x-corral-drive` (review F4): this is the API's first
+//! access-controlled GET, and a heuristically-cacheable 200 would let an
+//! intermediary serve one device's transcript to a credential-less
+//! second caller.
 //!
 //! ## Flow
 //!
-//! agent id → [`Store`] lookup → `workspace.worktree_path` →
-//! [`bind_worktree`] → [`read_page`]. Every failure is typed and mapped
-//! to a status below; ambiguity returns the CANDIDATE LIST, never a
-//! guess. Entries arrive already redacted (D-083 happens inside the
-//! transcript module boundary); this handler adds no text of its own.
+//! agent id → [`Store`] lookup → [`bind_agent`] (exact session-id rung
+//! first, then the tool-restricted worktree fallback) → cursor decode
+//! AGAINST the bound store (the wire cursor is fingerprinted — a rebind
+//! between pages is a typed `bad_cursor`, never a silent continuation) →
+//! [`read_page`]. Ambiguity returns the CANDIDATE LIST, never a guess.
+//! The success body names the bound session (`session` label) and any
+//! store that could not be consulted (`stores_unavailable`), so a client
+//! can pin the bind and tell a complete answer from a partial one.
+//! Entries arrive already redacted (D-083 inside the transcript module).
 //!
 //! This is an on-demand VIEW fetch — explicitly not in conflict with
 //! D5's bounded-push rule: nothing here is pushed, and the phone client
@@ -31,12 +57,13 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use serde::Deserialize;
 
-use crate::drive::{AuthError, Capability, SignedDrive};
-use crate::transcript::bind::{BindError, Candidate, bind_worktree};
+use crate::core::util::now_millis;
+use crate::drive::{AuditEntry, AuditLog as _, AuditOutcome, AuthError, Capability, SignedDrive};
+use crate::transcript::bind::{BindError, Candidate, bind_agent};
 use crate::transcript::{Cursor, TranscriptError, read_page};
 
 use super::AppState;
@@ -45,14 +72,15 @@ use super::AppState;
 /// shape `/drive` takes as its body).
 pub const TRANSCRIPT_AUTH_HEADER: &str = "x-corral-drive";
 
-/// `GET /transcript` query parameters. `cursor` is the opaque string from
-/// a previous page's `next_cursor`; `limit` is capped by the module's
-/// page caps regardless of what is asked.
+/// `GET /transcript` query parameters. Everything is a string here and
+/// parsed by hand in the handler (review F12): an extractor-level
+/// rejection would bypass the `{kind, message}` error contract with
+/// axum's plaintext 400.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TranscriptQuery {
-    pub agent: String,
+    pub agent: Option<String>,
     pub cursor: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<String>,
 }
 
 #[derive(Debug)]
@@ -76,6 +104,20 @@ pub enum TranscriptApiError {
     Read {
         error: TranscriptError,
     },
+}
+
+/// Both headers on EVERY response from this endpoint (review F4): the
+/// body is access-controlled, so no intermediary may cache it, and the
+/// credential lives in a header that is not part of the default cache
+/// key.
+fn with_no_store(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, "no-store".parse().expect("static"));
+    headers.insert(
+        header::VARY,
+        TRANSCRIPT_AUTH_HEADER.parse().expect("static"),
+    );
+    response
 }
 
 impl IntoResponse for TranscriptApiError {
@@ -145,7 +187,7 @@ impl IntoResponse for TranscriptApiError {
                 })
                 .collect();
         }
-        (status, Json(body)).into_response()
+        with_no_store((status, Json(body)).into_response())
     }
 }
 
@@ -156,7 +198,7 @@ fn authorize(
     state: &AppState,
     headers: &HeaderMap,
     agent_id: &str,
-) -> Result<(), TranscriptApiError> {
+) -> Result<SignedDrive, TranscriptApiError> {
     let Some(raw) = headers.get(TRANSCRIPT_AUTH_HEADER) else {
         return Err(TranscriptApiError::Auth {
             error: AuthError::MissingSignature,
@@ -191,37 +233,50 @@ fn authorize(
         .authorizer
         .verify(&signed)
         .map_err(|error| TranscriptApiError::Auth { error })?;
-    Ok(())
+    Ok(signed)
 }
 
 pub async fn transcript(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(params): Query<TranscriptQuery>,
-) -> Result<Json<serde_json::Value>, TranscriptApiError> {
-    if params.agent.is_empty() {
-        return Err(TranscriptApiError::BadRequest {
-            message: "agent must not be empty".to_string(),
-        });
+) -> Response {
+    match serve(&state, &headers, params).await {
+        Ok(body) => with_no_store(Json(body).into_response()),
+        Err(error) => error.into_response(),
     }
-    authorize(&state, &headers, &params.agent)?;
+}
 
-    // Decode the cursor BEFORE the (possibly slow) binding pass: a
-    // malformed cursor is deterministic and cheap to refuse.
-    let cursor = params
-        .cursor
-        .as_deref()
-        .map(Cursor::decode)
-        .transpose()
-        .map_err(|error| TranscriptApiError::Read { error })?;
+async fn serve(
+    state: &AppState,
+    headers: &HeaderMap,
+    params: TranscriptQuery,
+) -> Result<serde_json::Value, TranscriptApiError> {
+    let agent_id = match params.agent.as_deref() {
+        Some(agent) if !agent.is_empty() => agent.to_string(),
+        _ => {
+            return Err(TranscriptApiError::BadRequest {
+                message: "agent must not be empty".to_string(),
+            });
+        }
+    };
+    let signed = authorize(state, headers, &agent_id)?;
+    // limit parsed by hand (review F12) so a bad value keeps the JSON
+    // error contract; the module clamps it into 1..=MAX_PAGE_ENTRIES.
+    let limit = match params.limit.as_deref() {
+        None => crate::transcript::MAX_PAGE_ENTRIES,
+        Some(raw) => raw.parse().map_err(|_| TranscriptApiError::BadRequest {
+            message: format!("limit must be a non-negative integer, got {raw:?}"),
+        })?,
+    };
 
     let agent =
         state
             .store
-            .get(&params.agent)
+            .get(&agent_id)
             .await
             .ok_or_else(|| TranscriptApiError::UnknownAgent {
-                agent_id: params.agent.clone(),
+                agent_id: agent_id.clone(),
             })?;
     let Some(worktree) = agent.workspace.worktree_path.clone() else {
         return Err(TranscriptApiError::NoSession {
@@ -229,7 +284,7 @@ pub async fn transcript(
         });
     };
 
-    let store_ref = bind_worktree(&worktree, &state.transcript_roots)
+    let outcome = bind_agent(&agent_id, &agent.tool, &worktree, &state.transcript_roots)
         .await
         .map_err(|error| match error {
             BindError::NoSession { worktree } => TranscriptApiError::NoSession { worktree },
@@ -243,25 +298,64 @@ pub async fn transcript(
             BindError::Store(error) => TranscriptApiError::Read { error },
         })?;
 
-    let limit = params.limit.unwrap_or(crate::transcript::MAX_PAGE_ENTRIES);
-    let page = read_page(&store_ref, cursor.as_ref(), limit)
+    // Cursor decode happens AFTER binding, against the bound store: the
+    // wire cursor is fingerprinted (review F5), so a cursor issued for a
+    // different session's file is a typed bad_cursor here.
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|wire| Cursor::decode_for(wire, &outcome.store))
+        .transpose()
+        .map_err(|error| TranscriptApiError::Read { error })?;
+
+    let page = read_page(&outcome.store, cursor.as_ref(), limit)
         .await
         .map_err(|error| TranscriptApiError::Read { error })?;
 
-    let store_kind = match &store_ref {
+    // Review F3: the deepest read surface in the product must leave a
+    // trace. One entry per SERVED page, same shape as drive's read_tail
+    // audits; failures above never reach this line (AC5 holds).
+    let audit_entry = AuditEntry {
+        ts: now_millis(),
+        key_id: signed.key_id.clone(),
+        request_id: signed.envelope.request_id.clone(),
+        capability: format!("{}", Capability::ReadTail),
+        target: agent_id.clone(),
+        outcome: AuditOutcome::Executed,
+    };
+    if let Err(error) = state.auth.audit.append(&audit_entry) {
+        tracing::warn!(
+            request_id = %audit_entry.request_id,
+            error = %error,
+            "transcript audit append failed; the page was already read"
+        );
+    }
+
+    let session_label = Candidate {
+        store: outcome.store.clone(),
+        recency_ms: 0,
+    }
+    .label();
+    let store_kind = match &outcome.store {
         crate::transcript::StoreRef::Opencode { .. } => "opencode",
         crate::transcript::StoreRef::Claude { .. } => "claude",
         crate::transcript::StoreRef::Codex { .. } => "codex",
     };
-    Ok(Json(serde_json::json!({
-        "agent": params.agent,
+    Ok(serde_json::json!({
+        "agent": agent_id,
         "store": store_kind,
+        // Review F15: the bound session's identity, so a client can
+        // detect a rebind or a wrong bind instead of trusting silence.
+        "session": session_label,
+        // Review F9: store kinds that errored during binding — a
+        // complete-looking answer must not hide a store we could not ask.
+        "stores_unavailable": outcome.unavailable,
         "entries": page
             .entries
             .iter()
             .map(|e| serde_json::json!({ "role": e.role, "text": e.text, "ts": e.ts }))
             .collect::<Vec<_>>(),
-        "next_cursor": page.next_cursor.as_ref().map(Cursor::encode),
+        "next_cursor": page.next_cursor.as_ref().map(|c| c.encode_for(&outcome.store)),
         "skipped": page.skipped,
-    })))
+    }))
 }

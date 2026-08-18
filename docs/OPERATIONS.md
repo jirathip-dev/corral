@@ -187,8 +187,9 @@ before expiry.
   `attach`. Default deny; no auto-approve.
 - `GET /transcript` is NOT part of the credential-free read plane: it
   requires the `read_tail` grant (transcripts are a superset of tail
-  content — same trust decision, same device registry). See "Transcript
-  read-path" below.
+  content — same trust decision, same device registry). NOTE: this
+  widens what `read_tail` reaches — see "Grant scope" under "Transcript
+  read-path" below and re-review existing grants.
 - Grant/replace the whole set (verified):
 
 ```sh
@@ -249,9 +250,10 @@ curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
 # {"entries":[...],"head":"<sha256>","valid":true,...}
 ```
 
-- Grows **only on drive writes**: executions and typed refusals at
-  dispatch. GETs, authentication failures, and step-up failures are never
-  appended.
+- Grows on **drive writes** (executions and typed refusals at dispatch)
+  and on **served `/transcript` pages** (#63 — one entry per page,
+  capability `read_tail`, the agent as target). Authentication failures
+  and step-up failures are never appended.
 - `valid` is the live chain-integrity verdict: any tampered or inserted
   line breaks the chain. Known limit: a wholesale truncation of trailing
   entries is not detectable without an external anchor (a W4 follow-up).
@@ -299,24 +301,62 @@ and no step-up — signature, key registry, expiry/revocation, and the
 grant check are identical to `/drive`.
 
 ```sh
-curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:orch-corral&limit=20' \
+curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:ses_abc123&limit=20' \
   -H "x-corral-drive: $SIGNED_ENVELOPE_JSON"
-# → {"agent":"...","store":"opencode","entries":[{"role":"assistant","text":"...","ts":1723...}],
-#    "next_cursor":"oc.1723...9.6d73675f3031","skipped":0}
+# → {"agent":"...","store":"opencode","session":"opencode:ses_abc123",
+#    "stores_unavailable":[],
+#    "entries":[{"role":"assistant","text":"...","ts":1723...}],
+#    "next_cursor":"oc.1723...9.6d73675f3031.9f2ab4c1d0e37a55","skipped":0}
 ```
 
 Follow `next_cursor` (opaque string) for older pages; `null` means the
-store is exhausted. `skipped` counts torn rows/lines in the page's range
-(honesty counter). Errors are typed: `bad_cursor` 400, `unknown_agent` /
-`no_session` 404, `ambiguous_session` 409 **with the candidate list**
-(the daemon never guesses between sessions that tie on recency),
-`store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
+store is exhausted. The cursor is fingerprinted to the bound session —
+if a different session becomes the bind target between pages (a new run
+started), the stale cursor is a `bad_cursor` 400, never a silent
+continuation in the wrong file. `limit` is clamped to 1..=50 regardless
+of what is asked (asking for 500 yields 50). `skipped` counts torn
+rows/lines in the page's range; `session` names the bound session so a
+client can pin it; `stores_unavailable` lists store kinds that errored
+during binding (a complete-looking page from one store does not prove
+the others were consultable).
+
+Errors are typed (`{"kind": ..., "message": ...}`): auth —
+`missing_signature` 400, `bad_signature` 401, `unknown_key` 404,
+`expired`/`revoked`/`not_granted` 403, and `bad_request` 400 for a
+malformed header, a capability other than `read_tail`, or an envelope
+target that does not match `?agent`; read path — `bad_cursor` 400,
+`unknown_agent`/`no_session` 404, `ambiguous_session` 409 **with the
+candidate list** (the daemon never guesses between sessions that tie on
+recency), `store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
 `store_shape` 502.
 
-Session binding is by worktree: the agent's `workspace.worktree_path` is
-matched against opencode `session.directory`, the Claude Code project
-dir encoding under `~/.claude/projects`, and codex rollouts' first-line
-`payload.cwd`; the most recent match wins. Store locations honour the
+Every SERVED page appends an audit entry (capability `read_tail`, the
+agent as target) to the same hash-chained log as drive writes — check
+`GET /audit` for the read trail. Auth failures are never audited.
+
+### Grant scope — recorded decision (#63)
+
+Gating `/transcript` on `read_tail` follows the issue spec ("transcripts
+are a superset of tail content — the same trust decision") and it
+**widens what an existing grant reaches**: `read_tail` was specified as
+a 200-line / 32 KiB bounded tail of one pane (D5); with `/transcript`
+the same grant pages the FULL session history of any agent on the host
+(grants are per-device, not per-agent). **Operators: re-review existing
+`read_tail` grants before deploying this** — every device holding the
+grant gains history access with no re-consent. The reviewed alternative
+— a separate `read_transcript` capability, which would leave existing
+grants untouched — is recorded in the #63 review file for the merge
+decision.
+
+Session binding prefers the EXACT session id carried in the herdr agent
+id (`herdr:<session-id>` — claude jsonl filename, opencode
+`session.id`, codex rollout filename); only pane-derived ids fall back
+to worktree matching (`workspace.worktree_path` against opencode
+`session.directory`, the Claude Code project-dir encoding — with the
+recorded in-file cwd verified, since the encoding is lossy — and codex
+rollouts' first-line `payload.cwd`), restricted to the agent's own
+tool's store, most recent match wins. Path comparisons use raw-then-
+canonical matching (symlinked `$HOME` safe). Store locations honour the
 same env overrides as the cost meter (`$CORRAL_OPENCODE_DB`,
 `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
 (opencode via `sqlite3 -readonly`).

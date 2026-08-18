@@ -261,7 +261,7 @@ fn harness() -> Harness {
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
-        ..Default::default()
+        transcript_roots: corrald::transcript::bind::TranscriptRoots::hermetic(),
     });
     Harness {
         store,

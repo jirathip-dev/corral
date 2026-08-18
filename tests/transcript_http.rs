@@ -126,9 +126,9 @@ fn harness() -> Harness {
     let app = router(AppState {
         store: store.clone(),
         auth: auth.clone(),
+        adapter: Arc::new(corrald::api::drive::NoopAdapter),
         replay: Arc::new(ReplayTable::default()),
         transcript_roots: roots,
-        ..Default::default()
     });
     Harness {
         store,
@@ -245,6 +245,10 @@ async fn page_shape_is_stable_and_redacted_end_to_end() {
     // Stable page shape (golden keys, newest first).
     assert_eq!(body["agent"], "herdr:a1");
     assert_eq!(body["store"], "claude");
+    // F15: the bound session is named, so a client can pin the bind.
+    assert_eq!(body["session"], "claude:s1.jsonl");
+    // F9: no store failed, and the field says so explicitly.
+    assert_eq!(body["stores_unavailable"], json!([]));
     assert_eq!(body["skipped"], 0);
     assert!(body["next_cursor"].is_null(), "tiny store fits one page");
     let entries = body["entries"].as_array().expect("entries array");
@@ -362,4 +366,266 @@ async fn typed_misses_bad_cursor_unknown_agent_no_session() {
     let (status, body) = get(&h.app, "/transcript?agent=herdr:elsewhere", Some(&header)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["kind"], "no_session");
+}
+
+/// F3: every SERVED page appends one audit entry (same shape as drive's
+/// read_tail); auth failures append nothing (AC5).
+#[tokio::test]
+async fn served_pages_are_audited_and_auth_failures_are_not() {
+    let h = harness();
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+    write_claude_session(&h, "s1", &[claude_line("assistant", "hello")]);
+
+    let before = h.auth.audit.chain().0.len();
+
+    // Auth failure: no header → nothing audited.
+    let (status, _) = get(&h.app, "/transcript?agent=herdr:a1", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.auth.audit.chain().0.len(),
+        before,
+        "AC5: failures unaudited"
+    );
+
+    // Served page: exactly one entry, read_tail capability, agent target.
+    let header = h.auth_header(Capability::ReadTail, "herdr:a1");
+    let (status, _) = get(&h.app, "/transcript?agent=herdr:a1", Some(&header)).await;
+    assert_eq!(status, StatusCode::OK);
+    let chain = h.auth.audit.chain().0;
+    assert_eq!(chain.len(), before + 1, "one audit entry per served page");
+    let last = chain.last().expect("entry");
+    assert_eq!(last.capability, "read_tail");
+    assert_eq!(last.target, "herdr:a1");
+}
+
+/// F4: the access-controlled GET must never be cacheable — no-store and
+/// Vary on the credential header ride every response, success and error.
+#[tokio::test]
+async fn responses_carry_no_store_and_vary() {
+    let h = harness();
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+    write_claude_session(&h, "s1", &[claude_line("assistant", "hello")]);
+
+    let header = h.auth_header(Capability::ReadTail, "herdr:a1");
+    for (uri, auth) in [
+        ("/transcript?agent=herdr:a1", Some(header.as_str())),
+        ("/transcript?agent=herdr:a1", None), // error path
+    ] {
+        let mut request = Request::get(uri);
+        if let Some(value) = auth {
+            request = request.header(TRANSCRIPT_AUTH_HEADER, value);
+        }
+        let res = h
+            .app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get("cache-control")
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store"),
+            "{uri} auth={}",
+            auth.is_some()
+        );
+        assert_eq!(
+            res.headers().get("vary").map(|v| v.to_str().unwrap()),
+            Some("x-corral-drive"),
+            "{uri} auth={}",
+            auth.is_some()
+        );
+    }
+}
+
+/// F5: a cursor issued against one session must not silently continue in
+/// another after a rebind — through HTTP, the stale cursor is a typed
+/// 400 bad_cursor once a newer session becomes the bind target.
+#[tokio::test]
+async fn stale_cursor_after_rebind_is_refused_not_continued() {
+    let h = harness();
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+    write_claude_session(
+        &h,
+        "s1",
+        &[
+            claude_line("user", "one"),
+            claude_line("assistant", "two"),
+            claude_line("user", "three"),
+        ],
+    );
+
+    let header = h.auth_header(Capability::ReadTail, "herdr:a1");
+    let (status, body) = get(&h.app, "/transcript?agent=herdr:a1&limit=1", Some(&header)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cursor = body["next_cursor"].as_str().expect("cursor").to_string();
+
+    // A NEW session appears in the worktree and becomes newest (mtime
+    // forced into the future so the rebind is deterministic).
+    let p2 = write_claude_session(&h, "s2", &[claude_line("assistant", "fresh session")]);
+    let touched = std::process::Command::new("touch")
+        .args(["-t", "203712312359.00"])
+        .arg(&p2)
+        .status()
+        .expect("touch runs");
+    assert!(touched.success());
+
+    let (status, body) = get(
+        &h.app,
+        &format!("/transcript?agent=herdr:a1&limit=1&cursor={cursor}"),
+        Some(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["kind"], "bad_cursor",
+        "stale cursor must not read s2 at s1's offset"
+    );
+}
+
+/// F12: query values that fail to parse keep the JSON error contract —
+/// no axum plaintext 400s. Also pins the limit clamp through HTTP.
+#[tokio::test]
+async fn query_parsing_keeps_the_error_contract_and_limit_clamps() {
+    let h = harness();
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+    write_claude_session(
+        &h,
+        "s1",
+        &[claude_line("user", "one"), claude_line("assistant", "two")],
+    );
+    let header = h.auth_header(Capability::ReadTail, "herdr:a1");
+
+    // Bad limit: typed JSON bad_request, not plaintext.
+    let (status, body) = get(
+        &h.app,
+        "/transcript?agent=herdr:a1&limit=abc",
+        Some(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["kind"], "bad_request", "{body}");
+
+    // Missing agent entirely: same contract.
+    let (status, body) = get(&h.app, "/transcript", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["kind"], "bad_request", "{body}");
+
+    // limit=0 clamps to one entry; a huge limit clamps to the page cap
+    // and returns everything present.
+    let (status, body) = get(&h.app, "/transcript?agent=herdr:a1&limit=0", Some(&header)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["entries"].as_array().unwrap().len(), 1, "{body}");
+    let (status, body) = get(
+        &h.app,
+        "/transcript?agent=herdr:a1&limit=999999999",
+        Some(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["entries"].as_array().unwrap().len(), 2, "{body}");
+}
+
+/// F17: an unregistered key with a well-formed envelope reaches the
+/// verifier and maps to 404 unknown_key (the AC1 mapping), proving the
+/// pre-verify capability/target checks don't shadow auth classification.
+#[tokio::test]
+async fn unregistered_key_is_unknown_key_not_bad_request() {
+    let h = harness();
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+
+    let (signing, _pubkey) = test_support::keypair();
+    let envelope = DriveEnvelope {
+        request_id: "req-x".to_string(),
+        capability: Capability::ReadTail,
+        target: "herdr:a1".to_string(),
+        payload: json!({}),
+        rev: None,
+    };
+    let signed = corrald::drive::SignedDrive {
+        key_id: "dev_never_registered".to_string(),
+        signature: test_support::sign(&signing, &envelope),
+        envelope,
+    };
+    let header = serde_json::to_string(&signed).expect("serializes");
+    let (status, body) = get(&h.app, "/transcript?agent=herdr:a1", Some(&header)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["kind"], "unknown_key");
+}
+
+/// F17: the opencode path end-to-end through HTTP — direct session-id
+/// binding (agent id carries the opencode session id), sqlite3-CLI read,
+/// oc-cursor paging, redaction. Skips cleanly without sqlite3.
+#[tokio::test]
+async fn opencode_end_to_end_via_direct_session_id() {
+    if std::process::Command::new("sqlite3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("sqlite3 not on PATH; skipping");
+        return;
+    }
+    let h = harness();
+    let secret = format!("ghp_{}", "Ab129Zz4".repeat(5));
+    let seed = format!(
+        r#"
+CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, role TEXT, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+INSERT INTO session VALUES ('ses_fix', '{wt}');
+INSERT INTO message VALUES ('m1', 'ses_fix', 100, 'user', '{{"role":"user"}}');
+INSERT INTO message VALUES ('m2', 'ses_fix', 200, 'assistant', '{{"role":"assistant"}}');
+INSERT INTO part VALUES ('p1', 'm1', 'text', '{{"type":"text","text":"question"}}');
+INSERT INTO part VALUES ('p2', 'm2', 'text', '{{"type":"text","text":"answer with {secret}"}}');
+"#,
+        wt = h.worktree,
+    );
+    let status = std::process::Command::new("sqlite3")
+        .arg(h._stores_dir.path().join("opencode.db"))
+        .arg(&seed)
+        .status()
+        .expect("sqlite3 runs");
+    assert!(status.success());
+
+    // The agent id CARRIES the opencode session id — the direct rung
+    // binds it with no worktree heuristic in play (F1).
+    h.seed_agent("herdr:ses_fix", Some(&h.worktree)).await;
+    h.store
+        .apply(Change::upsert({
+            let mut a = h.store.get("herdr:ses_fix").await.expect("seeded");
+            a.tool = "opencode".to_string();
+            a.seq = 2;
+            a
+        }))
+        .await;
+
+    let header = h.auth_header(Capability::ReadTail, "herdr:ses_fix");
+    let (status, body) = get(
+        &h.app,
+        "/transcript?agent=herdr:ses_fix&limit=1",
+        Some(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["store"], "opencode");
+    assert_eq!(body["session"], "opencode:ses_fix");
+    let entries = body["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["role"], "assistant", "newest first");
+    assert!(
+        !body.to_string().contains(&secret),
+        "redaction end-to-end on the opencode path"
+    );
+
+    // Page 2 via the oc cursor: the older message, then exhaustion.
+    let cursor = body["next_cursor"].as_str().expect("cursor").to_string();
+    let (status, body) = get(
+        &h.app,
+        &format!("/transcript?agent=herdr:ses_fix&limit=1&cursor={cursor}"),
+        Some(&header),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["entries"][0]["text"], "question");
 }

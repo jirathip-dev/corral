@@ -414,8 +414,11 @@ fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Opti
 }
 
 /// Best-effort canonical form: real paths resolve symlinks (F5), synthetic
-/// test paths fall back to their raw spelling.
-fn canon_best_effort(p: &Path) -> PathBuf {
+/// test paths fall back to their raw spelling. `pub(crate)`: the transcript
+/// binder (#63 review F8) compares the same herdr-raw cwds against
+/// store-recorded paths and reuses this instead of re-learning the
+/// symlinked-HOME lesson.
+pub(crate) fn canon_best_effort(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
@@ -423,7 +426,7 @@ fn canon_best_effort(p: &Path) -> PathBuf {
 /// non-symlinked installs), then canonical forms of both sides so a
 /// symlinked `HOME` cannot split the plane's canonical event paths from
 /// herdr's raw cwd paths.
-fn paths_match(a: &Path, b: &Path) -> bool {
+pub(crate) fn paths_match(a: &Path, b: &Path) -> bool {
     a == b || canon_best_effort(a) == canon_best_effort(b)
 }
 

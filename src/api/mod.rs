@@ -94,20 +94,19 @@ impl Default for AppState {
             std::process::id(),
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let auth = Arc::new(AuthPlane::load_or_create(dir.clone()).expect("default auth plane"));
+        let auth = Arc::new(AuthPlane::load_or_create(dir).expect("default auth plane"));
         Self {
             store: Store::new(),
             auth,
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
-            // Hermetic: nonexistent paths under the throwaway dir, so a
-            // default-built state can never read this machine's live
+            // Hermetic: nonexistent per-process paths, nothing created —
+            // a default-built state can never read this machine's live
             // session stores (mirrors the N6 no-ambient-env discipline).
-            transcript_roots: crate::transcript::bind::TranscriptRoots {
-                opencode_db: dir.join("opencode.db"),
-                claude_dir: dir.join("claude-projects"),
-                codex_dir: dir.join("codex-sessions"),
-            },
+            // Test harnesses that only need roots should set this field
+            // directly via `TranscriptRoots::hermetic()` instead of
+            // paying for this whole Default (review F14).
+            transcript_roots: crate::transcript::bind::TranscriptRoots::hermetic(),
         }
     }
 }

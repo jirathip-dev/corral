@@ -99,34 +99,84 @@ pub enum Cursor {
     Bytes { offset: u64 },
 }
 
+/// Deterministic 64-bit FNV-1a over a store's identity (kind + session
+/// id / path), stamped into every wire cursor so a cursor can only ever
+/// resume against the exact store it was issued for (review F5: a rebind
+/// between pages — a new session becoming newest, or a co-resident
+/// agent's file — must be a typed `BadCursor`, never a silent
+/// continuation at an arbitrary byte offset of a different file).
+pub fn store_fingerprint(store: &StoreRef) -> u64 {
+    fn fnv64(seed: u64, bytes: &[u8]) -> u64 {
+        let mut hash = seed;
+        for b in bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    match store {
+        StoreRef::Opencode { session_id, .. } => {
+            fnv64(fnv64(FNV_OFFSET, b"oc:"), session_id.as_bytes())
+        }
+        StoreRef::Claude { jsonl_path } => fnv64(
+            fnv64(FNV_OFFSET, b"cl:"),
+            crate::integrate::canon_best_effort(jsonl_path)
+                .to_string_lossy()
+                .as_bytes(),
+        ),
+        StoreRef::Codex { rollout_path } => fnv64(
+            fnv64(FNV_OFFSET, b"cx:"),
+            crate::integrate::canon_best_effort(rollout_path)
+                .to_string_lossy()
+                .as_bytes(),
+        ),
+    }
+}
+
 impl Cursor {
-    /// Opaque wire form for HTTP clients (#63): `oc.<time>.<hex-id>` /
-    /// `b.<offset>`. The opencode id is hex-encoded so arbitrary id bytes
-    /// survive the dot-delimited framing; clients must treat the whole
-    /// string as opaque — the format may change with the store schemas.
-    pub fn encode(&self) -> String {
+    /// Opaque wire form for HTTP clients (#63):
+    /// `oc.<time>.<hex-id>.<fingerprint>` / `b.<offset>.<fingerprint>`.
+    /// The opencode id is hex-encoded so arbitrary id bytes survive the
+    /// dot-delimited framing; the trailing segment fingerprints the store
+    /// the cursor was issued against (review F5). Clients must treat the
+    /// whole string as opaque.
+    pub fn encode_for(&self, store: &StoreRef) -> String {
+        let fp = store_fingerprint(store);
         match self {
             Cursor::Opencode { time_created, id } => {
                 let hex: String = id.bytes().map(|b| format!("{b:02x}")).collect();
-                format!("oc.{time_created}.{hex}")
+                format!("oc.{time_created}.{hex}.{fp:016x}")
             }
-            Cursor::Bytes { offset } => format!("b.{offset}"),
+            Cursor::Bytes { offset } => format!("b.{offset}.{fp:016x}"),
         }
     }
 
-    /// Inverse of [`Cursor::encode`]. Any malformed input is
+    /// Inverse of [`Cursor::encode_for`], validated against the store the
+    /// caller just bound: a fingerprint mismatch (different session file,
+    /// different opencode session) and every malformed shape are typed
     /// [`TranscriptError::BadCursor`] — never a panic, never a guess.
-    pub fn decode(wire: &str) -> Result<Self, TranscriptError> {
-        if let Some(rest) = wire.strip_prefix("b.") {
+    pub fn decode_for(wire: &str, store: &StoreRef) -> Result<Self, TranscriptError> {
+        let (base, fp_hex) = wire.rsplit_once('.').ok_or(TranscriptError::BadCursor)?;
+        if fp_hex.len() != 16 {
+            return Err(TranscriptError::BadCursor);
+        }
+        let fp = u64::from_str_radix(fp_hex, 16).map_err(|_| TranscriptError::BadCursor)?;
+        if fp != store_fingerprint(store) {
+            return Err(TranscriptError::BadCursor);
+        }
+        if let Some(rest) = base.strip_prefix("b.") {
             let offset = rest.parse().map_err(|_| TranscriptError::BadCursor)?;
             return Ok(Cursor::Bytes { offset });
         }
-        let rest = wire.strip_prefix("oc.").ok_or(TranscriptError::BadCursor)?;
+        let rest = base.strip_prefix("oc.").ok_or(TranscriptError::BadCursor)?;
         let (time, hex) = rest.split_once('.').ok_or(TranscriptError::BadCursor)?;
         let time_created = time.parse().map_err(|_| TranscriptError::BadCursor)?;
-        // ASCII-hex only, checked up front: slicing below is byte-indexed
-        // and a multi-byte char would otherwise panic on a char boundary.
-        if hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Empty hex is malformed, not "id is empty" (review F11 — it
+        // would silently read as an exhausted transcript). ASCII-hex is
+        // checked up front: slicing below is byte-indexed and a
+        // multi-byte char would otherwise panic on a char boundary.
+        if hex.is_empty() || hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(TranscriptError::BadCursor);
         }
         let bytes = (0..hex.len())
@@ -1339,34 +1389,72 @@ mod tests {
         );
     }
 
-    /// #63: the opaque wire cursor round-trips both variants, and every
-    /// malformed shape is a typed BadCursor — never a panic (including
-    /// multi-byte UTF-8 in the hex segment, which byte-slices).
+    /// #63: the opaque wire cursor round-trips both variants against the
+    /// store it was issued for; a fingerprint mismatch (rebound store —
+    /// review F5) and every malformed shape (incl. empty hex — review
+    /// F11 — and multi-byte UTF-8 in the byte-sliced hex segment) are
+    /// typed BadCursor, never a panic and never a silent continuation.
     #[test]
-    fn cursor_wire_roundtrip_and_bad_inputs() {
+    fn cursor_wire_roundtrip_fingerprint_and_bad_inputs() {
+        let oc_store = StoreRef::Opencode {
+            db_path: PathBuf::from("/tmp/db"),
+            session_id: "ses_a".to_string(),
+        };
+        let jsonl_store = StoreRef::Claude {
+            jsonl_path: PathBuf::from("/p/s1.jsonl"),
+        };
         let oc = Cursor::Opencode {
             time_created: 1723972000123,
             id: "msg_01'weird.id".to_string(),
         };
-        assert_eq!(Cursor::decode(&oc.encode()).expect("oc roundtrip"), oc);
+        assert_eq!(
+            Cursor::decode_for(&oc.encode_for(&oc_store), &oc_store).expect("oc roundtrip"),
+            oc
+        );
         let b = Cursor::Bytes { offset: 987654 };
-        assert_eq!(Cursor::decode(&b.encode()).expect("bytes roundtrip"), b);
+        assert_eq!(
+            Cursor::decode_for(&b.encode_for(&jsonl_store), &jsonl_store).expect("b roundtrip"),
+            b
+        );
 
+        // F5: the same wire cursor against a DIFFERENT store (another
+        // session's file; another opencode session) is BadCursor.
+        let other_jsonl = StoreRef::Claude {
+            jsonl_path: PathBuf::from("/p/s2.jsonl"),
+        };
+        assert!(matches!(
+            Cursor::decode_for(&b.encode_for(&jsonl_store), &other_jsonl),
+            Err(TranscriptError::BadCursor)
+        ));
+        let other_session = StoreRef::Opencode {
+            db_path: PathBuf::from("/tmp/db"),
+            session_id: "ses_b".to_string(),
+        };
+        assert!(matches!(
+            Cursor::decode_for(&oc.encode_for(&oc_store), &other_session),
+            Err(TranscriptError::BadCursor)
+        ));
+
+        let fp = format!("{:016x}", store_fingerprint(&oc_store));
         for bad in [
-            "",
-            "x.1.aa",
-            "oc.",
-            "oc.12",
-            "oc.12.abc",
-            "oc.nan.abcd",
-            "oc.12.zz",
-            "oc.12.é1",
-            "b.",
-            "b.-1",
-            "b.nan",
-            "oc.12.61ff",
+            "".to_string(),
+            format!("x.1.aa.{fp}"),
+            format!("oc..{fp}"),
+            format!("oc.12.{fp}"),
+            format!("oc.12..{fp}"),
+            format!("oc.12.abc.{fp}"),
+            format!("oc.nan.abcd.{fp}"),
+            format!("oc.12.zz.{fp}"),
+            format!("oc.12.\u{e9}1.{fp}"),
+            format!("oc.12.61ff.{fp}"),
+            format!("b..{fp}"),
+            format!("b.-1.{fp}"),
+            format!("b.nan.{fp}"),
+            "b.1.zzzz".to_string(),
+            "b.1.abcd".to_string(),
+            "b.1".to_string(),
         ] {
-            match Cursor::decode(bad) {
+            match Cursor::decode_for(&bad, &oc_store) {
                 Err(TranscriptError::BadCursor) => {}
                 other => panic!("{bad:?} must be BadCursor, got {other:?}"),
             }

@@ -344,11 +344,14 @@ legacy tooling writing one file while corrald reads the other, and the
 two silently diverge. Every write command loads the registry before
 writing, so a missing parent dir surfaces as the plain
 `cannot read fleet registry <path>` error — bootstrap with
-`mkdir -p ~/.config/corral && echo '{"fleets": []}' > ~/.config/corral/fleets.json`. Exit codes: **0** all good, **1** an
-operation failed — a fleet failed `check`, or `add`/`remove` refused
-(duplicate name, unresolvable repo, unknown name, no models to inherit) or
-could not write, leaving the registry byte-identical; **2** usage error or
-an unreadable/unparseable/invalid registry. Validation is strict on
+`mkdir -p ~/.config/corral` followed by
+`echo '{"fleets": []}' > ~/.config/corral/fleets.json`.
+Exit codes: **0** all good, **1** an operation failed — a fleet failed
+`check`, or a write command (`add`/`remove`/`pause`/`resume`/`models`)
+refused (duplicate name, unresolvable repo, unknown name, no models to
+inherit) or could not write, leaving the registry byte-identical;
+**2** usage error or an unreadable/unparseable/invalid registry.
+Validation is strict on
 purpose — unknown fields, empty required fields, whitespace inside
 `name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
 `owner/repo`, a `local` starting with a bare `~`, and duplicate names all
@@ -361,9 +364,8 @@ reserved fleet name). Full schema and the per-command exit-code table:
 ## Security model summary
 
 - Non-public binds only (loopback default; private/RFC 1918, Tailscale
-  100.64/10, and IPv6 unique-local permitted — #65); `corrald` exits if
-  asked to bind a public/routable
-  address.
+  100.64/10, and IPv6 unique-local permitted — #65); `corrald` exits
+  if asked to bind a public/routable address.
 - Three credentials, never one: registration token (routing only),
   per-device Ed25519 keypair (authenticates writes; host identity is
   X25519), per-capability grants (read-only default, promoted on host).

@@ -15,7 +15,8 @@ canonical record, so the board, the signed drive plane, and the cost meter
 work the same no matter which harness an agent runs on.
 
 Corral reads every worktree / agent / PR / CI fact into a snapshot read
-model served over loopback HTTP + SSE, and lets a registered device drive
+model served over HTTP + SSE (loopback by default; tailnet/private
+interfaces allowlisted, never public), and lets a registered device drive
 the agents with typed, signed commands — prompt, interrupt, approve,
 read_tail, kill, attach. The daemon is `corrald`, with a desktop fleet
 board (`corrald-ui`, egui) and an iOS notifier app alongside it.
@@ -110,7 +111,7 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   placeholders** until real subscription limits are supplied — see
   [Cost meter (G34)](#cost-meter-g34) below.
 - **Fleet registry** — `corrald fleet list|check` read, and `corrald fleet
-  add|remove` atomically rewrite, the `fleets.json` registry
+  add|remove|pause|resume|models` atomically rewrite, the `fleets.json` registry
   (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree dir,
   workers and per-role models. Full schema and exit codes in
   `docs/corral/G35-registry.md`.

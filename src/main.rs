@@ -198,7 +198,9 @@ fn print_fleet_help() {
          \torch orch-<name>, workers empty, models inherited from the\n\
          \tfirst existing fleet (or required via --models on an empty\n\
          \tregistry). The registry file must exist — bootstrap one\n\
-         \twith: echo '{{\"fleets\": []}}' > <path>\n\
+         \t(a fresh machine lacks the parent dir, #66) with:\n\
+         \t  mkdir -p ~/.config/corral\n\
+         \t  echo '{{\"fleets\": []}}' > <path>\n\
          remove   atomically drop exactly one fleet by name\n\
          pause    set paused:true on exactly one fleet; pausing an\n\
          \talready-paused fleet is a no-op success (exit 0)\n\
@@ -1019,7 +1021,8 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
         eprintln!(
             "refusing to bind {addr}: only loopback, private (RFC 1918), \
              Tailscale/CGNAT (100.64.0.0/10), and IPv6 unique-local (RFC 4193) \
-             addresses are permitted — never public interfaces or 0.0.0.0"
+             addresses are permitted — never public interfaces, 0.0.0.0, or \
+             IPv4-mapped IPv6 forms (spell IPv4 addresses plainly)"
         );
         std::process::exit(2);
     }
@@ -1189,6 +1192,10 @@ mod tests {
             "172.16.0.1",
             "172.31.255.254",
             "192.168.1.10",
+            "10.0.0.0",        // exact 10/8 bottom
+            "10.255.255.255",  // exact 10/8 top
+            "172.16.0.0",      // exact 172.16/12 bottom
+            "172.31.255.255",  // exact 172.16/12 top
             "100.64.0.0",      // exact CGNAT range start
             "100.67.222.5",    // a typical tailnet address
             "100.127.255.255", // exact CGNAT range end
@@ -1212,6 +1219,19 @@ mod tests {
             "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", // just below fc00::/7
             "fe80::1", // link-local: outside fc00::/7
             "169.254.1.1", // v4 link-local
+            // #78 (#75 round-2 vectors): IPv4-mapped IPv6 forms are
+            // refused WHOLESALE — v6 loopback/ULA checks see the mapped
+            // form as neither, which fails closed. Bind literals must
+            // use the plain v4 spelling.
+            "::ffff:8.8.8.8",      // mapped public v4
+            "::ffff:127.0.0.1",    // mapped loopback — refused (fail closed)
+            "::ffff:10.0.0.1",     // mapped PRIVATE v4 — wholesale means this too
+            "::ffff:192.168.1.10", // the mapped spelling a user would type
+            "9.255.255.255",       // just below 10/8
+            "11.0.0.0",            // just above 10/8
+            "172.15.255.255",      // just below 172.16/12
+            "192.167.255.255",     // just below 192.168/16
+            "192.169.0.0",         // just above 192.168/16
         ] {
             assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
         }

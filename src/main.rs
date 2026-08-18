@@ -6,8 +6,9 @@
 //!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
 //! - #35 phase 1: fleet registry views AND writes:
-//!   `corrald fleet list|check` (read-only) and
-//!   `corrald fleet add|remove` (registry CRUD, atomic write)
+//!   `corrald fleet list|check` (read-only),
+//!   `corrald fleet add|remove` (registry CRUD, atomic write), and
+//!   `corrald fleet pause|resume|models` (registry mutation, atomic write)
 //!   (see `crate::fleet` for the registry format and validation).
 
 use std::net::SocketAddr;
@@ -135,15 +136,17 @@ fn run_digest(args: &[String]) {
 }
 
 /// `corrald fleet` — read/write views over the fleet registry (#35). Read
-/// side: `list`, `check`. Write side (slice 1): `add`, `remove`, both behind
-/// atomic-write discipline and validation in [`crate::fleet::ops`]. All accept
-/// `--registry <path>` to override `$CORRAL_FLEETS_PATH` /
-/// `~/.hermes/scripts/fleets.json`. Everything here runs before the tokio
-/// runtime is built; no subcommand touches a running daemon or the herdr
-/// socket.
+/// side: `list`, `check`. Write side (slice 1): `add`, `remove`; (slice 2):
+/// `pause`, `resume`, `models` — all behind atomic-write discipline and
+/// validation in [`crate::fleet::ops`]. All accept `--registry <path>` to
+/// override `$CORRAL_FLEETS_PATH` / `~/.hermes/scripts/fleets.json`.
+/// Everything here runs before the tokio runtime is built; no subcommand
+/// touches a running daemon or the herdr socket.
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
-        eprintln!("corrald fleet: need a subcommand: list | check | add | remove (see --help)");
+        eprintln!(
+            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models (see --help)"
+        );
         std::process::exit(2);
     };
     if matches!(sub, "--help" | "-h") {
@@ -154,6 +157,9 @@ fn run_fleet(args: &[String]) {
         "list" | "check" => run_fleet_read_only(sub, &args[1..]),
         "add" => run_fleet_add(&args[1..]),
         "remove" => run_fleet_remove(&args[1..]),
+        "pause" => run_fleet_pause_resume("pause", &args[1..]),
+        "resume" => run_fleet_pause_resume("resume", &args[1..]),
+        "models" => run_fleet_models(&args[1..]),
         other => {
             eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
             std::process::exit(2);
@@ -171,7 +177,11 @@ fn print_fleet_help() {
          \t[--models orch=..,impl=..,review=..] [--registry <path>]\n\
          \t(<name> may also be passed as --name; --worktree-dir is an\n\
          \talias for --worktree — both match the legacy fleet CLI)\n\
-         USAGE: corrald fleet remove <name> [--registry <path>]\n\n\
+         USAGE: corrald fleet remove <name> [--registry <path>]\n\
+         USAGE: corrald fleet pause <name> [--registry <path>]\n\
+         USAGE: corrald fleet resume <name> [--registry <path>]\n\
+         USAGE: corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]\n\
+         \t[--impl-alt2 M] [--review M] [--registry <path>]\n\n\
          list     one line per fleet: name, gh_repo, worker count,\n\
          \tpaused flag, and the three model ids\n\
          check    parse + validate, then verify each fleet's local\n\
@@ -184,10 +194,21 @@ fn print_fleet_help() {
          \tfirst existing fleet (or required via --models on an empty\n\
          \tregistry). The registry file must exist — bootstrap one\n\
          \twith: echo '{{\"fleets\": []}}' > <path>\n\
-         remove   atomically drop exactly one fleet by name\n\n\
-         add/remove exit codes: 0 = written; 1 = refused or the write\n\
-         \tfailed (duplicate name, unresolvable repo, unknown name,\n\
-         \tfilesystem error) — the registry is left byte-identical;\n\
+         remove   atomically drop exactly one fleet by name\n\
+         pause    set paused:true on exactly one fleet; pausing an\n\
+         \talready-paused fleet is a no-op success (exit 0)\n\
+         resume   clear paused on exactly one fleet; resuming an\n\
+         \tunpaused fleet is a no-op success (exit 0)\n\
+         models   update only the model slots named; <name> may be\n\
+         \t`all` to apply to every fleet (models only — pause/resume\n\
+         \ttake a real fleet name; `all` is reserved as a fleet name).\n\
+         \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
+         \tempty value for the required orch/impl/review slots is a\n\
+         \tusage error\n\n\
+         add/remove/pause/resume/models exit codes: 0 = written (or an\n\
+         \tidempotent no-op — already paused/resumed, models unchanged);\n\
+         \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
+         \twrite failed — the registry is left byte-identical;\n\
          \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
          \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
          \tor ~/.hermes/scripts/fleets.json)"
@@ -449,6 +470,207 @@ fn run_fleet_remove(args: &[String]) {
     }
 }
 
+/// `corrald fleet pause|resume <name>`: set/clear the fleet's `paused` flag,
+/// atomically. Idempotent: pausing a paused (or resuming an unpaused) fleet
+/// is a no-op SUCCESS that says so, exit 0. An unknown name is a refusal
+/// (exit 1) that leaves the file byte-identical.
+fn run_fleet_pause_resume(sub: &str, args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage(&format!("fleet {sub}: --registry needs a value"));
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                if other.starts_with('-') {
+                    usage(&format!("fleet {sub}: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage(&format!("fleet {sub}: exactly one fleet name"));
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage(&format!("fleet {sub}: need a fleet name"));
+    };
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let result = match sub {
+        "pause" => fleet::ops::pause(&path, &name),
+        "resume" => fleet::ops::resume(&path, &name),
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(true) => {
+            let verb = if sub == "pause" { "paused" } else { "resumed" };
+            println!("{verb} fleet {name}");
+        }
+        Ok(false) => {
+            let message = if sub == "pause" {
+                format!("fleet {name} already paused")
+            } else {
+                format!("fleet {name} not paused")
+            };
+            println!("{message} — nothing to do");
+        }
+        Err(error) => {
+            eprintln!("corrald fleet {sub}: {error}");
+            std::process::exit(error.exit_code());
+        }
+    }
+}
+
+/// `corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]
+/// [--impl-alt2 M] [--review M]`: update only the model slots named; `<name>`
+/// may be `all` (every fleet). `--impl-alt ''` / `--impl-alt2 ''` CLEAR that
+/// optional slot; empty values for the required slots are a usage error.
+fn run_fleet_models(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut orch: Option<String> = None;
+    let mut impl_: Option<String> = None;
+    let mut impl_alt: Option<String> = None;
+    let mut impl_alt2: Option<String> = None;
+    let mut review: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let mut value = || {
+            i += 1;
+            args.get(i).cloned()
+        };
+        match arg {
+            "--orch" => {
+                orch = value();
+                if orch.is_none() {
+                    usage("fleet models: --orch needs a value");
+                }
+            }
+            "--impl" => {
+                impl_ = value();
+                if impl_.is_none() {
+                    usage("fleet models: --impl needs a value");
+                }
+            }
+            "--impl-alt" => {
+                impl_alt = value();
+                if impl_alt.is_none() {
+                    usage("fleet models: --impl-alt needs a value");
+                }
+            }
+            "--impl-alt2" => {
+                impl_alt2 = value();
+                if impl_alt2.is_none() {
+                    usage("fleet models: --impl-alt2 needs a value");
+                }
+            }
+            "--review" => {
+                review = value();
+                if review.is_none() {
+                    usage("fleet models: --review needs a value");
+                }
+            }
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet models: --registry needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                if other.starts_with('-') {
+                    usage(&format!("fleet models: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage("fleet models: exactly one fleet name");
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage("fleet models: need a fleet name (or `all`)");
+    };
+    if orch.is_none()
+        && impl_.is_none()
+        && impl_alt.is_none()
+        && impl_alt2.is_none()
+        && review.is_none()
+    {
+        usage("fleet models: pass at least one of --orch/--impl/--impl-alt/--impl-alt2/--review");
+    }
+    // Empty values are usage errors for the REQUIRED slots (only the
+    // optional --impl-alt/--impl-alt2 accept '' to clear). Caught here so
+    // the message is a plain usage refusal, not a registry-shaped error.
+    for (flag, value) in [("--orch", &orch), ("--impl", &impl_), ("--review", &review)] {
+        if let Some(value) = value
+            && value.is_empty()
+        {
+            usage(&format!(
+                "fleet models: {flag} must be non-empty (only --impl-alt/--impl-alt2 accept '' to clear)"
+            ));
+        }
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+
+    let update = fleet::ops::ModelUpdate {
+        orch,
+        impl_,
+        impl_alt,
+        impl_alt2,
+        review,
+    };
+    let changes = match fleet::ops::models(&path, &name, &update) {
+        Ok(changes) => changes,
+        Err(error) => {
+            eprintln!("corrald fleet models: {error}");
+            std::process::exit(error.exit_code());
+        }
+    };
+    // Idempotent no-op (ops wrote nothing): say so instead of printing
+    // misleading `x -> x` lines.
+    if changes.iter().all(|c| c.before == c.after) {
+        let names: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
+        println!("models unchanged for {} — nothing to do", names.join(", "));
+        return;
+    }
+    // Print what changed (old -> new), per fleet, so the operator can see
+    // exactly which slots moved and confirm the untouched ones did not.
+    for change in &changes {
+        println!(
+            "{} models changed: orch {} -> {}; impl {} -> {}; impl_alt {} -> {}; impl_alt2 {} -> {}; review {} -> {}",
+            change.name,
+            change.before.orch,
+            change.after.orch,
+            change.before.impl_,
+            change.after.impl_,
+            change.before.impl_alt.as_deref().unwrap_or("-"),
+            change.after.impl_alt.as_deref().unwrap_or("-"),
+            change.before.impl_alt2.as_deref().unwrap_or("-"),
+            change.after.impl_alt2.as_deref().unwrap_or("-"),
+            change.before.review,
+            change.after.review
+        );
+    }
+}
+
 /// Parse `--models orch=..,impl=..,review=..` into a [`fleet::config::Models`].
 fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
     let mut orch = None;
@@ -471,7 +693,8 @@ fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
                 // settable from --models — they inherit or are registry-edited.
                 return Err(format!(
                     "--models {key:?} is not settable here; alt slots inherit \
-                     from the first fleet or are edited in the registry directly"
+                     from the first fleet — set them after add with \
+                     `corrald fleet models <name> --impl-alt <model>`"
                 ));
             }
             other => {

@@ -51,7 +51,7 @@ pub struct Fleet {
 /// last-resort backend, #56) are optional; `skip_serializing_if` omits them
 /// from the written JSON when absent, so an unrelated rewrite never grows
 /// `"impl_alt": null` into a registry that did not have them.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
     pub orch: String,
@@ -170,6 +170,14 @@ impl Registry {
                 return Err(ConfigError::BadTilde {
                     fleet: fleet_locator(index, fleet, "local"),
                     value: fleet.local.clone(),
+                });
+            }
+            // `all` is the `fleet models` wildcard (and pause/resume do NOT
+            // accept it) — a fleet actually named `all` would be shadowed by
+            // the keyword with no escape hatch, so the name is reserved.
+            if fleet.name == "all" {
+                return Err(ConfigError::ReservedFleetName {
+                    name: fleet.name.clone(),
                 });
             }
             if seen.contains(&fleet.name.as_str()) {
@@ -346,6 +354,9 @@ pub enum ConfigError {
     BadTilde { fleet: String, value: String },
     /// Two fleets share a `name`.
     DuplicateFleet { name: String },
+    /// The fleet name is a reserved word (`all` — the `fleet models`
+    /// wildcard).
+    ReservedFleetName { name: String },
     /// A `fleet add` `--gh <owner/repo>` could not be resolved upstream.
     /// Non-zero exit from `gh repo view` — including `gh` being absent — is a
     /// refusal, never a silent skip (#35's "repo resolves before add").
@@ -360,6 +371,19 @@ pub enum ConfigError {
     AddNeedsModels,
     /// A `fleet remove <name>` named a fleet that is not in the registry.
     RemoveNotFound { name: String },
+    /// `fleet pause`/`resume`/`models` named a fleet that is not in the
+    /// registry (or `models` used a name other than the legacy `all` while
+    /// applying per-fleet). Refusal, exit 1, like [`ConfigError::RemoveNotFound`].
+    FleetNotFound { name: String },
+    /// `fleet models all` against a registry with no fleets: a bulk
+    /// mutation that would update zero fleets is a refusal (exit 1), not a
+    /// silent success — automation must not read "nothing happened" as
+    /// "every fleet switched".
+    NoFleets,
+    /// A malformed `fleet models` request (no flags, or an empty value for
+    /// a required slot). Usage-class (exit 2); named so the message cannot
+    /// read as a registry problem in a fleet called "request".
+    ModelsRequest { field: String },
     /// The registry file could not be replaced atomically.
     Write {
         path: PathBuf,
@@ -378,13 +402,17 @@ impl ConfigError {
             | ConfigError::AddRepoUnresolved { .. }
             | ConfigError::AddNeedsModels
             | ConfigError::RemoveNotFound { .. }
+            | ConfigError::FleetNotFound { .. }
+            | ConfigError::NoFleets
             | ConfigError::Write { .. } => 1,
             ConfigError::Io { .. }
             | ConfigError::Parse { .. }
             | ConfigError::Empty { .. }
             | ConfigError::Whitespace { .. }
             | ConfigError::GhRepoShape { .. }
-            | ConfigError::BadTilde { .. } => 2,
+            | ConfigError::BadTilde { .. }
+            | ConfigError::ModelsRequest { .. }
+            | ConfigError::ReservedFleetName { .. } => 2,
         }
     }
 }
@@ -429,6 +457,12 @@ impl fmt::Display for ConfigError {
             ConfigError::DuplicateFleet { name } => {
                 write!(f, "duplicate fleet name {name:?}")
             }
+            ConfigError::ReservedFleetName { name } => {
+                write!(
+                    f,
+                    "fleet name {name:?} is reserved (it is the `fleet models` wildcard)"
+                )
+            }
             ConfigError::AddRepoUnresolved { repo, detail } => {
                 write!(
                     f,
@@ -447,6 +481,22 @@ impl fmt::Display for ConfigError {
                 )
             }
             ConfigError::RemoveNotFound { name } => {
+                write!(f, "no fleet named {name:?} in the registry")
+            }
+            ConfigError::NoFleets => {
+                write!(
+                    f,
+                    "the registry has no fleets to update (bootstrap one with `fleet add`)"
+                )
+            }
+            ConfigError::ModelsRequest { field } => {
+                write!(
+                    f,
+                    "models update request: {field} must be non-empty (only the optional \
+                     --impl-alt/--impl-alt2 accept '' to clear)"
+                )
+            }
+            ConfigError::FleetNotFound { name } => {
                 write!(f, "no fleet named {name:?} in the registry")
             }
             ConfigError::Write { path, source } => {
@@ -473,7 +523,11 @@ impl std::error::Error for ConfigError {
             | ConfigError::DuplicateFleet { .. }
             | ConfigError::AddRepoUnresolved { .. }
             | ConfigError::AddNeedsModels
-            | ConfigError::RemoveNotFound { .. } => None,
+            | ConfigError::RemoveNotFound { .. }
+            | ConfigError::FleetNotFound { .. }
+            | ConfigError::NoFleets
+            | ConfigError::ModelsRequest { .. }
+            | ConfigError::ReservedFleetName { .. } => None,
         }
     }
 }

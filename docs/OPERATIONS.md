@@ -196,18 +196,25 @@ have spent nothing".
 
 ## Fleet registry
 
-`corrald fleet` reads — and, since #35 slice 1, edits — the control-plane
+`corrald fleet` reads — and, since #35 slices 1–2, edits — the control-plane
 registry describing each fleet's repo, local checkout, worktree dir,
 orchestrator, workers and per-role models. `list`/`check` are read-only;
-**`add`/`remove` rewrite the registry file** (atomically, validated, with
-the repo resolved via `gh` before anything is written). Nothing touches a
-running agent.
+**`add`/`remove`** (slice 1) and **`pause`/`resume`/`models`** (slice 2)
+rewrite the registry file (atomically, validated, with the repo resolved via
+`gh` before an add). Nothing touches a running agent — `pause`/`resume` here
+mutate the `paused` flag only; the ops half (halting working agents, the
+auth-gated model-switch re-arm) is a later #35 slice.
 
 ```sh
 corrald fleet list                    # one greppable line per fleet
 corrald fleet check                   # validate + verify each local checkout
 corrald fleet add <name> --gh <o/r>   # insert a fleet (WRITES the registry)
 corrald fleet remove <name>           # drop a fleet (WRITES the registry)
+corrald fleet pause <name>            # set paused (WRITES; idempotent)
+corrald fleet resume <name>           # clear paused (WRITES; idempotent)
+corrald fleet models <name> --impl m  # update only the model slots named
+corrald fleet models all --impl m     # ... applied to every fleet
+corrald fleet models <name> --impl-alt ''   # CLEAR the optional alt slot
 corrald fleet list --registry <path>  # override the default
 ```
 
@@ -220,7 +227,10 @@ an unreadable/unparseable/invalid registry. Validation is strict on
 purpose — unknown fields, empty required fields, whitespace inside
 `name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
 `owner/repo`, a `local` starting with a bare `~`, and duplicate names all
-fail loudly. Full schema and the per-command exit-code table:
+fail loudly. Model map: required `orch`/`impl`/`review`, optional
+`impl_alt`/`impl_alt2` fallback slots that `fleet models` can set or clear
+(`--impl-alt ''`; `models all` applies to every fleet — `all` is a
+reserved fleet name). Full schema and the per-command exit-code table:
 `docs/corral/G35-registry.md`.
 
 ## Security model summary

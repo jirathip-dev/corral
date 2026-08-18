@@ -67,6 +67,7 @@ stderr note when it is taken) exists.
 ```
 corrald fleet list [--registry <path>]
 corrald fleet check [--registry <path>]
+corrald fleet watch [--registry <path>]
 ```
 
 `list` — one greppable line per fleet:
@@ -92,16 +93,6 @@ worktree) — both count as resolved.
 
 Both `ok` and `FAIL` lines go to **stdout**, deliberately, so `check` output
 stays one greppable stream; the exit code is what a script should branch on.
-
-## Write commands (slice 1: add/remove)
-
-```
-corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
-    [--orch <agent>] [--workers a,b,c] [--models orch=..,impl=..,review=..]
-    [--registry <path>]
-corrald fleet remove <name> [--registry <path>]
-corrald fleet watch [--registry <path>]
-```
 
 `watch` (the #35 watchdog parity item) is READ-ONLY: one health pass over
 the UNPAUSED fleets — herdr server reachability (one retry, so a
@@ -130,7 +121,22 @@ script failure need `|| true`); a successful zero-agent listing is
 healthy, never server-down; worker names count per-fleet, not globally;
 the orca-era workspaces leg is dropped; gh unavailability is stated on
 every stalled flavor (informational, at the cost of an extra output flap
-when the network blips).
+when the network blips). Legacy CHECKS not ported in this slice (fresh
+review N2/N4 — both were added to legacy v3 after production misses, and
+both remain gaps until a later slice or the legacy watcher's retirement):
+stall ESCALATION (legacy re-notifies at 30/60/120min while a stall
+persists; corrald's dedup-friendly stable output notifies once) and
+UNSHIPPED-WORK detection (local commits with no remote branch/PR read as
+a plain stall here, not as the "work never left the machine" alarm).
+
+## Write commands (slice 1: add/remove)
+
+```
+corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
+    [--orch <agent>] [--workers a,b,c] [--models orch=..,impl=..,review=..]
+    [--registry <path>]
+corrald fleet remove <name> [--registry <path>]
+```
 
 `<name>` may also be passed as `--name`, and `--worktree-dir` is an alias
 for `--worktree` — both spellings match the legacy fleet CLI. Defaults:
@@ -191,12 +197,13 @@ file byte-identical on any refusal, no-op, or write failure.
 | Code | Meaning |
 |------|---------|
 | 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove`/`pause`/`resume`/`models` wrote the registry (or were an idempotent no-op) |
-| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical |
-| 2    | usage error, unreadable/unparseable registry, or validation failure |
+| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical; `watch`: problems found — INCLUDING an unreadable/invalid registry, which `watch` reports as a `PROBLEM:` line with exit 1 (monitor safety) |
+| 2    | usage error; for every subcommand EXCEPT `watch`: also an unreadable/unparseable registry or validation failure |
 
 ## Phase boundary (explicitly out of scope)
 
 - No `fleet switch`, and no ops half of pause/resume (halting working
   agents, auth-gated model-switch re-arm) — later phases.
-- No status/watch/reap/prune consolidation — later phases.
+- No status/reap/prune consolidation — later phases (`watch` shipped
+  with this slice; see the watch section above).
 - No change to the running agent, session, or `src/drive/` contract.

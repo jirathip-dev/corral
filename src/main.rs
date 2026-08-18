@@ -731,14 +731,23 @@ fn run_fleet_watch(args: &[String]) {
 
     let home = std::env::var("HOME").unwrap_or_default();
     let agents = herdr_agents_with_retry();
-    // One gh call per distinct unpaused-fleet repo (serial, up to 30s
-    // each) — cheaper than proving which fleets can stall before asking.
+    // Fresh-review N7: only fleets whose orchestrator is PRESENT and not
+    // working can reach a stall arm (the exact predicate problems()
+    // applies), and only stall arms read PR counts — so the healthy
+    // steady state makes ZERO gh calls instead of one per repo (up to
+    // 30s each, serial). A fleet that skips the query here can never
+    // have its count read, so the pr_note semantics are unchanged.
     let mut prs = fleet::watch::PrCounts::new();
-    if agents.is_some() {
+    if let Some(agents) = &agents {
         let mut repos: Vec<&str> = registry
             .fleets
             .iter()
             .filter(|f| !f.paused)
+            .filter(|f| {
+                agents
+                    .get(&f.orch)
+                    .is_some_and(|orch| orch.status != "working")
+            })
             .map(|f| f.gh_repo.as_str())
             .collect();
         repos.sort_unstable();
@@ -837,23 +846,44 @@ fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<S
         let _ = child.wait();
         return None;
     };
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // Fresh-review N1: the reader PUBLISHES into shared state as it
+    // reads, instead of sending one String only at EOF. A persistent
+    // grandchild holding the pipe's write end means EOF never comes —
+    // the old shape then threw away a complete, valid listing sitting
+    // in the reader's local buffer and reported a FALSE server-down
+    // (which suppresses every true per-fleet problem). Now the grace
+    // expiry returns whatever has been read and the PARSE decides
+    // (same F9 principle as the exit status): a truncated buffer fails
+    // to parse and retries; a complete one is used. The no-hang
+    // property (round-1 F4) is unchanged — every wait stays bounded.
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let writer = buffer.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let mut out = String::new();
-        let _ = stdout.read_to_string(&mut out);
-        let _ = tx.send(out);
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = stdout.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            if let Ok(mut out) = writer.lock() {
+                out.push_str(&String::from_utf8_lossy(&chunk[..n]));
+            }
+        }
+        let _ = tx.send(());
     });
     let deadline = std::time::Instant::now() + timeout;
-    let recv_bounded = |rx: &std::sync::mpsc::Receiver<String>| {
-        // Give a well-behaved pipe a moment to flush after child exit,
-        // but never block past a short grace even if a grandchild holds
-        // the write end open.
-        rx.recv_timeout(Duration::from_secs(5)).ok()
+    let take_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<String>>| {
+        buffer.lock().ok().map(|out| out.clone())
     };
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                return recv_bounded(&rx);
+                // Give a well-behaved pipe a moment to reach EOF after
+                // child exit, but never block past a short grace even if
+                // a grandchild holds the write end open — and return the
+                // buffer EITHER WAY (N1).
+                let _ = rx.recv_timeout(Duration::from_secs(5));
+                return take_buffer(&buffer);
             }
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();

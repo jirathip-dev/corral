@@ -2417,3 +2417,63 @@ fn fleet_watch_bad_registry_alerts_on_stdout_exit_1() {
         "names the corruption: {stdout}"
     );
 }
+
+/// Fresh-review N1: a herdr child that answers COMPLETELY and exits 0,
+/// but leaves a background process holding the stdout write end, must
+/// NOT read as "server NOT reachable" — the reader publishes as it
+/// goes, the grace expiry returns the buffer, and the parse decides.
+/// (The old EOF-only reader threw the complete listing away and
+/// suppressed every per-fleet check behind a false server-down line.)
+#[test]
+fn watch_survives_a_grandchild_holding_stdout() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(dir.path(), &format!(r#"{{ "fleets": [{VALID_A}] }}"#));
+
+    // Hermetic herdr shim: valid listing, exit 0, fd-holder outliving
+    // the 5s EOF grace (but not the test runner).
+    let shim_dir = dir.path().join("bin");
+    std::fs::create_dir(&shim_dir).expect("mkdir");
+    let shim = shim_dir.join("herdr");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\n( sleep 8 ) &\necho '{\"result\":{\"agents\":[{\"name\":\"orch-corral\",\"agent_status\":\"working\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"},{\"name\":\"p4-w1-reviewer\",\"agent_status\":\"idle\",\"cwd\":\"/repos/corral\"}]}}'\nexit 0\n",
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    // Stub gh too so a stall arm could never hang on the network (the
+    // fleet is healthy here, so gh is never called — N7 — but belt and
+    // braces for a hermetic test).
+    std::fs::write(shim_dir.join("gh"), "#!/bin/sh\necho 0\n").expect("write gh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(shim_dir.join("gh"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod gh");
+    }
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_corrald"))
+        .args(["fleet", "watch", "--registry", path.to_str().expect("utf8")])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                shim_dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("HOME", dir.path().to_str().expect("utf8"))
+        .output()
+        .expect("watch runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("NOT reachable"),
+        "a complete answer with a held fd must not be a false server-down: {stdout}"
+    );
+    // VALID_A is paused:true, so the healthy outcome is ALL HEALTHY.
+    assert!(stdout.contains("ALL HEALTHY"), "{stdout}");
+    assert!(out.status.success(), "exit 0 on healthy: {stdout}");
+}

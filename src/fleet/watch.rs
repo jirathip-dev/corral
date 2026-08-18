@@ -144,6 +144,10 @@ pub fn cwd_in_fleet(cwd: &str, local: &str, worktree_dir: &str, home: &str) -> b
     if worktree_dir.is_empty() || home.is_empty() {
         return false;
     }
+    // Fresh-review N5: worktree_dir gets the same trailing-slash
+    // normalisation F10 gave `local` — a registry value of "corral/"
+    // must not silently disable the whole worktree leg.
+    let worktree_dir = worktree_dir.trim_matches('/');
     let root = format!(
         "{}/.herdr/worktrees/{worktree_dir}",
         home.trim_end_matches('/')
@@ -532,6 +536,13 @@ mod tests {
             "/Users/x/Projects/corral/",
             "corral",
             "/Users/x"
+        ));
+        // N5: a trailing slash on worktree_dir must not disable the leg.
+        assert!(cwd_in_fleet(
+            "/u/.herdr/worktrees/corral/wt1",
+            "",
+            "corral/",
+            "/u"
         ));
         // R3: the depth rule holds OUTSIDE home too — a misconfigured
         // one-component local must not authorize every cwd under it.

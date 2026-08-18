@@ -6,6 +6,39 @@ signed, capability-gated write plane (`POST /drive`). Design
 authority: `~/Projects/hermes-brain/plans/corral/DECISIONS.md`
 (D1–D14).
 
+## Stack terminology (model → harness → runtime → control plane)
+
+Precise terms matter when discussing "agnosticism". Four layers, bottom up:
+
+| Layer | What it is | Examples | Corral's relationship |
+|---|---|---|---|
+| **Model** | the LLM itself | deepseek-v4-flash, fable, opus | configured, not coupled |
+| **Harness** | the wrapper that gives a model tools (shell, files, browser) | **Claude Code, Codex CLI, OpenCode** | **interchangeable** — the adapter normalizes claude/codex/opencode agent kinds uniformly via `apply_agent_info`; core model has a `tool` label, no harness logic |
+| **Runtime** | the layer that spawns/supervises harnesses in panes/worktrees | **herdr** | **the coupling point** — `src/adapters/herdr.rs` reads the herdr unix socket for the live agent feed |
+| **Control plane** | the daemon on top | **corrald** | this repo |
+
+**Harness-agnostic vs runtime-bound.** Corral is already
+*harness-agnostic*: it does not care whether an agent is claude, codex, or
+opencode — all flow through the same canonical `Agent` record. It is
+*runtime-bound* to herdr at the adapter: without the herdr socket, the read
+model has no live agent feed (the daemon still serves HTTP, just no
+agents).
+
+**The one harness-specific exception: the cost meter.** `src/cost/` parses
+each harness's own session-store format — opencode.db (SQLite), Claude Code
+JSONL transcripts, codex rollouts. That is the only place corral understands
+harness-native file formats. Every path is env-overridable
+(`CORRAL_OPENCODE_DB`, `CORRAL_CLAUDE_DIR`, `CORRAL_CODEX_DIR`) so a
+different install layout or harness works without code changes; a store that
+is absent reports `store_found: false`, never a misleading zero.
+
+**Implication for a "no-herdr" mode.** The cost meter is not the coupling
+problem (it is tool-native); the adapter is. A second-runtime / no-runtime
+mode would add an `Adapter` implementation that derives agents from git
+worktrees + a mapping file (or another runtime's socket) instead of herdr's.
+That is a documented limitation today, not a bug — see
+`docs/corral/DECISIONS.md` for the phased plan.
+
 ## Read side: planes → integrator → store → HTTP/SSE
 
 ```

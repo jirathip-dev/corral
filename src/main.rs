@@ -830,7 +830,8 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
         eprintln!(
             "refusing to bind {addr}: only loopback, private (RFC 1918), \
              Tailscale/CGNAT (100.64.0.0/10), and IPv6 unique-local (RFC 4193) \
-             addresses are permitted — never public interfaces or 0.0.0.0"
+             addresses are permitted — never public interfaces, 0.0.0.0, or \
+             IPv4-mapped IPv6 forms (spell IPv4 addresses plainly)"
         );
         std::process::exit(2);
     }

@@ -17,8 +17,9 @@ itself is never restructured.
 
 ```
 src/main.rs              binary entrypoint: --socket/--port/--bind parsing
-                         (refuses non-loopback binds), auth-plane init,
-                         planes supervisor, axum serve
+                         (allowlist: loopback/RFC 1918/Tailscale CGNAT/
+                         IPv6 ULA — public and 0.0.0.0 refused), auth-plane
+                         init, planes supervisor, axum serve
 src/lib.rs               library surface: adapters, api, approve, auth,
                          core, drive, integrate
 src/adapters/            herdr.rs (push, zero polling), git_plane.rs,

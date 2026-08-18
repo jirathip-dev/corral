@@ -13,7 +13,12 @@ and worktree pruning land in later phases of #35 too.
 
 ## Registry schema
 
-Default path: `$CORRAL_FLEETS_PATH`, else `$HOME/.hermes/scripts/fleets.json`
+Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
+`$HOME/.config/corral/fleets.json`; a pre-existing legacy
+`$HOME/.hermes/scripts/fleets.json` is honoured as a migration fallback
+when — and only when — the corral-owned file does not exist (#66). The
+schema is corral's own registry format (it originated in earlier fleet
+tooling and corrald adopted it as the single source of truth)
 (any command accepts `--registry <path>` to override).
 
 ```json

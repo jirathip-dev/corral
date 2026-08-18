@@ -222,7 +222,9 @@ corrald fleet list --registry <path>  # override the default
 ```
 
 The registry path is `$CORRAL_FLEETS_PATH`, else
-`~/.hermes/scripts/fleets.json`. Exit codes: **0** all good, **1** an
+`~/.config/corral/fleets.json` (a pre-existing legacy
+`~/.hermes/scripts/fleets.json` is honoured as a fallback while the
+corral-owned file does not exist — #66). Exit codes: **0** all good, **1** an
 operation failed — a fleet failed `check`, or `add`/`remove` refused
 (duplicate name, unresolvable repo, unknown name, no models to inherit) or
 could not write, leaving the registry byte-identical; **2** usage error or

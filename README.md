@@ -80,8 +80,12 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 ## Security posture
 
 - **Loopback by default, public refused** — `corrald` binds `127.0.0.1`
-  by default and refuses public/routable binds. Private/tailnet
-  (100.x/10.x) binds are planned via #65.
+  by default; `--bind` also accepts tailnet (100.64/10), RFC 1918 private,
+  and IPv6 unique-local addresses (#65) — public IPs and `0.0.0.0` are
+  hard refusals. Writes are device-signed on every interface; the read
+  plane (`/healthz`, `/snapshot`, `/events`, `/history`, `/cost`) is
+  credential-free, so its boundary on a non-loopback bind is the network
+  itself — prefer a tailnet (WireGuard device auth) over a plain LAN.
 - **Signed writes, default deny** — every `POST /drive` carries an
   Ed25519 device signature; a registered device has zero grants until the
   host promotes capabilities. No auto-approve.

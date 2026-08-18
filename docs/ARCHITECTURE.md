@@ -150,10 +150,13 @@ dispatch.
   by default; `--bind` also accepts private (RFC 1918), Tailscale/CGNAT
   (100.64/10), and IPv6 unique-local addresses (#65) — public IPs and
   0.0.0.0 are hard refusals. The WRITE plane is device-signed everywhere.
-  The READ plane (`/snapshot`, `/events`) is credential-free: on loopback
-  that is process-local trust; on a tailnet bind the boundary is the
-  tailnet itself (WireGuard device auth) — bind a tailnet IP only on
-  tailnets whose every device may see fleet state.
+  The READ plane — `/healthz`, `/snapshot`, `/events`, `/history`, and
+  `/cost` (fleet state, transition history, provider spend) — is
+  credential-free: on loopback that is process-local trust; on a tailnet
+  bind the boundary is the tailnet itself (WireGuard device auth) — bind a
+  tailnet IP only on tailnets whose every device may see fleet state. An
+  RFC 1918 bind has NO comparable boundary (any LAN device reads fleet
+  state): permitted for lab setups, but prefer tailnet or loopback.
 - **Three credentials, never one** (D13): registration token (routing
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
   writes; host identity is X25519, published by `GET /host-key`), and

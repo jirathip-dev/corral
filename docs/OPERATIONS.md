@@ -67,10 +67,11 @@ before expiry.
 
 ### Grants model
 
-- Registered device: read plane only (`/snapshot`, `/events` —
-  credential-free; on a non-loopback bind the tailnet/private network
-  itself is the read boundary, so bind beyond loopback only on networks
-  whose every device may see fleet state).
+- Registered device: read plane only (`/healthz`, `/snapshot`, `/events`,
+  `/history`, `/cost` — credential-free; on a non-loopback bind the
+  tailnet/private network itself is the read boundary, so bind beyond
+  loopback only on networks whose every device may see fleet state — a
+  plain LAN offers no device auth, prefer a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.

@@ -33,6 +33,8 @@
 //! so torn tails are normal, and silent drops would make a page look
 //! complete when it is not.
 
+pub mod bind;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -95,6 +97,46 @@ pub enum Cursor {
     Opencode { time_created: i64, id: String },
     /// Read JSONL lines that END at or before this byte offset.
     Bytes { offset: u64 },
+}
+
+impl Cursor {
+    /// Opaque wire form for HTTP clients (#63): `oc.<time>.<hex-id>` /
+    /// `b.<offset>`. The opencode id is hex-encoded so arbitrary id bytes
+    /// survive the dot-delimited framing; clients must treat the whole
+    /// string as opaque — the format may change with the store schemas.
+    pub fn encode(&self) -> String {
+        match self {
+            Cursor::Opencode { time_created, id } => {
+                let hex: String = id.bytes().map(|b| format!("{b:02x}")).collect();
+                format!("oc.{time_created}.{hex}")
+            }
+            Cursor::Bytes { offset } => format!("b.{offset}"),
+        }
+    }
+
+    /// Inverse of [`Cursor::encode`]. Any malformed input is
+    /// [`TranscriptError::BadCursor`] — never a panic, never a guess.
+    pub fn decode(wire: &str) -> Result<Self, TranscriptError> {
+        if let Some(rest) = wire.strip_prefix("b.") {
+            let offset = rest.parse().map_err(|_| TranscriptError::BadCursor)?;
+            return Ok(Cursor::Bytes { offset });
+        }
+        let rest = wire.strip_prefix("oc.").ok_or(TranscriptError::BadCursor)?;
+        let (time, hex) = rest.split_once('.').ok_or(TranscriptError::BadCursor)?;
+        let time_created = time.parse().map_err(|_| TranscriptError::BadCursor)?;
+        // ASCII-hex only, checked up front: slicing below is byte-indexed
+        // and a multi-byte char would otherwise panic on a char boundary.
+        if hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(TranscriptError::BadCursor);
+        }
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|_| TranscriptError::BadCursor)?;
+        let id = String::from_utf8(bytes).map_err(|_| TranscriptError::BadCursor)?;
+        Ok(Cursor::Opencode { time_created, id })
+    }
 }
 
 /// One page, newest-first. `next_cursor: None` means the store is
@@ -1295,5 +1337,29 @@ mod tests {
             plan.contains("SEARCH p USING INDEX"),
             "part must be SEARCHed per message: {plan}"
         );
+    }
+
+    /// #63: the opaque wire cursor round-trips both variants, and every
+    /// malformed shape is a typed BadCursor — never a panic (including
+    /// multi-byte UTF-8 in the hex segment, which byte-slices).
+    #[test]
+    fn cursor_wire_roundtrip_and_bad_inputs() {
+        let oc = Cursor::Opencode {
+            time_created: 1723972000123,
+            id: "msg_01'weird.id".to_string(),
+        };
+        assert_eq!(Cursor::decode(&oc.encode()).expect("oc roundtrip"), oc);
+        let b = Cursor::Bytes { offset: 987654 };
+        assert_eq!(Cursor::decode(&b.encode()).expect("bytes roundtrip"), b);
+
+        for bad in [
+            "", "x.1.aa", "oc.", "oc.12", "oc.12.abc", "oc.nan.abcd", "oc.12.zz", "oc.12.é1",
+            "b.", "b.-1", "b.nan", "oc.12.61ff",
+        ] {
+            match Cursor::decode(bad) {
+                Err(TranscriptError::BadCursor) => {}
+                other => panic!("{bad:?} must be BadCursor, got {other:?}"),
+            }
+        }
     }
 }

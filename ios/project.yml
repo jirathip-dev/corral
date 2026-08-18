@@ -37,6 +37,15 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands."
         NSAppTransportSecurity:
+          # Deliberately NO ts.net / insecure-HTTP exception (#80): the
+          # build-3 carve-out never worked — iOS forces a TLS upgrade on
+          # MagicDNS hostnames regardless — and ATS classifies Tailscale's
+          # 100.64/10 (CGNAT) as public internet, so NSAllowsLocalNetworking
+          # does not cover a tailnet-bound plain-HTTP daemon either. Remote
+          # access is real TLS via `tailscale serve` fronting the
+          # loopback-bound daemon; see docs/OPERATIONS.md "Remote access
+          # from iOS (Tailscale Serve)". NSAllowsLocalNetworking stays for
+          # LAN/loopback dev setups.
           NSAllowsLocalNetworking: YES
         NSFaceIDUsageDescription: "Face ID step-up is required before destructive commands are sent to agents."
         NSUserNotificationsUsageDescription: "Corral shows a local notification when an agent blocks, so you can answer from the lock screen."

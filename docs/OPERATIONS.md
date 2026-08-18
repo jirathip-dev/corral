@@ -16,9 +16,14 @@ login and stays up (KeepAlive). Idempotent; safe to re-run.
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
-scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP
+scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (desktop/daemon only)
 scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps config)
 ```
+
+`--bind <tailnet-ip>` serves DESKTOP clients on the tailnet; the iOS
+client cannot use it (ATS refuses plain HTTP to the CGNAT range) — for
+iOS, keep the daemon loopback-only and use Tailscale Serve instead: see
+"Remote access from iOS (Tailscale Serve)" below.
 
 `launchctl bootstrap` is intentionally NOT run from inside an automation
 gateway (same reason as the herdr-server agent): run the script from your
@@ -39,6 +44,77 @@ scripts/corrald-grant.sh --key dev_<id> --revoke
 ```
 
 `CORRAL_BASE` overrides the daemon base URL (default `http://127.0.0.1:8474`).
+
+## Remote access from iOS (Tailscale Serve)
+
+The supported way to reach the daemon from the iOS client outside the
+LAN is **real TLS via Tailscale Serve fronting a loopback-only daemon**
+— not `--bind`. This is a strictly better posture (the daemon never
+listens beyond loopback; Serve is the sole encrypted entry point), and
+it is the ONLY path App Transport Security accepts.
+
+### Why `--bind <tailnet-ip>` cannot work for iOS
+
+ATS classifies Tailscale's 100.64.0.0/10 (CGNAT) addresses as public
+internet — `NSAllowsLocalNetworking` covers `.local` and RFC 1918, not
+the tailnet — so a plain-HTTP daemon on a tailnet IP is refused:
+
+```
+[register_failed] The resource could not be loaded because the App
+Transport Security policy requires the use of a secure connection.
+```
+
+An `NSExceptionDomains` carve-out for `ts.net` does NOT fix it — iOS
+still forces a TLS upgrade for the MagicDNS hostname:
+
+```
+[register_failed] A TLS error caused the secure connection to fail.
+```
+
+(The build-3 carve-out that tried this is gone; the generated
+Info.plist ships with no insecure-HTTP exception.)
+
+### One-time tailnet prerequisite: enable HTTPS Certificates
+
+`tailscale cert` fails (and `tailscale serve` hangs) until HTTPS
+Certificates is enabled for the tailnet:
+
+```
+500 Internal Server Error: your Tailscale account does not support
+getting TLS certs
+```
+
+Enable it in the Tailscale **admin console → DNS → HTTPS Certificates**
+(tailnet-wide, one-time, admin-console-only — there is no CLI
+equivalent). Verify:
+
+```sh
+tailscale status --json | grep -i certdomains   # empty before, populated after
+```
+
+### The working setup (verified)
+
+```sh
+# 1. one-time, in the Tailscale admin console: DNS -> enable HTTPS Certificates
+
+# 2. issue the cert (writes .crt/.key into the CWD)
+tailscale cert <host>.<tailnet>.ts.net
+
+# 3. front the loopback daemon with real TLS
+tailscale serve --bg --https=443 http://127.0.0.1:8474
+
+# 4. verify a valid chain (no -k)
+curl -s -o /dev/null -w '%{http_code} verify=%{ssl_verify_result}\n' \
+  https://<host>.<tailnet>.ts.net/healthz     # -> 200 verify=0
+```
+
+The daemon stays **loopback-only** (plain `scripts/setup-corrald.sh`,
+no `--bind`). In the app, the host is the plain HTTPS origin with no
+port:
+
+```
+https://<host>.<tailnet>.ts.net
+```
 
 ## Device lifecycle
 

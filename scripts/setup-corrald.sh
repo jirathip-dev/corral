@@ -83,7 +83,16 @@ PLIST_EOF
 plutil -lint "$PLIST" >/dev/null
 
 echo ">> Loading under launchd..."
-launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# If the agent is already loaded (re-run), kickstart -k reloads it with the
+# NEW plist args (e.g. changed --bind) instead of silently keeping the old
+# process. If not loaded, bootstrap it.
+if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+  echo "   (already loaded — reloading with new config)"
+  launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+else
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || \
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+fi
 
 sleep 2
 echo ">> Health check:"

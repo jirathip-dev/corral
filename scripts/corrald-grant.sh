@@ -44,7 +44,10 @@ PY
   exit 0
 fi
 
-[[ -n "$KEY" && -n "$CAPS" ]] || { echo "need --key and --caps (or --list)" >&2; exit 2; }
+[[ -n "$KEY" ]] || { echo "need --key (and --caps to grant, or --revoke)" >&2; exit 2; }
+if [[ "$REVOKE" != "1" && -z "$CAPS" ]]; then
+  echo "need --caps <list> to grant, or --revoke" >&2; exit 2
+fi
 
 if [[ "$REVOKE" == "1" ]]; then
   BODY="{\"action\":\"revoke\",\"key_id\":\"$KEY\",\"revoked\":true}"

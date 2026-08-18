@@ -147,8 +147,10 @@ dispatch.
 
 ## Security model
 
-- **Loopback only.** `corrald` refuses to bind a non-loopback address.
-  The read plane is credential-free *because* it is loopback-local.
+- **Loopback by default, public refused.** `corrald` binds `127.0.0.1`
+  by default and refuses public/routable binds. The read plane is
+  credential-free *because* it is loopback-local; private/tailnet binds
+  (#65) will still sit behind the full device-signature + grants plane.
 - **Three credentials, never one** (D13): registration token (routing
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
   writes; host identity is X25519, published by `GET /host-key`), and

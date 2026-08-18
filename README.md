@@ -54,7 +54,9 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Security posture
 
-- **Loopback only** — `corrald` refuses to bind any routable interface.
+- **Loopback by default, public refused** — `corrald` binds `127.0.0.1`
+  by default and refuses public/routable binds. Private/tailnet
+  (100.x/10.x) binds are planned via #65.
 - **Signed writes, default deny** — every `POST /drive` carries an
   Ed25519 device signature; a registered device has zero grants until the
   host promotes capabilities. No auto-approve.

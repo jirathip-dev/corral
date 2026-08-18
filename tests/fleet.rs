@@ -2304,4 +2304,11 @@ fn default_registry_path_is_corral_owned_with_legacy_fallback() {
         String::from_utf8_lossy(&out.stdout).contains("board"),
         "lists the legacy registry's fleet"
     );
+    // The fallback is LOUD (#66 review F5): a stderr note announces the
+    // legacy path so a split-brain migration cannot stay silent.
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("legacy registry"),
+        "the fallback announces itself: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

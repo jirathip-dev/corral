@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -47,7 +48,19 @@ final class AppModel: ObservableObject {
 
     private let defaults = UserDefaults.standard
 
+    /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
+    /// when the REFERENCE is reassigned — it does not forward the child's
+    /// `objectWillChange`. Every view observes `AppModel` but reads
+    /// `model.fleet.agents` / `model.fleet.connectionState`, so applying an
+    /// SSE frame used to mutate the store without re-running any `body`.
+    /// Forward the child's change notifications to this object so the board
+    /// re-renders when the fleet changes.
+    private var fleetChanges: AnyCancellable?
+
     init() {
+        fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         // Restore a previous registration so relaunch skips setup.
         if let meta = DeviceKeyStore.loadMeta(),
            let url = URL(string: defaults.string(forKey: "fleetnotifier.host") ?? "") {

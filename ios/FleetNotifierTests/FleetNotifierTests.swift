@@ -1268,3 +1268,34 @@ final class IssueDecodeTests: XCTestCase {
         XCTAssertEqual(agent.workspace.issues, [])
     }
 }
+
+// MARK: - Nested ObservableObject forwarding (#93)
+
+@MainActor
+final class AppModelFleetForwardingTests: XCTestCase {
+
+    /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` on
+    /// `AppModel` fires only when the REFERENCE is reassigned, so applying
+    /// an SSE frame to the store otherwise re-runs NO `body` — every view
+    /// observes `AppModel` but reads `model.fleet.agents` /
+    /// `model.fleet.connectionState`. The child's `objectWillChange` must be
+    /// forwarded to the parent. This test is RED on the unfixed code
+    /// (zero emissions) and GREEN with the forwarding.
+    func testFleetFrameApplyEmitsAppModelObjectWillChange() async {
+        let model = AppModel()
+        var emissions = 0
+        let cancellable = model.objectWillChange.sink { emissions += 1 }
+
+        // Real topology + real mutation path: one snapshot frame through
+        // FleetStore.ingest — decode off-main, single main-actor apply —
+        // exactly what the SSE stream does. Deterministic: await the hop.
+        let snapshot = #"{"schema_version":3,"rev":9,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"working","seq":1,"ts":1,"capabilities":[],"workspace":{}}}}"#
+        await model.fleet.ingest(SSEFrame(kind: .snapshot, id: 9, data: snapshot)).value
+
+        XCTAssertEqual(model.fleet.agents.count, 1,
+                       "the frame must actually land in the store")
+        XCTAssertGreaterThan(emissions, 0,
+                             "a fleet mutation must emit AppModel.objectWillChange or the board never re-renders")
+        cancellable.cancel()
+    }
+}

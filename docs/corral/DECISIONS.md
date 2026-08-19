@@ -23,6 +23,13 @@ claude,codex}.rs`), independent of any transcript-viewing feature.
   (older schema), it falls back to the per-session cumulative columns.
   **If corrald ever needs to run on a host without the `sqlite3` binary,
   that's the trigger to add `rusqlite` — not a silent default.**
+  **SQLite floor:** the transcript reader's role-column probe (S3/L4)
+  uses the table-valued-function form `pragma_table_info('message')`
+  inside a SELECT (the result must flow through the same `-json` child
+  as the page query), which needs SQLite >= 3.16 — unlike the plain
+  `PRAGMA table_info(message);` statement form the cost reader uses.
+  Below 3.16 the probe fails and degrades to "no role column": the
+  reader still works, with roles taken from the data JSON only.
 - **claude** (`src/cost/claude.rs`): walks `~/.claude/projects/**/*.jsonl`,
   skipping files whose mtime predates the query window (minus a 1-day
   margin), streaming line-by-line. Prices via `message.usage` tokens ×

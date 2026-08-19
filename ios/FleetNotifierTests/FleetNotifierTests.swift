@@ -1275,15 +1275,19 @@ final class IssueDecodeTests: XCTestCase {
 /// request gets the payload (delivered in two chunks split mid-line to
 /// exercise chunk boundaries), later requests hang like the daemon's open
 /// stream so the reconnect ladder cannot re-serve it before the test
-/// cancels.
+/// cancels. `finishAfterServe` switches the mock to EOF-after-serve so
+/// the byte loop's clean-EOF exit path is exercisable.
 final class SSEStreamMockURLProtocol: URLProtocol {
     static var fixture: Data?
     static var served = false
+    static var finishAfterServe = false
+    static var requestCount = 0
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.requestCount += 1
         guard let fixture = Self.fixture, let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
@@ -1298,7 +1302,10 @@ final class SSEStreamMockURLProtocol: URLProtocol {
             client?.urlProtocol(self, didLoad: Data(fixture.prefix(split)))
             client?.urlProtocol(self, didLoad: Data(fixture.suffix(fixture.count - split)))
         }
-        // Deliberately never finishes: the daemon's stream stays open too.
+        if Self.finishAfterServe {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        // Otherwise deliberately never finishes: the daemon's stream stays open.
     }
 
     override func stopLoading() {}
@@ -1341,7 +1348,7 @@ final class SSEStreamRegressionTests: XCTestCase {
         let payload = """
         event: snapshot
         id: 7
-        data: {"schema_version":3,"rev":7,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+        data: {"schema_version":4,"rev":7,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
 
         :
         event: delta
@@ -1355,6 +1362,8 @@ final class SSEStreamRegressionTests: XCTestCase {
     func testStreamCompletesFramesOverRealURLSessionBytes() async throws {
         SSEStreamMockURLProtocol.fixture = fixtureData
         SSEStreamMockURLProtocol.served = false
+        SSEStreamMockURLProtocol.finishAfterServe = false
+        SSEStreamMockURLProtocol.requestCount = 0
         defer { SSEStreamMockURLProtocol.fixture = nil }
 
         let config = URLSessionConfiguration.ephemeral
@@ -1366,7 +1375,6 @@ final class SSEStreamRegressionTests: XCTestCase {
         let stream = Task {
             await client.stream(lastEventId: { nil }, onEvent: { box.append($0) })
         }
-        defer { stream.cancel() }
 
         // Wait for both frames (snapshot + delta) under a hard deadline.
         // Against the bytes.lines regression neither ever completes.
@@ -1376,6 +1384,12 @@ final class SSEStreamRegressionTests: XCTestCase {
         }
 
         let frames = box.frames
+        // Tear down the stream and its URLSession before asserting so the
+        // mock's in-flight work cannot outlive the test (review F5).
+        stream.cancel()
+        await stream.value
+        session.invalidateAndCancel()
+
         XCTAssertEqual(
             frames.count, 2,
             "expected the snapshot + delta frames to COMPLETE over the real byte path — got \(frames.count). "
@@ -1403,6 +1417,52 @@ final class SSEStreamRegressionTests: XCTestCase {
         // a frame of its own nor merge into either frame.
         XCTAssertEqual(frames.map(\.kind), [.snapshot, .delta],
                        "the ':' keep-alive must not frame and must not break framing")
+    }
+
+    /// Review F2: the byte loop's EOF path. A server that closes the
+    /// connection mid-frame must NOT emit the truncated frame — WHATWG
+    /// EventSource discards pending data at EOF, and `stream()` reconnects
+    /// from `Last-Event-ID` so the daemon replays whatever was lost
+    /// (emitting it would hand `decode()` half a JSON object and raise a
+    /// spurious decode-failure banner). The mock finishes the load, so
+    /// this also proves the clean-EOF → reconnect transition: a second
+    /// request follows the first.
+    func testTruncatedFrameDiscardedAtEOFAndStreamReconnects() async throws {
+        // Snapshot frame WITHOUT its closing blank line — the daemon (or
+        // an intermediary such as tailscale serve) dropped the connection
+        // mid-frame.
+        let truncated = Data("event: snapshot\nid: 7\ndata: {\"rev\":7}\n".utf8)
+        SSEStreamMockURLProtocol.fixture = truncated
+        SSEStreamMockURLProtocol.served = false
+        SSEStreamMockURLProtocol.finishAfterServe = true
+        SSEStreamMockURLProtocol.requestCount = 0
+        defer { SSEStreamMockURLProtocol.fixture = nil }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SSEStreamMockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+
+        let box = StreamFrameBox()
+        let stream = Task {
+            await client.stream(lastEventId: { nil }, onEvent: { box.append($0) })
+        }
+
+        // Clean EOF → reconnect: wait for the SECOND request, then cancel.
+        let deadline = Date().addingTimeInterval(5)
+        while SSEStreamMockURLProtocol.requestCount < 2, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        stream.cancel()
+        await stream.value
+        session.invalidateAndCancel()
+
+        XCTAssertGreaterThanOrEqual(
+            SSEStreamMockURLProtocol.requestCount, 2,
+            "clean EOF must take the reconnect path, not end the stream")
+        XCTAssertEqual(
+            box.frames.count, 0,
+            "the truncated frame must be DISCARDED at EOF — emitting it would hand decode() half a JSON object")
     }
 }
 

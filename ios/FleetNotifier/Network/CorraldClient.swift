@@ -71,18 +71,22 @@ struct CorraldClient: Sendable {
         }
     }
 
-    /// Byte-consumption seam (issue #90): the loop `stream()` runs, kept
-    /// callable so the regression test can drive it through the REAL
-    /// `URLSession` byte path (a `URLProtocol` mock serves the payload) —
-    /// a hand-built-string `parser.feed()` test is vacuous against this
-    /// defect.
+    /// Byte-consumption path for `stream()`, factored out of the reconnect
+    /// loop for clarity. The regression test drives `stream()` (never
+    /// `parser.feed()` with hand-built strings), so the REAL `URLSession`
+    /// byte path — including this loop — is what the suite exercises.
     ///
     /// SSE framing is byte-defined: lines end at `0x0a` and frames close
     /// on an EMPTY line — the terminator the parser needs. `AsyncLineSequence`
     /// strips terminators AND drops blank lines, so it can never deliver a
     /// frame boundary; instead consume raw bytes and hand the parser each
-    /// line INCLUDING its terminator. A trailing partial line is flushed so
-    /// a server that closes without a final newline still yields its frame.
+    /// line INCLUDING its terminator.
+    ///
+    /// A partial final line at EOF is DISCARDED (WHATWG EventSource
+    /// semantics): `SSEParser.feed` only completes frames at a newline
+    /// boundary, so emitting it would hand `decode()` half a JSON object
+    /// and raise a spurious decode-failure banner. `stream()` reconnects
+    /// from `Last-Event-ID`, so the daemon replays whatever was lost.
     static func consumeLines(
         from bytes: URLSession.AsyncBytes,
         parser: inout SSEParser,
@@ -96,11 +100,6 @@ struct CorraldClient: Sendable {
             let frames = parser.feed(String(decoding: chunk, as: UTF8.self))
             chunk.removeAll(keepingCapacity: true)
             for frame in frames {
-                onEvent(frame)
-            }
-        }
-        if !chunk.isEmpty {
-            for frame in parser.feed(String(decoding: chunk, as: UTF8.self)) {
                 onEvent(frame)
             }
         }

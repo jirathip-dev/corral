@@ -61,6 +61,10 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
               the store-apply choke point, persisted as rotating JSONL;
               `?since=<epoch-millis>` and `?limit=` — 1000 default,
               5000 cap)
+        GET /transcript (#63: on-demand session-transcript pages,
+              newest first, redacted at the module boundary; the ONLY
+              grant-gated GET — requires the `read_tail` grant via a
+              signed envelope in the `x-corral-drive` header)
 ```
 
 Every adapter normalizes into the canonical `Agent` record
@@ -232,7 +236,12 @@ src/approve/         claim-based approvals (prompt_hash checks)
 src/auth/            host identity, device registry, authorizer, step-up,
                      hash-chained audit, HTTP routes
 src/api/             router, /snapshot /events /history /cost /healthz,
-                     POST /drive, POST /device-token
+                     GET /transcript (read_tail-gated), POST /drive,
+                     POST /device-token
+src/transcript/      D35: per-store paged transcript readers (opencode
+                     sqlite3-CLI, claude/codex backwards JSONL) +
+                     agent→session binding by worktree; redaction inside
+                     the module boundary
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
 src/cost/            per-provider spend readers (opencode.db, claude JSONL,
                      codex rollouts), rolling windows, pricing, caps

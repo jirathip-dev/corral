@@ -185,6 +185,11 @@ before expiry.
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
   `attach`. Default deny; no auto-approve.
+- `GET /transcript` is NOT part of the credential-free read plane: it
+  requires the `read_tail` grant (transcripts are a superset of tail
+  content — same trust decision, same device registry). NOTE: this
+  widens what `read_tail` reaches — see "Grant scope" under "Transcript
+  read-path" below and re-review existing grants.
 - Grant/replace the whole set (verified):
 
 ```sh
@@ -245,9 +250,10 @@ curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
 # {"entries":[...],"head":"<sha256>","valid":true,...}
 ```
 
-- Grows **only on drive writes**: executions and typed refusals at
-  dispatch. GETs, authentication failures, and step-up failures are never
-  appended.
+- Grows on **drive writes** (executions and typed refusals at dispatch)
+  and on **served `/transcript` pages** (#63 — one entry per page,
+  capability `read_tail:transcript`, the agent as target). Authentication failures
+  and step-up failures are never appended.
 - `valid` is the live chain-integrity verdict: any tampered or inserted
   line breaks the chain. Known limit: a wholesale truncation of trailing
   entries is not detectable without an external anchor (a W4 follow-up).
@@ -278,6 +284,114 @@ corrald digest                          # last 24h
 corrald digest --since 1784210400000    # explicit window
 corrald digest --config-dir <path>      # non-default config dir
 ```
+
+## Transcript read-path (#63)
+
+`GET /transcript?agent=<id>` returns one newest-first page of the
+agent's session transcript, redacted (D-083) before it leaves the
+transcript module. It is an on-demand VIEW fetch — never pushed (D5
+stays intact), and the phone client does not call it in this phase (D16:
+phone stays bounded-tail only).
+
+Auth is the drive plane's `read_tail` trust decision on a GET: put the
+exact `SignedDrive` JSON you would POST to `/drive` (capability
+`read_tail`, `target` = the agent id) into the `x-corral-drive` header.
+Signature, key registry, expiry/revocation, and the grant check are
+identical to `/drive`; there is no step-up (reads are never destructive)
+and no replay-table claim — **but `/transcript` is replay-BOUNDED, not
+replay-table'd**. The envelope payload is transcript-scoped: the client
+signs `{"ts": <unix seconds>, "cursor": <opaque|absent>, "limit":
+<1..=50|absent>}` inside the envelope, and the signature covers the
+whole envelope (payload included) — so **one signature buys exactly ONE
+page**, and only while `|now - ts| <= 60s` (the same freshness rule as
+`/step-up` and `/device-token`). There is no URL knob: `cursor`/`limit`
+query parameters are refused outright, so a captured header replays at
+most the one page it was signed for, for 60 seconds — never a different
+page, and never more than 60 seconds of drift on the newest page (a
+cursor-less capture replays whatever is newest at service time). Paging
+means re-signing per page with the new cursor. A suspected header leak
+is still a key-revocation event (revocation is checked on every call),
+and every served page leaves its own audit entry (below).
+
+```sh
+curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:ses_abc123' \
+  -H "x-corral-drive: $SIGNED_ENVELOPE_JSON"
+# SIGNED_ENVELOPE_JSON is a SignedDrive whose envelope payload is
+# {"ts": <unix seconds>, "cursor": <absent for page 1>, "limit": 20}
+# → {"agent":"...","store":"opencode","session":"opencode:ses_abc123",
+#    "bind":"session_id","stores_unavailable":[],
+#    "entries":[{"role":"assistant","text":"...","ts":1723...}],
+#    "next_cursor":"oc.1723...9.6d73675f3031.9f2ab4c1d0e37a55","skipped":0}
+```
+
+Follow `next_cursor` (opaque string) for older pages — re-signing the
+header with the new cursor; `null` means the store is exhausted. The
+cursor is fingerprinted to the bound session and can only ever read the
+file it was issued for; the bind is memoized for the life of the page
+sequence (fingerprint-verified), so a newer session appearing
+mid-sequence does not invalidate the cursor — it keeps paging the file
+it was issued for, and the next cursor-less request picks the new
+newest session. The memo is a bounded per-daemon cache (LRU, 64
+entries), not a promise: if the entry is evicted or the daemon
+restarts, a mid-sequence cursor falls through to a fresh bind and
+becomes `bad_cursor` — page 1 again re-establishes the sequence.
+`limit` is signed into the header and clamped to 1..=50 regardless of
+what is asked (asking for 500 yields 50). `skipped` counts torn
+rows/lines in the page's range; `session` names the bound session so a
+client can pin it; `bind` says which rung answered (`session_id` =
+exact, `worktree` = best-effort — same-tool agents sharing a worktree
+without session-id hints share that rung); `stores_unavailable` lists
+store kinds that errored during binding (a complete-looking page from
+one store does not prove the others were consultable).
+
+Errors are typed (`{"kind": ..., "message": ...}`): auth —
+`missing_signature` 400, `bad_signature` 401, `unknown_key` 404,
+`expired`/`revoked`/`not_granted` 403, and `bad_request` 400 for a
+malformed header (including a missing or stale `ts` — |now - ts| > 60s
+— or a `cursor`/`limit` query string), a capability other than
+`read_tail`, or an envelope target that does not match `?agent`; read
+path — `bad_cursor` 400, `unknown_agent`/`no_session` 404,
+`ambiguous_session` 409 **with the candidate list** (the daemon never
+guesses between sessions that tie on recency),
+`store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
+`store_shape` 502. Concurrency: `/transcript` serves are capped at 8
+per daemon; an over-cap request queues briefly (2s) then gets `busy`
+503 — the ONE error a client should retry on.
+
+Every SERVED page appends an audit entry (capability
+`read_tail:transcript` — distinguishable from a bounded `/drive`
+`read_tail` — the agent as target) to the same hash-chained log as drive
+writes — check
+`GET /audit` for the read trail. Auth failures are never audited.
+
+### Grant scope — recorded decision (#63)
+
+Gating `/transcript` on `read_tail` follows the issue spec ("transcripts
+are a superset of tail content — the same trust decision") and it
+**widens what an existing grant reaches**: `read_tail` was specified as
+a 200-line / 32 KiB bounded tail of one pane (D5); with `/transcript`
+the same grant pages the FULL session history of any agent on the host
+(grants are per-device, not per-agent). **Operators: re-review existing
+`read_tail` grants before deploying this** — every device holding the
+grant gains history access with no re-consent. The reviewed alternative
+— a separate `read_transcript` capability, which would leave existing
+grants untouched — is recorded in the #63 review file for the merge
+decision.
+
+Session binding prefers the EXACT session id carried in the herdr agent
+id (`herdr:<session-id>` — claude jsonl filename, opencode
+`session.id`, codex rollout filename); only pane-derived ids fall back
+to worktree matching (`workspace.worktree_path` against opencode
+`session.directory`, the Claude Code project-dir encoding — with the
+recorded in-file cwd verified, since the encoding is lossy — and codex
+rollouts' first-line `payload.cwd`), restricted to the agent's own
+tool's store when the tool is recognized (`opencode`/`claude`/`codex` —
+an agent reporting any other tool string consults all three stores),
+most recent match wins. Path comparisons use raw-then-
+canonical matching (symlinked `$HOME` safe). Store locations honour the
+same env overrides as the cost meter (`$CORRAL_OPENCODE_DB`,
+`$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
+(opencode via `sqlite3 -readonly`).
 
 ## Cost / usage meter
 

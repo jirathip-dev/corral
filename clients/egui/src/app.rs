@@ -437,21 +437,23 @@ impl CorralApp {
             pane.error = None;
             pane.generation
         };
-        let header = crate::drive::transcript_auth_header(&reg.key_id, &signing, &request.agent_id);
+        // Post-#88: the page parameters ride the SIGNED header payload,
+        // so each page is signed with its own cursor/ts/limit — paging
+        // re-signs per page with the new cursor.
+        let header = crate::drive::transcript_auth_header(
+            &reg.key_id,
+            &signing,
+            &request.agent_id,
+            request.cursor.as_deref(),
+            crate::transcript::PAGE_LIMIT,
+        );
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_transcript.clone();
         let agent_id = request.agent_id.clone();
         self.rt.spawn(async move {
-            let outcome = crate::protocol::fetch_transcript(
-                &client,
-                &base_url,
-                &header,
-                &agent_id,
-                request.cursor.as_deref(),
-                crate::transcript::PAGE_LIMIT,
-            )
-            .await;
+            let outcome =
+                crate::protocol::fetch_transcript(&client, &base_url, &header, &agent_id).await;
             let _ = tx.send(crate::transcript::TranscriptMsg {
                 agent_id,
                 generation,

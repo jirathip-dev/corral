@@ -281,7 +281,13 @@ fn my_transcript_header_passes_the_daemon_authorizer() {
         .set_grants(&rec.key_id, vec![corrald::drive::Capability::ReadTail])
         .expect("grant read_tail");
 
-    let header = corrald_ui::drive::transcript_auth_header(&rec.key_id, &signing, "herdr:agent-a");
+    let header = corrald_ui::drive::transcript_auth_header(
+        &rec.key_id,
+        &signing,
+        "herdr:agent-a",
+        None,
+        corrald_ui::transcript::PAGE_LIMIT,
+    );
     // The daemon parses the header value with serde into ITS SignedDrive
     // (src/api/transcript.rs authorize()) — same parse here.
     let daemon_signed: corrald::drive::SignedDrive =
@@ -298,6 +304,25 @@ fn my_transcript_header_passes_the_daemon_authorizer() {
             .starts_with("corrald-ui:transcript:"),
         "audit-traceable request id"
     );
+    // Post-#88: the page parameters live in the SIGNED payload — ts is
+    // fresh unix seconds, limit is the pane's page size, and a
+    // cursor-less newest-page request omits the field entirely (the
+    // daemon is deny_unknown_fields with skip_serializing_if).
+    let payload = daemon_signed
+        .envelope
+        .payload
+        .as_object()
+        .expect("payload object");
+    assert!(
+        payload["ts"].as_u64().expect("ts is unix seconds") > 0,
+        "fresh ts per page"
+    );
+    assert_eq!(
+        payload["limit"],
+        corrald_ui::transcript::PAGE_LIMIT,
+        "client page size rides the signed payload"
+    );
+    assert!(payload.get("cursor").is_none(), "newest page omits cursor");
     authorizer
         .verify(&daemon_signed)
         .expect("signature + grant verify against the real authorizer");

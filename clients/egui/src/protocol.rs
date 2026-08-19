@@ -240,8 +240,11 @@ pub async fn fetch_audit(
 }
 
 /// #64: one `GET /transcript` page. Auth rides the `x-corral-drive`
-/// header (see [`crate::drive::transcript_auth_header`]). Non-200 bodies
-/// are the endpoint's typed `{kind, message}` contract — parsed into
+/// header (see [`crate::drive::transcript_auth_header`]) — post-#88 the
+/// page parameters (`cursor`/`limit`) are SIGNED into that header's
+/// payload, so the URL carries only `?agent=` and each page must be
+/// re-signed with the new cursor. Non-200 bodies are the endpoint's
+/// typed `{kind, message}` contract — parsed into
 /// [`TranscriptFailure`](crate::transcript::TranscriptFailure) so the
 /// pane can branch on `kind` (stale cursor, ambiguity, grant refusals).
 pub async fn fetch_transcript(
@@ -249,18 +252,12 @@ pub async fn fetch_transcript(
     base_url: &str,
     auth_header: &str,
     agent_id: &str,
-    cursor: Option<&str>,
-    limit: usize,
 ) -> Result<crate::transcript::TranscriptPage, crate::transcript::TranscriptFailure> {
-    let mut url = format!(
-        "{}/transcript?agent={}&limit={limit}",
+    let url = format!(
+        "{}/transcript?agent={}",
         base_url.trim_end_matches('/'),
         urlencode(agent_id),
     );
-    if let Some(cursor) = cursor {
-        url.push_str("&cursor=");
-        url.push_str(&urlencode(cursor));
-    }
     let transport = |message: String| crate::transcript::TranscriptFailure {
         kind: "transport".to_string(),
         message,

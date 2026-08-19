@@ -237,6 +237,25 @@ curl -s -X POST http://127.0.0.1:8474/grants \
   -d '{"action":"revoke","key_id":"dev_...","revoked":true}'
 ```
 
+- Signed self-service grants read (#101): a device can refresh its OWN
+  grants via `POST /grants-read` — it signs `{key_id, request, ts}` with
+  its existing Ed25519 key (freshness `|now - ts| < 60s`); no admin token,
+  no new key material. The response is the key's CURRENT grants + expiry,
+  so a promotion reaches the phone after relaunch/foreground without a
+  device reset. The iOS app calls this on cold launch and on every
+  foreground (`scenePhase == .active`); a failed refresh keeps the cached
+  grants. Verified:
+
+```sh
+# KEY_B64 = base64 of the device's Ed25519 public key (see "Registering a
+# device" below); SIGNATURE = the device's signature over the exact JSON
+# {"key_id":"dev_...","request":"grants-read","ts":<unix-now>}
+curl -s -X POST http://127.0.0.1:8474/grants-read \
+  -H 'Content-Type: application/json' \
+  -d '{"key_id":"dev_...","signature":"<sig-b64>","request":{"key_id":"dev_...","request":"grants-read","ts":1780000000}}'
+# → {"ok":true,"key_id":"dev_...","grants":["read_tail","prompt","interrupt","approve"],"expiry_ts":...,"revoked":false}
+```
+
 Revocation takes effect on the next write — every drive is verified per
 request, there are no long-lived sessions to cut short. A revoked/expired
 key cannot mint step-up tokens either.
@@ -536,6 +555,7 @@ reserved fleet name). Full schema and the per-command exit-code table:
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
 | Tail 200 / prompt / approve buttons missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve`. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| Tail 200 / prompt / approve buttons still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the controls still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
 | `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |

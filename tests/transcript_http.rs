@@ -240,6 +240,7 @@ fn harness_with_limiter(limiter: corrald::api::transcript::TranscriptLimiter) ->
         replay: Arc::new(ReplayTable::default()),
         transcript_roots: roots,
         transcript_limiter: limiter.clone(),
+        role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
     });
     Harness {
         store,

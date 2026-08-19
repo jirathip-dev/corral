@@ -40,7 +40,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -293,6 +293,11 @@ fn capped_seam_cut(raw: &str) -> usize {
     {
         cut -= raw[..cut].chars().next_back().unwrap().len_utf8();
     }
+    // Deliberate availability-over-strictness trade (round-2 N2): a
+    // budget window with no non-alnum char is one unbroken SINGLE-CLASS
+    // run — rule 4 declines single-class runs at any length, so keeping
+    // the whole run (a "severed" one by construction) cannot leak a
+    // rule-4 secret, and dropping it would hand the user an empty entry.
     if cut == 0 { budget_boundary } else { cut }
 }
 
@@ -366,7 +371,12 @@ impl std::error::Error for TranscriptError {
 /// [`MAX_PAGE_TEXT_BYTES`] budget applies on top, truncating the page
 /// early (with a cursor that resumes exactly where it stopped) rather
 /// than dropping entries silently.
+///
+/// `memo` is the caller-owned role-column probe cache (round-2 N1:
+/// per-`AppState` in production, injected in tests — never a
+/// process-global; only the opencode arm uses it).
 pub async fn read_page(
+    memo: &RoleProbeMemo,
     store: &StoreRef,
     cursor: Option<&Cursor>,
     limit: usize,
@@ -382,7 +392,7 @@ pub async fn read_page(
                 Some(Cursor::Opencode { time_created, id }) => Some((*time_created, id.as_str())),
                 Some(Cursor::Bytes { .. }) => return Err(TranscriptError::BadCursor),
             };
-            read_opencode_page(db_path, session_id, cur, limit).await
+            read_opencode_page(memo, db_path, session_id, cur, limit).await
         }
         StoreRef::Claude { jsonl_path } => read_jsonl_page(jsonl_path, cursor, limit).await,
         StoreRef::Codex { rollout_path } => read_jsonl_page(rollout_path, cursor, limit).await,
@@ -477,14 +487,25 @@ fn opencode_page_sql(
 /// store's schema cannot change mid-walk, so one probe per store is
 /// enough. Bounded to a handful of entries (a live host holds a handful
 /// of stores); the oldest entry is evicted past the cap.
+///
+/// Per-INSTANCE, never a process-global (round-2 N1): the memo is owned
+/// by the `AppState` a serve runs under (matching `transcript_limiter`),
+/// or constructed by a caller/test with an injected probe — a
+/// multi-root daemon must not share probe state, and a cold memo must
+/// not serialize every store's first page through one lock.
 const ROLE_PROBE_MEMO_CAP: usize = 8;
 
 /// The memoized probe's executable shape: a boxed async closure.
 type RoleProbe = Arc<dyn Fn(PathBuf) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
-struct RoleProbeMemo {
+/// The role-column probe memo. [`RoleProbeMemo::new`] accepts an
+/// injected probe (tests count it; production uses [`probe_role_column`]
+/// via [`Default`]); [`RoleProbeMemo::get`] never holds its lock across
+/// the probe itself (N1).
+#[derive(Clone)]
+pub struct RoleProbeMemo {
     probe: RoleProbe,
-    inner: tokio::sync::Mutex<MemoState>,
+    inner: Arc<tokio::sync::Mutex<MemoState>>,
 }
 
 #[derive(Default)]
@@ -494,27 +515,32 @@ struct MemoState {
 }
 
 impl RoleProbeMemo {
-    fn new<P, F>(probe: P) -> Self
+    pub fn new<P, F>(probe: P) -> Self
     where
         P: Fn(PathBuf) -> F + Send + Sync + 'static,
         F: Future<Output = bool> + Send + 'static,
     {
         Self {
             probe: Arc::new(move |p| Box::pin(probe(p))),
-            inner: tokio::sync::Mutex::new(MemoState::default()),
+            inner: Arc::new(tokio::sync::Mutex::new(MemoState::default())),
         }
     }
 
     /// The cached probe result for `db_path`'s schema, probing once on a
-    /// miss. The lock is held across the probe so concurrent first pages
-    /// of the same store share one child process instead of a stampede.
+    /// miss. The lock NEVER spans the probe (N1): the probe is a sqlite3
+    /// child process (up to the OPENCODE_QUERY_TIMEOUT ceiling), so
+    /// holding the lock across it would serialize every store's cold
+    /// path through this memo — the regression the reviewer flagged.
+    /// Concurrent cold probes for the same store may race, but the
+    /// cached value is a schema bool — idempotent, and strictly no worse
+    /// than origin/main, which probed every page concurrently.
     async fn get(&self, db_path: &Path) -> bool {
         let key = canonical_key(db_path).await;
-        let mut state = self.inner.lock().await;
-        if let Some(v) = state.by_path.get(&key) {
+        if let Some(v) = self.inner.lock().await.by_path.get(&key) {
             return *v;
         }
         let v = (self.probe)(key.clone()).await;
+        let mut state = self.inner.lock().await;
         if state.by_path.len() >= ROLE_PROBE_MEMO_CAP
             && let Some(oldest) = state.order.pop_front()
         {
@@ -526,6 +552,12 @@ impl RoleProbeMemo {
     }
 }
 
+impl Default for RoleProbeMemo {
+    fn default() -> Self {
+        Self::new(probe_role_column)
+    }
+}
+
 /// The probe key: the CANONICAL path when it resolves (two spellings of
 /// one store share a memo entry), the raw spelling otherwise (the file
 /// was existence-checked before the probe, so resolution failure is
@@ -534,12 +566,6 @@ async fn canonical_key(db_path: &Path) -> PathBuf {
     tokio::fs::canonicalize(db_path)
         .await
         .unwrap_or_else(|_| db_path.to_path_buf())
-}
-
-static ROLE_PROBE_MEMO: OnceLock<RoleProbeMemo> = OnceLock::new();
-
-fn role_probe_memo() -> &'static RoleProbeMemo {
-    ROLE_PROBE_MEMO.get_or_init(|| RoleProbeMemo::new(|p: PathBuf| probe_role_column(p)))
 }
 
 /// L5/S3: probe whether `message.role` exists so the page SQL selects it
@@ -574,6 +600,7 @@ async fn probe_role_column(db_path: PathBuf) -> bool {
 }
 
 async fn read_opencode_page(
+    memo: &RoleProbeMemo,
     db_path: &Path,
     session_id: &str,
     cursor: Option<(i64, &str)>,
@@ -587,12 +614,14 @@ async fn read_opencode_page(
     }
     // S3/L4: probe whether `message.role` exists — memoized per store so
     // the probe (a sqlite3 child process, ~43% of a paged walk's spawn
-    // cost) runs once instead of once per page. When the column exists
-    // the page SQL selects it and role resolution prefers it over the
-    // data-JSON fallback; when it doesn't, the column never appears in
-    // the SQL. Both schema shapes are real (the cost fixtures lack the
-    // column); neither is assumed any more.
-    let has_role_column = role_probe_memo().get(db_path).await;
+    // cost) runs once instead of once per page. The memo is the
+    // caller-owned instance threaded through `read_page` (N1: never a
+    // process-global). When the column exists the page SQL selects it
+    // and role resolution prefers it over the data-JSON fallback; when
+    // it doesn't, the column never appears in the SQL. Both schema
+    // shapes are real (the cost fixtures lack the column); neither is
+    // assumed any more.
+    let has_role_column = memo.get(db_path).await;
     let sql = opencode_page_sql(session_id, cursor, limit, has_role_column);
     let fut = tokio::process::Command::new("sqlite3")
         .args(opencode_sqlite_args(db_path, &sql))
@@ -1016,15 +1045,22 @@ mod tests {
         f
     }
 
+    /// Test-side read: the production seam (`read_page` with an explicit
+    /// memo) using a fresh default memo per call — tests never share
+    /// probe state, and only the memo tests inject a counted probe.
+    async fn read(store: &StoreRef, cursor: Option<&Cursor>, limit: usize) -> TranscriptPage {
+        read_page(&RoleProbeMemo::default(), store, cursor, limit)
+            .await
+            .expect("page")
+    }
+
     async fn walk(store: &StoreRef, limit: usize) -> (Vec<Entry>, usize, usize) {
         let mut all = Vec::new();
         let mut cursor: Option<Cursor> = None;
         let mut pages = 0;
         let mut skipped = 0;
         loop {
-            let page = read_page(store, cursor.as_ref(), limit)
-                .await
-                .expect("page");
+            let page = read(store, cursor.as_ref(), limit).await;
             pages += 1;
             skipped += page.skipped;
             all.extend(page.entries);
@@ -1078,7 +1114,7 @@ mod tests {
         let store = StoreRef::Claude {
             jsonl_path: f.path().to_path_buf(),
         };
-        let first = read_page(&store, None, 50).await.expect("page");
+        let first = read(&store, None, 50).await;
         assert!(
             first.entries.len() < 9,
             "budget must truncate: got {}",
@@ -1108,7 +1144,7 @@ mod tests {
                 rollout_path: codex.path().to_path_buf(),
             },
         ] {
-            let page = read_page(&store, None, 10).await.expect("page");
+            let page = read(&store, None, 10).await;
             assert_eq!(page.entries.len(), 1);
             let text = &page.entries[0].text;
             assert!(
@@ -1159,7 +1195,7 @@ mod tests {
         let store = StoreRef::Claude {
             jsonl_path: f.path().to_path_buf(),
         };
-        let page = read_page(&store, None, 50).await.expect("page");
+        let page = read(&store, None, 50).await;
         assert_eq!(page.entries.len(), 50);
         let Some(Cursor::Bytes { offset }) = page.next_cursor else {
             panic!("large file must leave a cursor");
@@ -1267,14 +1303,12 @@ mod tests {
         // newest message (m2t) is reasoning-only: it is passed over WITHOUT
         // an entry and WITHOUT a skipped count — the page is empty but its
         // cursor advances (no stall).
-        let p0 = read_page(&store, None, 1).await.expect("page 0");
+        let p0 = read(&store, None, 1).await;
         assert!(p0.entries.is_empty(), "tool-only message yields no entry");
         assert_eq!(p0.skipped, 0, "tool-only message is not torn data");
         let p0_cursor = p0.next_cursor.expect("cursor advances past it");
 
-        let p1 = read_page(&store, Some(&p0_cursor), 1)
-            .await
-            .expect("page 1");
+        let p1 = read(&store, Some(&p0_cursor), 1).await;
         assert_eq!(p1.entries.len(), 1);
         assert_eq!(p1.entries[0].role, "assistant");
         // F2: ALL text parts of the multi-part message arrive, in p.id
@@ -1298,9 +1332,7 @@ mod tests {
             "non-text parts excluded: {text}"
         );
 
-        let p2 = read_page(&store, p1.next_cursor.as_ref(), 1)
-            .await
-            .expect("page 2");
+        let p2 = read(&store, p1.next_cursor.as_ref(), 1).await;
         assert_eq!(p2.entries.len(), 1);
         assert_eq!(p2.entries[0].text, "first question");
         assert_eq!(
@@ -1308,9 +1340,8 @@ mod tests {
             "other sessions never leak into the page"
         );
         assert!(
-            read_page(&store, p2.next_cursor.as_ref(), 1)
+            read(&store, p2.next_cursor.as_ref(), 1)
                 .await
-                .expect("page 3")
                 .entries
                 .is_empty(),
             "walk exhausts cleanly"
@@ -1347,7 +1378,7 @@ mod tests {
             db_path: db_a,
             session_id: "ses1".to_string(),
         };
-        let page_a = read_page(&store_a, None, 10).await.expect("page a");
+        let page_a = read(&store_a, None, 10).await;
         assert_eq!(page_a.entries.len(), 1);
         assert_eq!(
             page_a.entries[0].role, "assistant",
@@ -1373,7 +1404,7 @@ mod tests {
             db_path: db_b,
             session_id: "ses1".to_string(),
         };
-        let page_b = read_page(&store_b, None, 10).await.expect("page b");
+        let page_b = read(&store_b, None, 10).await;
         assert_eq!(page_b.entries.len(), 1);
         assert_eq!(
             page_b.entries[0].role, "user",
@@ -1412,7 +1443,7 @@ mod tests {
             db_path: db,
             session_id: "ses1".to_string(),
         };
-        let page = read_page(&store, None, 10).await.expect("page");
+        let page = read(&store, None, 10).await;
         assert_eq!(page.entries.len(), 1);
         let text = &page.entries[0].text;
         assert!(
@@ -1433,8 +1464,9 @@ mod tests {
     /// L4: the role-column probe is memoized per store — a paged walk
     /// probes once, not once per page, and the memo stays bounded (the
     /// oldest entry is evicted past the cap, so an evicted store
-    /// re-probes). The probe is counted directly — an honest seam: the
-    /// production global memo wraps this same struct.
+    /// re-probes). The probe is counted directly via the injected probe
+    /// seam (`RoleProbeMemo::new`); [`read_opencode_page_uses_the_memoized_role_probe`]
+    /// pins the same seam through the production call path.
     #[tokio::test]
     async fn role_probe_memo_probes_once_per_store_and_stays_bounded() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1479,6 +1511,63 @@ mod tests {
             calls.load(Ordering::SeqCst),
             ROLE_PROBE_MEMO_CAP + 4,
             "re-probed entry is cached again"
+        );
+    }
+
+    /// N3.1: `read_opencode_page` USES the memo through the production
+    /// seam — a counted probe wired into `read_page` must run once across
+    /// a two-page walk of one store. (Reverting the call site to an
+    /// inline per-page probe would make this fail.)
+    #[tokio::test]
+    async fn read_opencode_page_uses_the_memoized_role_probe() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        let seed = r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{"role":"user"}');
+            INSERT INTO part VALUES ('p1','m1','text','{"text":"older"}');
+            INSERT INTO message VALUES ('m2','ses1',200,'{"role":"assistant"}');
+            INSERT INTO part VALUES ('p2','m2','text','{"text":"newer"}');
+        "#;
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(seed)
+            .status()
+            .expect("seed");
+        assert!(status.success(), "fixture seeded");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_probe = calls.clone();
+        let memo = RoleProbeMemo::new(move |_p: PathBuf| {
+            let c = calls_for_probe.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                // The fixture's `message` has no role column — the
+                // probe's VALUE is irrelevant to the count assertion,
+                // only that it is consulted through the memo.
+                false
+            }
+        });
+        let store = StoreRef::Opencode {
+            db_path: db,
+            session_id: "ses1".to_string(),
+        };
+        let p1 = read_page(&memo, &store, None, 1).await.expect("page 1");
+        assert_eq!(p1.entries.len(), 1);
+        let p2 = read_page(&memo, &store, p1.next_cursor.as_ref(), 1)
+            .await
+            .expect("page 2");
+        assert_eq!(p2.entries.len(), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "two-page walk probes exactly once through the production seam"
         );
     }
 
@@ -1541,7 +1630,7 @@ mod tests {
         let store = StoreRef::Claude {
             jsonl_path: f.path().to_path_buf(),
         };
-        let page = read_page(&store, None, 10).await.expect("page");
+        let page = read(&store, None, 10).await;
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].role, "unknown", "unknown roles collapse");
     }
@@ -1566,7 +1655,7 @@ mod tests {
         let store = StoreRef::Claude {
             jsonl_path: f.path().to_path_buf(),
         };
-        let page = read_page(&store, None, 10).await.expect("page");
+        let page = read(&store, None, 10).await;
         assert_eq!(page.entries.len(), 1, "the oversized entry fills the page");
         let text = &page.entries[0].text;
         assert!(
@@ -1616,7 +1705,7 @@ mod tests {
             db_path: db,
             session_id: "ses1".to_string(),
         };
-        let page = read_page(&store, None, 10).await.expect("page");
+        let page = read(&store, None, 10).await;
         assert_eq!(page.entries.len(), 1);
         let text = &page.entries[0].text;
         assert!(
@@ -1677,7 +1766,7 @@ mod tests {
             db_path: db,
             session_id: "ses1".to_string(),
         };
-        let page = read_page(&store, None, 10).await.expect("page");
+        let page = read(&store, None, 10).await;
         assert_eq!(page.entries.len(), 1);
         let text = &page.entries[0].text;
         for n in (8..=22).rev() {
@@ -1688,6 +1777,64 @@ mod tests {
         }
         assert!(text.ends_with(TRUNCATED_MARKER), "truncation marked");
         assert!(text.starts_with("wordy "), "trimmed content survives");
+    }
+
+    /// N3.2: the same seam guarantee in a WHITESPACE-FREE context — the
+    /// actual novelty of `capped_seam_cut`. An unbroken alnum filler
+    /// (no boundary of any kind) with a rule-4-shaped secret straddling
+    /// the cap must not leak a cleartext prefix: the whole run is
+    /// redacted, marker appended, content survives.
+    #[tokio::test]
+    async fn sql_capped_secret_in_an_unbroken_alnum_run_does_not_leak_a_prefix() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        let secret = "Ab1".repeat(14); // rule-4 shape, 42 alnum chars
+        // Unbroken lowercase filler sized so the substr cap cuts 22
+        // chars INTO the secret — the whole window is one alnum run.
+        let filler_len = MAX_PAGE_TEXT_BYTES + 1 - 22;
+        let mut body = "a".repeat(filler_len);
+        body.push_str(&secret);
+        body.push_str(" trailing tail beyond the cap");
+        let seed = format!(
+            r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{{"role":"assistant"}}');
+            INSERT INTO part VALUES ('p1','m1','text','{{"text":"{body}"}}');
+        "#
+        );
+        let script = dir.path().join("seed.sql");
+        std::fs::write(&script, &seed).expect("write seed");
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(format!(".read {}", script.display()))
+            .status()
+            .expect("seed");
+        assert!(status.success());
+
+        let store = StoreRef::Opencode {
+            db_path: db,
+            session_id: "ses1".to_string(),
+        };
+        let page = read(&store, None, 10).await;
+        assert_eq!(page.entries.len(), 1);
+        let text = &page.entries[0].text;
+        for n in (8..=22).rev() {
+            assert!(
+                !text.contains(&secret[..n]),
+                "a {n}-char cleartext prefix of the severed secret leaked"
+            );
+        }
+        assert!(text.contains("[REDACTED]"), "the run was redacted: {text}");
+        assert!(text.ends_with(TRUNCATED_MARKER), "truncation marked");
+        assert!(
+            text.starts_with("[REDACTED]"),
+            "content survives as redacted text"
+        );
     }
 
     /// Fresh-review R5: against an INDEXED store (the shape a sane live

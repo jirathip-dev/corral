@@ -263,6 +263,7 @@ fn harness() -> Harness {
         replay: Arc::new(ReplayTable::default()),
         transcript_roots: corrald::transcript::bind::TranscriptRoots::hermetic(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
+        role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
     });
     Harness {
         store,

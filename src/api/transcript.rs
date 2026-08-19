@@ -616,9 +616,14 @@ async fn serve(
         .transpose()
         .map_err(|error| TranscriptApiError::Read { error })?;
 
-    let page = read_page(&outcome.store, cursor.as_ref(), limit)
-        .await
-        .map_err(|error| TranscriptApiError::Read { error })?;
+    let page = read_page(
+        &state.role_probe_memo,
+        &outcome.store,
+        cursor.as_ref(),
+        limit,
+    )
+    .await
+    .map_err(|error| TranscriptApiError::Read { error })?;
 
     // Review F3: the deepest read surface in the product must leave a
     // trace. One entry per SERVED page, same shape as drive's read_tail

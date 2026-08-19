@@ -88,6 +88,14 @@ pub struct AppState {
     /// [`TranscriptLimiter::new`] makes the cap injectable (the
     /// transcript tests shrink it to pin the `busy` path).
     pub transcript_limiter: crate::api::transcript::TranscriptLimiter,
+    /// #87 round-2 N1: the per-daemon role-column probe memo for the
+    /// opencode transcript reader. Per-instance like
+    /// [`Self::transcript_limiter`], never a process-global — a
+    /// multi-root daemon must not share probe state, and the memo's
+    /// lock never spans the sqlite3 probe. [`Default`] wires the real
+    /// probe; tests inject a counted one via
+    /// [`RoleProbeMemo::new`](crate::transcript::RoleProbeMemo::new).
+    pub role_probe_memo: crate::transcript::RoleProbeMemo,
 }
 
 impl Default for AppState {
@@ -115,6 +123,7 @@ impl Default for AppState {
             // paying for this whole Default (review F14).
             transcript_roots: crate::transcript::bind::TranscriptRoots::hermetic(),
             transcript_limiter: crate::api::transcript::TranscriptLimiter::default(),
+            role_probe_memo: crate::transcript::RoleProbeMemo::default(),
         }
     }
 }

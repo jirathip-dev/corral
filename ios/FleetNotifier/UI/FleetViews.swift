@@ -306,12 +306,47 @@ struct AgentRow: View {
 /// Line 2 (D26): repo·branch·worktree basename — no nesting level — with
 /// PR / dirty / one `↑a↓b` badge trailing (D29: not separate columns).
 ///
-/// Each segment is its own `Text` so truncation is per-segment: the repo
-/// and badges never truncate, the branch middle-truncates within its own
-/// bounds (the egui board's lesson: never middle-truncate the joined
-/// line, it eats the branch — the most identifying token on the row).
+/// Each segment is its own `Text` so truncation is per-segment: the
+/// identity segments (branch, worktree basename) middle-truncate within
+/// their own bounds (the egui board's lesson: never middle-truncate the
+/// joined line, it eats the branch — the most identifying token on the
+/// row), and the basename sits in the top priority tier so a long
+/// worktree name keeps head AND tail instead of collapsing to a bare
+/// `…` stub (G100).
 struct WorkspaceLine: View {
     let agent: Agent
+
+    /// Per-segment truncation + compression policy (G100). Pinned here so
+    /// the "who compresses first, and how" contract is unit-testable
+    /// without a rendering harness (see WorkspaceLineTests). Tiers:
+    /// basename + badges (2) take their ideal width first and never
+    /// compress in a realistic row; repo + branch (0) share the remainder,
+    /// with the branch — middle-truncating by design — absorbing the
+    /// compression.
+    enum SegmentPolicy {
+        case repo
+        case branch
+        case basename
+        case badge
+
+        static func priority(for segment: SegmentPolicy) -> Double {
+            switch segment {
+            case .basename, .badge: return 2
+            case .repo, .branch: return 0
+            }
+        }
+
+        /// `.middle` keeps head+tail of the identity segments. Repo and
+        /// badges keep SwiftUI's default `.tail`; the view doesn't call
+        /// this for them (no truncation mode modifier there) — the cases
+        /// are pinned for completeness.
+        static func truncationMode(for segment: SegmentPolicy) -> Text.TruncationMode {
+            switch segment {
+            case .branch, .basename: return .middle
+            case .repo, .badge: return .tail
+            }
+        }
+    }
 
     var body: some View {
         let w = agent.workspace
@@ -321,7 +356,7 @@ struct WorkspaceLine: View {
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .layoutPriority(2)
+                    .layoutPriority(SegmentPolicy.priority(for: .repo))
             }
             if let branch = w.branch {
                 if w.repo != nil {
@@ -331,7 +366,8 @@ struct WorkspaceLine: View {
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(SegmentPolicy.truncationMode(for: .branch))
+                    .layoutPriority(SegmentPolicy.priority(for: .branch))
             }
             if let basename = Self.worktreeBasename(w) {
                 Text("·").font(.caption2).foregroundStyle(.secondary)
@@ -339,7 +375,8 @@ struct WorkspaceLine: View {
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .layoutPriority(1)
+                    .truncationMode(SegmentPolicy.truncationMode(for: .basename))
+                    .layoutPriority(SegmentPolicy.priority(for: .basename))
             }
             if w.repo == nil && w.branch == nil && Self.worktreeBasename(w) == nil {
                 Text("—").font(.caption2).foregroundStyle(.secondary)
@@ -349,18 +386,18 @@ struct WorkspaceLine: View {
                 Text("#\(pr)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .layoutPriority(2)
+                    .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
             if w.dirty {
                 Text("dirty").font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
-                    .layoutPriority(2)
+                    .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
             if w.ahead > 0 || w.behind > 0 {
                 Text("↑\(w.ahead)↓\(w.behind)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-                    .layoutPriority(2)
+                    .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
         }
     }

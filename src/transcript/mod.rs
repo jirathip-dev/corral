@@ -16,8 +16,9 @@
 //!   typed error, not a panic). Honesty (fresh-review R3/R5): the schema
 //!   facts used here (`message.{id,session_id,time_created,data}`,
 //!   `part.{id,message_id,type,data}`) go BEYOND the single column the
-//!   cost reader probes, and role deliberately comes from the `data`
-//!   JSON only (no `m.role` — its existence is unprobed). Bounded row
+//!   cost reader probes; `message.role` is PROBED once per store
+//!   (memoized, L4) and selected only when present, with the `data` JSON
+//!   as the role fallback for either schema shape (S3). Bounded row
 //!   EXAMINATION additionally depends on the live store carrying indexes
 //!   on `message(session_id, time_created)` and `part(message_id)` —
 //!   without them the plan degrades to a per-page table scan; the
@@ -35,7 +36,11 @@
 
 pub mod bind;
 
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -246,6 +251,13 @@ pub struct TranscriptPage {
 /// marker rather than admitted whole.
 pub const TRUNCATED_MARKER: &str = "\n… [truncated: entry exceeded the page text budget]";
 
+/// L7: appended to an entry whose text was cut by an embedded NUL byte —
+/// SQLite's `length()`/`substr()`/`group_concat` stop at the first NUL,
+/// so the store content beyond it never reached Rust. The page SQL
+/// carries a pre-substr `has_nul` flag so the cut is detected and marked,
+/// never silently shortened.
+pub const NUL_TRUNCATED_MARKER: &str = "\n… [truncated: text contained a NUL byte]";
+
 /// Truncate `text` to `budget` bytes on a char boundary and append the
 /// marker. Only called when `text.len() > budget`.
 fn truncate_to_budget(text: &str, budget: usize) -> String {
@@ -254,6 +266,34 @@ fn truncate_to_budget(text: &str, budget: usize) -> String {
         end -= 1;
     }
     format!("{}{TRUNCATED_MARKER}", &text[..end])
+}
+
+/// S1 seam cut for a SQL-capped string: the largest prefix that never
+/// hands the redactor a severed token. Backs off from the byte budget to
+/// the nearest NON-ALNUM boundary, so every alnum run that survives in
+/// the prefix is COMPLETE within it — rule 4 judges it at full length and
+/// a secret severed at the seam (too short to match) can never leak a
+/// cleartext prefix. A budget window with no non-alnum char at all is one
+/// unbroken alnum run of ~256KiB: kept whole, because such a run is far
+/// past rule 4's 24-char threshold — the redactor either redacts it
+/// wholesale or it is not secret-shaped. (L1: the old whitespace-only
+/// fallback reduced a whitespace-free blob — minified JSON, base64 — to
+/// the marker alone, an empty entry.)
+fn capped_seam_cut(raw: &str) -> usize {
+    let mut cut = MAX_PAGE_TEXT_BYTES;
+    while cut > 0 && !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let budget_boundary = cut;
+    while cut > 0
+        && raw[..cut]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        cut -= raw[..cut].chars().next_back().unwrap().len_utf8();
+    }
+    if cut == 0 { budget_boundary } else { cut }
 }
 
 /// Wall-clock cap on one sqlite3 invocation (mirrors the cost reader's
@@ -391,16 +431,18 @@ fn opencode_page_sql(
     // R2: substr caps a message's assembled text IN SQL (budget + one
     // byte so the Rust side can detect and mark the truncation) — one
     // giant message can no longer make a page unbounded (the old ceiling
-    // was SQLITE_MAX_LENGTH, ~1GB). R3: role comes from msg_data's JSON
-    // only — `m.role` was an unprobed schema assumption (the cost
-    // reader's fixtures declare `message` without it; an absent column
-    // would hard-fail EVERY page, and the old NULL-fallback protected
-    // against the wrong failure).
+    // was SQLITE_MAX_LENGTH, ~1GB). S3: `m.role` is selected only when
+    // the (memoized, L4) probe found the column — the msg_data JSON is
+    // the role fallback for either schema shape, so an absent column
+    // cannot hard-fail a page.
     // S6: substr counts CHARS, so the intermediate can overshoot the
     // byte budget by up to 4x on multi-byte text (and group_concat still
     // materialises the full concatenation inside the sqlite3 child,
     // bounded only by SQLITE_MAX_LENGTH); the final entry is byte-capped
     // in Rust. The +1 makes the cap detectable for S1's seam handling.
+    // L7: the `has_nul` flag runs instr() on each part BEFORE substr —
+    // substr stops at the first NUL and would hide it — so an embedded
+    // NUL is detected and marked in Rust, never silently cut.
     let cap = MAX_PAGE_TEXT_BYTES + 1;
     // S3: `m.role` appears only when the probe found the column.
     let role_select = if has_role_column {
@@ -417,11 +459,118 @@ fn opencode_page_sql(
                     FROM part p \
                     WHERE p.message_id = m.id AND p.type = 'text' \
                     ORDER BY p.id) \
-                 WHERE t IS NOT NULL), 1, {cap}) AS text \
+                 WHERE t IS NOT NULL), 1, {cap}) AS text, \
+                (SELECT max(CASE WHEN json_valid(p.data) \
+                        THEN instr(json_extract(p.data, '$.text'), char(0)) > 0 \
+                        ELSE 0 END) \
+                 FROM part p \
+                 WHERE p.message_id = m.id AND p.type = 'text') AS has_nul \
          FROM message m \
          WHERE m.session_id = '{sid}' {cursor_clause} \
          ORDER BY m.time_created DESC, m.id DESC LIMIT {limit}"
     )
+}
+
+/// L4: the role-column probe (a sqlite3 child process) used to run once
+/// per page — ~43% of a paged walk's spawn cost and up to 2x the
+/// OPENCODE_QUERY_TIMEOUT ceiling. Memoized per canonical db path: a
+/// store's schema cannot change mid-walk, so one probe per store is
+/// enough. Bounded to a handful of entries (a live host holds a handful
+/// of stores); the oldest entry is evicted past the cap.
+const ROLE_PROBE_MEMO_CAP: usize = 8;
+
+/// The memoized probe's executable shape: a boxed async closure.
+type RoleProbe = Arc<dyn Fn(PathBuf) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+
+struct RoleProbeMemo {
+    probe: RoleProbe,
+    inner: tokio::sync::Mutex<MemoState>,
+}
+
+#[derive(Default)]
+struct MemoState {
+    by_path: HashMap<PathBuf, bool>,
+    order: VecDeque<PathBuf>,
+}
+
+impl RoleProbeMemo {
+    fn new<P, F>(probe: P) -> Self
+    where
+        P: Fn(PathBuf) -> F + Send + Sync + 'static,
+        F: Future<Output = bool> + Send + 'static,
+    {
+        Self {
+            probe: Arc::new(move |p| Box::pin(probe(p))),
+            inner: tokio::sync::Mutex::new(MemoState::default()),
+        }
+    }
+
+    /// The cached probe result for `db_path`'s schema, probing once on a
+    /// miss. The lock is held across the probe so concurrent first pages
+    /// of the same store share one child process instead of a stampede.
+    async fn get(&self, db_path: &Path) -> bool {
+        let key = canonical_key(db_path).await;
+        let mut state = self.inner.lock().await;
+        if let Some(v) = state.by_path.get(&key) {
+            return *v;
+        }
+        let v = (self.probe)(key.clone()).await;
+        if state.by_path.len() >= ROLE_PROBE_MEMO_CAP
+            && let Some(oldest) = state.order.pop_front()
+        {
+            state.by_path.remove(&oldest);
+        }
+        state.order.push_back(key.clone());
+        state.by_path.insert(key, v);
+        v
+    }
+}
+
+/// The probe key: the CANONICAL path when it resolves (two spellings of
+/// one store share a memo entry), the raw spelling otherwise (the file
+/// was existence-checked before the probe, so resolution failure is
+/// exotic and still leaves a correct, uncached key).
+async fn canonical_key(db_path: &Path) -> PathBuf {
+    tokio::fs::canonicalize(db_path)
+        .await
+        .unwrap_or_else(|_| db_path.to_path_buf())
+}
+
+static ROLE_PROBE_MEMO: OnceLock<RoleProbeMemo> = OnceLock::new();
+
+fn role_probe_memo() -> &'static RoleProbeMemo {
+    ROLE_PROBE_MEMO.get_or_init(|| RoleProbeMemo::new(|p: PathBuf| probe_role_column(p)))
+}
+
+/// L5/S3: probe whether `message.role` exists so the page SQL selects it
+/// only when present. This is the TABLE-VALUED FUNCTION form
+/// (`pragma_table_info('message')` inside a SELECT) — the result must
+/// flow through the same `-json` child as the page query — and it needs
+/// SQLite >= 3.16, unlike the PRAGMA STATEMENT form (`PRAGMA
+/// table_info(message);`) that `cost::opencode` uses; that floor is
+/// documented in docs/corral/DECISIONS.md. Any failure (missing binary,
+/// timeout, non-zero exit, unparseable JSON) falls back to `false`: the
+/// reader then uses the data-JSON role — the shape that works against
+/// every store.
+async fn probe_role_column(db_path: PathBuf) -> bool {
+    let probe = "SELECT count(*) AS n FROM pragma_table_info('message') WHERE name = 'role'";
+    let out = tokio::process::Command::new("sqlite3")
+        .args(opencode_sqlite_args(&db_path, probe))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(OPENCODE_QUERY_TIMEOUT, out).await {
+        Ok(Ok(o)) if o.status.success() => {
+            serde_json::from_slice::<Value>(&o.stdout)
+                .ok()
+                .and_then(|v| v.as_array().and_then(|rows| rows.first()).cloned())
+                .and_then(|row| row.get("n").and_then(Value::as_u64))
+                == Some(1)
+        }
+        _ => false,
+    }
 }
 
 async fn read_opencode_page(
@@ -436,28 +585,14 @@ async fn read_opencode_page(
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such store"),
         });
     }
-    // S3: probe whether `message.role` exists (the same PRAGMA shape
-    // cost::opencode uses for `data`) — when it does, the page SQL
-    // selects it and role resolution prefers the column over the
+    // S3/L4: probe whether `message.role` exists — memoized per store so
+    // the probe (a sqlite3 child process, ~43% of a paged walk's spawn
+    // cost) runs once instead of once per page. When the column exists
+    // the page SQL selects it and role resolution prefers it over the
     // data-JSON fallback; when it doesn't, the column never appears in
     // the SQL. Both schema shapes are real (the cost fixtures lack the
     // column); neither is assumed any more.
-    let has_role_column = {
-        let probe = "SELECT count(*) AS n FROM pragma_table_info('message') WHERE name = 'role'";
-        let out = tokio::process::Command::new("sqlite3")
-            .args(opencode_sqlite_args(db_path, probe))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        match tokio::time::timeout(OPENCODE_QUERY_TIMEOUT, out).await {
-            Ok(Ok(o)) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).contains("\"n\":1")
-            }
-            _ => false,
-        }
-    };
+    let has_role_column = role_probe_memo().get(db_path).await;
     let sql = opencode_page_sql(session_id, cursor, limit, has_role_column);
     let fut = tokio::process::Command::new("sqlite3")
         .args(opencode_sqlite_args(db_path, &sql))
@@ -544,19 +679,22 @@ fn assemble_opencode_page(
         // severed at the seam could arrive too short for rule 4's
         // length threshold and leak a cleartext prefix. A capped string
         // (exactly cap chars — SQL returns cap = budget+1 chars when the
-        // message is longer) is trimmed back to its last whitespace
-        // BEFORE redact() so the redactor never sees a severed token; a
-        // whitespace-free capped string keeps only the marker.
+        // message is longer) is trimmed back to a non-alnum boundary by
+        // capped_seam_cut BEFORE redact() so the redactor never sees a
+        // severed token — and a whitespace-free blob keeps its content,
+        // not just the marker (L1). L7: a NUL-cut message is marked
+        // explicitly (via the SQL's has_nul flag), never silently
+        // shortened.
         let raw = row.get("text").and_then(Value::as_str).unwrap_or_default();
         // Cheap pre-filter: chars <= bytes, so a string under budget+1
         // BYTES cannot be at the char cap; only then count chars.
         let sql_capped =
             raw.len() > MAX_PAGE_TEXT_BYTES && raw.chars().count() == MAX_PAGE_TEXT_BYTES + 1;
+        let has_nul = row.get("has_nul").and_then(Value::as_i64).unwrap_or(0) > 0;
         let text = if sql_capped {
-            match raw.rfind(|c: char| c.is_ascii_whitespace()) {
-                Some(cut) => format!("{}{TRUNCATED_MARKER}", redact(&raw[..cut])),
-                None => TRUNCATED_MARKER.trim_start().to_string(),
-            }
+            format!("{}{TRUNCATED_MARKER}", redact(&raw[..capped_seam_cut(raw)]))
+        } else if has_nul {
+            format!("{}{NUL_TRUNCATED_MARKER}", redact(raw))
         } else {
             redact(raw).into_owned()
         };
@@ -1066,8 +1204,16 @@ mod tests {
             "substr text cap missing: {sql}"
         );
         assert!(sql.contains("substr("), "{sql}");
-        // R3: no unprobed m.role in the SELECT.
+        // S3: no m.role when the probe said the column is absent; with
+        // the probe's OK, the column IS selected.
         assert!(!sql.contains("m.role"), "{sql}");
+        let sql_with_role = opencode_page_sql("ses", None, 5, true);
+        assert!(
+            sql_with_role.contains("m.role AS role"),
+            "probe found the column: {sql_with_role}"
+        );
+        // L7: the NUL-detection flag rides on every page query.
+        assert!(sql.contains("has_nul"), "NUL flag missing: {sql}");
     }
 
     fn have_sqlite3() -> bool {
@@ -1168,6 +1314,171 @@ mod tests {
                 .entries
                 .is_empty(),
             "walk exhausts cleanly"
+        );
+    }
+
+    /// S3: the role-column probe detects BOTH schema shapes and the
+    /// precedence is pinned — role comes from the `role` COLUMN when the
+    /// column exists (a conflicting data-JSON value proves the column
+    /// wins), and from the data JSON when it does not.
+    #[tokio::test]
+    async fn opencode_role_probe_detects_both_schema_shapes_and_precedence() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        // Shape (a): message WITHOUT a role column — the cost reader's
+        // shape — so role comes from the data JSON alone.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_a = dir.path().join("no_role_column.db");
+        let seed_a = r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{"role":"assistant"}');
+            INSERT INTO part VALUES ('p1','m1','text','{"text":"json role only"}');
+        "#;
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db_a)
+            .arg(seed_a)
+            .status()
+            .expect("seed a");
+        assert!(status.success(), "fixture a seeded");
+        let store_a = StoreRef::Opencode {
+            db_path: db_a,
+            session_id: "ses1".to_string(),
+        };
+        let page_a = read_page(&store_a, None, 10).await.expect("page a");
+        assert_eq!(page_a.entries.len(), 1);
+        assert_eq!(
+            page_a.entries[0].role, "assistant",
+            "no role column: role comes from the data JSON"
+        );
+
+        // Shape (b): message WITH a role column whose value CONFLICTS
+        // with the data JSON — the column must win.
+        let db_b = dir.path().join("with_role_column.db");
+        let seed_b = r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, role TEXT, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'user','{"role":"assistant"}');
+            INSERT INTO part VALUES ('p1','m1','text','{"text":"column wins"}');
+        "#;
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db_b)
+            .arg(seed_b)
+            .status()
+            .expect("seed b");
+        assert!(status.success(), "fixture b seeded");
+        let store_b = StoreRef::Opencode {
+            db_path: db_b,
+            session_id: "ses1".to_string(),
+        };
+        let page_b = read_page(&store_b, None, 10).await.expect("page b");
+        assert_eq!(page_b.entries.len(), 1);
+        assert_eq!(
+            page_b.entries[0].role, "user",
+            "role column present: the column wins over the data JSON"
+        );
+    }
+
+    /// L7: an embedded NUL byte used to silently truncate the message
+    /// (SQLite's substr/group_concat stop at the first NUL) — now the
+    /// page SQL's has_nul flag detects it and the cut is marked
+    /// explicitly, with the pre-NUL content preserved.
+    #[tokio::test]
+    async fn opencode_nul_byte_is_marked_not_silently_truncated() {
+        if !have_sqlite3() {
+            eprintln!("sqlite3 not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("opencode.db");
+        // The \u0000 JSON escape is a genuine NUL byte inside the part
+        // text once json_extract decodes it.
+        let seed = r#"
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, type TEXT, data TEXT);
+            INSERT INTO message VALUES ('m1','ses1',100,'{"role":"assistant"}');
+            INSERT INTO part VALUES ('p1','m1','text','{"text":"before the NUL\u0000after it"}');
+        "#;
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(seed)
+            .status()
+            .expect("seed");
+        assert!(status.success(), "fixture seeded");
+
+        let store = StoreRef::Opencode {
+            db_path: db,
+            session_id: "ses1".to_string(),
+        };
+        let page = read_page(&store, None, 10).await.expect("page");
+        assert_eq!(page.entries.len(), 1);
+        let text = &page.entries[0].text;
+        assert!(
+            text.starts_with("before the NUL"),
+            "pre-NUL content preserved: {text}"
+        );
+        assert!(
+            !text.contains("after it"),
+            "post-NUL content never reaches Rust (SQLite cut it): {text}"
+        );
+        assert!(
+            text.ends_with(NUL_TRUNCATED_MARKER),
+            "NUL cut is marked explicitly, never silent: {text}"
+        );
+        assert_eq!(page.skipped, 0, "a NUL message is not torn data");
+    }
+
+    /// L4: the role-column probe is memoized per store — a paged walk
+    /// probes once, not once per page, and the memo stays bounded (the
+    /// oldest entry is evicted past the cap, so an evicted store
+    /// re-probes). The probe is counted directly — an honest seam: the
+    /// production global memo wraps this same struct.
+    #[tokio::test]
+    async fn role_probe_memo_probes_once_per_store_and_stays_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_probe = calls.clone();
+        let memo = RoleProbeMemo::new(move |_p: PathBuf| {
+            let c = calls_for_probe.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        });
+        let a = Path::new("/stores/a/opencode.db");
+        assert!(memo.get(a).await, "first page probes");
+        assert!(memo.get(a).await, "second page hits the cache");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "one store probes exactly once across pages"
+        );
+        let b = Path::new("/stores/b/opencode.db");
+        assert!(memo.get(b).await, "a second store probes fresh");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // Bounded growth: filling past the cap evicts the oldest entry,
+        // which re-probes on its next access; a still-cached one does
+        // not.
+        for i in 0..=ROLE_PROBE_MEMO_CAP {
+            let p = PathBuf::from(format!("/stores/{i}/opencode.db"));
+            assert!(memo.get(&p).await);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), ROLE_PROBE_MEMO_CAP + 3);
+        let first = PathBuf::from("/stores/0/opencode.db");
+        assert!(memo.get(&first).await);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            ROLE_PROBE_MEMO_CAP + 4,
+            "evicted entry re-probes"
+        );
+        assert!(memo.get(&first).await);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            ROLE_PROBE_MEMO_CAP + 4,
+            "re-probed entry is cached again"
         );
     }
 
@@ -1313,12 +1624,14 @@ mod tests {
             "opencode entry must be capped, got {}",
             text.len()
         );
-        // S1: a WHITESPACE-FREE capped blob keeps only the marker — the
-        // redactor must never see (or emit) a severed token.
+        // L1: a WHITESPACE-FREE capped blob keeps its content up to the
+        // byte budget — an unbroken ~256KiB run is far past rule 4's
+        // 24-char threshold, so the redactor judges it at full length and
+        // never sees a severed token — with the marker on top.
         assert_eq!(
             text.as_str(),
-            TRUNCATED_MARKER.trim_start(),
-            "whitespace-free capped text reduces to the marker alone"
+            format!("{}{TRUNCATED_MARKER}", "y".repeat(MAX_PAGE_TEXT_BYTES)),
+            "whitespace-free capped text keeps its content, not just the marker"
         );
     }
 

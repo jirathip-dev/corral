@@ -232,6 +232,14 @@ fn session_hint(agent_id: &str) -> Option<&str> {
     if rest.is_empty() || rest.starts_with("pane:") {
         return None;
     }
+    // Fresh review F1: the hint is joined into store paths downstream
+    // (`claude_by_id` builds `<project>/<hint>.jsonl`), and `Path::join`
+    // traverses on `..` components and REPLACES the base on an absolute
+    // one. Real tool session ids are uuid-shaped; anything path-shaped
+    // is not a session id and must never become a path.
+    if rest.contains(['/', '\\']) || rest.contains("..") {
+        return None;
+    }
     Some(rest)
 }
 
@@ -606,6 +614,14 @@ fn claude_by_id(
         // Too-short hints (never a claude uuid) must not stat around.
         return Ok(None);
     }
+    // F1 belt-and-braces: `session_hint` already refuses path shapes,
+    // but this function builds `<project>/<id>.jsonl`, so the module
+    // that promises containment enforces it too. NOT a `starts_with`
+    // check on the joined path — that comparison is lexical and would
+    // wave `..` components straight through.
+    if session_id.contains(['/', '\\']) || session_id.contains("..") {
+        return Ok(None);
+    }
     let projects =
         std::fs::read_dir(claude_dir).map_err(|source| TranscriptError::StoreUnreadable {
             path: claude_dir.to_path_buf(),
@@ -906,6 +922,45 @@ mod tests {
         assert_eq!(session_hint("herdr:pane:w1:p2"), None, "pane fallback");
         assert_eq!(session_hint("herdr:"), None);
         assert_eq!(session_hint("other:xyz"), None);
+    }
+
+    /// Fresh review F1: a path-shaped hint is not a session id. `..`
+    /// traverses out of a project dir and an absolute component makes
+    /// `Path::join` REPLACE the base entirely — both must die at the
+    /// hint boundary, before any rung can join them into a path.
+    #[test]
+    fn path_shaped_session_hints_are_rejected() {
+        assert_eq!(session_hint("herdr:../../../etc/victim"), None);
+        assert_eq!(session_hint("herdr:/etc/hostname"), None);
+        assert_eq!(session_hint("herdr:a\\..\\b"), None);
+        assert_eq!(session_hint("herdr:abcd1234..jsonl"), None, "any .. shape");
+        assert_eq!(
+            session_hint("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784"),
+            Some("2d5e5911-b103-4a92-adc3-a8bdc03fd784"),
+            "real uuids still pass"
+        );
+    }
+
+    /// F1 belt-and-braces: even if a hostile id reached `claude_by_id`
+    /// directly, the containment check refuses any candidate that
+    /// escapes `claude_dir` — the invariant holds in the module that
+    /// promises it, not only at the hint boundary.
+    #[test]
+    fn claude_by_id_never_returns_a_path_outside_its_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude_dir = dir.path().join("claude-projects");
+        let project = claude_dir.join("-some-project");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        // A victim file OUTSIDE the claude root that a traversal-shaped
+        // id would reach via <project>/../../victim.jsonl.
+        std::fs::write(dir.path().join("victim.jsonl"), "{}\n").expect("write victim");
+        let mut b = ScanBudget::for_test();
+        assert!(
+            claude_by_id(&claude_dir, "../../victim", &mut b)
+                .expect("scan")
+                .is_none(),
+            "a traversal-shaped id must not bind outside claude_dir"
+        );
     }
 
     #[test]

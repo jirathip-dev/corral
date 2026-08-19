@@ -105,6 +105,14 @@ pub enum Cursor {
 /// between pages — a new session becoming newest, or a co-resident
 /// agent's file — must be a typed `BadCursor`, never a silent
 /// continuation at an arbitrary byte offset of a different file).
+///
+/// Honest residual (fresh review F6): "different file" means a different
+/// PATH. A file REWRITTEN in place at the same path keeps its
+/// fingerprint, so a byte cursor into it is validated only by
+/// `offset <= len` and can land mid-content. Append-only session stores
+/// make that unlikely; closing it would need a size/mtime component,
+/// which reintroduces exactly the filesystem dependence R7 rejects — a
+/// recorded trade-off, not an oversight.
 pub fn store_fingerprint(store: &StoreRef) -> u64 {
     fn fnv64(seed: u64, bytes: &[u8]) -> u64 {
         let mut hash = seed;
@@ -164,19 +172,39 @@ impl Cursor {
         }
     }
 
-    /// Inverse of [`Cursor::encode_for`], validated against the store the
-    /// caller just bound: a fingerprint mismatch (different session file,
-    /// different opencode session) and every malformed shape are typed
-    /// [`TranscriptError::BadCursor`] — never a panic, never a guess.
-    pub fn decode_for(wire: &str, store: &StoreRef) -> Result<Self, TranscriptError> {
+    /// Structural half of [`Cursor::decode_for`]: framing, prefixes,
+    /// hex — everything that needs NO store. Returns the cursor and its
+    /// CLAIMED fingerprint, unverified. Fresh review F7: the handler
+    /// runs [`Cursor::validate_wire`] before the (expensive) bind so a
+    /// malformed cursor is refused without any store IO; only the
+    /// fingerprint comparison has to wait for the bound store.
+    fn parse_wire(wire: &str) -> Result<(Self, u64), TranscriptError> {
         let (base, fp_hex) = wire.rsplit_once('.').ok_or(TranscriptError::BadCursor)?;
         if fp_hex.len() != 16 {
             return Err(TranscriptError::BadCursor);
         }
         let fp = u64::from_str_radix(fp_hex, 16).map_err(|_| TranscriptError::BadCursor)?;
+        Self::parse_base(base).map(|cursor| (cursor, fp))
+    }
+
+    /// Structural validation only — no store, no fingerprint check.
+    pub fn validate_wire(wire: &str) -> Result<(), TranscriptError> {
+        Self::parse_wire(wire).map(|_| ())
+    }
+
+    /// Inverse of [`Cursor::encode_for`], validated against the store the
+    /// caller just bound: a fingerprint mismatch (different session file,
+    /// different opencode session) and every malformed shape are typed
+    /// [`TranscriptError::BadCursor`] — never a panic, never a guess.
+    pub fn decode_for(wire: &str, store: &StoreRef) -> Result<Self, TranscriptError> {
+        let (cursor, fp) = Self::parse_wire(wire)?;
         if fp != store_fingerprint(store) {
             return Err(TranscriptError::BadCursor);
         }
+        Ok(cursor)
+    }
+
+    fn parse_base(base: &str) -> Result<Self, TranscriptError> {
         if let Some(rest) = base.strip_prefix("b.") {
             let offset = rest.parse().map_err(|_| TranscriptError::BadCursor)?;
             return Ok(Cursor::Bytes { offset });

@@ -1625,6 +1625,148 @@ final class ConnectionFailureTests: XCTestCase {
     }
 }
 
+// MARK: - Issue #91: a stale persisted cursor must not resume into an empty store
+
+/// Captures the `Last-Event-ID` REQUEST header and holds the stream open
+/// (one request only): serves a 200 `text/event-stream` response and never
+/// finishes — the daemon's open stream — so `FleetStore.connect()` makes a
+/// single request whose header the test asserts on. Lock-guarded statics,
+/// the same NSLock pattern as `SSEStreamMockURLProtocol` (review N1: bare
+/// static vars raced under TSan).
+final class LastEventIDCapturingURLProtocol: URLProtocol {
+    private static let captureLock = NSLock()
+    private static var capturedHeaderStorage: String?
+    private static var requestCountStorage = 0
+
+    static var capturedHeader: String? {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        return capturedHeaderStorage
+    }
+
+    static var requestCount: Int {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        return requestCountStorage
+    }
+
+    static func reset() {
+        captureLock.lock()
+        capturedHeaderStorage = nil
+        requestCountStorage = 0
+        captureLock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.captureLock.lock()
+        Self.requestCountStorage += 1
+        Self.capturedHeaderStorage = request.value(forHTTPHeaderField: "Last-Event-ID")
+        Self.captureLock.unlock()
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        // Deliberately never finishes: the request stays open like the live stream.
+    }
+
+    override func stopLoading() {}
+}
+
+/// Regression for #91. `AppModel.resetDevice()` wipes the agent map but NOT
+/// the persisted `fleetnotifier.lastEventId` key, so `restoreCursor()` can
+/// resurrect a cursor into a store holding ZERO agents; `connect()` then
+/// sends that cursor as `Last-Event-ID` and the daemon — correctly — replies
+/// with deltas only, never the snapshot that would populate the board. The
+/// invariant: a cursor is only valid if you hold the state it is a
+/// delta-base for. These tests drive the REAL `FleetStore.connect()` path
+/// (real `URLSession` byte path, URLProtocol mock) and assert on the
+/// CAPTURED request header — the exact wire signal the daemon acts on.
+@MainActor
+final class StaleCursorTests: XCTestCase {
+
+    private func makeStreamingClient() -> (URLSession, CorraldClient) {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LastEventIDCapturingURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+        return (session, client)
+    }
+
+    /// Waits for the URLProtocol mock to see the stream's first request
+    /// (startLoading runs on the URLProtocol delegate queue, not the main
+    /// actor) under a hard deadline — the same poll shape as the #90 tests.
+    private func waitForFirstRequest() async {
+        let deadline = Date().addingTimeInterval(5)
+        while LastEventIDCapturingURLProtocol.requestCount < 1, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// Acceptance: an EMPTY store must DROP a persisted cursor. Seeds the
+    /// real UserDefaults key and runs `restoreCursor()` — mirroring
+    /// AppModel's resetDevice → re-register relaunch path — then connects
+    /// with zero agents and asserts the wire carries NO `Last-Event-ID`.
+    /// On the unfixed code the stale cursor survives, the header is sent,
+    /// and the daemon answers deltas-only: the board never populates.
+    func testEmptyStoreDropsPersistedCursor() async throws {
+        UserDefaults.standard.set("8089", forKey: "fleetnotifier.lastEventId")
+        defer { UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId") }
+        LastEventIDCapturingURLProtocol.reset()
+
+        let store = FleetStore()
+        store.restoreCursor()
+        XCTAssertEqual(store.lastEventId, 8089, "precondition: the stale cursor was restored")
+
+        let (session, client) = makeStreamingClient()
+        store.connect(client: client)
+        await waitForFirstRequest()
+        store.disconnect()
+        session.invalidateAndCancel()
+
+        XCTAssertGreaterThanOrEqual(
+            LastEventIDCapturingURLProtocol.requestCount, 1,
+            "the stream must reach the wire for this test to mean anything")
+        XCTAssertNil(
+            LastEventIDCapturingURLProtocol.capturedHeader,
+            "an EMPTY store holds no state to resume — the stale cursor must be dropped, "
+                + "not sent as Last-Event-ID (the daemon would reply deltas-only and the board stays empty)")
+    }
+
+    /// Acceptance: a POPULATED store keeps its cursor — applying a snapshot
+    /// (agents non-empty, `lastEventId` = the snapshot rev) then reconnecting
+    /// must send that rev, so delta resume survives and a full snapshot is
+    /// NOT forced on every reconnect.
+    func testPopulatedStoreKeepsCursor() async throws {
+        LastEventIDCapturingURLProtocol.reset()
+
+        let store = FleetStore()
+        let snapshotJSON = """
+        {"schema_version":4,"rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+        """
+        await store.ingest(SSEFrame(kind: .snapshot, id: 8008, data: snapshotJSON)).value
+        XCTAssertFalse(store.agents.isEmpty, "precondition: the snapshot populated the store")
+        XCTAssertEqual(store.lastEventId, 8008, "precondition: the snapshot rev is the delta-base")
+
+        let (session, client) = makeStreamingClient()
+        store.connect(client: client)
+        await waitForFirstRequest()
+        store.disconnect()
+        session.invalidateAndCancel()
+
+        XCTAssertEqual(
+            LastEventIDCapturingURLProtocol.capturedHeader, "8008",
+            "a populated store holds the delta-base — delta resume must survive reconnect")
+    }
+}
+
 // MARK: - Nested ObservableObject forwarding (#93)
 
 @MainActor

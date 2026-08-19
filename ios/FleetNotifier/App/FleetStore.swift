@@ -207,6 +207,11 @@ final class FleetStore: ObservableObject {
         connectionState = .connecting
         connectionGeneration += 1
         lastConnectionErrorReason = nil
+        // #91: a cursor is only valid while the store holds the state it is
+        // a delta-base for — resetDevice() wipes the map but NOT the
+        // persisted cursor, so an EMPTY store must not resume one (the
+        // daemon would answer deltas-only and the board would stay empty).
+        if agents.isEmpty && lastEventId != nil { lastEventId = nil }
         cursorBox.write(lastEventId)
         streamSeen = [:]
         let generation = connectionGeneration

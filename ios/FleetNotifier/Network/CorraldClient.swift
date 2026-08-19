@@ -58,12 +58,7 @@ struct CorraldClient: Sendable {
                 }
                 backoff = 1 // connected: reset the backoff ladder
                 var parser = SSEParser()
-                for try await line in bytes.lines {
-                    let frames = parser.feed(line + "\n")
-                    for frame in frames {
-                        onEvent(frame)
-                    }
-                }
+                try await Self.consumeLines(from: bytes, parser: &parser, onEvent: onEvent)
                 // Clean EOF: server closed the stream; reconnect.
             } catch is CancellationError {
                 return
@@ -73,6 +68,40 @@ struct CorraldClient: Sendable {
             if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
             backoff = min(backoff * 2, 30)
+        }
+    }
+
+    /// Byte-consumption path for `stream()`, factored out of the reconnect
+    /// loop for clarity. The regression test drives `stream()` (never
+    /// `parser.feed()` with hand-built strings), so the REAL `URLSession`
+    /// byte path — including this loop — is what the suite exercises.
+    ///
+    /// SSE framing is byte-defined: lines end at `0x0a` and frames close
+    /// on an EMPTY line — the terminator the parser needs. `AsyncLineSequence`
+    /// strips terminators AND drops blank lines, so it can never deliver a
+    /// frame boundary; instead consume raw bytes and hand the parser each
+    /// line INCLUDING its terminator.
+    ///
+    /// A partial final line at EOF is DISCARDED (WHATWG EventSource
+    /// semantics): `SSEParser.feed` only completes frames at a newline
+    /// boundary, so emitting it would hand `decode()` half a JSON object
+    /// and raise a spurious decode-failure banner. `stream()` reconnects
+    /// from `Last-Event-ID`, so the daemon replays whatever was lost.
+    static func consumeLines(
+        from bytes: URLSession.AsyncBytes,
+        parser: inout SSEParser,
+        onEvent: @escaping @Sendable (SSEFrame) -> Void
+    ) async throws {
+        var chunk = [UInt8]()
+        chunk.reserveCapacity(16 * 1024)
+        for try await byte in bytes {
+            chunk.append(byte)
+            guard byte == 0x0a else { continue }
+            let frames = parser.feed(String(decoding: chunk, as: UTF8.self))
+            chunk.removeAll(keepingCapacity: true)
+            for frame in frames {
+                onEvent(frame)
+            }
         }
     }
 

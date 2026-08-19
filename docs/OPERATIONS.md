@@ -142,12 +142,41 @@ tailscale serve reset
 ```
 
 Include the `https://` scheme — the app assumes `http://` when the
-scheme is omitted, which lands on the ATS error above. Verified on a
-live tailnet with `curl` (`200 verify=0`); the iOS DEVICE leg —
-registration plus holding the `/events` SSE stream through the Serve
-proxy — is pending the first TestFlight verification round (with #79),
-any inaccuracy in this section will surface at that device leg, not
-in the curl-verified part above.
+scheme is omitted, which lands on the ATS error above. Device leg
+verified 2026-08-19 (TestFlight build 5): registration plus holding the
+`/events` SSE stream through the Serve proxy populates the live board
+on hardware. The drive legs (tail/prompt/approve) were promoted the same
+day but remain pending on-device confirmation.
+
+### The FleetNotifier app (iOS)
+
+Capabilities, grant-gated per device (see "Grants model" below):
+
+- **Live board** from the `/events` SSE stream, resuming from a
+  persisted `Last-Event-ID` cursor. A stale cursor is dropped when the
+  store is empty — a cursor is only a valid delta-base for state you
+  actually hold (a reset device that resumes deltas-only would otherwise
+  never see a snapshot).
+- **Tail 200** (`read_tail`): bounded 200-line tail via signed `/drive`
+  — not `/transcript`; the phone's read surface is bounded-tail only in
+  this phase (D16).
+- **Prompt** (`prompt`) and **Approve / Deny / Continue** (`approve`):
+  canned replies answer a waiting agent in-app; the same actions work
+  from the lock-screen notification, validated against the live claim
+  (`prompt_hash` / `stale_approval` refusals surface as typed banners).
+- Biometric step-up (Face ID) runs in-app for destructive payloads; the
+  lock-screen path is bounded to non-destructive canned replies.
+
+Promote the phone's key (never hand the admin token to the device):
+
+```sh
+scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve
+```
+
+Diagnosing a stuck board: since #92 every stream-layer failure sets a
+visible `.error` banner (os.Logger line + dismissible text) instead of
+an infinite spinner — check the banner first, then the Troubleshooting
+table below.
 
 ## Device lifecycle
 
@@ -291,7 +320,8 @@ corrald digest --config-dir <path>      # non-default config dir
 agent's session transcript, redacted (D-083) before it leaves the
 transcript module. It is an on-demand VIEW fetch — never pushed (D5
 stays intact), and the phone client does not call it in this phase (D16:
-phone stays bounded-tail only).
+the phone's read surface is the bounded Tail 200 via `/drive`;
+`/transcript` is desktop/egui-only for now).
 
 Auth is the drive plane's `read_tail` trust decision on a GET: put the
 exact `SignedDrive` JSON you would POST to `/drive` (capability
@@ -504,6 +534,9 @@ reserved fleet name). Full schema and the per-command exit-code table:
 |---|---|
 | `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
+| Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
+| Tail 200 / prompt / approve buttons missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve`. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
 | Daemon won't start, `failed to bind` | port already in use — pick another `--port`; `lsof -nP -iTCP:<port> -sTCP:LISTEN` to see who owns it |

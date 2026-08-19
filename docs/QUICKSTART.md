@@ -180,6 +180,45 @@ and 5 above are only needed for other clients.
 macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
 [OPERATIONS.md](OPERATIONS.md) has the how-to.
 
+## 9. The iOS app (FleetNotifier)
+
+TestFlight-distributed SwiftUI client (`ios/` in this repo, bundle
+`com.corral.fleetnotifier`) that speaks the same HTTP/SSE surface as the
+desktop UI: live fleet board, per-agent workspace lines, and signed drive
+controls.
+
+Registering from the phone is steps 4 and 5 above, with two phone-specific
+rules:
+
+- **Include the `https://` scheme in the host.** The app assumes `http://`
+  when the scheme is omitted, and ATS refuses plain HTTP to a tailnet
+  hostname — see "Remote access from iOS (Tailscale Serve)" in
+  OPERATIONS.md.
+- **A fresh registration is read-only** (`grants: []`), and registration is
+  idempotent per device key — re-registering never upgrades grants. Promote
+  the phone's key with step 5:
+
+```sh
+scripts/corrald-grant.sh --key <phone-key-id> --caps read_tail,prompt,interrupt,approve
+```
+
+What the app shows:
+
+- **Live board** from the `/events` SSE stream: agent rows ordered
+  blocked > working > done > idle, each with state, title/session,
+  repo·branch·worktree, issue chips, CI glyph, tool.
+- **Tail 200** (`read_tail`): bounded 200-line tail via signed `/drive`.
+- **Prompt** (`prompt`): free-text prompt to an agent.
+- **Approve / Deny / Continue** (`approve`): canned replies to a waiting
+  agent, including from the lock-screen notification.
+- Rows without the matching grant render without those controls.
+
+Board never renders but the daemon is healthy? Every stream-layer failure
+now surfaces as a dismissible banner instead of a silent spinner (the
+`bytes.lines` frame-terminator defect and the nested-`ObservableObject`
+render defect are fixed as of build 5). The Troubleshooting table in
+OPERATIONS.md has the full checklist.
+
 ## Next
 
 - One-shot setup (build + launchd + first run):

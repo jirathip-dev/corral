@@ -103,6 +103,17 @@ enum CanonicalJSON {
         return Data(json.utf8)
     }
 
+    /// `canonical_grants_read_bytes` (#101) — fixed order key_id, request,
+    /// ts (mirror of `GrantsReadRequest` in src/push/payload.rs).
+    static func grantsReadBytes(keyId: String, request: String, ts: UInt64) -> Data {
+        var json = "{\"key_id\":"
+        json += escaped(keyId)
+        json += ",\"request\":"
+        json += escaped(request)
+        json += ",\"ts\":\(ts)}"
+        return Data(json.utf8)
+    }
+
     // MARK: - Value encoding
 
     static func encode(_ value: Value) -> String {
@@ -171,6 +182,18 @@ enum CanonicalJSON {
 
     /// `{key_id, signature, request}` device-token body (D16).
     static func deviceTokenBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
+        var json = "{\"key_id\":"
+        json += escaped(keyId)
+        json += ",\"signature\":"
+        json += escaped(signatureB64)
+        json += ",\"request\":"
+        json += String(data: requestBytes, encoding: .utf8) ?? "{}"
+        json += "}"
+        return Data(json.utf8)
+    }
+
+    /// `{key_id, signature, request}` grants-read body (#101).
+    static func grantsReadBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
         var json = "{\"key_id\":"
         json += escaped(keyId)
         json += ",\"signature\":"

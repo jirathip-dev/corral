@@ -26,6 +26,10 @@ struct FleetNotifierApp: App {
                     case .active:
                         if model.mode == .live {
                             model.startLive()
+                            // #101: re-sync grants on foreground so a
+                            // host-side promotion appears without a device
+                            // reset (idempotent; never blocks the stream).
+                            Task { await model.refreshGrants() }
                         }
                     @unknown default:
                         break
@@ -49,6 +53,9 @@ struct RootView: View {
             .task {
                 if model.mode == .live {
                     model.startLive()
+                    // #101: cold-launch grants refresh (restored meta may
+                    // be stale — the host promoted grants since last run).
+                    await model.refreshGrants()
                 }
             }
     }

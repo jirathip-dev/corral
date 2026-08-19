@@ -264,3 +264,117 @@ fn refusal_kinds_match_the_conformance_table() {
         );
     }
 }
+
+/// #64: the transcript auth header the client mints is the exact
+/// SignedDrive wire form the daemon's `/transcript` handler parses and
+/// verifies — capability read_tail, target bound to the agent, signature
+/// valid against the real authorizer.
+#[test]
+fn my_transcript_header_passes_the_daemon_authorizer() {
+    let (registry, authorizer, token, _dir) = daemon_support::setup();
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let pubkey = signing.verifying_key().to_bytes();
+    let rec = registry
+        .register(&token, pubkey, std::time::Duration::from_secs(3600))
+        .expect("register");
+    registry
+        .set_grants(&rec.key_id, vec![corrald::drive::Capability::ReadTail])
+        .expect("grant read_tail");
+
+    let header = corrald_ui::drive::transcript_auth_header(
+        &rec.key_id,
+        &signing,
+        "herdr:agent-a",
+        None,
+        corrald_ui::transcript::PAGE_LIMIT,
+    );
+    // The daemon parses the header value with serde into ITS SignedDrive
+    // (src/api/transcript.rs authorize()) — same parse here.
+    let daemon_signed: corrald::drive::SignedDrive =
+        serde_json::from_str(&header).expect("header parses daemon-side");
+    assert_eq!(
+        daemon_signed.envelope.capability,
+        corrald::drive::Capability::ReadTail
+    );
+    assert_eq!(daemon_signed.envelope.target, "herdr:agent-a");
+    assert!(
+        daemon_signed
+            .envelope
+            .request_id
+            .starts_with("corrald-ui:transcript:"),
+        "audit-traceable request id"
+    );
+    // Post-#88: the page parameters live in the SIGNED payload — ts is
+    // fresh unix seconds, limit is the pane's page size, and a
+    // cursor-less newest-page request omits the field entirely (the
+    // daemon is deny_unknown_fields with skip_serializing_if).
+    let payload = daemon_signed
+        .envelope
+        .payload
+        .as_object()
+        .expect("payload object");
+    assert!(
+        payload["ts"].as_u64().expect("ts is unix seconds") > 0,
+        "fresh ts per page"
+    );
+    assert_eq!(
+        payload["limit"],
+        corrald_ui::transcript::PAGE_LIMIT,
+        "client page size rides the signed payload"
+    );
+    assert!(payload.get("cursor").is_none(), "newest page omits cursor");
+    authorizer
+        .verify(&daemon_signed)
+        .expect("signature + grant verify against the real authorizer");
+
+    // A header minted for agent A must fail the daemon's target binding
+    // for agent B — the client cannot accidentally reuse one.
+    assert_ne!(daemon_signed.envelope.target, "herdr:agent-b");
+}
+
+/// #64 review F13: the client's `TranscriptPage` must deserialize the
+/// body the DAEMON actually builds — `corrald::api::transcript::page_body`
+/// is the one place the 200 shape is written, so this pins drift that a
+/// hand-copied golden cannot.
+#[test]
+fn daemon_transcript_body_parses_into_the_client_page() {
+    let store = corrald::transcript::StoreRef::Claude {
+        jsonl_path: std::path::PathBuf::from("/p/2d5e5911.jsonl"),
+    };
+    let outcome = corrald::transcript::bind::BindOutcome {
+        store: store.clone(),
+        unavailable: vec!["opencode".to_string()],
+        rung: "worktree",
+    };
+    let page = corrald::transcript::TranscriptPage {
+        entries: vec![
+            corrald::transcript::Entry {
+                role: "assistant".to_string(),
+                text: "newest".to_string(),
+                ts: Some(1_723_000_000_123),
+            },
+            corrald::transcript::Entry {
+                role: "user".to_string(),
+                text: "older".to_string(),
+                ts: None,
+            },
+        ],
+        next_cursor: Some(corrald::transcript::Cursor::Bytes { offset: 4096 }),
+        skipped: 2,
+    };
+    let body = corrald::api::transcript::page_body("herdr:a1", &outcome, &page);
+
+    let parsed: corrald_ui::transcript::TranscriptPage =
+        serde_json::from_value(body).expect("client parses the daemon's own body shape");
+    assert_eq!(parsed.agent, "herdr:a1");
+    assert_eq!(parsed.store, "claude");
+    assert_eq!(parsed.session, "claude:2d5e5911.jsonl");
+    assert_eq!(parsed.bind, "worktree");
+    assert_eq!(parsed.stores_unavailable, vec!["opencode".to_string()]);
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].text, "newest");
+    assert_eq!(parsed.entries[0].ts, Some(1_723_000_000_123));
+    assert_eq!(parsed.entries[1].ts, None, "string-timestamp stores → null");
+    assert!(parsed.next_cursor.is_some(), "opaque cursor passes through");
+    assert_eq!(parsed.skipped, 2);
+}

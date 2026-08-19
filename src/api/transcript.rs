@@ -643,6 +643,18 @@ async fn serve(
         );
     }
 
+    Ok(page_body(&agent_id, &outcome, &page))
+}
+
+/// The 200 body — the ONE place its shape is written, factored `pub` so
+/// the desktop client's conformance suite can pin its deserialization
+/// against the body the daemon actually builds (#64 review: hand-copied
+/// goldens cannot catch drift; this can).
+pub fn page_body(
+    agent_id: &str,
+    outcome: &crate::transcript::bind::BindOutcome,
+    page: &crate::transcript::TranscriptPage,
+) -> serde_json::Value {
     let session_label = Candidate {
         store: outcome.store.clone(),
         recency_ms: 0,
@@ -653,7 +665,7 @@ async fn serve(
         crate::transcript::StoreRef::Claude { .. } => "claude",
         crate::transcript::StoreRef::Codex { .. } => "codex",
     };
-    Ok(serde_json::json!({
+    serde_json::json!({
         "agent": agent_id,
         "store": store_kind,
         // Review F15: the bound session's identity, so a client can
@@ -673,5 +685,5 @@ async fn serve(
             .collect::<Vec<_>>(),
         "next_cursor": page.next_cursor.as_ref().map(|c| c.encode_for(&outcome.store)),
         "skipped": page.skipped,
-    }))
+    })
 }

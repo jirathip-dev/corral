@@ -128,6 +128,21 @@ final class AppModel: ObservableObject {
         fleet.onDecodeFailure = { [weak self] reason in
             self?.banner = .error("stream_decode", reason)
         }
+        // #92: a connection failure lands in the same full-width,
+        // dismissible, text-selectable banner as decode failures —
+        // readable/copyable on device — in addition to the .error
+        // connection state and the os.Logger line.
+        fleet.onConnectionError = { [weak self] reason in
+            self?.banner = .error("stream_connection", reason)
+        }
+        // Review F2: once the stream re-establishes a 200 the connection is
+        // healthy again — drop a stale stream_connection banner (an idle
+        // fleet emits no frames, so apply() alone would never clear it).
+        fleet.onConnected = { [weak self] in
+            if self?.banner?.kind == "stream_connection" {
+                self?.banner = nil
+            }
+        }
         fleet.connect(client: client)
         // #79 review F4: only connect() is idempotent by itself (its
         // streamTask guard). The notification/APNs setup below is NOT —

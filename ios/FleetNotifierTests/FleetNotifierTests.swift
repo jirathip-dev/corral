@@ -1490,6 +1490,141 @@ final class SSEStreamRegressionTests: XCTestCase {
     }
 }
 
+// MARK: - Connection failures (#92)
+
+/// #92: a URLProtocol mock that FAILS every request (connection refused).
+/// `startLoading()` reports `didFailWithError` before any response bytes,
+/// so `URLSession.bytes(for:)` throws and the real `stream()` catch-all is
+/// what sees the failure.
+private final class FailingStreamURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    override func stopLoading() {}
+}
+
+/// F1: a URLProtocol mock that serves HTTP 500 — the non-200 arm of
+/// `stream()`'s guard, which must surface a status-bearing reason.
+private final class Non200StreamURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: 500, httpVersion: "HTTP/1.1", headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// #92 regression: `stream()` used to swallow EVERY connection error in a
+/// bare catch, so `connectionState` never left `.connecting` — the UI
+/// rendered `ProgressView()` forever with no banner, no `os.Logger` line,
+/// no diagnosis (this is why #90 stayed invisible for the app's whole
+/// life). This test drives the REAL path — `FleetStore.connect(client:)` →
+/// `CorraldClient.stream()` over a real `URLSession` whose `URLProtocol`
+/// mock FAILS the request — and asserts the store flips to `.error`, NOT
+/// `.connecting`. RED on current main: the bare catch swallows the failure
+/// and the state stays `.connecting`, failing the guard below.
+@MainActor
+final class ConnectionFailureTests: XCTestCase {
+
+    func testConnectionFailureSurfacesErrorNotConnecting() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingStreamURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+        let store = FleetStore()
+
+        store.connect(client: client)
+        defer {
+            store.disconnect()
+            session.invalidateAndCancel()
+        }
+
+        // The mock fails immediately; poll for the surfaced .error state.
+        let deadline = Date().addingTimeInterval(5)
+        while store.connectionState == .connecting, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        guard case .error(let message) = store.connectionState else {
+            return XCTFail("connection failure must set .error, not \(store.connectionState)")
+        }
+        XCTAssertTrue(message.hasPrefix("stream disconnected — "), message)
+        // F5: the underlying reason must be non-empty too — the prefix
+        // check alone would pass even if the reason were a blank string.
+        let reason = String(message.dropFirst("stream disconnected — ".count))
+        XCTAssertFalse(reason.isEmpty, "the surfaced reason must not be empty")
+    }
+
+    /// F1: an HTTP-level failure must NAME the status and URL — a bare
+    /// `localizedDescription` of `DriveError` used to discard the message
+    /// entirely, leaving a banner with zero diagnostic content. Drives the
+    /// real path with a mock that serves HTTP 500.
+    func testNon200ResponseNamesStatusInError() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [Non200StreamURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+        let store = FleetStore()
+
+        store.connect(client: client)
+        defer {
+            store.disconnect()
+            session.invalidateAndCancel()
+        }
+
+        let deadline = Date().addingTimeInterval(5)
+        while store.connectionState == .connecting, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        guard case .error(let message) = store.connectionState else {
+            return XCTFail("non-200 must surface .error, not \(store.connectionState)")
+        }
+        XCTAssertTrue(message.contains("HTTP 500"), message)
+        XCTAssertTrue(message.contains("/events"), message)
+    }
+
+    /// Review F2: a recovered stream clears the `.error` indicator even
+    /// when the fleet is idle (no frames arrive for `apply()` to clear it).
+    func testReconnectClearsErrorState() {
+        let store = FleetStore()
+        store.noteConnectionError("host unreachable")
+        guard case .error = store.connectionState else {
+            return XCTFail("precondition: error state, got \(store.connectionState)")
+        }
+        store.noteConnected()
+        XCTAssertEqual(store.connectionState, .connected)
+    }
+
+    /// F5: the connection reason reaches the owner's banner hook (AppModel
+    /// routes it into the dismissible, copyable BannerView) — mirror of
+    /// testDecodeFailureReachesTheBannerHook. The RED proof is banked, so
+    /// referencing `onConnectionError` here no longer costs anything.
+    func testConnectionFailureReachesTheBannerHook() {
+        let store = FleetStore()
+        var routed: String?
+        store.onConnectionError = { routed = $0 }
+        store.noteConnectionError("Could not connect to the server.")
+        XCTAssertEqual(routed, "Could not connect to the server.")
+        guard case .error = store.connectionState else {
+            return XCTFail("state must also flip to .error")
+        }
+    }
+}
+
 // MARK: - Nested ObservableObject forwarding (#93)
 
 @MainActor

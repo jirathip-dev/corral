@@ -50,9 +50,29 @@ final class FleetStore: ObservableObject {
     /// on device, where the acceptance gate runs.
     var onDecodeFailure: (@MainActor @Sendable (String) -> Void)?
 
+    /// #92: the connection-error hook — AppModel routes this into the SAME
+    /// dismissible, text-selectable banner as decode failures, so a refused
+    /// or unreachable host is READABLE on device instead of an endless
+    /// spinner.
+    var onConnectionError: (@MainActor @Sendable (String) -> Void)?
+
+    /// Review F2: fired when the stream re-establishes a 200 — an idle
+    /// fleet emits NO frames (keep-alives are comments, never framed), so
+    /// `apply()` would never run to clear a stale `.error` indicator.
+    var onConnected: (@MainActor @Sendable () -> Void)?
+
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
+    /// Review F3: bumped on every `connect()`. Hop closures capture it, so
+    /// a report from a PREVIOUS stream cannot land after `disconnect()` —
+    /// or worse, after a NEW connect — and flip the state back.
+    private var connectionGeneration = 0
+    /// Review F4: last reported connection-error reason. The retry ladder
+    /// re-raises every attempt (≤30s cadence); report only on change so a
+    /// user-dismissed banner is not re-asserted forever and the log does
+    /// not spam.
+    private var lastConnectionErrorReason: String?
     /// Blocked-transition shadow for the live stream (was a closure-local;
     /// stored so `ingest` is a plain testable method — review F5).
     private var streamSeen: [String: WaitingOn] = [:]
@@ -185,15 +205,63 @@ final class FleetStore: ObservableObject {
     func connect(client: CorraldClient) {
         guard streamTask == nil else { return }
         connectionState = .connecting
+        connectionGeneration += 1
+        lastConnectionErrorReason = nil
         cursorBox.write(lastEventId)
         streamSeen = [:]
+        let generation = connectionGeneration
         streamTask = Task { [weak self] in
             await client.stream(lastEventId: { [weak self] in
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
                 self?.ingest(frame)
+            }, onConnected: { [weak self] in
+                // The stream callback runs off the main actor; hop once.
+                // F3: guard the hop — it must not land after disconnect()
+                // (or on a newer connection) and flip the state back.
+                Task { @MainActor in
+                    guard let self, self.streamTask != nil,
+                          self.connectionGeneration == generation else { return }
+                    self.noteConnected()
+                }
+            }, onConnectionError: { [weak self] reason in
+                // The stream callback runs off the main actor; hop once.
+                // F3: guard the hop — it must not land after disconnect()
+                // (or on a newer connection) and re-raise .error + banner.
+                Task { @MainActor in
+                    guard let self, self.streamTask != nil,
+                          self.connectionGeneration == generation else { return }
+                    self.noteConnectionError(reason)
+                }
             })
         }
+    }
+
+    /// #92: visible + diagnosable connection-failure state (never a silent
+    /// spinner). Mirrors `noteDecodeFailure`: os.Logger (retrievable from a
+    /// detached TestFlight build via Console/sysdiagnose — print is not),
+    /// the `.error` connection state, and the callback the owner routes to
+    /// the full-width, copyable banner. A later good frame's `apply()`
+    /// returns the state to `.connected`, so a transient failure is visible
+    /// but not fatal.
+    func noteConnectionError(_ reason: String) {
+        // F4: the retry ladder re-reports every attempt; only surface on
+        // change (first failure, or when the reason differs).
+        guard reason != lastConnectionErrorReason else { return }
+        lastConnectionErrorReason = reason
+        Self.log.error("stream connection error: \(reason, privacy: .public)")
+        connectionState = .error("stream disconnected — \(reason)")
+        onConnectionError?(reason)
+    }
+
+    /// Review F2: the stream re-established a 200 — clear a stale `.error`
+    /// (an idle fleet emits no frames, so `apply()` never runs to clear
+    /// it). Also ends the F4 dedupe episode: a later failure after a real
+    /// recovery is a NEW failure and must report again.
+    func noteConnected() {
+        lastConnectionErrorReason = nil
+        connectionState = .connected
+        onConnected?()
     }
 
     /// One frame off the wire: decode OFF-main (round-3 R-N4 — a large

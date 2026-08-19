@@ -1225,6 +1225,61 @@ final class WorkspaceLineTests: XCTestCase {
 
         XCTAssertNil(WorkspaceLine.worktreeBasename(Workspace()))
     }
+
+    /// G100: a long worktree basename (e.g.
+    /// `g64-egui-transcript-panel-lazy-paged-virtualized`) must render with
+    /// a visible head AND tail — never collapse to a bare `…` stub. The
+    /// basename gets the branch's middle-truncation treatment AND the top
+    /// priority tier (shared only with the never-truncating badges), so it
+    /// is the last segment to compress.
+    ///
+    /// RED against current main: the basename segment had NO truncation
+    /// mode (SwiftUI's default tail → head-only, and at extreme compression
+    /// a bare `…`) and priority 1 — below repo/badges' 2 — so it was the
+    /// first segment after the branch to collapse. The suite has no
+    /// view-rendering harness, so the fix is pinned as policy shape: the
+    /// segment middle-truncates and outranks every other segment.
+    func testWorkspaceLineLongBasenameKeepsHeadAndTail() {
+        let basename = "g64-egui-transcript-panel-lazy-paged-virtualized"
+        let long = Workspace(branch: "g64/egui-transcript",
+                             worktreePath: "~/worktrees/corral/g64-egui-transcript-panel-lazy-paged-virtualized")
+        XCTAssertEqual(WorkspaceLine.worktreeBasename(long), basename,
+                       "a basename that EXTENDS the branch renders as a segment at all (D26 R2-C)")
+        XCTAssertEqual(WorkspaceLine.SegmentPolicy.truncationMode(for: .basename), .middle,
+                       "\(basename) must middle-truncate so head AND tail stay visible")
+        XCTAssertEqual(WorkspaceLine.SegmentPolicy.truncationMode(for: .branch), .middle,
+                       "the branch keeps its existing middle truncation")
+        XCTAssertGreaterThan(WorkspaceLine.SegmentPolicy.priority(for: .basename),
+                             WorkspaceLine.SegmentPolicy.priority(for: .branch),
+                             "the basename must outlive the branch on compression")
+        XCTAssertGreaterThan(WorkspaceLine.SegmentPolicy.priority(for: .basename),
+                             WorkspaceLine.SegmentPolicy.priority(for: .repo),
+                             "the basename must outlive the repo on compression")
+        XCTAssertEqual(WorkspaceLine.SegmentPolicy.priority(for: .basename),
+                       WorkspaceLine.SegmentPolicy.priority(for: .badge),
+                       "the basename survives as long as the never-truncating badges")
+        XCTAssertGreaterThan(WorkspaceLine.SegmentPolicy.priority(for: .badge),
+                             WorkspaceLine.SegmentPolicy.priority(for: .repo),
+                             "badges keep the never-truncate tier; repo compresses first")
+    }
+
+    /// G100 no-regression guard: a short basename renders byte-identical to
+    /// today. The basename string still flows to the segment unchanged (the
+    /// D26 suppression rule is untouched), middle truncation is applied by
+    /// SwiftUI only when the text overflows (a no-op when it fits), and the
+    /// priority reorder only changes WHO compresses first — never what fits
+    /// when everything fits.
+    func testWorkspaceLineShortBasenameUnchanged() {
+        let short = Workspace(branch: "g100/workspace-squish",
+                              worktreePath: "~/worktrees/corral/review-611")
+        XCTAssertEqual(WorkspaceLine.worktreeBasename(short), "review-611",
+                       "the short basename string must reach the segment unchanged")
+        XCTAssertEqual(WorkspaceLine.SegmentPolicy.truncationMode(for: .basename), .middle,
+                       "native middle truncation is a no-op when the text fits")
+        XCTAssertEqual(WorkspaceLine.SegmentPolicy.priority(for: .basename),
+                       WorkspaceLine.SegmentPolicy.priority(for: .badge),
+                       "priorities engage only on compression, so full-width rows render as before")
+    }
 }
 
 // MARK: - Schema v4 issues decode (G23, daemon wire shape)

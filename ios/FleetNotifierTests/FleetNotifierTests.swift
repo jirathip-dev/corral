@@ -1594,6 +1594,52 @@ private final class Non200StreamURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// Durable F2 probe mock: FAILS request #1 (connection refused, no response
+/// bytes) then serves 200 `text/event-stream` with clean EOF and ZERO body
+/// bytes on requests #2+ — an idle fleet serves 0 frames. Lock-guarded
+/// request counter, the same NSLock pattern as `SSEStreamMockURLProtocol`
+/// (review N1: bare static vars raced under TSan).
+private final class ReconnectStreamURLProtocol: URLProtocol {
+    private static let requestLock = NSLock()
+    private static var requestCountStorage = 0
+
+    static var requestCount: Int {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        return requestCountStorage
+    }
+
+    static func resetRequestCount() {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        requestCountStorage = 0
+    }
+
+    private static func incrementRequestCount() {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        requestCountStorage += 1
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.incrementRequestCount()
+        guard Self.requestCount > 1, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 /// #92 regression: `stream()` used to swallow EVERY connection error in a
 /// bare catch, so `connectionState` never left `.connecting` — the UI
 /// rendered `ProgressView()` forever with no banner, no `os.Logger` line,
@@ -1664,16 +1710,41 @@ final class ConnectionFailureTests: XCTestCase {
         XCTAssertTrue(message.contains("/events"), message)
     }
 
-    /// Review F2: a recovered stream clears the `.error` indicator even
-    /// when the fleet is idle (no frames arrive for `apply()` to clear it).
-    func testReconnectClearsErrorState() {
+    /// Review F2 durable probe: a recovered stream clears the `.error`
+    /// indicator even when the fleet is idle (no frames arrive for
+    /// `apply()` to clear it). Drives the REAL chain — `stream()` →
+    /// `onConnected?()` → FleetStore's guarded Task hop → `noteConnected()`
+    /// — via a URLProtocol mock that fails request #1 (refused) and serves
+    /// 200 + clean EOF with ZERO body bytes on the retry (idle fleet → 0
+    /// frames). Goes RED if `onConnected?()` is deleted from
+    /// `CorraldClient.stream()`.
+    func testReconnectOverRealURLSessionClearsErrorState() async {
+        ReconnectStreamURLProtocol.resetRequestCount()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ReconnectStreamURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
         let store = FleetStore()
-        store.noteConnectionError("host unreachable")
-        guard case .error = store.connectionState else {
-            return XCTFail("precondition: error state, got \(store.connectionState)")
+
+        store.connect(client: client)
+        defer {
+            store.disconnect()
+            session.invalidateAndCancel()
         }
-        store.noteConnected()
-        XCTAssertEqual(store.connectionState, .connected)
+
+        // Request #1 fails → the store surfaces `.error`; the 1s backoff
+        // retry then lands a 200 that MUST clear the stale error through
+        // the wiring. Poll (deadline 5s, ~25ms sleeps) until it does.
+        let deadline = Date().addingTimeInterval(5)
+        while store.connectionState != .connected, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        XCTAssertEqual(store.connectionState, .connected,
+                       "the 200 on retry must clear the stale error via the real wiring")
+        XCTAssertTrue(store.agents.isEmpty, "an idle fleet serves 0 frames → 0 agents")
+        XCTAssertGreaterThanOrEqual(ReconnectStreamURLProtocol.requestCount, 2,
+                                    "the probe must exercise the failure → retry ladder")
     }
 
     /// F5: the connection reason reaches the owner's banner hook (AppModel

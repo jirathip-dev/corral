@@ -2,7 +2,7 @@ import Foundation
 
 /// Typed drive-plane failure. `.server` carries the daemon's typed error
 /// body (`{kind, message, request_id?}`) plus its HTTP status.
-enum DriveError: Error, Equatable, Sendable {
+enum DriveError: LocalizedError, Equatable, Sendable {
     case server(status: Int, kind: String, message: String, requestId: String?)
     case network(String)
     case encoding
@@ -10,6 +10,22 @@ enum DriveError: Error, Equatable, Sendable {
     var isStepUpRequired: Bool {
         if case .server(_, let kind, _, _) = self { return kind == "step_up_required" }
         return false
+    }
+
+    /// F1: `error.localizedDescription` used to fall back to the generic
+    /// NSError bridge ("The operation couldn't be completed. (...)") and
+    /// DISCARD the payload message — so a non-200 stream failure surfaced
+    /// with zero diagnostic content (no status, no URL). Surface the
+    /// underlying message instead.
+    var errorDescription: String? {
+        switch self {
+        case .server(let status, let kind, let message, _):
+            return "HTTP \(status) \(kind): \(message)"
+        case .network(let message):
+            return message
+        case .encoding:
+            return "payload encoding failed"
+        }
     }
 }
 

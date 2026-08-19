@@ -44,9 +44,14 @@ struct CorraldClient: Sendable {
     ///   `onConnectionError`; clean server EOF and task cancellation are
     ///   NOT reported — the former is the daemon's normal reconnect path,
     ///   the latter is the owner ending the stream.
+    /// - A successful 200 (including reconnects) reports via `onConnected`
+    ///   — an idle fleet emits no frames (keep-alives are comments, never
+    ///   framed), so the owner needs this to clear a stale `.error`
+    ///   indicator (review F2).
     /// - Ends only on cancellation.
     func stream(lastEventId: @escaping @Sendable () -> UInt64?,
                 onEvent: @escaping @Sendable (SSEFrame) -> Void,
+                onConnected: (@Sendable () -> Void)? = nil,
                 onConnectionError: (@Sendable (String) -> Void)? = nil) async {
         var backoff: UInt64 = 1
         while !Task.isCancelled {
@@ -58,10 +63,18 @@ struct CorraldClient: Sendable {
                     request.setValue(String(rev), forHTTPHeaderField: "Last-Event-ID")
                 }
                 let (bytes, response) = try await session.bytes(for: request)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    throw DriveError.network("events failed: \(response)")
+                guard let http = response as? HTTPURLResponse else {
+                    throw DriveError.network("events failed: not an HTTP response")
+                }
+                guard http.statusCode == 200 else {
+                    // F1: name the status and URL — a bare
+                    // `error.localizedDescription` used to discard this
+                    // entirely (DriveError had no LocalizedError conformance).
+                    throw DriveError.network(
+                        "events failed: HTTP \(http.statusCode) from \(request.url?.path ?? "/events")")
                 }
                 backoff = 1 // connected: reset the backoff ladder
+                onConnected?()
                 var parser = SSEParser()
                 try await Self.consumeLines(from: bytes, parser: &parser, onEvent: onEvent)
                 // Clean EOF: server closed the stream; reconnect.
@@ -74,11 +87,14 @@ struct CorraldClient: Sendable {
                 // never reached the connection path). Report the reason;
                 // the backoff/retry ladder below still runs and a later
                 // good frame's apply() returns the state to .connected, so
-                // a transient failure is visible but not fatal. Task
-                // cancellation while awaiting bytes(for:) surfaces as a
-                // URLError.cancelled — that is the owner ending the stream,
-                // not a connection failure, so it returns instead.
-                if (error as? URLError)?.code == .cancelled { return }
+                // a transient failure is visible but not fatal.
+                //
+                // Owner cancellation while awaiting bytes(for:) surfaces as
+                // a URLError.cancelled — end the stream then, but ONLY when
+                // the task is actually cancelled; a stray .cancelled without
+                // task cancellation must fall through to reporting (review
+                // F6), or the stream could end silently forever.
+                if (error as? URLError)?.code == .cancelled, Task.isCancelled { return }
                 onConnectionError?(error.localizedDescription)
             }
             if Task.isCancelled { return }

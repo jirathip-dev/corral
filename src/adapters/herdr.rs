@@ -13,8 +13,9 @@
 //!   drive commands) opens a fresh short-lived connection per call.
 //! - On subscribe, the server replays current pane state (pane.updated), so
 //!   the adapter converges without polling. If bounded event delivery
-//!   overflows, the stream is retired after its pending subscribe response
-//!   and the session re-bootstraps before reconnecting.
+//!   overflows, the stream is retired after its pending subscribe response;
+//!   the global stream re-bootstraps, while a pane stream reconnects and
+//!   re-subscribes with its bounded retry delay.
 //!
 //! Bootstrap is one `agent.list` call on connect (initial state — never a
 //! poll loop; AC5: no sleep-loops calling `herdr agent list`).
@@ -204,8 +205,14 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-/// Pending request id -> response oneshot.
-type PendingCalls = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, RpcError>>>>>;
+/// Pending requests and the terminal state of their reader, guarded as one
+/// unit so call registration cannot race reader teardown.
+struct PendingState {
+    closed: bool,
+    calls: HashMap<String, oneshot::Sender<Result<Value, RpcError>>>,
+}
+
+type PendingCalls = Arc<Mutex<PendingState>>;
 
 /// JSON-RPC client over a unix socket. One reader task parses
 /// newline-delimited frames: responses (with `id`) resolve pending calls
@@ -224,7 +231,10 @@ impl RpcClient {
     fn new(stream: UnixStream) -> (Arc<Self>, mpsc::Receiver<EventFrame>) {
         let (read, write) = stream.into_split();
         let (events_tx, events_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
-        let pending: PendingCalls = Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingCalls = Arc::new(Mutex::new(PendingState {
+            closed: false,
+            calls: HashMap::new(),
+        }));
         let client = Arc::new(Self {
             writer: AsyncMutex::new(write),
             pending: pending.clone(),
@@ -259,7 +269,7 @@ impl RpcClient {
                 }
             };
             if let Some(id) = value.get("id").and_then(|i| i.as_str()) {
-                if let Some(tx) = pending.lock().unwrap().remove(id) {
+                if let Some(tx) = pending.lock().unwrap().calls.remove(id) {
                     let result = match value.get("error") {
                         Some(err) => Err(RpcError::Server {
                             code: err
@@ -303,14 +313,19 @@ impl RpcClient {
                 // reading only until that response has been resolved.
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     overflowed = true;
-                    if pending.lock().unwrap().is_empty() {
+                    if pending.lock().unwrap().calls.is_empty() {
                         break;
                     }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
-        for (_, tx) in pending.lock().unwrap().drain() {
+        let calls = {
+            let mut state = pending.lock().unwrap();
+            state.closed = true;
+            std::mem::take(&mut state.calls)
+        };
+        for (_, tx) in calls {
             let _ = tx.send(Err(RpcError::Disconnected));
         }
     }
@@ -321,14 +336,20 @@ impl RpcClient {
     async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = format!("corral:{}", self.id_seq.fetch_add(1, Ordering::SeqCst));
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id.clone(), tx);
+        {
+            let mut state = self.pending.lock().unwrap();
+            if state.closed {
+                return Err(RpcError::Disconnected);
+            }
+            state.calls.insert(id.clone(), tx);
+        }
         let frame = json!({ "id": id, "method": method, "params": params });
         let mut line = frame.to_string();
         line.push('\n');
         {
             let mut writer = self.writer.lock().await;
             if writer.write_all(line.as_bytes()).await.is_err() {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock().unwrap().calls.remove(&id);
                 return Err(RpcError::Disconnected);
             }
             let _ = writer.flush().await;
@@ -2111,6 +2132,23 @@ mod tests {
             .expect("pending call cancellation timeout")
             .expect("call task panicked");
         server.await.expect("server task panicked");
+        assert!(matches!(result, Err(RpcError::Disconnected)));
+    }
+
+    #[tokio::test]
+    async fn call_after_reader_exit_is_rejected_without_timeout() {
+        let (server, client) = UnixStream::pair().expect("socketpair");
+        let (client, mut events) = RpcClient::new(client);
+        drop(server);
+
+        let closed = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("reader exit timeout");
+        assert!(closed.is_none(), "reader exit must close event receiver");
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), client.call("agent.list", json!({})))
+                .await
+                .expect("closed-call registration timeout");
         assert!(matches!(result, Err(RpcError::Disconnected)));
     }
 }

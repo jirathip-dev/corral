@@ -27,11 +27,13 @@
 //!   so ONE signature buys exactly ONE page, and only within the 60s
 //!   `|now - ts|` window the step-up / device-token handlers already
 //!   enforce. A captured header replays that one page at most, for 60
-//!   seconds, never live current content of the still-growing history
-//!   and never a different page (there is no URL knob: `cursor`/`limit`
-//!   query params are refused outright). Paging means re-signing per
-//!   page with the new cursor. The remaining mitigations are revocation
-//!   (checked per call), the 90-day key TTL, and the audit trail below.
+//!   seconds — never a different page, and never more than 60 seconds
+//!   of drift on the newest page (a cursor-less capture replays
+//!   whatever is newest at service time; there is no URL knob:
+//!   `cursor`/`limit` query params are refused outright). Paging means
+//!   re-signing per page with the new cursor. The remaining mitigations
+//!   are revocation (checked per call), the 90-day key TTL, and the
+//!   audit trail below.
 //! - no step-up: reads are never destructive.
 //! - every SERVED page appends an [`AuditEntry`] (capability
 //!   `read_tail`, the agent as target, outcome `Executed`) — the deepest
@@ -129,9 +131,114 @@ fn parse_transcript_payload(
 ) -> Result<TranscriptPayload, TranscriptApiError> {
     serde_json::from_value(payload.clone()).map_err(|error| TranscriptApiError::BadRequest {
         message: format!(
-            "signed envelope payload must be {{\"ts\": <unix secs>, \"cursor\": <opaque|absent>, \"limit\": <1..=50|absent>}}: {error}"
+            "signed envelope payload must be {{\"ts\": <unix secs>, \"cursor\": <opaque|absent>, \"limit\": <int, clamped to 1..=50|absent>}}: {error}"
         ),
     })
+}
+
+/// How long an over-cap `/transcript` request QUEUES before it becomes a
+/// 503 `busy` (fresh review N1c). A short burst absorbs into the queue
+/// instead of hard-denying (the pre-gate behaviour degraded to 503s for
+/// everyone once 8 slow binds held the blocking pool); a caller stuck
+/// behind slow binds still gets a clear retry signal within a bounded
+/// time. Chosen short: the cap is 8 per daemon, and paging is serial
+/// from one client, so a queue longer than this is a burst, not a
+/// workload.
+const TRANSCRIPT_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Per-daemon `/transcript` limiter (fresh review N1/N5): the
+/// concurrency gate AND the fingerprint-gated bind memo, in one
+/// `AppState`-owned value. Per-instance, never a process-global — tests
+/// build one `AppState` per harness, so they stop fighting one shared
+/// semaphore (the CI flake), and a future multi-root daemon cannot
+/// accidentally share state either.
+#[derive(Clone)]
+pub struct TranscriptLimiter {
+    gate: Arc<tokio::sync::Semaphore>,
+    memo: Arc<std::sync::Mutex<BindMemoInner>>,
+}
+
+impl TranscriptLimiter {
+    /// A limiter with `permits` concurrent serves. Injectable so tests
+    /// can shrink the cap to pin the `busy` path (fresh review F8).
+    pub fn new(permits: usize) -> Self {
+        Self {
+            gate: Arc::new(tokio::sync::Semaphore::new(permits)),
+            memo: Arc::new(std::sync::Mutex::new(BindMemoInner::default())),
+        }
+    }
+
+    /// Acquire one serve slot. Queues for up to [`TRANSCRIPT_GATE_WAIT`]
+    /// (fresh review N1c — a burst waits its turn instead of being
+    /// denied outright); only a wait that outlasts the window becomes
+    /// [`TranscriptApiError::Busy`]. The caller MUST hold the returned
+    /// permit for the whole serve (it drops it on return).
+    pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, TranscriptApiError> {
+        match tokio::time::timeout(TRANSCRIPT_GATE_WAIT, self.gate.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            // Timeout or closed semaphore: the semaphore is never closed
+            // (per-instance, lives for the daemon), so this is the wait
+            // window expiring.
+            _ => Err(TranscriptApiError::Busy),
+        }
+    }
+
+    /// Reuse the memoized bind only when the wire cursor's fingerprint
+    /// matches the memoized store (see the [`TranscriptLimiter`] docs
+    /// for why that is the whole identity check). Otherwise fall through
+    /// to a fresh bind. On a hit the entry is LRU-touched (fresh review
+    /// N2), so a long-running page sequence is not the first evicted
+    /// when the cap fills.
+    fn memo_lookup(
+        &self,
+        key: &BindMemoKey,
+        wire: &str,
+    ) -> Option<crate::transcript::bind::BindOutcome> {
+        let mut memo = self
+            .memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let outcome = memo.map.get(key)?.clone();
+        Cursor::decode_for(wire, &outcome.store).ok()?;
+        if let Some(pos) = memo.order.iter().position(|k| k == key) {
+            let key = memo.order.remove(pos).expect("position came from order");
+            memo.order.push_back(key);
+        }
+        Some(outcome)
+    }
+
+    /// Record a successful bind. FIFO/LRU-bounded: a NEW key past the
+    /// cap evicts the least-recently-used entry; updating an existing
+    /// key never grows the map.
+    fn memo_store(&self, key: BindMemoKey, outcome: crate::transcript::bind::BindOutcome) {
+        let mut memo = self
+            .memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        use std::collections::hash_map::Entry;
+        match memo.map.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                occupied.insert(outcome);
+                return;
+            }
+            Entry::Vacant(vacant) => {
+                let key = vacant.key().clone();
+                vacant.insert(outcome);
+                memo.order.push_back(key);
+            }
+        }
+        while memo.order.len() > BIND_MEMO_MAX_ENTRIES {
+            if let Some(oldest) = memo.order.pop_front() {
+                memo.map.remove(&oldest);
+            }
+        }
+    }
+}
+
+impl Default for TranscriptLimiter {
+    fn default() -> Self {
+        Self::new(TRANSCRIPT_MAX_CONCURRENT)
+    }
 }
 
 /// Bind memoization (fresh review F5, efficiency half). Paging an agent
@@ -152,9 +259,18 @@ fn parse_transcript_payload(
 /// `bad_cursor` path.
 ///
 /// Bounded (fresh review F5 — memoization must not be a DoS vector
-/// either): FIFO cap of [`BIND_MEMO_MAX_ENTRIES`] entries; overflow
-/// evicts the oldest. Entries hold a bind OUTCOME (store paths, rung,
-/// `stores_unavailable`) — never transcript content.
+/// either): LRU cap of [`BIND_MEMO_MAX_ENTRIES`] entries; overflow
+/// evicts the least-recently-used. Entries hold a bind OUTCOME (store
+/// paths, rung, `stores_unavailable`) — never transcript content.
+///
+/// Honest residual (fresh review N2): "does not invalidate the cursor"
+/// holds only while the entry is present. If it is gone — 64-entry cap
+/// overflow, or a daemon restart — a mid-sequence cursor falls through
+/// to a fresh bind, the fingerprint no longer matches the new newest
+/// session, and the client gets the pre-memo `400 bad_cursor` (page 1
+/// again re-establishes the sequence). Same request, 200 or 400
+/// depending on what else bound in between — a bounded cache, not a
+/// promise.
 const BIND_MEMO_MAX_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -170,50 +286,11 @@ struct BindMemoInner {
     order: VecDeque<BindMemoKey>,
 }
 
-fn bind_memo() -> &'static std::sync::Mutex<BindMemoInner> {
-    static MEMO: std::sync::OnceLock<std::sync::Mutex<BindMemoInner>> = std::sync::OnceLock::new();
-    MEMO.get_or_init(|| std::sync::Mutex::new(BindMemoInner::default()))
-}
-
-/// Reuse the memoized bind only when the wire cursor's fingerprint
-/// matches the memoized store (see [`bind_memo`] for why that is the
-/// whole identity check). Otherwise fall through to a fresh bind.
-fn memo_lookup(key: &BindMemoKey, wire: &str) -> Option<crate::transcript::bind::BindOutcome> {
-    let memo = bind_memo()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let outcome = memo.map.get(key)?;
-    Cursor::decode_for(wire, &outcome.store).ok()?;
-    Some(outcome.clone())
-}
-
-/// Record a successful bind. FIFO-bounded: a NEW key past the cap
-/// evicts the oldest; updating an existing key never grows the map.
-fn memo_store(key: BindMemoKey, outcome: crate::transcript::bind::BindOutcome) {
-    let mut memo = bind_memo()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use std::collections::hash_map::Entry;
-    match memo.map.entry(key) {
-        Entry::Occupied(mut occupied) => {
-            occupied.insert(outcome);
-            return;
-        }
-        Entry::Vacant(vacant) => {
-            let key = vacant.key().clone();
-            vacant.insert(outcome);
-            memo.order.push_back(key);
-        }
-    }
-    while memo.order.len() > BIND_MEMO_MAX_ENTRIES {
-        if let Some(oldest) = memo.order.pop_front() {
-            memo.map.remove(&oldest);
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum TranscriptApiError {
+    /// Over-cap concurrency: the request queued past [`TRANSCRIPT_GATE_WAIT`]
+    /// and got a 503 `busy` — the ONE error a client should retry on.
+    Busy,
     BadRequest {
         message: String,
     },
@@ -252,6 +329,12 @@ fn with_no_store(mut response: Response) -> Response {
 impl IntoResponse for TranscriptApiError {
     fn into_response(self) -> Response {
         let (status, kind, message, candidates) = match self {
+            Self::Busy => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "busy",
+                "too many concurrent transcript reads; retry shortly".to_string(),
+                None,
+            ),
             Self::BadRequest { message } => (StatusCode::BAD_REQUEST, "bad_request", message, None),
             Self::Auth { error } => {
                 // Same status/kind mapping as the drive plane (AC1): 401
@@ -394,36 +477,22 @@ fn authorize(
     Ok(signed)
 }
 
-/// Fresh review F5: cap on concurrent `/transcript` serves. One request
-/// can run up to three blocking store scans plus several sqlite3
-/// children on the tokio blocking pool the WHOLE daemon shares —
-/// uncapped, a couple hundred concurrent requests (one captured header
-/// suffices, finding 3) would saturate it for 10s stretches. The
-/// per-scan `ScanBudget` bounds one walk, not N of them; this bounds N.
-/// Process-wide static (the blocking pool it protects is process-wide).
-/// Try-acquire: over-cap callers get an immediate 503 `busy`, never an
-/// invisible queue. The efficiency half of F5 (one bind per page
-/// sequence instead of one per page) is [`bind_memo`] — fingerprint
-/// gated, FIFO-bounded, below.
+/// Default cap on concurrent `/transcript` serves per daemon (fresh
+/// review F5/N1): one request can run up to three blocking store scans
+/// plus several sqlite3 children on the tokio blocking pool the WHOLE
+/// daemon shares — uncapped, a couple hundred concurrent requests (one
+/// captured header suffices, finding 3) would saturate it for 10s
+/// stretches. The per-scan `ScanBudget` bounds one walk, not N of them;
+/// this bounds N. Per-daemon via [`TranscriptLimiter`] on `AppState`
+/// (fresh review N1a/N5: injectable, never a process-global, so tests
+/// build one limiter per harness instead of fighting a shared one).
 const TRANSCRIPT_MAX_CONCURRENT: usize = 8;
-static TRANSCRIPT_GATE: tokio::sync::Semaphore =
-    tokio::sync::Semaphore::const_new(TRANSCRIPT_MAX_CONCURRENT);
 
 pub async fn transcript(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(params): Query<TranscriptQuery>,
 ) -> Response {
-    let _permit = match TRANSCRIPT_GATE.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => {
-            let body = serde_json::json!({
-                "kind": "busy",
-                "message": "too many concurrent transcript reads; retry shortly",
-            });
-            return with_no_store((StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response());
-        }
-    };
     match serve(&state, &headers, params).await {
         Ok(body) => with_no_store(Json(body).into_response()),
         Err(error) => error.into_response(),
@@ -453,6 +522,13 @@ async fn serve(
         });
     }
     let signed = authorize(state, headers, &agent_id)?;
+    // Fresh review N1(b/c): the concurrency permit is acquired AFTER
+    // auth (unauthenticated traffic must not compete for the operator's
+    // slots) and with a short QUEUE window instead of try_acquire (a
+    // burst waits its turn; only a wait past TRANSCRIPT_GATE_WAIT is the
+    // 503 `busy`). Held for the rest of this serve — the expensive
+    // blocking bind/read work runs under it.
+    let _permit = state.transcript_limiter.acquire().await?;
     // Fresh review F3: the signed, transcript-scoped payload is the page
     // authority. Parsed AFTER the signature verify (it is signed
     // content), with the same 60s freshness rule as /step-up and
@@ -507,7 +583,9 @@ async fn serve(
         tool: agent.tool.clone(),
         worktree: worktree.clone(),
     };
-    let outcome = match cursor_wire.and_then(|wire| memo_lookup(&bind_key, wire)) {
+    let outcome = match cursor_wire
+        .and_then(|wire| state.transcript_limiter.memo_lookup(&bind_key, wire))
+    {
         Some(memoized) => memoized,
         None => {
             let fresh = bind_agent(&agent_id, &agent.tool, &worktree, &state.transcript_roots)
@@ -523,7 +601,7 @@ async fn serve(
                     },
                     BindError::Store(error) => TranscriptApiError::Read { error },
                 })?;
-            memo_store(bind_key, fresh.clone());
+            state.transcript_limiter.memo_store(bind_key, fresh.clone());
             fresh
         }
     };

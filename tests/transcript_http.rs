@@ -30,6 +30,9 @@ struct Harness {
     app: Router,
     /// The worktree path agents in this harness claim to run in.
     worktree: String,
+    /// Fresh-review N1/F8: this harness's own per-daemon limiter (clone
+    /// of the one inside `app`), so the busy test can occupy the gate.
+    limiter: corrald::api::transcript::TranscriptLimiter,
     _auth_dir: tempfile::TempDir,
     _stores_dir: tempfile::TempDir,
 }
@@ -192,6 +195,17 @@ impl Harness {
 }
 
 fn harness() -> Harness {
+    harness_with_limiter(corrald::api::transcript::TranscriptLimiter::default())
+}
+
+/// Fresh-review F8/N1: a harness with a chosen concurrency cap, so the
+/// `busy` 503 path is reachable deterministically (the default cap is
+/// per-harness and never contended across tests).
+fn harness_with_permits(permits: usize) -> Harness {
+    harness_with_limiter(corrald::api::transcript::TranscriptLimiter::new(permits))
+}
+
+fn harness_with_limiter(limiter: corrald::api::transcript::TranscriptLimiter) -> Harness {
     let store = Store::new();
     let coalescer = store.clone();
     std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
@@ -225,6 +239,7 @@ fn harness() -> Harness {
         adapter: Arc::new(corrald::api::drive::NoopAdapter),
         replay: Arc::new(ReplayTable::default()),
         transcript_roots: roots,
+        transcript_limiter: limiter.clone(),
     });
     Harness {
         store,
@@ -233,6 +248,7 @@ fn harness() -> Harness {
         pubkey,
         app,
         worktree,
+        limiter,
         _auth_dir: auth_dir,
         _stores_dir: stores_dir,
     }
@@ -924,4 +940,46 @@ async fn captured_header_serves_only_the_page_it_was_signed_for() {
     let (status, body) = get(&h.app, "/transcript?agent=herdr:a1", Some(&header2)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["entries"][0]["text"], "two");
+}
+
+/// Fresh review F8/N1: the concurrency cap is per-daemon and injectable —
+/// a harness with a 1-permit limiter pins the `busy` 503. The gate is
+/// acquired AFTER auth and QUEUES for a short window
+/// (`TRANSCRIPT_GATE_WAIT`) before degrading to `busy`, the one error a
+/// client should retry on; the busy body still carries no-store (F4).
+#[tokio::test]
+async fn over_cap_queues_then_returns_busy_503() {
+    let h = harness_with_permits(1);
+    h.seed_agent("herdr:a1", Some(&h.worktree)).await;
+    write_claude_session(&h, "s1", &[claude_line("assistant", "hello")]);
+
+    // Occupy the harness's only permit. The harness limiter is a clone
+    // of the one inside `app`, so this shares the gate with the serve
+    // path (per-instance — no other test's harness contends).
+    let _permit = h
+        .limiter
+        .acquire()
+        .await
+        .expect("the lone permit is free at harness start");
+
+    let header = h.auth_header(Capability::ReadTail, "herdr:a1");
+    let mut request = Request::get("/transcript?agent=herdr:a1");
+    request = request.header(TRANSCRIPT_AUTH_HEADER, header);
+    let res = h
+        .app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        res.headers()
+            .get("cache-control")
+            .map(|v| v.to_str().unwrap()),
+        Some("no-store"),
+        "the busy error must still carry no-store (F4)"
+    );
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["kind"], "busy");
 }

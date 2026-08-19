@@ -81,6 +81,13 @@ pub struct AppState {
     /// fixtures — the Default is hermetic (a throwaway temp dir, so no
     /// test accidentally reads live stores).
     pub transcript_roots: crate::transcript::bind::TranscriptRoots,
+    /// #63 fresh-review N1/N5: the per-daemon `/transcript` limiter
+    /// (concurrency gate + bind memo). Per-instance, never a
+    /// process-global — the test suite builds one `AppState` per harness,
+    /// and a future multi-root daemon must not share a gate or memo.
+    /// [`TranscriptLimiter::new`] makes the cap injectable (the
+    /// transcript tests shrink it to pin the `busy` path).
+    pub transcript_limiter: crate::api::transcript::TranscriptLimiter,
 }
 
 impl Default for AppState {
@@ -107,6 +114,7 @@ impl Default for AppState {
             // directly via `TranscriptRoots::hermetic()` instead of
             // paying for this whole Default (review F14).
             transcript_roots: crate::transcript::bind::TranscriptRoots::hermetic(),
+            transcript_limiter: crate::api::transcript::TranscriptLimiter::default(),
         }
     }
 }

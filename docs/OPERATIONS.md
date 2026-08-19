@@ -306,11 +306,12 @@ whole envelope (payload included) — so **one signature buys exactly ONE
 page**, and only while `|now - ts| <= 60s` (the same freshness rule as
 `/step-up` and `/device-token`). There is no URL knob: `cursor`/`limit`
 query parameters are refused outright, so a captured header replays at
-most the one page it was signed for, for 60 seconds — never live current
-pages of the still-growing history, never a different page. Paging means
-re-signing per page with the new cursor. A suspected header leak is
-still a key-revocation event (revocation is checked on every call), and
-every served page leaves its own audit entry (below).
+most the one page it was signed for, for 60 seconds — never a different
+page, and never more than 60 seconds of drift on the newest page (a
+cursor-less capture replays whatever is newest at service time). Paging
+means re-signing per page with the new cursor. A suspected header leak
+is still a key-revocation event (revocation is checked on every call),
+and every served page leaves its own audit entry (below).
 
 ```sh
 curl -s 'http://127.0.0.1:8474/transcript?agent=herdr:ses_abc123' \
@@ -330,10 +331,14 @@ file it was issued for; the bind is memoized for the life of the page
 sequence (fingerprint-verified), so a newer session appearing
 mid-sequence does not invalidate the cursor — it keeps paging the file
 it was issued for, and the next cursor-less request picks the new
-newest session. `limit` is signed into the header and clamped to 1..=50
-regardless of what is asked (asking for 500 yields 50). `skipped` counts
-torn rows/lines in the page's range; `session` names the bound session
-so a client can pin it; `bind` says which rung answered (`session_id` =
+newest session. The memo is a bounded per-daemon cache (LRU, 64
+entries), not a promise: if the entry is evicted or the daemon
+restarts, a mid-sequence cursor falls through to a fresh bind and
+becomes `bad_cursor` — page 1 again re-establishes the sequence.
+`limit` is signed into the header and clamped to 1..=50 regardless of
+what is asked (asking for 500 yields 50). `skipped` counts torn
+rows/lines in the page's range; `session` names the bound session so a
+client can pin it; `bind` says which rung answered (`session_id` =
 exact, `worktree` = best-effort — same-tool agents sharing a worktree
 without session-id hints share that rung); `stores_unavailable` lists
 store kinds that errored during binding (a complete-looking page from
@@ -349,7 +354,9 @@ path — `bad_cursor` 400, `unknown_agent`/`no_session` 404,
 `ambiguous_session` 409 **with the candidate list** (the daemon never
 guesses between sessions that tie on recency),
 `store_unreadable`/`sqlite3_unavailable`/`query_timeout` 503,
-`store_shape` 502.
+`store_shape` 502. Concurrency: `/transcript` serves are capped at 8
+per daemon; an over-cap request queues briefly (2s) then gets `busy`
+503 — the ONE error a client should retry on.
 
 Every SERVED page appends an audit entry (capability
 `read_tail:transcript` — distinguishable from a bounded `/drive`

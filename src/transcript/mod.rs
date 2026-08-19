@@ -269,21 +269,24 @@ fn truncate_to_budget(text: &str, budget: usize) -> String {
 }
 
 /// S1 seam cut for a SQL-capped string: the largest prefix that never
-/// hands the redactor a severed token. Backs off from the byte budget to
-/// the nearest NON-ALNUM boundary, so every alnum run that survives in
-/// the prefix is COMPLETE within it — "can never leak a cleartext
-/// prefix" holds for RULE-4 alnum runs, judged at their full (unsevered)
-/// length. Rule 5's non-env-shaped branch is a different shape: a
-/// `_`/`-`/`.` boundary is non-alnum, so a cut can land INSIDE a
-/// secret-named `name=value` token and leave a 1–7 char value fragment
-/// that the ≥8-char gate (`ENV_VALUE_MIN_LEN`) declines to redact — the
-/// guard below extends the backoff past such an assignment, dropping the
-/// whole severed fragment (origin/main strictness). A budget window with
-/// no non-alnum char at all is one unbroken alnum run of ~256KiB: kept
-/// whole, because such a run is far past rule 4's 24-char threshold —
-/// the redactor either redacts it wholesale or it is not secret-shaped.
-/// (L1: the old whitespace-only fallback reduced a whitespace-free blob
-/// — minified JSON, base64 — to the marker alone, an empty entry.)
+/// hands the redactor a severed rule-4 alnum run or a severed
+/// secret-named value fragment. Backs off from the byte budget to the
+/// nearest NON-ALNUM boundary, so every alnum run that survives in the
+/// prefix is COMPLETE within it — "can never leak a cleartext prefix"
+/// holds for RULE-4 alnum runs, judged at their full (unsevered) length.
+/// Rule 5's non-env-shaped branch is a different shape: its value is ANY
+/// whitespace-free run, so a cut can land inside a secret-named
+/// `name=value` token at any non-alnum char (incl. `/`, `+`, `=`,
+/// non-ASCII) and leave a short value fragment below the ≥8-char gate
+/// (`ENV_VALUE_MIN_LEN`) in cleartext. The guard below models rule 5's
+/// value shape exactly: when the cut severs such a value, the prefix
+/// backs off past the whole assignment (origin/main strictness), so no
+/// fragment survives. A budget window with no non-alnum char at all is
+/// one unbroken alnum run of ~256KiB: kept whole, because such a run is
+/// far past rule 4's 24-char threshold — the redactor either redacts it
+/// wholesale or it is not secret-shaped. (L1: the old whitespace-only
+/// fallback reduced a whitespace-free blob — minified JSON, base64 — to
+/// the marker alone, an empty entry.)
 fn capped_seam_cut(raw: &str) -> usize {
     let mut cut = MAX_PAGE_TEXT_BYTES;
     while cut > 0 && !raw.is_char_boundary(cut) {
@@ -306,58 +309,76 @@ fn capped_seam_cut(raw: &str) -> usize {
     if cut == 0 {
         return budget_boundary;
     }
-    // F1 (PR #99): the non-alnum backoff cannot see `name=value` shapes
-    // (its boundary chars `_`/`-`/`.` are non-alnum), so extend the
-    // backoff past a severed secret-named assignment when the cut lands
-    // inside its value.
+    // F1/F1.1 (PR #99): the non-alnum backoff cannot see `name=value`
+    // shapes (any non-alnum char can be a value-fragment boundary), so
+    // extend the backoff past a severed secret-named assignment when the
+    // cut lands inside its value.
     severed_secret_assignment_start(raw, cut).unwrap_or(cut)
 }
 
-/// F1 (PR #99) rule-5 seam guard: when the non-alnum seam cut lands
-/// INSIDE a secret-named `name=value` token (the value continues past
-/// the cut), the prefix would carry a 1–7 char value fragment that rule
-/// 5's ≥8-char gate (`ENV_VALUE_MIN_LEN`) leaves in cleartext — even
-/// though the full (severed) value would have been redacted. Backs off
-/// to the last whitespace before the `name=` fragment (or 0), so the
-/// whole assignment is dropped from the page prefix. Only fires when the
+/// F1/F1.1 (PR #99) rule-5 seam guard: when the non-alnum seam cut
+/// lands INSIDE a secret-named `name=value` token (the value continues
+/// past the cut), the prefix would carry a short value fragment that
+/// rule 5's ≥8-char gate (`ENV_VALUE_MIN_LEN`) leaves in cleartext —
+/// even though the full (severed) value would have been redacted. Backs
+/// off to the last whitespace before the whole non-whitespace run (or
+/// 0), so the assignment is dropped from the page prefix. Models rule
+/// 5's value shape exactly — a value is ANY whitespace-free run — and
+/// walks the run the way `env_value_at` does, so `=` inside values and
+/// URL-query runs resolve to the right assignment. Only fires when the
 /// cut is mid-value; a complete value in the prefix is judged at full
 /// length by the redactor.
 fn severed_secret_assignment_start(raw: &str, cut: usize) -> Option<usize> {
     let bytes = raw.as_bytes();
-    // The cut must be INSIDE the value (it continues past the cut), not
-    // at its end — a complete value is redacted whole by rule 5.
-    if cut >= bytes.len() || !seam_value_char(bytes[cut]) {
+    // No continuation past the cut: a complete value is judged at full
+    // length by the redactor.
+    if cut >= bytes.len() || bytes[cut].is_ascii_whitespace() {
         return None;
     }
-    // Scan back over the value-fragment chars to the preceding `=`.
-    let mut start = cut;
-    while start > 0 && seam_value_char(bytes[start - 1]) {
-        start -= 1;
+    // The non-whitespace run containing the cut — rule 5's value shape.
+    let mut run_start = cut;
+    while run_start > 0 && !bytes[run_start - 1].is_ascii_whitespace() {
+        run_start -= 1;
     }
-    if start == 0 || bytes[start - 1] != b'=' {
-        return None;
+    let mut run_end = cut;
+    while run_end < bytes.len() && !bytes[run_end].is_ascii_whitespace() {
+        run_end += 1;
     }
-    // The name is the ident run before the `=`.
-    let eq = start - 1;
-    let mut name_start = eq;
-    while name_start > 0 && seam_name_char(bytes[name_start - 1]) {
-        name_start -= 1;
+    // Walk the run the way `env_value_at` does: every STANDALONE ident
+    // run (preceded by a non-ident char, per is_ident_char) immediately
+    // followed by `=` closes a candidate name. A secret-ish name whose
+    // value span `(eq+1, run_end)` contains the cut means the cut severs
+    // that secret value — back off to the last whitespace before the
+    // run (or 0).
+    let mut i = run_start;
+    while i < run_end {
+        if seam_name_start(bytes[i]) && (i == run_start || !seam_name_char(bytes[i - 1])) {
+            let mut j = i + 1;
+            while j < run_end && seam_name_char(bytes[j]) {
+                j += 1;
+            }
+            if j < run_end && bytes[j] == b'=' && seam_name_is_secret(&raw[i..j]) {
+                let eq = j;
+                if cut > eq + 1 {
+                    let mut back = run_start;
+                    while back > 0 && !bytes[back - 1].is_ascii_whitespace() {
+                        back -= 1;
+                    }
+                    return Some(back);
+                }
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
     }
-    if name_start == eq || !seam_name_is_secret(&raw[name_start..eq]) {
-        return None;
-    }
-    // Back off to the last whitespace before the `name=` fragment (or 0).
-    let mut back = name_start;
-    while back > 0 && !bytes[back - 1].is_ascii_whitespace() {
-        back -= 1;
-    }
-    Some(back)
+    None
 }
 
-/// F1: the value-fragment charset `capped_seam_cut` can sever at a
-/// non-alnum boundary (rule 5's whitespace-free token branch).
-fn seam_value_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
+/// F1.1: the `.env` name START charset (`src/core/redact.rs`'s
+/// `is_ident_start`).
+fn seam_name_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
 }
 
 /// F1: the `.env` name charset (`src/core/redact.rs`'s `is_ident_char`).
@@ -1923,29 +1944,41 @@ mod tests {
         );
     }
 
-    /// F1 (PR #99): the seam can land on a `_`/`-`/`.` boundary INSIDE a
-    /// secret-named `name=value` token — non-alnum, so the S1 backoff
-    /// stops there — leaving a 1–7 char value fragment that rule 5's
-    /// ≥8-char gate (`ENV_VALUE_MIN_LEN`) declines to redact. The fix
-    /// backs off past the whole assignment, so no short fragment
-    /// survives in the page text (dropped whole, not shown redacted).
+    /// F1/F1.1 (PR #99): the seam can land on ANY non-alnum boundary
+    /// INSIDE a secret-named `name=value` token — rule 5's non-env value
+    /// is any whitespace-free run, so a `_`, `/`, or `+` boundary all
+    /// stop the S1 backoff and leave a short value fragment below the
+    /// ≥8-char gate (`ENV_VALUE_MIN_LEN`). The guard backs off past the
+    /// whole assignment, so no fragment survives in the page text
+    /// (dropped whole, not shown redacted).
     #[tokio::test]
     async fn sql_capped_secret_named_value_fragment_at_the_seam_does_not_leak() {
         if !have_sqlite3() {
             eprintln!("sqlite3 not on PATH; skipping");
             return;
         }
+        // `_`-boundary fragment (F1) plus `/`/`+`-boundary fragments
+        // (F1.1 residual class): the cap lands inside each value.
+        for (value, fragment) in [
+            ("ab_c_def", "ab_c_"),
+            ("ab/c_def", "ab/"),
+            ("ab+c_def", "ab+"),
+        ] {
+            assert_no_seam_value_fragment_leaks(value, fragment).await;
+        }
+    }
+
+    /// One shape of the F1/F1.1 seam leak: `fragment` is the value
+    /// prefix left by a cap cut at a non-alnum boundary inside `value`;
+    /// the page must contain no cleartext fragment of `value` at all.
+    async fn assert_no_seam_value_fragment_leaks(value: &str, fragment: &str) {
         let dir = tempfile::tempdir().expect("temp dir");
         let db = dir.path().join("opencode.db");
-        // Secret-named, NON-env-shaped assignment whose value the substr
-        // cap severs at a `_` boundary: `auth_key=ab_c_def` — the full
-        // 8-char value would be redacted by rule 5, but the seam
-        // fragment `ab_c_` (5 chars) is below the ≥8-char gate.
-        let value = "ab_c_def";
         // Whitespace filler sized so the SQL cap (budget+1 chars) ends
-        // right after the `_` in `ab_c_def` (filler + "auth_key=" +
-        // "ab_c_" == budget): the non-alnum backoff stops at that `_`.
-        let filler_len = MAX_PAGE_TEXT_BYTES - ("auth_key=".len() + "ab_c_".len());
+        // right after `fragment` (filler + "auth_key=" + fragment ==
+        // budget): the non-alnum backoff stops at the fragment's last
+        // char.
+        let filler_len = MAX_PAGE_TEXT_BYTES - ("auth_key=".len() + fragment.len());
         assert_eq!(filler_len % 2, 0, "filler ends on a `w ` boundary");
         let body = format!(
             "{}auth_key={value} trailing tail beyond the cap",
@@ -1977,8 +2010,9 @@ mod tests {
         let text = &page.entries[0].text;
         // 2..=7: a 1-char prefix (`a`) also occurs inside the truncation
         // marker's own words, so it cannot discriminate; every longer
-        // fragment of the value (all contain `_` or a multi-char run)
-        // is absent from both the `w ` filler and the marker.
+        // fragment of the value contains `_`, `/`, or `+` — absent from
+        // both the `w ` filler and the marker ("ab" is the only
+        // exception and it does not occur in either).
         for n in 2..=7 {
             assert!(
                 !text.contains(&value[..n]),
@@ -1992,11 +2026,11 @@ mod tests {
         assert!(text.ends_with(TRUNCATED_MARKER), "truncation marked");
     }
 
-    /// F1 doc-scope pin (cheap, no sqlite): `capped_seam_cut` extends
-    /// the backoff past a severed secret-named `name=value` fragment
-    /// (rule 5's non-env branch — the ≥8-char gate declines the short
-    /// fragment), while the rule-4 backoff and the unbroken-run budget
-    /// trade are byte-for-byte unchanged.
+    /// F1/F1.1 doc-scope pin (cheap, no sqlite): `capped_seam_cut`
+    /// extends the backoff past a severed secret-named `name=value`
+    /// fragment — any whitespace-free run, `_` or `/` boundaries — while
+    /// the rule-4 backoff and the unbroken-run budget trade are
+    /// byte-for-byte unchanged.
     #[test]
     fn seam_cut_drops_severed_secret_named_value_fragment() {
         // The rule-5 gate the guard defends: the FULL value is redacted,
@@ -2030,6 +2064,43 @@ mod tests {
         assert!(
             !redact(prefix).contains("ab_c"),
             "no value fragment survives in the redacted prefix"
+        );
+        // F1.1: rule 5's value is ANY whitespace-free run — a `/`-in-
+        // value cut after `/` must drop the assignment the same way.
+        assert_eq!(
+            redact("auth_key=ab/c_def").as_ref(),
+            "auth_key=[REDACTED]",
+            "full `/`-containing value redacted by rule 5"
+        );
+        let slash_filler_len = MAX_PAGE_TEXT_BYTES - ("auth_key=".len() + "ab/".len());
+        let mut raw_slash = "w ".repeat(slash_filler_len / 2);
+        raw_slash.push_str("auth_key=ab/c_def trailing");
+        let cut_slash = capped_seam_cut(&raw_slash);
+        let prefix_slash = &raw_slash[..cut_slash];
+        assert!(
+            !prefix_slash.contains("auth_key"),
+            "a `/`-severed secret value is dropped from the prefix"
+        );
+        assert!(
+            !redact(prefix_slash).contains("ab/"),
+            "no `/`-value fragment survives in the redacted prefix"
+        );
+        // The run walk resolves `=`-in-values to the OUTER assignment
+        // (the inner `ab` before `=` is not secret and does not confuse
+        // it), and never matches non-secret names.
+        let eq_run = "w auth_key=ab=cd/ef";
+        let cut_in_eq_value = eq_run.find("cd/ef").unwrap() + 1;
+        assert_eq!(
+            severed_secret_assignment_start(eq_run, cut_in_eq_value),
+            Some(2),
+            "a cut inside a `=`-containing secret value backs off past the run"
+        );
+        let plain_run = "w a=1&b=2/3";
+        let cut_in_plain_value = plain_run.find("2/3").unwrap() + 1;
+        assert_eq!(
+            severed_secret_assignment_start(plain_run, cut_in_plain_value),
+            None,
+            "non-secret names never trigger the guard"
         );
         // Rule-4 seam unchanged: a severed mixed-case run still backs
         // off to the preceding whitespace boundary.

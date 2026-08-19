@@ -65,6 +65,7 @@ cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
 
 mkdir -p "$CONFIG_DIR"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
 echo ">> Installing launchd agent: $PLIST"
 # bootout any previously-loaded job FIRST — launchd does NOT re-read a
 # rewritten plist on kickstart, so a re-run with changed --bind would
@@ -157,16 +158,22 @@ cat > "$UPDATE_PLIST" <<UPDATE_EOF
     <key>Minute</key><integer>17</integer>
   </dict>
   <key>ProcessType</key><string>Background</string>
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>$CONFIG_DIR/corral-update.log</string>
   <key>StandardErrorPath</key><string>$CONFIG_DIR/corral-update.log</string>
 </dict>
 </plist>
 UPDATE_EOF
 plutil -lint "$UPDATE_PLIST" >/dev/null
-launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1 \
-  || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1; } \
-  || { echo "!! update-agent bootstrap failed" >&2; }
-echo "   ✓ update agent loaded (checks hourly at :17; pulls main, rebuilds, restarts)"
+if launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1 \
+  || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1; }; then
+  echo "   ✓ update agent loaded (checks hourly at :17; pulls main, rebuilds, restarts)"
+else
+  echo "   ✗ update agent bootstrap failed — see output above" >&2
+fi
+else
+  echo ">> Skipping launchd agent (macOS only)"
+fi
 
 # --- Desktop client install (platform-aware) ---------------------------------
 # macOS: /Applications/Corral.app bundle (icon + ad-hoc signed)
@@ -188,13 +195,15 @@ install_desktop_client() {
       # Icon: build an .icns from the 1024 master (assets/icon/corral-icon-1024.png)
       local ICON_SRC="$REPO_DIR/assets/icon/corral-icon-1024.png"
       if [[ -f "$ICON_SRC" ]] && command -v iconutil >/dev/null 2>&1; then
-        local ICONSET="$(mktemp -d)/Corral.iconset"
+        local ICONSET_DIR ICONSET
+        ICONSET_DIR="$(mktemp -d)"
+        ICONSET="$ICONSET_DIR/Corral.iconset"
         mkdir -p "$ICONSET"
         for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x" "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x" "512:512x512" "1024:512x512@2x"; do
           local px="${spec%%:*}"; local name="${spec##*:}"
-          sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_$name.png" >/dev/null 2>&1
+          sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_$name.png" >/dev/null 2>&1 || true
         done
-        iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Corral.icns" 2>/dev/null
+        iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Corral.icns" 2>/dev/null || true
         rm -rf "$(dirname "$ICONSET")"
       fi
       cat > "$APP/Contents/Info.plist" <<PLIST_EOF
@@ -206,6 +215,7 @@ install_desktop_client() {
   <key>CFBundleIdentifier</key><string>com.corral.corrald-ui</string>
   <key>CFBundleName</key><string>Corral</string>
   <key>CFBundleDisplayName</key><string>Corral</string>
+  <key>CFBundleIconFile</key><string>Corral</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>0.1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>

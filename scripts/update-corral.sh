@@ -22,6 +22,14 @@ mkdir -p "$CONFIG_DIR"
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z')  $*" >> "$LOG"; }
 
+file_mtime() {  # epoch mtime; 0 when missing/unreadable
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f %m "$1" 2>/dev/null || echo 0
+  else
+    stat -c %Y "$1" 2>/dev/null || echo 0
+  fi
+}
+
 cd "$REPO_DIR"
 
 # --- Guards: skip when the main checkout is not in a pullable state ---------
@@ -52,8 +60,8 @@ git pull --ff-only origin main 2>>"$LOG" || { log "pull failed — retry next cy
 BIN_DIR="$REPO_DIR/target/release"
 DAEMON_BIN="$BIN_DIR/corrald"
 UI_BIN="$BIN_DIR/corrald-ui"
-daemon_before_mtime="$(stat -f %m "$DAEMON_BIN" 2>/dev/null || echo 0)"
-ui_before_mtime="$(stat -f %m "$UI_BIN" 2>/dev/null || echo 0)"
+daemon_before_mtime="$(file_mtime "$DAEMON_BIN")"
+ui_before_mtime="$(file_mtime "$UI_BIN")"
 
 log "building (workspace release)..."
 cargo build --release 2>>"$LOG" || { log "build FAILED — keeping old binaries"; exit 0; }
@@ -106,7 +114,7 @@ reinstall_ui() {
 }
 
 # --- Restart the daemon if its binary changed ------------------------------
-if [[ "$(stat -f %m "$DAEMON_BIN")" != "$daemon_before_mtime" ]]; then
+if [[ "$(file_mtime "$DAEMON_BIN")" != "$daemon_before_mtime" ]]; then
   if launchctl print "gui/$(id -u)/com.corral.corrald" >/dev/null 2>&1; then
     launchctl kickstart -k "gui/$(id -u)/com.corral.corrald" && log "daemon restarted (new binary)"
   else
@@ -115,7 +123,7 @@ if [[ "$(stat -f %m "$DAEMON_BIN")" != "$daemon_before_mtime" ]]; then
 fi
 
 # --- Relaunch the egui client if it is running and changed -----------------
-if [[ "$(stat -f %m "$UI_BIN" 2>/dev/null || echo 0)" != "$ui_before_mtime" ]]; then
+if [[ "$(file_mtime "$UI_BIN")" != "$ui_before_mtime" ]]; then
   reinstall_ui
 fi
 

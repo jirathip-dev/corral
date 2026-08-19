@@ -1490,6 +1490,61 @@ final class SSEStreamRegressionTests: XCTestCase {
     }
 }
 
+// MARK: - Connection failures (#92)
+
+/// #92: a URLProtocol mock that FAILS every request (connection refused).
+/// `startLoading()` reports `didFailWithError` before any response bytes,
+/// so `URLSession.bytes(for:)` throws and the real `stream()` catch-all is
+/// what sees the failure.
+private final class FailingStreamURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    override func stopLoading() {}
+}
+
+/// #92 regression: `stream()` used to swallow EVERY connection error in a
+/// bare catch, so `connectionState` never left `.connecting` — the UI
+/// rendered `ProgressView()` forever with no banner, no `os.Logger` line,
+/// no diagnosis (this is why #90 stayed invisible for the app's whole
+/// life). This test drives the REAL path — `FleetStore.connect(client:)` →
+/// `CorraldClient.stream()` over a real `URLSession` whose `URLProtocol`
+/// mock FAILS the request — and asserts the store flips to `.error`, NOT
+/// `.connecting`. RED on current main: the bare catch swallows the failure
+/// and the state stays `.connecting`, failing the guard below.
+@MainActor
+final class ConnectionFailureTests: XCTestCase {
+
+    func testConnectionFailureSurfacesErrorNotConnecting() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingStreamURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+        let store = FleetStore()
+
+        store.connect(client: client)
+        defer {
+            store.disconnect()
+            session.invalidateAndCancel()
+        }
+
+        // The mock fails immediately; poll for the surfaced .error state.
+        let deadline = Date().addingTimeInterval(5)
+        while store.connectionState == .connecting, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        guard case .error(let message) = store.connectionState else {
+            return XCTFail("connection failure must set .error, not \(store.connectionState)")
+        }
+        XCTAssertTrue(message.contains("stream disconnected"), message)
+    }
+}
+
 // MARK: - Nested ObservableObject forwarding (#93)
 
 @MainActor

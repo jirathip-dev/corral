@@ -40,9 +40,14 @@ struct CorraldClient: Sendable {
     /// - On disconnect (server close or network error) backs off
     ///   1s → 2s → 4s … capped at 30s, then reconnects from the latest
     ///   event id delivered so far (`onEvent` reports ids).
+    /// - Genuine failures (non-200, URLError, request errors) report via
+    ///   `onConnectionError`; clean server EOF and task cancellation are
+    ///   NOT reported — the former is the daemon's normal reconnect path,
+    ///   the latter is the owner ending the stream.
     /// - Ends only on cancellation.
     func stream(lastEventId: @escaping @Sendable () -> UInt64?,
-                onEvent: @escaping @Sendable (SSEFrame) -> Void) async {
+                onEvent: @escaping @Sendable (SSEFrame) -> Void,
+                onConnectionError: (@Sendable (String) -> Void)? = nil) async {
         var backoff: UInt64 = 1
         while !Task.isCancelled {
             do {
@@ -63,7 +68,18 @@ struct CorraldClient: Sendable {
             } catch is CancellationError {
                 return
             } catch {
-                // Transient network failure; back off and retry.
+                // #92: connection failures used to VANISH in this bare
+                // catch — the spinner spun forever with no banner, no log
+                // line, no diagnosis (the #79/#82 decode-failure treatment
+                // never reached the connection path). Report the reason;
+                // the backoff/retry ladder below still runs and a later
+                // good frame's apply() returns the state to .connected, so
+                // a transient failure is visible but not fatal. Task
+                // cancellation while awaiting bytes(for:) surfaces as a
+                // URLError.cancelled — that is the owner ending the stream,
+                // not a connection failure, so it returns instead.
+                if (error as? URLError)?.code == .cancelled { return }
+                onConnectionError?(error.localizedDescription)
             }
             if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)

@@ -50,6 +50,12 @@ final class FleetStore: ObservableObject {
     /// on device, where the acceptance gate runs.
     var onDecodeFailure: (@MainActor @Sendable (String) -> Void)?
 
+    /// #92: the connection-error hook — AppModel routes this into the SAME
+    /// dismissible, text-selectable banner as decode failures, so a refused
+    /// or unreachable host is READABLE on device instead of an endless
+    /// spinner.
+    var onConnectionError: (@MainActor @Sendable (String) -> Void)?
+
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
@@ -192,8 +198,24 @@ final class FleetStore: ObservableObject {
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
                 self?.ingest(frame)
+            }, onConnectionError: { [weak self] reason in
+                // The stream callback runs off the main actor; hop once.
+                Task { @MainActor in self?.noteConnectionError(reason) }
             })
         }
+    }
+
+    /// #92: visible + diagnosable connection-failure state (never a silent
+    /// spinner). Mirrors `noteDecodeFailure`: os.Logger (retrievable from a
+    /// detached TestFlight build via Console/sysdiagnose — print is not),
+    /// the `.error` connection state, and the callback the owner routes to
+    /// the full-width, copyable banner. A later good frame's `apply()`
+    /// returns the state to `.connected`, so a transient failure is visible
+    /// but not fatal.
+    func noteConnectionError(_ reason: String) {
+        Self.log.error("stream connection error: \(reason, privacy: .public)")
+        connectionState = .error("stream disconnected — \(reason)")
+        onConnectionError?(reason)
     }
 
     /// One frame off the wire: decode OFF-main (round-3 R-N4 — a large

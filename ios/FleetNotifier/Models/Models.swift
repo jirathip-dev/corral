@@ -361,6 +361,31 @@ struct DeviceTokenResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// `POST /grants-read` response (#101): `{ok, key_id, grants, expiry_ts,
+/// revoked}` — the key's CURRENT grants, so a host-side promotion reaches
+/// the phone without a device reset.
+struct GrantsReadResponse: Codable, Equatable, Sendable {
+    var ok: Bool
+    var keyId: String
+    var grants: [String]
+    var expiryTs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case keyId = "key_id"
+        case grants
+        case expiryTs = "expiry_ts"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        keyId = try c.decode(String.self, forKey: .keyId)
+        grants = try c.decodeIfPresent([String].self, forKey: .grants) ?? []
+        expiryTs = try c.decodeIfPresent(UInt64.self, forKey: .expiryTs) ?? 0
+    }
+}
+
 /// Opaque JSON value for `DriveResponse.result` (never touched in v1).
 enum CodableValue: Codable, Equatable, Sendable {
     case null

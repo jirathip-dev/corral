@@ -540,6 +540,18 @@ final class PushPayloadTests: XCTestCase {
         XCTAssertEqual(String(data: bytes, encoding: .utf8),
                        #"{"key_id":"dev-1","device_token":"a1b2c3","ts":1700000000}"#)
     }
+
+    /// `canonical_grants_read_bytes` — fixed order key_id, request, ts
+    /// (mirror of the Rust GrantsReadRequest; the daemon's serde field
+    /// order is the same, so signatures cannot drift across the wire).
+    func testGrantsReadBodyCanonicalShape() {
+        let bytes = CanonicalJSON.grantsReadBytes(keyId: "dev_abc", request: "grants-read", ts: 1_700_000_000)
+        XCTAssertEqual(String(data: bytes, encoding: .utf8),
+                       #"{"key_id":"dev_abc","request":"grants-read","ts":1700000000}"#)
+        let body = CanonicalJSON.grantsReadBody(keyId: "dev_abc", signatureB64: "c2ln", requestBytes: bytes)
+        XCTAssertEqual(String(data: body, encoding: .utf8),
+                       #"{"key_id":"dev_abc","signature":"c2ln","request":{"key_id":"dev_abc","request":"grants-read","ts":1700000000}}"#)
+    }
 }
 
 // MARK: - Stale-hash rejection (D16: lock-screen reply bound to prompt_hash)
@@ -1850,5 +1862,131 @@ final class AppModelFleetForwardingTests: XCTestCase {
         XCTAssertGreaterThan(emissions, 0,
                              "a fleet mutation must emit AppModel.objectWillChange or the board never re-renders")
         cancellable.cancel()
+    }
+}
+
+// MARK: - Issue #101: signed self-service grants read (grants refresh)
+
+/// Regression for #101. `AppModel` caches grants from the last `/register`
+/// response and there was NO way to refresh them — a host-side promotion
+/// stayed invisible until the device re-minted itself read-only. The fix:
+/// `POST /grants-read` (signed `{key_id, request, ts}`, verified like
+/// `/device-token`) returns the key's CURRENT grants + expiry, and
+/// `AppModel.refreshGrants()` re-syncs on cold launch / foreground. These
+/// tests drive the REAL `DriveClient` / `AppModel` byte path with a
+/// URLProtocol mock and assert on the persisted `DeviceKeyStore` meta.
+/// Lock-guarded statics (review N1 discipline, same as
+/// `LastEventIDCapturingURLProtocol`).
+@MainActor
+final class GrantsRefreshTests: XCTestCase {
+
+    final class GrantsReadURLProtocol: URLProtocol {
+        private static let lock = NSLock()
+        private static var responsesStorage: [URL: (HTTPURLResponse, Data)] = [:]
+        private static var requestsStorage: [URLRequest] = []
+
+        static var requests: [URLRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestsStorage
+        }
+
+        static func setResponses(_ responses: [URL: (HTTPURLResponse, Data)]) {
+            lock.lock()
+            responsesStorage = responses
+            requestsStorage = []
+            lock.unlock()
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            Self.lock.lock()
+            Self.requestsStorage.append(request)
+            let scripted = Self.responsesStorage[request.url!]
+            Self.lock.unlock()
+            guard let (response, data) = scripted else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func scriptedSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [GrantsReadURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func seedMeta(grants: [String]) {
+        let meta = DeviceKeyStore.DeviceMeta(keyId: "dev_seeded", host: "http://daemon",
+                                             grants: grants, expiryTs: 1, registeredAt: 1)
+        UserDefaults.standard.set(try! JSONEncoder().encode(meta), forKey: "fleetnotifier.deviceMeta")
+        UserDefaults.standard.set("http://daemon", forKey: "fleetnotifier.host")
+    }
+
+    private func clearMeta() {
+        UserDefaults.standard.removeObject(forKey: "fleetnotifier.deviceMeta")
+        UserDefaults.standard.removeObject(forKey: "fleetnotifier.host")
+    }
+
+    /// #101 THE regression test. A cold launch restores `meta.grants` ([]),
+    /// then `refreshGrants()` must re-fetch the CURRENT grants from the
+    /// daemon and persist them — WITHOUT re-registering or re-minting a new
+    /// key. RED on the unfixed code: there is no `refreshGrants()` (or it
+    /// is not wired), so cached grants stay `[]`.
+    func testRefreshGrantsOnColdLaunchUpdatesCachedGrants() async {
+        seedMeta(grants: [])
+        defer { clearMeta() }
+
+        let grantsURL = URL(string: "http://daemon/grants-read")!
+        GrantsReadURLProtocol.setResponses([
+            grantsURL: (HTTPURLResponse(url: grantsURL, statusCode: 200,
+                                        httpVersion: nil, headerFields: nil)!,
+                        Data(#"{"ok":true,"key_id":"dev_seeded","grants":["read_tail","prompt","interrupt","approve"],"expiry_ts":1800000000,"revoked":false}"#.utf8)),
+        ])
+
+        let model = AppModel(session: scriptedSession())
+        XCTAssertEqual(model.grants, [], "precondition: cold-launch cache is the read-only []")
+
+        await model.refreshGrants()
+
+        XCTAssertEqual(model.grants, ["read_tail", "prompt", "interrupt", "approve"],
+                       "the promoted grants must land on the board")
+        let persisted = DeviceKeyStore.loadMeta()
+        XCTAssertEqual(persisted?.grants, ["read_tail", "prompt", "interrupt", "approve"],
+                       "persisted meta must carry the refreshed grants")
+        XCTAssertEqual(persisted?.expiryTs, 1_800_000_000, "expiry must refresh too")
+        XCTAssertEqual(persisted?.keyId, "dev_seeded")
+        XCTAssertEqual(persisted?.host, "http://daemon")
+        XCTAssertEqual(GrantsReadURLProtocol.requests.map(\.url?.path),
+                       ["/grants-read"],
+                       "the refresh must hit /grants-read exactly once")
+    }
+
+    /// Failure path: a network error must NEVER clear the cached grants —
+    /// a stale cached set is strictly better than a broken board.
+    func testRefreshGrantsFailureKeepsCachedGrants() async {
+        seedMeta(grants: ["prompt"])
+        defer { clearMeta() }
+
+        // No scripted response → the URLProtocol fails with URLError.
+        GrantsReadURLProtocol.setResponses([:])
+
+        let model = AppModel(session: scriptedSession())
+        XCTAssertEqual(model.grants, ["prompt"], "precondition: cached grants restored")
+
+        await model.refreshGrants()
+
+        XCTAssertEqual(model.grants, ["prompt"],
+                       "a failed refresh must preserve the cached grants, never clear them")
+        XCTAssertEqual(DeviceKeyStore.loadMeta()?.grants, ["prompt"],
+                       "persisted meta is untouched by a failed refresh")
     }
 }

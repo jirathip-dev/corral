@@ -45,6 +45,9 @@ final class AppModel: ObservableObject {
     private var driveTask: Task<Void, Never>?
     /// In-flight notification-reply validation (cold-start snapshot fetch).
     private var notificationTask: Task<Void, Never>?
+    /// Injectable for tests (URLProtocol-mocked session); `.shared` by
+    /// default so production call sites are unchanged.
+    private let session: URLSession
 
     private let defaults = UserDefaults.standard
 
@@ -57,7 +60,8 @@ final class AppModel: ObservableObject {
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
 
-    init() {
+    init(session: URLSession = .shared) {
+        self.session = session
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -86,7 +90,7 @@ final class AppModel: ObservableObject {
             let (signer, storage) = try DeviceKeyStore.loadOrCreate()
             self.signer = signer
             keyStorageWarning = (storage == .insecureFallback)
-            let client = DriveClient(host: url)
+            let client = DriveClient(host: url, session: session)
             let response = try await client.register(token: token, signer: signer)
             keyId = response.keyId
             grants = response.grants
@@ -107,6 +111,41 @@ final class AppModel: ObservableObject {
             banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
         } catch {
             banner = .error("register_failed", error.localizedDescription)
+        }
+    }
+
+    // MARK: - Grants refresh (#101)
+
+    /// Signed self-service grants read: re-fetches THIS key's CURRENT
+    /// grants + expiry from the daemon so a host-side promotion reaches the
+    /// phone without a device reset. Idempotent and non-blocking: callers
+    /// wrap it in a fire-and-forget `Task`, and it never touches the live
+    /// stream. On ANY failure the cached grants are kept — a stale cached
+    /// set is strictly better than a broken board, so grants are never
+    /// cleared by a network error.
+    @MainActor
+    func refreshGrants() async {
+        guard let hostURL, let signer, let keyId else {
+            return
+        }
+        let client = DriveClient(host: hostURL, session: session)
+        let currentKeyId = keyId
+        do {
+            let response = try await client.fetchGrants(keyId: currentKeyId, signer: signer)
+            // The device may have been reset / re-registered while the
+            // read was in flight — never apply another key's grants.
+            guard self.keyId == currentKeyId else { return }
+            grants = response.grants
+            if let meta = DeviceKeyStore.loadMeta() {
+                DeviceKeyStore.saveMeta(DeviceKeyStore.DeviceMeta(
+                    keyId: meta.keyId,
+                    host: meta.host,
+                    grants: response.grants,
+                    expiryTs: response.expiryTs,
+                    registeredAt: meta.registeredAt))
+            }
+        } catch {
+            // Silent by design: stale cached grants beat a broken board.
         }
     }
 

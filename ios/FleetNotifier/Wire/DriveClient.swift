@@ -137,6 +137,29 @@ struct DriveClient: Sendable {
         return try JSONDecoder().decode(DeviceTokenResponse.self, from: data)
     }
 
+    // MARK: - Grants refresh (#101)
+
+    /// `POST /grants-read` — signed self-service read of THIS key's CURRENT
+    /// grants + expiry. Same proof-of-possession discipline as
+    /// `/device-token` (canonical `{key_id, request, ts}` bytes, freshness
+    /// enforced by the host), so a host-side promotion reaches the phone
+    /// without admin involvement or a device reset.
+    func fetchGrants(keyId: String, signer: DeviceSigner) async throws -> GrantsReadResponse {
+        let ts = UInt64(Date().timeIntervalSince1970)
+        let requestBytes = CanonicalJSON.grantsReadBytes(keyId: keyId, request: "grants-read", ts: ts)
+        let signature = try signer.sign(requestBytes).base64EncodedString()
+        let body = CanonicalJSON.grantsReadBody(keyId: keyId, signatureB64: signature, requestBytes: requestBytes)
+        let (status, data) = try await post("/grants-read", body: body)
+        guard status == 200 else {
+            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
+            throw DriveError.server(status: status,
+                                    kind: typed?.kind ?? "grants_read_failed",
+                                    message: typed?.message ?? "grants-read failed",
+                                    requestId: typed?.requestId)
+        }
+        return try JSONDecoder().decode(GrantsReadResponse.self, from: data)
+    }
+
     // MARK: - Drive (R3–R9)
 
     /// Sign + send one envelope. `requestId` must be stable per logical

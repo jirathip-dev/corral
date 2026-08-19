@@ -1281,13 +1281,36 @@ final class SSEStreamMockURLProtocol: URLProtocol {
     static var fixture: Data?
     static var served = false
     static var finishAfterServe = false
-    static var requestCount = 0
+    /// Lock-guarded request counter: `startLoading()` runs on the
+    /// URLProtocol delegate queue while the tests poll from the main
+    /// thread — the same NSLock pattern as `StreamFrameBox`/`CursorBox`
+    /// (review N1: a bare static var raced under TSan).
+    private static let requestLock = NSLock()
+    private static var requestCountStorage = 0
+
+    static var requestCount: Int {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        return requestCountStorage
+    }
+
+    static func resetRequestCount() {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        requestCountStorage = 0
+    }
+
+    private static func incrementRequestCount() {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        requestCountStorage += 1
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.requestCount += 1
+        Self.incrementRequestCount()
         guard let fixture = Self.fixture, let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
@@ -1363,7 +1386,7 @@ final class SSEStreamRegressionTests: XCTestCase {
         SSEStreamMockURLProtocol.fixture = fixtureData
         SSEStreamMockURLProtocol.served = false
         SSEStreamMockURLProtocol.finishAfterServe = false
-        SSEStreamMockURLProtocol.requestCount = 0
+        SSEStreamMockURLProtocol.resetRequestCount()
         defer { SSEStreamMockURLProtocol.fixture = nil }
 
         let config = URLSessionConfiguration.ephemeral
@@ -1428,14 +1451,15 @@ final class SSEStreamRegressionTests: XCTestCase {
     /// this also proves the clean-EOF → reconnect transition: a second
     /// request follows the first.
     func testTruncatedFrameDiscardedAtEOFAndStreamReconnects() async throws {
-        // Snapshot frame WITHOUT its closing blank line — the daemon (or
-        // an intermediary such as tailscale serve) dropped the connection
-        // mid-frame.
-        let truncated = Data("event: snapshot\nid: 7\ndata: {\"rev\":7}\n".utf8)
+        // Snapshot frame whose final `data:` line has NO trailing newline —
+        // the daemon (or an intermediary such as tailscale serve) dropped
+        // the connection mid-line, so `chunk` is non-empty at EOF and the
+        // documented discard behaviour is actually exercised (review N2).
+        let truncated = Data("event: snapshot\nid: 7\ndata: {\"rev\":7}".utf8)
         SSEStreamMockURLProtocol.fixture = truncated
         SSEStreamMockURLProtocol.served = false
         SSEStreamMockURLProtocol.finishAfterServe = true
-        SSEStreamMockURLProtocol.requestCount = 0
+        SSEStreamMockURLProtocol.resetRequestCount()
         defer { SSEStreamMockURLProtocol.fixture = nil }
 
         let config = URLSessionConfiguration.ephemeral

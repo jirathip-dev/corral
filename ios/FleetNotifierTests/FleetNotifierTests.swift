@@ -1269,6 +1269,143 @@ final class IssueDecodeTests: XCTestCase {
     }
 }
 
+// MARK: - Issue #90: the REAL URLSession byte path must complete SSE frames
+
+/// Serves an SSE fixture over the REAL `URLSession` byte path: the first
+/// request gets the payload (delivered in two chunks split mid-line to
+/// exercise chunk boundaries), later requests hang like the daemon's open
+/// stream so the reconnect ladder cannot re-serve it before the test
+/// cancels.
+final class SSEStreamMockURLProtocol: URLProtocol {
+    static var fixture: Data?
+    static var served = false
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let fixture = Self.fixture, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !Self.served {
+            Self.served = true
+            let split = fixture.count / 2
+            client?.urlProtocol(self, didLoad: Data(fixture.prefix(split)))
+            client?.urlProtocol(self, didLoad: Data(fixture.suffix(fixture.count - split)))
+        }
+        // Deliberately never finishes: the daemon's stream stays open too.
+    }
+
+    override func stopLoading() {}
+}
+
+/// Accumulates frames off the URLSession loading path (not the main
+/// actor) — lock-guarded, like the app's `CursorBox`.
+private final class StreamFrameBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [SSEFrame] = []
+
+    var frames: [SSEFrame] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ frame: SSEFrame) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.append(frame)
+    }
+}
+
+/// Regression for #90. `AsyncLineSequence` (`bytes.lines`) strips line
+/// terminators AND drops the empty line that closes an SSE frame, so the
+/// parser never completes a frame and the live board spins forever. This
+/// test drives `stream()` — the real `URLSession` byte path, mocked via
+/// `URLProtocol` — and asserts frames COMPLETE. A test that feeds
+/// hand-built strings straight into `parser.feed()` is vacuous against
+/// this defect and does not count.
+final class SSEStreamRegressionTests: XCTestCase {
+
+    /// The EXACT shape the daemon emits (issue #90 proof C): `\n`-
+    /// separated, frames closed by an empty line, keep-alive comment
+    /// lines (`:`) between frames. Swift drops the newline before the
+    /// closing delimiter, so the blank line that closes the delta frame
+    /// is appended explicitly — the daemon's raw bytes end `...}\n\n`.
+    private var fixtureData: Data {
+        let payload = """
+        event: snapshot
+        id: 7
+        data: {"schema_version":3,"rev":7,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+
+        :
+        event: delta
+        id: 8
+        data: {"rev":8,"upd":[],"del":[]}
+
+        """ + "\n"
+        return Data(payload.utf8)
+    }
+
+    func testStreamCompletesFramesOverRealURLSessionBytes() async throws {
+        SSEStreamMockURLProtocol.fixture = fixtureData
+        SSEStreamMockURLProtocol.served = false
+        defer { SSEStreamMockURLProtocol.fixture = nil }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SSEStreamMockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
+
+        let box = StreamFrameBox()
+        let stream = Task {
+            await client.stream(lastEventId: { nil }, onEvent: { box.append($0) })
+        }
+        defer { stream.cancel() }
+
+        // Wait for both frames (snapshot + delta) under a hard deadline.
+        // Against the bytes.lines regression neither ever completes.
+        let deadline = Date().addingTimeInterval(5)
+        while box.frames.count < 2, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        let frames = box.frames
+        XCTAssertEqual(
+            frames.count, 2,
+            "expected the snapshot + delta frames to COMPLETE over the real byte path — got \(frames.count). "
+                + "bytes.lines drops the empty-line terminator, so the parser never closes a frame.")
+        guard frames.count == 2 else { return }
+
+        let snapshot = frames[0]
+        XCTAssertEqual(snapshot.kind, .snapshot)
+        XCTAssertEqual(snapshot.id, 7)
+        guard case .event(.snapshot(let decoded)) = CorraldClient.decode(snapshot) else {
+            return XCTFail("snapshot frame must decode")
+        }
+        XCTAssertEqual(decoded.rev, 7)
+        XCTAssertEqual(decoded.agents["herdr:a"]?.state, .idle)
+
+        let delta = frames[1]
+        XCTAssertEqual(delta.kind, .delta)
+        XCTAssertEqual(delta.id, 8)
+        guard case .event(.delta(let decodedDelta)) = CorraldClient.decode(delta) else {
+            return XCTFail("delta frame must decode")
+        }
+        XCTAssertEqual(decodedDelta.rev, 8)
+
+        // The keep-alive comment between the frames must neither produce
+        // a frame of its own nor merge into either frame.
+        XCTAssertEqual(frames.map(\.kind), [.snapshot, .delta],
+                       "the ':' keep-alive must not frame and must not break framing")
+    }
+}
+
 // MARK: - Nested ObservableObject forwarding (#93)
 
 @MainActor

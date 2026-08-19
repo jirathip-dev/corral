@@ -58,12 +58,7 @@ struct CorraldClient: Sendable {
                 }
                 backoff = 1 // connected: reset the backoff ladder
                 var parser = SSEParser()
-                for try await line in bytes.lines {
-                    let frames = parser.feed(line + "\n")
-                    for frame in frames {
-                        onEvent(frame)
-                    }
-                }
+                try await Self.consumeLines(from: bytes, parser: &parser, onEvent: onEvent)
                 // Clean EOF: server closed the stream; reconnect.
             } catch is CancellationError {
                 return
@@ -73,6 +68,41 @@ struct CorraldClient: Sendable {
             if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
             backoff = min(backoff * 2, 30)
+        }
+    }
+
+    /// Byte-consumption seam (issue #90): the loop `stream()` runs, kept
+    /// callable so the regression test can drive it through the REAL
+    /// `URLSession` byte path (a `URLProtocol` mock serves the payload) —
+    /// a hand-built-string `parser.feed()` test is vacuous against this
+    /// defect.
+    ///
+    /// SSE framing is byte-defined: lines end at `0x0a` and frames close
+    /// on an EMPTY line — the terminator the parser needs. `AsyncLineSequence`
+    /// strips terminators AND drops blank lines, so it can never deliver a
+    /// frame boundary; instead consume raw bytes and hand the parser each
+    /// line INCLUDING its terminator. A trailing partial line is flushed so
+    /// a server that closes without a final newline still yields its frame.
+    static func consumeLines(
+        from bytes: URLSession.AsyncBytes,
+        parser: inout SSEParser,
+        onEvent: @escaping @Sendable (SSEFrame) -> Void
+    ) async throws {
+        var chunk = [UInt8]()
+        chunk.reserveCapacity(16 * 1024)
+        for try await byte in bytes {
+            chunk.append(byte)
+            guard byte == 0x0a else { continue }
+            let frames = parser.feed(String(decoding: chunk, as: UTF8.self))
+            chunk.removeAll(keepingCapacity: true)
+            for frame in frames {
+                onEvent(frame)
+            }
+        }
+        if !chunk.isEmpty {
+            for frame in parser.feed(String(decoding: chunk, as: UTF8.self)) {
+                onEvent(frame)
+            }
         }
     }
 

@@ -23,6 +23,12 @@
 //!   [`DeviceTokenRequest`](crate::push::payload::DeviceTokenRequest) with
 //!   its key (same proof-of-possession shape as `/step-up`); the token is
 //!   stored on the registry record (revocable per-device).
+//! - `POST /grants-read` — #101: signed self-service grants read. The
+//!   device signs a
+//!   [`GrantsReadRequest`](crate::push::payload::GrantsReadRequest) with its
+//!   key; the daemon verifies exactly like `/device-token` and returns that
+//!   key's CURRENT grants + expiry — host promotions reach the phone without
+//!   a device reset.
 //!
 //! ## Push notifier arming
 //!
@@ -55,7 +61,10 @@ use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
 use crate::core::model::Resume;
 use crate::core::store::Store;
-use crate::push::payload::{DeviceTokenRequest, canonical_device_token_bytes};
+use crate::push::payload::{
+    DeviceTokenRequest, GrantsReadRequest, canonical_device_token_bytes,
+    canonical_grants_read_bytes,
+};
 
 use self::drive::{NoopAdapter, ReplayTable, drive};
 
@@ -133,6 +142,7 @@ pub fn router(state: AppState) -> Router {
         .route("/transcript", get(self::transcript::transcript))
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
+        .route("/grants-read", post(grants_read))
         .merge(crate::auth::http::auth_routes())
         .with_state(Arc::new(state))
 }
@@ -361,6 +371,81 @@ async fn device_token(
             ),
         },
     }
+}
+
+/// Max accepted skew between a signed grants-read request's `ts` and the
+/// host clock — same freshness rule as device-token/step-up (replay-proof).
+const GRANTS_READ_MAX_SKEW_SECS: u64 = DEVICE_TOKEN_MAX_SKEW_SECS;
+
+/// `POST /grants-read {key_id, signature, request}` → `{ok, key_id, grants,
+/// expiry_ts, revoked}`.
+///
+/// #101 signed self-service grants read. Auth mirrors `POST /device-token`
+/// EXACTLY: the signature covers [`canonical_grants_read_bytes`] of the
+/// request (fixed-order `{key_id, request, ts}`), verified against the
+/// registered device key; freshness `|now - ts| < 60s`; revoked/expired
+/// keys are refused. On success the handler returns the CURRENT registry
+/// record — never a cached copy — so a host-side promotion reaches the
+/// phone without admin involvement or a device reset. No new key material,
+/// no token storage.
+async fn grants_read(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let request: GrantsReadRequest =
+        match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
+            Ok(r) => r,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed grants-read request"),
+        };
+    if now_secs().abs_diff(request.ts) > GRANTS_READ_MAX_SKEW_SECS {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "stale grants-read request: |now - ts| > 60s",
+        );
+    }
+    let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return json_err(StatusCode::BAD_REQUEST, "missing grants-read signature"),
+    };
+    let rec = match state.auth.registry.get(&request.key_id) {
+        Some(r) => r,
+        None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
+    };
+    if rec.revoked {
+        return json_err(StatusCode::FORBIDDEN, "device key revoked");
+    }
+    if now_secs() >= rec.expiry_ts {
+        return json_err(StatusCode::FORBIDDEN, "device key expired");
+    }
+    let sig = match crate::auth::decode_b64(signature_b64) {
+        Some(s) => match s.try_into() {
+            Ok(sig) => sig,
+            Err(_) => return json_err(StatusCode::BAD_REQUEST, "signature must be 64 bytes"),
+        },
+        None => return json_err(StatusCode::BAD_REQUEST, "signature must be base64"),
+    };
+    let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&rec.public_key) {
+        Ok(pk) => pk,
+        Err(_) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "corrupt registry key"),
+    };
+    let message = canonical_grants_read_bytes(&request);
+    if public_key
+        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
+        .is_err()
+    {
+        return json_err(StatusCode::UNAUTHORIZED, "bad grants-read signature");
+    }
+    info!(key_id = %request.key_id, grants = ?rec.grants, "grants-read served");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "key_id": rec.key_id,
+            "grants": rec.grants,
+            "expiry_ts": rec.expiry_ts,
+            "revoked": rec.revoked,
+        })),
+    )
 }
 
 fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -607,6 +692,245 @@ mod tests {
             StatusCode::FORBIDDEN,
             "revoked key cannot register push"
         );
+    }
+
+    /// A signed grants-read request the handler must accept (register →
+    /// sign the canonical `{key_id, request, ts}` bytes).
+    fn signed_grants_read_request(
+        registry: &crate::auth::registry::DeviceRegistry,
+        signing: &ed25519_dalek::SigningKey,
+        pubkey: [u8; 32],
+    ) -> serde_json::Value {
+        let token = registry.registration_token();
+        let rec = registry
+            .register(&token, pubkey, std::time::Duration::from_secs(3600))
+            .expect("register");
+        let request = GrantsReadRequest {
+            key_id: rec.key_id.clone(),
+            request: "grants-read".to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(signing, &canonical_grants_read_bytes(&request));
+        serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": signature,
+            "request": request,
+        })
+    }
+
+    /// POST one `/grants-read` body and return (status, parsed JSON body) —
+    /// the body is read so tests can assert no grants leak on error paths.
+    async fn post_grants_read(
+        app: &Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/grants-read")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// #101 THE regression test: a host-side promotion must be visible to
+    /// the device on a signed self-service read. Register (read-only
+    /// default → grants `[]`), promote via the registry, then `POST
+    /// /grants-read` with a valid signature → 200 with the CURRENT grants
+    /// and expiry — never a cached snapshot. RED on unfixed code: the
+    /// route does not exist → 404 with no grants body.
+    #[tokio::test]
+    async fn grants_read_returns_current_grants() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let body = signed_grants_read_request(&state.auth.registry, &signing, pubkey);
+        let key_id = body["key_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            state.auth.registry.get(&key_id).unwrap().grants,
+            Vec::<crate::drive::Capability>::new(),
+            "precondition: a fresh registration is read-only"
+        );
+
+        // Host-side promotion (what `POST /grants` does, admin-only).
+        let promoted = vec![
+            crate::drive::Capability::ReadTail,
+            crate::drive::Capability::Prompt,
+            crate::drive::Capability::Interrupt,
+            crate::drive::Capability::Approve,
+        ];
+        state
+            .auth
+            .registry
+            .set_grants(&key_id, promoted.clone())
+            .unwrap();
+        let expiry_ts = state.auth.registry.get(&key_id).unwrap().expiry_ts;
+
+        let (status, body) = post_grants_read(&app, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["grants"]
+                .as_array()
+                .map(|g| g
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_string())
+                    .collect::<Vec<_>>())
+                .unwrap_or_default(),
+            vec![
+                "read_tail".to_string(),
+                "prompt".to_string(),
+                "interrupt".to_string(),
+                "approve".to_string(),
+            ],
+            "the device sees its CURRENT grants, not the cached []"
+        );
+        assert_eq!(body["expiry_ts"].as_u64(), Some(expiry_ts));
+        assert_eq!(body["revoked"].as_bool(), Some(false));
+        assert_eq!(body["ok"].as_bool(), Some(true));
+    }
+
+    /// #101 rejection matrix — every failure must refuse with the right
+    /// status AND leak no grants: forged signature → 401, stale `ts` →
+    /// 400, unknown key → 404, revoked key → 403, expired key → 403.
+    #[tokio::test]
+    async fn grants_read_rejects_forged_signature_stale_ts_and_unknown_key() {
+        let state = AppState::default();
+        let app = router(state.clone());
+        let (signing, pubkey) = test_support::keypair();
+        let rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+        let fresh = GrantsReadRequest {
+            key_id: rec.key_id.clone(),
+            request: "grants-read".to_string(),
+            ts: now_secs(),
+        };
+
+        // Forged signature -> 401, no grants.
+        let forged = serde_json::json!({
+            "key_id": rec.key_id,
+            "signature": test_support::sign_bytes(&signing, b"tampered"),
+            "request": fresh.clone(),
+        });
+        let (status, body) = post_grants_read(&app, forged).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.get("grants").is_none(), "forged read leaks no grants");
+
+        // Stale ts -> 400, no grants.
+        let stale = GrantsReadRequest {
+            key_id: rec.key_id.clone(),
+            request: "grants-read".to_string(),
+            ts: now_secs() - 3600,
+        };
+        let signature = test_support::sign_bytes(&signing, &canonical_grants_read_bytes(&stale));
+        let (status, body) = post_grants_read(
+            &app,
+            serde_json::json!({
+                "key_id": rec.key_id,
+                "signature": signature,
+                "request": stale,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.get("grants").is_none(), "stale read leaks no grants");
+
+        // Unknown key -> 404, no grants (the registry lookup uses the
+        // signed request's key_id, so the request itself is the unknown).
+        let unknown = GrantsReadRequest {
+            key_id: "dev_unknown".to_string(),
+            request: "grants-read".to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(&signing, &canonical_grants_read_bytes(&unknown));
+        let (status, body) = post_grants_read(
+            &app,
+            serde_json::json!({
+                "key_id": "dev_unknown",
+                "signature": signature,
+                "request": unknown,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.get("grants").is_none(), "unknown key leaks no grants");
+
+        // Revoked key -> 403, no grants (signature is valid; the refusal
+        // happens before verification, mirroring /device-token).
+        let (signing2, pubkey2) = test_support::keypair();
+        let revoked_rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey2, std::time::Duration::from_secs(3600))
+                .unwrap()
+        };
+        state
+            .auth
+            .registry
+            .set_revoked(&revoked_rec.key_id, true)
+            .unwrap();
+        let request = GrantsReadRequest {
+            key_id: revoked_rec.key_id.clone(),
+            request: "grants-read".to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(&signing2, &canonical_grants_read_bytes(&request));
+        let (status, body) = post_grants_read(
+            &app,
+            serde_json::json!({
+                "key_id": revoked_rec.key_id,
+                "signature": signature,
+                "request": request,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.get("grants").is_none(), "revoked key leaks no grants");
+
+        // Expired key (TTL 0 → expiry == now) -> 403, no grants.
+        let (signing3, pubkey3) = test_support::keypair();
+        let expired_rec = {
+            let token = state.auth.registry.registration_token();
+            state
+                .auth
+                .registry
+                .register(&token, pubkey3, std::time::Duration::from_secs(0))
+                .unwrap()
+        };
+        let request = GrantsReadRequest {
+            key_id: expired_rec.key_id.clone(),
+            request: "grants-read".to_string(),
+            ts: now_secs(),
+        };
+        let signature = test_support::sign_bytes(&signing3, &canonical_grants_read_bytes(&request));
+        let (status, body) = post_grants_read(
+            &app,
+            serde_json::json!({
+                "key_id": expired_rec.key_id,
+                "signature": signature,
+                "request": request,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.get("grants").is_none(), "expired key leaks no grants");
     }
 
     /// N13: a device token is spliced into the APNs URL verbatim, so

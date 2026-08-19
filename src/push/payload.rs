@@ -95,6 +95,26 @@ pub fn canonical_device_token_bytes(request: &DeviceTokenRequest) -> Vec<u8> {
     serde_json::to_vec(request).expect("device-token request serializes")
 }
 
+/// `POST /grants-read` signed request (#101). The signature covers the
+/// fixed-order bytes of this struct (same proof-of-possession discipline as
+/// the device-token and step-up requests): the device refreshes its CURRENT
+/// grants + expiry without admin involvement or a new key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct GrantsReadRequest {
+    pub key_id: String,
+    /// Short purpose string (e.g. "grants-read") — part of the signed
+    /// envelope so the body cannot be re-targeted.
+    pub request: String,
+    /// Device clock, seconds since epoch. The host enforces freshness
+    /// `|now - ts| < 60s` — replaying an old signed request is refused.
+    pub ts: u64,
+}
+
+/// Canonical bytes a grants-read signature must cover.
+pub fn canonical_grants_read_bytes(request: &GrantsReadRequest) -> Vec<u8> {
+    serde_json::to_vec(request).expect("grants-read request serializes")
+}
+
 /// APNs push body for a blocked agent (D16 surface 1).
 ///
 /// `prompt` is redacted here, at the machine boundary, before any byte

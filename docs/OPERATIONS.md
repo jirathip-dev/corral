@@ -189,11 +189,12 @@ tailscale serve reset
 ```
 
 Include the `https://` scheme — the app assumes `http://` when the
-scheme is omitted, which lands on the ATS error above. Device leg
-verified 2026-08-19 (TestFlight build 5): registration plus holding the
-`/events` SSE stream through the Serve proxy populates the live board
-on hardware. The drive legs (tail/prompt/approve) were promoted the same
-day but remain pending on-device confirmation.
+scheme is omitted, which lands on the ATS error above. This repository's
+local gate does not claim physical-device or TestFlight verification. When a
+Release build is distributed, its only product path is the real registration,
+`/events` SSE stream, and signed drive plane; the Debug-only seeded demo is
+not part of that build. Validate the Release artifact with
+`ios/check-release-demo.py` before any later hardware or TestFlight pass.
 
 ### The FleetNotifier app (iOS)
 

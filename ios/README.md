@@ -25,10 +25,11 @@ ios/
     Keychain/DeviceKeyStore.swift  Ed25519 key storage (Keychain + documented fallback)
     Security/Biometrics.swift    Face ID gate (injectable for tests)
     Notifications/LocalNotifier.swift  lock-screen canned answers bound to prompt_hash
-    Demo/DemoFleet.swift         seeded fleet (App Review 4.2)
+    Demo/DemoFleet.swift         Debug-only seeded fleet for local tests
     App/                          store, app model, SwiftUI entry, live-verify harness
     UI/                           fleet list, tappable agent detail/actions, claim cards, registration, settings
     FleetNotifierTests/            unit tests (canonical bytes, SSE, claims, controls, step-up, demo)
+  check-release-demo.py           source and Release-binary demo boundary gate
 ```
 
 ## Build
@@ -37,19 +38,42 @@ Requires Xcode 26+ and `xcodegen` (only if you change `project.yml`):
 
 ```sh
 xcodegen generate
-xcodebuild -project FleetNotifier.xcodeproj -scheme FleetNotifier \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
-  CODE_SIGNING_ALLOWED=NO build test
+hermes-sim-task --shell 'xcodebuild -project FleetNotifier.xcodeproj -scheme FleetNotifier \
+  -destination "id=$SIMULATOR_UDID" CODE_SIGNING_ALLOWED=NO test'
 ```
 
-## Signing / TestFlight (documented blocker)
+The Herdr wrapper owns a private simulator when an iOS runtime is installed.
+It must be used for simulator-backed actions; the command does not install or
+launch the app on a user device. A generic Release build is intentionally
+separate from that wrapper so the release artifact can be inspected without a
+simulator:
 
-The project builds cleanly for the iOS **simulator** with no signing
-(`CODE_SIGNING_ALLOWED=NO`). Shipping to TestFlight needs an Apple Developer
-account and a development/distribution team selected in `CODE_SIGN_STYLE =
-Automatic` (set `DEVELOPMENT_TEAM` in project.yml or Xcode). **No account is
-configured in this repo (D12: App Store via TestFlight first) — that is the
-only blocker between this build and TestFlight.**
+```sh
+release_derived_data="$(mktemp -d)"
+trap 'rm -rf "$release_derived_data"' EXIT
+HERDR_XCODEBUILD_DIRECT=1 xcodebuild -project FleetNotifier.xcodeproj \
+  -scheme FleetNotifier -configuration Release -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath "$release_derived_data" CODE_SIGNING_ALLOWED=NO build
+python3 check-release-demo.py \
+  --binary "$release_derived_data/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier"
+```
+
+Run `python3 check-release-demo.py --self-test` as a hermetic negative
+check. The source assertions require demo entrypoints and visible strings to
+be behind `#if DEBUG`; the binary assertion requires the Release executable to
+retain the real registration, SSE, and drive client/error paths while
+containing no demo entrypoint, menu label, or seeded fake-agent identifier.
+
+## Signing / distribution status
+
+The project is configured for iOS **simulator** builds with no signing
+(`CODE_SIGNING_ALLOWED=NO`); an installed runtime is required to execute or
+thin those builds. A distribution archive requires the eventual
+owner's Apple Developer account, signing assets, and a physical-device or
+TestFlight verification pass. This repository does not claim that pass. The
+Release build is intentionally a real-only product path: it has registration,
+live SSE, and signed drive behavior, but no Demo mode or fake fleet.
 
 ### fastlane credentials
 
@@ -146,15 +170,16 @@ claim replies, and cancellation of multiple live drives at the demo boundary.
 Held-boundary tests also cover concurrent cold-start notification snapshot
 replies and stale-agent refreshes crossing a demo boundary, plus cancellation
 during biometrics before either `/step-up` or `/drive` is sent.
-Registration and APNs identity transitions are lifecycle-owned: reset/demo
-cannot resurrect a late `/register` response, live SSE, metadata write, or
-retired `/device-token` upload, and concurrent registration is refused.
+Registration and APNs identity transitions are lifecycle-owned: reset and the
+Debug-only demo boundary cannot resurrect a late `/register` response, live
+SSE, metadata write, or retired `/device-token` upload, and concurrent
+registration is refused.
 An APNs callback received outside live mode retains only the latest token in
 memory and retries it exactly once under the restored live identity; reset
 clears that retained token and the APNs bridge state. Fleet cursor persistence
 is injected into `FleetStore` (production defaults to `UserDefaults.standard`),
 so reset clears only the configured store.
-Exiting demo is also model-owned: it validates the persisted live identity,
+Exiting Debug demo is also model-owned: it validates the persisted live identity,
 clears demo rows and cursors so a fresh snapshot is required, and falls back
 to setup without dispatch when that identity is missing or inconsistent.
 Runtime execution remains pending an installed iOS runtime.
@@ -162,18 +187,27 @@ The current verification host has the iOS SDK but no installed iOS runtime or
 device platform, so no simulator/device interaction evidence is claimed here;
 see `ios/evidence/tappable-controls.md` for the source/type-check record.
 
-## Demo mode
+## Demo mode (Debug only)
 
-Settings/registration screen → "Demo fleet": seven seeded agents covering
-every `WaitingOnKind` (ApproveTool/Menu/AnswerQuestion/Crash) with choices,
-workspace/PR/CI columns, and locally-answered demo drives. App Review 4.2
-(minimal functionality) is met without a daemon.
+Debug builds retain the Settings/registration → "Demo fleet" harness: seven
+seeded agents cover every `WaitingOnKind` (ApproveTool/Menu/AnswerQuestion/
+Crash), with choices, workspace/PR/CI columns, and locally answered drives.
+`-demoMode`, the Demo mode/Exit demo controls, the fake fleet, and the local
+demo-drive methods are all compiled only under `#if DEBUG`. Release ignores
+`-demoMode` and presents only the real registration, SSE, and signed-drive
+path. The harness is for local Debug/simulator development and deterministic
+tests; it is not an App Review or TestFlight product path.
 
-## Live verification (evidence)
+`DemoSeedTests` and the lifecycle/action tests continue to exercise the
+Debug-only fixture. No physical-device or TestFlight result is claimed here.
+
+## Live verification (historical Debug evidence)
 
 Against a real corrald on `127.0.0.1:8474` (herdr socket with live agents),
-the dev-only harness (`-liveVerify`, `ios/FleetNotifier/App/LiveVerifyRunner.swift`)
-ran the full flow from inside the app on the iOS simulator:
+the Debug-only harness (`-liveVerify`,
+`ios/FleetNotifier/App/LiveVerifyRunner.swift`) was used for the historical
+simulator run below. It is not part of Release and is not a physical-device or
+TestFlight result:
 
 ```
 key storage: insecureFallback public key es1GjVYl0srTbD/…

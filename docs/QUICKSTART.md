@@ -182,10 +182,12 @@ macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
 
 ## 9. The iOS app (FleetNotifier)
 
-TestFlight-distributed SwiftUI client (`ios/` in this repo, bundle
-`com.corral.fleetnotifier`) that speaks the same HTTP/SSE surface as the
-desktop UI: live fleet board, per-agent workspace lines, and signed drive
-controls.
+SwiftUI client (`ios/` in this repo, bundle `com.corral.fleetnotifier`) that
+speaks the same HTTP/SSE surface as the desktop UI: live fleet board,
+per-agent workspace lines, and signed drive controls. Release/distribution
+builds use only the real registration, SSE, and signed-drive path; the
+Debug-only seeded demo is not a TestFlight or App Review path. This guide does
+not claim physical-device or TestFlight verification.
 
 Registering from the phone is steps 4 and 5 above, with two phone-specific
 rules:

@@ -446,20 +446,24 @@ private struct AgentDetailContent: View {
 
     private func dispatchTail() {
         guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .readTail, agent: live)
-        } else {
-            model.driveReadTail(agent: live, driveClient: driveClient)
+            return
         }
+#endif
+        model.driveReadTail(agent: live, driveClient: driveClient)
     }
 
     private func dispatchInterrupt() {
         guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .interrupt, agent: live)
-        } else {
-            model.driveInterrupt(agent: live, driveClient: driveClient)
+            return
         }
+#endif
+        model.driveInterrupt(agent: live, driveClient: driveClient)
     }
 
     private func dispatchPrompt() {
@@ -467,34 +471,40 @@ private struct AgentDetailContent: View {
         let text = drafts.drafts[agent.agentId] ?? ""
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         drafts.clear(agent.agentId)
+#if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .prompt, agent: live, choice: text)
-        } else {
-            model.drivePrompt(agent: live, text: text, driveClient: driveClient)
+            return
         }
+#endif
+        model.drivePrompt(agent: live, text: text, driveClient: driveClient)
     }
 
     private func dispatchApproval(_ choice: String, expectedPromptHash: String) {
         guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .approve, agent: live, choice: choice)
-        } else {
-            model.driveApprove(agent: live, choice: choice, driveClient: driveClient,
-                              expectedPromptHash: expectedPromptHash)
+            return
         }
+#endif
+        model.driveApprove(agent: live, choice: choice, driveClient: driveClient,
+                           expectedPromptHash: expectedPromptHash)
     }
 
     private func dispatchCanned(_ action: CannedChoice.Action, expectedPromptHash: String) {
+#if DEBUG
         if model.mode == .demo {
             guard let live = model.fleet.agent(agent.agentId), let waiting = live.waitingOn,
                   let choice = CannedChoice.choice(for: action, kind: waiting.kind,
                                                    choices: waiting.choices) else { return }
             model.driveDemo(capability: .approve, agent: live, choice: choice)
-        } else {
-            model.handleCannedAction(agentId: agent.agentId, action: action,
-                                     driveClient: driveClient,
-                                     expectedPromptHash: expectedPromptHash)
+            return
         }
+#endif
+        model.handleCannedAction(agentId: agent.agentId, action: action,
+                                 driveClient: driveClient,
+                                 expectedPromptHash: expectedPromptHash)
     }
 }
 
@@ -800,7 +810,11 @@ struct FleetView: View {
                 switch model.mode {
                 case .needsSetup:
                     RegistrationView(model: model)
-                case .demo, .live:
+#if DEBUG
+                case .demo:
+                    fleetList
+#endif
+                case .live:
                     fleetList
                 }
             }
@@ -822,6 +836,7 @@ struct FleetView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+#if DEBUG
                         Button(model.mode == .demo ? "Exit demo" : "Demo mode",
                                systemImage: "sparkles") {
                             if model.mode == .demo {
@@ -830,6 +845,7 @@ struct FleetView: View {
                                 model.enterDemo()
                             }
                         }
+#endif
                         Button("Settings", systemImage: "gearshape") {
                             showSettings = true
                         }
@@ -1001,17 +1017,19 @@ struct RegistrationView: View {
         } header: {
             PinnedHeader { Text("Connect") }
         }
+#if DEBUG
         Section {
-            Button("Try demo fleet (no daemon)") {
+            Button("Try demo fleet (Debug only; no daemon)") {
                 model.enterDemo()
             }
             .font(.subheadline)
-            Text("Seeded fake fleet for App Review 4.2 (minimal functionality).")
+            Text("Seeded fake fleet for local Debug/simulator testing only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } header: {
             PinnedHeader { Text("Demo") }
         }
+#endif
     }
 }
 

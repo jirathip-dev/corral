@@ -7,8 +7,9 @@ from the file contents (the sandbox denies tool use).
 ## Context
 
 Corral (`owner/repo`) is an agent-fleet control plane daemon
-(`corrald`, Rust) with a desktop egui client, an iOS FleetNotifier app
-(TestFlight build 2 live), and a planned public release. The repo wants to
+(`corrald`, Rust) with a desktop egui client, an iOS FleetNotifier app, and a
+planned public release. This branch does not claim physical-device or
+TestFlight verification. The repo wants to
 become PUBLIC on GitHub. Current state on `main`:
 
 - `Cargo.toml` declares `license = "MIT"` but **there is no LICENSE file**.

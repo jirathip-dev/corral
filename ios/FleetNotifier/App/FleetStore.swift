@@ -397,7 +397,8 @@ final class FleetStore: ObservableObject {
         connectionState = .disconnected
     }
 
-    /// Demo mode: seed the store directly (no daemon).
+#if DEBUG
+    /// Debug-only demo mode: seed the store directly (no daemon).
     func seedDemo(agents: [String: Agent], rev: UInt64) {
         self.agents = agents
         tails = tails.filter { agents[$0.key] != nil }
@@ -412,6 +413,7 @@ final class FleetStore: ObservableObject {
         next[agent.agentId] = agent
         agents = next
     }
+#endif
 
     func persistCursor() {
         if let lastEventId {

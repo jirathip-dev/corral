@@ -10,7 +10,9 @@ final class IdentityLifecycle: @unchecked Sendable {
         case needsSetup
         case registering
         case live
+#if DEBUG
         case demo
+#endif
     }
 
     struct Context: Equatable, Sendable {
@@ -123,7 +125,9 @@ final class AppModel: ObservableObject {
     enum Mode: Equatable, Sendable {
         case needsSetup
         case live
+#if DEBUG
         case demo
+#endif
     }
 
     /// Captures the identity a lifecycle-sensitive async operation is
@@ -198,13 +202,15 @@ final class AppModel: ObservableObject {
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
 
-    /// Demo mode is local and intentionally exposes the safe action set even
-    /// though no daemon grant exists. Live mode always uses the device's
-    /// signed grants.
     var actionGrants: Set<Capability> {
+#if DEBUG
+        /// Demo mode is local and intentionally exposes the safe action set
+        /// even though no daemon grant exists. Live mode always uses the
+        /// device's signed grants.
         if mode == .demo {
             return [.prompt, .interrupt, .approve, .readTail]
         }
+#endif
         return Set(grants.compactMap(Capability.init(rawValue:)))
     }
 
@@ -235,7 +241,9 @@ final class AppModel: ObservableObject {
         switch mode {
         case .needsSetup: return .needsSetup
         case .live: return .live
+#if DEBUG
         case .demo: return .demo
+#endif
         }
     }
 
@@ -916,7 +924,8 @@ final class AppModel: ObservableObject {
         lifecycleTasks[taskId] = task
     }
 
-    // MARK: - Demo mode (App Review 4.2)
+#if DEBUG
+    // MARK: - Demo mode (Debug only)
 
     func enterDemo() {
         cancelLifecycleTasks()
@@ -997,6 +1006,8 @@ final class AppModel: ObservableObject {
         agent.ts = UInt64(Date().timeIntervalSince1970 * 1000)
         fleet.upsertDemo(agent)
     }
+
+#endif
 
     // MARK: - Identity management
 

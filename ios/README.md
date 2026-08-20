@@ -60,10 +60,13 @@ python3 check-release-demo.py \
 ```
 
 Run `python3 check-release-demo.py --self-test` as a hermetic negative
-check. The source assertions require demo entrypoints and visible strings to
-be behind `#if DEBUG`; the binary assertion requires the Release executable to
-retain the real registration, SSE, and drive client/error paths while
-containing no demo entrypoint, menu label, or seeded fake-agent identifier.
+check. The source proof masks line/block comments, evaluates only `true`,
+`false`, `DEBUG`, and `!DEBUG` branches (including `#elseif`/`#else`), and
+fails closed on unsupported conditions. The `--binary` proof requires the
+actual iOS or iOS Simulator Mach-O executable and successful `file`/`otool`
+platform validation before checking that Release retains the real registration,
+SSE, and drive client/error paths while containing no demo entrypoint, menu
+label, or seeded fake-agent identifier.
 
 ## Signing / distribution status
 

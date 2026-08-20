@@ -5,6 +5,12 @@ The source checks make the intended conditional-compilation boundary explicit;
 the binary checks make the check build-derived rather than a substring-only
 review of Swift source.  Debug still owns the demo fixtures and tests, while a
 Release app must retain the real registration/SSE/drive client and error paths.
+
+Source proof is intentionally limited to the supported conditional expressions
+``true``, ``false``, ``DEBUG``, and ``!DEBUG``.  Comments and inactive branches
+are not evidence, and any other conditional expression fails closed.  Binary
+proof requires an iOS or iOS Simulator Mach-O executable before inspecting its
+strings and symbols.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -126,9 +133,35 @@ BINARY_REQUIRED = (
     "unparseable drive response",
 )
 
+SUPPORTED_CONDITIONS = {"true", "false", "DEBUG", "!DEBUG"}
+
 
 class CheckFailure(RuntimeError):
     """A deterministic release-demo assertion failed."""
+
+
+@dataclass(frozen=True)
+class _SourceLine:
+    code: str
+    debug_active: bool
+    release_active: bool
+
+
+@dataclass(frozen=True)
+class _SourceAnalysis:
+    lines: tuple[_SourceLine, ...]
+    directives: tuple[tuple[str, str], ...]
+
+
+@dataclass
+class _ConditionalFrame:
+    parent_debug: bool
+    parent_release: bool
+    taken_debug: bool
+    taken_release: bool
+    current_debug: bool
+    current_release: bool
+    saw_else: bool = False
 
 
 def _display_path(path: Path) -> str:
@@ -138,73 +171,275 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def _code_without_line_comment(line: str) -> str:
-    """Remove Swift's single-line comments for source-boundary checks."""
-
-    return line.split("//", 1)[0]
+def _blank(character: str) -> str:
+    return character if character in "\r\n" else " "
 
 
-def _source_states(text: str) -> list[tuple[str, bool]]:
-    """Return each source line and whether it is DEBUG-only.
+def _lex_source(text: str) -> tuple[str, str]:
+    """Mask comments and strings while retaining a marker-search view.
 
-    This is deliberately a small conditional-compilation parser, not a Swift
-    token search.  Unknown conditional expressions remain active for Debug but
-    do not establish a DEBUG-only boundary; #else of DEBUG is never accepted.
+    The first result preserves string contents and masks comments.  The second
+    also masks strings, so a ``#if`` inside a string cannot become a directive.
+    Swift block comments can nest, so their depth is tracked explicitly.
     """
 
-    stack: list[tuple[bool, bool]] = []
-    states: list[tuple[str, bool]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#if "):
-            expression = stripped[4:].strip()
-            if expression == "DEBUG":
-                stack.append((True, True))
-            elif expression == "!DEBUG":
-                stack.append((True, False))
-            else:
-                stack.append((False, True))
-            states.append((line, False))
+    marker: list[str] = []
+    directives: list[str] = []
+    state = "normal"
+    block_depth = 0
+    string_closer: str | None = None
+    string_raw = False
+    index = 0
+
+    while index < len(text):
+        character = text[index]
+        if state == "normal":
+            if text.startswith("//", index):
+                marker.extend((" ", " "))
+                directives.extend((" ", " "))
+                index += 2
+                state = "line-comment"
+                continue
+            if text.startswith("/*", index):
+                marker.extend((" ", " "))
+                directives.extend((" ", " "))
+                index += 2
+                block_depth = 1
+                state = "block-comment"
+                continue
+
+            hash_index = index
+            while hash_index < len(text) and text[hash_index] == "#":
+                hash_index += 1
+            if (
+                hash_index < len(text)
+                and text[hash_index] == '"'
+                and hash_index > index
+            ):
+                hashes = text[index:hash_index]
+                if text.startswith('"""', hash_index):
+                    opening = f'{hashes}"""'
+                    string_closer = f'"""{hashes}'
+                else:
+                    opening = f'{hashes}"'
+                    string_closer = f'"{hashes}'
+                marker.extend(opening)
+                directives.extend(_blank(character) for character in opening)
+                index += len(opening)
+                string_raw = True
+                state = "string"
+                continue
+            if text.startswith('"""', index):
+                marker.extend('"""')
+                directives.extend((" ", " ", " "))
+                index += 3
+                string_closer = '"""'
+                string_raw = False
+                state = "string"
+                continue
+            if character == '"':
+                marker.append(character)
+                directives.append(" ")
+                index += 1
+                string_closer = '"'
+                string_raw = False
+                state = "string"
+                continue
+
+            marker.append(character)
+            directives.append(character)
+            index += 1
             continue
-        if stripped.startswith("#elseif "):
+
+        if state == "line-comment":
+            marker.append(_blank(character))
+            directives.append(_blank(character))
+            index += 1
+            if character == "\n":
+                state = "normal"
+            continue
+
+        if state == "block-comment":
+            if text.startswith("/*", index):
+                marker.extend((" ", " "))
+                directives.extend((" ", " "))
+                index += 2
+                block_depth += 1
+                continue
+            if text.startswith("*/", index):
+                marker.extend((" ", " "))
+                directives.extend((" ", " "))
+                index += 2
+                block_depth -= 1
+                if block_depth == 0:
+                    state = "normal"
+                continue
+            marker.append(_blank(character))
+            directives.append(_blank(character))
+            index += 1
+            continue
+
+        if state == "string":
+            assert string_closer is not None
+            if text.startswith(string_closer, index):
+                closing = string_closer
+                marker.extend(closing)
+                directives.extend(_blank(item) for item in closing)
+                index += len(closing)
+                string_closer = None
+                string_raw = False
+                state = "normal"
+                continue
+            if not string_raw and string_closer == '"' and character == "\\":
+                marker.append(character)
+                directives.append(_blank(character))
+                index += 1
+                if index < len(text):
+                    escaped = text[index]
+                    marker.append(escaped)
+                    directives.append(_blank(escaped))
+                    index += 1
+                continue
+            marker.append(character)
+            directives.append(_blank(character))
+            index += 1
+            continue
+
+        raise AssertionError(f"unknown lexer state {state!r}")
+
+    if state == "block-comment":
+        raise CheckFailure("unterminated Swift block comment")
+    if state == "string":
+        raise CheckFailure("unterminated Swift string literal")
+    return "".join(marker), "".join(directives)
+
+
+def _parse_directive(line: str) -> tuple[str, str | None] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("#if"):
+        match = re.fullmatch(r"#if\s+(.+)", stripped)
+        if match is None:
+            raise CheckFailure(f"malformed conditional directive {stripped!r}")
+        return "if", match.group(1).strip()
+    if stripped.startswith("#elseif"):
+        match = re.fullmatch(r"#elseif\s+(.+)", stripped)
+        if match is None:
+            raise CheckFailure(f"malformed conditional directive {stripped!r}")
+        return "elseif", match.group(1).strip()
+    if stripped == "#else":
+        return "else", None
+    if stripped == "#endif":
+        return "endif", None
+    return None
+
+
+def _condition_value(expression: str) -> tuple[bool, bool]:
+    normalized = " ".join(expression.split())
+    if normalized not in SUPPORTED_CONDITIONS:
+        raise CheckFailure(
+            "unsupported conditional-compilation expression "
+            f"{expression!r}; refusing to assume it is active"
+        )
+    if normalized == "true":
+        return True, True
+    if normalized == "DEBUG":
+        return True, False
+    if normalized == "!DEBUG":
+        return False, True
+    return False, False
+
+
+def _source_analysis(text: str) -> _SourceAnalysis:
+    marker_text, directive_text = _lex_source(text)
+    marker_lines = marker_text.splitlines()
+    directive_lines = directive_text.splitlines()
+    if len(marker_lines) != len(directive_lines):
+        raise CheckFailure("source lexer changed the number of lines")
+
+    stack: list[_ConditionalFrame] = []
+    lines: list[_SourceLine] = []
+    directives: list[tuple[str, str]] = []
+
+    def current_state() -> tuple[bool, bool]:
+        if not stack:
+            return True, True
+        frame = stack[-1]
+        return frame.current_debug, frame.current_release
+
+    for marker_line, directive_line in zip(marker_lines, directive_lines):
+        directive = _parse_directive(directive_line)
+        debug_active, release_active = current_state()
+        if directive is None:
+            lines.append(_SourceLine(marker_line, debug_active, release_active))
+            continue
+
+        kind, expression = directive
+        if kind == "if":
+            assert expression is not None
+            branch_debug, branch_release = _condition_value(expression)
+            stack.append(
+                _ConditionalFrame(
+                    parent_debug=debug_active,
+                    parent_release=release_active,
+                    taken_debug=branch_debug,
+                    taken_release=branch_release,
+                    current_debug=debug_active and branch_debug,
+                    current_release=release_active and branch_release,
+                )
+            )
+            directives.append((kind, expression))
+        elif kind == "elseif":
+            assert expression is not None
             if not stack:
                 raise CheckFailure("#elseif without #if")
-            expression = stripped[8:].strip()
-            is_debug = expression in {"DEBUG", "!DEBUG"}
-            active = expression == "DEBUG"
-            stack[-1] = (is_debug, active)
-            states.append((line, False))
-            continue
-        if stripped == "#else":
+            frame = stack[-1]
+            if frame.saw_else:
+                raise CheckFailure("#elseif after #else")
+            branch_debug, branch_release = _condition_value(expression)
+            frame.current_debug = (
+                frame.parent_debug and not frame.taken_debug and branch_debug
+            )
+            frame.current_release = (
+                frame.parent_release and not frame.taken_release and branch_release
+            )
+            frame.taken_debug = frame.taken_debug or branch_debug
+            frame.taken_release = frame.taken_release or branch_release
+            directives.append((kind, expression))
+        elif kind == "else":
             if not stack:
                 raise CheckFailure("#else without #if")
-            is_debug, active = stack[-1]
-            stack[-1] = (is_debug, not active)
-            states.append((line, False))
-            continue
-        if stripped == "#endif":
+            frame = stack[-1]
+            if frame.saw_else:
+                raise CheckFailure("duplicate #else")
+            frame.current_debug = frame.parent_debug and not frame.taken_debug
+            frame.current_release = frame.parent_release and not frame.taken_release
+            frame.taken_debug = True
+            frame.taken_release = True
+            frame.saw_else = True
+            directives.append((kind, ""))
+        elif kind == "endif":
             if not stack:
                 raise CheckFailure("#endif without #if")
             stack.pop()
-            states.append((line, False))
-            continue
-
-        active = all(item[1] for item in stack)
-        guarded = active and any(item[0] and item[1] for item in stack)
-        states.append((line, guarded))
+            directives.append((kind, ""))
+        else:
+            raise AssertionError(f"unknown directive kind {kind!r}")
+        lines.append(_SourceLine(marker_line, debug_active, release_active))
 
     if stack:
         raise CheckFailure("unterminated conditional-compilation block")
-    return states
+    return _SourceAnalysis(tuple(lines), tuple(directives))
 
 
 def _check_source(path: Path, markers: tuple[str, ...]) -> None:
-    text = path.read_text(encoding="utf-8")
-    states = _source_states(text)
-    for line_number, (line, debug_only) in enumerate(states, start=1):
-        code = _code_without_line_comment(line)
+    analysis = _source_analysis(path.read_text(encoding="utf-8"))
+    for line_number, line in enumerate(analysis.lines, start=1):
+        if not line.release_active:
+            continue
         for marker in markers:
-            if re.search(marker, code) and not debug_only:
+            if re.search(marker, line.code):
                 raise CheckFailure(
                     f"{_display_path(path)}:{line_number}: {marker!r} "
                     "is not behind #if DEBUG"
@@ -212,56 +447,80 @@ def _check_source(path: Path, markers: tuple[str, ...]) -> None:
 
 
 def _check_required_source(path: Path, required: tuple[str, ...]) -> None:
-    text = path.read_text(encoding="utf-8")
+    analysis = _source_analysis(path.read_text(encoding="utf-8"))
     for marker in required:
-        if marker not in text:
-            raise CheckFailure(f"{_display_path(path)} is missing {marker!r}")
-
-
-def _check_release_source(path: Path, required: tuple[str, ...]) -> None:
-    states = _source_states(path.read_text(encoding="utf-8"))
-    for marker in required:
+        if marker.startswith("#if "):
+            expression = marker[4:].strip()
+            if ("if", expression) not in analysis.directives:
+                raise CheckFailure(f"{_display_path(path)} is missing {marker!r}")
+            continue
         matching = [
-            (line_number, debug_only)
-            for line_number, (line, debug_only) in enumerate(states, start=1)
-            if marker in _code_without_line_comment(line)
+            line_number
+            for line_number, line in enumerate(analysis.lines, start=1)
+            if line.debug_active and not line.release_active and marker in line.code
         ]
         if not matching:
-            raise CheckFailure(f"{_display_path(path)} is missing {marker!r}")
-        if all(debug_only for _, debug_only in matching):
-            locations = ", ".join(str(number) for number, _ in matching)
             raise CheckFailure(
-                f"{_display_path(path)}: {marker!r} is only in DEBUG "
-                f"(lines {locations})"
+                f"{_display_path(path)} is missing active Debug evidence {marker!r}"
             )
 
 
+def _check_release_source(path: Path, required: tuple[str, ...]) -> None:
+    analysis = _source_analysis(path.read_text(encoding="utf-8"))
+    for marker in required:
+        matching = [
+            line_number
+            for line_number, line in enumerate(analysis.lines, start=1)
+            if line.release_active and marker in line.code
+        ]
+        if not matching:
+            raise CheckFailure(f"{_display_path(path)} is missing {marker!r}")
+
+
+def _run_checked(command: list[str]) -> str:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise CheckFailure(
+            f"validation command {' '.join(command)!r} failed: {error}"
+        ) from error
+
+
+def _validate_macho(binary: Path) -> None:
+    file_description = _run_checked(["file", "-b", str(binary)])
+    if "Mach-O" not in file_description or "executable" not in file_description:
+        raise CheckFailure(
+            f"{binary} is not a Mach-O executable: {file_description.strip()!r}"
+        )
+
+    load_commands = _run_checked(["otool", "-l", str(binary)])
+    if "LC_BUILD_VERSION" not in load_commands:
+        raise CheckFailure(f"{binary} has no LC_BUILD_VERSION platform metadata")
+    platforms = set(
+        re.findall(r"^\s*platform\s+(\d+)\s*$", load_commands, re.MULTILINE)
+    )
+    if not platforms.intersection({"2", "7"}):
+        raise CheckFailure(
+            f"{binary} is not an iOS/iOS Simulator Mach-O (platforms: {sorted(platforms)})"
+        )
+
+
 def _binary_blob(binary: Path) -> str:
-    strings = subprocess.run(
-        ["strings", "-a", str(binary)],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    symbols = subprocess.run(
-        ["nm", "-a", str(binary)],
-        check=False,
-        capture_output=True,
-        text=True,
-    ).stdout
+    strings = _run_checked(["strings", "-a", str(binary)])
+    symbols = _run_checked(["nm", "-a", str(binary)])
     return f"{strings}\n{symbols}"
 
 
 def _check_binary(binary: Path) -> None:
     if not binary.is_file():
         raise CheckFailure(f"Release executable does not exist: {binary}")
-    blob = _binary_blob(binary)
-    for marker in BINARY_FORBIDDEN:
-        if marker in blob:
-            raise CheckFailure(f"Release executable contains demo marker {marker!r}")
-    for marker in BINARY_REQUIRED:
-        if marker not in blob:
-            raise CheckFailure(f"Release executable lost real-path marker {marker!r}")
+    _validate_macho(binary)
+    _check_binary_text(_binary_blob(binary))
 
 
 def _expect_failure(action: Callable[[], None], label: str) -> None:
@@ -270,6 +529,10 @@ def _expect_failure(action: Callable[[], None], label: str) -> None:
     except CheckFailure:
         return
     raise CheckFailure(f"self-test fixture was accepted: {label}")
+
+
+def _valid_binary_fixture() -> str:
+    return "\n".join(BINARY_REQUIRED) + "\n"
 
 
 def _self_test() -> None:
@@ -294,17 +557,119 @@ def _self_test() -> None:
             "demo call in the release branch",
         )
 
+        elseif_branch = (
+            "#if false\n"
+            'let hidden = "enterDemo"\n'
+            "#elseif DEBUG\n"
+            'let debug = "enterDemo"\n'
+            "#else\n"
+            'let release = "enterDemo"\n'
+            "#endif\n"
+        )
+        analysis = _source_analysis(elseif_branch)
+        active_lines = {
+            line.code.strip(): (line.debug_active, line.release_active)
+            for line in analysis.lines
+            if "enterDemo" in line.code
+        }
+        if active_lines.get('let hidden = "enterDemo"') != (False, False):
+            raise CheckFailure("#if false branch was treated as active")
+        if active_lines.get('let debug = "enterDemo"') != (True, False):
+            raise CheckFailure("#elseif DEBUG branch was not isolated")
+        if active_lines.get('let release = "enterDemo"') != (False, True):
+            raise CheckFailure("#else branch was not isolated")
+
+        true_branch = (
+            "#if true\n"
+            'let always = "always"\n'
+            "#elseif !DEBUG\n"
+            'let release_only = "release"\n'
+            "#else\n"
+            'let unreachable = "unreachable"\n'
+            "#endif\n"
+        )
+        true_analysis = _source_analysis(true_branch)
+        true_lines = {
+            line.code.strip(): (line.debug_active, line.release_active)
+            for line in true_analysis.lines
+            if '"' in line.code
+        }
+        if true_lines.get('let always = "always"') != (True, True):
+            raise CheckFailure("#if true branch was not active for both builds")
+        if true_lines.get('let release_only = "release"') != (False, False):
+            raise CheckFailure("#elseif after #if true was treated as active")
+        if true_lines.get('let unreachable = "unreachable"') != (False, False):
+            raise CheckFailure("#else after a taken #if true was treated as active")
+
+        not_debug_branch = (
+            "#if false\n"
+            'let hidden_again = "hidden"\n'
+            "#elseif !DEBUG\n"
+            'let release_only = "release"\n'
+            "#else\n"
+            'let debug_only = "debug"\n'
+            "#endif\n"
+        )
+        not_debug_analysis = _source_analysis(not_debug_branch)
+        not_debug_lines = {
+            line.code.strip(): (line.debug_active, line.release_active)
+            for line in not_debug_analysis.lines
+            if '"' in line.code
+        }
+        if not_debug_lines.get('let release_only = "release"') != (False, True):
+            raise CheckFailure("#elseif !DEBUG branch was not Release-only")
+        if not_debug_lines.get('let debug_only = "debug"') != (True, False):
+            raise CheckFailure("#else after #elseif !DEBUG was not Debug-only")
+
+        block_comment = root / "block-comment.swift"
+        block_comment.write_text(
+            "/* func enterDemo() */\n/* #if DEBUG */\n", encoding="utf-8"
+        )
+        _check_source(block_comment, (r"enterDemo",))
         _expect_failure(
-            lambda: _check_binary_text(
-                "CorraldClient\nDriveClient\nRegisterResponse\nDriveResponse\n"
-                "events failed:\nunparseable drive response\nDemo mode\n"
-            ),
+            lambda: _check_required_source(block_comment, ("func enterDemo",)),
+            "marker only in a block comment",
+        )
+        _expect_failure(
+            lambda: _check_required_source(block_comment, ("#if DEBUG",)),
+            "conditional marker only in a block comment",
+        )
+
+        dead_branch = root / "dead-branch.swift"
+        dead_branch.write_text(
+            "#if false\nfunc enterDemo() {}\n#endif\n", encoding="utf-8"
+        )
+        _check_source(dead_branch, (r"enterDemo",))
+        _expect_failure(
+            lambda: _check_required_source(dead_branch, ("func enterDemo",)),
+            "marker only in #if false",
+        )
+
+        _expect_failure(
+            lambda: _source_analysis("#if canImport(FakeModule)\n#endif\n"),
+            "unsupported conditional expression",
+        )
+        _expect_failure(
+            lambda: _source_analysis("#if UNKNOWN\n#endif\n"),
+            "unknown conditional expression",
+        )
+
+        for marker in BINARY_REQUIRED:
+            fixture = _valid_binary_fixture().replace(marker, "")
+            _expect_failure(
+                lambda fixture=fixture: _check_binary_text(fixture),
+                f"missing real-path marker {marker!r}",
+            )
+
+        _expect_failure(
+            lambda: _check_binary_text(_valid_binary_fixture() + "Demo mode\n"),
             "release user-facing demo string",
         )
-        _check_binary_text(
-            "CorraldClient\nDriveClient\nRegisterResponse\nDriveResponse\n"
-            "events failed:\nunparseable drive response\n"
-        )
+        _check_binary_text(_valid_binary_fixture())
+
+        plain = root / "plain-text"
+        plain.write_text(_valid_binary_fixture(), encoding="utf-8")
+        _expect_failure(lambda: _check_binary(plain), "non-Mach-O binary input")
 
 
 def _check_binary_text(blob: str) -> None:

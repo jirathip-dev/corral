@@ -35,14 +35,18 @@ own Terminal. If the daemon is already up under launchd, the script's
 kickstart -k` only restarts the process; it does not re-read a rewritten
 plist).
 
-The macOS desktop install builds `Contents/Resources/Corral.icns` from the
-checked-in squircle-masked `assets/icon/corral-icon-macos.png` using the
-system `sips` and `iconutil` tools, and writes `CFBundleIconFile=Corral` in
-the app's `Info.plist`. The iconset is created in a temporary directory and
-removed on success or failure. Linux installs
-`assets/icon/corral-icon-256.png` as the `corral` desktop icon referenced by
-`~/.local/share/applications/corral.desktop`. A missing icon or failed macOS
-icon conversion is an installation error rather than a silent fallback.
+The macOS desktop install is handled by `scripts/install-corral-ui.sh`. It
+stages the complete `Corral.app` beside `/Applications/Corral.app`, builds and
+round-trips `Contents/Resources/Corral.icns` from the checked-in
+squircle-masked `assets/icon/corral-icon-macos.png`, validates the executable,
+and writes `CFBundleIconFile=Corral` in `Info.plist` before touching the live
+destination. Linux stages the binary, the 256px
+`assets/icon/corral-icon-256.png`, and the
+`~/.local/share/applications/corral.desktop` entry together. Only a validated
+staged payload is committed; a failed copy, converter, plist check, or final
+rename leaves the existing installation in place and rolls back any partial
+commit. A missing icon or failed macOS icon conversion is an installation
+error rather than a silent fallback.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

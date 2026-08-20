@@ -72,15 +72,43 @@ When the approved source PNG is available, regenerate the outputs with:
 ```sh
 mise exec -- python tools/icon/from-user-png.py <approved-source.png>
 mise exec -- python tools/icon/check-assets.py
+mise exec -- python tools/icon/check-assets.py --self-test
 ```
 
-`check-assets.py` is read-only: it checks PNG dimensions/modes/alpha,
-generator relationships, the egui `include_bytes!`/viewport reference, the
-iOS asset catalog, and the desktop packaging references. The egui binary
-embeds `corral-icon-256.png` at compile time. `scripts/setup-corrald.sh`
-generates `Corral.icns` with macOS `sips`/`iconutil`, sets
-`CFBundleIconFile` to `Corral`, and removes its temporary iconset; Linux
-installs the 256px PNG alongside the `.desktop` entry.
+The generator pins the approved SFNS wordmark font by SHA-256
+(`2bfd40dc72e6759e248f82a52a40d551338979fffc9b5c070e685b4b7ad19e66`) and
+fails before writing outputs if `/System/Library/Fonts/SFNS.ttf` is absent or
+different. A machine with the exact approved font at another path may set
+`CORRAL_ICON_FONT`; the fixed fingerprint is still enforced and there is no
+silent Pillow fallback. The checked-in social preview is the approved output
+and should not be regenerated without an approved visual-equivalent change.
+
+`check-assets.py` is read-only: it checks the pinned SHA-256 manifest, PNG
+dimensions/modes/alpha, social wordmark/caption structure, generator
+relationships, the egui token structure, the iOS asset catalog, shell syntax,
+and the desktop packaging references. The egui binary embeds
+`corral-icon-256.png` at compile time; after a release build, prove that
+embedding with:
+
+```sh
+cargo build --release -p corrald-ui
+mise exec -- python tools/icon/check-assets.py --require-build
+```
+
+The negative self-tests mutate temporary fixtures, including the macOS alpha
+mask, social copy, the AppIcon catalog, and a commented-out egui icon call.
+`scripts/test-icon-packaging.sh` similarly uses only a temporary destination
+and failing converter/copy/rename stubs to verify staging cleanup and rollback;
+it never targets `/Applications` or a user config directory.
+
+`scripts/setup-corrald.sh` delegates desktop installation to
+`scripts/install-corral-ui.sh`. The installer builds and validates the entire
+macOS bundle—including a round-tripped `Corral.icns`, `CFBundleIconFile`, and
+the executable—or the complete Linux binary/icon/`.desktop` payload in a
+sibling staging directory first. It commits only after validation; existing
+installations are moved into same-filesystem rollback storage and restored if
+a final rename fails. Linux installs the 256px PNG as the `corral` desktop
+icon.
 
 ## Quality gates (run all of these before merging)
 

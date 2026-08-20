@@ -1391,6 +1391,113 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertEqual(lifecycle.current().mode, .needsSetup)
     }
 
+    func testExitDemoRestoresPersistedIdentityAndRequiresLiveSnapshot() async throws {
+        let eventsGate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"request_id":"r","ok":true,"rev":42}"#.utf8)],
+            gates: ["/events": eventsGate])
+        let session = session(for: script)
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.exit-demo.live.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let persistedSigner = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let meta = DeviceKeyStore.DeviceMeta(keyId: "persisted-key", host: "http://daemon",
+                                             grants: ["read_tail"], expiryTs: 99, registeredAt: 1)
+        let model = AppModel(
+            session: session,
+            identityLifecycle: lifecycle,
+            defaults: defaults,
+            identityLoader: { (persistedSigner, .insecureFallback) },
+            loadMeta: { meta },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        defaults.set(meta.host, forKey: "fleetnotifier.host")
+        defer {
+            eventsGate.cancel()
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId")
+            DeterministicDriveURLProtocol.clearScript()
+        }
+
+        model.enterDemo()
+        let demoAgent = try XCTUnwrap(model.fleet.agents.values.first)
+        UserDefaults.standard.set("9001", forKey: "fleetnotifier.lastEventId")
+        XCTAssertEqual(model.mode, .demo)
+        XCTAssertEqual(model.fleet.lastEventId, 1)
+        XCTAssertEqual(lifecycle.current().mode, .demo)
+
+        model.exitDemo()
+        let streamObserved = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(streamObserved, "exitDemo must start the new live stream")
+
+        XCTAssertEqual(model.mode, .live)
+        XCTAssertEqual(model.hostURL, URL(string: meta.host))
+        XCTAssertEqual(model.keyId, meta.keyId)
+        XCTAssertEqual(model.signer?.publicKeyB64, persistedSigner.publicKeyB64)
+        XCTAssertEqual(model.grants, meta.grants)
+        XCTAssertEqual(lifecycle.current().mode, .live)
+        XCTAssertEqual(lifecycle.current().hostURL, URL(string: meta.host))
+        XCTAssertEqual(lifecycle.current().keyId, meta.keyId)
+        XCTAssertEqual(lifecycle.current().signerPublicKeyB64, persistedSigner.publicKeyB64)
+        XCTAssertTrue(model.fleet.agents.isEmpty,
+                      "leaving demo must discard every demo row")
+        XCTAssertNil(model.fleet.lastEventId,
+                     "leaving demo must clear the demo cursor")
+        XCTAssertNil(UserDefaults.standard.string(forKey: "fleetnotifier.lastEventId"),
+                     "the persisted cursor must not resume demo state")
+        let streamRequest = try XCTUnwrap(script.log.requests.first { $0.url?.path == "/events" })
+        XCTAssertNil(streamRequest.value(forHTTPHeaderField: "Last-Event-ID"),
+                     "live reconnect must require a fresh snapshot")
+
+        let client = DriveClient(host: URL(string: meta.host)!, session: session)
+        model.driveReadTail(agent: demoAgent, driveClient: client)
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/drive" }.isEmpty,
+                      "a demo agent reference must not dispatch after the transition")
+
+        let liveAgent = agent("herdr:live-after-snapshot", capabilities: ["read_tail"])
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 42, generatedAt: 42,
+                                             agents: [liveAgent.agentId: liveAgent])))
+        model.driveReadTail(agent: liveAgent, driveClient: client)
+        let driveObserved = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(driveObserved, "a live action is only possible after a snapshot lands")
+        let driveCompleted = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(driveCompleted)
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/drive" }.count, 1)
+    }
+
+    func testExitDemoFallsBackToNeedsSetupWithoutPersistedIdentity() throws {
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.exit-demo.missing.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let model = AppModel(
+            identityLifecycle: lifecycle,
+            defaults: defaults,
+            identityLoader: { throw NSError(domain: "test", code: 1) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        model.enterDemo()
+        let demoAgent = try XCTUnwrap(model.fleet.agents.values.first)
+        model.exitDemo()
+
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertNil(model.hostURL)
+        XCTAssertNil(model.keyId)
+        XCTAssertNil(model.signer)
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertEqual(lifecycle.current().mode, .needsSetup)
+        XCTAssertNil(lifecycle.current().hostURL)
+        XCTAssertNil(lifecycle.current().keyId)
+        model.driveReadTail(agent: demoAgent,
+                            driveClient: DriveClient(host: URL(string: "http://daemon")!))
+        XCTAssertEqual(model.banner?.kind, "stale_agent")
+    }
+
     func testColdStartNotificationTasksCannotApplyOldSnapshotAcrossDemoBoundary() async throws {
         let snapshotGate = DriveRequestGate()
         let oldAgent = blockedAgent("herdr:old-notification")

@@ -149,6 +149,9 @@ during biometrics before either `/step-up` or `/drive` is sent.
 Registration and APNs identity transitions are lifecycle-owned: reset/demo
 cannot resurrect a late `/register` response, live SSE, metadata write, or
 retired `/device-token` upload, and concurrent registration is refused.
+Exiting demo is also model-owned: it validates the persisted live identity,
+clears demo rows and cursors so a fresh snapshot is required, and falls back
+to setup without dispatch when that identity is missing or inconsistent.
 Runtime execution remains pending an installed iOS runtime.
 The current verification host has the iOS SDK but no installed iOS runtime or
 device platform, so no simulator/device interaction evidence is claimed here;

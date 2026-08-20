@@ -825,7 +825,7 @@ struct FleetView: View {
                         Button(model.mode == .demo ? "Exit demo" : "Demo mode",
                                systemImage: "sparkles") {
                             if model.mode == .demo {
-                                restartLive()
+                                model.exitDemo()
                             } else {
                                 model.enterDemo()
                             }
@@ -932,10 +932,6 @@ struct FleetView: View {
         .accessibilityHint("Double tap to open agent details and actions")
     }
 
-    private func restartLive() {
-        model.mode = .live
-        model.startLive()
-    }
 }
 
 struct BannerView: View {

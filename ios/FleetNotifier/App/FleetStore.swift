@@ -385,6 +385,9 @@ final class FleetStore: ObservableObject {
         tails = [:]
         lastEventId = nil
         cursorBox.write(nil)
+        // A reset abandons the delta base; retaining it would let a later
+        // live connection resume from demo or otherwise unrelated state.
+        UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
         connectionState = .disconnected
     }

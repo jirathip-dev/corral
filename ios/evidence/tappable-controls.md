@@ -25,6 +25,9 @@ Registration tests hold `/register` across both demo and reset boundaries,
 reject a concurrent registration, and verify that no metadata or `/events`
 stream is resurrected. An injected APNs reset race holds the upload before
 `/device-token` and verifies that cancellation prevents the retired request.
+Exit-demo tests verify persisted host/key/signer restoration, demo row and
+cursor clearing, a fresh live snapshot before actions, and a needs-setup
+fallback with no live dispatch when the identity is absent.
 The deterministic URLProtocol script pointer is lock-protected for every
 set/clear/read operation.
 The live SSE hop also carries its connection generation so a decoded frame

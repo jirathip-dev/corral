@@ -145,6 +145,14 @@ final class AppModel: ObservableObject {
         let candidateSignerPublicKeyB64: String
     }
 
+    private struct PersistedLiveIdentity {
+        let hostURL: URL
+        let keyId: String
+        let grants: [String]
+        let signer: DeviceSigner
+        let storage: DeviceKeyStore.Storage
+    }
+
     @Published var mode: Mode = .needsSetup
     @Published var fleet = FleetStore()
     @Published var banner: DriveBanner?
@@ -257,23 +265,44 @@ final class AppModel: ObservableObject {
             self?.objectWillChange.send()
         }
         // Restore a previous registration so relaunch skips setup.
-        if let meta = loadMeta(),
-           let url = URL(string: defaults.string(forKey: "fleetnotifier.host") ?? "") {
-            if let (s, storage) = try? identityLoader() {
-                signer = s
-                keyId = meta.keyId
-                grants = meta.grants
-                hostURL = url
-                keyStorageWarning = (storage == .insecureFallback)
-                mode = .live
-                identityLifecycle.setCurrent(mode: .live, hostURL: url,
-                                             keyId: meta.keyId,
-                                             signerPublicKeyB64: s.publicKeyB64)
-            }
+        if let identity = persistedLiveIdentity() {
+            applyLiveIdentity(identity)
         } else {
             identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                          keyId: nil, signerPublicKeyB64: nil)
         }
+    }
+
+    /// Load only a complete, internally consistent persisted identity. The
+    /// host is stored in both metadata and the convenience default; requiring
+    /// them to agree prevents a stale host from being paired with the current
+    /// key after a partial reset or interrupted registration.
+    private func persistedLiveIdentity() -> PersistedLiveIdentity? {
+        guard let meta = loadMeta(), !meta.keyId.isEmpty,
+              let configuredHost = defaults.string(forKey: "fleetnotifier.host"),
+              configuredHost == meta.host,
+              let url = URL(string: meta.host),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              url.host != nil,
+              let (signer, storage) = try? identityLoader() else {
+            return nil
+        }
+        return PersistedLiveIdentity(hostURL: url, keyId: meta.keyId,
+                                     grants: meta.grants, signer: signer,
+                                     storage: storage)
+    }
+
+    private func applyLiveIdentity(_ identity: PersistedLiveIdentity) {
+        signer = identity.signer
+        keyId = identity.keyId
+        grants = identity.grants
+        hostURL = identity.hostURL
+        keyStorageWarning = (identity.storage == .insecureFallback)
+        mode = .live
+        identityLifecycle.setCurrent(mode: .live, hostURL: identity.hostURL,
+                                     keyId: identity.keyId,
+                                     signerPublicKeyB64: identity.signer.publicKeyB64)
     }
 
     // MARK: - Registration (R1)
@@ -892,6 +921,34 @@ final class AppModel: ObservableObject {
         identityLifecycle.setCurrent(mode: .demo, hostURL: hostURL,
                                     keyId: keyId,
                                     signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
+    /// Leave demo through the same identity boundary as reset/registration.
+    /// Demo rows and their cursor are discarded before a live identity is
+    /// restored, so the next connection must receive a fresh snapshot.
+    func exitDemo() {
+        guard mode == .demo else { return }
+        cancelLifecycleTasks()
+        fleet.reset()
+
+        guard let identity = persistedLiveIdentity() else {
+            signer = nil
+            keyId = nil
+            grants = []
+            hostURL = nil
+            keyStorageWarning = false
+            notificationsConfigured = false
+            mode = .needsSetup
+            identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                         keyId: nil, signerPublicKeyB64: nil)
+            return
+        }
+
+        // This is synchronous on the main actor: local fields and the shared
+        // delegate context are updated as one transition before startLive()
+        // can create any new live work.
+        applyLiveIdentity(identity)
+        startLive()
     }
 
     /// Demo drive: answered locally; approve un-blocks the seeded agent.

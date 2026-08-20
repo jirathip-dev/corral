@@ -30,7 +30,7 @@ write_stub mv '#!/usr/bin/env bash\nset -euo pipefail\ncount_file="${CORRAL_TEST
 write_stub sips '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_SIPS:-0}" == "1" ]]; then exit 93; fi\noutput=""\nfor ((index = 1; index <= $#; index++)); do\n  if [[ "${!index}" == "--out" ]]; then\n    next=$((index + 1))\n    output="${!next}"\n  fi\ndone\n[[ -n "$output" ]]\nprintf "stub-sips" > "$output"'
 write_stub iconutil '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_ICONUTIL:-0}" == "1" ]]; then exit 94; fi\nmode=""\noutput=""\nfor ((index = 1; index <= $#; index++)); do\n  if [[ "${!index}" == "-c" ]]; then\n    next=$((index + 1))\n    mode="${!next}"\n  elif [[ "${!index}" == "-o" ]]; then\n    next=$((index + 1))\n    output="${!next}"\n  fi\ndone\n[[ -n "$mode" && -n "$output" ]]\nif [[ "$mode" == "icns" ]]; then\n  printf "stub-icns" > "$output"\nelif [[ "$mode" == "iconset" ]]; then\n  mkdir -p "$output"\n  printf "stub-png" > "$output/icon_16x16.png"\nelse\n  exit 95\nfi'
 write_stub plutil '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_PLUTIL:-0}" == "1" ]]; then exit 96; fi\n[[ "${1:-}" == "-lint" && -s "${2:-}" ]]'
-write_stub rm '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_PARTIAL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then\n      for candidate in "$argument"/*; do\n        if [[ -e "$candidate" || -L "$candidate" ]]; then\n          "$CORRAL_TEST_REAL_RM" -rf -- "$candidate"\n          break\n        fi\n      done\n      exit 97\n    fi\n  done\nfi\nif [[ "${CORRAL_TEST_FAIL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then exit 97; fi\n  done\nfi\nexec "$CORRAL_TEST_REAL_RM" "$@"'
+write_stub rm '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_TOTAL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then\n      "$CORRAL_TEST_REAL_RM" -rf -- "$argument"\n      exit 97\n    fi\n  done\nfi\nif [[ "${CORRAL_TEST_INDETERMINATE_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then\n      "$CORRAL_TEST_REAL_RM" -rf -- "$argument"\n      printf "indeterminate rollback state" > "$argument"\n      exit 97\n    fi\n  done\nfi\nif [[ "${CORRAL_TEST_PARTIAL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then\n      for candidate in "$argument"/*; do\n        if [[ -e "$candidate" || -L "$candidate" ]]; then\n          "$CORRAL_TEST_REAL_RM" -rf -- "$candidate"\n          break\n        fi\n      done\n      exit 97\n    fi\n  done\nfi\nif [[ "${CORRAL_TEST_FAIL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then exit 97; fi\n  done\nfi\nexec "$CORRAL_TEST_REAL_RM" "$@"'
 write_stub stat '#!/usr/bin/env bash\nset -euo pipefail\npath=""\nfor argument in "$@"; do path="$argument"; done\nif [[ "${CORRAL_TEST_STAT_MISMATCH:-0}" == "1" && "$path" == "$CORRAL_TEST_STAT_MISMATCH_PATH" ]]; then\n  printf "device-mismatch"\n  exit 0\nfi\nexec "$CORRAL_TEST_REAL_STAT" "$@"'
 
 TEST_PATH="$STUB_DIR:$REAL_PATH"
@@ -64,6 +64,7 @@ run_installer() {
 clear_failures() {
   unset CORRAL_TEST_FAIL_CP CORRAL_TEST_FAIL_SIPS CORRAL_TEST_FAIL_ICONUTIL
   unset CORRAL_TEST_FAIL_PLUTIL CORRAL_TEST_FAIL_MV_AT CORRAL_TEST_FAIL_RM_ROLLBACK
+  unset CORRAL_TEST_TOTAL_RM_ROLLBACK CORRAL_TEST_INDETERMINATE_RM_ROLLBACK
   unset CORRAL_TEST_PARTIAL_RM_ROLLBACK
   unset CORRAL_TEST_STAT_MISMATCH CORRAL_TEST_STAT_MISMATCH_PATH
   rm -f -- "$TEST_ROOT/mv-count"
@@ -112,6 +113,14 @@ rollback_path_from_log() {
   printf '%s' "$path"
 }
 
+rollback_path_from_log_marker() {
+  local log="$1"
+  local marker="$2"
+  local line
+  line="$(grep -F "$marker" "$log" | tail -n 1)" || fail "rollback path marker was not reported in $log"
+  printf '%s' "${line##*: }"
+}
+
 assert_no_false_restore_message() {
   local log="$1"
   if grep -Eq 'restored|preserved' "$log"; then
@@ -140,6 +149,24 @@ assert_empty_cleanup_label() {
     || fail "empty rollback cleanup log label is not truthful: $log"
   if grep -Eq 'rollback cop(y|ies) retained|prior desktop payload is retained' "$log"; then
     fail "empty rollback cleanup failure was reported as payload retention: $log"
+  fi
+}
+
+assert_missing_cleanup_label() {
+  local log="$1"
+  grep -Fq 'installed desktop payload; rollback directory is missing' "$log" \
+    || fail "missing rollback cleanup log label is not truthful: $log"
+  if grep -Eq 'inspect|retained|remain|recover|empty|partial|rollback directory:' "$log"; then
+    fail "missing rollback cleanup claimed an inspectable or recoverable state: $log"
+  fi
+}
+
+assert_indeterminate_cleanup_label() {
+  local log="$1"
+  grep -Fq 'rollback cleanup state is indeterminate; inspect rollback path:' "$log" \
+    || fail "indeterminate rollback cleanup log label is not truthful: $log"
+  if grep -Eq 'rollback directory is empty|partially cleaned|prior rollback payload|retained|recover' "$log"; then
+    fail "indeterminate rollback cleanup claimed a definite state: $log"
   fi
 }
 
@@ -215,18 +242,15 @@ assert_no_temporary_entries "$MAC_PARENT"
 
 rm -rf -- "$MAC_DEST"
 clear_failures
-export CORRAL_TEST_PARTIAL_RM_ROLLBACK=1
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
 if ! run_installer Darwin > "$TEST_ROOT/macos-fresh-rm.log" 2>&1; then
   fail "macOS fresh rollback-directory rm injection unexpectedly failed"
 fi
 assert_executable "$MAC_DEST/Contents/MacOS/corrald-ui"
 assert_file "$MAC_DEST/Contents/Resources/Corral.icns"
-assert_fresh_cleanup_label "$TEST_ROOT/macos-fresh-rm.log"
-mac_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-fresh-rm.log")"
-assert_empty_rollback_directory "$mac_fresh_rollback"
-rm -rf -- "$mac_fresh_rollback"
-clear_failures
+assert_missing_cleanup_label "$TEST_ROOT/macos-fresh-rm.log"
 assert_no_temporary_entries "$MAC_PARENT"
+clear_failures
 
 seed_macos_old
 clear_failures
@@ -243,6 +267,18 @@ assert_empty_rollback_directory "$mac_partial_rollback"
 rm -rf -- "$mac_partial_rollback"
 clear_failures
 assert_no_temporary_entries "$MAC_PARENT"
+
+seed_macos_old
+clear_failures
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if ! run_installer Darwin > "$TEST_ROOT/macos-total-rm.log" 2>&1; then
+  fail "macOS replacement total rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$MAC_DEST/Contents/MacOS/corrald-ui"
+assert_file "$MAC_DEST/Contents/Resources/Corral.icns"
+assert_missing_cleanup_label "$TEST_ROOT/macos-total-rm.log"
+assert_no_temporary_entries "$MAC_PARENT"
+clear_failures
 
 for failure in cp sips iconutil plutil; do
   seed_macos_old
@@ -363,19 +399,16 @@ assert_no_temporary_entries "$LINUX_PREFIX"
 
 rm -rf -- "$LINUX_PREFIX"
 clear_failures
-export CORRAL_TEST_PARTIAL_RM_ROLLBACK=1
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
 if ! run_installer Linux > "$TEST_ROOT/linux-fresh-rm.log" 2>&1; then
   fail "Linux fresh rollback-directory rm injection unexpectedly failed"
 fi
 assert_executable "$LINUX_PREFIX/bin/corrald-ui"
 assert_file "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
 assert_file "$LINUX_PREFIX/share/applications/corral.desktop"
-assert_fresh_cleanup_label "$TEST_ROOT/linux-fresh-rm.log"
-linux_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/linux-fresh-rm.log")"
-assert_empty_rollback_directory "$linux_fresh_rollback"
-rm -rf -- "$linux_fresh_rollback"
-clear_failures
+assert_missing_cleanup_label "$TEST_ROOT/linux-fresh-rm.log"
 assert_no_temporary_entries "$LINUX_PREFIX"
+clear_failures
 
 DEVICE_LINUX_PREFIX="$TEST_ROOT/device-linux/.local"
 mkdir -p \
@@ -507,6 +540,35 @@ assert_no_temporary_entries "$LINUX_PREFIX"
 
 seed_linux_old
 clear_failures
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if ! run_installer Linux > "$TEST_ROOT/linux-total-rm.log" 2>&1; then
+  fail "Linux replacement total rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$LINUX_PREFIX/bin/corrald-ui"
+assert_file "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
+assert_file "$LINUX_PREFIX/share/applications/corral.desktop"
+assert_missing_cleanup_label "$TEST_ROOT/linux-total-rm.log"
+assert_no_temporary_entries "$LINUX_PREFIX"
+clear_failures
+
+seed_linux_old
+clear_failures
+export CORRAL_TEST_INDETERMINATE_RM_ROLLBACK=1
+if ! run_installer Linux > "$TEST_ROOT/linux-indeterminate-rm.log" 2>&1; then
+  fail "Linux replacement indeterminate rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$LINUX_PREFIX/bin/corrald-ui"
+assert_file "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
+assert_file "$LINUX_PREFIX/share/applications/corral.desktop"
+assert_indeterminate_cleanup_label "$TEST_ROOT/linux-indeterminate-rm.log"
+linux_indeterminate_path="$(rollback_path_from_log_marker "$TEST_ROOT/linux-indeterminate-rm.log" 'inspect rollback path:')"
+[[ -f "$linux_indeterminate_path" ]] || fail "Linux indeterminate rollback state is not a retained non-directory path"
+rm -f -- "$linux_indeterminate_path"
+clear_failures
+assert_no_temporary_entries "$LINUX_PREFIX"
+
+seed_linux_old
+clear_failures
 export CORRAL_TEST_FAIL_CP=1
 if run_installer Linux > "$TEST_ROOT/linux-cp.log" 2>&1; then
   fail "Linux cp injection unexpectedly succeeded"
@@ -574,19 +636,29 @@ clear_failures
 assert_no_temporary_entries "$OTHER_PREFIX"
 
 rm -rf -- "$OTHER_PREFIX"
+mkdir -p "$OTHER_PREFIX/bin"
+printf 'old-other-binary' > "$OTHER_PREFIX/bin/corrald-ui"
+clear_failures
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if ! run_installer Other > "$TEST_ROOT/other-total-rm.log" 2>&1; then
+  fail "Other replacement total rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$OTHER_PREFIX/bin/corrald-ui"
+assert_missing_cleanup_label "$TEST_ROOT/other-total-rm.log"
+assert_no_temporary_entries "$OTHER_PREFIX"
+clear_failures
+
+rm -rf -- "$OTHER_PREFIX"
 mkdir -p "$OTHER_PREFIX"
 clear_failures
-export CORRAL_TEST_PARTIAL_RM_ROLLBACK=1
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
 if ! run_installer Other > "$TEST_ROOT/other-fresh-rm.log" 2>&1; then
   fail "Other fresh rollback-directory rm injection unexpectedly failed"
 fi
 assert_executable "$OTHER_PREFIX/bin/corrald-ui"
-assert_fresh_cleanup_label "$TEST_ROOT/other-fresh-rm.log"
-other_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/other-fresh-rm.log")"
-assert_empty_rollback_directory "$other_fresh_rollback"
-rm -rf -- "$other_fresh_rollback"
-clear_failures
+assert_missing_cleanup_label "$TEST_ROOT/other-fresh-rm.log"
 assert_no_temporary_entries "$OTHER_PREFIX"
+clear_failures
 
 rm -rf -- "$OTHER_PREFIX"
 mkdir -p "$OTHER_PREFIX/bin"

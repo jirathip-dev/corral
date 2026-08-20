@@ -130,8 +130,11 @@ inspection rather than claiming a rollback copy exists. After a replacement,
 cleanup diagnostics inspect the expected rollback paths after the failed
 removal: macOS reports a remaining previous path only when it exists, while
 Linux and Other distinguish all, some, or none of the expected backup paths.
-They never infer recoverability from pre-cleanup backup state. The multi-file
-Linux commit remains rollback-based; the installer does not claim one atomic
+An existing empty directory gets an inspection path; a missing rollback root
+gets no path or recoverability claim; and an existing but uninspectable root
+is reported as indeterminate without being called empty or retained. They
+never infer recoverability from pre-cleanup backup state. The multi-file Linux
+commit remains rollback-based; the installer does not claim one atomic
 operation for the whole payload.
 
 `scripts/setup-corrald.sh` delegates desktop installation to

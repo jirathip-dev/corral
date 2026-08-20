@@ -267,13 +267,43 @@ rollback_directory_has_entries() {
   return 1
 }
 
+rollback_cleanup_state() {
+  local rollback_dir="$1"
+  if [[ ! -e "$rollback_dir" && ! -L "$rollback_dir" ]]; then
+    printf 'missing'
+    return 0
+  fi
+  if [[ -L "$rollback_dir" || ! -d "$rollback_dir" || ! -r "$rollback_dir" || ! -x "$rollback_dir" ]]; then
+    printf 'indeterminate'
+    return 0
+  fi
+  if rollback_directory_has_entries "$rollback_dir"; then
+    printf 'partial'
+  else
+    printf 'empty'
+  fi
+}
+
 report_rollback_cleanup_inspection() {
   local rollback_dir="$1"
-  if rollback_directory_has_entries "$rollback_dir"; then
-    echo "!! installed desktop payload; rollback directory was partially cleaned; inspect rollback directory: $rollback_dir" >&2
-  else
-    echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
-  fi
+  local state="$2"
+  case "$state" in
+    missing)
+      echo "!! installed desktop payload; rollback directory is missing" >&2
+      ;;
+    indeterminate)
+      echo "!! installed desktop payload; rollback cleanup state is indeterminate; inspect rollback path: $rollback_dir" >&2
+      ;;
+    partial)
+      echo "!! installed desktop payload; rollback directory was partially cleaned; inspect rollback directory: $rollback_dir" >&2
+      ;;
+    empty)
+      echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+      ;;
+    *)
+      echo "!! installed desktop payload; rollback cleanup state is indeterminate; inspect rollback path: $rollback_dir" >&2
+      ;;
+  esac
 }
 
 rollback_directory() {
@@ -348,10 +378,12 @@ commit_directory() {
   fi
 
   if ! rm -rf "$rollback_dir"; then
-    if rollback_path_exists "$rollback_dir/previous"; then
+    local cleanup_state
+    cleanup_state="$(rollback_cleanup_state "$rollback_dir")"
+    if [[ "$cleanup_state" == "empty" || "$cleanup_state" == "partial" ]] && rollback_path_exists "$rollback_dir/previous"; then
       echo "!! installed desktop payload; prior rollback payload path remains at $rollback_dir/previous; inspect rollback directory: $rollback_dir" >&2
     else
-      report_rollback_cleanup_inspection "$rollback_dir"
+      report_rollback_cleanup_inspection "$rollback_dir" "$cleanup_state"
     fi
   fi
 }
@@ -484,9 +516,11 @@ commit_files() {
   done
 
   if ! rm -rf "$rollback_dir"; then
+    local cleanup_state
+    cleanup_state="$(rollback_cleanup_state "$rollback_dir")"
     local retained_backups=0
     local expected_backups="${#backed_up[@]}"
-    if [[ "$expected_backups" -gt 0 ]]; then
+    if [[ "$cleanup_state" == "empty" || "$cleanup_state" == "partial" ]] && [[ "$expected_backups" -gt 0 ]]; then
       for relative in "${backed_up[@]}"; do
         if rollback_path_exists "$rollback_dir/$relative"; then
           retained_backups=$((retained_backups + 1))
@@ -498,7 +532,7 @@ commit_files() {
     elif [[ "$retained_backups" -gt 0 ]]; then
       echo "!! installed desktop payload; some prior rollback payload paths remain; inspect rollback directory: $rollback_dir" >&2
     else
-      report_rollback_cleanup_inspection "$rollback_dir"
+      report_rollback_cleanup_inspection "$rollback_dir" "$cleanup_state"
     fi
   fi
 }

@@ -70,9 +70,11 @@ payload. After a fresh install, the cleanup-failure diagnostic instead names
 an empty rollback directory for inspection. After a replacement, the
 diagnostic checks the expected rollback paths after failed cleanup and reports
 all, some, or none of the prior Linux/Other backups (or the macOS previous
-path) without promising recoverability from a pre-cleanup count. The
-multi-file Linux commit is rollback-based rather than one single atomic
-operation.
+path) without promising recoverability from a pre-cleanup count. An existing
+empty rollback directory is named for inspection; a missing root has no
+inspection or recoverability claim; and an existing but uninspectable root is
+reported as indeterminate. The multi-file Linux commit is rollback-based
+rather than one single atomic operation.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

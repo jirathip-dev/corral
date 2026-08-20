@@ -6,6 +6,20 @@ import Foundation
 /// `reason` / `waitingOn`, not here.
 enum AgentState: String, Codable, CaseIterable, Sendable {
     case idle, working, blocked, done, unknown
+
+    /// Human-facing state text. The board intentionally renders this beside
+    /// the color cue so state is never communicated by color alone.
+    var displayName: String {
+        switch self {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .blocked: return "Blocked"
+        case .done: return "Done"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    var accessibilityLabel: String { "State: \(displayName)" }
 }
 
 /// Why an agent is blocked. "Blocked" is not one UI: an approve-tool prompt,

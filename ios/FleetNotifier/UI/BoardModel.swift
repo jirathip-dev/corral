@@ -133,22 +133,81 @@ enum IssueChip: Equatable {
     }
 }
 
-// MARK: - D30 row actions (the ONLY actions a row may render)
+// MARK: - Tappable controls and selection
 
-/// The set of row actions the board is allowed to render (D30 pin).
-/// Approve/Deny live inside the blocked claim card; Prompt and Tail 200
-/// are the bare row controls. Interrupt/Kill are deliberately ABSENT —
-/// D29/D30 cut kill-on-phone. What the pin actually guarantees: the row
-/// view renders ONLY from `rowActions`' output, and `RowActionTests` pin
-/// that interrupt/kill never appear in that output for any
-/// capabilities/grants combination. It does NOT make a rogue direct
-/// `Button` in the view a compile error — keeping the view free of its own
-/// capability checks is review discipline, enforced by this comment and
-/// the one on `AgentRow.actions`.
+/// A navigation value for the agent detail surface. It carries only the
+/// opaque, source-stable agent id; the detail view resolves the current
+/// record again before every action.
+struct AgentRoute: Hashable, Sendable {
+    let agentId: String
+}
+
+/// Small state machine for row selection. Keeping reconciliation pure makes
+/// the stale/deleted-row rule testable without a SwiftUI rendering harness.
+struct AgentSelection: Equatable, Sendable {
+    private(set) var route: AgentRoute?
+
+    mutating func select(_ agentId: String) {
+        route = AgentRoute(agentId: agentId)
+    }
+
+    mutating func clear() {
+        route = nil
+    }
+
+    /// A deleted row must never remain an actionable selection.
+    mutating func reconcile(availableAgentIds: Set<String>) {
+        guard let route, !availableAgentIds.contains(route.agentId) else { return }
+        self.route = nil
+    }
+}
+
+/// State for the Idle/Done disclosure header. The UI owns the animation;
+/// this value owns the testable collapsed → expanded transition.
+struct IdleDoneDisclosure: Equatable, Sendable {
+    var isExpanded = false
+
+    mutating func toggle() {
+        isExpanded.toggle()
+    }
+
+    var stateLabel: String { isExpanded ? "Expanded" : "Collapsed" }
+}
+
+/// The actions exposed by the per-agent detail surface. The board renders
+/// only actions that are enabled by both the agent capability and the device
+/// grant; the detail surface also renders disabled explanations.
 enum RowAction: Equatable, Sendable {
     case approveDeny
     case prompt
+    case interrupt
     case tail
+
+    var label: String {
+        switch self {
+        case .approveDeny: return "Approval"
+        case .prompt: return "Prompt"
+        case .interrupt: return "Interrupt"
+        case .tail: return "Tail 200"
+        }
+    }
+
+    var capability: Capability? {
+        switch self {
+        case .approveDeny: return .approve
+        case .prompt: return .prompt
+        case .interrupt: return .interrupt
+        case .tail: return .readTail
+        }
+    }
+}
+
+struct AgentActionAvailability: Equatable, Sendable {
+    let action: RowAction
+    let isEnabled: Bool
+    let disabledReason: String?
+
+    var label: String { action.label }
 }
 
 // MARK: - D25 hierarchy (sections + within-repo ordering)
@@ -241,27 +300,62 @@ enum BoardModel {
         return Sections(needsYou: needsYou, repos: repos, idleDone: idleDone)
     }
 
-    /// D30: the row actions for one agent, as a pure function of its
-    /// capabilities and the device's grants — both must hold (agent
-    /// capability + device grant). The row view renders EXACTLY this list:
-    /// prompt shows only when `prompt` and the grant both hold; tail when
-    /// `read_tail` and its grant hold; the claim card (approveDeny) shows
-    /// only while the agent is blocked. Interrupt/Kill have no row action
-    /// here by design (D29/D30) regardless of capabilities/grants.
+    /// Enabled actions for one agent. The per-action detail surface uses
+    /// `actionAvailability` below to explain disabled controls; this helper
+    /// is the compact enabled-only projection used by board-level policy and
+    /// tests.
     static func rowActions(agent: Agent, grants: Set<Capability>) -> [RowAction] {
-        var actions: [RowAction] = []
-        // The claim card needs a live claim to render, so `.approveDeny`
-        // requires waiting_on, not just the blocked state — this list and
-        // the view must agree exactly.
-        if agent.isBlocked && agent.waitingOn != nil {
-            actions.append(.approveDeny)
+        actionAvailability(agent: agent, grants: grants)
+            .filter(\.isEnabled)
+            .map(\.action)
+    }
+
+    /// Full action matrix for the detail surface. Reasons deliberately name
+    /// the missing capability or grant so a read-only device never presents
+    /// an unexplained disabled control.
+    static func actionAvailability(agent: Agent,
+                                   grants: Set<Capability>) -> [AgentActionAvailability] {
+        [
+            availability(.tail, agent: agent, grants: grants),
+            availability(.prompt, agent: agent, grants: grants),
+            availability(.interrupt, agent: agent, grants: grants),
+            availability(.approveDeny, agent: agent, grants: grants),
+        ]
+    }
+
+    private static func availability(_ action: RowAction, agent: Agent,
+                                     grants: Set<Capability>) -> AgentActionAvailability {
+        if action == .approveDeny {
+            guard agent.isBlocked, let waiting = agent.waitingOn else {
+                return AgentActionAvailability(
+                    action: action,
+                    isEnabled: false,
+                    disabledReason: "Approval is available only while this agent is blocked on a live claim.")
+            }
+            if waiting.kind == .crash {
+                return AgentActionAvailability(
+                    action: action,
+                    isEnabled: false,
+                    disabledReason: "Crash states do not accept approval replies.")
+            }
         }
-        if agent.capabilities.contains(Capability.prompt.rawValue) && grants.contains(.prompt) {
-            actions.append(.prompt)
+
+        guard let capability = action.capability else {
+            return AgentActionAvailability(action: action, isEnabled: false,
+                                           disabledReason: "This action is not available for this agent.")
         }
-        if agent.capabilities.contains(Capability.readTail.rawValue) && grants.contains(.readTail) {
-            actions.append(.tail)
+        guard agent.capabilities.contains(capability.rawValue) else {
+            return AgentActionAvailability(
+                action: action,
+                isEnabled: false,
+                disabledReason: "This agent does not advertise the `\(capability.rawValue)` capability.")
         }
-        return actions
+        guard grants.contains(capability) else {
+            return AgentActionAvailability(
+                action: action,
+                isEnabled: false,
+                disabledReason: "The device has no `\(capability.rawValue)` grant — ask the host to promote capabilities.")
+        }
+        return AgentActionAvailability(action: action, isEnabled: true, disabledReason: nil)
     }
 }

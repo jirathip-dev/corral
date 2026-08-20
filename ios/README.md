@@ -27,8 +27,8 @@ ios/
     Notifications/LocalNotifier.swift  lock-screen canned answers bound to prompt_hash
     Demo/DemoFleet.swift         seeded fleet (App Review 4.2)
     App/                          store, app model, SwiftUI entry, live-verify harness
-    UI/                           fleet list, claim cards, registration, settings
-    FleetNotifierTests/            40 unit tests (canonical bytes, SSE, claims, step-up, demo)
+    UI/                           fleet list, tappable agent detail/actions, claim cards, registration, settings
+    FleetNotifierTests/            unit tests (canonical bytes, SSE, claims, controls, step-up, demo)
 ```
 
 ## Build
@@ -96,7 +96,7 @@ tracked in this repo until #26 untracked it; if you cloned before that, run
   409/refusal. The app removes the stale row, shows a refresh banner, and
   requests one fresh snapshot; SSE remains the source of truth afterward.
 - A successful `read_tail` stores the daemon-redacted, bounded `result.lines`
-  and renders them below the row's Tail button; an empty result is shown as
+  and renders them in the agent detail surface; an empty result is shown as
   "No output returned". The client applies the same 200-line / 32 KiB bounds.
 - **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
   `LocalNotifier.ClaimPayload` — a future relay would register the device
@@ -120,6 +120,29 @@ replays instead of double-sending.
 Registration returns empty grants. Drive buttons render only when the grant
 AND the agent's `capabilities` both allow them; any refusal surfaces the
 daemon's typed error banner (`not_granted`, `expired`, `revoked`, …).
+
+## Tappable controls and accessibility (#110)
+
+Every visible agent row is a full-width navigation target. Its detail surface
+re-resolves the live fleet record before dispatch and exposes Tail 200,
+Prompt, Interrupt, and blocked approval controls. Tail is sent with the
+contract's 200-line bound; approvals echo the current `approval_id` and
+`prompt_hash`, and a changed/deleted target is refused locally before signed
+bytes leave the device.
+
+The Idle / done section is collapsed by default. Its header is a full-width,
+44-point disclosure target with visible `Collapsed` / `Expanded` text and the
+same state exposed through VoiceOver. Rows and detail summaries show explicit
+Working, Idle, Done, and Blocked text alongside their color cues. Disabled
+controls retain a plain-language explanation naming the missing agent
+capability or device grant.
+
+The iOS unit suite covers the disclosure transition, route reconciliation when
+an agent is deleted, explicit lifecycle labels, bounded Tail 200 and null
+Interrupt payloads, claim-bound approval availability, and grant explanations.
+The current verification host has the iOS SDK but no installed iOS runtime or
+device platform, so no simulator/device interaction evidence is claimed here;
+see `ios/evidence/tappable-controls.md` for the source/type-check record.
 
 ## Demo mode
 

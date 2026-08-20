@@ -31,6 +31,20 @@ final class CanonicalBytesTests: XCTestCase {
         XCTAssertEqual(CanonicalJSON.encode(withLines), #"{"kind":"read_tail","lines":200}"#)
     }
 
+    func testTappableTailControlIsBoundedTo200Lines() {
+        XCTAssertEqual(CanonicalJSON.encode(CanonicalJSON.readTailPayload(lines: 200)),
+                       #"{"kind":"read_tail","lines":200}"#)
+    }
+
+    func testInterruptControlUsesNullPayload() {
+        XCTAssertEqual(CanonicalJSON.encode(CanonicalJSON.interruptPayload()), "null")
+        let bytes = CanonicalJSON.envelopeBytes(requestId: "interrupt-1", capability: "interrupt",
+                                                target: "herdr:a",
+                                                payload: CanonicalJSON.interruptPayload(), rev: 4)
+        XCTAssertEqual(String(data: bytes, encoding: .utf8),
+                       #"{"request_id":"interrupt-1","capability":"interrupt","target":"herdr:a","payload":null,"rev":4}"#)
+    }
+
     func testDriveResponseTailResultDecodesIntoVisibleLines() throws {
         let data = Data(#"{"request_id":"r","ok":true,"rev":4,"result":{"lines":["one","two"]}}"#.utf8)
         let response = try JSONDecoder().decode(DriveResponse.self, from: data)
@@ -815,6 +829,77 @@ final class StepUpDriveFlowTests: XCTestCase {
     }
 }
 
+// MARK: - Tappable drive safety (#110)
+
+@MainActor
+final class TappableDriveSafetyTests: XCTestCase {
+    private func scriptedSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StepUpDriveFlowTests.ScriptedURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func configure(_ model: AppModel, agent: Agent) {
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_tail"]
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [agent.agentId: agent])))
+    }
+
+    func testDeletedDetailTargetCannotDispatchTail() async {
+        StepUpDriveFlowTests.ScriptedURLProtocol.requests = []
+        StepUpDriveFlowTests.ScriptedURLProtocol.responses = [:]
+        let model = AppModel()
+        let stale = Agent(agentId: "herdr:deleted", state: .working,
+                          capabilities: ["read_tail"])
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_tail"]
+
+        model.driveReadTail(agent: stale,
+                            driveClient: DriveClient(host: URL(string: "http://daemon")!,
+                                                     session: scriptedSession()))
+
+        XCTAssertEqual(StepUpDriveFlowTests.ScriptedURLProtocol.requests.count, 0,
+                       "a deleted selection must not reach /drive")
+        XCTAssertEqual(model.banner?.kind, "stale_agent")
+    }
+
+    func testDuplicateTailTapUsesOneInFlightRequestAndTail200() async {
+        let driveURL = URL(string: "http://daemon/drive")!
+        StepUpDriveFlowTests.ScriptedURLProtocol.requests = []
+        StepUpDriveFlowTests.ScriptedURLProtocol.responses = [
+            driveURL: (HTTPURLResponse(url: driveURL, statusCode: 200,
+                                       httpVersion: nil, headerFields: nil)!,
+                       Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"lines":[]}}"#.utf8))
+        ]
+        let model = AppModel()
+        let live = Agent(agentId: "herdr:live", state: .working,
+                         capabilities: ["read_tail"])
+        configure(model, agent: live)
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: scriptedSession())
+
+        model.driveReadTail(agent: live, driveClient: client)
+        XCTAssertTrue(model.isActionInFlight(agentId: live.agentId, capability: .readTail))
+        model.driveReadTail(agent: live, driveClient: client)
+
+        for _ in 0..<20 where StepUpDriveFlowTests.ScriptedURLProtocol.requests.isEmpty {
+            await Task.yield()
+        }
+        let drives = StepUpDriveFlowTests.ScriptedURLProtocol.requests.filter { $0.url?.path == "/drive" }
+        XCTAssertEqual(drives.count, 1, "duplicate taps must not create a second signed action")
+        guard let drive = drives.first else { return }
+        let body = try? JSONSerialization.jsonObject(with: drive.httpBody ?? Data()) as? [String: Any]
+        let envelope = body?["envelope"] as? [String: Any]
+        let payload = envelope?["payload"] as? [String: Any]
+        XCTAssertEqual(payload?["lines"] as? Int, 200)
+        XCTAssertEqual(payload?["kind"] as? String, "read_tail")
+    }
+}
+
 /// Thread-safe counter for the biometrics spy closure.
 private final class LockingCounter: @unchecked Sendable {
     private let lock = NSLock()
@@ -1116,7 +1201,7 @@ final class BoardModelTests: XCTestCase {
     }
 }
 
-// MARK: - D30 row actions (approve/deny, prompt, tail — NEVER interrupt/kill)
+// MARK: - Tappable controls, grant explanations, and selection (#110)
 
 final class RowActionTests: XCTestCase {
 
@@ -1129,65 +1214,95 @@ final class RowActionTests: XCTestCase {
                      waitingOn: waitingOn)
     }
 
-    /// The D30 whitelist — `RowAction` has exactly these three cases. The
-    /// interrupt/kill pin works two ways: the enum has no `.interrupt` /
-    /// `.kill` cases to render from (a future addition must first compile),
-    /// AND `rowActions` must never emit anything outside this set even
-    /// given every capability and every grant.
-    func testInterruptAndKillNeverAppearRegardlessOfCapabilitiesAndGrants() {
-        let whitelist: Set<RowAction> = [.approveDeny, .prompt, .tail]
-        let everything = Capability.allCases.map(\.rawValue)
-        let allGrants = Set(Capability.allCases)
-        for state in AgentState.allCases {
-            let actions = BoardModel.rowActions(agent: agent("herdr:x", state: state,
-                                                             capabilities: everything),
-                                                grants: allGrants)
-            XCTAssertTrue(Set(actions).isSubset(of: whitelist),
-                          "interrupt/kill must never be row actions (D29/D30), state=\(state.rawValue)")
-        }
-    }
-
-    /// Only three action kinds exist, and a maximally-capable blocked agent
-    /// gets exactly all three. (This pins the model's output; keeping the
-    /// VIEW free of buttons outside this list is review discipline — see
-    /// the `RowAction` doc comment.)
-    func testRowActionKindsAreExhaustive() {
+    /// A maximally-capable blocked row exposes the four supported detail
+    /// actions. Kill/attach remain outside this UI surface.
+    func testEnabledActionsIncludeInterruptButNeverKillOrAttach() {
         let actions = BoardModel.rowActions(
             agent: agent("herdr:x", state: .blocked,
                          capabilities: Capability.allCases.map(\.rawValue)),
             grants: Set(Capability.allCases))
-        XCTAssertEqual(actions, [.approveDeny, .prompt, .tail])
+        XCTAssertEqual(actions, [.tail, .prompt, .interrupt, .approveDeny])
     }
 
-    /// Both the agent capability and the device grant must hold (D30).
+    /// Both the agent capability and the device grant must hold. The detail
+    /// surface retains a reason for every disabled action.
     func testActionsRequireCapabilityAndGrant() {
-        // Capability present and grant present: all three.
-        let capable = agent("herdr:x", state: .blocked, capabilities: ["read_tail", "prompt", "approve"])
+        let capable = agent("herdr:x", state: .blocked,
+                            capabilities: ["read_tail", "prompt", "interrupt", "approve"])
         XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: [.prompt, .readTail]),
-                       [.approveDeny, .prompt, .tail])
-        // Grant present but capability ABSENT: no prompt/tail action — a
-        // broad grant set must not offer actions the tool cannot take.
+                       [.tail, .prompt])
+
         let incapable = agent("herdr:y", state: .blocked, capabilities: [])
-        XCTAssertEqual(BoardModel.rowActions(agent: incapable, grants: [.prompt, .readTail]),
-                       [.approveDeny])
-        // Capability present but no grants: read-only device sees only the
-        // approveDeny claim card (which itself hides its buttons via the
-        // approve grant).
-        XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: []), [.approveDeny])
-        // Working agent with no claim: no approveDeny.
+        XCTAssertEqual(BoardModel.rowActions(agent: incapable,
+                                             grants: [.prompt, .readTail, .interrupt]), [])
+
+        let noGrants = BoardModel.actionAvailability(agent: capable, grants: [])
+        XCTAssertTrue(noGrants.allSatisfy { !$0.isEnabled })
+        XCTAssertTrue(noGrants.contains {
+            $0.action == .tail && $0.disabledReason?.contains("read_tail") == true
+        })
+        XCTAssertTrue(noGrants.contains {
+            $0.action == .prompt && $0.disabledReason?.contains("prompt") == true
+        })
+
         let working = agent("herdr:w", state: .working, capabilities: ["prompt", "read_tail"])
-        XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]), [.prompt, .tail])
+        XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]), [.tail, .prompt])
     }
 
-    /// The model and the view agree about `.approveDeny`: a blocked agent
-    /// with NO live claim (waiting_on nil) renders no claim card, so
-    /// `rowActions` must not report one.
+    /// The model and the view agree about approval: a blocked agent without
+    /// a live claim cannot expose a claim-bound action.
     func testBlockedWithoutClaimGetsNoApproveDeny() {
         let claimless = agent("herdr:z", state: .blocked,
-                              capabilities: ["prompt", "read_tail"], waiting: false)
-        XCTAssertEqual(BoardModel.rowActions(agent: claimless,
-                                             grants: [.prompt, .readTail]),
-                       [.prompt, .tail])
+                              capabilities: ["prompt", "read_tail", "approve"], waiting: false)
+        let approval = BoardModel.actionAvailability(agent: claimless,
+                                                     grants: [.approve]).first { $0.action == .approveDeny }
+        XCTAssertEqual(approval?.isEnabled, false)
+        XCTAssertTrue(approval?.disabledReason?.contains("live claim") == true)
+    }
+
+    func testCrashClaimExplainsWhyApprovalIsDisabled() {
+        let crash = Agent(agentId: "herdr:crash", state: .blocked,
+                          capabilities: ["approve"],
+                          waitingOn: WaitingOn(kind: .crash, prompt: "crashed",
+                                               promptHash: "sha256:crash"))
+        let approval = BoardModel.actionAvailability(agent: crash, grants: [.approve])
+            .first { $0.action == .approveDeny }
+        XCTAssertEqual(approval?.isEnabled, false)
+        XCTAssertEqual(approval?.disabledReason, "Crash states do not accept approval replies.")
+    }
+}
+
+final class TappableControlStateTests: XCTestCase {
+    func testIdleDoneDisclosureTogglesCollapsedToExpanded() {
+        var disclosure = IdleDoneDisclosure()
+        XCTAssertFalse(disclosure.isExpanded)
+        XCTAssertEqual(disclosure.stateLabel, "Collapsed")
+        disclosure.toggle()
+        XCTAssertTrue(disclosure.isExpanded)
+        XCTAssertEqual(disclosure.stateLabel, "Expanded")
+    }
+
+    func testRowSelectionReconcilesWhenTheSelectedAgentIsDeleted() {
+        var selection = AgentSelection()
+        selection.select("herdr:selected")
+        XCTAssertEqual(selection.route, AgentRoute(agentId: "herdr:selected"))
+
+        selection.reconcile(availableAgentIds: ["herdr:other"])
+        XCTAssertNil(selection.route, "deleted detail routes must not remain actionable")
+    }
+
+    func testRowSelectionSurvivesUnrelatedFleetUpdates() {
+        var selection = AgentSelection()
+        selection.select("herdr:selected")
+        selection.reconcile(availableAgentIds: ["herdr:selected", "herdr:new"])
+        XCTAssertEqual(selection.route?.agentId, "herdr:selected")
+    }
+
+    func testExplicitStateTextCoversEveryLifecycleState() {
+        XCTAssertEqual(AgentState.working.displayName, "Working")
+        XCTAssertEqual(AgentState.idle.displayName, "Idle")
+        XCTAssertEqual(AgentState.done.displayName, "Done")
+        XCTAssertEqual(AgentState.blocked.displayName, "Blocked")
     }
 }
 

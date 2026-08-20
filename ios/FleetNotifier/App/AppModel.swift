@@ -19,6 +19,15 @@ struct DriveBanner: Equatable, Sendable {
     }
 }
 
+/// One logical drive action. The identity is stable across duplicated row
+/// surfaces (for example NEEDS YOU plus its repo section), so a double tap
+/// cannot create two signed request ids for the same operation.
+private struct DriveActionKey: Hashable, Sendable {
+    let capability: Capability
+    let target: String
+    let identity: String
+}
+
 /// App-level orchestration: identity, registration, live connection,
 /// notification hook, and the signed drive flows shared by the UI and the
 /// notification-action path.
@@ -43,6 +52,8 @@ final class AppModel: ObservableObject {
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
     private var driveTask: Task<Void, Never>?
+    @Published private var inFlightDriveKeys: Set<DriveActionKey> = []
+    private var driveGeneration = 0
     /// In-flight notification-reply validation (cold-start snapshot fetch).
     private var notificationTask: Task<Void, Never>?
     /// Injectable for tests (URLProtocol-mocked session); `.shared` by
@@ -59,6 +70,21 @@ final class AppModel: ObservableObject {
     /// Forward the child's change notifications to this object so the board
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
+
+    /// Demo mode is local and intentionally exposes the safe action set even
+    /// though no daemon grant exists. Live mode always uses the device's
+    /// signed grants.
+    var actionGrants: Set<Capability> {
+        if mode == .demo {
+            return [.prompt, .interrupt, .approve, .readTail]
+        }
+        return Set(grants.compactMap(Capability.init(rawValue:)))
+    }
+
+    func isActionInFlight(agentId: String, capability: Capability?) -> Bool {
+        guard let capability else { return false }
+        return inFlightDriveKeys.contains { $0.target == agentId && $0.capability == capability }
+    }
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -242,16 +268,24 @@ final class AppModel: ObservableObject {
     /// here — the row is rendered from the live agent record. (The lock
     /// screen uses [`handleNotificationReply`], which binds to the
     /// notification's OWN prompt_hash instead.)
-    func handleCannedAction(agentId: String, action: CannedChoice.Action, driveClient: DriveClient) {
+    func handleCannedAction(agentId: String, action: CannedChoice.Action,
+                            driveClient: DriveClient,
+                            expectedPromptHash: String? = nil) {
         guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else {
             banner = .error("no_waiting_approval", "The agent is no longer waiting; the claim is stale.")
+            return
+        }
+        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
             return
         }
         guard let choice = CannedChoice.choice(for: action, kind: waiting.kind, choices: waiting.choices) else {
             banner = .error("cannot_approve_kind", "This waiting state cannot be answered with \(action.rawValue).")
             return
         }
-        driveApprove(agent: agent, choice: choice, driveClient: driveClient)
+        driveApprove(agent: agent, choice: choice, driveClient: driveClient,
+                     expectedPromptHash: waiting.promptHash)
     }
 
     /// The lock-screen reply path: bound to the notification's OWN
@@ -319,70 +353,176 @@ final class AppModel: ObservableObject {
             banner = .error("bad_payload", "Notification carried no prompt_hash.")
             return
         }
+        guard let live = currentAgent(for: payload.agentId),
+              let waiting = live.waitingOn,
+              live.isBlocked,
+              waiting.promptHash == promptHash else {
+            banner = .error("stale_approval",
+                             "This notification is stale: the agent is no longer waiting on that prompt.")
+            return
+        }
+        guard authorize(.approve, for: live) else { return }
         let approvalId = payload.approvalId ?? Claim.approvalId(agentId: payload.agentId,
                                                                 promptHash: promptHash)
         let approvePayload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                           promptHash: promptHash,
                                                           choice: choice)
+        let key = DriveActionKey(capability: .approve, target: payload.agentId,
+                                 identity: "\(approvalId)|\(promptHash)|\(choice)")
+        guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: payload.agentId, payload: approvePayload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     // MARK: - Drive flows (D8 claims, byte-for-byte from the snapshot)
 
     /// The approval claim is echoed EXACTLY from the snapshot's `waiting_on`
     /// (approval_id + prompt_hash); never re-derived from pane text.
-    func driveApprove(agent: Agent, choice: String, driveClient: DriveClient) {
+    func driveApprove(agent: Agent, choice: String, driveClient: DriveClient,
+                      expectedPromptHash: String? = nil) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
-        guard let waiting = agent.waitingOn else {
+        guard live.isBlocked, let waiting = live.waitingOn else {
             banner = .error("no_waiting_approval", "Agent is not waiting on an approval.")
             return
         }
+        if waiting.kind == .crash {
+            banner = .error("cannot_approve_kind", "Crash states do not accept approval replies.")
+            return
+        }
+        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
+            return
+        }
+        if let renderedWaiting = agent.waitingOn,
+           renderedWaiting.promptHash != waiting.promptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
+            return
+        }
+        guard authorize(.approve, for: live) else { return }
         let approvalId = waiting.approvalId ?? Claim.approvalId(agentId: agent.agentId, promptHash: waiting.promptHash)
         let payload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                    promptHash: waiting.promptHash,
                                                    choice: choice)
+        let key = DriveActionKey(capability: .approve, target: live.agentId,
+                                 identity: "\(approvalId)|\(waiting.promptHash)|\(choice)")
+        guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     /// `read_tail` is bounded (D5): 200 lines, never prefetched.
     func driveReadTail(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
+        guard authorize(.readTail, for: live) else { return }
         let payload = CanonicalJSON.readTailPayload(lines: 200)
-        drive(capability: .readTail, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+        let key = DriveActionKey(capability: .readTail, target: live.agentId, identity: "tail-200")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .readTail, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     func drivePrompt(agent: Agent, text: String, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            banner = .error("empty_prompt", "Prompt text cannot be empty.")
+            return
+        }
+        guard authorize(.prompt, for: live) else { return }
         let payload = CanonicalJSON.promptPayload(text: text)
-        drive(capability: .prompt, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+        let key = DriveActionKey(capability: .prompt, target: live.agentId, identity: text)
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .prompt, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
-    // NOTE: `driveCommand` (the interrupt/kill wrapper) was removed with the
-    // D30 board rework — row actions are Approve/Deny/Prompt/Tail only, and
-    // kill-on-phone is D29-cut. `DriveClient.drive` still supports every
-    // capability for any future, non-row surface.
+    /// Interrupt takes the contract's null payload and is grant/capability
+    /// gated at the same boundary as Tail, Prompt, and Approval.
+    func driveInterrupt(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.interrupt, for: live) else { return }
+        let payload = CanonicalJSON.interruptPayload()
+        let key = DriveActionKey(capability: .interrupt, target: live.agentId,
+                                 identity: "interrupt")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .interrupt, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
+    }
+
+    /// Resolve an action's target from the current read model. A detail view
+    /// may outlive a delta deletion; in that case no signed bytes are built.
+    private func currentAgent(for agentId: String) -> Agent? {
+        guard let agent = fleet.agent(agentId) else {
+            banner = .error("stale_agent", "This agent was deleted or migrated; refresh the fleet before acting.")
+            return nil
+        }
+        return agent
+    }
+
+    /// Both sides of the drive authorization contract must hold locally for
+    /// an actionable control. The daemon remains authoritative and can still
+    /// return a typed refusal, which the common drive path surfaces.
+    private func authorize(_ capability: Capability, for agent: Agent) -> Bool {
+        guard agent.capabilities.contains(capability.rawValue) else {
+            banner = .error("capability_unavailable",
+                            "This agent does not advertise the `\(capability.rawValue)` capability.")
+            return false
+        }
+        guard actionGrants.contains(capability) else {
+            banner = .error("not_granted",
+                            "The device has no `\(capability.rawValue)` grant — ask the host to promote capabilities.")
+            return false
+        }
+        return true
+    }
+
+    private func beginDriveAction(_ key: DriveActionKey) -> String? {
+        guard !inFlightDriveKeys.contains(key) else {
+            banner = .info("\(key.capability.displayName) for \(key.target) is already in progress.")
+            return nil
+        }
+        inFlightDriveKeys.insert(key)
+        return DriveClient.newRequestId()
+    }
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
-                       driveClient: DriveClient, keyId: String, signer: DeviceSigner) {
-        driveTask?.cancel()
+                       driveClient: DriveClient, keyId: String, signer: DeviceSigner,
+                       actionKey: DriveActionKey, requestId: String) {
+        let generation = driveGeneration
         driveTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.driveGeneration == generation {
+                    self.inFlightDriveKeys.remove(actionKey)
+                }
+            }
             let result = await driveClient.drive(capability: capability, target: target,
                                                  payload: payload, rev: self.fleet.lastEventId,
+                                                 requestId: requestId,
                                                  keyId: keyId, signer: signer)
+            guard self.driveGeneration == generation else { return }
             switch result {
             case .dispatched(let response):
                 if response.ok {
@@ -392,6 +532,10 @@ final class AppModel: ObservableObject {
                         self.banner = .info("Tail \(target): \(lines.count) lines")
                     } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
+                    } else if capability == .prompt {
+                        self.banner = .info("Prompt sent to \(target): rev \(response.rev)")
+                    } else if capability == .interrupt {
+                        self.banner = .info("Interrupted \(target): rev \(response.rev)")
                     }
                 } else {
                     if response.errorKind == "stale_agent" {
@@ -410,7 +554,8 @@ final class AppModel: ObservableObject {
                         return
                     }
                     // Read-only default: ungranted capabilities are refused
-                    // with the typed banner; the UI also hides the buttons.
+                    // with the typed banner; the UI also explains disabled
+                    // controls before this path is reachable.
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
                 case .network(let message):
                     self.banner = .error("network", message)
@@ -440,7 +585,10 @@ final class AppModel: ObservableObject {
     // MARK: - Demo mode (App Review 4.2)
 
     func enterDemo() {
+        driveGeneration &+= 1
         driveTask?.cancel()
+        driveTask = nil
+        inFlightDriveKeys.removeAll()
         notificationTask?.cancel()
         fleet.disconnect()
         fleet.reset()
@@ -492,7 +640,11 @@ final class AppModel: ObservableObject {
     // MARK: - Identity management
 
     func resetDevice() {
+        driveGeneration &+= 1
         stopLive()
+        driveTask?.cancel()
+        driveTask = nil
+        inFlightDriveKeys.removeAll()
         DeviceKeyStore.wipe()
         defaults.removeObject(forKey: "fleetnotifier.host")
         fleet.reset()

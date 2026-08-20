@@ -13,7 +13,9 @@ For a new machine / public install, two scripts make the daemon turnkey:
 
 Builds the release binary, creates `~/.config/corral` (keys, tokens), and
 installs a **launchd agent** (`com.corral.corrald`) so the daemon runs at
-login and stays up (KeepAlive). Idempotent; safe to re-run.
+login and stays up (KeepAlive). It also installs the release desktop client:
+`/Applications/Corral.app` on macOS or `~/.local/bin/corrald-ui` plus a
+`.desktop` entry on Linux. Idempotent; safe to re-run.
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
@@ -32,6 +34,18 @@ own Terminal. If the daemon is already up under launchd, the script's
 `bootout` + `bootstrap` applies a changed config (a plain `launchctl
 kickstart -k` only restarts the process; it does not re-read a rewritten
 plist).
+
+The macOS desktop install builds `Contents/Resources/Corral.icns` from the
+checked-in squircle-masked `assets/icon/corral-icon-macos.png` using the
+system `sips` and `iconutil` tools, and writes `CFBundleIconFile=Corral` in
+the app's `Info.plist`. The iconset is created in a temporary directory and
+removed on success or failure. Linux installs
+`assets/icon/corral-icon-256.png` as the `corral` desktop icon referenced by
+`~/.local/share/applications/corral.desktop`. A missing icon or failed macOS
+icon conversion is an installation error rather than a silent fallback.
+
+`--uninstall` removes the launchd agent and leaves the config directory; it
+does not remove an installed desktop app.
 
 ### `scripts/corrald-grant.sh`
 

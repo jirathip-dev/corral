@@ -51,6 +51,37 @@ docs/corral/             P1–P4 briefs (history) + P4-conformance.md
                          (normative wire contract)
 ```
 
+## Icon assets and packaging
+
+The approved icon outputs are checked in under `assets/icon/` and the iOS
+AppIcon catalog:
+
+- `corral-master.png` is the cropped square reference.
+- `corral-icon-1024.png` is the opaque repository/reference output.
+- `corral-icon-256.png` is the opaque egui/Linux desktop output.
+- `corral-icon-macos.png` is the 1024px squircle-masked macOS output with
+  transparent corners.
+- `social-preview.png` is the 1280×640 repository preview asset. Committing
+  it does not change GitHub's social-preview setting; that remains a manual
+  repository-settings step.
+- `ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`
+  is the opaque 1024px iOS AppIcon selected by the Xcode project.
+
+When the approved source PNG is available, regenerate the outputs with:
+
+```sh
+mise exec -- python tools/icon/from-user-png.py <approved-source.png>
+mise exec -- python tools/icon/check-assets.py
+```
+
+`check-assets.py` is read-only: it checks PNG dimensions/modes/alpha,
+generator relationships, the egui `include_bytes!`/viewport reference, the
+iOS asset catalog, and the desktop packaging references. The egui binary
+embeds `corral-icon-256.png` at compile time. `scripts/setup-corrald.sh`
+generates `Corral.icns` with macOS `sips`/`iconutil`, sets
+`CFBundleIconFile` to `Corral`, and removes its temporary iconset; Linux
+installs the 256px PNG alongside the `.desktop` entry.
+
 ## Quality gates (run all of these before merging)
 
 ```sh

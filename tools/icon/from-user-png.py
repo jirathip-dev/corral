@@ -6,7 +6,8 @@ Process:
   1. Load the source (1254x1254 RGB, near-black bg).
   2. Auto-crop to content (threshold on near-black) + keep a ~9% safe
      margin so the subject fills the icon without touching the squircle.
-  3. Render to: iOS 1024 opaque, egui 256, repo 1024, social preview.
+  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 masked, repo 1024,
+     social preview.
 
 Usage: python3 tools/icon/from-user-png.py <input.png>
 """
@@ -83,6 +84,21 @@ def main():
     eg = sq.resize((256, 256), Image.LANCZOS).convert("RGB")
     eg.save("assets/icon/corral-icon-256.png")
     print("  ✓ egui icon (256)")
+
+    # 3b. macOS app icon: squircle-masked, transparent corners (the Dock/
+    #     Launchpad/Finder show app icons rounded; an opaque square looks
+    #     wrong). Supersampled mask, corner radius ~0.2237x (Apple ratio).
+    from PIL import ImageDraw as _ImageDraw
+    mac = sq.resize((1024, 1024), Image.LANCZOS).convert("RGBA")
+    SS = 4
+    mask = Image.new("L", (1024 * SS, 1024 * SS), 0)
+    d = _ImageDraw.Draw(mask)
+    d.rounded_rectangle([0, 0, 1024 * SS - 1, 1024 * SS - 1],
+                        radius=0.2237 * 1024 * SS, fill=255)
+    mask = mask.resize((1024, 1024), Image.BOX)
+    mac.putalpha(mask)
+    mac.save("assets/icon/corral-icon-macos.png")
+    print("  ✓ macOS app icon (1024 squircle-masked)")
 
     # 4. repo reference 1024
     ios.save("assets/icon/corral-icon-1024.png")

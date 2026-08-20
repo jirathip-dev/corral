@@ -192,20 +192,30 @@ install_desktop_client() {
       rm -rf "$APP"
       mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
       cp "$UI_BIN" "$APP/Contents/MacOS/corrald-ui"
-      # Icon: build an .icns from the 1024 master (assets/icon/corral-icon-1024.png)
-      local ICON_SRC="$REPO_DIR/assets/icon/corral-icon-1024.png"
-      if [[ -f "$ICON_SRC" ]] && command -v iconutil >/dev/null 2>&1; then
-        local ICONSET_DIR ICONSET
-        ICONSET_DIR="$(mktemp -d)"
-        ICONSET="$ICONSET_DIR/Corral.iconset"
-        mkdir -p "$ICONSET"
-        for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x" "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x" "512:512x512" "1024:512x512@2x"; do
-          local px="${spec%%:*}"; local name="${spec##*:}"
-          sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_$name.png" >/dev/null 2>&1 || true
-        done
-        iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Corral.icns" 2>/dev/null || true
-        rm -rf "$(dirname "$ICONSET")"
+      # Icon: build a valid .icns from the squircle-masked macOS asset.
+      local ICON_SRC="$REPO_DIR/assets/icon/corral-icon-macos.png"
+      [[ -f "$ICON_SRC" ]] || ICON_SRC="$REPO_DIR/assets/icon/corral-icon-1024.png"
+      if [[ ! -f "$ICON_SRC" ]]; then
+        echo "!! macOS icon source missing: $ICON_SRC" >&2
+        return 1
       fi
+      if ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
+        echo "!! macOS Corral.app packaging requires sips and iconutil" >&2
+        return 1
+      fi
+      (
+        set -euo pipefail
+        icon_tmp="$(mktemp -d)"
+        trap 'rm -rf -- "$icon_tmp"' EXIT
+        iconset="$icon_tmp/Corral.iconset"
+        mkdir -p "$iconset"
+        for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x" "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x" "512:512x512" "1024:512x512@2x"; do
+          px="${spec%%:*}"; name="${spec##*:}"
+          sips -z "$px" "$px" "$ICON_SRC" --out "$iconset/icon_$name.png" >/dev/null
+        done
+        iconutil -c icns "$iconset" -o "$APP/Contents/Resources/Corral.icns"
+        [[ -s "$APP/Contents/Resources/Corral.icns" ]]
+      )
       cat > "$APP/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -233,9 +243,13 @@ PLIST_EOF
       echo ">> Installing desktop client → ~/.local/bin + .desktop"
       mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
       cp "$UI_BIN" "$HOME/.local/bin/corrald-ui"
-      if [[ -f "$REPO_DIR/assets/icon/corral-icon-256.png" ]]; then
-        cp "$REPO_DIR/assets/icon/corral-icon-256.png" "$HOME/.local/share/icons/hicolor/256x256/apps/corral.png"
+      local LINUX_ICON="$REPO_DIR/assets/icon/corral-icon-256.png"
+      if [[ ! -f "$LINUX_ICON" ]]; then
+        echo "!! Linux desktop icon missing: $LINUX_ICON" >&2
+        return 1
       fi
+      cp "$LINUX_ICON" "$HOME/.local/share/icons/hicolor/256x256/apps/corral.png"
+      [[ -s "$HOME/.local/share/icons/hicolor/256x256/apps/corral.png" ]]
       cat > "$HOME/.local/share/applications/corral.desktop" <<DESKTOP_EOF
 [Desktop Entry]
 Type=Application

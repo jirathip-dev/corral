@@ -62,6 +62,11 @@ CORRAL_UI_CONFIG_DIR=~/.config/corral/ui ./target/release/corrald-ui
 RUST_LOG=info ./target/release/corrald-ui        # SSE connect is logged
 ```
 
+The desktop window icon is embedded at compile time from
+`assets/icon/corral-icon-256.png` and supplied to eframe's native viewport.
+Regenerate/check the repository icon outputs with the commands in
+[`docs/DEVELOPING.md`](../../docs/DEVELOPING.md#icon-assets-and-packaging).
+
 Client config lives in `$CORRAL_UI_CONFIG_DIR` (default
 `~/.config/corral/ui`): `config.json` (host URL + registration record),
 `keys/` (0600 key file fallback), and keychain entries under

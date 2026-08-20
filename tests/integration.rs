@@ -14,6 +14,7 @@ use corrald::core::events::{
 };
 use corrald::core::model::{Agent, AgentState, Change, CiStatus, Workspace};
 use corrald::core::store::Store;
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
 use corrald::integrate::Integrator;
 
 const REPO_ROOT: &str = "/Users/jirathip/Projects/herdr-board";
@@ -520,6 +521,59 @@ async fn main_checkout_derives_repo_from_root_name() {
         "main checkout repo = root dir name"
     );
     assert_eq!(a.workspace.branch.as_deref(), Some("main"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_attribution_merges_primary_alias_and_keeps_unknown_orphaned() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let primary = temp.path().join("primary");
+    let worktrees = temp.path().join("worktrees");
+    let alias = temp.path().join("primary-alias");
+    let unknown = temp.path().join("unknown");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::create_dir_all(&worktrees).unwrap();
+    std::fs::create_dir_all(&unknown).unwrap();
+    std::os::unix::fs::symlink(&primary, &alias).unwrap();
+
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: primary.clone(),
+            repo: "registry-repo".to_string(),
+        }],
+        worktrees,
+    );
+    let store = Store::new();
+    let integrator = Integrator::new_with_attribution(store.clone(), attribution);
+    let (sink, rx) = plane_channel();
+    tokio::spawn(async move { integrator.run(rx).await });
+
+    let alias_string = alias.to_string_lossy().into_owned();
+    let unknown_string = unknown.to_string_lossy().into_owned();
+    let primary_string = primary.to_string_lossy().into_owned();
+    store
+        .apply(Change::upsert(agent("primary", Some(&alias_string))))
+        .await;
+    store
+        .apply(Change::upsert(agent("unknown", Some(&unknown_string))))
+        .await;
+    sink.send(head(&primary_string, "main", "abc123"))
+        .await
+        .unwrap();
+    sink.send(head(&unknown_string, "should-not-attribute", "def456"))
+        .await
+        .unwrap();
+
+    let primary = wait_for(&store, "primary", |agent| {
+        agent.workspace.repo.as_deref() == Some("registry-repo")
+            && agent.workspace.branch.as_deref() == Some("main")
+    })
+    .await;
+    assert_eq!(primary.workspace.repo.as_deref(), Some("registry-repo"));
+    assert_eq!(primary.workspace.branch.as_deref(), Some("main"));
+    let unknown = store.get("unknown").await.expect("unknown agent");
+    assert_eq!(unknown.workspace.repo, None);
+    assert_eq!(unknown.workspace.branch, None);
 }
 
 #[tokio::test]

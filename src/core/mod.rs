@@ -5,6 +5,7 @@ pub mod model;
 pub mod redact;
 pub mod store;
 pub mod util;
+pub mod workspace;
 
 pub use events::{
     GhIssueRef, GhPrState, GhRepoState, GitEvent, GitStatus, Plane, PlaneEvent, PlaneSink,
@@ -17,3 +18,4 @@ pub use model::{
 };
 pub use redact::{REDACTED, redact};
 pub use store::Store;
+pub use workspace::{RepoRoot, WorkspaceAttribution, WorkspaceFacts};

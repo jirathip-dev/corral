@@ -98,10 +98,12 @@ pub enum CiStatus {
 }
 
 /// Git topology + task-centric read-model fields (P2). P1 fills only
-/// `worktree_path` (from the source's cwd); the git watcher fills
-/// `branch`/`repo` (derived from the worktree path pattern), `dirty`/
-/// `ahead`/`behind`; the gh poller fills `pr_number`/`ci_status`. Every field
-/// defaults so P1-shaped payloads and P1 sources still decode.
+/// `worktree_path` (from the source's cwd); the shared attribution resolver
+/// fills repo identity for explicit Corral/fleet roots and the canonical
+/// Herdr linked-worktree layout, while the git watcher supplies branch,
+/// dirty, ahead, and behind facts. The gh poller fills
+/// `pr_number`/`ci_status`. Every field defaults so P1-shaped payloads and P1
+/// sources still decode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     pub repo: Option<String>,

@@ -71,7 +71,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::core::events::{GitEvent, GitStatus, Plane, PlaneEvent, PlaneSink};
-use crate::core::util::now_millis;
+use crate::core::util::{canonicalize_existing_prefix, now_millis};
 
 /// Per-worktree debounce window (the brief's 300ms).
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -186,8 +186,8 @@ enum ProbeError {
 /// net) over a repo's main checkout and herdr-managed linked worktrees.
 #[derive(Debug)]
 pub struct GitPlane {
-    /// Main checkout (repo root) — always watched.
-    repo_root: PathBuf,
+    /// Explicit primary checkout roots — always watched.
+    repo_roots: Vec<PathBuf>,
     /// Root of the herdr-managed worktrees; linked worktrees under it are
     /// watched too.
     worktrees_root: PathBuf,
@@ -206,10 +206,24 @@ impl GitPlane {
     /// Watch the main checkout at `repo_root` and every linked worktree
     /// under `worktrees_root`.
     pub fn new(repo_root: PathBuf, worktrees_root: PathBuf) -> Self {
-        let repo_root = fs::canonicalize(&repo_root).unwrap_or(repo_root);
+        Self::with_repo_roots(vec![repo_root], worktrees_root)
+    }
+
+    /// Watch every explicit primary checkout and the Herdr-managed linked
+    /// worktree root. The default constructor keeps the historical single
+    /// Corral root; the daemon uses this form after loading additional roots
+    /// from the fleet registry.
+    pub fn with_repo_roots(repo_roots: Vec<PathBuf>, worktrees_root: PathBuf) -> Self {
+        let mut canonical_roots = Vec::new();
+        for root in repo_roots {
+            let root = fs::canonicalize(&root).unwrap_or(root);
+            if !canonical_roots.contains(&root) {
+                canonical_roots.push(root);
+            }
+        }
         let worktrees_root = fs::canonicalize(&worktrees_root).unwrap_or(worktrees_root);
         Self {
-            repo_root,
+            repo_roots: canonical_roots,
             worktrees_root,
             state: Mutex::new(PlaneState::default()),
             last_rescan: AtomicU64::new(0),
@@ -242,7 +256,7 @@ impl GitPlane {
     /// `map_event_path`.
     fn watches(&self, path: &Path) -> bool {
         let canon = canonicalize_existing_prefix(path);
-        canon == self.repo_root || canon.starts_with(&self.worktrees_root)
+        self.repo_roots.contains(&canon) || canon.starts_with(&self.worktrees_root)
     }
 
     // -- watcher (primary signal) -------------------------------------------
@@ -268,7 +282,7 @@ impl GitPlane {
             Self::new_commondir_watcher(cd, &event_tx)
         }) {
             info!(
-                repo = %self.repo_root.display(),
+                repos = ?self.repo_roots,
                 root = %self.worktrees_root.display(),
                 "git plane: fsevents watchers live"
             );
@@ -856,7 +870,7 @@ impl GitPlane {
     /// deduped by canonical path (WS3 F5: one spelling for registry keys,
     /// emitted events and commondir lookups).
     async fn scan_all_worktrees(&self) -> ScanResult {
-        let mut sources = vec![self.repo_root.clone()];
+        let mut sources = self.repo_roots.clone();
         if let Ok(entries) = fs::read_dir(&self.worktrees_root) {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
@@ -974,52 +988,8 @@ fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)> {
     entries
 }
 
-/// Canonicalize the longest EXISTING prefix of `path`, then re-append the
-/// components that do not exist yet.
-///
-/// [`fs::canonicalize`] fails outright on a missing path, which leaves the
-/// caller comparing a raw spelling against canonicalized roots. On macOS
-/// those disagree by construction — `/var` is a symlink to `/private/var`
-/// and `/tmp` to `/private/tmp` — so a path under a watched root answered
-/// `false` purely because it did not exist yet (#43). A filesystem watcher
-/// asks about exactly those paths: a worktree just removed, or one whose
-/// creation event arrives before the directory is visible.
-///
-/// Walking up cannot loop: each step drops one component, and a path with
-/// no parent returns the input unchanged.
-///
-/// **Known limitation.** [`Path::file_name`] returns `None` for a `..`
-/// component, so a path containing (or ending in) `..` hits that fallback
-/// and keeps its raw spelling — meaning #43's platform split survives for
-/// those inputs. Unreachable from today's callers, whose paths come from
-/// `git worktree list --porcelain` and from FSEvents, both absolute and
-/// `..`-free. Normalising `..` textually would be wrong anyway: with
-/// symlinks in play, `a/b/../c` and `a/c` are not the same path.
-fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut cursor = path;
-    loop {
-        if let Ok(base) = fs::canonicalize(cursor) {
-            let mut out = base;
-            // `tail` was pushed leaf-first while walking up; re-append in
-            // reverse so the original order is restored.
-            for part in tail.iter().rev() {
-                out.push(part);
-            }
-            return out;
-        }
-        match (cursor.parent(), cursor.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                cursor = parent;
-            }
-            // No existing ancestor resolved (or a rootless/relative path):
-            // fall back to the raw spelling, exactly as before.
-            _ => return path.to_path_buf(),
-        }
-    }
-}
-
+// `canonicalize_existing_prefix` is shared with the integrator and Herdr
+// attribution resolver so all path-keyed facts use the same alias rules.
 /// Resolve a porcelain worktree path to the path that actually exists.
 ///
 /// `git worktree list --porcelain` prints paths RAW — verified against the

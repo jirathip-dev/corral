@@ -5,9 +5,8 @@
 //!
 //! - **Git facts** (keyed by `workspace.worktree_path`): a fact for a
 //!   worktree updates EVERY agent whose `worktree_path` matches that path.
-//!   `HeadMoved`/`CommitOnBranch` set `branch` (+ `repo` derived from the
-//!   worktree path pattern `<worktrees_root>/<repo>/<label>`, or the repo
-//!   root directory name for the main checkout), `head_sha` + `head_subject`
+//!   `HeadMoved`/`CommitOnBranch` set `branch` (+ `repo` from the shared
+//!   explicit-root/linked-worktree resolver), `head_sha` + `head_subject`
 //!   (G21: the head commit the PR matcher resolves, carried onto the
 //!   snapshot — `null` for unborn/empty checkouts); `DirtyChanged` sets
 //!   `dirty` (index OR worktree dirty) and `ahead`/`behind`. The path's
@@ -76,7 +75,8 @@
 //!   to `branch: None` (F7).
 //! - Paths are compared in canonical form when the raw spellings differ
 //!   (F5), so a symlinked `HOME` cannot split the plane's canonical event
-//!   paths from herdr's raw cwd paths.
+//!   paths from Herdr's raw cwd paths. Unknown paths do not enter the shared
+//!   attribution cache and remain in the orphan bucket.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -89,6 +89,8 @@ use crate::core::events::{GhRepoState, GitEvent, GitStatus, PlaneEvent};
 use crate::core::model::{CiStatus, Workspace};
 use crate::core::redact::redact;
 use crate::core::store::Store;
+use crate::core::util::canonicalize_existing_prefix;
+use crate::core::workspace::{WorkspaceAttribution, paths_match as workspace_paths_match};
 
 /// Last-known git facts for one worktree path (the re-apply unit).
 #[derive(Debug, Clone, Default)]
@@ -116,10 +118,10 @@ impl GitFacts {
 /// polling, no broadcast subscription.
 pub struct Integrator {
     store: Store,
-    /// Main checkout (repo root) — the path pattern's anchor.
-    repo_root: PathBuf,
-    /// Root of the herdr-managed worktrees — `<root>/<repo>/<label>`.
-    worktrees_root: PathBuf,
+    /// Explicit primary roots plus the Herdr linked-worktree root. This is
+    /// shared with Herdr so fresh records and merged records resolve the same
+    /// canonical facts.
+    attribution: WorkspaceAttribution,
     /// worktree path -> last-known git facts (path-keyed re-apply).
     git: Mutex<HashMap<PathBuf, GitFacts>>,
     /// repo name -> last-known gh state (repo-keyed re-apply).
@@ -128,10 +130,13 @@ pub struct Integrator {
 
 impl Integrator {
     pub fn new(store: Store, repo_root: PathBuf, worktrees_root: PathBuf) -> Self {
+        Self::new_with_attribution(store, WorkspaceAttribution::new(repo_root, worktrees_root))
+    }
+
+    pub fn new_with_attribution(store: Store, attribution: WorkspaceAttribution) -> Self {
         Self {
             store,
-            repo_root,
-            worktrees_root,
+            attribution,
             git: Mutex::new(HashMap::new()),
             gh: Mutex::new(HashMap::new()),
         }
@@ -179,10 +184,12 @@ impl Integrator {
                 commit,
                 subject,
             } => {
+                let worktree = canonicalize_existing_prefix(&worktree);
+                self.attribution.record_branch(&worktree, &branch);
                 self.git
                     .lock()
                     .unwrap()
-                    .entry(worktree.clone())
+                    .entry(worktree)
                     .or_default()
                     .head(branch, commit, subject);
                 self.converge().await;
@@ -195,27 +202,26 @@ impl Integrator {
             } => {
                 // Wire-level distinction only: the read-model impact equals
                 // HeadMoved's (branch + head commit facts).
+                let worktree = canonicalize_existing_prefix(&worktree);
+                self.attribution.record_branch(&worktree, &branch);
                 self.git
                     .lock()
                     .unwrap()
-                    .entry(worktree.clone())
+                    .entry(worktree)
                     .or_default()
                     .head(branch, commit, subject);
                 self.converge().await;
             }
             GitEvent::DirtyChanged { worktree, status } => {
-                self.git
-                    .lock()
-                    .unwrap()
-                    .entry(worktree.clone())
-                    .or_default()
-                    .status = Some(status);
+                let worktree = canonicalize_existing_prefix(&worktree);
+                self.git.lock().unwrap().entry(worktree).or_default().status = Some(status);
                 self.converge().await;
             }
             GitEvent::WorktreeAdded { worktree } => {
                 // Topology fact, no read-model payload. Ensure the path is
                 // cached so later partial facts have a landing spot; no agent
                 // mapping and no synthetic agents.
+                let worktree = canonicalize_existing_prefix(&worktree);
                 self.git
                     .lock()
                     .unwrap()
@@ -228,7 +234,9 @@ impl Integrator {
                 // derived fields + PR binding (F6): a removed worktree must
                 // not leave records claiming a branch/pr of a nonexistent
                 // worktree.
+                let worktree = canonicalize_existing_prefix(&worktree);
                 self.git.lock().unwrap().remove(&worktree);
+                self.attribution.clear_branch(&worktree);
                 self.reset_worktree(&worktree).await;
                 debug!(worktree = %worktree.display(), "integrator: worktree removed (facts dropped, agents reset)");
             }
@@ -245,7 +253,8 @@ impl Integrator {
     }
 
     /// Re-apply every cached fact (git per path, gh per repo) plus the
-    /// path-derived repo fallback onto the current agent set. Idempotent:
+    /// explicit-root/linked-worktree repo fallback onto the current agent
+    /// set. Idempotent:
     /// records change only when the merged candidate differs.
     async fn converge(&self) {
         let (git, gh) = {
@@ -259,20 +268,21 @@ impl Integrator {
         for (repo, state) in &gh {
             self.reapply_repo(repo, state).await;
         }
-        // F2 fallback: derive the repo from the path pattern even when the
-        // git plane has no facts for the path yet, so gh facts can still
-        // bind fleet-wide by repo.
-        let repo_root = self.repo_root.clone();
-        let worktrees_root = self.worktrees_root.clone();
+        // F2 fallback: resolve explicit primary roots and the linked-worktree
+        // layout even when the git plane has no facts for the path yet, so a
+        // fresh Herdr record is grouped correctly before its first probe.
+        let attribution = self.attribution.clone();
         self.store
             .update_where(
                 |_| true,
                 move |agent| {
                     if let Some(path) = agent.workspace.worktree_path.as_deref()
-                        && let Some(repo) =
-                            derive_repo(Path::new(path), &repo_root, &worktrees_root)
+                        && let Some(facts) = attribution.facts_for(Path::new(path))
                     {
-                        agent.workspace.repo = Some(repo);
+                        agent.workspace.repo = facts.repo;
+                        if facts.branch_known {
+                            agent.workspace.branch = facts.branch;
+                        }
                     }
                 },
             )
@@ -283,11 +293,12 @@ impl Integrator {
     /// whose `worktree_path` matches: branch/repo from the head, dirty/ahead/
     /// behind from the status, then the gh PR facts for the derived repo.
     async fn reapply_path(&self, path: &Path, facts: &GitFacts) {
-        let repo = derive_repo(path, &self.repo_root, &self.worktrees_root);
+        let repo = self.attribution.repo_for(path);
         let gh_state = repo
             .as_ref()
             .and_then(|r| self.gh.lock().unwrap().get(r).cloned());
-        let (path, facts, repo, gh_state) = (path.to_path_buf(), facts.clone(), repo, gh_state);
+        let path = canonicalize_existing_prefix(path);
+        let (path, facts, repo, gh_state) = (path, facts.clone(), repo, gh_state);
         let match_path = path.clone();
         self.store
             .update_where(
@@ -299,9 +310,14 @@ impl Integrator {
                 },
                 move |agent| {
                     let ws = &mut agent.workspace;
-                    if let Some(repo) = &repo {
-                        ws.repo = Some(repo.clone());
-                    }
+                    // Git events from an unrecognized path are not enough to
+                    // promote that path into the read model. Production git
+                    // events are already scoped, but this guard also keeps a
+                    // stray/synthetic event in the orphan bucket.
+                    let Some(repo) = &repo else {
+                        return;
+                    };
+                    ws.repo = Some(repo.clone());
                     if let Some(branch) = &facts.branch {
                         // F7: detached HEAD reports the literal "HEAD" —
                         // never a branch; normalize to None.
@@ -351,11 +367,11 @@ impl Integrator {
             .update_where(
                 |a| a.workspace.repo.as_deref() == Some(match_repo.as_str()),
                 move |agent| {
-                    let facts = agent
-                        .workspace
-                        .worktree_path
-                        .as_deref()
-                        .and_then(|p| git.get(&canon_best_effort(Path::new(p))));
+                    let facts = agent.workspace.worktree_path.as_deref().and_then(|p| {
+                        git.iter()
+                            .find(|(path, _)| paths_match(path, Path::new(p)))
+                            .map(|(_, facts)| facts)
+                    });
                     // No git facts for this agent's worktree yet: a PR cannot
                     // be matched by commit. Leave pr/ci untouched.
                     if let Some(facts) = facts {
@@ -398,19 +414,13 @@ impl Integrator {
     }
 }
 
-/// Canonical repo name for a worktree path: the main checkout derives from
-/// the repo root directory name; a herdr worktree from the first component
-/// under the worktrees root (`<root>/<repo>/<label>`). Paths outside both
-/// roots yield `None`.
+/// Compatibility helper for the path-derived repo contract. Production
+/// attribution goes through [`WorkspaceAttribution`] so primary roots can be
+/// supplied explicitly and aliases share one identity.
+#[cfg(test)]
 fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Option<String> {
-    if worktree == repo_root {
-        return repo_root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-    }
-    let rel = worktree.strip_prefix(worktrees_root).ok()?;
-    let first = rel.components().next()?;
-    Some(first.as_os_str().to_string_lossy().into_owned())
+    WorkspaceAttribution::new(repo_root.to_path_buf(), worktrees_root.to_path_buf())
+        .repo_for(worktree)
 }
 
 /// Best-effort canonical form: real paths resolve symlinks (F5), synthetic
@@ -419,7 +429,7 @@ fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Opti
 /// store-recorded paths and reuses this instead of re-learning the
 /// symlinked-HOME lesson.
 pub(crate) fn canon_best_effort(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    canonicalize_existing_prefix(p)
 }
 
 /// F5 path comparison: raw equality first (cheap, and identity on
@@ -427,7 +437,7 @@ pub(crate) fn canon_best_effort(p: &Path) -> PathBuf {
 /// symlinked `HOME` cannot split the plane's canonical event paths from
 /// herdr's raw cwd paths.
 pub(crate) fn paths_match(a: &Path, b: &Path) -> bool {
-    a == b || canon_best_effort(a) == canon_best_effort(b)
+    workspace_paths_match(a, b)
 }
 
 /// Map the gh repo state onto the agent's PR fields.
@@ -538,7 +548,7 @@ mod tests {
         // G21 acceptance 1+2: the head fields ride the cached git facts the
         // PR matcher already resolves — merged here with zero extra git.
         let store = Store::new();
-        store.apply(Change::upsert(agent_on("/wt/a"))).await;
+        store.apply(Change::upsert(agent_on("/repo"))).await;
         let integrator =
             Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
 
@@ -551,7 +561,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+        integrator.reapply_path(Path::new("/repo"), &facts).await;
 
         let agents = store.matching(|_| true).await;
         let ws = &agents[0].workspace;
@@ -563,7 +573,7 @@ mod tests {
         // No head fact (unborn/empty checkout): fields stay null.
         integrator
             .reapply_path(
-                Path::new("/wt/a"),
+                Path::new("/repo"),
                 &GitFacts {
                     branch: Some("feat/x".to_string()),
                     ..Default::default()
@@ -582,7 +592,7 @@ mod tests {
         // head_sha (identity) stays raw.
         const GHP: &str = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890";
         let store = Store::new();
-        store.apply(Change::upsert(agent_on("/wt/a"))).await;
+        store.apply(Change::upsert(agent_on("/repo"))).await;
         let integrator =
             Integrator::new(store.clone(), PathBuf::from("/repo"), PathBuf::from("/wts"));
 
@@ -592,7 +602,7 @@ mod tests {
             subject: Some(format!("rotate the {GHP} token now")),
             ..Default::default()
         };
-        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+        integrator.reapply_path(Path::new("/repo"), &facts).await;
 
         let agents = store.matching(|_| true).await;
         let ws = &agents[0].workspace;
@@ -612,7 +622,7 @@ mod tests {
         );
 
         // Idempotent under re-apply: the second pass must not double-redact.
-        integrator.reapply_path(Path::new("/wt/a"), &facts).await;
+        integrator.reapply_path(Path::new("/repo"), &facts).await;
         let agents = store.matching(|_| true).await;
         assert_eq!(
             agents[0].workspace.head_subject.as_deref(),

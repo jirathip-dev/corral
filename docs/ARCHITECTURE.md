@@ -114,9 +114,27 @@ inputs are files on disk rather than plane events:
 - **Fleet registry** (`src/fleet/`,
   `corrald fleet list|check|add|remove|pause|resume|models`)
   — parses, validates and atomically rewrites the `fleets.json`
-  control-plane registry. No process control, and the daemon runtime path
-  never touches it (the subcommands dispatch before the tokio runtime is
-  built).
+  control-plane registry. The daemon read path may consult the validated
+  registry for primary-checkout attribution, but never mutates it or controls
+  processes; the registry subcommands dispatch before the tokio runtime is
+  built.
+
+### Workspace attribution
+
+Repo/branch grouping is one shared read-side fact flow. The daemon seeds
+explicit primary checkout roots from `CORRAL_REPO_ROOT` and, when present,
+the fleet registry's `local` + `gh_repo` pairs. The git plane probes those
+roots and the Herdr linked-worktree root; the integrator records branch facts
+by canonical worktree path, and the Herdr adapter reads the same facts while
+building a fresh agent record.
+
+Path identity is raw-then-canonical, including symlinked `$HOME` and missing
+path tails. A primary checkout must match a known root exactly. A linked
+worktree uses the established `<worktrees_root>/<repo>/<label>` layout, with
+the `<label>` treated only as a path component—not as branch identity.
+Branches come from git HEAD facts; display names, pane labels, and terminal
+titles never participate. Paths that match neither source remain
+`workspace.repo: null` and therefore stay in the `(no repo)` orphan bucket.
 
 ## Write side: the signed drive plane
 

@@ -33,7 +33,9 @@
 //! display name) passes through [`crate::core::redact::redact`] BEFORE it
 //! becomes a canonical record. Everything downstream (snapshot, SSE, drive
 //! responses, audit entries) serializes the store, so the output is redacted
-//! by construction. Paths and pane ids are identity, never redacted. The
+//! by construction. Paths and pane ids are identity, never redacted. Repo
+//! identity comes from explicit Corral/Herdr roots and branch identity comes
+//! from cached git facts; display names and pane labels are never used. The
 //! `read_tail` result path applies the same `redact` to the fetched tail
 //! text before it leaves the machine ([`Adapter::read_tail`]).
 //!
@@ -48,7 +50,7 @@
 //! [`DriveError::UnknownAgent`]. A command never panics on Unknown state.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,6 +71,7 @@ use crate::core::model::{
 use crate::core::redact::redact;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
+use crate::core::workspace::{WorkspaceAttribution, paths_match};
 use crate::drive::{READ_TAIL_MAX_BYTES, READ_TAIL_MAX_LINES};
 
 /// Where herdr exposes its JSON-RPC API socket (expanded from ~ in main).
@@ -793,6 +796,9 @@ impl Drop for LiveEventStream {
 
 pub struct HerdrAdapter {
     socket_path: PathBuf,
+    /// Canonical Corral/Herdr repo and git-fact view used while building a
+    /// fresh agent record. It never derives attribution from pane labels.
+    workspace_attribution: WorkspaceAttribution,
     state: Arc<Mutex<SessionState>>,
     /// The read model to retire after a source-level `agent_not_found`.
     /// `start` installs this for the production adapter; tests and direct
@@ -814,8 +820,22 @@ impl std::fmt::Debug for HerdrAdapter {
 
 impl HerdrAdapter {
     pub fn new(socket_path: PathBuf) -> Self {
+        Self::new_with_attribution(
+            socket_path,
+            WorkspaceAttribution::from_roots(
+                std::iter::empty::<crate::core::workspace::RepoRoot>(),
+                PathBuf::from("/nonexistent-herdr-worktrees"),
+            ),
+        )
+    }
+
+    pub fn new_with_attribution(
+        socket_path: PathBuf,
+        workspace_attribution: WorkspaceAttribution,
+    ) -> Self {
         Self {
             socket_path,
+            workspace_attribution,
             state: Arc::new(Mutex::new(SessionState::default())),
             store: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -1234,6 +1254,9 @@ impl HerdrAdapter {
         display_name: Option<String>,
     ) -> Agent {
         let seq = state.next_seq(agent_id);
+        let workspace_facts = worktree_path
+            .as_deref()
+            .and_then(|path| self.workspace_attribution.facts_for(Path::new(path)));
         // G34: best-effort cumulative spend from the D30 background cache,
         // keyed by (tool, worktree_path). `None` until the refresh loop
         // has populated a match for this pair — same as the pre-G34
@@ -1257,8 +1280,13 @@ impl HerdrAdapter {
             parent_id: None,
             host: None,
             workspace: Workspace {
-                repo: None,
-                branch: None,
+                repo: workspace_facts
+                    .as_ref()
+                    .and_then(|facts| facts.repo.clone()),
+                branch: workspace_facts
+                    .as_ref()
+                    .filter(|facts| facts.branch_known)
+                    .and_then(|facts| facts.branch.clone()),
                 worktree_path,
                 pr_number: None,
                 ..Default::default()
@@ -1346,26 +1374,50 @@ impl HerdrAdapter {
             .await;
     }
 
-    /// WS3 F1: herdr owns `worktree_path` only. A full-record rebuild (agent
-    /// info, pane.updated, agent_detected) must PRESERVE the plane-merged
-    /// workspace read-model fields (repo/branch/dirty/ahead/behind/pr_number/
-    /// ci_status) when the worktree is unchanged, or every herdr upsert
-    /// clobbers the integrator's merged view. When the worktree changed, the
-    /// fresh workspace wins (the integrator re-derives facts for the new
-    /// path on its next pass).
+    /// WS3 F1/#109: herdr owns `worktree_path` only. A full-record rebuild
+    /// (agent info, pane.updated, agent_detected) must preserve the
+    /// plane-merged workspace fields when the worktree is unchanged, while
+    /// allowing the shared canonical resolver to provide a newer primary
+    /// repo/branch fact. Canonical path matching keeps a symlink alias from
+    /// looking like a worktree change. When the worktree really changes, the
+    /// fresh workspace wins and the integrator re-derives facts for the new
+    /// path on its next pass.
     async fn preserve_workspace(&self, store: &Store, agent_id: &str, mut agent: Agent) -> Agent {
         let Some(existing) = store.get(agent_id).await else {
             return agent;
         };
-        if existing.workspace.worktree_path == agent.workspace.worktree_path {
+        if existing
+            .workspace
+            .worktree_path
+            .as_deref()
+            .zip(agent.workspace.worktree_path.as_deref())
+            .is_some_and(|(existing, fresh)| paths_match(Path::new(existing), Path::new(fresh)))
+        {
             let ws = &existing.workspace;
-            agent.workspace.repo = ws.repo.clone();
-            agent.workspace.branch = ws.branch.clone();
+            let facts = agent
+                .workspace
+                .worktree_path
+                .as_deref()
+                .and_then(|path| self.workspace_attribution.facts_for(Path::new(path)));
+            if facts
+                .as_ref()
+                .and_then(|facts| facts.repo.as_ref())
+                .is_none()
+            {
+                agent.workspace.repo = ws.repo.clone();
+            }
+            if !facts.as_ref().is_some_and(|facts| facts.branch_known) {
+                agent.workspace.branch = ws.branch.clone();
+            }
             agent.workspace.dirty = ws.dirty;
             agent.workspace.ahead = ws.ahead;
             agent.workspace.behind = ws.behind;
             agent.workspace.pr_number = ws.pr_number;
             agent.workspace.ci_status = ws.ci_status;
+            agent.workspace.head_sha = ws.head_sha.clone();
+            agent.workspace.head_subject = ws.head_subject.clone();
+            agent.workspace.pr_match_source = ws.pr_match_source.clone();
+            agent.workspace.issues = ws.issues.clone();
         }
         agent
     }
@@ -2325,6 +2377,130 @@ mod tests {
         // Per-source monotonic seqs.
         assert_eq!(c.seq, 1);
         assert_eq!(o.seq, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn primary_linked_alias_and_unknown_paths_get_only_canonical_facts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("primary-repo");
+        let worktrees = temp.path().join("worktrees");
+        let linked = worktrees.join("linked-repo/feature");
+        let alias = temp.path().join("primary-alias");
+        let unknown = temp.path().join("unknown");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::os::unix::fs::symlink(&primary, &alias).unwrap();
+
+        let attribution = WorkspaceAttribution::from_roots(
+            [crate::core::workspace::RepoRoot {
+                path: primary.clone(),
+                repo: "primary-repo".to_string(),
+            }],
+            worktrees,
+        );
+        attribution.record_branch(&primary, "main");
+        attribution.record_branch(&linked, "feature/x");
+        attribution.record_branch(&unknown, "must-not-infer");
+
+        let store = Store::new();
+        let adapter =
+            HerdrAdapter::new_with_attribution(PathBuf::from("/nonexistent.sock"), attribution);
+        let info = |id: &str, pane_id: &str, path: &Path| {
+            serde_json::from_value::<AgentInfoWire>(json!({
+                "agent": "opencode",
+                "agent_session": {"agent": "opencode", "kind": "id", "value": id},
+                "agent_status": "working",
+                "foreground_cwd": path,
+                "pane_id": pane_id,
+                "state_labels": {}
+            }))
+            .expect("agent fixture")
+        };
+
+        adapter
+            .apply_agent_info(&info("primary", "p-primary", &primary), &store)
+            .await;
+        adapter
+            .apply_agent_info(&info("linked", "p-linked", &linked), &store)
+            .await;
+        adapter
+            .apply_agent_info(&info("alias", "p-alias", &alias), &store)
+            .await;
+        adapter
+            .apply_agent_info(&info("unknown", "p-unknown", &unknown), &store)
+            .await;
+
+        let snapshot = store.snapshot().await;
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:primary")
+                .and_then(|agent| agent.workspace.repo.as_deref()),
+            Some("primary-repo")
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:primary")
+                .and_then(|agent| agent.workspace.branch.as_deref()),
+            Some("main")
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:linked")
+                .and_then(|agent| agent.workspace.repo.as_deref()),
+            Some("linked-repo")
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:linked")
+                .and_then(|agent| agent.workspace.branch.as_deref()),
+            Some("feature/x")
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:alias")
+                .and_then(|agent| agent.workspace.repo.as_deref()),
+            Some("primary-repo")
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .get("herdr:alias")
+                .and_then(|agent| agent.workspace.branch.as_deref()),
+            Some("main")
+        );
+        let unknown_agent = snapshot.agents.get("herdr:unknown").expect("unknown row");
+        assert_eq!(unknown_agent.workspace.repo, None);
+        assert_eq!(unknown_agent.workspace.branch, None);
+
+        // A canonical alias is also the same worktree for preservation: the
+        // plane-derived fields must survive a Herdr record rebuild.
+        let mut existing = store.get("herdr:alias").await.expect("alias row");
+        existing.workspace.dirty = true;
+        existing.workspace.head_sha = Some("abc123".to_string());
+        existing.workspace.head_subject = Some("subject".to_string());
+        existing.workspace.pr_number = Some(7);
+        existing.workspace.issues = vec![crate::core::events::GhIssueRef {
+            repo: "primary-repo".to_string(),
+            number: 109,
+            state: "OPEN".to_string(),
+            title: "primary attribution".to_string(),
+        }];
+        store.apply(Change::upsert(existing)).await;
+        adapter
+            .apply_agent_info(&info("alias", "p-alias", &primary), &store)
+            .await;
+        let preserved = store.get("herdr:alias").await.expect("preserved alias row");
+        assert!(preserved.workspace.dirty);
+        assert_eq!(preserved.workspace.head_sha.as_deref(), Some("abc123"));
+        assert_eq!(preserved.workspace.pr_number, Some(7));
+        assert_eq!(preserved.workspace.issues.len(), 1);
     }
 
     #[tokio::test]

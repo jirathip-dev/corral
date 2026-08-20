@@ -1,5 +1,8 @@
 # Corral — delta re-review after MUST-FIX round (Fable round 2)
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 You reviewed this repo before. Your round-1 review is at
 `docs/corral/public-review.md` (baseline). The fixes landed in commits
 `1c9bda6`, `2f30383`, `6de5eb6`. Re-review the DELTA: verify each of your
@@ -43,11 +46,11 @@ may have introduced.
    handling)? Does the README front door overclaim (e.g. "remote control
    from your phone" — but the phone is blocked until #65)?
 3. **Q8/Q9 confirmation**: corral is harness-agnostic (generic tool label),
-   runtime-bound to herdr at the adapter, and keeps fleet registry plus
-   provider-specific transcript binding outside the canonical model. Confirm
+   runtime-bound to herdr at the adapter; cost meter does NOT use
+   fleets.json (keys on tool:worktree_path from provider stores). Confirm
    the ARCHITECTURE.md "Stack terminology" section I added (commit d5633d4)
    is accurate — any errors in the model→harness→runtime→control-plane
-   table or the transcript-boundary claims?
+   table or the cost-meter claims?
 4. **Remaining blockers**: is the repo PUBLIC-READY now, or is there
    anything left that blocks flipping it public TODAY? Be precise: only
    things that would actually stop a stranger from cloning, building, and

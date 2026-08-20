@@ -1,5 +1,8 @@
 # Corral — public-readiness + scripts review
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 Reviewer: Claude (Fable 5), static review, 2026-08-18. Files read in full:
 `scripts/setup-corrald.sh`, `scripts/corrald-grant.sh`, `scripts/asc-beta-state.rb`,
 `README.md`, `Cargo.toml`, `docs/QUICKSTART.md`, `docs/OPERATIONS.md`,
@@ -135,8 +138,8 @@ What a stranger hits, top to bottom:
 - **Line 3 assumes you know what herdr is.** "Corral is the control plane for the
   herdr agent fleet" is the first sentence; herdr is never defined or linked. A
   stranger needs a 2–3 sentence hook first: *the problem* (you run a fleet of
-  coding agents in worktrees; you need one board and signed remote control) —
-  then "herdr (link) is the runtime that spawns them; corral is the
+  coding agents in worktrees; you need one board, signed remote control, and cost
+  visibility) — then "herdr (link) is the runtime that spawns them; corral is the
   control plane above it."
 - **The "Loopback only" claim (line 57) will be false once #65 lands**, and the
   enforcement message is already stale today: `src/main.rs:571-579` refuses with

@@ -67,6 +67,24 @@ async fn healthz_ok() {
 }
 
 #[tokio::test]
+async fn removed_cost_route_is_not_a_json_fallback() {
+    let (_store, app) = app().await;
+    let res = app
+        .oneshot(Request::get("/cost").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(
+        res.headers().get(header::CONTENT_TYPE).is_none(),
+        "the removed route must not fall through to a JSON handler"
+    );
+    assert_eq!(
+        res.into_body().collect().await.unwrap().to_bytes().as_ref(),
+        b""
+    );
+}
+
+#[tokio::test]
 async fn snapshot_returns_json_with_rev_and_agents() {
     let (store, app) = app().await;
     store

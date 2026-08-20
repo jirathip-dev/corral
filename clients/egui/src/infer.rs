@@ -217,7 +217,6 @@ mod tests {
                 approval_id: "herdr:a:sha256:x".into(),
                 choices: vec!["yes".into()],
             }),
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Workspace {

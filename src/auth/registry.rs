@@ -2,7 +2,7 @@
 //! and revocation, persisted as `registry.json` (0600) in the config dir.
 //!
 //! Default deny: a freshly registered device has NO drive grants (the read
-//! plane — `/healthz`, `/snapshot`, `/events`, `/history`, `/cost` — is
+//! plane — `/healthz`, `/snapshot`, `/events`, `/history` — is
 //! credential-free; its boundary is the bound interface's network, #65).
 //! Drive capabilities are promoted by the host via `POST /grants`
 //! (admin token). Registration is gated by the routing-only registration

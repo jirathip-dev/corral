@@ -557,7 +557,6 @@ mod tests {
             ts: 1,
             capabilities: Vec::new(),
             waiting_on: None,
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Workspace {

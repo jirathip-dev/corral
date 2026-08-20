@@ -79,10 +79,10 @@ const CLAUDE_CWD_PROBE_LINES: usize = 8;
 /// per-worktree session count, and it bounds the row set by construction.
 const OPENCODE_FALLBACK_LIMIT: usize = 16;
 
-/// Where the three session stores live. Built from the same env-var
-/// overrides the cost meter uses (`$CORRAL_OPENCODE_DB`,
-/// `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`), so tests point the whole
-/// read path at fixtures without touching live stores.
+/// Where the three session stores live. Built from environment-variable
+/// overrides (`$CORRAL_OPENCODE_DB`, `$CORRAL_CLAUDE_DIR`,
+/// `$CORRAL_CODEX_DIR`), so tests point the whole read path at fixtures
+/// without touching live stores.
 #[derive(Debug, Clone)]
 pub struct TranscriptRoots {
     pub opencode_db: PathBuf,
@@ -93,9 +93,9 @@ pub struct TranscriptRoots {
 impl TranscriptRoots {
     pub fn from_env() -> Self {
         Self {
-            opencode_db: crate::cost::opencode_db_path(),
-            claude_dir: crate::cost::claude_dir_path(),
-            codex_dir: crate::cost::codex_dir_path(),
+            opencode_db: opencode_db_path(),
+            claude_dir: claude_dir_path(),
+            codex_dir: codex_dir_path(),
         }
     }
 
@@ -116,6 +116,31 @@ impl TranscriptRoots {
             codex_dir: dir.join("codex-sessions"),
         }
     }
+}
+
+/// `$CORRAL_OPENCODE_DB`, or the default OpenCode database path.
+fn opencode_db_path() -> PathBuf {
+    std::env::var("CORRAL_OPENCODE_DB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".local/share/opencode/opencode.db"))
+}
+
+/// `$CORRAL_CLAUDE_DIR`, or the default Claude Code projects directory.
+fn claude_dir_path() -> PathBuf {
+    std::env::var("CORRAL_CLAUDE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".claude/projects"))
+}
+
+/// `$CORRAL_CODEX_DIR`, or the default Codex sessions directory.
+fn codex_dir_path() -> PathBuf {
+    std::env::var("CORRAL_CODEX_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".codex/sessions"))
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
 }
 
 /// One session that matched. `recency_ms` is epoch millis of the

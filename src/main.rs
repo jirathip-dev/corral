@@ -43,11 +43,6 @@ const INTEGRATOR_RECONNECT_MAX: Duration = Duration::from_secs(30);
 const INTEGRATOR_RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
 /// `corrald digest` default window when `--since` is omitted: the last 24h.
 const DIGEST_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
-/// G34: how often the D30 per-agent cost cache and the cost-alert watchdog
-/// recompute. Bounded reads (SQL WHERE clauses, mtime-skipped file walks)
-/// keep this cheap even on a 13GB+ opencode.db, so 5 minutes is plenty
-/// fresh without hammering the stores.
-const COST_METER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// $CORRAL_CONFIG_DIR, or ~/.config/corral.
 fn config_dir() -> PathBuf {
@@ -1135,12 +1130,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         worktrees_root = %attribution.worktrees_root().display(),
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
-
-    // G34: D30 per-agent cost cache (herdr.rs reads it synchronously on
-    // every pane rebuild) and the cost-alert watchdog (flags a window at
-    // its threshold before agents idle from exhaustion).
-    corrald::cost::agent_cache::spawn_refresh_loop(COST_METER_INTERVAL);
-    corrald::cost::spawn_alert_watchdog(COST_METER_INTERVAL);
 
     // N6: arm the APNs notifier HERE — the daemon entrypoint — not as a
     // side effect of router() (which is also the test constructor; reading

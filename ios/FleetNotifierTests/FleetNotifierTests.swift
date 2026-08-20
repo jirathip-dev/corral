@@ -276,7 +276,7 @@ final class SSETests: XCTestCase {
 
     func testDecodesSnapshotAndDelta() throws {
         let snapshotJSON = """
-        {"schema_version":3,"rev":12,"generated_at":1700000000000,"agents":{
+        {"schema_version":5,"rev":12,"generated_at":1700000000000,"agents":{
           "herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"blocked",
           "reason":"waiting","seq":1,"ts":1700000000000,"capabilities":["approve"],
           "waiting_on":{"kind":"menu","prompt":"go?","prompt_hash":"sha256:ab","approval_id":"herdr:a:sha256:ab","choices":["y","n"]},
@@ -286,7 +286,7 @@ final class SSETests: XCTestCase {
         guard case .event(.snapshot(let snapshot)) = CorraldClient.decode(frame) else {
             return XCTFail("expected snapshot")
         }
-        XCTAssertEqual(snapshot.schemaVersion, 3)
+        XCTAssertEqual(snapshot.schemaVersion, 5)
         XCTAssertEqual(snapshot.rev, 12)
         let agent = snapshot.agents["herdr:a"]
         XCTAssertEqual(agent?.state, .blocked)
@@ -342,7 +342,7 @@ final class SSETests: XCTestCase {
         }
         XCTAssertTrue(message.contains("undecodable"), message)
 
-        let good = "{\"schema_version\":3,\"rev\":9,\"generated_at\":0,\"agents\":{}}"
+        let good = "{\"schema_version\":5,\"rev\":9,\"generated_at\":0,\"agents\":{}}"
         await store.ingest(SSEFrame(kind: .snapshot, id: 9, data: good)).value
         XCTAssertEqual(store.connectionState, .connected,
                        "a good frame recovers the connection state")
@@ -2441,7 +2441,7 @@ final class SSEStreamRegressionTests: XCTestCase {
         let payload = """
         event: snapshot
         id: 7
-        data: {"schema_version":4,"rev":7,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+        data: {"schema_version":5,"rev":7,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
 
         :
         event: delta
@@ -2897,7 +2897,7 @@ final class StaleCursorTests: XCTestCase {
 
         let store = FleetStore(defaults: defaults)
         let snapshotJSON = """
-        {"schema_version":4,"rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+        {"schema_version":5,"rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
         """
         await store.ingest(SSEFrame(kind: .snapshot, id: 8008, data: snapshotJSON)).value
         XCTAssertFalse(store.agents.isEmpty, "precondition: the snapshot populated the store")
@@ -2935,7 +2935,7 @@ final class AppModelFleetForwardingTests: XCTestCase {
         // Real topology + real mutation path: one snapshot frame through
         // FleetStore.ingest — decode off-main, single main-actor apply —
         // exactly what the SSE stream does. Deterministic: await the hop.
-        let snapshot = #"{"schema_version":3,"rev":9,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"working","seq":1,"ts":1,"capabilities":[],"workspace":{}}}}"#
+        let snapshot = #"{"schema_version":5,"rev":9,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"working","seq":1,"ts":1,"capabilities":[],"workspace":{}}}}"#
         await model.fleet.ingest(SSEFrame(kind: .snapshot, id: 9, data: snapshot)).value
 
         XCTAssertEqual(model.fleet.agents.count, 1,

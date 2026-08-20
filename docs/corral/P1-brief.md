@@ -28,7 +28,6 @@ a binary that, when run, connects to the local herdr socket and serves
      crash are different UIs
    - per-source monotonic `seq` (ordering; `ts` is display-only)
    - `state` (coarse enum) + `reason` (free string)
-   - `cost` (cumulative $, nullable)
    - `parent_id` (topology: reviewer belongs to implementation)
    - `workspace {repo, branch, worktree_path, pr_number}`
    - `host` (public key identity, not hostname — D10)

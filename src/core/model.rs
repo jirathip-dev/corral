@@ -1,6 +1,7 @@
 //! Canonical agent model — the schema every source adapter normalizes into.
 //!
-//! Versioned (see [`SCHEMA_VERSION`]), additive-only. `agent_id` is opaque and
+//! Versioned (see [`SCHEMA_VERSION`]); additive fields preserve compatibility,
+//! while breaking removals bump the version. `agent_id` is opaque and
 //! source-stable; source-specific identifiers (like herdr's pane_id) live in
 //! [`Attachment`], never in `agent_id`.
 
@@ -27,7 +28,8 @@ pub use crate::core::events::GhIssueRef;
 /// existing probe — no new git calls), `pr_match_source` (debug-only
 /// match-source note) and `issues` (the bound PR's authoritative
 /// closing-issue refs) — all serde-defaulted, additive-only.
-pub const SCHEMA_VERSION: u32 = 4;
+/// v5 (#107): removed the provider-specific spend field from `Agent`.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
@@ -184,8 +186,6 @@ pub struct Agent {
     pub ts: u64,
     pub capabilities: Vec<String>,
     pub waiting_on: Option<WaitingOn>,
-    /// Cumulative spend in USD, nullable (P1: always null from herdr).
-    pub cost: Option<f64>,
     /// Topology: reviewer belongs to its implementation agent (P2+).
     pub parent_id: Option<String>,
     /// Host public-key identity (D10). P1: null until P3 device keys.

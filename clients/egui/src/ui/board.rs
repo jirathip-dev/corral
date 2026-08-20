@@ -1,7 +1,7 @@
 //! Fleet board: repo sections (CollapsingHeader, default open) with agent
 //! rows beneath — state/reason/waiting_on kind badges, worktree topology
-//! columns (repo/branch/dirty/ahead-behind), PR/CI columns, the G34 COST
-//! column (per-agent `agent.cost`), and capability-driven drive controls
+//! columns (repo/branch/dirty/ahead-behind), PR/CI columns, and
+//! capability-driven drive controls
 //! rendered from `agent.capabilities` AND the device's grant ledger.
 
 use std::cmp::Ordering;
@@ -25,7 +25,6 @@ const COL_DIRTY: f32 = 46.0;
 const COL_AB: f32 = 64.0;
 const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
-const COL_COST: f32 = 70.0;
 const COL_DRIVE: f32 = 400.0;
 
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
@@ -70,7 +69,6 @@ pub fn show(
         + COL_AB
         + COL_PR
         + COL_CI
-        + COL_COST
         + COL_DRIVE;
 
     let ids: Vec<String> = fleet.agents.keys().cloned().collect();
@@ -196,7 +194,6 @@ fn header(ui: &mut Ui) {
         header_cell(ui, COL_AB, "A/B");
         header_cell(ui, COL_PR, "PR");
         header_cell(ui, COL_CI, "CI");
-        header_cell(ui, COL_COST, "COST");
         header_cell(ui, COL_DRIVE, "DRIVE");
     });
 }
@@ -353,27 +350,7 @@ fn topology_cells(ui: &mut Ui, agent: &Agent) {
             }
             None => cell(ui, COL_CI, "—".into(), theme::ui::TEXT_MUTED),
         }
-        cost_cell(ui, agent.cost, &cell);
     });
-}
-
-/// The board's COST cell text (D30): `$12.34` (2dp) when the daemon
-/// attributed a cost, or the same neutral placeholder the other unknown
-/// cells use (`—`) — never `$0.00` for "unknown".
-pub fn cost_text(cost: Option<f64>) -> String {
-    match cost {
-        Some(c) => format!("${c:.2}"),
-        None => "—".into(),
-    }
-}
-
-fn cost_cell(ui: &mut Ui, cost: Option<f64>, plain: &dyn Fn(&mut Ui, f32, String, Color32)) {
-    let color = if cost.is_some() {
-        theme::ui::TEXT_STRONG
-    } else {
-        theme::ui::TEXT_MUTED
-    };
-    plain(ui, COL_COST, cost_text(cost), color);
 }
 
 /// The branch cell: the branch name plus, when the name infers an issue
@@ -607,9 +584,6 @@ fn detail(
                 detail_kv(ui, "host", agent.host.as_deref().unwrap_or("—"));
                 if let Some(p) = &agent.parent_id {
                     detail_kv(ui, "parent", p);
-                }
-                if let Some(c) = agent.cost {
-                    detail_kv(ui, "cost", &format!("${c:.2}"));
                 }
                 if let Some(wt) = &agent.workspace.worktree_path {
                     detail_kv(ui, "worktree", wt);
@@ -1105,7 +1079,6 @@ mod tests {
             ts: 0,
             capabilities: caps.iter().map(|c| c.to_string()).collect(),
             waiting_on: None,
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Default::default(),
@@ -1284,17 +1257,6 @@ mod tests {
             ),
             DriveState::Failed { .. }
         ));
-    }
-
-    #[test]
-    fn cost_text_formats_some_and_none() {
-        // D30: `$12.34` (2dp) when the daemon attributed a cost; the same
-        // neutral placeholder the other unknown cells use (`—`) otherwise —
-        // never `$0.00`, which would read as "free".
-        assert_eq!(cost_text(Some(12.34)), "$12.34");
-        assert_eq!(cost_text(Some(5.0)), "$5.00");
-        assert_eq!(cost_text(Some(0.0)), "$0.00");
-        assert_eq!(cost_text(None), "—");
     }
 
     /// #64: virtualized rows are one line, truncated, index-stable —

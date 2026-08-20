@@ -6,7 +6,7 @@ Reviewer: Claude (Fable 5), static review, 2026-08-18. Baseline:
 `scripts/corrald-grant.sh`, `scripts/asc-beta-state.rb`, `fastlane/Fastfile`,
 `fastlane/.env.example`, `docs/OPERATIONS.md`, `docs/ARCHITECTURE.md`; targeted
 reads of `docs/QUICKSTART.md`, `docs/corral/DECISIONS.md`, `src/main.rs`,
-`src/cost/mod.rs`, `src/cost/agent_cache.rs`, `src/adapters/herdr.rs`,
+`src/transcript/bind.rs`, `src/adapters/herdr.rs`,
 `src/fleet/config.rs`.
 
 ---
@@ -110,8 +110,8 @@ pre-existing-class.
 `docs/ARCHITECTURE.md:5-7` cites the repository decision record
 (`docs/corral/DECISIONS.md`) as "Design authority";
 `docs/corral/DECISIONS.md:1-8` opens as an internal mirror addressed to
-"Guy/orchestrator" while `README.md:147` sends users there for the D34
-writeup; `src/cost/mod.rs:95` says "a provider Guy doesn't use";
+"Guy/orchestrator" while `README.md:147` sends users there for an internal
+writeup; the former provider-usage estimator had similar internal wording;
 `docs/OPERATIONS.md:26` still says `kickstart -k` "reloads" the daemon —
 contradicting the (correct) comment at `setup-corrald.sh:66-68` that
 kickstart never re-reads a changed plist ("restarts" is the accurate word).
@@ -135,18 +135,15 @@ claims: `source: "herdr"` / `tool: tool.unwrap_or("unknown")` pass-through at
 `src/adapters/herdr.rs:688-689` (harness-agnostic core confirmed — though
 "normalizes ... uniformly via `apply_agent_info`" slightly overstates it; the
 tool label is passed through *verbatim*, which is the stronger form of
-agnosticism — no per-harness logic exists to normalize with). The cost-meter
-paragraph (`:27-33`) is fully accurate: `CORRAL_OPENCODE_DB` /
-`CORRAL_CLAUDE_DIR` / `CORRAL_CODEX_DIR` exist exactly as named
-(`src/cost/mod.rs:100-119`), and `store_found: false` is real
-(`mod.rs:94-96`).
+agnosticism — no per-harness logic exists to normalize with). The
+transcript-boundary paragraph is accurate: `CORRAL_OPENCODE_DB` /
+`CORRAL_CLAUDE_DIR` / `CORRAL_CODEX_DIR` are isolated in the transcript
+binding module and the resulting pages are redacted before serving.
 
-**Q9 confirmed: the cost meter does not touch fleets.json.** Attribution
-keys on `format!("{tool}:{worktree_path}")`
-(`src/cost/agent_cache.rs:41-43`), accumulated from each provider store's own
-`workspace_path` (`:88-94`), joined to agents in the adapter
-(`herdr.rs:681-685`). `fleets.json` appears only in `src/fleet/`, and its
-default path is still a legacy fleet registry fallback
+**Q9 confirmed: provider usage is not a Corral data plane.** `fleets.json`
+appears only in `src/fleet/`, and transcript store roots are resolved only by
+`src/transcript/bind.rs`; neither is folded into the canonical agent model.
+The registry default path is still `~/.hermes/scripts/fleets.json`
 (`src/fleet/config.rs:181-188`) — correctly deferred to #66, and
 `docs/OPERATIONS.md:212-213` documents the env override, so a stranger is not
 blocked, just pointed at a legacy default.

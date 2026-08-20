@@ -101,7 +101,7 @@ LAN is **real TLS via Tailscale Serve fronting a loopback-only daemon**
 process never listens beyond loopback), and it is the path ATS accepts
 with no certificate plumbing of your own. It does NOT narrow exposure:
 `tailscale serve` publishes to the WHOLE tailnet, and corral's read
-plane (`/snapshot`, `/events`, `/history`, `/cost`) is credential-free
+plane (`/snapshot`, `/events`, `/history`) is credential-free
 — every device on the tailnet can read full fleet state, exactly as
 with a tailnet `--bind`. Use it only on a tailnet whose every device
 may see fleet state (same rule as binding beyond loopback).
@@ -258,7 +258,7 @@ before expiry.
 ### Grants model
 
 - Registered device: read plane only (`/healthz`, `/snapshot`, `/events`,
-  `/history`, `/cost` — credential-free; on a non-loopback bind — or a
+  `/history` — credential-free; on a non-loopback bind — or a
   loopback bind fronted by Tailscale Serve — the tailnet/private network
   itself is the read boundary, so expose it only on networks whose every
   device may see fleet state — a plain LAN offers no device auth, prefer
@@ -490,37 +490,9 @@ tool's store when the tool is recognized (`opencode`/`claude`/`codex` —
 an agent reporting any other tool string consults all three stores),
 most recent match wins. Path comparisons use raw-then-
 canonical matching (symlinked `$HOME` safe). Store locations honour the
-same env overrides as the cost meter (`$CORRAL_OPENCODE_DB`,
+transcript-reader env overrides (`$CORRAL_OPENCODE_DB`,
 `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
 (opencode via `sqlite3 -readonly`).
-
-## Cost / usage meter
-
-`GET /cost` reports per-provider spend over rolling 5h / weekly / monthly
-windows, read straight from each tool's own session store (read-only).
-
-> **The default caps are invented.** Nobody has supplied the real
-> opencode-go / claude / codex subscription limits, so every unset cap is a
-> placeholder and the response marks it `cap_is_placeholder: true` (the UI
-> prefixes such percentages with `~`). **Do not act on a percentage until
-> you have set the real cap.** A meter that looks authoritative while
-> resting on a guess is worse than no meter — the outage this feature
-> exists to prevent was a silent credit exhaustion.
-
-Set the real limits before trusting the alert:
-
-```sh
-CORRAL_COST_CAP_OPENCODE_5H_USD=...   CORRAL_COST_CAP_OPENCODE_WEEKLY_USD=...   CORRAL_COST_CAP_OPENCODE_MONTHLY_USD=...
-CORRAL_COST_CAP_CLAUDE_5H_USD=...     CORRAL_COST_CAP_CLAUDE_WEEKLY_USD=...     CORRAL_COST_CAP_CLAUDE_MONTHLY_USD=...
-CORRAL_COST_CAP_CODEX_5H_USD=...      CORRAL_COST_CAP_CODEX_WEEKLY_USD=...      CORRAL_COST_CAP_CODEX_MONTHLY_USD=...
-
-CORRAL_COST_WARN_THRESHOLD_PCT=70     # window status -> warning at/above
-CORRAL_COST_ALERT_THRESHOLD_PCT=90    # window status -> problem at/above
-```
-
-A provider whose store is absent reports `store_found: false` and renders
-as "no store" — distinct from `$0.00`, which would wrongly read as "you
-have spent nothing".
 
 ## Fleet registry
 

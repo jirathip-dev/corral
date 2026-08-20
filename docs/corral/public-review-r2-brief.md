@@ -43,11 +43,11 @@ may have introduced.
    handling)? Does the README front door overclaim (e.g. "remote control
    from your phone" — but the phone is blocked until #65)?
 3. **Q8/Q9 confirmation**: corral is harness-agnostic (generic tool label),
-   runtime-bound to herdr at the adapter; cost meter does NOT use
-   fleets.json (keys on tool:worktree_path from provider stores). Confirm
+   runtime-bound to herdr at the adapter, and keeps fleet registry plus
+   provider-specific transcript binding outside the canonical model. Confirm
    the ARCHITECTURE.md "Stack terminology" section I added (commit d5633d4)
    is accurate — any errors in the model→harness→runtime→control-plane
-   table or the cost-meter claims?
+   table or the transcript-boundary claims?
 4. **Remaining blockers**: is the repo PUBLIC-READY now, or is there
    anything left that blocks flipping it public TODAY? Be precise: only
    things that would actually stop a stranger from cloning, building, and

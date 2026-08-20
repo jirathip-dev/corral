@@ -77,7 +77,7 @@ The read plane is credential-free on loopback:
 curl -s http://127.0.0.1:8474/snapshot
 ```
 
-`{"schema_version":4,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
+`{"schema_version":5,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
 entry per agent with state, waiting_on, capabilities, and workspace
 facts. Live updates (resume from a `rev` via `Last-Event-ID`):
 
@@ -172,8 +172,8 @@ cargo run -p corrald-ui --release
 ```
 
 A dark-dashboard fleet board speaking corrald's HTTP/SSE surface directly,
-with signed drive controls, keychain-stored device keys (macOS), an audit
-view, and the per-provider cost tiles. It **auto-registers on localhost**
+with signed drive controls, keychain-stored device keys (macOS), and an
+audit view. It **auto-registers on localhost**
 by reading the daemon's `registration-token` for the same user, so steps 4
 and 5 above are only needed for other clients.
 

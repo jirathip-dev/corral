@@ -24,7 +24,7 @@ src/lib.rs               library surface: adapters, api, approve, auth,
                          core, drive, integrate
 src/adapters/            herdr.rs (push, zero polling), git_plane.rs,
                          gh_plane.rs, mod.rs (Adapter trait)
-src/core/                model.rs (canonical Agent, schema v3),
+src/core/                model.rs (canonical Agent, schema v5),
                          events.rs (Plane trait + channel),
                          store.rs (revisioned store, coalescing, resume),
                          redact.rs (secret redaction at the boundary)
@@ -39,7 +39,9 @@ src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
                          audit, tokens), host_identity.rs, registry.rs,
                          authorizer.rs, step_up.rs, audit.rs, http.rs
 src/api/                 mod.rs (router: /healthz /snapshot /events
-                         /history), drive.rs (POST /drive handler)
+                         /history /transcript), drive.rs (POST /drive handler)
+src/transcript/          bounded, redacted session-transcript reads and
+                         agent-to-session binding
 src/history/             mod.rs, ring.rs (D23 persistent event ring),
                          digest.rs (D33 `corrald digest`)
 crates/corrald-client/   shared client layer: model, drive, keypair,
@@ -154,7 +156,7 @@ icon.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build --release
-cargo test
+cargo test --workspace
 cargo test -p corrald-client                       # client unit + wire pins
 cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
@@ -207,6 +209,10 @@ clients.
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add
   capabilities, never mutate.
+- **Provider-neutral canonical model.** The `Agent` and snapshot shapes carry
+  fleet state only; they do not represent provider pricing, quota, or spend.
+  Store-specific transcript parsing belongs in the bounded, redacted
+  `src/transcript/` boundary and must not feed the board model.
 - **Same quality bar for every phase.** No phase skips the four gates
   above; the conformance suite grows with each wire change.
 - **Signatures over canonical bytes.** `canonical_envelope_bytes` is the

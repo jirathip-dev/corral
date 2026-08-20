@@ -466,7 +466,6 @@ async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
             approval_id,
             choices,
         }),
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),

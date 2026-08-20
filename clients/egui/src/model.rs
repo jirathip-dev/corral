@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 /// Snapshot/delta schema version (corrald `SCHEMA_VERSION`).
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Coarse agent lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,7 +157,6 @@ pub struct Agent {
     pub ts: u64,
     pub capabilities: Vec<String>,
     pub waiting_on: Option<WaitingOn>,
-    pub cost: Option<f64>,
     pub parent_id: Option<String>,
     pub host: Option<String>,
     pub workspace: Workspace,
@@ -200,96 +199,6 @@ pub struct Delta {
     pub rev: u64,
     pub upd: Vec<Agent>,
     pub del: Vec<String>,
-}
-
-/// G34 cost meter wire mirrors of corrald's `src/cost/mod.rs` types — the
-/// serde shapes (snake_case enums, same field names) are mirrored 1:1 so
-/// `GET /cost` decodes verbatim, never as `serde_json::Value` in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CostProvider {
-    Opencode,
-    Claude,
-    Codex,
-}
-
-impl CostProvider {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Opencode => "opencode",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-}
-
-/// Rolling windows: `FiveHour` serializes as `five_hour` (mirroring the
-/// daemon's `Window` serde rename), displayed as "5h".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CostWindow {
-    FiveHour,
-    Weekly,
-    Monthly,
-}
-
-impl CostWindow {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::FiveHour => "5h",
-            Self::Weekly => "weekly",
-            Self::Monthly => "monthly",
-        }
-    }
-}
-
-/// fleet-watch-style severity: `Problem` is the before-exhaustion signal
-/// (a window at/above the alert threshold), not "already exhausted".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CostStatus {
-    Ok,
-    Warning,
-    Problem,
-}
-
-impl CostStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ok => "ok",
-            Self::Warning => "warning",
-            Self::Problem => "problem",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CostWindowUsage {
-    pub window: CostWindow,
-    pub usd: f64,
-    pub cap_usd: f64,
-    /// `true` when `cap_usd` is the daemon's built-in placeholder, not an
-    /// operator-configured `CORRAL_COST_CAP_*` value — the percentage must
-    /// be flagged as provisional, never shown as authoritative.
-    pub cap_is_placeholder: bool,
-    pub pct_of_cap: f64,
-    pub status: CostStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CostProviderUsage {
-    pub provider: CostProvider,
-    /// Whether the provider's session store was found at all (a fresh
-    /// install, or a provider Guy doesn't use, is "no data", not an error).
-    pub store_found: bool,
-    pub windows: Vec<CostWindowUsage>,
-}
-
-/// `GET /cost` response body (mirrors corrald's cost handler).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CostReport {
-    pub generated_at: u64,
-    pub providers: Vec<CostProviderUsage>,
 }
 
 /// Epoch millis -> local "HH:MM:SS" clock time (display only).
@@ -404,7 +313,7 @@ mod tests {
     #[test]
     fn snapshot_and_delta_decode_from_daemon_shapes() {
         let wire = serde_json::json!({
-            "schema_version": 3,
+            "schema_version": 5,
             "rev": 42,
             "generated_at": 1700000000000u64,
             "agents": {
@@ -424,7 +333,6 @@ mod tests {
                         "approval_id": "herdr:agent-a:sha256:abc",
                         "choices": ["Yes", "No"]
                     },
-                    "cost": null,
                     "parent_id": null,
                     "host": null,
                     "workspace": {
@@ -470,7 +378,7 @@ mod tests {
         // mirrors corrald's GhIssueRef (repo/number/state/title) and the
         // known-issue set feeds D21 validation (display-only).
         let wire = serde_json::json!({
-            "schema_version": 3,
+            "schema_version": 5,
             "rev": 1,
             "generated_at": 0,
             "agents": {
@@ -484,7 +392,6 @@ mod tests {
                     "ts": 0,
                     "capabilities": [],
                     "waiting_on": null,
-                    "cost": null,
                     "parent_id": null,
                     "host": null,
                     "workspace": {
@@ -532,92 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn cost_report_decodes_from_daemon_shape() {
-        // G34 acceptance: the exact `GET /cost` shape (mirrors
-        // src/cost/mod.rs `WindowUsage` / `ProviderUsage` / the handler's
-        // `{generated_at, providers}` wrapper) decodes into the typed
-        // model — not `serde_json::Value`.
-        let wire = serde_json::json!({
-            "generated_at": 1784210400000u64,
-            "providers": [
-                {
-                    "provider": "opencode",
-                    "store_found": true,
-                    "windows": [
-                        {
-                            "window": "five_hour",
-                            "usd": 12.34,
-                            "cap_usd": 100.0,
-                            "cap_is_placeholder": true,
-                            "pct_of_cap": 12.34,
-                            "status": "ok"
-                        }
-                    ]
-                }
-            ]
-        });
-        let report: CostReport = serde_json::from_value(wire).unwrap();
-        assert_eq!(report.generated_at, 1784210400000u64);
-        assert_eq!(report.providers.len(), 1);
-        let provider = &report.providers[0];
-        assert_eq!(provider.provider, CostProvider::Opencode);
-        assert!(provider.store_found);
-        let window = &provider.windows[0];
-        assert_eq!(window.window, CostWindow::FiveHour);
-        assert!((window.usd - 12.34).abs() < 1e-9);
-        assert!((window.cap_usd - 100.0).abs() < 1e-9);
-        assert!(window.cap_is_placeholder, "placeholder caps are surfaced");
-        assert!((window.pct_of_cap - 12.34).abs() < 1e-9);
-        assert_eq!(window.status, CostStatus::Ok);
-    }
-
-    #[test]
-    fn cost_report_decodes_all_windows_statuses_and_missing_stores() {
-        let wire = serde_json::json!({
-            "generated_at": 0,
-            "providers": [
-                {
-                    "provider": "claude",
-                    "store_found": false,
-                    "windows": [
-                        { "window": "five_hour", "usd": 0.0, "cap_usd": 5.0, "cap_is_placeholder": true, "pct_of_cap": 0.0, "status": "ok" },
-                        { "window": "weekly", "usd": 25.0, "cap_usd": 35.0, "cap_is_placeholder": true, "pct_of_cap": 71.4, "status": "warning" },
-                        { "window": "monthly", "usd": 130.0, "cap_usd": 140.0, "cap_is_placeholder": true, "pct_of_cap": 92.9, "status": "problem" }
-                    ]
-                },
-                {
-                    "provider": "codex",
-                    "store_found": true,
-                    "windows": []
-                }
-            ]
-        });
-        let report: CostReport = serde_json::from_value(wire).unwrap();
-        assert_eq!(report.providers.len(), 2);
-        let claude = &report.providers[0];
-        assert_eq!(claude.provider, CostProvider::Claude);
-        assert!(
-            !claude.store_found,
-            "absent store decodes to false, not an error"
-        );
-        let pairs: Vec<(CostWindow, CostStatus)> = claude
-            .windows
-            .iter()
-            .map(|w| (w.window, w.status))
-            .collect();
-        assert_eq!(
-            pairs,
-            vec![
-                (CostWindow::FiveHour, CostStatus::Ok),
-                (CostWindow::Weekly, CostStatus::Warning),
-                (CostWindow::Monthly, CostStatus::Problem),
-            ]
-        );
-        assert!(report.providers[1].windows.is_empty());
-        assert_eq!(report.providers[1].provider, CostProvider::Codex);
-    }
-
-    #[test]
     fn agent_display_falls_back_to_agent_id() {
         let mut a = Agent {
             agent_id: "herdr:x".into(),
@@ -629,7 +450,6 @@ mod tests {
             ts: 0,
             capabilities: vec![],
             waiting_on: None,
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Workspace::default(),

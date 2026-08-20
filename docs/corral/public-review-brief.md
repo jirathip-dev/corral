@@ -56,8 +56,8 @@ become PUBLIC on GitHub. Current state on `main`:
 5. **README public-readiness**: what's MISSING for a stranger cloning this?
    (Badges? Screenshots? Architecture diagram? "What problem does it
    solve?" hook? Install via brew? Docs link structure?) Is the "Loopback
-   only" claim now misleading? What about the Cost-meter placeholder
-   honesty — keep or hide? Anything that would embarrass a public release
+   only" claim now misleading? Do the docs accurately omit the retired
+   provider-usage estimator? Anything that would embarrass a public release
    (personal paths, Thai/English mix, herdr-specific jargon)?
 6. **Repo hygiene for public**: .gitignore correctness (fastlane/.env,
    *.p8, build/, target/)? Any committed secrets or personal identifiers in
@@ -83,11 +83,9 @@ become PUBLIC on GitHub. Current state on `main`:
    runtime-agnosticism a blocker for public release or a documented
    limitation? Rate effort (S/M/L) and recommend whether it belongs in #35
    or a separate issue.
-9. **Fleet registry + cost attribution**: the agent→worktree association
-   for per-agent cost uses `fleets.json` (herdr convention). Is a
-   `FleetRegistry` trait (herdr impl + generic impl) the right decoupling
-   seam? What's the minimal change to make the cost meter fully
-   runtime-agnostic without breaking the herdr path?
+9. **Fleet registry + transcript binding**: does the registry remain separate
+   from the live board, and are provider-specific transcript roots isolated in
+   the on-demand, redacted transcript reader rather than the canonical model?
 
 ## Output
 

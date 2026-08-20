@@ -7,16 +7,16 @@
 //! discovery here (those are #63/#64).
 //!
 //! Store disciplines:
-//! - **opencode** (`opencode.db`, 13GB+ in steady state): the same
-//!   sqlite3-CLI pattern as [`crate::cost::opencode`] — `-readonly`, busy
+//! - **opencode** (`opencode.db`, 13GB+ in steady state): a
+//!   sqlite3-CLI pattern — `-readonly`, busy
 //!   timeout, JSON output, every query bounded in SQL by session id, a
 //!   `(time_created, id)` cursor, LIMIT, and a per-message `substr` text
 //!   cap (fresh-review R2). Never a write, and no sqlite crate (the
 //!   system `sqlite3` binary is the documented trade; its absence is a
 //!   typed error, not a panic). Honesty (fresh-review R3/R5): the schema
 //!   facts used here (`message.{id,session_id,time_created,data}`,
-//!   `part.{id,message_id,type,data}`) go BEYOND the single column the
-//!   cost reader probes; `message.role` is PROBED once per store
+//!   `part.{id,message_id,type,data}`) go beyond the role-column probe;
+//!   `message.role` is PROBED once per store
 //!   (memoized, L4) and selected only when present, with the `data` JSON
 //!   as the role fallback for either schema shape (S3). Bounded row
 //!   EXAMINATION additionally depends on the live store carrying indexes
@@ -408,8 +408,8 @@ fn seam_name_is_secret(name: &str) -> bool {
     })
 }
 
-/// Wall-clock cap on one sqlite3 invocation (mirrors the cost reader's
-/// discipline — the busy timeout only covers lock waits, not a scan).
+/// Wall-clock cap on one sqlite3 invocation (the busy timeout only covers
+/// lock waits, not a scan).
 const OPENCODE_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Why a page could not be read.
@@ -680,7 +680,7 @@ async fn canonical_key(db_path: &Path) -> PathBuf {
 /// (`pragma_table_info('message')` inside a SELECT) — the result must
 /// flow through the same `-json` child as the page query — and it needs
 /// SQLite >= 3.16, unlike the PRAGMA STATEMENT form (`PRAGMA
-/// table_info(message);`) that `cost::opencode` uses; that floor is
+/// table_info(message);`) used by the store probe; that floor is
 /// documented in docs/corral/DECISIONS.md. Any failure (missing binary,
 /// timeout, non-zero exit, unparseable JSON) falls back to `false`: the
 /// reader then uses the data-JSON role — the shape that works against
@@ -726,7 +726,7 @@ async fn read_opencode_page(
     // process-global). When the column exists the page SQL selects it
     // and role resolution prefers it over the data-JSON fallback; when
     // it doesn't, the column never appears in the SQL. Both schema
-    // shapes are real (the cost fixtures lack the column); neither is
+    // shapes are real (the fixture schema lacks the column); neither is
     // assumed any more.
     let has_role_column = memo.get(db_path).await;
     let sql = opencode_page_sql(session_id, cursor, limit, has_role_column);
@@ -741,7 +741,7 @@ async fn read_opencode_page(
         // after we returned QueryTimeout (round-2 N5).
         .kill_on_drop(true)
         .output();
-    // Wall-clock cap, same discipline as the cost reader: the busy timeout
+    // Wall-clock cap: the busy timeout
     // only covers lock waits, not a long scan (review F5).
     let output = tokio::time::timeout(OPENCODE_QUERY_TIMEOUT, fut)
         .await
@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     /// Fixture-driven opencode paging + redaction, skipped cleanly when the
-    /// sqlite3 binary is absent (same convention as the cost tests).
+    /// sqlite3 binary is absent.
     #[tokio::test]
     async fn opencode_fixture_pages_newest_first_and_redacts() {
         if !have_sqlite3() {
@@ -1377,7 +1377,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let db = dir.path().join("opencode.db");
         // R3: the fixture schema deliberately has NO `role` column —
-        // matching the cost reader's fixtures — proving the reader takes
+        // matching the no-role fixture shape — proving the reader takes
         // role from msg_data's JSON alone (an unprobed `m.role` SELECT
         // would hard-fail every page against such a store).
         let seed = r#"
@@ -1465,8 +1465,8 @@ mod tests {
             eprintln!("sqlite3 not on PATH; skipping");
             return;
         }
-        // Shape (a): message WITHOUT a role column — the cost reader's
-        // shape — so role comes from the data JSON alone.
+        // Shape (a): message WITHOUT a role column, so role comes from the
+        // data JSON alone.
         let dir = tempfile::tempdir().expect("temp dir");
         let db_a = dir.path().join("no_role_column.db");
         let seed_a = r#"

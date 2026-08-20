@@ -33,7 +33,6 @@ fn agent(id: &str, worktree: Option<&str>) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Workspace {

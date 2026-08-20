@@ -6,7 +6,7 @@ agents through the signed drive plane (D10/D13) — all Swift, no third-party
 SDKs (URLSession + Codable + CryptoKit).
 
 The wire contract is `docs/corral/P4-conformance.md`; the read model mirrors
-`src/core/model.rs` (schema v3). The daemon API is frozen — this app only
+`src/core/model.rs` (schema v5). The daemon API is frozen — this app only
 speaks it.
 
 ## Layout
@@ -236,7 +236,7 @@ TestFlight result:
 ```
 key storage: insecureFallback public key es1GjVYl0srTbD/…
 registered key_id=dev_5b6e0e… grants=[] expiry_ts=1794642094   # R1 read-only default
-snapshot schema_version=3 rev=57 agents=25                     # R2 read path
+snapshot schema_version=5 rev=57 agents=25                     # R2 read path
 /grants set_grants → HTTP 200
 drive read_tail request_id=b2e333f9-… target=herdr:ff72a82e…   # R3 signed drive
 DRIVE OK ok=true rev=57

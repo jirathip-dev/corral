@@ -16,7 +16,6 @@ fn agent(id: &str) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),
@@ -40,7 +39,7 @@ async fn snapshot_flushes_and_bumps_rev_once_per_batch() {
     assert_eq!(snap.agents.len(), 3);
     // v4 (P4 G21): Workspace gained `head_sha` + `head_subject` — versioned
     // strictly.
-    assert_eq!(snap.schema_version, 4);
+    assert_eq!(snap.schema_version, 5);
 }
 
 #[tokio::test]

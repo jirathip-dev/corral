@@ -41,6 +41,9 @@ struct RecordingAdapter {
     commands: Mutex<Vec<(String, DriveCommand)>>,
     known: Mutex<HashSet<String>>,
     stale: Mutex<HashSet<String>>,
+    /// Hide one tombstone check so a test can model disappearance after the
+    /// handler's initial stale check but before its store lookup.
+    deferred_stale: Mutex<HashSet<String>>,
     mode: Mutex<Mode>,
     /// When Some, drive() notifies `started` and blocks on the receiver
     /// before returning (concurrency test support — never in production).
@@ -60,6 +63,7 @@ impl Default for RecordingAdapter {
             commands: Mutex::new(Vec::new()),
             known: Mutex::new(HashSet::new()),
             stale: Mutex::new(HashSet::new()),
+            deferred_stale: Mutex::new(HashSet::new()),
             mode: Mutex::new(Mode::Ok),
             hold: Mutex::new(None),
             started: Arc::new(tokio::sync::Notify::new()),
@@ -82,6 +86,15 @@ impl RecordingAdapter {
 
     fn stale(&self, agent_id: &str) -> &Self {
         self.stale.lock().unwrap().insert(agent_id.to_string());
+        self
+    }
+
+    fn stale_after_initial_check(&self, agent_id: &str) -> &Self {
+        self.stale(agent_id);
+        self.deferred_stale
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_string());
         self
     }
 
@@ -142,6 +155,9 @@ impl Adapter for RecordingAdapter {
     }
 
     fn is_stale_agent(&self, agent_id: &str) -> bool {
+        if self.deferred_stale.lock().unwrap().remove(agent_id) {
+            return false;
+        }
         self.stale.lock().unwrap().contains(agent_id)
     }
 
@@ -753,6 +769,43 @@ async fn stale_approve_is_conflict_before_current_claim_validation() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(value["kind"], "stale_agent");
     assert_eq!(value["request_id"], "req-stale-approve");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert!(h.audit_entries().is_empty());
+}
+
+#[tokio::test]
+async fn approve_missing_row_after_initial_stale_check_is_reclassified_stale() {
+    let h = harness();
+    h.adapter.stale_after_initial_check(W2_AGENT);
+    seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into()]).await;
+    h.store
+        .apply(corrald::core::model::Change::Remove(W2_AGENT.to_string()))
+        .await;
+
+    // The first adapter check intentionally says "not stale"; the row is
+    // already gone by the time the first approval store.get runs, and the
+    // classification check must observe the tombstone instead of returning a
+    // generic 404.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-approve-first-read-race",
+            Capability::Approve,
+            W2_AGENT,
+            json!({
+                "kind": "approve",
+                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+                "prompt_hash": W2_HASH,
+                "choice": "yes"
+            }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["kind"], "stale_agent");
+    assert_eq!(value["request_id"], "req-approve-first-read-race");
     assert_eq!(h.adapter.dispatch_count(), 0);
     assert!(h.audit_entries().is_empty());
 }

@@ -52,6 +52,13 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   live SSE stream remains authoritative. A narrow adapter race may return the
   same typed `error_kind` in a 200 refusal body after the dispatch claim, with
   the same client recovery behavior.
+- Herdr `agent_not_found` replies are awaited for `read_tail`, `prompt`, and
+  `approve`. The adapter captures the canonical mapping generation and exact
+  wire target used by the RPC; it retires the mapping, tombstones the agent,
+  and removes the canonical store row only when both still match. A late reply
+  from an older pane/target generation is classified stale for that request
+  but cannot retire the newer mapping or its row. Tombstones are bounded by
+  TTL and capacity.
 - Step-up: destructive payloads require `X-Step-Up-Token` header (minted via
   `/step-up`); failures are never audited.
 
@@ -66,6 +73,9 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   wrong-question race kill — distinct from stale); menu choice not in
   `choices[]` → 422 `choice_not_in_menu`; Crash kind → 422
   `cannot_approve_kind`.
+- Both approval store reads classify a missing row at return time. If the
+  adapter has acquired a stale tombstone during the lookup, the missing row
+  is a 409 `stale_agent` rather than a misleading 404 `unknown_agent`.
 
 ## Conformance scenarios (both clients must pass, against a real corrald)
 

@@ -940,12 +940,59 @@ private final class DriveRequestGate: @unchecked Sendable {
 
 private final class DeterministicDriveScript: @unchecked Sendable {
     let log = DriveRequestLog()
-    let response: Data
-    let gate: DriveRequestGate?
+    let defaultResponse: Data
+    let responses: [String: Data]
+    let gates: [String: DriveRequestGate]
 
     init(response: Data, gate: DriveRequestGate? = nil) {
-        self.response = response
-        self.gate = gate
+        self.defaultResponse = response
+        self.responses = [:]
+        self.gates = gate.map { ["/drive": $0] } ?? [:]
+    }
+
+    init(responses: [String: Data], gates: [String: DriveRequestGate] = [:],
+         defaultResponse: Data = Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8)) {
+        self.defaultResponse = defaultResponse
+        self.responses = responses
+        self.gates = gates
+    }
+
+    func response(for path: String) -> Data {
+        responses[path] ?? defaultResponse
+    }
+
+    func gate(for path: String) -> DriveRequestGate? {
+        gates[path]
+    }
+}
+
+private final class HeldBiometrics: @unchecked Sendable {
+    let entered = AsyncCount()
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var released = false
+
+    func evaluate() async -> Bool {
+        entered.increment()
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume(returning: true)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        released = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: true)
     }
 }
 
@@ -964,12 +1011,12 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             return
         }
         script.log.record(request)
-        let canRespond = script.gate?.wait() ?? true
+        let canRespond = script.gate(for: url.path)?.wait() ?? true
         if canRespond {
             let response = HTTPURLResponse(url: url, statusCode: 200,
                                            httpVersion: "HTTP/1.1", headerFields: nil)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: script.response)
+            client?.urlProtocol(self, didLoad: script.response(for: url.path))
             client?.urlProtocolDidFinishLoading(self)
         } else {
             client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
@@ -980,9 +1027,11 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     override func stopLoading() {
         guard !stopWasRecorded else { return }
         stopWasRecorded = true
-        guard let script = Self.script, script.gate != nil else { return }
+        guard let script = Self.script,
+              let path = request.url?.path,
+              let gate = script.gate(for: path) else { return }
         script.log.cancelled.increment()
-        script.gate?.cancel()
+        gate.cancel()
     }
 }
 
@@ -1094,6 +1143,128 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertEqual(approvalPayload["approval_id"] as? String, live.waitingOn?.approvalId)
         XCTAssertEqual(approvalPayload["prompt_hash"] as? String, live.waitingOn?.promptHash)
         XCTAssertEqual(approvalPayload["choice"] as? String, "y")
+    }
+
+    func testCancellationDuringBiometricsSendsNoStepUpOrDrive() async {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let heldBiometrics = HeldBiometrics()
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let driveTask = Task {
+            await client.drive(capability: .prompt, target: "herdr:destructive",
+                               payload: CanonicalJSON.promptPayload(text: "rm -rf ~/tmp"),
+                               rev: 1, keyId: "k",
+                               signer: DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                               biometrics: Biometrics(evaluate: { await heldBiometrics.evaluate() }))
+        }
+
+        let biometricEntered = await heldBiometrics.entered.waitFor(atLeast: 1)
+        XCTAssertTrue(biometricEntered)
+        driveTask.cancel()
+        heldBiometrics.release()
+        let result = await driveTask.value
+
+        guard case .refused(.network(let message)) = result else {
+            return XCTFail("cancellation during biometrics must refuse before step-up or drive: \(result)")
+        }
+        XCTAssertEqual(message, "drive cancelled")
+        XCTAssertTrue(script.log.requests.isEmpty,
+                      "a canceled biometric must not mint /step-up or send /drive")
+    }
+
+    func testColdStartNotificationTasksCannotApplyOldSnapshotAcrossDemoBoundary() async throws {
+        let snapshotGate = DriveRequestGate()
+        let oldAgent = blockedAgent("herdr:old-notification")
+        let oldSnapshot = Snapshot(schemaVersion: 3, rev: 9, generatedAt: 9,
+                                   agents: [oldAgent.agentId: oldAgent])
+        let script = DeterministicDriveScript(
+            responses: ["/snapshot": try JSONEncoder().encode(oldSnapshot)],
+            gates: ["/snapshot": snapshotGate])
+        let session = session(for: script)
+        defer {
+            snapshotGate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["approve"]
+        model.hostURL = URL(string: "http://daemon")!
+        model.fleet.reset()
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let waiting = try XCTUnwrap(oldAgent.waitingOn)
+        let payload = PushPayload.blocked(agent: oldAgent, waiting: waiting)
+
+        // Two cold-start replies both suspend in snapshot resolution. The
+        // boundary must cancel both handles, not just the latest one.
+        model.handleNotificationReply(payload: payload, action: .approve, driveClient: client)
+        model.handleNotificationReply(payload: payload, action: .deny, driveClient: client)
+        let observed = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(observed)
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/snapshot" }.count, 2)
+
+        model.enterDemo()
+        let cancelled = await script.log.cancelled.waitFor(atLeast: 2)
+        XCTAssertTrue(cancelled,
+                      "demo entry must cancel every cold-start notification snapshot task")
+        snapshotGate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(completed)
+        await Task.yield()
+
+        XCTAssertEqual(model.mode, .demo)
+        XCTAssertNil(model.fleet.agent(oldAgent.agentId),
+                     "an old notification snapshot must not re-enter the demo fleet")
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/drive" }.isEmpty,
+                      "canceled notification replies must not approve against the old identity")
+        XCTAssertEqual(model.fleet.agents.count, DemoFleet.seed().count)
+    }
+
+    func testStaleSnapshotRefreshCannotOverwriteDemoBoundary() async throws {
+        let snapshotGate = DriveRequestGate()
+        let oldAgent = agent("herdr:old-refresh", capabilities: ["read_tail"])
+        let oldSnapshot = Snapshot(schemaVersion: 3, rev: 9, generatedAt: 9,
+                                   agents: [oldAgent.agentId: oldAgent])
+        let staleResponse = Data(#"{"request_id":"r","ok":false,"error":"gone","error_kind":"stale_agent","rev":2}"#.utf8)
+        let script = DeterministicDriveScript(
+            responses: ["/drive": staleResponse,
+                        "/snapshot": try JSONEncoder().encode(oldSnapshot)],
+            gates: ["/snapshot": snapshotGate])
+        let session = session(for: script)
+        defer {
+            snapshotGate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let model = AppModel(session: session)
+        configure(model, agent: oldAgent, grants: ["read_tail"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.driveReadTail(agent: oldAgent, driveClient: client)
+        let driveObserved = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(driveObserved)
+        let refreshObserved = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(refreshObserved, "stale_agent must start the snapshot refresh")
+
+        model.enterDemo()
+        let cancelled = await script.log.cancelled.waitFor(atLeast: 1)
+        XCTAssertTrue(cancelled, "demo entry must cancel the stale snapshot refresh")
+        snapshotGate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(completed)
+        await Task.yield()
+
+        XCTAssertEqual(model.mode, .demo)
+        XCTAssertNil(model.fleet.agent(oldAgent.agentId),
+                     "a late stale-agent refresh must not overwrite the demo fleet")
+        XCTAssertEqual(model.fleet.agents.count, DemoFleet.seed().count)
     }
 
     func testDuplicateApprovalChoicesShareOneDirectClaimKey() async {

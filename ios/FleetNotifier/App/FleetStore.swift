@@ -273,7 +273,11 @@ final class FleetStore: ObservableObject {
             await client.stream(lastEventId: { [weak self] in
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
-                self?.ingest(frame)
+                // The stream callback can race disconnect/demo after the
+                // frame has been decoded. Pass the connection identity into
+                // the main-actor hop so a late frame cannot overwrite the
+                // replacement fleet.
+                self?.ingest(frame, generation: generation)
             }, onConnected: { [weak self] in
                 // The stream callback runs off the main actor; hop once.
                 // F3: guard the hop — it must not land after disconnect()
@@ -333,9 +337,14 @@ final class FleetStore: ObservableObject {
     /// await it deterministically (round-3 R-N5). Testable without a
     /// network (review F5).
     @discardableResult
-    nonisolated func ingest(_ frame: SSEFrame) -> Task<Void, Never> {
+    nonisolated func ingest(_ frame: SSEFrame,
+                            generation: Int? = nil) -> Task<Void, Never> {
         let outcome = CorraldClient.decode(frame)
         return Task { @MainActor in
+            if let generation {
+                guard self.streamTask != nil,
+                      self.connectionGeneration == generation else { return }
+            }
             switch outcome {
             case .event(let event):
                 self.apply(event, previous: &self.streamSeen)

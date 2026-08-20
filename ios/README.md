@@ -142,8 +142,11 @@ The iOS test target includes coverage for the disclosure transition and the actu
 lifecycle labels, bounded Tail 200 and null Interrupt payloads, and grant
 explanations. The type-checked deterministic URLProtocol-backed action tests
 cover Prompt, Interrupt, direct approval, notification approval, duplicate
-claim replies, and cancellation of multiple live drives at the demo boundary;
-runtime execution remains pending an installed iOS runtime.
+claim replies, and cancellation of multiple live drives at the demo boundary.
+Held-boundary tests also cover concurrent cold-start notification snapshot
+replies and stale-agent refreshes crossing a demo boundary, plus cancellation
+during biometrics before either `/step-up` or `/drive` is sent.
+Runtime execution remains pending an installed iOS runtime.
 The current verification host has the iOS SDK but no installed iOS runtime or
 device platform, so no simulator/device interaction evidence is claimed here;
 see `ios/evidence/tappable-controls.md` for the source/type-check record.

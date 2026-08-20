@@ -17,11 +17,16 @@ deletion. It also includes deterministic URLProtocol-backed drive tests that
 await request observation and completion for Prompt, Interrupt, direct
 approval, notification approval, duplicate claim replies, deleted-target
 refusal, and two simultaneous live drives cancelled at the demo boundary.
-Separate policy tests cover explicit lifecycle labels, action
-availability/grant explanations, Tail 200 payload construction, null
-Interrupt payload construction, and claim-bound approval availability. These
-tests were type-checked but could not execute because this host has no iOS
-runtime.
+Additional held-boundary tests cover two concurrent cold-start notification
+snapshot replies cancelled before they can apply or approve, a stale-agent
+snapshot refresh cancelled before it can overwrite the demo fleet, and
+cancellation during held biometrics with no `/step-up` or `/drive` request.
+The live SSE hop also carries its connection generation so a decoded frame
+cannot apply after disconnect/demo. Separate policy tests cover explicit
+lifecycle labels, action availability/grant explanations, Tail 200 payload
+construction, null Interrupt payload construction, and claim-bound approval
+availability. These tests were type-checked but could not execute because
+this host has no iOS runtime.
 
 ## Runtime limitation
 

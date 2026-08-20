@@ -44,12 +44,12 @@ APPROVED_SHA256 = {
 INTEGRATION_SHA256 = {
     "clients/egui/src/main.rs": "09e3162acf7a21fe76efbd869a8b2550ab52fd942b461c4fd7d52a9934202287",
     "tools/icon/from-user-png.py": "a933a13a1da7f8e51a9427a38cd612ec8e5d6eb444cef6f6c378a6287c6e47d9",
-    "tools/icon/check-desktop-entry.py": "39a354f2dd0ac2f35d029eeea63bbe09c3c4480ff79ed7c202e1ee1db8b11731",
+    "tools/icon/check-desktop-entry.py": "3986536ae7001dee559d63d6c8ec1802d45d70058c8a14c963a3a06d07c57ddb",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
     "ios/FleetNotifier.xcodeproj/project.pbxproj": "93241932c3cbd975eaef3efed58e68f09bcfd5e19d496e1471bf8683f453368d",
-    "scripts/install-corral-ui.sh": "1387919fd2bfafa951fe4b0aedac8345c53edaabc1df796a5dad8fce95f21478",
+    "scripts/install-corral-ui.sh": "78bcc468ffa012ad9b6bbae8a982841b9c2f2f2d630d7c0bb53414d994037f56",
     "scripts/setup-corrald.sh": "6612c55a1174bbfbc673234ce24441642185a8a24478b1e3eb856a370c3dd33e",
-    "scripts/test-icon-packaging.sh": "13c04ce623f54b30441e07d6777e4293c2d42a281b9de1fec8d055aa0a4f18f2",
+    "scripts/test-icon-packaging.sh": "87c080541ff92c4bec44a9bac6e021b81e6a3c295af3b3dd61eeb74ecaf73f80",
 }
 
 PNG_SPECS = {

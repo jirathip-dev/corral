@@ -36,6 +36,9 @@ chmod +x "$UI_BIN"
 
 run_installer() {
   local platform="$1"
+  local mac_dest="${CORRAL_TEST_MAC_DEST:-$MAC_DEST}"
+  local linux_prefix="${CORRAL_TEST_LINUX_PREFIX:-$LINUX_PREFIX}"
+  local other_prefix="${CORRAL_TEST_OTHER_PREFIX:-$OTHER_PREFIX}"
   shift
   env \
     PATH="$TEST_PATH" \
@@ -45,9 +48,9 @@ run_installer() {
     CORRAL_TEST_MV_COUNT="$TEST_ROOT/mv-count" \
     CORRAL_INSTALL_PLATFORM="$platform" \
     CORRAL_SKIP_CODESIGN=1 \
-    CORRAL_MACOS_APP_DEST="$MAC_DEST" \
-    CORRAL_LINUX_PREFIX="$LINUX_PREFIX" \
-    CORRAL_OTHER_PREFIX="$OTHER_PREFIX" \
+    CORRAL_MACOS_APP_DEST="$mac_dest" \
+    CORRAL_LINUX_PREFIX="$linux_prefix" \
+    CORRAL_OTHER_PREFIX="$other_prefix" \
     bash "$INSTALLER" --binary "$UI_BIN"
 }
 
@@ -102,9 +105,15 @@ rollback_path_from_log() {
 
 assert_no_false_restore_message() {
   local log="$1"
-  if grep -Eq 'existing (app|payload) restored' "$log"; then
+  if grep -Eq 'restored|preserved' "$log"; then
     fail "false preservation message in $log"
   fi
+}
+
+assert_rollback_label() {
+  local log="$1"
+  grep -Fq 'rollback failed; prior desktop payload is retained in rollback directory:' "$log" \
+    || fail "rollback log label is not platform-neutral: $log"
 }
 
 assert_retained_file() {
@@ -142,9 +151,10 @@ assert_macos_old() {
 
 MAC_PARENT="$TEST_ROOT/macos"
 MAC_DEST="$MAC_PARENT/Corral.app"
-LINUX_PARENT="$TEST_ROOT/linux path % \"quoted\" \\slash"
+SPECIAL_SUFFIX=' path % "quoted" \slash $dollar `tick`'
+LINUX_PARENT="$TEST_ROOT/linux$SPECIAL_SUFFIX"
 LINUX_PREFIX="$LINUX_PARENT/.local"
-OTHER_PARENT="$TEST_ROOT/other path % \"quoted\" \\slash"
+OTHER_PARENT="$TEST_ROOT/other$SPECIAL_SUFFIX"
 OTHER_PREFIX="$OTHER_PARENT/.local"
 mkdir -p "$MAC_PARENT"
 clear_failures
@@ -186,6 +196,7 @@ if run_installer Darwin > "$TEST_ROOT/macos-double-mv.log" 2>&1; then
   fail "macOS double commit mv injection unexpectedly succeeded"
 fi
 assert_no_false_restore_message "$TEST_ROOT/macos-double-mv.log"
+assert_rollback_label "$TEST_ROOT/macos-double-mv.log"
 assert_no_staging_entries "$MAC_PARENT"
 mac_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-double-mv.log")"
 assert_retained_file "$mac_rollback/previous" Contents/old-marker old-macos-install
@@ -195,10 +206,79 @@ run_installer Linux > "$TEST_ROOT/linux-success.log" 2>&1
 assert_executable "$LINUX_PREFIX/bin/corrald-ui"
 assert_file "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
 assert_file "$LINUX_PREFIX/share/applications/corral.desktop"
+linux_prefix_canonical="$(cd -P -- "$LINUX_PREFIX" && pwd -P)"
 mise exec -- python "$REPO_DIR/tools/icon/check-desktop-entry.py" \
-  "$LINUX_PREFIX/share/applications/corral.desktop" "$LINUX_PREFIX/bin/corrald-ui"
+  "$LINUX_PREFIX/share/applications/corral.desktop" "$linux_prefix_canonical/bin/corrald-ui"
+mise exec -- python - "$LINUX_PREFIX/share/applications/corral.desktop" \
+  "$linux_prefix_canonical/bin/corrald-ui" \
+  "$REPO_DIR/tools/icon/check-desktop-entry.py" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("check_desktop_entry", sys.argv[3])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+arguments, _ = module.parse_desktop_entry(Path(sys.argv[1]))
+assert arguments == [sys.argv[2]]
+raw_exec = next(
+    line.removeprefix("Exec=")
+    for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+    if line.startswith("Exec=")
+)
+
+def count_backslashes_before(index):
+    count = 0
+    index -= 1
+    while index >= 0 and raw_exec[index] == "\\":
+        count += 1
+        index -= 1
+    return count
+
+assert raw_exec.count("%%") == 1
+quoted = raw_exec.index("quoted")
+assert count_backslashes_before(quoted - 1) == 3
+assert count_backslashes_before(raw_exec.index('"', quoted + len("quoted"))) == 3
+dollar = raw_exec.index("$dollar")
+assert count_backslashes_before(dollar) == 2
+tick = raw_exec.index("`tick")
+assert count_backslashes_before(tick) == 2
+assert count_backslashes_before(raw_exec.index("`", tick + len("`tick"))) == 2
+slash = raw_exec.index("slash")
+assert count_backslashes_before(slash) == 4
+
+for invalid in (
+    r'"/tmp/path\$dollar"',
+    r'"/tmp/path`tick`"',
+    r'"/tmp/path\"quoted\""',
+    r'"/tmp/path\\slash"',
+):
+    try:
+        module.tokenize_exec(module.decode_general_string(invalid))
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError(f"one-layer Exec escape was accepted: {invalid!r}")
+PY
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate "$LINUX_PREFIX/share/applications/corral.desktop"
+fi
 grep -Fqx 'Icon=corral' "$LINUX_PREFIX/share/applications/corral.desktop"
 assert_no_temporary_entries "$LINUX_PREFIX"
+
+NEWLINE_PARENT="$TEST_ROOT/linux newline"$'\n'"rejected"
+NEWLINE_PREFIX="$NEWLINE_PARENT/.local"
+clear_failures
+export CORRAL_TEST_LINUX_PREFIX="$NEWLINE_PREFIX"
+if run_installer Linux > "$TEST_ROOT/linux-newline.log" 2>&1; then
+  fail "Linux newline path unexpectedly succeeded"
+fi
+unset CORRAL_TEST_LINUX_PREFIX
+grep -Fq 'Linux executable path contains a desktop-entry newline' "$TEST_ROOT/linux-newline.log"
+[[ ! -e "$NEWLINE_PREFIX/bin/corrald-ui" ]] || fail "newline path installed a Linux executable"
+[[ ! -e "$NEWLINE_PARENT" ]] || fail "newline path created destination directories before validation"
+assert_no_staging_entries "$NEWLINE_PARENT"
 
 seed_linux_old() {
   rm -rf -- "$LINUX_PREFIX"
@@ -242,6 +322,7 @@ if run_installer Linux > "$TEST_ROOT/linux-double-mv.log" 2>&1; then
   fail "Linux double commit mv injection unexpectedly succeeded"
 fi
 assert_no_false_restore_message "$TEST_ROOT/linux-double-mv.log"
+assert_rollback_label "$TEST_ROOT/linux-double-mv.log"
 assert_no_staging_entries "$LINUX_PREFIX"
 linux_rollback="$(rollback_path_from_log "$TEST_ROOT/linux-double-mv.log")"
 assert_file_or_rollback "$LINUX_PREFIX" "$linux_rollback" bin/corrald-ui old-linux-binary
@@ -263,8 +344,65 @@ if run_installer Other > "$TEST_ROOT/other-double-mv.log" 2>&1; then
   fail "Other double commit mv injection unexpectedly succeeded"
 fi
 assert_no_false_restore_message "$TEST_ROOT/other-double-mv.log"
+assert_rollback_label "$TEST_ROOT/other-double-mv.log"
 assert_no_staging_entries "$OTHER_PREFIX"
 other_rollback="$(rollback_path_from_log "$TEST_ROOT/other-double-mv.log")"
 assert_retained_file "$other_rollback" bin/corrald-ui old-other-binary
 
-echo "icon packaging transactional tests: ok (macOS/Linux/Other staging, rollback, special Exec path)"
+TRAVERSAL_PREFIX="/tmp/x/../.."
+clear_failures
+export CORRAL_TEST_OTHER_PREFIX="$TRAVERSAL_PREFIX"
+if run_installer Other > "$TEST_ROOT/other-traversal.log" 2>&1; then
+  fail "root-resolving traversal unexpectedly succeeded"
+fi
+unset CORRAL_TEST_OTHER_PREFIX
+grep -Fq 'containing ..' "$TEST_ROOT/other-traversal.log"
+
+ROOT_LINK_PREFIX="$TEST_ROOT/root-prefix-link"
+ln -s / "$ROOT_LINK_PREFIX"
+clear_failures
+export CORRAL_TEST_OTHER_PREFIX="$ROOT_LINK_PREFIX"
+if run_installer Other > "$TEST_ROOT/other-root-symlink.log" 2>&1; then
+  fail "prefix symlink to root unexpectedly succeeded"
+fi
+unset CORRAL_TEST_OTHER_PREFIX
+grep -Fq 'refusing root Other install prefix' "$TEST_ROOT/other-root-symlink.log"
+
+BIN_LINK_PREFIX="$TEST_ROOT/bin-link-prefix"
+BIN_ESCAPE="$TEST_ROOT/bin-link-escape"
+mkdir -p "$BIN_LINK_PREFIX"
+ln -s "$BIN_ESCAPE" "$BIN_LINK_PREFIX/bin"
+clear_failures
+export CORRAL_TEST_OTHER_PREFIX="$BIN_LINK_PREFIX"
+if run_installer Other > "$TEST_ROOT/other-bin-symlink.log" 2>&1; then
+  fail "bin symlink unexpectedly succeeded"
+fi
+unset CORRAL_TEST_OTHER_PREFIX
+grep -Fq 'refusing symlink in Other payload parent' "$TEST_ROOT/other-bin-symlink.log"
+[[ ! -e "$BIN_ESCAPE" ]] || fail "bin symlink test wrote outside the prefix"
+
+SHARE_LINK_PREFIX="$TEST_ROOT/share-link-prefix"
+SHARE_ESCAPE="$TEST_ROOT/share-link-escape"
+mkdir -p "$SHARE_LINK_PREFIX"
+ln -s "$SHARE_ESCAPE" "$SHARE_LINK_PREFIX/share"
+clear_failures
+export CORRAL_TEST_LINUX_PREFIX="$SHARE_LINK_PREFIX"
+if run_installer Linux > "$TEST_ROOT/linux-share-symlink.log" 2>&1; then
+  fail "share symlink unexpectedly succeeded"
+fi
+unset CORRAL_TEST_LINUX_PREFIX
+grep -Fq 'refusing symlink in Linux payload parent' "$TEST_ROOT/linux-share-symlink.log"
+[[ ! -e "$SHARE_ESCAPE" ]] || fail "share symlink test wrote outside the prefix"
+
+SAFE_REAL_PREFIX="$TEST_ROOT/safe-canonical-prefix"
+SAFE_LINK_PREFIX="$TEST_ROOT/safe-canonical-link"
+mkdir -p "$SAFE_REAL_PREFIX"
+ln -s "$SAFE_REAL_PREFIX" "$SAFE_LINK_PREFIX"
+clear_failures
+export CORRAL_TEST_OTHER_PREFIX="$SAFE_LINK_PREFIX"
+run_installer Other > "$TEST_ROOT/other-safe-symlink.log" 2>&1
+unset CORRAL_TEST_OTHER_PREFIX
+assert_executable "$SAFE_REAL_PREFIX/bin/corrald-ui"
+assert_no_temporary_entries "$SAFE_REAL_PREFIX"
+
+echo "icon packaging transactional tests: ok (macOS/Linux/Other staging, rollback, Exec escaping, path safety)"

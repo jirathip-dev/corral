@@ -53,13 +53,148 @@ require_binary() {
   }
 }
 
+reject_parent_traversal() {
+  local path="$1"
+  local label="$2"
+  case "/$path/" in
+    */../*)
+      echo "!! refusing unsafe $label containing ..: $path" >&2
+      return 1
+      ;;
+  esac
+}
+
+canonicalize_directory() {
+  local path="$1"
+  local label="$2"
+  [[ -n "$path" ]] || {
+    echo "!! refusing empty $label" >&2
+    return 1
+  }
+  reject_parent_traversal "$path" "$label" || return 1
+  case "$path" in
+    /*) ;;
+    *) path="$(pwd -P)/$path" ;;
+  esac
+
+  local current="$path"
+  local parent
+  local component
+  local canonical
+  local -a missing=()
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    [[ "$current" != "/" ]] || {
+      echo "!! could not resolve $label: $path" >&2
+      return 1
+    }
+    parent="$(dirname "$current")"
+    component="$(basename "$current")"
+    [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
+      echo "!! could not resolve $label: $path" >&2
+      return 1
+    }
+    if [[ "${#missing[@]}" -eq 0 ]]; then
+      missing=("$component")
+    else
+      missing=("$component" "${missing[@]}")
+    fi
+    current="$parent"
+  done
+  [[ -d "$current" ]] || {
+    echo "!! $label is not a directory: $path" >&2
+    return 1
+  }
+  canonical="$(cd -P -- "$current" && pwd -P)" || {
+    echo "!! could not canonicalize $label: $path" >&2
+    return 1
+  }
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    for component in "${missing[@]}"; do
+      if [[ "$canonical" == "/" ]]; then
+        canonical="/$component"
+      else
+        canonical="$canonical/$component"
+      fi
+    done
+  fi
+  printf '%s' "$canonical"
+}
+
+canonicalize_destination() {
+  local path="$1"
+  local label="$2"
+  [[ -n "$path" ]] || {
+    echo "!! refusing empty $label" >&2
+    return 1
+  }
+  reject_parent_traversal "$path" "$label" || return 1
+  local leaf="$(basename "$path")"
+  [[ -n "$leaf" && "$leaf" != "." && "$leaf" != ".." ]] || {
+    echo "!! refusing unsafe $label: $path" >&2
+    return 1
+  }
+  local parent
+  parent="$(canonicalize_directory "$(dirname "$path")" "$label parent")" || return 1
+  [[ "$parent" != "/" ]] || {
+    echo "!! refusing broad $label parent: $path" >&2
+    return 1
+  }
+  printf '%s/%s' "$parent" "$leaf"
+}
+
+assert_no_symlink_components() {
+  local path="$1"
+  local label="$2"
+  [[ "$path" == /* ]] || {
+    echo "!! refusing non-absolute $label: $path" >&2
+    return 1
+  }
+  local current="/"
+  local remainder="${path#/}"
+  local component
+  while [[ -n "$remainder" ]]; do
+    component="${remainder%%/*}"
+    if [[ "$remainder" == "$component" ]]; then
+      remainder=""
+    else
+      remainder="${remainder#*/}"
+    fi
+    [[ -z "$component" || "$component" == "." ]] && continue
+    [[ "$component" != ".." ]] || {
+      echo "!! refusing unsafe $label containing ..: $path" >&2
+      return 1
+    }
+    if [[ "$current" == "/" ]]; then
+      current="/$component"
+    else
+      current="$current/$component"
+    fi
+    if [[ -L "$current" ]]; then
+      echo "!! refusing symlink in $label: $current" >&2
+      return 1
+    fi
+  done
+}
+
+assert_safe_target() {
+  local path="$1"
+  local label="$2"
+  [[ "$path" != "/" && -n "$path" ]] || {
+    echo "!! refusing root $label: $path" >&2
+    return 1
+  }
+  assert_no_symlink_components "$path" "$label"
+}
+
 rollback_directory() {
   local destination="$1"
   local rollback_dir="$2"
   local had_destination="$3"
   local rollback_ok=0
 
-  if [[ -e "$destination" || -L "$destination" ]]; then
+  if ! assert_safe_target "$destination" "desktop app rollback target"; then
+    rollback_ok=1
+  elif [[ -e "$destination" ]]; then
     if ! rm -rf "$destination"; then
       rollback_ok=1
     fi
@@ -75,7 +210,7 @@ rollback_directory() {
     fi
   fi
   if [[ "$rollback_ok" != "0" ]]; then
-    echo "!! rollback failed; prior app is retained in rollback directory: $rollback_dir" >&2
+    echo "!! rollback failed; prior desktop payload is retained in rollback directory: $rollback_dir" >&2
   fi
   return "$rollback_ok"
 }
@@ -85,6 +220,12 @@ commit_directory() {
   local destination="$2"
   local parent
   parent="$(dirname "$destination")"
+  assert_safe_target "$parent" "desktop app transaction parent"
+  assert_safe_target "$destination" "desktop app destination"
+  [[ "$(dirname "$stage")" == "$parent" ]] || {
+    echo "!! refusing cross-directory desktop app staging: $stage" >&2
+    return 1
+  }
   local rollback_dir
   rollback_dir="$(mktemp -d "$parent/.corral-ui.rollback.XXXXXX")"
   local had_destination=0
@@ -92,7 +233,7 @@ commit_directory() {
   if [[ -e "$destination" || -L "$destination" ]]; then
     if ! mv "$destination" "$rollback_dir/previous"; then
       rm -rf "$rollback_dir"
-      echo "!! could not move the existing desktop app into rollback storage" >&2
+      echo "!! could not move the existing desktop payload into rollback storage" >&2
       return 1
     fi
     had_destination=1
@@ -102,12 +243,12 @@ commit_directory() {
     if ! rollback_directory "$destination" "$rollback_dir" "$had_destination"; then
       return 1
     fi
-    echo "!! could not install the staged desktop app; existing app restored" >&2
+    echo "!! could not install the staged desktop payload; previous desktop payload restored" >&2
     return 1
   fi
 
   if ! rm -rf "$rollback_dir"; then
-    echo "!! installed Corral.app; rollback copy retained at $rollback_dir" >&2
+    echo "!! installed desktop payload; rollback copy retained at $rollback_dir" >&2
   fi
 }
 
@@ -116,6 +257,22 @@ commit_files() {
   local prefix="$2"
   shift 2
   local -a relative_paths=("$@")
+  assert_safe_target "$prefix" "desktop payload prefix"
+  [[ "$(dirname "$stage")" == "$prefix" ]] || {
+    echo "!! refusing cross-directory desktop payload staging: $stage" >&2
+    return 1
+  }
+  local relative
+  local target
+  local target_parent
+  for relative in "${relative_paths[@]}"; do
+    assert_safe_target "$prefix/$relative" "desktop payload target"
+    target_parent="$(dirname "$prefix/$relative")"
+    [[ -d "$target_parent" ]] || {
+      echo "!! desktop payload parent is missing: $target_parent" >&2
+      return 1
+    }
+  done
   local rollback_dir
   rollback_dir="$(mktemp -d "$prefix/.corral-ui.rollback.XXXXXX")"
   local -a backed_up=()
@@ -131,7 +288,11 @@ commit_files() {
     for ((index = ${#installed[@]} - 1; index >= 0; index--)); do
       relative="${installed[$index]}"
       target="$prefix/$relative"
-      if [[ -e "$target" || -L "$target" ]]; then
+      if ! assert_safe_target "$target" "desktop payload rollback target"; then
+        rollback_ok=1
+        continue
+      fi
+      if [[ -e "$target" ]]; then
         if ! rm -rf "$target"; then
           rollback_ok=1
           continue
@@ -142,7 +303,11 @@ commit_files() {
       relative="${backed_up[$index]}"
       target="$prefix/$relative"
       backup="$rollback_dir/$relative"
-      if ! mkdir -p "$(dirname "$target")"; then
+      if ! assert_safe_target "$target" "desktop payload rollback target"; then
+        rollback_ok=1
+        continue
+      fi
+      if [[ ! -d "$(dirname "$target")" ]]; then
         rollback_ok=1
         continue
       fi
@@ -160,22 +325,21 @@ commit_files() {
       fi
     fi
     if [[ "$rollback_ok" != "0" ]]; then
-      echo "!! rollback failed; prior Linux payload is retained in rollback directory: $rollback_dir" >&2
+      echo "!! rollback failed; prior desktop payload is retained in rollback directory: $rollback_dir" >&2
     fi
     return "$rollback_ok"
   }
 
-  local relative
-  local target
   local backup
   for relative in "${relative_paths[@]}"; do
     target="$prefix/$relative"
-    if [[ -e "$target" || -L "$target" ]]; then
+    assert_safe_target "$target" "desktop payload target"
+    if [[ -e "$target" ]]; then
       backup="$rollback_dir/$relative"
       mkdir -p "$(dirname "$backup")"
       if ! mv "$target" "$backup"; then
         rollback_files || true
-        echo "!! could not move an existing Linux payload into rollback storage" >&2
+        echo "!! could not move an existing desktop payload into rollback storage" >&2
         return 1
       fi
       backed_up+=("$relative")
@@ -184,31 +348,36 @@ commit_files() {
 
   for relative in "${relative_paths[@]}"; do
     target="$prefix/$relative"
-    mkdir -p "$(dirname "$target")"
+    assert_safe_target "$target" "desktop payload target"
+    [[ -d "$(dirname "$target")" ]] || {
+      echo "!! desktop payload parent disappeared: $(dirname "$target")" >&2
+      if ! rollback_files; then
+        return 1
+      fi
+      return 1
+    }
     if ! mv "$stage/$relative" "$target"; then
       if ! rollback_files; then
         return 1
       fi
-      echo "!! could not install the staged Linux payload; existing payload restored" >&2
+      echo "!! could not install the staged desktop payload; previous desktop payload restored" >&2
       return 1
     fi
     installed+=("$relative")
   done
 
   if ! rm -rf "$rollback_dir"; then
-    echo "!! installed the Linux payload; rollback copies retained at $rollback_dir" >&2
+    echo "!! installed desktop payload; rollback copies retained at $rollback_dir" >&2
   fi
 }
 
 install_macos() (
   set -euo pipefail
+  MACOS_APP_DEST="$(canonicalize_destination "$MACOS_APP_DEST" "macOS app destination")" || exit 1
   local app_parent
   app_parent="$(dirname "$MACOS_APP_DEST")"
-  [[ "$MACOS_APP_DEST" != "/" && -n "$MACOS_APP_DEST" ]] || {
-    echo "!! refusing an unsafe macOS app destination: $MACOS_APP_DEST" >&2
-    exit 1
-  }
-  mkdir -p "$app_parent"
+  assert_safe_target "$app_parent" "macOS app parent"
+  assert_safe_target "$MACOS_APP_DEST" "macOS app destination"
   require_binary
   [[ -f "$MACOS_ICON" ]] || {
     echo "!! macOS icon source missing: $MACOS_ICON" >&2
@@ -220,6 +389,9 @@ install_macos() (
   if [[ "$SKIP_CODESIGN" != "1" ]]; then
     require_command codesign
   fi
+  mkdir -p "$app_parent"
+  assert_safe_target "$app_parent" "macOS app parent"
+  assert_safe_target "$MACOS_APP_DEST" "macOS app destination"
 
   local stage
   local iconset
@@ -296,40 +468,70 @@ PLIST_EOF
   echo "   ✓ installed. Launch: open $MACOS_APP_DEST"
 )
 
+desktop_exec_quote() {
+  local value="$1"
+  local output='"'
+  local character
+  while [[ -n "$value" ]]; do
+    character="${value%"${value#?}"}"
+    value="${value#?}"
+    case "$character" in
+      \\)
+        output+='\\'
+        output+='\\'
+        ;;
+      \")
+        output+="\\"
+        output+="\\"
+        output+="\\"
+        output+='"'
+        ;;
+      '$')
+        output+="\\"
+        output+="\\"
+        output+='$'
+        ;;
+      '`')
+        output+="\\"
+        output+="\\"
+        output+='`'
+        ;;
+      %) output+='%%' ;;
+      $'\n'|$'\r')
+        echo "!! Linux executable path contains a desktop-entry newline" >&2
+        return 1
+        ;;
+      *) output+="$character" ;;
+    esac
+  done
+  output+='"'
+  printf '%s' "$output"
+}
+
 install_linux() (
   set -euo pipefail
-  [[ "$LINUX_PREFIX" != "/" && -n "$LINUX_PREFIX" ]] || {
-    echo "!! refusing an unsafe Linux install prefix: $LINUX_PREFIX" >&2
-    exit 1
-  }
-  mkdir -p "$LINUX_PREFIX"
+  LINUX_PREFIX="$(canonicalize_directory "$LINUX_PREFIX" "Linux install prefix")" || exit 1
+  assert_safe_target "$LINUX_PREFIX" "Linux install prefix"
   require_binary
   [[ -f "$LINUX_ICON" ]] || {
     echo "!! Linux desktop icon missing: $LINUX_ICON" >&2
     exit 1
   }
-
-  desktop_exec_quote() {
-    local value="$1"
-    local output='"'
-    local character
-    while [[ -n "$value" ]]; do
-      character="${value%"${value#?}"}"
-      value="${value#?}"
-      case "$character" in
-        \\) output+='\\' ;;
-        \") output+='\"' ;;
-        %) output+='%%' ;;
-        $'\n'|$'\r')
-          echo "!! Linux executable path contains a desktop-entry newline" >&2
-          exit 1
-          ;;
-        *) output+="$character" ;;
-      esac
-    done
-    output+='"'
-    printf '%s' "$output"
-  }
+  local desktop_exec
+  desktop_exec="$(desktop_exec_quote "$LINUX_PREFIX/bin/corrald-ui")"
+  mkdir -p "$LINUX_PREFIX"
+  assert_safe_target "$LINUX_PREFIX" "Linux install prefix"
+  assert_safe_target "$LINUX_PREFIX/bin" "Linux payload parent"
+  assert_safe_target "$LINUX_PREFIX/share" "Linux payload parent"
+  assert_safe_target "$LINUX_PREFIX/share/applications" "Linux payload parent"
+  assert_safe_target "$LINUX_PREFIX/share/icons/hicolor/256x256/apps" "Linux payload parent"
+  mkdir -p \
+    "$LINUX_PREFIX/bin" \
+    "$LINUX_PREFIX/share/applications" \
+    "$LINUX_PREFIX/share/icons/hicolor/256x256/apps"
+  assert_safe_target "$LINUX_PREFIX/bin/corrald-ui" "Linux executable target"
+  assert_safe_target "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png" "Linux icon target"
+  assert_safe_target "$LINUX_PREFIX/share/applications/corral.desktop" "Linux desktop-entry target"
 
   local stage
   stage="$(mktemp -d "$LINUX_PREFIX/.corral-ui.stage.XXXXXX")"
@@ -342,8 +544,6 @@ install_linux() (
   cp "$UI_BIN" "$stage/bin/corrald-ui"
   chmod +x "$stage/bin/corrald-ui"
   cp "$LINUX_ICON" "$stage/share/icons/hicolor/256x256/apps/corral.png"
-  local desktop_exec
-  desktop_exec="$(desktop_exec_quote "$LINUX_PREFIX/bin/corrald-ui")"
   cat > "$stage/share/applications/corral.desktop" <<DESKTOP_EOF
 [Desktop Entry]
 Type=Application
@@ -372,13 +572,15 @@ DESKTOP_EOF
 
 install_other() (
   set -euo pipefail
-  local prefix="$OTHER_PREFIX"
-  [[ "$prefix" != "/" && -n "$prefix" ]] || {
-    echo "!! refusing an unsafe install prefix: $prefix" >&2
-    exit 1
-  }
-  mkdir -p "$prefix"
+  local prefix
+  prefix="$(canonicalize_directory "$OTHER_PREFIX" "Other install prefix")" || exit 1
+  assert_safe_target "$prefix" "Other install prefix"
   require_binary
+  mkdir -p "$prefix"
+  assert_safe_target "$prefix" "Other install prefix"
+  assert_safe_target "$prefix/bin" "Other payload parent"
+  mkdir -p "$prefix/bin"
+  assert_safe_target "$prefix/bin/corrald-ui" "Other executable target"
   local stage
   stage="$(mktemp -d "$prefix/.corral-ui.stage.XXXXXX")"
   cleanup_other() {

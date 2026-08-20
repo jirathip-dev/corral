@@ -50,6 +50,15 @@ existing installation in place and rolls back any partial commit. If rollback
 restoration itself fails, the installer keeps and reports the exact rollback
 directory so the old payload remains recoverable. A missing icon or failed
 macOS icon conversion is an installation error rather than a silent fallback.
+The Linux `Exec` value uses command quoting followed by desktop-entry
+general-string escaping: quotes, `$`, and backticks receive doubled on-disk
+backslashes, a literal backslash receives four, and `%` is written as `%%`.
+Newline-containing executable paths fail before destination directories are
+created. Install prefixes and the macOS app parent are physically
+canonicalized before safety checks; root/`..` paths and symlinked `bin` or
+`share` payload parents are rejected, while a safe symlinked prefix is
+resolved to its canonical target. Staging and final renames stay beside the
+resolved destination on one filesystem.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

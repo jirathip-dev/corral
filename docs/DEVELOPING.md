@@ -108,7 +108,16 @@ staging, special-character desktop-entry `Exec` escaping, cleanup, and
 single- and double-failure rollback. If both restoration renames fail, the
 installer reports the exact retained rollback directory instead of deleting
 the only recoverable old payload; it never targets `/Applications` or a user
-config directory.
+config directory. Linux `Exec` values are encoded in the two required passes:
+command quoting is followed by desktop-entry general-string escaping, so the
+on-disk forms use doubled backslashes for quotes, `$`, and backticks, four for
+a literal backslash, and `%%` for a literal percent. Newline-containing
+executable paths are rejected before destination directories are created.
+Install prefixes and the macOS app parent are physically canonicalized before
+guards; root-resolving paths, `..` traversal, and symlinked `bin`/`share`
+payload parents are refused. A symlinked prefix is accepted only by resolving
+it to its safe canonical target, and every stage is created beside that
+resolved target so final renames stay on one filesystem.
 
 `scripts/setup-corrald.sh` delegates desktop installation to
 `scripts/install-corral-ui.sh`. The installer builds and validates the entire

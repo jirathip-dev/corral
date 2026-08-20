@@ -35,11 +35,6 @@ const BACKGROUND_TICK: Duration = Duration::from_secs(2);
 #[derive(Debug, Default)]
 struct Inner {
     agents: BTreeMap<String, Agent>,
-    /// Per-live-row token used by conditional adapter removals. Tokens are
-    /// deleted with rows and allocated from a store-lifetime counter, so a
-    /// newer upsert can never compare equal to an older removal request.
-    row_versions: BTreeMap<String, u64>,
-    next_row_version: u64,
     rev: u64,
     /// (rev, delta) history, oldest first. Bounded by HISTORY_CAP.
     history: VecDeque<(u64, Delta)>,
@@ -115,11 +110,6 @@ impl Store {
         match change {
             Change::Upsert(agent) => {
                 let agent_id = agent.agent_id.clone();
-                let row_version = inner
-                    .next_row_version
-                    .checked_add(1)
-                    .expect("store row version exhausted");
-                inner.next_row_version = row_version;
                 let old_state = inner.agents.get(&agent_id).map(|a| a.state);
                 if old_state != Some(agent.state) {
                     event = Some(HistoryEvent {
@@ -132,13 +122,16 @@ impl Store {
                         repo: agent.workspace.repo.clone(),
                     });
                 }
+                // A remove followed by a replacement in one coalescing
+                // window is one live upsert, not a delete followed by an
+                // upsert. A client that applies `del` after `upd` would erase
+                // the replacement if the stale delete remained queued.
+                inner.pending_del.retain(|pending| pending != &agent_id);
                 inner.pending_upd.insert(agent_id.clone(), (*agent).clone());
-                inner.row_versions.insert(agent_id.clone(), row_version);
                 inner.agents.insert(agent_id, *agent);
             }
             Change::Remove(agent_id) => {
                 if inner.agents.remove(&agent_id).is_some() {
-                    inner.row_versions.remove(&agent_id);
                     // A same-window upsert is subsumed by the removal.
                     inner.pending_upd.remove(&agent_id);
                     if !inner.pending_del.contains(&agent_id) {
@@ -182,14 +175,6 @@ impl Store {
         }
         let changed = changed_records.len();
         for next in changed_records {
-            let row_version = inner
-                .next_row_version
-                .checked_add(1)
-                .expect("store row version exhausted");
-            inner.next_row_version = row_version;
-            inner
-                .row_versions
-                .insert(next.agent_id.clone(), row_version);
             inner.pending_upd.insert(next.agent_id.clone(), next);
         }
         if changed > 0 {
@@ -267,36 +252,18 @@ impl Store {
         self.inner.lock().await.agents.get(agent_id).cloned()
     }
 
-    /// Read a live row together with its store-lifetime token. The token
-    /// changes on every upsert/update and is removed with the row, allowing a
-    /// caller to perform a later conditional mutation without holding a lock
-    /// across an await.
-    pub async fn get_with_version(&self, agent_id: &str) -> Option<(Agent, u64)> {
-        let inner = self.inner.lock().await;
-        inner.agents.get(agent_id).cloned().map(|agent| {
-            let version = inner
-                .row_versions
-                .get(agent_id)
-                .copied()
-                .expect("every live store row has a version");
-            (agent, version)
-        })
-    }
-
-    /// Remove a row only if its live-row token still matches. This is the
-    /// store-side half of adapter stale-RPC retirement: a newer upsert wins
-    /// even if it lands after the adapter retires its mapping but before this
-    /// async operation acquires the store lock.
-    pub async fn remove_if_version(&self, agent_id: &str, expected_version: u64) -> bool {
+    /// Remove a row only when the synchronous predicate agrees while the
+    /// Store lock is held. The predicate is deliberately synchronous: callers
+    /// may inspect another in-memory state machine at this exact mutation
+    /// point, but must never await while either lock is held.
+    pub async fn remove_if(&self, agent_id: &str, should_remove: impl FnOnce() -> bool) -> bool {
         let mut inner = self.inner.lock().await;
-        if inner.row_versions.get(agent_id).copied() != Some(expected_version) {
+        if !inner.agents.contains_key(agent_id) || !should_remove() {
             return false;
         }
         if inner.agents.remove(agent_id).is_none() {
-            inner.row_versions.remove(agent_id);
             return false;
         }
-        inner.row_versions.remove(agent_id);
         inner.pending_upd.remove(agent_id);
         if !inner.pending_del.contains(&agent_id.to_string()) {
             inner.pending_del.push(agent_id.to_string());

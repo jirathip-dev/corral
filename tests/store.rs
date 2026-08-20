@@ -55,6 +55,39 @@ async fn remove_emits_del_delta() {
 }
 
 #[tokio::test]
+async fn remove_then_upsert_emits_only_update_for_clients() {
+    let store = Store::new();
+    let initial = agent("a");
+    store.apply(Change::upsert(initial.clone())).await;
+    store.flush().await;
+
+    let mut replacement = initial.clone();
+    replacement.seq = 2;
+    replacement.title = Some("replacement".to_string());
+    store.apply(Change::Remove("a".to_string())).await;
+    store.apply(Change::upsert(replacement.clone())).await;
+
+    let delta = store.flush().await.expect("replacement delta");
+    assert!(
+        delta.del.is_empty(),
+        "replacement must cancel the queued delete"
+    );
+    assert_eq!(delta.upd, vec![replacement.clone()]);
+
+    // Mirror a client reducer's upd-then-del application order. A live
+    // replacement must remain visible after one coalesced delta.
+    let mut client_agents = std::collections::BTreeMap::from([("a".to_string(), initial)]);
+    for updated in &delta.upd {
+        client_agents.insert(updated.agent_id.clone(), updated.clone());
+    }
+    for agent_id in &delta.del {
+        client_agents.remove(agent_id);
+    }
+    assert_eq!(client_agents.get("a"), Some(&replacement));
+    assert_eq!(store.get("a").await, Some(replacement));
+}
+
+#[tokio::test]
 async fn background_tick_coalesces_at_2s_when_unwatched() {
     let store = Store::new();
     let c = store.clone();

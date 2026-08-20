@@ -1982,17 +1982,10 @@ impl HerdrAdapter {
     }
 
     async fn retire_failed_rpc(&self, agent_id: &str, failed_target: &str, generation: u64) {
-        // Clone the store handle before any await. The row token is captured
-        // before retirement; if a newer upsert lands in the retirement gap,
-        // the store-side conditional remove will reject the old token.
+        // Clone the store handle before any await. State retirement happens
+        // before the conditional Store mutation so a same-generation status
+        // or integration update cannot make cleanup miss the row.
         let store = self.store.lock().unwrap().clone();
-        let expected_version = match store.as_ref() {
-            Some(store) => store
-                .get_with_version(agent_id)
-                .await
-                .map(|(_, version)| version),
-            None => None,
-        };
         let retired = {
             let mut state = self.state.lock().unwrap();
             state.prune_tombstones();
@@ -2031,12 +2024,23 @@ impl HerdrAdapter {
             let _ = release.await;
         }
 
-        if retired && let (Some(store), Some(expected_version)) = (store, expected_version) {
-            // Await the removal before returning the stale outcome. A
-            // refresh that starts immediately after the failed RPC must
-            // observe no canonical row, while a newer row wins the
-            // conditional compare and survives.
-            store.remove_if_version(agent_id, expected_version).await;
+        if retired && let Some(store) = store {
+            // Lock order is Store -> SessionState for this synchronous
+            // predicate. Every adapter path releases SessionState before
+            // awaiting Store I/O, so no path holds the inverse order; the
+            // predicate itself never awaits while either lock is held.
+            // A newer live mapping therefore preserves its row, while any
+            // same-generation Store update made after retirement is removed.
+            store
+                .remove_if(agent_id, || {
+                    !self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .agent_panes
+                        .contains_key(agent_id)
+                })
+                .await;
         }
     }
 }
@@ -3409,6 +3413,62 @@ mod tests {
         retirement.await;
         assert_eq!(adapter.drive_target(agent_id).unwrap(), "same-target");
         assert!(store.snapshot().await.agents.contains_key(agent_id));
+    }
+
+    #[tokio::test]
+    async fn conditional_rpc_removal_discards_same_generation_store_update() {
+        let (release_tx, release_rx) = oneshot::channel();
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-same-generation"},
+            "agent_status": "working",
+            "name": "same-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let agent_id = "herdr:ses-same-generation";
+        let generation = adapter
+            .state
+            .lock()
+            .unwrap()
+            .agent_generations
+            .get(agent_id)
+            .copied()
+            .expect("first generation");
+
+        let (retired_tx, retired_rx) = oneshot::channel();
+        adapter.pause_before_store_remove(retired_tx, release_rx);
+        let retirement = adapter.retire_failed_rpc(agent_id, "same-target", generation);
+        tokio::pin!(retirement);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = retired_rx => result.expect("retirement reached"),
+                _ = &mut retirement => panic!("retirement completed before store-removal pause"),
+            }
+        })
+        .await
+        .expect("retirement pause timeout");
+        assert!(adapter.drive_target(agent_id).is_err());
+
+        // A status/integration update for the retired generation can still
+        // land before cleanup. It must not make Store cleanup miss the row.
+        let mut derived_update = store.get(agent_id).await.expect("row before update");
+        derived_update.state = AgentState::Blocked;
+        derived_update.workspace.branch = Some("derived-update".to_string());
+        derived_update.seq += 1;
+        store.apply(Change::upsert(derived_update)).await;
+        assert!(store.get(agent_id).await.is_some());
+
+        release_tx.send(()).expect("release conditional removal");
+        retirement.await;
+        assert!(store.get(agent_id).await.is_none());
+        assert!(store.snapshot().await.agents.is_empty());
     }
 
     #[tokio::test]

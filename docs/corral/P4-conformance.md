@@ -55,8 +55,9 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
 - Herdr `agent_not_found` replies are awaited for `read_tail`, `prompt`, and
   `approve`. The adapter captures the canonical mapping generation and exact
   wire target used by the RPC; it retires the mapping, tombstones the agent,
-  and removes the canonical store row only when both still match and its
-  store-lifetime row token is unchanged. A late reply from an older
+  and removes the canonical store row under a Store-side predicate that
+  confirms no newer live mapping exists at removal time. Same-generation
+  status/integration updates do not block cleanup. A late reply from an older
   pane/target generation is classified stale for that request but cannot
   retire the newer mapping or its row. Mapping generations are allocated from
   a monotonic adapter-lifetime counter while only live mappings retain map

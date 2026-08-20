@@ -131,15 +131,15 @@ enum DemoFleet {
                 "lines": .string("(demo) last lines of \(agent.displayName ?? agent.agentId)\n"
                     + "…seeded tail, no daemon in demo mode"),
             ])
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev, result: result))
         case .approve:
             // Fake the agent un-blocking; the store owner applies the
             // transition via `simulateUnblock`.
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev + 1, result: nil))
         default:
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev + 1, result: nil))
         }
     }

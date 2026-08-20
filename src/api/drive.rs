@@ -50,10 +50,10 @@
 //! - `409 in_flight` — same request_id currently being dispatched.
 //!
 //! Everything that reaches dispatch returns `200` with the contract's
-//! [`DriveResponse`]; dispatch-level refusals (unknown agent, command not
-//! implemented, transport failure) are `ok: false` with a typed `error` in
-//! that same body. Storing and replaying the exact body keeps idempotent
-//! retries byte-identical.
+//! [`DriveResponse`]; dispatch-level refusals (unknown agent, stale agent,
+//! command not implemented, transport failure) are `ok: false` with a
+//! human-readable `error` plus stable `error_kind` in that same body.
+//! Storing and replaying the exact body keeps idempotent retries byte-identical.
 
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{HashMap, VecDeque};
@@ -366,6 +366,13 @@ pub enum DriveApiError {
         agent_id: String,
         request_id: Option<String>,
     },
+    /// The target was present when the client selected it but disappeared or
+    /// migrated before dispatch. This is a refreshable conflict, not a
+    /// generic not-found or transport error.
+    StaleAgent {
+        agent_id: String,
+        request_id: Option<String>,
+    },
     InFlight {
         request_id: String,
     },
@@ -453,6 +460,15 @@ impl IntoResponse for DriveApiError {
                 StatusCode::NOT_FOUND,
                 "unknown_agent",
                 format!("unknown agent: {agent_id}"),
+                request_id,
+            ),
+            Self::StaleAgent {
+                agent_id,
+                request_id,
+            } => (
+                StatusCode::CONFLICT,
+                "stale_agent",
+                format!("stale agent: {agent_id}; refresh the fleet snapshot"),
                 request_id,
             ),
             Self::InFlight { request_id } => (
@@ -626,6 +642,16 @@ pub async fn drive(
             }
         };
 
+    // A Herdr tombstone tells us this id was real but is no longer a safe
+    // target. Check immediately before claiming replay state so a stale tap
+    // can be retried with a fresh request after the client refreshes.
+    if state.adapter.is_stale_agent(&agent_id) {
+        return Err(DriveApiError::StaleAgent {
+            agent_id,
+            request_id: Some(authorized.envelope.request_id.clone()),
+        });
+    }
+
     match state.replay.claim(&authorized.envelope.request_id) {
         Claim::Done(response) => return Ok(Json(response)),
         Claim::Pending => {
@@ -636,7 +662,7 @@ pub async fn drive(
         Claim::Claimed => {}
     }
 
-    let (ok, error, outcome, result) = match command {
+    let (ok, error, error_kind, outcome, result) = match command {
         // read_tail is the one capability whose whole point is a response:
         // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
         // carry it back in `result.lines` — the drive() fire-and-forget path
@@ -647,6 +673,7 @@ pub async fn drive(
                 Ok(lines) => (
                     true,
                     None,
+                    None,
                     AuditOutcome::Executed,
                     Some(serde_json::json!({ "lines": lines })),
                 ),
@@ -654,7 +681,7 @@ pub async fn drive(
             }
         }
         other => match state.adapter.drive(&agent_id, other) {
-            Ok(()) => (true, None, AuditOutcome::Executed, None),
+            Ok(()) => (true, None, None, AuditOutcome::Executed, None),
             Err(e) => drive_refusal(e),
         },
     };
@@ -666,6 +693,7 @@ pub async fn drive(
         request_id: authorized.envelope.request_id.clone(),
         ok,
         error,
+        error_kind,
         rev,
         result,
     };
@@ -683,17 +711,19 @@ fn drive_refusal(
 ) -> (
     bool,
     Option<String>,
+    Option<String>,
     AuditOutcome,
     Option<serde_json::Value>,
 ) {
     let text = e.to_string();
+    let error_kind = Some(e.wire_kind().to_string());
     let outcome = match &e {
         DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),
-        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) => {
+        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) | DriveError::StaleAgent(_) => {
             AuditOutcome::Refused(text.clone())
         }
     };
-    (false, Some(text), outcome, None)
+    (false, Some(text), error_kind, outcome, None)
 }
 
 fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {

@@ -43,7 +43,8 @@
 //! outside idle/working/blocked/done maps to it). Drive gating keys off the
 //! pane mapping, NOT the state: an Unknown-state agent whose pane is still
 //! tracked is drivable (its pane exists — prompt/interrupt/read_tail work),
-//! and an agent with no mapping is refused with the typed
+//! an agent that disappeared is refused with the typed
+//! [`DriveError::StaleAgent`], and an agent with no mapping is refused with
 //! [`DriveError::UnknownAgent`]. A command never panics on Unknown state.
 
 use std::collections::{HashMap, HashSet};
@@ -541,6 +542,13 @@ struct SessionState {
     agent_panes: HashMap<String, String>,
     /// agent_id -> herdr agent name (drive target when available)
     agent_names: HashMap<String, String>,
+    /// Canonical ids that were tracked and then removed or migrated away.
+    /// These tombstones distinguish a stale snapshot from an id the adapter
+    /// has never seen.
+    stale_agents: HashSet<String>,
+    /// Panes retired by migration/removal. Late status events for one of
+    /// these panes must not resurrect a row through replay-order fallback.
+    stale_panes: HashSet<String>,
     /// per-source monotonic ordering
     seqs: HashMap<String, u64>,
     /// panes with a dedicated event stream
@@ -581,15 +589,25 @@ impl SessionState {
 
     fn remove(&mut self, pane_id: &str) -> Option<String> {
         let agent_id = self.pane_agents.remove(pane_id);
-        if let Some(agent_id) = &agent_id {
-            self.agent_panes.remove(agent_id);
-            self.agent_names.remove(agent_id);
-        }
         self.subscribed_panes.remove(pane_id);
+        self.stale_panes.insert(pane_id.to_string());
+        // Always cancel a live pane stream, even when the pane had no agent
+        // mapping left: a removed-and-recreated pane must not leak a task.
         if let Some(cancel) = self.pane_streams.remove(pane_id) {
             let _ = cancel.send(true);
         }
-        agent_id
+        let agent_id = agent_id?;
+        // A pane can send a late close/status event after the same agent has
+        // already migrated to a new pane. Do not let that late event remove
+        // the new reverse mapping or delete the live store row.
+        if self.agent_panes.get(&agent_id).map(String::as_str) != Some(pane_id) {
+            return None;
+        }
+        self.agent_panes.remove(&agent_id);
+        self.agent_names.remove(&agent_id);
+        self.stale_agents.insert(agent_id.clone());
+        Some(agent_id)
+    }
     }
 }
 
@@ -875,7 +893,8 @@ impl HerdrAdapter {
         let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&agent.pane_id, session_value);
-            let migrated = self.register_pane(&mut state, &agent.pane_id, &agent_id);
+            let migrated =
+                self.register_pane(&mut state, &agent.pane_id, &agent_id, agent.name.as_deref());
             let canonical = self.build_agent(
                 &mut state,
                 &agent.pane_id,
@@ -898,12 +917,6 @@ impl HerdrAdapter {
         }
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
         store.apply(Change::upsert(canonical)).await;
-        {
-            let mut state = self.state.lock().unwrap();
-            if let Some(name) = agent.name.clone() {
-                state.agent_names.insert(agent_id.clone(), name);
-            }
-        }
         info!(
             agent_id = %agent_id,
             tool = %agent.agent.as_deref().unwrap_or("unknown"),
@@ -926,25 +939,50 @@ impl HerdrAdapter {
         state: &mut SessionState,
         pane_id: &str,
         agent_id: &str,
+        agent_name: Option<&str>,
     ) -> Option<String> {
-        let prev = state
+        state.stale_panes.remove(pane_id);
+
+        let previous_agent = state
             .pane_agents
             .insert(pane_id.to_string(), agent_id.to_string());
-        if prev.as_deref() != Some(agent_id)
-            && let Some(old) = prev
+        let mut removed_agent = None;
+
+        // A pane can be rebound from one canonical identity to another (the
+        // fallback pane id becoming a stable session id). Remove the old
+        // reverse/name entries while the same mutex is still held.
+        if previous_agent.as_deref() != Some(agent_id)
+            && let Some(old) = previous_agent
+            && state.agent_panes.get(&old).map(String::as_str) == Some(pane_id)
         {
             state.agent_panes.remove(&old);
             state.agent_names.remove(&old);
-            state
-                .agent_panes
-                .insert(agent_id.to_string(), pane_id.to_string());
-            return Some(old);
+            state.stale_agents.insert(old.clone());
+            removed_agent = Some(old);
         }
-        state
+
+        // The same stable session can move from pane A to pane B. The old
+        // implementation used `entry().or_insert_with`, which kept pane A as
+        // the drive target forever. Evict that old forward edge atomically.
+        if let Some(previous_pane) = state
             .agent_panes
-            .entry(agent_id.to_string())
-            .or_insert_with(|| pane_id.to_string());
-        None
+            .insert(agent_id.to_string(), pane_id.to_string())
+            && previous_pane != pane_id
+        {
+            if state.pane_agents.get(&previous_pane).map(String::as_str) == Some(agent_id) {
+                state.pane_agents.remove(&previous_pane);
+            }
+            state.subscribed_panes.remove(&previous_pane);
+            state.stale_panes.insert(previous_pane);
+        }
+
+        state.stale_agents.remove(agent_id);
+        if let Some(name) = agent_name {
+            state
+                .agent_names
+                .insert(agent_id.to_string(), name.to_string());
+        }
+        removed_agent
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1083,7 +1121,12 @@ impl HerdrAdapter {
                         return;
                     }
                 };
-                if let Some(tool) = ev.agent {
+                if ev.released.unwrap_or(false) || ev.agent.is_none() {
+                    let removed = self.state.lock().unwrap().remove(&ev.pane_id);
+                    if let Some(agent_id) = removed {
+                        store.apply(Change::Remove(agent_id)).await;
+                    }
+                } else if let Some(tool) = ev.agent {
                     if self
                         .state
                         .lock()
@@ -1100,11 +1143,6 @@ impl HerdrAdapter {
                     }
                     self.register_agent_pane(&ev.pane_id, &tool, AgentState::Unknown, store)
                         .await;
-                } else {
-                    let removed = self.state.lock().unwrap().remove(&ev.pane_id);
-                    if let Some(agent_id) = removed {
-                        store.apply(Change::Remove(agent_id)).await;
-                    }
                 }
             }
             "pane_exited" | "pane_closed" => {
@@ -1143,7 +1181,12 @@ impl HerdrAdapter {
         let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&pane.pane_id, session_value);
-            let migrated = self.register_pane(&mut state, &pane.pane_id, &agent_id);
+            let migrated = self.register_pane(
+                &mut state,
+                &pane.pane_id,
+                &agent_id,
+                pane.display_agent.as_deref(),
+            );
             let canonical = self.build_agent(
                 &mut state,
                 &pane.pane_id,
@@ -1184,6 +1227,9 @@ impl HerdrAdapter {
     async fn handle_status_changed(&self, ev: &StatusChangedWire, store: &Store) {
         let known_id = {
             let state = self.state.lock().unwrap();
+            if state.stale_panes.contains(&ev.pane_id) {
+                return;
+            }
             state.pane_agents.get(&ev.pane_id).cloned()
         };
         let Some(agent_id) = known_id else {
@@ -1259,10 +1305,10 @@ impl HerdrAdapter {
         agent_state: AgentState,
         store: &Store,
     ) {
-        let (agent_id, canonical) = {
+        let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(pane_id, None);
-            self.register_pane(&mut state, pane_id, &agent_id);
+            let migrated = self.register_pane(&mut state, pane_id, &agent_id, None);
             let canonical = self.build_agent(
                 &mut state,
                 pane_id,
@@ -1274,8 +1320,11 @@ impl HerdrAdapter {
                 &HashMap::new(),
                 None,
             );
-            (agent_id, canonical)
+            (agent_id, migrated, canonical)
         };
+        if let Some(old) = migrated {
+            store.apply(Change::Remove(old)).await;
+        }
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
         store.apply(Change::upsert(canonical)).await;
         info!(pane = pane_id, tool, ?agent_state, "agent detected");
@@ -1650,18 +1699,26 @@ impl Adapter for HerdrAdapter {
             .agent_panes
             .contains_key(agent_id)
     }
+
+    fn is_stale_agent(&self, agent_id: &str) -> bool {
+        self.state.lock().unwrap().stale_agents.contains(agent_id)
+    }
 }
 
-/// Resolve the drive target for `agent_id`: the pane's herdr agent name when
-/// one is known, else the pane id. `None`-safe: an agent with no pane mapping
-/// is the typed [`DriveError::UnknownAgent`].
+/// Resolve the drive target for `agent_id`: the pane's current herdr agent
+/// name when one is known, else the pane id. `None`-safe: an agent with no
+/// current pane mapping is classified as stale when it was previously known,
+/// otherwise it is the typed [`DriveError::UnknownAgent`].
 impl HerdrAdapter {
     fn drive_target(&self, agent_id: &str) -> Result<String, DriveError> {
         let state = self.state.lock().unwrap();
-        let pane = state
-            .agent_panes
-            .get(agent_id)
-            .ok_or_else(|| DriveError::UnknownAgent(agent_id.to_string()))?;
+        let Some(pane) = state.agent_panes.get(agent_id) else {
+            return if state.stale_agents.contains(agent_id) {
+                Err(DriveError::StaleAgent(agent_id.to_string()))
+            } else {
+                Err(DriveError::UnknownAgent(agent_id.to_string()))
+            };
+        };
         Ok(state
             .agent_names
             .get(agent_id)
@@ -2128,6 +2185,94 @@ mod tests {
             "wY:p1",
             "migrated id still resolves its pane for drive"
         );
+    }
+
+    #[tokio::test]
+    async fn drive_target_follows_stable_session_to_new_pane_and_name() {
+        // A stable herdr session may be reported on a different pane after a
+        // terminal/workspace migration. The target must follow the new pane
+        // and name; the old entry must not survive through `or_insert`.
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-moving"},
+            "agent_status": "working",
+            "name": "old-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+
+        let moved: PaneInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-moving"},
+            "agent_status": "working",
+            "display_agent": "new-target",
+            "pane_id": "w-new:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        // Keep this hermetic control socket focused on request/response RPCs;
+        // the production handler would open a pane subscription here.
+        adapter
+            .state
+            .lock()
+            .unwrap()
+            .subscribed_panes
+            .insert("w-new:p1".to_string());
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&moved, sink, &store).await;
+
+        assert_eq!(
+            adapter.drive_target("herdr:ses-moving").unwrap(),
+            "new-target",
+            "name target follows the migrated pane"
+        );
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(
+            state.agent_panes.get("herdr:ses-moving").unwrap(),
+            "w-new:p1"
+        );
+        assert!(!state.pane_agents.contains_key("w-old:p1"));
+    }
+
+    #[tokio::test]
+    async fn disappearance_is_typed_stale_for_read_prompt_and_approve() {
+        // Once a known pane disappears, all three controls must refuse before
+        // opening a transport. A stale selection is refreshable; it is not an
+        // unknown id and must not become a generic socket failure.
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter
+            .register_agent_pane("w-stale:p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (sink, _rx) = mpsc::channel(16);
+        adapter
+            .handle_event(
+                "pane_closed",
+                &json!({"pane_id": "w-stale:p1"}),
+                sink,
+                &store,
+            )
+            .await;
+        let agent_id = "herdr:pane:w-stale:p1";
+
+        assert!(matches!(
+            adapter.read_tail(agent_id, 10).await,
+            Err(DriveError::StaleAgent(id)) if id == agent_id
+        ));
+        assert!(matches!(
+            adapter.drive(agent_id, DriveCommand::Prompt { text: "hi".into() }),
+            Err(DriveError::StaleAgent(id)) if id == agent_id
+        ));
+        assert!(matches!(
+            adapter.drive(agent_id, DriveCommand::Approve { choice: "y".into() }),
+            Err(DriveError::StaleAgent(id)) if id == agent_id
+        ));
     }
 
     #[tokio::test]
@@ -2612,6 +2757,102 @@ mod tests {
             .expect("read_tail");
         server.await.unwrap();
         assert!(tail.is_empty(), "no output -> clean empty lines");
+    }
+
+    /// Three bounded control operations against one current migrated target.
+    /// This is deliberately a socket-level assertion: resolving only the
+    /// in-memory map would not prove that read_tail, prompt, and approve all
+    /// send the same current target over their production RPC paths.
+    #[tokio::test]
+    async fn current_snapshot_target_dispatches_read_prompt_and_approve() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                let line = lines.next_line().await.expect("request").expect("line");
+                let request: Value = serde_json::from_str(&line).expect("json request");
+                let result = if request["method"] == "agent.read" {
+                    json!({"read": {"text": "current tail\n"}})
+                } else {
+                    json!({"ok": true})
+                };
+                let response = json!({"id": request["id"], "result": result}).to_string() + "\n";
+                write
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                requests.push(request);
+            }
+            requests
+        });
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-controls"},
+            "agent_status": "blocked",
+            "name": "old-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let moved: PaneInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-controls"},
+            "agent_status": "blocked",
+            "display_agent": "new-target",
+            "pane_id": "w-new:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        // Keep this hermetic control socket focused on request/response RPCs;
+        // the production handler would open a pane subscription here.
+        adapter
+            .state
+            .lock()
+            .unwrap()
+            .subscribed_panes
+            .insert("w-new:p1".to_string());
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&moved, sink, &store).await;
+
+        let agent_id = "herdr:ses-controls";
+        let tail = adapter.read_tail(agent_id, 10).await.expect("read tail");
+        assert_eq!(tail, vec!["current tail"]);
+        adapter
+            .drive(
+                agent_id,
+                DriveCommand::Prompt {
+                    text: "hello".into(),
+                },
+            )
+            .expect("prompt dispatch accepted");
+        adapter
+            .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
+            .expect("approve dispatch accepted");
+
+        let requests = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("three RPCs timeout")
+            .expect("server task");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0]["method"], "agent.read");
+        assert_eq!(requests[0]["params"]["target"], "new-target");
+        assert_eq!(requests[1]["method"], "agent.prompt");
+        assert_eq!(requests[1]["params"]["target"], "new-target");
+        assert_eq!(requests[1]["params"]["text"], "hello");
+        assert_eq!(requests[2]["method"], "agent.prompt");
+        assert_eq!(requests[2]["params"]["target"], "new-target");
+        assert_eq!(requests[2]["params"]["text"], "y");
     }
 
     // #105 regression: exercise the production reader -> forwarder -> sink

@@ -40,6 +40,7 @@ struct RecordingAdapter {
     dispatches: AtomicUsize,
     commands: Mutex<Vec<(String, DriveCommand)>>,
     known: Mutex<HashSet<String>>,
+    stale: Mutex<HashSet<String>>,
     mode: Mutex<Mode>,
     /// When Some, drive() notifies `started` and blocks on the receiver
     /// before returning (concurrency test support — never in production).
@@ -58,6 +59,7 @@ impl Default for RecordingAdapter {
             dispatches: AtomicUsize::new(0),
             commands: Mutex::new(Vec::new()),
             known: Mutex::new(HashSet::new()),
+            stale: Mutex::new(HashSet::new()),
             mode: Mutex::new(Mode::Ok),
             hold: Mutex::new(None),
             started: Arc::new(tokio::sync::Notify::new()),
@@ -75,6 +77,11 @@ impl RecordingAdapter {
 
     fn mode(&self, mode: Mode) -> &Self {
         *self.mode.lock().unwrap() = mode;
+        self
+    }
+
+    fn stale(&self, agent_id: &str) -> &Self {
+        self.stale.lock().unwrap().insert(agent_id.to_string());
         self
     }
 
@@ -125,6 +132,10 @@ impl Adapter for RecordingAdapter {
 
     fn knows_agent(&self, agent_id: &str) -> bool {
         self.known.lock().unwrap().contains(agent_id)
+    }
+
+    fn is_stale_agent(&self, agent_id: &str) -> bool {
+        self.stale.lock().unwrap().contains(agent_id)
     }
 
     fn read_tail<'a>(
@@ -673,6 +684,39 @@ async fn read_tail_unknown_agent_is_typed_refusal() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
+}
+
+#[tokio::test]
+async fn stale_agent_is_typed_conflict_before_dispatch() {
+    let h = harness();
+    h.adapter.stale("herdr:gone");
+
+    for (request_id, capability, payload) in [
+        (
+            "req-stale-prompt",
+            Capability::Prompt,
+            prompt_payload("hello"),
+        ),
+        (
+            "req-stale-tail",
+            Capability::ReadTail,
+            json!({ "kind": "read_tail", "lines": 10 }),
+        ),
+    ] {
+        let (status, value) = post(
+            &h.app,
+            h.body(request_id, capability, "herdr:gone", payload, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{capability}");
+        assert_eq!(value["kind"], "stale_agent", "{capability}");
+        assert_eq!(value["request_id"], request_id, "{capability}");
+    }
+    assert_eq!(h.adapter.dispatch_count(), 0, "stale rows never dispatch");
+    assert!(
+        h.audit_entries().is_empty(),
+        "pre-dispatch stale is not audited"
+    );
 }
 
 // ---------------------------------------------------------------------------

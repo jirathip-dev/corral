@@ -236,6 +236,10 @@ fn refusal_kinds_match_the_conformance_table() {
             corrald_ui::drive::DriveFailure::UnknownAgent("x".into()),
         ),
         (
+            "stale_agent",
+            corrald_ui::drive::DriveFailure::StaleAgent("x".into()),
+        ),
+        (
             "payload",
             corrald_ui::drive::DriveFailure::Payload("x".into()),
         ),
@@ -252,7 +256,11 @@ fn refusal_kinds_match_the_conformance_table() {
             "not_granted" | "expired" | "revoked" | "step_up_required" => 403,
             "bad_signature" | "step_up_failed" => 401,
             "unknown_key" | "unknown_agent" => 404,
-            "in_flight" | "no_waiting_approval" | "stale_approval" | "hash_mismatch" => 409,
+            "in_flight"
+            | "stale_agent"
+            | "no_waiting_approval"
+            | "stale_approval"
+            | "hash_mismatch" => 409,
             "payload" | "choice_not_in_menu" | "cannot_approve_kind" => 422,
             _ => 400, // bad_request / unknown_capability / missing_signature
         };

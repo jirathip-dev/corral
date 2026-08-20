@@ -250,7 +250,9 @@ pub trait AuditLog: fmt::Debug + Send + Sync {
     fn append(&self, entry: &AuditEntry) -> Result<(), String>;
 }
 
-/// Response to a drive write (W1). `ok` + `error` are the typed outcome;
+/// Response to a drive write (W1). `ok` + `error` are the human-readable
+/// outcome; `error_kind` is the stable dispatch-level refusal kind when one
+/// exists;
 /// `rev` is the store's new monotonic rev after the write. For `read_tail`
 /// `result` carries `{"lines": [...]}` — the adapter-returned tail, redacted
 /// (D9) and bounded (D5: ≤ 200 lines / ≤ 32 KiB) before it left the machine;
@@ -262,6 +264,8 @@ pub struct DriveResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
     pub rev: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,

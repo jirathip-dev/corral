@@ -353,6 +353,18 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
+                if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
+                    // A stale tap is a read-model event, not a generic drive
+                    // failure: remove the row before the next frame renders
+                    // controls, then refresh once for the current identity.
+                    self.fleet.remove_agent(&msg.agent_id);
+                    self.refresh_snapshot();
+                    self.toast(
+                        Level::Warn,
+                        format!("{} disappeared; refreshing the fleet", msg.agent_id),
+                    );
+                    return;
+                }
                 let level = if failure.suggests_re_registration() {
                     Level::Warn
                 } else {
@@ -367,6 +379,20 @@ impl CorralApp {
                 }
             }
         }
+    }
+
+    /// One-shot read-model refresh after a typed stale-target refusal. The
+    /// live SSE loop remains authoritative; this closes the tap-to-refresh
+    /// gap without creating a daemon poll loop.
+    fn refresh_snapshot(&self) {
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            if let Ok(snapshot) = protocol::fetch_snapshot(&client, &base_url).await {
+                let _ = tx.send(ApplyMsg::Sse(protocol::SseEvent::Snapshot(snapshot)));
+            }
+        });
     }
 
     /// #64: one transcript page arrived (or failed). Correlation and

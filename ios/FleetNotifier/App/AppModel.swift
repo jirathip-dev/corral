@@ -390,12 +390,21 @@ final class AppModel: ObservableObject {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
                     }
                 } else {
-                    self.banner = .error("dispatch_refused",
-                                         response.error ?? "dispatch refused (ok:false)")
+                    if response.errorKind == "stale_agent" {
+                        self.handleStaleAgent(target,
+                                              message: response.error ?? "the agent moved or disappeared")
+                    } else {
+                        self.banner = .error("dispatch_refused",
+                                             response.error ?? "dispatch refused (ok:false)")
+                    }
                 }
             case .refused(let error):
                 switch error {
                 case .server(let status, let kind, let message, _):
+                    if kind == "stale_agent" {
+                        self.handleStaleAgent(target, message: message)
+                        return
+                    }
                     // Read-only default: ungranted capabilities are refused
                     // with the typed banner; the UI also hides the buttons.
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
@@ -405,6 +414,22 @@ final class AppModel: ObservableObject {
                     self.banner = .error("encoding", "payload encoding failed")
                 }
             }
+        }
+    }
+
+    /// Stale target handling is deliberately shared by the HTTP 409 path and
+    /// the narrow 200 dispatch-race path: remove controls immediately, then
+    /// fetch the current read model once.
+    private func handleStaleAgent(_ target: String, message: String) {
+        fleet.removeAgent(target)
+        banner = .error("stale_agent", "\(message) — refreshing the fleet.")
+        guard let hostURL else { return }
+        let client = CorraldClient(host: hostURL, session: session)
+        let expectedHost = hostURL
+        Task { @MainActor [weak self] in
+            guard let self, let snapshot = try? await client.fetchSnapshot(),
+                  self.hostURL == expectedHost else { return }
+            self.fleet.apply(.snapshot(snapshot))
         }
     }
 

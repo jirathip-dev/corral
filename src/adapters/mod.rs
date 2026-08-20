@@ -42,6 +42,11 @@ pub enum DriveError {
     NotImplemented(&'static str),
     /// The given agent_id is not known to this adapter.
     UnknownAgent(String),
+    /// The adapter knew this agent, but its live target disappeared or moved
+    /// before the command could be dispatched. This is actionable client
+    /// state, not a generic transport failure: refresh the snapshot before
+    /// offering the row's controls again.
+    StaleAgent(String),
     /// Transport-level failure reaching the source.
     Transport(String),
 }
@@ -51,12 +56,26 @@ impl std::fmt::Display for DriveError {
         match self {
             Self::NotImplemented(cmd) => write!(f, "command not implemented: {cmd}"),
             Self::UnknownAgent(id) => write!(f, "unknown agent: {id}"),
+            Self::StaleAgent(id) => write!(f, "stale agent: {id}"),
             Self::Transport(msg) => write!(f, "transport error: {msg}"),
         }
     }
 }
 
 impl std::error::Error for DriveError {}
+
+impl DriveError {
+    /// Stable wire kind for dispatch-level outcomes. Clients use this field
+    /// instead of parsing human-facing error text.
+    pub fn wire_kind(&self) -> &'static str {
+        match self {
+            Self::NotImplemented(_) => "not_implemented",
+            Self::UnknownAgent(_) => "unknown_agent",
+            Self::StaleAgent(_) => "stale_agent",
+            Self::Transport(_) => "transport",
+        }
+    }
+}
 
 /// A source of canonical agent records.
 pub trait Adapter: Debug + Send + Sync {
@@ -97,6 +116,14 @@ pub trait Adapter: Debug + Send + Sync {
 
     /// True if `agent_id` is currently tracked by this adapter.
     fn knows_agent(&self, agent_id: &str) -> bool;
+
+    /// True if this adapter previously tracked `agent_id` but has since
+    /// removed it. The drive API uses this distinction to return a typed
+    /// refreshable stale-target result while preserving `unknown_agent` for
+    /// ids that were never present.
+    fn is_stale_agent(&self, _agent_id: &str) -> bool {
+        false
+    }
 }
 
 /// Convenience: canonical record with its agent_id, as adapters hand off to

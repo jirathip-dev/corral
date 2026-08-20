@@ -193,6 +193,15 @@ final class FleetStore: ObservableObject {
         agents[id]
     }
 
+    /// Remove a target immediately after a typed stale-agent refusal. The
+    /// subsequent snapshot/SSE update may re-add a current identity, but the
+    /// old row cannot keep rendering usable controls during the refresh.
+    func removeAgent(_ id: String) {
+        agents.removeValue(forKey: id)
+        previousStates.removeValue(forKey: id)
+        streamSeen.removeValue(forKey: id)
+    }
+
     // NOTE: the pre-D25 `blockedAgents`/`sortedAgents` accessors were
     // removed with the board rework — ordering now lives ONLY in
     // `BoardModel.ordered` (blocked > working > done > idle > unknown),

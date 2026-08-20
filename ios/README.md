@@ -92,6 +92,9 @@ tracked in this repo until #26 untracked it; if you cloned before that, run
   snapshot's `approval_id` + `prompt_hash` byte-for-byte; a stale or
   wrong-hash reply is refused with the typed banner (`stale_approval`,
   `hash_mismatch`, `choice_not_in_menu`).
+- A Herdr target that disappears or migrates returns `stale_agent` as a typed
+  409/refusal. The app removes the stale row, shows a refresh banner, and
+  requests one fresh snapshot; SSE remains the source of truth afterward.
 - **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
   `LocalNotifier.ClaimPayload` — a future relay would register the device
   token and push exactly that claim dict; the action-execution path
@@ -175,3 +178,4 @@ own R8/R9 conformance suite (W1's).
 | R8 matching approve executes | `driveApprove` + canned actions | daemon contract (W1 suite) |
 | R9 step-up | Face ID → mint → `X-Step-Up-Token` retry | live mint; destructive-mirror tests |
 | R10 audit grows only on writes | never on auth failures | live audit (2 entries) |
+| R11 stale target recovery | typed `stale_agent`, remove row, refresh snapshot | unit + daemon contract |

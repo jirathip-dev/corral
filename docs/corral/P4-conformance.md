@@ -34,15 +34,24 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   - prompt: `{"kind":"prompt","text":String}`
   - read_tail: `{"kind":"read_tail","lines":Option<u32>}` (clamped 1..=200)
   - approve: `{"kind":"approve","approval_id":String,"prompt_hash":String,"choice":String}`
-- Responses: success → 200 `DriveResponse {request_id, ok, error?, rev, result?}`;
-  typed refusals ride the body (`ok:false` + `error`). Client errors:
+- Responses: success → 200 `DriveResponse {request_id, ok, error?, error_kind?, rev, result?}`;
+  typed refusals ride the body (`ok:false` + human `error` and stable
+  `error_kind`). Client errors:
   - 400 `bad_request` / `unknown_capability` / `missing_signature`
   - 401 `bad_signature` / `step_up_failed`
   - 404 `unknown_key` / `unknown_agent`
   - 403 `expired` / `revoked` / `not_granted` / `step_up_required`
-  - 409 `in_flight` / `no_waiting_approval` / `stale_approval` / `hash_mismatch`
+  - 409 `in_flight` / `no_waiting_approval` / `stale_approval` / `hash_mismatch` /
+    `stale_agent`
   - 422 `payload` / `choice_not_in_menu` / `cannot_approve_kind`
 - Idempotency: same `request_id` → same stored response, never double-send.
+- `stale_agent` means the daemon knew the target but its current Herdr session
+  disappeared or moved. It is a conflict, not an unknown target: the daemon
+  does not claim a replay or append an audit entry for the pre-dispatch 409.
+  Clients must remove/disable the stale row and fetch a fresh snapshot; the
+  live SSE stream remains authoritative. A narrow adapter race may return the
+  same typed `error_kind` in a 200 refusal body after the dispatch claim, with
+  the same client recovery behavior.
 - Step-up: destructive payloads require `X-Step-Up-Token` header (minted via
   `/step-up`); failures are never audited.
 
@@ -83,6 +92,9 @@ R9. **Step-up** — `rm -rf ...` payload without token → 403 `step_up_required
      replay → 401 `step_up_failed`.
 R10. **Audit grows only on writes** — GETs, auth failures, step-up failures
      never grow the log; each executed/refused-at-dispatch drive does.
+R11. **Stale target recovery** — a target that disappears or migrates before
+     dispatch returns `stale_agent`; no pre-dispatch replay/audit is created,
+     and both clients remove the row and refresh their snapshot.
 
 ## Open questions resolved by default (noted on #12/#13)
 

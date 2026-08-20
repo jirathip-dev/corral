@@ -280,17 +280,20 @@ struct Delta: Codable, Equatable, Sendable {
     var del: [String]
 }
 
-/// Response to a drive write: `{request_id, ok, error?, rev, result?}`.
+/// Response to a drive write: `{request_id, ok, error?, error_kind?, rev, result?}`.
 struct DriveResponse: Codable, Equatable, Sendable {
     var requestId: String
     var ok: Bool
     var error: String?
+    var errorKind: String?
     var rev: UInt64
     var result: CodableValue?
 
     enum CodingKeys: String, CodingKey {
         case requestId = "request_id"
-        case ok, error, rev, result
+        case ok, error
+        case errorKind = "error_kind"
+        case rev, result
     }
 }
 

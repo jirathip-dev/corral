@@ -159,6 +159,13 @@ signed envelope {key_id, signature,       POST /drive
   before any dispatch.
 - The daemon never sends keys by coordinates: the adapter resolves the
   canonical `agent_id` to its own transport target.
+- Herdr keeps the canonical agent-to-pane target and its reverse mapping under
+  one state lock. A stable session moving panes evicts the old pane, and a
+  disappeared or moved target leaves a stale-agent tombstone. Dispatch
+  observes that tombstone as `stale_agent` (HTTP 409 before replay claim when
+  possible; a typed refusal if the adapter loses the race). Desktop and iOS
+  clients remove the stale row immediately and refresh their snapshot; the
+  live SSE stream remains the authority for the replacement row.
 
 ## Capabilities
 

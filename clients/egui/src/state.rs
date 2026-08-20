@@ -124,15 +124,22 @@ impl Fleet {
             self.agents.insert(agent.agent_id.clone(), agent.clone());
         }
         for id in &delta.del {
-            self.agents.remove(id);
-            self.tails.remove(id);
-            self.transcripts.remove(id);
-            self.recent_drives.remove(id);
-            self.expanded.retain(|e| e != id);
+            self.remove_agent(id);
         }
         if delta.rev > self.rev.unwrap_or(0) {
             self.rev = Some(delta.rev);
         }
+    }
+
+    /// Remove a target immediately when a drive reports that its snapshot
+    /// identity is stale. The next snapshot/SSE delta may re-add a genuinely
+    /// current identity, but no controls remain usable during the refresh.
+    pub fn remove_agent(&mut self, agent_id: &str) {
+        self.agents.remove(agent_id);
+        self.tails.remove(agent_id);
+        self.transcripts.remove(agent_id);
+        self.recent_drives.remove(agent_id);
+        self.expanded.retain(|id| id != agent_id);
     }
 
     pub fn is_expanded(&self, agent_id: &str) -> bool {

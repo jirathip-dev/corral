@@ -143,6 +143,24 @@ assert_cleanup_label() {
   fi
 }
 
+assert_restored_missing_cleanup_label() {
+  local log="$1"
+  grep -Fq 'prior desktop payload restored; rollback directory cleanup failed; rollback directory is missing' "$log" \
+    || fail "restored-payload missing cleanup label is not truthful: $log"
+  if grep -Eq 'inspect|retained|remain|recover|empty|partial|rollback directory:' "$log"; then
+    fail "restored-payload missing cleanup claimed an inspectable or recoverable state: $log"
+  fi
+}
+
+assert_restored_indeterminate_cleanup_label() {
+  local log="$1"
+  grep -Fq 'prior desktop payload restored; rollback directory cleanup failed; rollback cleanup state is indeterminate; inspect rollback path:' "$log" \
+    || fail "restored-payload indeterminate cleanup label is not truthful: $log"
+  if grep -Eq 'rollback directory is empty|partially cleaned|prior rollback payload|retained|recover' "$log"; then
+    fail "restored-payload indeterminate cleanup claimed a definite state: $log"
+  fi
+}
+
 assert_empty_cleanup_label() {
   local log="$1"
   grep -Fq 'installed desktop payload; rollback directory is empty; inspect rollback directory:' "$log" \
@@ -316,6 +334,7 @@ assert_rollback_label "$TEST_ROOT/macos-double-mv.log"
 assert_no_staging_entries "$MAC_PARENT"
 mac_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-double-mv.log")"
 assert_retained_file "$mac_rollback/previous" Contents/old-marker old-macos-install
+rm -rf -- "$mac_rollback"
 
 seed_macos_old
 clear_failures
@@ -329,6 +348,32 @@ assert_cleanup_label "$TEST_ROOT/macos-rm.log"
 mac_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-rm.log")"
 [[ ! -e "$mac_cleanup_rollback/previous" ]] || fail "macOS cleanup-failure rollback retained restored payload"
 assert_no_staging_entries "$MAC_PARENT"
+rm -rf -- "$mac_cleanup_rollback"
+
+seed_macos_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if run_installer Darwin > "$TEST_ROOT/macos-rollback-total-rm.log" 2>&1; then
+  fail "macOS rollback total-delete injection unexpectedly succeeded"
+fi
+assert_macos_old
+assert_restored_missing_cleanup_label "$TEST_ROOT/macos-rollback-total-rm.log"
+assert_no_temporary_entries "$MAC_PARENT"
+
+seed_macos_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_INDETERMINATE_RM_ROLLBACK=1
+if run_installer Darwin > "$TEST_ROOT/macos-rollback-indeterminate-rm.log" 2>&1; then
+  fail "macOS rollback indeterminate injection unexpectedly succeeded"
+fi
+assert_macos_old
+assert_restored_indeterminate_cleanup_label "$TEST_ROOT/macos-rollback-indeterminate-rm.log"
+mac_rollback_indeterminate_path="$(rollback_path_from_log_marker "$TEST_ROOT/macos-rollback-indeterminate-rm.log" 'inspect rollback path:')"
+[[ -f "$mac_rollback_indeterminate_path" ]] || fail "macOS rollback indeterminate state is not a retained non-directory path"
+rm -f -- "$mac_rollback_indeterminate_path"
+assert_no_temporary_entries "$MAC_PARENT"
 
 clear_failures
 run_installer Linux > "$TEST_ROOT/linux-success.log" 2>&1
@@ -612,6 +657,31 @@ linux_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/linux-rm.log")"
 [[ ! -e "$linux_cleanup_rollback/bin/corrald-ui" ]] || fail "Linux cleanup-failure rollback retained restored payload"
 assert_no_staging_entries "$LINUX_PREFIX"
 
+seed_linux_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=5
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if run_installer Linux > "$TEST_ROOT/linux-rollback-total-rm.log" 2>&1; then
+  fail "Linux rollback total-delete injection unexpectedly succeeded"
+fi
+assert_linux_old
+assert_restored_missing_cleanup_label "$TEST_ROOT/linux-rollback-total-rm.log"
+assert_no_temporary_entries "$LINUX_PREFIX"
+
+seed_linux_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=5
+export CORRAL_TEST_INDETERMINATE_RM_ROLLBACK=1
+if run_installer Linux > "$TEST_ROOT/linux-rollback-indeterminate-rm.log" 2>&1; then
+  fail "Linux rollback indeterminate injection unexpectedly succeeded"
+fi
+assert_linux_old
+assert_restored_indeterminate_cleanup_label "$TEST_ROOT/linux-rollback-indeterminate-rm.log"
+linux_rollback_indeterminate_path="$(rollback_path_from_log_marker "$TEST_ROOT/linux-rollback-indeterminate-rm.log" 'inspect rollback path:')"
+[[ -f "$linux_rollback_indeterminate_path" ]] || fail "Linux rollback indeterminate state is not a retained non-directory path"
+rm -f -- "$linux_rollback_indeterminate_path"
+assert_no_temporary_entries "$LINUX_PREFIX"
+
 mkdir -p "$OTHER_PARENT"
 clear_failures
 run_installer Other > "$TEST_ROOT/other-success.log" 2>&1
@@ -689,6 +759,37 @@ assert_cleanup_label "$TEST_ROOT/other-rm.log"
 other_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/other-rm.log")"
 [[ ! -e "$other_cleanup_rollback/bin/corrald-ui" ]] || fail "Other cleanup-failure rollback retained restored payload"
 assert_no_staging_entries "$OTHER_PREFIX"
+
+rm -rf -- "$OTHER_PREFIX"
+mkdir -p "$OTHER_PREFIX/bin"
+printf 'old-other-binary' > "$OTHER_PREFIX/bin/corrald-ui"
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_TOTAL_RM_ROLLBACK=1
+if run_installer Other > "$TEST_ROOT/other-rollback-total-rm.log" 2>&1; then
+  fail "Other rollback total-delete injection unexpectedly succeeded"
+fi
+[[ -f "$OTHER_PREFIX/bin/corrald-ui" ]] || fail "Other total-delete rollback removed the old payload"
+[[ "$(<"$OTHER_PREFIX/bin/corrald-ui")" == "old-other-binary" ]] || fail "Other total-delete rollback changed the old payload"
+assert_restored_missing_cleanup_label "$TEST_ROOT/other-rollback-total-rm.log"
+assert_no_temporary_entries "$OTHER_PREFIX"
+
+rm -rf -- "$OTHER_PREFIX"
+mkdir -p "$OTHER_PREFIX/bin"
+printf 'old-other-binary' > "$OTHER_PREFIX/bin/corrald-ui"
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_INDETERMINATE_RM_ROLLBACK=1
+if run_installer Other > "$TEST_ROOT/other-rollback-indeterminate-rm.log" 2>&1; then
+  fail "Other rollback indeterminate injection unexpectedly succeeded"
+fi
+[[ -f "$OTHER_PREFIX/bin/corrald-ui" ]] || fail "Other indeterminate rollback removed the old payload"
+[[ "$(<"$OTHER_PREFIX/bin/corrald-ui")" == "old-other-binary" ]] || fail "Other indeterminate rollback changed the old payload"
+assert_restored_indeterminate_cleanup_label "$TEST_ROOT/other-rollback-indeterminate-rm.log"
+other_rollback_indeterminate_path="$(rollback_path_from_log_marker "$TEST_ROOT/other-rollback-indeterminate-rm.log" 'inspect rollback path:')"
+[[ -f "$other_rollback_indeterminate_path" ]] || fail "Other rollback indeterminate state is not a retained non-directory path"
+rm -f -- "$other_rollback_indeterminate_path"
+assert_no_temporary_entries "$OTHER_PREFIX"
 
 TRAVERSAL_PREFIX="/tmp/x/../.."
 clear_failures

@@ -123,11 +123,13 @@ preflight the device of every target parent against the staging prefix before
 creating payload directories and recheck before commit; a device mismatch is
 an error rather than a cross-filesystem fallback. Rollback diagnostics
 distinguish a payload-restore failure, which retains the old payload, from a
-cleanup-only failure, which reports that the payload was restored and names
-the rollback-directory inspection path. If cleanup fails after a fresh
-install, the diagnostic instead identifies an empty rollback directory for
-inspection rather than claiming a rollback copy exists. After a replacement,
-cleanup diagnostics inspect the expected rollback paths after the failed
+cleanup-only failure, which reports that the payload was restored. For the
+cleanup-only case, an existing empty or partial rollback directory gets an
+inspection path, a missing root gets no path or recoverability claim, and an
+existing but uninspectable root is reported as indeterminate with its path.
+If cleanup fails after a fresh install, the diagnostic instead identifies an
+empty rollback directory for inspection rather than claiming a rollback copy
+exists. After a replacement, cleanup diagnostics inspect the expected rollback paths after the failed
 removal: macOS reports a remaining previous path only when it exists, while
 Linux and Other distinguish all, some, or none of the expected backup paths.
 An existing empty directory gets an inspection path; a missing rollback root

@@ -64,10 +64,11 @@ the device of every target parent with the staging prefix before mutation and
 again before commit; device mismatches fail rather than pretending a
 cross-filesystem rename is atomic. If payload restoration fails, the old
 payload is retained in the reported rollback directory; if only rollback
-directory cleanup fails, the payload-restored diagnostic names the
-rollback-directory inspection path without claiming it contains the old
-payload. After a fresh install, the cleanup-failure diagnostic instead names
-an empty rollback directory for inspection. After a replacement, the
+directory cleanup fails after a failed install, an existing empty or partial
+rollback directory is named for inspection, a missing root is reported
+without a path or recoverability claim, and an uninspectable root is reported
+as indeterminate with its path. After a fresh install, the cleanup-failure
+diagnostic instead names an empty rollback directory for inspection. After a replacement, the
 diagnostic checks the expected rollback paths after failed cleanup and reports
 all, some, or none of the prior Linux/Other backups (or the macOS previous
 path) without promising recoverability from a pre-cleanup count. An existing

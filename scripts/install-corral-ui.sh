@@ -306,6 +306,26 @@ report_rollback_cleanup_inspection() {
   esac
 }
 
+report_restored_cleanup_failure() {
+  local rollback_dir="$1"
+  local payload_state="$2"
+  local state="$3"
+  case "$state" in
+    missing)
+      echo "!! $payload_state; rollback directory cleanup failed; rollback directory is missing" >&2
+      ;;
+    indeterminate)
+      echo "!! $payload_state; rollback directory cleanup failed; rollback cleanup state is indeterminate; inspect rollback path: $rollback_dir" >&2
+      ;;
+    partial|empty)
+      echo "!! $payload_state; rollback directory cleanup failed; inspect rollback directory: $rollback_dir" >&2
+      ;;
+    *)
+      echo "!! $payload_state; rollback directory cleanup failed; rollback cleanup state is indeterminate; inspect rollback path: $rollback_dir" >&2
+      ;;
+  esac
+}
+
 rollback_directory() {
   local destination="$1"
   local rollback_dir="$2"
@@ -335,10 +355,12 @@ rollback_directory() {
     return 1
   fi
   if [[ "$cleanup_ok" != "0" ]]; then
+    local cleanup_state
+    cleanup_state="$(rollback_cleanup_state "$rollback_dir")"
     if [[ "$had_destination" == "1" ]]; then
-      echo "!! prior desktop payload restored; rollback directory cleanup failed; inspect rollback directory: $rollback_dir" >&2
+      report_restored_cleanup_failure "$rollback_dir" "prior desktop payload restored" "$cleanup_state"
     else
-      echo "!! staged desktop payload removed; rollback directory cleanup failed; inspect rollback directory: $rollback_dir" >&2
+      report_restored_cleanup_failure "$rollback_dir" "staged desktop payload removed" "$cleanup_state"
     fi
     return 1
   fi
@@ -467,15 +489,17 @@ commit_files() {
     if [[ "$payload_rollback_ok" != "0" ]]; then
       echo "!! payload rollback failed; prior desktop payload is retained in rollback directory: $rollback_dir" >&2
       return 1
-    fi
-    if [[ "$cleanup_ok" != "0" ]]; then
-      if [[ "${#backed_up[@]}" -gt 0 ]]; then
-        echo "!! prior desktop payload restored; rollback directory cleanup failed; inspect rollback directory: $rollback_dir" >&2
-      else
-        echo "!! staged desktop payload removed; rollback directory cleanup failed; inspect rollback directory: $rollback_dir" >&2
-      fi
-      return 1
-    fi
+   fi
+   if [[ "$cleanup_ok" != "0" ]]; then
+      local cleanup_state
+      cleanup_state="$(rollback_cleanup_state "$rollback_dir")"
+     if [[ "${#backed_up[@]}" -gt 0 ]]; then
+        report_restored_cleanup_failure "$rollback_dir" "prior desktop payload restored" "$cleanup_state"
+     else
+        report_restored_cleanup_failure "$rollback_dir" "staged desktop payload removed" "$cleanup_state"
+     fi
+     return 1
+   fi
     return 0
   }
 

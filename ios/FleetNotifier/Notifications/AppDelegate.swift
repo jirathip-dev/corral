@@ -15,13 +15,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// doubled notifications (SSE bridge + APNs).
     static var apnsRegistered = false
 
+    private let identityLifecycle: IdentityLifecycle
+    private let session: URLSession
+    private let identityProvider: @Sendable () -> DeviceSigner?
+    private let beforeDeviceTokenUpload: @Sendable () async -> Void
+
+    /// Dependencies are injectable so lifecycle races can be tested with a
+    /// URLProtocol session and an in-memory identity, without touching APNs or
+    /// the device key store.
+    init(identityLifecycle: IdentityLifecycle = .shared,
+         session: URLSession = .shared,
+         identityProvider: @escaping @Sendable () -> DeviceSigner? = {
+             try? DeviceKeyStore.loadOrCreate().0
+         },
+         beforeDeviceTokenUpload: @escaping @Sendable () async -> Void = {}) {
+        self.identityLifecycle = identityLifecycle
+        self.session = session
+        self.identityProvider = identityProvider
+        self.beforeDeviceTokenUpload = beforeDeviceTokenUpload
+        super.init()
+    }
+
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
         Self.apnsRegistered = true
-        Task {
-            await Self.uploadToken(hex)
-        }
+        _ = startDeviceTokenUpload(hex)
     }
 
     func application(_ application: UIApplication,
@@ -32,17 +51,41 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         Self.apnsRegistered = false
     }
 
-    /// Send the APNs token to the daemon, signed with the device key. A
-    /// failure is logged nowhere user-visible: the daemon keeps the last
-    /// good token, and the next launch re-registers.
-    private static func uploadToken(_ hex: String) async {
-        guard let meta = DeviceKeyStore.loadMeta(),
-              let url = URL(string: meta.host),
-              let (signer, _) = try? DeviceKeyStore.loadOrCreate() else {
-            return
+    /// Send the APNs token to the daemon, signed with the CURRENT identity.
+    /// The shared lifecycle owns cancellation on reset/demo and every
+    /// suspension is followed by a generation/identity check.
+    @discardableResult
+    func startDeviceTokenUpload(_ hex: String) -> Task<Void, Never>? {
+        let lifecycle = identityLifecycle
+        let expected = lifecycle.current()
+        guard expected.mode == .live,
+              expected.hostURL != nil,
+              expected.keyId != nil,
+              expected.signerPublicKeyB64 != nil,
+              let signer = identityProvider(),
+              signer.publicKeyB64 == expected.signerPublicKeyB64,
+              lifecycle.isCurrent(expected) else {
+            return nil
         }
-        let client = DriveClient(host: url)
-        _ = try? await client.registerDeviceToken(hex, keyId: meta.keyId, signer: signer)
+        let session = self.session
+        let beforeUpload = self.beforeDeviceTokenUpload
+        return lifecycle.launch { context in
+            guard context.mode == .live,
+                  let hostURL = context.hostURL,
+                  let keyId = context.keyId,
+                  context.signerPublicKeyB64 == signer.publicKeyB64,
+                  !Task.isCancelled,
+                  lifecycle.isCurrent(context) else { return }
+            await beforeUpload()
+            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            let client = DriveClient(host: hostURL, session: session)
+            // Keep the identity check adjacent to the request. Reset/demo
+            // can invalidate the context while the preflight boundary was
+            // suspended, and no retired token should cross this point.
+            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            _ = try? await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
+            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+        }
     }
 }
 

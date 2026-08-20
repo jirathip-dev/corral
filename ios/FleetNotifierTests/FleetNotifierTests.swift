@@ -996,20 +996,88 @@ private final class HeldBiometrics: @unchecked Sendable {
     }
 }
 
+private final class HeldAsyncBoundary: @unchecked Sendable {
+    let entered = AsyncCount()
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func wait() async {
+        entered.increment()
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        released = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+private final class MetadataRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [DeviceKeyStore.DeviceMeta] = []
+
+    func append(_ meta: DeviceKeyStore.DeviceMeta) {
+        lock.lock()
+        storage.append(meta)
+        lock.unlock()
+    }
+
+    var values: [DeviceKeyStore.DeviceMeta] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 /// Immediate and gated responses share one URLProtocol so the tests exercise
 /// AppModel's real DriveClient path while retaining deterministic barriers.
 private final class DeterministicDriveURLProtocol: URLProtocol {
-    static var script: DeterministicDriveScript?
+    private static let scriptLock = NSLock()
+    private static var scriptStorage: DeterministicDriveScript?
+    private var activeScript: DeterministicDriveScript?
     private var stopWasRecorded = false
+
+    static func setScript(_ script: DeterministicDriveScript) {
+        scriptLock.lock()
+        scriptStorage = script
+        scriptLock.unlock()
+    }
+
+    static func clearScript() {
+        scriptLock.lock()
+        scriptStorage = nil
+        scriptLock.unlock()
+    }
+
+    private static func currentScript() -> DeterministicDriveScript? {
+        scriptLock.lock()
+        defer { scriptLock.unlock() }
+        return scriptStorage
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let script = Self.script, let url = request.url else {
+        guard let script = Self.currentScript(), let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
+        activeScript = script
         script.log.record(request)
         let canRespond = script.gate(for: url.path)?.wait() ?? true
         if canRespond {
@@ -1027,7 +1095,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     override func stopLoading() {
         guard !stopWasRecorded else { return }
         stopWasRecorded = true
-        guard let script = Self.script,
+        guard let script = activeScript,
               let path = request.url?.path,
               let gate = script.gate(for: path) else { return }
         script.log.cancelled.increment()
@@ -1038,7 +1106,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
 @MainActor
 final class TappableDriveSafetyTests: XCTestCase {
     private func session(for script: DeterministicDriveScript) -> URLSession {
-        DeterministicDriveURLProtocol.script = script
+        DeterministicDriveURLProtocol.setScript(script)
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [DeterministicDriveURLProtocol.self]
         return URLSession(configuration: config)
@@ -1088,7 +1156,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         let session = session(for: script)
         defer {
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
 
         model.driveReadTail(agent: stale,
@@ -1105,7 +1173,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         let session = session(for: script)
         defer {
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel()
         let live = blockedAgent()
@@ -1151,7 +1219,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         let session = session(for: script)
         defer {
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let heldBiometrics = HeldBiometrics()
         let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
@@ -1177,6 +1245,152 @@ final class TappableDriveSafetyTests: XCTestCase {
                       "a canceled biometric must not mint /step-up or send /drive")
     }
 
+    private func registrationModel(session: URLSession, lifecycle: IdentityLifecycle,
+                                   defaults: UserDefaults, signer: DeviceSigner,
+                                   recorder: MetadataRecorder) -> AppModel {
+        let model = AppModel(
+            session: session,
+            identityLifecycle: lifecycle,
+            defaults: defaults,
+            identityLoader: { (signer, .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { recorder.append($0) },
+            wipeIdentity: {})
+        model.mode = .live
+        model.keyId = "old-key"
+        model.signer = signer
+        model.grants = ["approve"]
+        model.hostURL = URL(string: "http://old-daemon")!
+        lifecycle.setCurrent(mode: .live, hostURL: model.hostURL,
+                             keyId: model.keyId, signerPublicKeyB64: signer.publicKeyB64)
+        return model
+    }
+
+    func testRegistrationCannotResurrectAfterDemoBoundary() async {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: ["/register": Data(#"{"key_id":"new-key","grants":[],"expiry_ts":42}"#.utf8)],
+            gates: ["/register": gate])
+        let session = session(for: script)
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.registration.demo.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let recorder = MetadataRecorder()
+        let model = registrationModel(session: session, lifecycle: lifecycle,
+                                       defaults: defaults, signer: signer,
+                                       recorder: recorder)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+
+        let registration = Task { await model.register(host: "http://new-daemon", token: "token") }
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+        XCTAssertEqual(script.log.requests.first?.url?.path, "/register")
+
+        let concurrent = Task { await model.register(host: "http://other-daemon", token: "other") }
+        await concurrent.value
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/register" }.count, 1,
+                       "a second registration must not replace the owned in-flight operation")
+
+        model.enterDemo()
+        gate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(completed)
+        await registration.value
+
+        XCTAssertEqual(model.mode, .demo)
+        XCTAssertNotEqual(model.keyId, "new-key")
+        XCTAssertNotEqual(model.hostURL, URL(string: "http://new-daemon"))
+        XCTAssertTrue(recorder.values.isEmpty, "late registration must not persist metadata")
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/events" }.isEmpty,
+                      "late registration must not resurrect the live SSE stream")
+        XCTAssertEqual(model.fleet.agents.count, DemoFleet.seed().count)
+    }
+
+    func testRegistrationCannotResurrectAfterResetBoundary() async {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: ["/register": Data(#"{"key_id":"new-key","grants":[],"expiry_ts":42}"#.utf8)],
+            gates: ["/register": gate])
+        let session = session(for: script)
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.registration.reset.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let recorder = MetadataRecorder()
+        let model = registrationModel(session: session, lifecycle: lifecycle,
+                                       defaults: defaults, signer: signer,
+                                       recorder: recorder)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+
+        let registration = Task { await model.register(host: "http://new-daemon", token: "token") }
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+
+        model.resetDevice()
+        gate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(completed)
+        await registration.value
+
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertNil(model.keyId)
+        XCTAssertNil(model.hostURL)
+        XCTAssertTrue(recorder.values.isEmpty, "late registration must not persist metadata")
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/events" }.isEmpty,
+                      "late registration must not resurrect the live SSE stream")
+    }
+
+    func testResetCancelsHeldAPNsUploadBeforeDeviceTokenRequest() async {
+        let script = DeterministicDriveScript(
+            responses: ["/device-token": Data(#"{"ok":true,"key_id":"old-key","push_registered":true}"#.utf8)])
+        let session = session(for: script)
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.apns.reset.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let recorder = MetadataRecorder()
+        let model = registrationModel(session: session, lifecycle: lifecycle,
+                                       defaults: defaults, signer: signer,
+                                       recorder: recorder)
+        let heldUpload = HeldAsyncBoundary()
+        let delegate = AppDelegate(
+            identityLifecycle: lifecycle,
+            session: session,
+            identityProvider: { signer },
+            beforeDeviceTokenUpload: { await heldUpload.wait() })
+        defer {
+            heldUpload.release()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+
+        let upload = delegate.startDeviceTokenUpload("retired-token")
+        XCTAssertNotNil(upload)
+        let entered = await heldUpload.entered.waitFor(atLeast: 1)
+        XCTAssertTrue(entered)
+
+        model.resetDevice()
+        heldUpload.release()
+        await upload?.value
+
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/device-token" }.isEmpty,
+                      "reset must prevent a retired identity's device-token upload")
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertEqual(lifecycle.current().mode, .needsSetup)
+    }
+
     func testColdStartNotificationTasksCannotApplyOldSnapshotAcrossDemoBoundary() async throws {
         let snapshotGate = DriveRequestGate()
         let oldAgent = blockedAgent("herdr:old-notification")
@@ -1189,7 +1403,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         defer {
             snapshotGate.release()
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel(session: session)
         model.mode = .live
@@ -1241,7 +1455,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         defer {
             snapshotGate.release()
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel(session: session)
         configure(model, agent: oldAgent, grants: ["read_tail"])
@@ -1275,7 +1489,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         defer {
             gate.release()
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel()
         let live = blockedAgent()
@@ -1303,7 +1517,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         defer {
             gate.release()
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel()
         let live = blockedAgent("herdr:notification")
@@ -1333,7 +1547,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         defer {
             gate.release()
             session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.script = nil
+            DeterministicDriveURLProtocol.clearScript()
         }
         let model = AppModel()
         let live = agent("herdr:boundary", capabilities: ["read_tail", "prompt"])

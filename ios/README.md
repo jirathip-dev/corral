@@ -146,6 +146,9 @@ claim replies, and cancellation of multiple live drives at the demo boundary.
 Held-boundary tests also cover concurrent cold-start notification snapshot
 replies and stale-agent refreshes crossing a demo boundary, plus cancellation
 during biometrics before either `/step-up` or `/drive` is sent.
+Registration and APNs identity transitions are lifecycle-owned: reset/demo
+cannot resurrect a late `/register` response, live SSE, metadata write, or
+retired `/device-token` upload, and concurrent registration is refused.
 Runtime execution remains pending an installed iOS runtime.
 The current verification host has the iOS SDK but no installed iOS runtime or
 device platform, so no simulator/device interaction evidence is claimed here;

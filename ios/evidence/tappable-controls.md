@@ -21,6 +21,12 @@ Additional held-boundary tests cover two concurrent cold-start notification
 snapshot replies cancelled before they can apply or approve, a stale-agent
 snapshot refresh cancelled before it can overwrite the demo fleet, and
 cancellation during held biometrics with no `/step-up` or `/drive` request.
+Registration tests hold `/register` across both demo and reset boundaries,
+reject a concurrent registration, and verify that no metadata or `/events`
+stream is resurrected. An injected APNs reset race holds the upload before
+`/device-token` and verifies that cancellation prevents the retired request.
+The deterministic URLProtocol script pointer is lock-protected for every
+set/clear/read operation.
 The live SSE hop also carries its connection generation so a decoded frame
 cannot apply after disconnect/demo. Separate policy tests cover explicit
 lifecycle labels, action availability/grant explanations, Tail 200 payload

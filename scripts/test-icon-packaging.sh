@@ -13,6 +13,8 @@ trap 'rm -rf -- "$TEST_ROOT"' EXIT
 REAL_PATH="$PATH"
 REAL_CP="$(command -v cp)"
 REAL_MV="$(command -v mv)"
+REAL_RM="$(command -v rm)"
+REAL_STAT="$(command -v stat)"
 STUB_DIR="$TEST_ROOT/stubs"
 mkdir -p "$STUB_DIR" "$TEST_ROOT/home"
 
@@ -28,6 +30,8 @@ write_stub mv '#!/usr/bin/env bash\nset -euo pipefail\ncount_file="${CORRAL_TEST
 write_stub sips '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_SIPS:-0}" == "1" ]]; then exit 93; fi\noutput=""\nfor ((index = 1; index <= $#; index++)); do\n  if [[ "${!index}" == "--out" ]]; then\n    next=$((index + 1))\n    output="${!next}"\n  fi\ndone\n[[ -n "$output" ]]\nprintf "stub-sips" > "$output"'
 write_stub iconutil '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_ICONUTIL:-0}" == "1" ]]; then exit 94; fi\nmode=""\noutput=""\nfor ((index = 1; index <= $#; index++)); do\n  if [[ "${!index}" == "-c" ]]; then\n    next=$((index + 1))\n    mode="${!next}"\n  elif [[ "${!index}" == "-o" ]]; then\n    next=$((index + 1))\n    output="${!next}"\n  fi\ndone\n[[ -n "$mode" && -n "$output" ]]\nif [[ "$mode" == "icns" ]]; then\n  printf "stub-icns" > "$output"\nelif [[ "$mode" == "iconset" ]]; then\n  mkdir -p "$output"\n  printf "stub-png" > "$output/icon_16x16.png"\nelse\n  exit 95\nfi'
 write_stub plutil '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_PLUTIL:-0}" == "1" ]]; then exit 96; fi\n[[ "${1:-}" == "-lint" && -s "${2:-}" ]]'
+write_stub rm '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${CORRAL_TEST_FAIL_RM_ROLLBACK:-0}" == "1" ]]; then\n  for argument in "$@"; do\n    if [[ "$argument" == */.corral-ui.rollback.* ]]; then exit 97; fi\n  done\nfi\nexec "$CORRAL_TEST_REAL_RM" "$@"'
+write_stub stat '#!/usr/bin/env bash\nset -euo pipefail\npath=""\nfor argument in "$@"; do path="$argument"; done\nif [[ "${CORRAL_TEST_STAT_MISMATCH:-0}" == "1" && "$path" == "$CORRAL_TEST_STAT_MISMATCH_PATH" ]]; then\n  printf "device-mismatch"\n  exit 0\nfi\nexec "$CORRAL_TEST_REAL_STAT" "$@"'
 
 TEST_PATH="$STUB_DIR:$REAL_PATH"
 UI_BIN="$TEST_ROOT/corrald-ui"
@@ -45,7 +49,10 @@ run_installer() {
     HOME="$TEST_ROOT/home" \
     CORRAL_TEST_REAL_CP="$REAL_CP" \
     CORRAL_TEST_REAL_MV="$REAL_MV" \
+    CORRAL_TEST_REAL_RM="$REAL_RM" \
+    CORRAL_TEST_REAL_STAT="$REAL_STAT" \
     CORRAL_TEST_MV_COUNT="$TEST_ROOT/mv-count" \
+    CORRAL_TEST_STAT_MISMATCH_PATH="${CORRAL_TEST_STAT_MISMATCH_PATH:-}" \
     CORRAL_INSTALL_PLATFORM="$platform" \
     CORRAL_SKIP_CODESIGN=1 \
     CORRAL_MACOS_APP_DEST="$mac_dest" \
@@ -56,7 +63,8 @@ run_installer() {
 
 clear_failures() {
   unset CORRAL_TEST_FAIL_CP CORRAL_TEST_FAIL_SIPS CORRAL_TEST_FAIL_ICONUTIL
-  unset CORRAL_TEST_FAIL_PLUTIL CORRAL_TEST_FAIL_MV_AT
+  unset CORRAL_TEST_FAIL_PLUTIL CORRAL_TEST_FAIL_MV_AT CORRAL_TEST_FAIL_RM_ROLLBACK
+  unset CORRAL_TEST_STAT_MISMATCH CORRAL_TEST_STAT_MISMATCH_PATH
   rm -f -- "$TEST_ROOT/mv-count"
 }
 
@@ -112,8 +120,17 @@ assert_no_false_restore_message() {
 
 assert_rollback_label() {
   local log="$1"
-  grep -Fq 'rollback failed; prior desktop payload is retained in rollback directory:' "$log" \
+  grep -Fq 'payload rollback failed; prior desktop payload is retained in rollback directory:' "$log" \
     || fail "rollback log label is not platform-neutral: $log"
+}
+
+assert_cleanup_label() {
+  local log="$1"
+  grep -Fq 'prior desktop payload restored; rollback directory cleanup failed; inspect rollback directory:' "$log" \
+    || fail "rollback cleanup log label is not truthful: $log"
+  if grep -Fq 'prior desktop payload is retained in rollback directory:' "$log"; then
+    fail "cleanup failure was reported as payload retention: $log"
+  fi
 }
 
 assert_retained_file() {
@@ -201,6 +218,19 @@ assert_no_staging_entries "$MAC_PARENT"
 mac_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-double-mv.log")"
 assert_retained_file "$mac_rollback/previous" Contents/old-marker old-macos-install
 
+seed_macos_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if run_installer Darwin > "$TEST_ROOT/macos-rm.log" 2>&1; then
+  fail "macOS rollback-directory rm injection unexpectedly succeeded"
+fi
+assert_macos_old
+assert_cleanup_label "$TEST_ROOT/macos-rm.log"
+mac_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-rm.log")"
+[[ ! -e "$mac_cleanup_rollback/previous" ]] || fail "macOS cleanup-failure rollback retained restored payload"
+assert_no_staging_entries "$MAC_PARENT"
+
 clear_failures
 run_installer Linux > "$TEST_ROOT/linux-success.log" 2>&1
 assert_executable "$LINUX_PREFIX/bin/corrald-ui"
@@ -253,6 +283,7 @@ for invalid in (
     r'"/tmp/path`tick`"',
     r'"/tmp/path\"quoted\""',
     r'"/tmp/path\\slash"',
+    r'"/tmp/path=reserved"',
 ):
     try:
         module.tokenize_exec(module.decode_general_string(invalid))
@@ -267,18 +298,98 @@ fi
 grep -Fqx 'Icon=corral' "$LINUX_PREFIX/share/applications/corral.desktop"
 assert_no_temporary_entries "$LINUX_PREFIX"
 
-NEWLINE_PARENT="$TEST_ROOT/linux newline"$'\n'"rejected"
-NEWLINE_PREFIX="$NEWLINE_PARENT/.local"
+DEVICE_LINUX_PREFIX="$TEST_ROOT/device-linux/.local"
+mkdir -p \
+  "$DEVICE_LINUX_PREFIX/bin" \
+  "$DEVICE_LINUX_PREFIX/share/applications" \
+  "$DEVICE_LINUX_PREFIX/share/icons/hicolor/256x256/apps"
+printf 'device-linux-binary' > "$DEVICE_LINUX_PREFIX/bin/corrald-ui"
+printf 'device-linux-icon' > "$DEVICE_LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
+printf 'device-linux-desktop' > "$DEVICE_LINUX_PREFIX/share/applications/corral.desktop"
+device_linux_canonical="$(cd -P -- "$DEVICE_LINUX_PREFIX" && pwd -P)"
 clear_failures
-export CORRAL_TEST_LINUX_PREFIX="$NEWLINE_PREFIX"
-if run_installer Linux > "$TEST_ROOT/linux-newline.log" 2>&1; then
-  fail "Linux newline path unexpectedly succeeded"
+export CORRAL_TEST_LINUX_PREFIX="$DEVICE_LINUX_PREFIX"
+export CORRAL_TEST_STAT_MISMATCH=1
+export CORRAL_TEST_STAT_MISMATCH_PATH="$device_linux_canonical/share/applications"
+if run_installer Linux > "$TEST_ROOT/linux-device-mismatch.log" 2>&1; then
+  fail "Linux device mismatch unexpectedly succeeded"
+fi
+unset CORRAL_TEST_LINUX_PREFIX CORRAL_TEST_STAT_MISMATCH CORRAL_TEST_STAT_MISMATCH_PATH
+grep -Fq 'across filesystems' "$TEST_ROOT/linux-device-mismatch.log"
+[[ "$(<"$DEVICE_LINUX_PREFIX/bin/corrald-ui")" == "device-linux-binary" ]] || fail "Linux device mismatch changed the old binary"
+[[ "$(<"$DEVICE_LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png")" == "device-linux-icon" ]] || fail "Linux device mismatch changed the old icon"
+assert_no_temporary_entries "$DEVICE_LINUX_PREFIX"
+
+DEVICE_OTHER_PREFIX="$TEST_ROOT/device-other/.local"
+mkdir -p "$DEVICE_OTHER_PREFIX/bin"
+printf 'device-other-binary' > "$DEVICE_OTHER_PREFIX/bin/corrald-ui"
+device_other_canonical="$(cd -P -- "$DEVICE_OTHER_PREFIX" && pwd -P)"
+clear_failures
+export CORRAL_TEST_OTHER_PREFIX="$DEVICE_OTHER_PREFIX"
+export CORRAL_TEST_STAT_MISMATCH=1
+export CORRAL_TEST_STAT_MISMATCH_PATH="$device_other_canonical/bin"
+if run_installer Other > "$TEST_ROOT/other-device-mismatch.log" 2>&1; then
+  fail "Other device mismatch unexpectedly succeeded"
+fi
+unset CORRAL_TEST_OTHER_PREFIX CORRAL_TEST_STAT_MISMATCH CORRAL_TEST_STAT_MISMATCH_PATH
+grep -Fq 'across filesystems' "$TEST_ROOT/other-device-mismatch.log"
+[[ "$(<"$DEVICE_OTHER_PREFIX/bin/corrald-ui")" == "device-other-binary" ]] || fail "Other device mismatch changed the old binary"
+assert_no_temporary_entries "$DEVICE_OTHER_PREFIX"
+
+assert_rejected_control_prefix() {
+  local platform="$1"
+  local position="$2"
+  local control_name="$3"
+  local control_char="$4"
+  local safe_prefix="$TEST_ROOT/control-$platform-$control_name-$position"
+  local parent="$(dirname "$safe_prefix")"
+  local base="$(basename "$safe_prefix")"
+  local malformed
+  case "$position" in
+    beginning) malformed="$parent/$control_char$base" ;;
+    middle) malformed="$parent/${base:0:7}$control_char${base:7}" ;;
+    end) malformed="$safe_prefix$control_char" ;;
+    *) fail "unknown control position: $position" ;;
+  esac
+  clear_failures
+  case "$platform" in
+    Linux) export CORRAL_TEST_LINUX_PREFIX="$malformed" ;;
+    Other) export CORRAL_TEST_OTHER_PREFIX="$malformed" ;;
+    *) fail "unknown control platform: $platform" ;;
+  esac
+  local log="$TEST_ROOT/control-$platform-$control_name-$position.log"
+  if run_installer "$platform" > "$log" 2>&1; then
+    fail "$platform $control_name $position destination unexpectedly succeeded"
+  fi
+  unset CORRAL_TEST_LINUX_PREFIX CORRAL_TEST_OTHER_PREFIX
+  grep -Fq 'newline or carriage return' "$log"
+  [[ ! -e "$safe_prefix" ]] || fail "control path retargeted a safe prefix: $safe_prefix"
+  [[ ! -e "$malformed" ]] || fail "control path created a malformed destination"
+  assert_no_staging_entries "$parent"
+}
+
+for control_name in newline carriage-return; do
+  if [[ "$control_name" == "newline" ]]; then
+    control_char=$'\n'
+  else
+    control_char=$'\r'
+  fi
+  for position in beginning middle end; do
+    assert_rejected_control_prefix Linux "$position" "$control_name" "$control_char"
+    assert_rejected_control_prefix Other "$position" "$control_name" "$control_char"
+  done
+done
+
+EQUAL_PREFIX="$TEST_ROOT/linux=reserved"
+clear_failures
+export CORRAL_TEST_LINUX_PREFIX="$EQUAL_PREFIX"
+if run_installer Linux > "$TEST_ROOT/linux-equal.log" 2>&1; then
+  fail "Linux equals-sign path unexpectedly succeeded"
 fi
 unset CORRAL_TEST_LINUX_PREFIX
-grep -Fq 'Linux executable path contains a desktop-entry newline' "$TEST_ROOT/linux-newline.log"
-[[ ! -e "$NEWLINE_PREFIX/bin/corrald-ui" ]] || fail "newline path installed a Linux executable"
-[[ ! -e "$NEWLINE_PARENT" ]] || fail "newline path created destination directories before validation"
-assert_no_staging_entries "$NEWLINE_PARENT"
+grep -Fq "Linux executable path contains Desktop Entry '='" "$TEST_ROOT/linux-equal.log"
+[[ ! -e "$EQUAL_PREFIX" ]] || fail "equals-sign path created a destination"
+assert_no_staging_entries "$TEST_ROOT"
 
 seed_linux_old() {
   rm -rf -- "$LINUX_PREFIX"
@@ -329,6 +440,19 @@ assert_file_or_rollback "$LINUX_PREFIX" "$linux_rollback" bin/corrald-ui old-lin
 assert_file_or_rollback "$LINUX_PREFIX" "$linux_rollback" share/icons/hicolor/256x256/apps/corral.png old-linux-icon
 assert_file_or_rollback "$LINUX_PREFIX" "$linux_rollback" share/applications/corral.desktop old-linux-desktop
 
+seed_linux_old
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=5
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if run_installer Linux > "$TEST_ROOT/linux-rm.log" 2>&1; then
+  fail "Linux rollback-directory rm injection unexpectedly succeeded"
+fi
+assert_linux_old
+assert_cleanup_label "$TEST_ROOT/linux-rm.log"
+linux_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/linux-rm.log")"
+[[ ! -e "$linux_cleanup_rollback/bin/corrald-ui" ]] || fail "Linux cleanup-failure rollback retained restored payload"
+assert_no_staging_entries "$LINUX_PREFIX"
+
 mkdir -p "$OTHER_PARENT"
 clear_failures
 run_installer Other > "$TEST_ROOT/other-success.log" 2>&1
@@ -348,6 +472,22 @@ assert_rollback_label "$TEST_ROOT/other-double-mv.log"
 assert_no_staging_entries "$OTHER_PREFIX"
 other_rollback="$(rollback_path_from_log "$TEST_ROOT/other-double-mv.log")"
 assert_retained_file "$other_rollback" bin/corrald-ui old-other-binary
+
+rm -rf -- "$OTHER_PREFIX"
+mkdir -p "$OTHER_PREFIX/bin"
+printf 'old-other-binary' > "$OTHER_PREFIX/bin/corrald-ui"
+clear_failures
+export CORRAL_TEST_FAIL_MV_AT=2
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if run_installer Other > "$TEST_ROOT/other-rm.log" 2>&1; then
+  fail "Other rollback-directory rm injection unexpectedly succeeded"
+fi
+[[ -f "$OTHER_PREFIX/bin/corrald-ui" ]] || fail "Other cleanup failure removed the old payload"
+[[ "$(<"$OTHER_PREFIX/bin/corrald-ui")" == "old-other-binary" ]] || fail "Other cleanup failure changed the old payload"
+assert_cleanup_label "$TEST_ROOT/other-rm.log"
+other_cleanup_rollback="$(rollback_path_from_log "$TEST_ROOT/other-rm.log")"
+[[ ! -e "$other_cleanup_rollback/bin/corrald-ui" ]] || fail "Other cleanup-failure rollback retained restored payload"
+assert_no_staging_entries "$OTHER_PREFIX"
 
 TRAVERSAL_PREFIX="/tmp/x/../.."
 clear_failures
@@ -405,4 +545,4 @@ unset CORRAL_TEST_OTHER_PREFIX
 assert_executable "$SAFE_REAL_PREFIX/bin/corrald-ui"
 assert_no_temporary_entries "$SAFE_REAL_PREFIX"
 
-echo "icon packaging transactional tests: ok (macOS/Linux/Other staging, rollback, Exec escaping, path safety)"
+echo "icon packaging transactional tests: ok (staging, rollback, Exec/path/device safety, cleanup diagnostics)"

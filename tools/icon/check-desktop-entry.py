@@ -22,7 +22,7 @@ GENERAL_ESCAPES = {
 }
 DEFERRED_COMMAND_ESCAPES = {'"': '"', "$": "$", "`": "`"}
 COMMAND_ESCAPES = {'"': '"', "$": "$", "`": "`", "\\": "\\"}
-RESERVED_UNQUOTED = set(" \t\n\r\"'\\><~|&;$*?#()`")
+RESERVED_UNQUOTED = set(" \t\n\r\"'\\><~|&;$*?#()=`")
 
 
 def fail(message: str) -> None:
@@ -95,6 +95,8 @@ def tokenize_exec(value: str) -> list[str]:
                     continue
                 if character in "$`":
                     fail("Exec reserved command character is not escaped")
+                if character == "=":
+                    fail("Exec executable path contains Desktop Entry '='")
                 if character == "%":
                     index = decode_field_code(value, index, token)
                     continue

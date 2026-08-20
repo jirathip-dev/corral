@@ -111,13 +111,22 @@ the only recoverable old payload; it never targets `/Applications` or a user
 config directory. Linux `Exec` values are encoded in the two required passes:
 command quoting is followed by desktop-entry general-string escaping, so the
 on-disk forms use doubled backslashes for quotes, `$`, and backticks, four for
-a literal backslash, and `%%` for a literal percent. Newline-containing
-executable paths are rejected before destination directories are created.
+a literal backslash, and `%%` for a literal percent. Newline- or
+carriage-return-containing requested prefixes, and executable paths containing
+`=`, are rejected before destination directories are created.
 Install prefixes and the macOS app parent are physically canonicalized before
 guards; root-resolving paths, `..` traversal, and symlinked `bin`/`share`
 payload parents are refused. A symlinked prefix is accepted only by resolving
 it to its safe canonical target, and every stage is created beside that
-resolved target so final renames stay on one filesystem.
+resolved target so final renames stay on one filesystem. Linux and Other
+preflight the device of every target parent against the staging prefix before
+creating payload directories and recheck before commit; a device mismatch is
+an error rather than a cross-filesystem fallback. Rollback diagnostics
+distinguish a payload-restore failure, which retains the old payload, from a
+cleanup-only failure, which reports that the payload was restored and names
+the rollback-directory inspection path. The multi-file Linux commit remains
+rollback-based; the installer does not claim one atomic operation for the
+whole payload.
 
 `scripts/setup-corrald.sh` delegates desktop installation to
 `scripts/install-corral-ui.sh`. The installer builds and validates the entire

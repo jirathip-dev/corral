@@ -44,8 +44,8 @@ destination. Linux stages the binary, the 256px
 `assets/icon/corral-icon-256.png`, and the
 `~/.local/share/applications/corral.desktop` entry together. Only a validated
 staged payload is committed; the desktop entry quotes and escapes executable
-paths containing spaces, `%`, quotes, or backslashes according to desktop-entry
-syntax. A failed copy, converter, plist check, or final rename leaves the
+paths containing spaces, `%`, quotes, `$`, backticks, or backslashes according
+to desktop-entry syntax. A failed copy, converter, plist check, or final rename leaves the
 existing installation in place and rolls back any partial commit. If rollback
 restoration itself fails, the installer keeps and reports the exact rollback
 directory so the old payload remains recoverable. A missing icon or failed
@@ -53,12 +53,21 @@ macOS icon conversion is an installation error rather than a silent fallback.
 The Linux `Exec` value uses command quoting followed by desktop-entry
 general-string escaping: quotes, `$`, and backticks receive doubled on-disk
 backslashes, a literal backslash receives four, and `%` is written as `%%`.
-Newline-containing executable paths fail before destination directories are
-created. Install prefixes and the macOS app parent are physically
+Newline- or carriage-return-containing requested prefixes and executable paths
+containing `=` fail before destination directories are created. Install
+prefixes and the macOS app parent are physically
 canonicalized before safety checks; root/`..` paths and symlinked `bin` or
 `share` payload parents are rejected, while a safe symlinked prefix is
 resolved to its canonical target. Staging and final renames stay beside the
-resolved destination on one filesystem.
+resolved destination on one filesystem. Linux and Other explicitly compare
+the device of every target parent with the staging prefix before mutation and
+again before commit; device mismatches fail rather than pretending a
+cross-filesystem rename is atomic. If payload restoration fails, the old
+payload is retained in the reported rollback directory; if only rollback
+directory cleanup fails, the payload-restored diagnostic names the
+rollback-directory inspection path without claiming it contains the old
+payload. The multi-file Linux commit is rollback-based rather than one
+single atomic operation.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

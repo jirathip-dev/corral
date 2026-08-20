@@ -126,8 +126,12 @@ distinguish a payload-restore failure, which retains the old payload, from a
 cleanup-only failure, which reports that the payload was restored and names
 the rollback-directory inspection path. If cleanup fails after a fresh
 install, the diagnostic instead identifies an empty rollback directory for
-inspection rather than claiming a rollback copy exists. The multi-file Linux
-commit remains rollback-based; the installer does not claim one atomic
+inspection rather than claiming a rollback copy exists. After a replacement,
+cleanup diagnostics inspect the expected rollback paths after the failed
+removal: macOS reports a remaining previous path only when it exists, while
+Linux and Other distinguish all, some, or none of the expected backup paths.
+They never infer recoverability from pre-cleanup backup state. The multi-file
+Linux commit remains rollback-based; the installer does not claim one atomic
 operation for the whole payload.
 
 `scripts/setup-corrald.sh` delegates desktop installation to

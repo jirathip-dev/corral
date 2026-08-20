@@ -252,6 +252,30 @@ assert_safe_target() {
   assert_no_symlink_components "$path" "$label"
 }
 
+rollback_path_exists() {
+  [[ -e "$1" || -L "$1" ]]
+}
+
+rollback_directory_has_entries() {
+  local rollback_dir="$1"
+  local candidate
+  for candidate in "$rollback_dir"/* "$rollback_dir"/.[!.]* "$rollback_dir"/..?*; do
+    if rollback_path_exists "$candidate"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+report_rollback_cleanup_inspection() {
+  local rollback_dir="$1"
+  if rollback_directory_has_entries "$rollback_dir"; then
+    echo "!! installed desktop payload; rollback directory was partially cleaned; inspect rollback directory: $rollback_dir" >&2
+  else
+    echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+  fi
+}
+
 rollback_directory() {
   local destination="$1"
   local rollback_dir="$2"
@@ -324,10 +348,10 @@ commit_directory() {
   fi
 
   if ! rm -rf "$rollback_dir"; then
-    if [[ "$had_destination" == "1" ]]; then
-      echo "!! installed desktop payload; rollback copy retained at $rollback_dir" >&2
+    if rollback_path_exists "$rollback_dir/previous"; then
+      echo "!! installed desktop payload; prior rollback payload path remains at $rollback_dir/previous; inspect rollback directory: $rollback_dir" >&2
     else
-      echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+      report_rollback_cleanup_inspection "$rollback_dir"
     fi
   fi
 }
@@ -460,10 +484,21 @@ commit_files() {
   done
 
   if ! rm -rf "$rollback_dir"; then
-    if [[ "${#backed_up[@]}" -gt 0 ]]; then
-      echo "!! installed desktop payload; rollback copies retained at $rollback_dir" >&2
+    local retained_backups=0
+    local expected_backups="${#backed_up[@]}"
+    if [[ "$expected_backups" -gt 0 ]]; then
+      for relative in "${backed_up[@]}"; do
+        if rollback_path_exists "$rollback_dir/$relative"; then
+          retained_backups=$((retained_backups + 1))
+        fi
+      done
+    fi
+    if [[ "$retained_backups" == "$expected_backups" && "$retained_backups" -gt 0 ]]; then
+      echo "!! installed desktop payload; prior rollback payload paths remain; inspect rollback directory: $rollback_dir" >&2
+    elif [[ "$retained_backups" -gt 0 ]]; then
+      echo "!! installed desktop payload; some prior rollback payload paths remain; inspect rollback directory: $rollback_dir" >&2
     else
-      echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+      report_rollback_cleanup_inspection "$rollback_dir"
     fi
   fi
 }

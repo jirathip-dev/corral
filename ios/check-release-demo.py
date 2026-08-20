@@ -227,6 +227,45 @@ def _string_escape_width(
     return len(prefix) + 1
 
 
+def _unicode_scalar_escape(
+    text: str, index: int, string_hashes: int
+) -> tuple[int, str] | None:
+    """Decode one valid Swift Unicode scalar escape in a string literal."""
+
+    prefix = "\\" + ("#" * string_hashes)
+    unicode_prefix = f"{prefix}u"
+    if not text.startswith(unicode_prefix, index):
+        return None
+    braced_prefix = f"{unicode_prefix}{{"
+    if not text.startswith(braced_prefix, index):
+        raise CheckFailure("unsupported Swift Unicode escape form")
+    end = text.find("}", index + len(braced_prefix))
+    if end < 0:
+        raise CheckFailure("unterminated Swift Unicode scalar escape")
+    digits = text[index + len(braced_prefix) : end]
+    if not re.fullmatch(r"[0-9A-Fa-f]{1,8}", digits):
+        raise CheckFailure("malformed Swift Unicode scalar escape")
+    scalar = int(digits, 16)
+    if scalar > 0x10FFFF or 0xD800 <= scalar <= 0xDFFF:
+        raise CheckFailure("invalid Swift Unicode scalar escape")
+    decoded = chr(scalar)
+    if decoded in "\r\n":
+        raise CheckFailure(
+            "Unicode scalar escape changing source line layout is unsupported"
+        )
+    return end - index + 1, decoded
+
+
+def _string_opening_at(text: str, index: int) -> tuple[int, bool] | None:
+    hash_index = index
+    while hash_index < len(text) and text[hash_index] == "#":
+        hash_index += 1
+    if hash_index >= len(text) or text[hash_index] != '"':
+        return None
+    hashes = hash_index - index
+    return hashes, text.startswith('"""', hash_index)
+
+
 def _lex_source(text: str) -> tuple[str, str]:
     """Return syntax- and string-aware views with comments masked.
 
@@ -239,131 +278,135 @@ def _lex_source(text: str) -> tuple[str, str]:
 
     code: list[str] = []
     strings: list[str] = []
-    state = "normal"
-    block_depth = 0
-    string_closer: str | None = None
-    string_hashes = 0
-    index = 0
 
-    while index < len(text):
-        character = text[index]
-        if state == "normal":
-            if text.startswith("//", index):
-                code.extend((" ", " "))
-                strings.extend((" ", " "))
-                index += 2
-                state = "line-comment"
-                continue
-            if text.startswith("/*", index):
-                code.extend((" ", " "))
-                strings.extend((" ", " "))
-                index += 2
-                block_depth = 1
-                state = "block-comment"
-                continue
+    def append_masked(source: str) -> None:
+        code.extend(_blank(item) for item in source)
+        strings.extend(_blank(item) for item in source)
 
-            hash_index = index
-            while hash_index < len(text) and text[hash_index] == "#":
-                hash_index += 1
-            if (
-                hash_index < len(text)
-                and text[hash_index] == '"'
-                and hash_index > index
-            ):
-                hashes = text[index:hash_index]
-                if text.startswith('"""', hash_index):
-                    opening = f'{hashes}"""'
-                    string_closer = f'"""{hashes}'
-                else:
-                    opening = f'{hashes}"'
-                    string_closer = f'"{hashes}'
-                code.extend(_blank(item) for item in opening)
-                strings.extend(opening)
-                index += len(opening)
-                string_hashes = len(hashes)
-                state = "string"
-                continue
-            if text.startswith('"""', index):
-                code.extend((" ", " ", " "))
-                strings.extend('"""')
-                index += 3
-                string_closer = '"""'
-                string_hashes = 0
-                state = "string"
-                continue
-            if character == '"':
-                code.append(" ")
-                strings.append(character)
-                index += 1
-                string_closer = '"'
-                string_hashes = 0
-                state = "string"
-                continue
+    def append_code(source: str) -> None:
+        code.extend(source)
+        strings.extend(source)
 
-            code.append(character)
-            strings.append(character)
-            index += 1
-            continue
-
-        if state == "line-comment":
-            code.append(_blank(character))
-            strings.append(_blank(character))
+    def scan_line_comment(index: int) -> int:
+        while index < len(text):
+            character = text[index]
+            append_masked(character)
             index += 1
             if character in "\r\n":
-                state = "normal"
-            continue
+                return index
+        return index
 
-        if state == "block-comment":
+    def scan_block_comment(index: int) -> int:
+        depth = 1
+        while index < len(text):
             if text.startswith("/*", index):
-                code.extend((" ", " "))
-                strings.extend((" ", " "))
+                append_masked("/*")
                 index += 2
-                block_depth += 1
+                depth += 1
                 continue
             if text.startswith("*/", index):
-                code.extend((" ", " "))
-                strings.extend((" ", " "))
+                append_masked("*/")
                 index += 2
-                block_depth -= 1
-                if block_depth == 0:
-                    state = "normal"
+                depth -= 1
+                if depth == 0:
+                    return index
                 continue
-            code.append(_blank(character))
-            strings.append(_blank(character))
+            append_masked(text[index])
             index += 1
-            continue
+        raise CheckFailure("unterminated Swift block comment")
 
-        if state == "string":
-            assert string_closer is not None
-            escape_width = _string_escape_width(
-                text, index, string_hashes, string_closer
-            )
+    def scan_interpolation(index: int) -> int:
+        depth = 1
+        while index < len(text):
+            if text.startswith("//", index):
+                append_masked("//")
+                index = scan_line_comment(index + 2)
+                continue
+            if text.startswith("/*", index):
+                append_masked("/*")
+                index = scan_block_comment(index + 2)
+                continue
+            opening = _string_opening_at(text, index)
+            if opening is not None:
+                hashes, multiline = opening
+                index = scan_string(index, hashes, multiline)
+                continue
+            character = text[index]
+            if character == "(":
+                append_masked(character)
+                depth += 1
+                index += 1
+                continue
+            if character == ")":
+                append_masked(character)
+                depth -= 1
+                index += 1
+                if depth == 0:
+                    return index
+                continue
+            append_masked(character)
+            index += 1
+        raise CheckFailure("unterminated Swift string interpolation")
+
+    def scan_string(index: int, hashes: int, multiline: bool) -> int:
+        quote = '"""' if multiline else '"'
+        opening = ("#" * hashes) + quote
+        closing = quote + ("#" * hashes)
+        append_masked(opening)
+        index += len(opening)
+        interpolation_prefix = "\\" + ("#" * hashes)
+
+        while index < len(text):
+            scalar_escape = _unicode_scalar_escape(text, index, hashes)
+            if scalar_escape is not None:
+                width, decoded = scalar_escape
+                code.extend(_blank(item) for item in text[index : index + width])
+                strings.append(decoded)
+                index += width
+                continue
+
+            interpolation_opening = interpolation_prefix + "("
+            if text.startswith(interpolation_opening, index):
+                append_masked(interpolation_opening)
+                index = scan_interpolation(index + len(interpolation_opening))
+                continue
+
+            escape_width = _string_escape_width(text, index, hashes, closing)
             if escape_width:
                 escaped_text = text[index : index + escape_width]
-                code.extend(_blank(item) for item in escaped_text)
+                append_masked(escaped_text)
                 strings.extend(escaped_text)
                 index += escape_width
                 continue
-            if text.startswith(string_closer, index):
-                closing = string_closer
-                code.extend(_blank(item) for item in closing)
-                strings.extend(closing)
-                index += len(closing)
-                string_closer = None
-                string_hashes = 0
-                state = "normal"
-                continue
-            code.append(_blank(character))
-            strings.append(character)
+
+            if text.startswith(closing, index):
+                append_masked(closing)
+                return index + len(closing)
+            append_masked(text[index])
+            strings[-1] = text[index]
             index += 1
-            continue
-
-        raise AssertionError(f"unknown lexer state {state!r}")
-
-    if state == "block-comment":
-        raise CheckFailure("unterminated Swift block comment")
-    if state == "string":
         raise CheckFailure("unterminated Swift string literal")
+
+    def scan_code(index: int) -> int:
+        while index < len(text):
+            if text.startswith("//", index):
+                append_masked("//")
+                index = scan_line_comment(index + 2)
+                continue
+            if text.startswith("/*", index):
+                append_masked("/*")
+                index = scan_block_comment(index + 2)
+                continue
+            opening = _string_opening_at(text, index)
+            if opening is not None:
+                hashes, multiline = opening
+                index = scan_string(index, hashes, multiline)
+                continue
+            append_code(text[index])
+            index += 1
+        return index
+
+    scan_code(0)
     return "".join(code), "".join(strings)
 
 
@@ -888,6 +931,55 @@ suffix
             "escaped raw multiline delimiter spoof",
         )
 
+        interpolation_debug = root / "interpolation-debug.swift"
+        interpolation_debug.write_text(
+            r"""#if DEBUG
+let fake = "\("func enterDemo()")"
+let rawFake = "\(#"func enterDemo()"#)"
+let rawPoundFake = "\(##"func enterDemo()"##)"
+#endif
+""",
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(interpolation_debug, debug=True)
+        _check_source(interpolation_debug, (r"enterDemo",))
+        _expect_failure(
+            lambda: _check_required_source(interpolation_debug, ("func enterDemo",)),
+            "nested interpolation string Debug spoof",
+        )
+
+        interpolation_release = root / "interpolation-release.swift"
+        interpolation_release.write_text(
+            r"""#if !DEBUG
+let fake = "\("model.startLive()")"
+let rawFake = "\(#"model.startLive()"#)"
+let rawPoundFake = "\(##"model.startLive()"##)"
+#endif
+""",
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(interpolation_release, debug=False)
+        _expect_failure(
+            lambda: _check_release_source(
+                interpolation_release, ("model.startLive()",)
+            ),
+            "nested interpolation string Release spoof",
+        )
+
+        positive_debug = root / "positive-debug.swift"
+        positive_debug.write_text(
+            "#if DEBUG\nfunc enterDemo() {}\n#endif\n", encoding="utf-8"
+        )
+        _typecheck_swift_fixture(positive_debug, debug=True)
+        _check_required_source(positive_debug, ("#if DEBUG", "func enterDemo"))
+
+        positive_release = root / "positive-release.swift"
+        positive_release.write_text(
+            "#if !DEBUG\nfunc startLive() {}\n#endif\n", encoding="utf-8"
+        )
+        _typecheck_swift_fixture(positive_release, debug=False)
+        _check_release_source(positive_release, ("func startLive()",))
+
         string_release = root / "string-release.swift"
         string_release.write_text(
             "#if !DEBUG\n"
@@ -953,6 +1045,52 @@ suffix
         _expect_failure(
             lambda: _check_source(unguarded_literal, (r"\(demo\)",)),
             "unguarded user-facing demo literal",
+        )
+
+        unicode_fixtures = (
+            (
+                "unicode-ordinary.swift",
+                r"""let banner = "\u{28}\u{64}emo)"
+""",
+            ),
+            (
+                "unicode-raw.swift",
+                r"""let banner = #"\#u{28}\#u{64}emo)"#
+""",
+            ),
+            (
+                "unicode-multiline.swift",
+                r'''let banner = """
+\u{28}\u{64}emo)
+"""
+''',
+            ),
+            (
+                "unicode-raw-multiline.swift",
+                r'''let banner = #"""
+\#u{28}\#u{64}emo)
+"""#
+''',
+            ),
+        )
+        for name, source in unicode_fixtures:
+            fixture = root / name
+            fixture.write_text(source, encoding="utf-8")
+            _typecheck_swift_fixture(fixture, debug=False)
+            _expect_failure(
+                lambda fixture=fixture: _check_source(fixture, (r"\(demo\)",)),
+                f"Unicode-escaped user-facing literal in {name}",
+            )
+
+        malformed_unicode = root / "malformed-unicode.swift"
+        malformed_unicode.write_text(
+            r"""let banner = "\u{not-a-scalar}"
+""",
+            encoding="utf-8",
+        )
+        _expect_failure(
+            lambda: _source_analysis(malformed_unicode.read_text(encoding="utf-8")),
+            "malformed Unicode scalar escape",
         )
 
         inactive_guard = root / "inactive-guard.swift"

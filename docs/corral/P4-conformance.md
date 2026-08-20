@@ -61,7 +61,9 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   pane/target generation is classified stale for that request but cannot
   retire the newer mapping or its row. Mapping generations are allocated from
   a monotonic adapter-lifetime counter while only live mappings retain map
-  entries; tombstones are bounded by TTL and capacity.
+  entries; event-derived read/modify/write upserts use the same generation
+  predicate at Store commit, so an in-flight event cannot resurrect a retired
+  row. Tombstones are bounded by TTL and capacity.
 - Step-up: destructive payloads require `X-Step-Up-Token` header (minted via
   `/step-up`); failures are never audited.
 

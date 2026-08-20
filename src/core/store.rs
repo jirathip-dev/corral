@@ -105,7 +105,23 @@ impl Store {
     /// is recorded into the history ring while the lock is held, so ring
     /// order matches apply order exactly.
     pub async fn apply(&self, change: Change) {
+        self.apply_if(change, || true).await;
+    }
+
+    /// Apply an upsert only if the synchronous predicate agrees while the
+    /// Store lock is held. This is the write-side counterpart to
+    /// [`Store::remove_if`]: an adapter can validate its in-memory mapping at
+    /// the same commit point as the row mutation, closing a read/modify/write
+    /// gap without awaiting while either lock is held.
+    pub async fn upsert_if(&self, agent: Agent, should_apply: impl FnOnce() -> bool) -> bool {
+        self.apply_if(Change::upsert(agent), should_apply).await
+    }
+
+    async fn apply_if(&self, change: Change, should_apply: impl FnOnce() -> bool) -> bool {
         let mut inner = self.inner.lock().await;
+        if !should_apply() {
+            return false;
+        }
         let mut event: Option<HistoryEvent> = None;
         match change {
             Change::Upsert(agent) => {
@@ -147,6 +163,7 @@ impl Store {
         if let Some(event) = event {
             self.history.push(event);
         }
+        true
     }
 
     /// Atomically read-compare-apply a transformation to every record

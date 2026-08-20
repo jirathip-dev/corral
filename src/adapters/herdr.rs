@@ -64,7 +64,7 @@ use tracing::{info, warn};
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::core::model::{
-    Agent, AgentState, Attachment, CAPABILITIES, Change, WaitingOn, WaitingOnKind, Workspace,
+    Agent, AgentState, Attachment, CAPABILITIES, WaitingOn, WaitingOnKind, Workspace,
 };
 use crate::core::redact::redact;
 use crate::core::store::Store;
@@ -653,6 +653,19 @@ impl SessionState {
         self.agent_generations.remove(agent_id);
     }
 
+    fn mapping_generation(&self, agent_id: &str, pane_id: &str) -> Option<u64> {
+        if self.agent_panes.get(agent_id).map(String::as_str) != Some(pane_id)
+            || self.pane_agents.get(pane_id).map(String::as_str) != Some(agent_id)
+        {
+            return None;
+        }
+        self.agent_generations.get(agent_id).copied()
+    }
+
+    fn mapping_matches(&self, agent_id: &str, pane_id: &str, generation: u64) -> bool {
+        self.mapping_generation(agent_id, pane_id) == Some(generation)
+    }
+
     fn is_stale_agent(&mut self, agent_id: &str) -> bool {
         self.prune_tombstones();
         self.stale_agents.contains_key(agent_id)
@@ -787,6 +800,8 @@ pub struct HerdrAdapter {
     store: Arc<Mutex<Option<Store>>>,
     #[cfg(test)]
     store_remove_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    #[cfg(test)]
+    event_store_read_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl std::fmt::Debug for HerdrAdapter {
@@ -805,6 +820,8 @@ impl HerdrAdapter {
             store: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             store_remove_pause: Mutex::new(None),
+            #[cfg(test)]
+            event_store_read_pause: Mutex::new(None),
         }
     }
 
@@ -819,6 +836,15 @@ impl HerdrAdapter {
         release: oneshot::Receiver<()>,
     ) {
         *self.store_remove_pause.lock().unwrap() = Some((reached, release));
+    }
+
+    #[cfg(test)]
+    fn pause_after_event_store_read(
+        &self,
+        reached: oneshot::Sender<()>,
+        release: oneshot::Receiver<()>,
+    ) {
+        *self.event_store_read_pause.lock().unwrap() = Some((reached, release));
     }
 
     async fn run_forever(&self, store: Store) {
@@ -986,7 +1012,7 @@ impl HerdrAdapter {
         removals.extend(migrations);
         for agent_id in removals {
             info!(agent_id, "agent removed: pane absent from fresh agent.list");
-            store.apply(Change::Remove(agent_id)).await;
+            self.remove_if_unmapped(store, &agent_id).await;
         }
         for agent in &list.agents {
             self.apply_agent_info(agent, store).await;
@@ -1075,7 +1101,7 @@ impl HerdrAdapter {
             .agent_session
             .as_ref()
             .and_then(|s| s.value.as_deref());
-        let (agent_id, migrated, canonical) = {
+        let (agent_id, generation, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&agent.pane_id, session_value);
             let migrated =
@@ -1095,13 +1121,19 @@ impl HerdrAdapter {
                 &agent.state_labels,
                 agent.name.clone(),
             );
-            (agent_id, migrated, canonical)
+            let generation = state
+                .agent_generations
+                .get(&agent_id)
+                .copied()
+                .expect("registered Herdr mapping has a generation");
+            (agent_id, generation, migrated, canonical)
         };
         if let Some(old) = migrated {
-            store.apply(Change::Remove(old)).await;
+            self.remove_if_unmapped(store, &old).await;
         }
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
-        store.apply(Change::upsert(canonical)).await;
+        self.upsert_if_current(store, canonical, &agent.pane_id, generation)
+            .await;
         info!(
             agent_id = %agent_id,
             tool = %agent.agent.as_deref().unwrap_or("unknown"),
@@ -1240,16 +1272,78 @@ impl HerdrAdapter {
         }
     }
 
-    /// Mutate an existing record in the store, bump its seq, re-apply.
-    async fn update_record(&self, store: &Store, agent_id: &str, f: impl FnOnce(&mut Agent)) {
+    async fn upsert_if_current(
+        &self,
+        store: &Store,
+        agent: Agent,
+        pane_id: &str,
+        generation: u64,
+    ) -> bool {
+        let agent_id = agent.agent_id.clone();
+        let pane_id = pane_id.to_string();
+        // Store -> SessionState is the same lock order used by stale cleanup.
+        // Every adapter path releases SessionState before awaiting this write,
+        // and the predicate never awaits while either lock is held.
+        store
+            .upsert_if(agent, || {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .mapping_matches(&agent_id, &pane_id, generation)
+            })
+            .await
+    }
+
+    async fn remove_if_unmapped(&self, store: &Store, agent_id: &str) {
+        let agent_id = agent_id.to_string();
+        store
+            .remove_if(&agent_id, || {
+                !self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .agent_panes
+                    .contains_key(&agent_id)
+            })
+            .await;
+    }
+
+    /// Mutate an existing record in the store, bump its seq, and re-apply it
+    /// only if the pane mapping generation remains current across the whole
+    /// read/modify/write window.
+    async fn update_record(
+        &self,
+        store: &Store,
+        agent_id: &str,
+        pane_id: &str,
+        f: impl FnOnce(&mut Agent),
+    ) {
+        let Some(generation) = self
+            .state
+            .lock()
+            .unwrap()
+            .mapping_generation(agent_id, pane_id)
+        else {
+            return;
+        };
         let Some(mut agent) = store.get(agent_id).await else {
             return;
         };
+
+        #[cfg(test)]
+        let event_store_read_pause = self.event_store_read_pause.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some((reached, release)) = event_store_read_pause {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
+
         f(&mut agent);
         let seq = self.state.lock().unwrap().next_seq(agent_id);
         agent.seq = seq;
         agent.ts = now_millis();
-        store.apply(Change::upsert(agent)).await;
+        self.upsert_if_current(store, agent, pane_id, generation)
+            .await;
     }
 
     /// WS3 F1: herdr owns `worktree_path` only. A full-record rebuild (agent
@@ -1327,7 +1421,7 @@ impl HerdrAdapter {
                 if ev.released.unwrap_or(false) || ev.agent.is_none() {
                     let removed = self.state.lock().unwrap().remove(&ev.pane_id);
                     if let Some(agent_id) = removed {
-                        store.apply(Change::Remove(agent_id)).await;
+                        self.remove_if_unmapped(store, &agent_id).await;
                     }
                 } else if let Some(tool) = ev.agent {
                     let should_ignore = {
@@ -1363,7 +1457,7 @@ impl HerdrAdapter {
                 if let Some(pane_id) = data.get("pane_id").and_then(|p| p.as_str()) {
                     let removed = self.state.lock().unwrap().remove(pane_id);
                     if let Some(agent_id) = removed {
-                        store.apply(Change::Remove(agent_id)).await;
+                        self.remove_if_unmapped(store, &agent_id).await;
                     }
                 }
             }
@@ -1399,7 +1493,7 @@ impl HerdrAdapter {
         }
         let agent_state =
             AgentState::from_herdr_status(pane.agent_status.as_deref().unwrap_or("unknown"));
-        let (agent_id, migrated, canonical) = {
+        let (agent_id, generation, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             let agent_id = state.resolve_agent_id(&pane.pane_id, session_value);
             let migrated = self.register_pane(
@@ -1422,13 +1516,19 @@ impl HerdrAdapter {
                 &pane.state_labels,
                 pane.display_agent.clone(),
             );
-            (agent_id, migrated, canonical)
+            let generation = state
+                .agent_generations
+                .get(&agent_id)
+                .copied()
+                .expect("registered Herdr mapping has a generation");
+            (agent_id, generation, migrated, canonical)
         };
         if let Some(old) = migrated {
-            store.apply(Change::Remove(old)).await;
+            self.remove_if_unmapped(store, &old).await;
         }
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
-        store.apply(Change::upsert(canonical)).await;
+        self.upsert_if_current(store, canonical, &pane.pane_id, generation)
+            .await;
         if self
             .state
             .lock()
@@ -1469,7 +1569,7 @@ impl HerdrAdapter {
             AgentState::from_herdr_status(ev.agent_status.as_deref().unwrap_or("unknown"));
         let title = ev.title.clone().map(|t| redact(&t).into_owned());
         let labels = ev.state_labels.clone();
-        self.update_record(store, &agent_id, move |agent| {
+        self.update_record(store, &agent_id, &ev.pane_id, move |agent| {
             agent.state = agent_state;
             agent.reason = reason_from_labels(&labels);
             if let Some(t) = title {
@@ -1500,7 +1600,7 @@ impl HerdrAdapter {
             .unwrap_or_default();
         let waiting_on = classify_waiting_on(&matched, &text);
         let agent_id_for_claim = agent_id.clone();
-        self.update_record(store, &agent_id, move |agent| {
+        self.update_record(store, &agent_id, &ev.pane_id, move |agent| {
             if agent.state == AgentState::Blocked {
                 let mut waiting_on = waiting_on.clone();
                 // P3 D8: emit the live approval claim — the approval_id is
@@ -1526,7 +1626,7 @@ impl HerdrAdapter {
         agent_state: AgentState,
         store: &Store,
     ) {
-        let (agent_id, migrated, canonical) = {
+        let (agent_id, generation, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
             if state.is_stale_pane(pane_id) && !state.pane_agents.contains_key(pane_id) {
                 return;
@@ -1544,13 +1644,19 @@ impl HerdrAdapter {
                 &HashMap::new(),
                 None,
             );
-            (agent_id, migrated, canonical)
+            let generation = state
+                .agent_generations
+                .get(&agent_id)
+                .copied()
+                .expect("registered Herdr mapping has a generation");
+            (agent_id, generation, migrated, canonical)
         };
         if let Some(old) = migrated {
-            store.apply(Change::Remove(old)).await;
+            self.remove_if_unmapped(store, &old).await;
         }
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
-        store.apply(Change::upsert(canonical)).await;
+        self.upsert_if_current(store, canonical, pane_id, generation)
+            .await;
         info!(pane = pane_id, tool, ?agent_state, "agent detected");
     }
 }
@@ -2025,22 +2131,7 @@ impl HerdrAdapter {
         }
 
         if retired && let Some(store) = store {
-            // Lock order is Store -> SessionState for this synchronous
-            // predicate. Every adapter path releases SessionState before
-            // awaiting Store I/O, so no path holds the inverse order; the
-            // predicate itself never awaits while either lock is held.
-            // A newer live mapping therefore preserves its row, while any
-            // same-generation Store update made after retirement is removed.
-            store
-                .remove_if(agent_id, || {
-                    !self
-                        .state
-                        .lock()
-                        .unwrap()
-                        .agent_panes
-                        .contains_key(agent_id)
-                })
-                .await;
+            self.remove_if_unmapped(&store, agent_id).await;
         }
     }
 }
@@ -2069,6 +2160,7 @@ fn bounded_redacted_tail(text: &str, max_lines: u32) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::Change;
     use serde_json::json;
 
     /// Real `agent.list` entry captured from the live herdr socket: a claude
@@ -3468,6 +3560,71 @@ mod tests {
         release_tx.send(()).expect("release conditional removal");
         retirement.await;
         assert!(store.get(agent_id).await.is_none());
+        assert!(store.snapshot().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_cleanup_rejects_inflight_event_upsert_after_store_read() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-event-race"},
+            "agent_status": "working",
+            "name": "event-target",
+            "pane_id": "w-event:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        store.flush().await;
+        let agent_id = "herdr:ses-event-race";
+        let generation = adapter
+            .state
+            .lock()
+            .unwrap()
+            .agent_generations
+            .get(agent_id)
+            .copied()
+            .expect("first generation");
+
+        let status: StatusChangedWire = serde_json::from_value(json!({
+            "pane_id": "w-event:p1",
+            "agent_status": "blocked",
+            "agent": "opencode",
+            "state_labels": {"waiting_for_input": ""}
+        }))
+        .unwrap();
+        let (read_tx, read_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        adapter.pause_after_event_store_read(read_tx, release_rx);
+        let writer = adapter.handle_status_changed(&status, &store);
+        tokio::pin!(writer);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = read_rx => result.expect("event Store read reached"),
+                _ = &mut writer => panic!("event writer completed before read barrier"),
+            }
+        })
+        .await
+        .expect("event read pause timeout");
+
+        // Cleanup wins while the event still holds its cloned row.
+        adapter
+            .retire_failed_rpc(agent_id, "event-target", generation)
+            .await;
+        assert!(store.get(agent_id).await.is_none());
+
+        release_tx.send(()).expect("release event writer");
+        writer.await;
+        let delta = store.flush().await.expect("stale cleanup delta");
+        assert!(
+            delta.upd.is_empty(),
+            "stale event must not resurrect the row"
+        );
+        assert_eq!(delta.del, vec![agent_id.to_string()]);
         assert!(store.snapshot().await.agents.is_empty());
     }
 

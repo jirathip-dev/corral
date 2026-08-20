@@ -152,6 +152,7 @@ SOURCE_STRING_MARKERS = frozenset(
         "Seeded fake fleet",
         "demo-",
         "demo mode",
+        r"\(demo\)",
     }
 )
 
@@ -204,6 +205,28 @@ def _blank(character: str) -> str:
     return character if character in "\r\n" else " "
 
 
+def _string_escape_width(
+    text: str, index: int, string_hashes: int, string_closer: str
+) -> int:
+    """Return the source width of one Swift string escape, or zero.
+
+    Extended delimiters require exactly the opening delimiter's number of
+    pounds after the backslash.  For a multiline delimiter, the escaped unit
+    can be the full triple-quote sequence; a trailing raw-string pound belongs
+    to the content, not to that escaped sequence.
+    """
+
+    prefix = "\\" + ("#" * string_hashes)
+    if not text.startswith(prefix, index):
+        return 0
+    escaped_start = index + len(prefix)
+    if escaped_start >= len(text):
+        return len(prefix)
+    if string_closer.startswith('"""') and text.startswith('"""', escaped_start):
+        return len(prefix) + 3
+    return len(prefix) + 1
+
+
 def _lex_source(text: str) -> tuple[str, str]:
     """Return syntax- and string-aware views with comments masked.
 
@@ -219,7 +242,7 @@ def _lex_source(text: str) -> tuple[str, str]:
     state = "normal"
     block_depth = 0
     string_closer: str | None = None
-    string_raw = False
+    string_hashes = 0
     index = 0
 
     while index < len(text):
@@ -257,7 +280,7 @@ def _lex_source(text: str) -> tuple[str, str]:
                 code.extend(_blank(item) for item in opening)
                 strings.extend(opening)
                 index += len(opening)
-                string_raw = True
+                string_hashes = len(hashes)
                 state = "string"
                 continue
             if text.startswith('"""', index):
@@ -265,7 +288,7 @@ def _lex_source(text: str) -> tuple[str, str]:
                 strings.extend('"""')
                 index += 3
                 string_closer = '"""'
-                string_raw = False
+                string_hashes = 0
                 state = "string"
                 continue
             if character == '"':
@@ -273,7 +296,7 @@ def _lex_source(text: str) -> tuple[str, str]:
                 strings.append(character)
                 index += 1
                 string_closer = '"'
-                string_raw = False
+                string_hashes = 0
                 state = "string"
                 continue
 
@@ -312,24 +335,23 @@ def _lex_source(text: str) -> tuple[str, str]:
 
         if state == "string":
             assert string_closer is not None
+            escape_width = _string_escape_width(
+                text, index, string_hashes, string_closer
+            )
+            if escape_width:
+                escaped_text = text[index : index + escape_width]
+                code.extend(_blank(item) for item in escaped_text)
+                strings.extend(escaped_text)
+                index += escape_width
+                continue
             if text.startswith(string_closer, index):
                 closing = string_closer
                 code.extend(_blank(item) for item in closing)
                 strings.extend(closing)
                 index += len(closing)
                 string_closer = None
-                string_raw = False
+                string_hashes = 0
                 state = "normal"
-                continue
-            if not string_raw and string_closer == '"' and character == "\\":
-                code.append(_blank(character))
-                strings.append(character)
-                index += 1
-                if index < len(text):
-                    escaped = text[index]
-                    code.append(_blank(escaped))
-                    strings.append(escaped)
-                    index += 1
                 continue
             code.append(_blank(character))
             strings.append(character)
@@ -636,6 +658,14 @@ def _expect_failure(action: Callable[[], None], label: str) -> None:
     raise CheckFailure(f"self-test fixture was accepted: {label}")
 
 
+def _typecheck_swift_fixture(path: Path, debug: bool) -> None:
+    command = ["swiftc", "-typecheck", "-parse-as-library"]
+    if debug:
+        command.extend(("-D", "DEBUG"))
+    command.append(str(path))
+    _run_checked(command)
+
+
 def _valid_binary_fixture() -> str:
     return "\n".join(BINARY_REQUIRED) + "\n"
 
@@ -816,6 +846,48 @@ def _self_test() -> None:
             "Debug declaration marker only in ordinary/escaped/raw/multiline strings",
         )
 
+        escaped_multiline_debug = root / "escaped-multiline-debug.swift"
+        escaped_multiline_debug.write_text(
+            r'''#if DEBUG
+let spoof = """
+prefix \"""
+func enterDemo()
+middle \"""
+suffix
+"""
+#endif
+''',
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(escaped_multiline_debug, debug=True)
+        _check_source(escaped_multiline_debug, (r"enterDemo",))
+        _expect_failure(
+            lambda: _check_required_source(
+                escaped_multiline_debug, ("func enterDemo",)
+            ),
+            "escaped ordinary multiline delimiter spoof",
+        )
+
+        escaped_raw_debug = root / "escaped-raw-multiline-debug.swift"
+        escaped_raw_debug.write_text(
+            r'''#if DEBUG
+let spoof = #"""
+prefix \#"""#
+func enterDemo()
+middle \#"""#
+suffix
+"""#
+#endif
+''',
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(escaped_raw_debug, debug=True)
+        _check_source(escaped_raw_debug, (r"enterDemo",))
+        _expect_failure(
+            lambda: _check_required_source(escaped_raw_debug, ("func enterDemo",)),
+            "escaped raw multiline delimiter spoof",
+        )
+
         string_release = root / "string-release.swift"
         string_release.write_text(
             "#if !DEBUG\n"
@@ -834,6 +906,53 @@ def _self_test() -> None:
         _expect_failure(
             lambda: _check_release_source(string_release, ("model.startLive()",)),
             "Release call marker only in ordinary/escaped/raw/multiline strings",
+        )
+
+        escaped_multiline_release = root / "escaped-multiline-release.swift"
+        escaped_multiline_release.write_text(
+            r'''#if !DEBUG
+let spoof = """
+prefix \"""
+model.startLive()
+middle \"""
+suffix
+"""
+#endif
+''',
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(escaped_multiline_release, debug=False)
+        _expect_failure(
+            lambda: _check_release_source(
+                escaped_multiline_release, ("model.startLive()",)
+            ),
+            "escaped ordinary multiline Release spoof",
+        )
+
+        escaped_raw_release = root / "escaped-raw-multiline-release.swift"
+        escaped_raw_release.write_text(
+            r'''#if !DEBUG
+let spoof = #"""
+prefix \#"""#
+model.startLive()
+middle \#"""#
+suffix
+"""#
+#endif
+''',
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(escaped_raw_release, debug=False)
+        _expect_failure(
+            lambda: _check_release_source(escaped_raw_release, ("model.startLive()",)),
+            "escaped raw multiline Release spoof",
+        )
+
+        unguarded_literal = root / "unguarded-demo-literal.swift"
+        unguarded_literal.write_text('let banner = "(demo)"\n', encoding="utf-8")
+        _expect_failure(
+            lambda: _check_source(unguarded_literal, (r"\(demo\)",)),
+            "unguarded user-facing demo literal",
         )
 
         inactive_guard = root / "inactive-guard.swift"

@@ -567,6 +567,10 @@ struct SessionState {
     /// this value, so a late RPC result cannot retire a newer mapping that
     /// happens to resolve to the same wire target.
     agent_generations: HashMap<String, u64>,
+    /// Adapter-lifetime allocator. It is intentionally not reset when a
+    /// canonical id is retired, so a late RPC can never validate against a
+    /// newly created mapping after the live entry is pruned.
+    next_generation: u64,
     /// Canonical ids that were tracked and then removed or migrated away.
     /// These tombstones distinguish a stale snapshot from an id the adapter
     /// has never seen.
@@ -634,13 +638,19 @@ impl SessionState {
         self.stale_panes.remove(pane_id);
     }
 
-    fn bump_generation(&mut self, agent_id: &str) -> u64 {
+    fn allocate_generation(&mut self, agent_id: &str) -> u64 {
         let generation = self
-            .agent_generations
-            .entry(agent_id.to_string())
-            .or_insert(0);
-        *generation = generation.saturating_add(1);
-        *generation
+            .next_generation
+            .checked_add(1)
+            .expect("Herdr mapping generation exhausted");
+        self.next_generation = generation;
+        self.agent_generations
+            .insert(agent_id.to_string(), generation);
+        generation
+    }
+
+    fn clear_generation(&mut self, agent_id: &str) {
+        self.agent_generations.remove(agent_id);
     }
 
     fn is_stale_agent(&mut self, agent_id: &str) -> bool {
@@ -696,7 +706,7 @@ impl SessionState {
         if self.agent_panes.get(&agent_id).map(String::as_str) != Some(pane_id) {
             return None;
         }
-        self.bump_generation(&agent_id);
+        self.clear_generation(&agent_id);
         self.agent_panes.remove(&agent_id);
         self.agent_names.remove(&agent_id);
         if tombstone_agent {
@@ -775,6 +785,8 @@ pub struct HerdrAdapter {
     /// `start` installs this for the production adapter; tests and direct
     /// hermetic adapter users can attach the same store explicitly.
     store: Arc<Mutex<Option<Store>>>,
+    #[cfg(test)]
+    store_remove_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl std::fmt::Debug for HerdrAdapter {
@@ -791,11 +803,22 @@ impl HerdrAdapter {
             socket_path,
             state: Arc::new(Mutex::new(SessionState::default())),
             store: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            store_remove_pause: Mutex::new(None),
         }
     }
 
     fn attach_store(&self, store: Store) {
         *self.store.lock().unwrap() = Some(store);
+    }
+
+    #[cfg(test)]
+    fn pause_before_store_remove(
+        &self,
+        reached: oneshot::Sender<()>,
+        release: oneshot::Receiver<()>,
+    ) {
+        *self.store_remove_pause.lock().unwrap() = Some((reached, release));
     }
 
     async fn run_forever(&self, store: Store) {
@@ -1126,7 +1149,7 @@ impl HerdrAdapter {
         {
             state.agent_panes.remove(&old);
             state.agent_names.remove(&old);
-            state.bump_generation(&old);
+            state.clear_generation(&old);
             state.mark_stale_agent(old.clone());
             removed_agent = Some(old);
         }
@@ -1160,7 +1183,7 @@ impl HerdrAdapter {
             }
         }
         if mapping_changed {
-            state.bump_generation(agent_id);
+            state.allocate_generation(agent_id);
         }
         removed_agent
     }
@@ -1959,6 +1982,17 @@ impl HerdrAdapter {
     }
 
     async fn retire_failed_rpc(&self, agent_id: &str, failed_target: &str, generation: u64) {
+        // Clone the store handle before any await. The row token is captured
+        // before retirement; if a newer upsert lands in the retirement gap,
+        // the store-side conditional remove will reject the old token.
+        let store = self.store.lock().unwrap().clone();
+        let expected_version = match store.as_ref() {
+            Some(store) => store
+                .get_with_version(agent_id)
+                .await
+                .map(|(_, version)| version),
+            None => None,
+        };
         let retired = {
             let mut state = self.state.lock().unwrap();
             state.prune_tombstones();
@@ -1989,14 +2023,20 @@ impl HerdrAdapter {
             }
         };
 
-        if retired {
-            let store = self.store.lock().unwrap().clone();
-            if let Some(store) = store {
-                // Await the removal before returning the stale outcome. A
-                // refresh that starts immediately after the failed RPC must
-                // observe no canonical row to resurrect at the old revision.
-                store.apply(Change::Remove(agent_id.to_string())).await;
-            }
+        #[cfg(test)]
+        let store_remove_pause = self.store_remove_pause.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some((reached, release)) = store_remove_pause {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
+
+        if retired && let (Some(store), Some(expected_version)) = (store, expected_version) {
+            // Await the removal before returning the stale outcome. A
+            // refresh that starts immediately after the failed RPC must
+            // observe no canonical row, while a newer row wins the
+            // conditional compare and survives.
+            store.remove_if_version(agent_id, expected_version).await;
         }
     }
 }
@@ -3306,6 +3346,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conditional_rpc_removal_preserves_newer_same_target_generation() {
+        let (release_tx, release_rx) = oneshot::channel();
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-conditional"},
+            "agent_status": "working",
+            "name": "same-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let agent_id = "herdr:ses-conditional";
+        let first_seq = store.get(agent_id).await.expect("first row").seq;
+        let generation = adapter
+            .state
+            .lock()
+            .unwrap()
+            .agent_generations
+            .get(agent_id)
+            .copied()
+            .expect("first generation");
+
+        let (retired_tx, retired_rx) = oneshot::channel();
+        adapter.pause_before_store_remove(retired_tx, release_rx);
+        let retirement = adapter.retire_failed_rpc(agent_id, "same-target", generation);
+        tokio::pin!(retirement);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = retired_rx => result.expect("retirement reached"),
+                _ = &mut retirement => panic!("retirement completed before store-removal pause"),
+            }
+        })
+        .await
+        .expect("retirement pause timeout");
+        assert!(
+            adapter.drive_target(agent_id).is_err(),
+            "state is retired before the conditional store remove"
+        );
+
+        let newer: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-conditional"},
+            "agent_status": "working",
+            "name": "same-target",
+            "pane_id": "w-new:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&newer, &store).await;
+        assert_eq!(adapter.drive_target(agent_id).unwrap(), "same-target");
+        let newer_seq = store.get(agent_id).await.expect("newer row").seq;
+        assert!(newer_seq > first_seq, "new generation upserted a newer row");
+
+        release_tx.send(()).expect("release conditional removal");
+        retirement.await;
+        assert_eq!(adapter.drive_target(agent_id).unwrap(), "same-target");
+        assert!(store.snapshot().await.agents.contains_key(agent_id));
+    }
+
+    #[tokio::test]
     async fn late_pane_events_cannot_resurrect_migrated_pane() {
         let store = Store::new();
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
@@ -3433,6 +3539,29 @@ mod tests {
         }
         assert!(state.stale_agents.len() <= STALE_TOMBSTONE_CAP);
         assert!(state.stale_panes.len() <= STALE_TOMBSTONE_CAP);
+    }
+
+    #[test]
+    fn live_generation_map_is_bounded_and_never_reuses_tokens() {
+        let mut state = SessionState::default();
+        let mut previous = 0;
+        for i in 0..(STALE_TOMBSTONE_CAP * 4) {
+            let agent_id = format!("herdr:unique-{i}");
+            let generation = state.allocate_generation(&agent_id);
+            assert!(generation > previous, "generation allocation is monotonic");
+            previous = generation;
+            state.clear_generation(&agent_id);
+        }
+        assert!(
+            state.agent_generations.is_empty(),
+            "only live mappings retain generation entries"
+        );
+
+        let old = state.allocate_generation("herdr:reused");
+        state.clear_generation("herdr:reused");
+        let new = state.allocate_generation("herdr:reused");
+        assert!(new > old, "a future mapping cannot reuse an old RPC token");
+        assert_eq!(state.agent_generations.len(), 1);
     }
 
     // #105 regression: exercise the production reader -> forwarder -> sink

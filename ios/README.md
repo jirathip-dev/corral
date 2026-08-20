@@ -28,7 +28,7 @@ ios/
     Demo/DemoFleet.swift         seeded fleet (App Review 4.2)
     App/                          store, app model, SwiftUI entry, live-verify harness
     UI/                           fleet list, claim cards, registration, settings
-  FleetNotifierTests/            37 unit tests (canonical bytes, SSE, claims, step-up, demo)
+    FleetNotifierTests/            40 unit tests (canonical bytes, SSE, claims, step-up, demo)
 ```
 
 ## Build
@@ -95,6 +95,9 @@ tracked in this repo until #26 untracked it; if you cloned before that, run
 - A Herdr target that disappears or migrates returns `stale_agent` as a typed
   409/refusal. The app removes the stale row, shows a refresh banner, and
   requests one fresh snapshot; SSE remains the source of truth afterward.
+- A successful `read_tail` stores the daemon-redacted, bounded `result.lines`
+  and renders them below the row's Tail button; an empty result is shown as
+  "No output returned". The client applies the same 200-line / 32 KiB bounds.
 - **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
   `LocalNotifier.ClaimPayload` — a future relay would register the device
   token and push exactly that claim dict; the action-execution path
@@ -162,7 +165,9 @@ case (R4). `read_tail` dispatched against a live herdr agent. A live
 approve round-trip needs a blocked agent, which no herdr session is
 currently — the claim flow is covered by the unit tests
 (`ClaimTests`, `DeltaApplyTests`, canonical-bytes vectors) and the daemon's
-own R8/R9 conformance suite (W1's).
+own R8/R9 conformance suite (W1's). The local JSON-RPC listener tests in the
+repository are hermetic protocol mocks, not evidence of a live Herdr
+migration or stale-agent event.
 
 ## Conformance mapping (R1–R10, from the Swift client)
 
@@ -178,4 +183,4 @@ own R8/R9 conformance suite (W1's).
 | R8 matching approve executes | `driveApprove` + canned actions | daemon contract (W1 suite) |
 | R9 step-up | Face ID → mint → `X-Step-Up-Token` retry | live mint; destructive-mirror tests |
 | R10 audit grows only on writes | never on auth failures | live audit (2 entries) |
-| R11 stale target recovery | typed `stale_agent`, remove row, refresh snapshot | unit + daemon contract |
+| R11 stale target recovery | typed `stale_agent`, remove row, refresh snapshot | API/adapter unit tests; no live migration proof |

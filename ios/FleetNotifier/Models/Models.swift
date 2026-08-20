@@ -389,7 +389,9 @@ struct GrantsReadResponse: Codable, Equatable, Sendable {
     }
 }
 
-/// Opaque JSON value for `DriveResponse.result` (never touched in v1).
+/// JSON value for `DriveResponse.result`. The daemon's read_tail result is
+/// intentionally small and shaped as `{"lines": [String]}`; other result
+/// fields remain opaque to this client.
 enum CodableValue: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
@@ -399,6 +401,18 @@ enum CodableValue: Codable, Equatable, Sendable {
     case string(String)
     case array([CodableValue])
     case object([String: CodableValue])
+
+    var tailLines: [String]? {
+        guard case .object(let object) = self,
+              case .array(let values) = object["lines"] else {
+            return nil
+        }
+        let lines = values.compactMap { value -> String? in
+            guard case .string(let line) = value else { return nil }
+            return line
+        }
+        return lines.count == values.count ? lines : nil
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()

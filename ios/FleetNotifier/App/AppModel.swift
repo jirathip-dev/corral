@@ -386,7 +386,11 @@ final class AppModel: ObservableObject {
             switch result {
             case .dispatched(let response):
                 if response.ok {
-                    if capability == .approve {
+                    if capability == .readTail {
+                        let lines = response.result?.tailLines ?? []
+                        self.fleet.rememberTail(lines, for: target)
+                        self.banner = .info("Tail \(target): \(lines.count) lines")
+                    } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
                     }
                 } else {
@@ -465,6 +469,9 @@ final class AppModel: ObservableObject {
                                        rev: (fleet.lastEventId ?? 1) + 1)
         if case .dispatched(let response) = result {
             fleet.seedDemo(agents: fleet.agents, rev: response.rev)
+            if capability == .readTail {
+                fleet.rememberTail(response.result?.tailLines ?? [], for: agent.agentId)
+            }
             if capability == .approve, agent.isBlocked {
                 simulateUnblock(agentId: agent.agentId)
             }

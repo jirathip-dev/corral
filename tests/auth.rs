@@ -313,8 +313,12 @@ impl Adapter for AcceptAllAdapter {
 
     fn start(self: Arc<Self>, _store: Store) {}
 
-    fn drive(&self, _agent_id: &str, _command: DriveCommand) -> Result<(), DriveError> {
-        Ok(())
+    fn drive<'a>(
+        &'a self,
+        _agent_id: &'a str,
+        _command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn knows_agent(&self, _agent_id: &str) -> bool {

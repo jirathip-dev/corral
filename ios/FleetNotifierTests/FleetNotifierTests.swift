@@ -31,6 +31,12 @@ final class CanonicalBytesTests: XCTestCase {
         XCTAssertEqual(CanonicalJSON.encode(withLines), #"{"kind":"read_tail","lines":200}"#)
     }
 
+    func testDriveResponseTailResultDecodesIntoVisibleLines() throws {
+        let data = Data(#"{"request_id":"r","ok":true,"rev":4,"result":{"lines":["one","two"]}}"#.utf8)
+        let response = try JSONDecoder().decode(DriveResponse.self, from: data)
+        XCTAssertEqual(response.result?.tailLines, ["one", "two"])
+    }
+
     /// Payload object keys are SORTED (serde_json Map = BTreeMap): the
     /// approve payload emits approval_id < choice < kind < prompt_hash.
     func testApprovePayloadKeysSorted() {
@@ -398,6 +404,36 @@ final class DeltaApplyTests: XCTestCase {
         store.apply(.delta(Delta(rev: 4, upd: [agent("a", state: .working)], del: [])), previous: &seen)
         store.apply(.delta(Delta(rev: 5, upd: [agent("a", state: .blocked, waiting: prompt)], del: [])), previous: &seen)
         XCTAssertEqual(notified, ["a", "a", "a"])
+    }
+
+    func testStaleRecoverySnapshotAndDeltaCannotOverwriteNewerSSE() {
+        let store = FleetStore()
+        var newer = agent("a", state: .working)
+        newer.title = "newer SSE"
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 10, generatedAt: 1,
+                                       agents: ["a": agent("a", state: .idle)])))
+        store.apply(.delta(Delta(rev: 11, upd: [newer], del: [])))
+
+        var stale = agent("a", state: .idle)
+        stale.title = "stale fetch"
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 10, generatedAt: 1,
+                                       agents: ["a": stale])))
+        store.apply(.delta(Delta(rev: 10, upd: [agent("late", state: .done)], del: [])))
+
+        XCTAssertEqual(store.lastEventId, 11)
+        XCTAssertEqual(store.agents["a"]?.title, "newer SSE")
+        XCTAssertNil(store.agents["late"])
+    }
+
+    func testReadTailResultIsStoredBoundedAndRemovedWithAgent() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": agent("a", state: .working)])))
+        store.rememberTail(Array(repeating: "tail", count: 250), for: "a")
+        XCTAssertEqual(store.tail(for: "a")?.count, 200)
+
+        store.apply(.delta(Delta(rev: 2, upd: [], del: ["a"])))
+        XCTAssertNil(store.tail(for: "a"))
     }
 }
 

@@ -94,7 +94,16 @@ R10. **Audit grows only on writes** — GETs, auth failures, step-up failures
      never grow the log; each executed/refused-at-dispatch drive does.
 R11. **Stale target recovery** — a target that disappears or migrates before
      dispatch returns `stale_agent`; no pre-dispatch replay/audit is created,
-     and both clients remove the row and refresh their snapshot.
+     and both clients remove the row and refresh their snapshot. The checked-in
+     evidence is the API regression suite plus the Herdr adapter's hermetic
+     JSON-RPC error/migration tests. A local `UnixListener` mock is not a live
+     Herdr socket and must not be reported as live migration proof.
+
+     A bounded read-only probe on 2026-08-20 sent one `agent.list` request to
+     the configured Herdr Unix socket and received a valid response containing
+     11 agents. It proves socket reachability and current-list decoding only;
+     it does not prove a live drive, migration, disappearance, or stale-event
+     recovery.
 
 ## Open questions resolved by default (noted on #12/#13)
 

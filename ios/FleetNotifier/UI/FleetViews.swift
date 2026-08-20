@@ -201,6 +201,8 @@ final class PromptDrafts: ObservableObject {
 /// (D30); Interrupt/Kill are deliberately NOT row actions (D29/D30).
 struct AgentRow: View {
     let agent: Agent
+    /// Last successful bounded read_tail result, shown below the action.
+    let tail: [String]?
     let grants: Set<Capability>
     /// The shared draft store (R2-B): the ROW observes it, so keystrokes
     /// re-render rows without touching `FleetView.body`. Rows of the same
@@ -266,6 +268,30 @@ struct AgentRow: View {
                         .font(.caption)
                     Spacer()
                 }
+            }
+            if let tail {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Latest tail")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if tail.isEmpty {
+                        Text("No output returned")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ScrollView([.vertical, .horizontal]) {
+                            Text(tail.joined(separator: "\n"))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityLabel("Latest bounded agent tail")
+                        }
+                        .frame(maxHeight: 180)
+                        .padding(6)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                }
+                .accessibilityElement(children: .contain)
             }
             if actions.contains(.prompt) {
                 HStack {
@@ -614,6 +640,7 @@ struct FleetView: View {
         let driveClient = DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
         let grants = Set(model.grants.compactMap(Capability.init(rawValue:)))
         return AgentRow(agent: agent,
+                        tail: model.fleet.tail(for: agent.agentId),
                         grants: grants,
                         drafts: promptDrafts,
                         actions: BoardModel.rowActions(agent: agent, grants: grants),

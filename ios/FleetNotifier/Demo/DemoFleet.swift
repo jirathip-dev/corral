@@ -128,8 +128,10 @@ enum DemoFleet {
         case .readTail:
             let result: CodableValue = .object([
                 "agent_id": .string(agent.agentId),
-                "lines": .string("(demo) last lines of \(agent.displayName ?? agent.agentId)\n"
-                    + "…seeded tail, no daemon in demo mode"),
+                "lines": .array([
+                    .string("(demo) last lines of \(agent.displayName ?? agent.agentId)"),
+                    .string("…seeded tail, no daemon in demo mode")
+                ])
             ])
             return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev, result: result))

@@ -22,9 +22,9 @@
 //!    caller ever dispatches for a given id, even under concurrent
 //!    duplicates (the loser gets `409 in_flight` and can retry for the
 //!    stored response). Replays return the first response byte-identical.
-//! 5. Dispatch via [`Adapter::drive`] (fire-and-forget). The adapter
-//!    resolves the canonical `agent_id` to its own transport target — the
-//!    daemon never sends keys by coordinates (D8), and W1 never sees pane
+//! 5. Dispatch via [`Adapter::drive`] and await the source outcome. The
+//!    adapter resolves the canonical `agent_id` to its own transport target —
+//!    the daemon never sends keys by coordinates (D8), and W1 never sees pane
 //!    ids. Exception: `read_tail` routes through
 //!    [`Adapter::read_tail`], which returns the redacted, bounded tail so
 //!    the response can carry `result.lines` (the one capability whose whole
@@ -93,8 +93,12 @@ impl Adapter for NoopAdapter {
 
     fn start(self: Arc<Self>, _store: Store) {}
 
-    fn drive(&self, _agent_id: &str, _command: DriveCommand) -> Result<(), DriveError> {
-        Err(DriveError::NotImplemented("noop adapter"))
+    fn drive<'a>(
+        &'a self,
+        _agent_id: &'a str,
+        _command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+        Box::pin(async { Err(DriveError::NotImplemented("noop adapter")) })
     }
 
     fn knows_agent(&self, _agent_id: &str) -> bool {
@@ -177,6 +181,23 @@ impl ReplayTable {
                 Claim::Claimed
             }
         }
+    }
+
+    /// Return a completed response without claiming a new dispatch. This
+    /// lookup deliberately happens before live-target validation: a retry of
+    /// a request that already completed must remain byte-identical even if
+    /// the agent disappeared after the original dispatch.
+    fn completed(&self, request_id: &str) -> Option<DriveResponse> {
+        let mut inner = self.inner.lock().expect("replay table poisoned");
+        inner.evict_stale_claims();
+        let response = match inner.entries.get(request_id) {
+            Some(Entry::Done(response)) => Some(response.clone()),
+            Some(Entry::Claimed { .. }) | None => None,
+        };
+        if response.is_some() {
+            inner.touch(request_id);
+        }
+        response
     }
 
     fn complete(&self, request_id: &str, response: DriveResponse) {
@@ -581,11 +602,28 @@ pub async fn drive(
         }
     })?;
 
+    // A completed request is an immutable response, even if its target has
+    // disappeared since the original dispatch. Peek before any current
+    // store/tombstone validation so retries remain byte-identical.
+    let agent_id = authorized.envelope.target.clone();
+    if let Some(response) = state.replay.completed(&authorized.envelope.request_id) {
+        return Ok(Json(response));
+    }
+
+    // A tombstone must win before approve claim validation: the store may
+    // already have removed the blocked row, but the adapter still knows this
+    // was a real target and can give the client a refreshable 409.
+    if state.adapter.is_stale_agent(&agent_id) {
+        return Err(DriveApiError::StaleAgent {
+            agent_id: agent_id.clone(),
+            request_id: Some(authorized.envelope.request_id.clone()),
+        });
+    }
+
     // Claim check (W2, D8): the approve reply is validated against the
-    // agent's CURRENT waiting approval BEFORE the replay claim, so a stale
+    // agent's CURRENT waiting approval BEFORE a new replay claim, so a stale
     // hash / stale approval can never occupy the id's slot or dispatch.
     // Refusals here are client errors: no replay entry, no audit entry.
-    let agent_id = authorized.envelope.target.clone();
     let command =
         match pending {
             PendingCommand::Command(command) => command,
@@ -642,9 +680,8 @@ pub async fn drive(
             }
         };
 
-    // A Herdr tombstone tells us this id was real but is no longer a safe
-    // target. Check immediately before claiming replay state so a stale tap
-    // can be retried with a fresh request after the client refreshes.
+    // Re-check immediately before claiming replay state to cover a target
+    // that disappeared while an approve claim was being validated.
     if state.adapter.is_stale_agent(&agent_id) {
         return Err(DriveApiError::StaleAgent {
             agent_id,
@@ -665,8 +702,8 @@ pub async fn drive(
     let (ok, error, error_kind, outcome, result) = match command {
         // read_tail is the one capability whose whole point is a response:
         // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
-        // carry it back in `result.lines` — the drive() fire-and-forget path
-        // never sees it.
+        // carry it back in `result.lines`; other drive commands await their
+        // source RPC through the same outcome-bearing adapter future.
         DriveCommand::ReadTail { lines } => {
             let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
             match state.adapter.read_tail(&agent_id, requested).await {
@@ -680,7 +717,7 @@ pub async fn drive(
                 Err(e) => drive_refusal(e),
             }
         }
-        other => match state.adapter.drive(&agent_id, other) {
+        other => match state.adapter.drive(&agent_id, other).await {
             Ok(()) => (true, None, None, AuditOutcome::Executed, None),
             Err(e) => drive_refusal(e),
         },

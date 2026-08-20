@@ -92,6 +92,10 @@ const RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
 const PANE_RETRY_BASE: Duration = Duration::from_secs(2);
 /// Delay before a pane task retries after a live stream closes.
 const PANE_RESPAWN_DELAY: Duration = Duration::from_secs(5);
+/// Tombstones are only needed long enough to classify late drive/event races;
+/// they are not an unbounded session history.
+const STALE_TOMBSTONE_TTL: Duration = Duration::from_secs(5 * 60);
+const STALE_TOMBSTONE_CAP: usize = 1024;
 
 /// Exponential retry schedule shared by event-stream reconnect loops. Keeping
 /// this policy as a small value type makes the no-hot-loop guarantee testable
@@ -530,6 +534,23 @@ async fn rpc_call(
     client.call(method, params).await
 }
 
+fn is_agent_not_found(code: &str, message: &str) -> bool {
+    let normalized_code = code.to_ascii_lowercase().replace('-', "_");
+    normalized_code == "agent_not_found"
+        || normalized_code == "agent_not_found_error"
+        || message.to_ascii_lowercase().contains("agent not found")
+        || message.to_ascii_lowercase().contains("agent-not-found")
+}
+
+fn map_drive_rpc_error(agent_id: &str, method: &str, error: RpcError) -> DriveError {
+    match error {
+        RpcError::Server { code, message } if is_agent_not_found(&code, &message) => {
+            DriveError::StaleAgent(agent_id.to_string())
+        }
+        other => DriveError::Transport(format!("{method} failed: {other}")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Session state (survives reconnects)
 // ---------------------------------------------------------------------------
@@ -545,10 +566,10 @@ struct SessionState {
     /// Canonical ids that were tracked and then removed or migrated away.
     /// These tombstones distinguish a stale snapshot from an id the adapter
     /// has never seen.
-    stale_agents: HashSet<String>,
+    stale_agents: HashMap<String, Instant>,
     /// Panes retired by migration/removal. Late status events for one of
     /// these panes must not resurrect a row through replay-order fallback.
-    stale_panes: HashSet<String>,
+    stale_panes: HashMap<String, Instant>,
     /// per-source monotonic ordering
     seqs: HashMap<String, u64>,
     /// panes with a dedicated event stream
@@ -560,6 +581,65 @@ struct SessionState {
 }
 
 impl SessionState {
+    fn prune_tombstones(&mut self) {
+        let now = Instant::now();
+        self.stale_agents
+            .retain(|_, marked| now.duration_since(*marked) < STALE_TOMBSTONE_TTL);
+        self.stale_panes
+            .retain(|_, marked| now.duration_since(*marked) < STALE_TOMBSTONE_TTL);
+
+        while self.stale_agents.len() > STALE_TOMBSTONE_CAP {
+            let Some(oldest) = self
+                .stale_agents
+                .iter()
+                .min_by_key(|(_, marked)| *marked)
+                .map(|(agent_id, _)| agent_id.clone())
+            else {
+                break;
+            };
+            self.stale_agents.remove(&oldest);
+        }
+        while self.stale_panes.len() > STALE_TOMBSTONE_CAP {
+            let Some(oldest) = self
+                .stale_panes
+                .iter()
+                .min_by_key(|(_, marked)| *marked)
+                .map(|(pane_id, _)| pane_id.clone())
+            else {
+                break;
+            };
+            self.stale_panes.remove(&oldest);
+        }
+    }
+
+    fn mark_stale_agent(&mut self, agent_id: impl Into<String>) {
+        self.stale_agents.insert(agent_id.into(), Instant::now());
+        self.prune_tombstones();
+    }
+
+    fn mark_stale_pane(&mut self, pane_id: impl Into<String>) {
+        self.stale_panes.insert(pane_id.into(), Instant::now());
+        self.prune_tombstones();
+    }
+
+    fn clear_stale_agent(&mut self, agent_id: &str) {
+        self.stale_agents.remove(agent_id);
+    }
+
+    fn clear_stale_pane(&mut self, pane_id: &str) {
+        self.stale_panes.remove(pane_id);
+    }
+
+    fn is_stale_agent(&mut self, agent_id: &str) -> bool {
+        self.prune_tombstones();
+        self.stale_agents.contains_key(agent_id)
+    }
+
+    fn is_stale_pane(&mut self, pane_id: &str) -> bool {
+        self.prune_tombstones();
+        self.stale_panes.contains_key(pane_id)
+    }
+
     /// Resolve or create the canonical agent_id for a pane. A herdr session
     /// id wins (stable across restarts); otherwise a pane-derived fallback
     /// is reused if one already exists so ids never churn.
@@ -587,16 +667,16 @@ impl SessionState {
         }
     }
 
-    fn remove(&mut self, pane_id: &str) -> Option<String> {
-        let agent_id = self.pane_agents.remove(pane_id);
+    fn retire_pane(&mut self, pane_id: &str, tombstone_agent: bool) -> Option<String> {
+        self.prune_tombstones();
         self.subscribed_panes.remove(pane_id);
-        self.stale_panes.insert(pane_id.to_string());
+        self.mark_stale_pane(pane_id);
         // Always cancel a live pane stream, even when the pane had no agent
         // mapping left: a removed-and-recreated pane must not leak a task.
         if let Some(cancel) = self.pane_streams.remove(pane_id) {
             let _ = cancel.send(true);
         }
-        let agent_id = agent_id?;
+        let agent_id = self.pane_agents.remove(pane_id)?;
         // A pane can send a late close/status event after the same agent has
         // already migrated to a new pane. Do not let that late event remove
         // the new reverse mapping or delete the live store row.
@@ -605,9 +685,16 @@ impl SessionState {
         }
         self.agent_panes.remove(&agent_id);
         self.agent_names.remove(&agent_id);
-        self.stale_agents.insert(agent_id.clone());
-        Some(agent_id)
+        if tombstone_agent {
+            self.mark_stale_agent(agent_id.clone());
+            Some(agent_id)
+        } else {
+            None
+        }
     }
+
+    fn remove(&mut self, pane_id: &str) -> Option<String> {
+        self.retire_pane(pane_id, true)
     }
 }
 
@@ -779,34 +866,86 @@ impl HerdrAdapter {
         }
     }
 
-    /// Reconcile tracked agents against a fresh `agent.list`. Upserts present
-    /// panes; removes every tracked agent whose pane is absent from the list.
-    /// Panes closed while a stream was down never emit pane.closed on the new
-    /// stream (subscription only replays current pane state), so without this
-    /// diff their agents would linger as ghosts forever.
+    /// Reconcile tracked agents against a fresh `agent.list` in one state
+    /// transition. The lock covers the pane diff and all new mappings before
+    /// store I/O starts, so a stable session moving from pane A to pane B is
+    /// never briefly tombstoned or removed from the read model. Panes closed
+    /// while a stream was down never emit pane.closed on the new stream, so
+    /// truly absent agents are removed after the atomic mapping update.
     async fn reconcile_against_list(&self, list: &AgentListWire, store: &Store) {
-        let removals: Vec<String> = {
+        let (mut removals, migrations): (Vec<String>, Vec<String>) = {
             let mut state = self.state.lock().unwrap();
-            let present: HashSet<String> = list.agents.iter().map(|a| a.pane_id.clone()).collect();
+            state.prune_tombstones();
+            let present: Vec<(String, String)> = list
+                .agents
+                .iter()
+                .map(|agent| {
+                    let session = agent
+                        .agent_session
+                        .as_ref()
+                        .and_then(|session| session.value.as_deref());
+                    (
+                        agent.pane_id.clone(),
+                        state.resolve_agent_id(&agent.pane_id, session),
+                    )
+                })
+                .collect();
+            let present_panes: HashSet<String> =
+                present.iter().map(|(pane_id, _)| pane_id.clone()).collect();
+            let present_agents: HashSet<String> = present
+                .iter()
+                .map(|(_, agent_id)| agent_id.clone())
+                .collect();
             let stale: Vec<String> = state
                 .pane_agents
                 .keys()
-                .filter(|pane| !present.contains(*pane))
+                .filter(|pane| !present_panes.contains(*pane))
                 .cloned()
                 .collect();
-            stale.iter().filter_map(|pane| state.remove(pane)).collect()
+            let mut removals = Vec::new();
+            for pane_id in stale {
+                // A stable session may move between panes while the event
+                // stream is down. Retire only the old pane edge; the agent
+                // remains live through the present pane mapping.
+                let remapped = state
+                    .pane_agents
+                    .get(&pane_id)
+                    .is_some_and(|agent_id| present_agents.contains(agent_id));
+                if let Some(agent_id) = state.retire_pane(&pane_id, !remapped) {
+                    removals.push(agent_id);
+                }
+            }
+
+            let mut migrations = Vec::new();
+            for (pane_id, agent_id) in &present {
+                // A fresh list is authoritative: it may revive a pane whose
+                // old event arrived after a prior reconciliation, but only
+                // this ordered snapshot path may clear its tombstone.
+                state.clear_stale_pane(pane_id);
+                if let Some(old) = self.register_pane(
+                    &mut state,
+                    pane_id,
+                    agent_id,
+                    list.agents
+                        .iter()
+                        .find(|agent| agent.pane_id == *pane_id)
+                        .and_then(|agent| agent.name.as_deref()),
+                ) {
+                    migrations.push(old);
+                }
+                state.subscribed_panes.insert(pane_id.clone());
+            }
+            (removals, migrations)
         };
+        removals.extend(migrations);
         for agent_id in removals {
             info!(agent_id, "agent removed: pane absent from fresh agent.list");
             store.apply(Change::Remove(agent_id)).await;
         }
         for agent in &list.agents {
             self.apply_agent_info(agent, store).await;
-            self.state
-                .lock()
-                .unwrap()
-                .subscribed_panes
-                .insert(agent.pane_id.clone());
+            // `reconcile_against_list` already marked the pane subscribed
+            // while holding the same state lock as the mapping transition.
         }
     }
 
@@ -941,7 +1080,7 @@ impl HerdrAdapter {
         agent_id: &str,
         agent_name: Option<&str>,
     ) -> Option<String> {
-        state.stale_panes.remove(pane_id);
+        state.prune_tombstones();
 
         let previous_agent = state
             .pane_agents
@@ -957,7 +1096,7 @@ impl HerdrAdapter {
         {
             state.agent_panes.remove(&old);
             state.agent_names.remove(&old);
-            state.stale_agents.insert(old.clone());
+            state.mark_stale_agent(old.clone());
             removed_agent = Some(old);
         }
 
@@ -973,10 +1112,10 @@ impl HerdrAdapter {
                 state.pane_agents.remove(&previous_pane);
             }
             state.subscribed_panes.remove(&previous_pane);
-            state.stale_panes.insert(previous_pane);
+            state.mark_stale_pane(previous_pane);
         }
 
-        state.stale_agents.remove(agent_id);
+        state.clear_stale_agent(agent_id);
         if let Some(name) = agent_name {
             state
                 .agent_names
@@ -1127,13 +1266,24 @@ impl HerdrAdapter {
                         store.apply(Change::Remove(agent_id)).await;
                     }
                 } else if let Some(tool) = ev.agent {
-                    if self
+                    let should_ignore = {
+                        let mut state = self.state.lock().unwrap();
+                        let known = state.pane_agents.contains_key(&ev.pane_id);
+                        state.is_stale_pane(&ev.pane_id) && !known
+                    };
+                    if should_ignore {
+                        // A late replay from a retired pane cannot recreate
+                        // the old edge. Only an ordered agent.list
+                        // reconciliation may clear this tombstone.
+                        return;
+                    }
+                    let should_spawn = self
                         .state
                         .lock()
                         .unwrap()
                         .subscribed_panes
-                        .insert(ev.pane_id.clone())
-                    {
+                        .insert(ev.pane_id.clone());
+                    if should_spawn {
                         spawn_pane_event_stream(
                             self.socket_path.clone(),
                             ev.pane_id.clone(),
@@ -1168,10 +1318,17 @@ impl HerdrAdapter {
         store: &Store,
     ) {
         let session_value = pane.agent_session.as_ref().and_then(|s| s.value.as_deref());
-        let known = {
-            let state = self.state.lock().unwrap();
-            state.pane_agents.get(&pane.pane_id).cloned()
+        let (known, ignore_late) = {
+            let mut state = self.state.lock().unwrap();
+            let known = state.pane_agents.get(&pane.pane_id).cloned();
+            let ignore_late = state.is_stale_pane(&pane.pane_id) && known.is_none();
+            (known, ignore_late)
         };
+        if ignore_late {
+            // `pane.updated` replay can arrive after a move/removal. Do not
+            // let it clear the retired-pane tombstone through register_pane.
+            return;
+        }
         // Only track panes that have (or had) an agent.
         if pane.agent.is_none() && session_value.is_none() && known.is_none() {
             return;
@@ -1226,8 +1383,8 @@ impl HerdrAdapter {
 
     async fn handle_status_changed(&self, ev: &StatusChangedWire, store: &Store) {
         let known_id = {
-            let state = self.state.lock().unwrap();
-            if state.stale_panes.contains(&ev.pane_id) {
+            let mut state = self.state.lock().unwrap();
+            if state.is_stale_pane(&ev.pane_id) && !state.pane_agents.contains_key(&ev.pane_id) {
                 return;
             }
             state.pane_agents.get(&ev.pane_id).cloned()
@@ -1307,6 +1464,9 @@ impl HerdrAdapter {
     ) {
         let (agent_id, migrated, canonical) = {
             let mut state = self.state.lock().unwrap();
+            if state.is_stale_pane(pane_id) && !state.pane_agents.contains_key(pane_id) {
+                return;
+            }
             let agent_id = state.resolve_agent_id(pane_id, None);
             let migrated = self.register_pane(&mut state, pane_id, &agent_id, None);
             let canonical = self.build_agent(
@@ -1609,16 +1769,21 @@ impl Adapter for HerdrAdapter {
         tokio::spawn(async move { self.run_forever(store).await });
     }
 
-    fn drive(&self, agent_id: &str, command: DriveCommand) -> Result<(), DriveError> {
-        // read_tail is the one capability whose whole point is a response —
-        // it never dispatches fire-and-forget. The API layer routes it
-        // through Adapter::read_tail (synchronous, redacted, bounded);
-        // drive() refusing it here keeps a silent fallback to the
-        // discarded-response path impossible.
+    fn drive<'a>(
+        &'a self,
+        agent_id: &'a str,
+        command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+        // read_tail is the one capability whose whole point is a response;
+        // the API routes it through Adapter::read_tail. Refusing it here
+        // keeps a discarded-response fallback impossible.
         if matches!(command, DriveCommand::ReadTail { .. }) {
-            return Err(DriveError::NotImplemented("read_tail"));
+            return Box::pin(async { Err(DriveError::NotImplemented("read_tail")) });
         }
-        let target = self.drive_target(agent_id)?;
+        let target = match self.drive_target(agent_id) {
+            Ok(target) => target,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let (method, params) = match command {
             DriveCommand::Prompt { text } => {
                 ("agent.prompt", json!({"target": target, "text": text}))
@@ -1642,24 +1807,21 @@ impl Adapter for HerdrAdapter {
             DriveCommand::Approve { choice } => {
                 ("agent.prompt", json!({"target": target, "text": choice}))
             }
-            DriveCommand::Kill => return Err(DriveError::NotImplemented("kill")),
-            DriveCommand::Attach => return Err(DriveError::NotImplemented("attach")),
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let agent_id = agent_id.to_string();
-                let socket = self.socket_path.clone();
-                handle.spawn(async move {
-                    if let Err(e) = rpc_call(&socket, method, params).await {
-                        warn!(agent_id, error = %e, "drive command failed");
-                    }
-                });
-                Ok(())
+            DriveCommand::Kill => {
+                return Box::pin(async { Err(DriveError::NotImplemented("kill")) });
             }
-            Err(_) => Err(DriveError::Transport(
-                "no tokio runtime available for drive".to_string(),
-            )),
-        }
+            DriveCommand::Attach => {
+                return Box::pin(async { Err(DriveError::NotImplemented("attach")) });
+            }
+        };
+        let agent_id = agent_id.to_string();
+        let socket = self.socket_path.clone();
+        Box::pin(async move {
+            rpc_call(&socket, method, params)
+                .await
+                .map(|_| ())
+                .map_err(|error| map_drive_rpc_error(&agent_id, method, error))
+        })
     }
 
     fn read_tail<'a>(
@@ -1682,7 +1844,7 @@ impl Adapter for HerdrAdapter {
         Box::pin(async move {
             let response = rpc_call(&socket, "agent.read", params)
                 .await
-                .map_err(|e| DriveError::Transport(format!("agent.read failed: {e}")))?;
+                .map_err(|e| map_drive_rpc_error(agent_id, "agent.read", e))?;
             let text = response
                 .get("read")
                 .and_then(|read| read.get("text"))
@@ -1701,7 +1863,7 @@ impl Adapter for HerdrAdapter {
     }
 
     fn is_stale_agent(&self, agent_id: &str) -> bool {
-        self.state.lock().unwrap().stale_agents.contains(agent_id)
+        self.state.lock().unwrap().is_stale_agent(agent_id)
     }
 }
 
@@ -1711,9 +1873,9 @@ impl Adapter for HerdrAdapter {
 /// otherwise it is the typed [`DriveError::UnknownAgent`].
 impl HerdrAdapter {
     fn drive_target(&self, agent_id: &str) -> Result<String, DriveError> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let Some(pane) = state.agent_panes.get(agent_id) else {
-            return if state.stale_agents.contains(agent_id) {
+            return if state.is_stale_agent(agent_id) {
                 Err(DriveError::StaleAgent(agent_id.to_string()))
             } else {
                 Err(DriveError::UnknownAgent(agent_id.to_string()))
@@ -2266,11 +2428,15 @@ mod tests {
             Err(DriveError::StaleAgent(id)) if id == agent_id
         ));
         assert!(matches!(
-            adapter.drive(agent_id, DriveCommand::Prompt { text: "hi".into() }),
+            adapter
+                .drive(agent_id, DriveCommand::Prompt { text: "hi".into() })
+                .await,
             Err(DriveError::StaleAgent(id)) if id == agent_id
         ));
         assert!(matches!(
-            adapter.drive(agent_id, DriveCommand::Approve { choice: "y".into() }),
+            adapter
+                .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
+                .await,
             Err(DriveError::StaleAgent(id)) if id == agent_id
         ));
     }
@@ -2311,38 +2477,46 @@ mod tests {
         assert_eq!(agent.state, AgentState::Unknown);
 
         // A tracked pane in Unknown state is drivable (drive gates on the
-        // pane mapping, not the state): Ok, never a crash. The spawned rpc
-        // task fails to connect to /nonexistent.sock and only logs.
-        let result = adapter.drive(&agent.agent_id, DriveCommand::Prompt { text: "hi".into() });
+        // pane mapping, not the state): the transport outcome is returned,
+        // never hidden in a detached task.
+        let result = adapter
+            .drive(&agent.agent_id, DriveCommand::Prompt { text: "hi".into() })
+            .await;
         assert!(
-            result.is_ok(),
-            "drive on an unknown-state agent must be Ok: {result:?}"
+            matches!(result, Err(DriveError::Transport(_))),
+            "drive on an unknown-state agent must expose transport failure: {result:?}"
         );
 
         // An agent with no pane mapping gets the typed error.
-        let err = adapter.drive(
-            "herdr:pane:absent",
-            DriveCommand::Prompt { text: "hi".into() },
-        );
+        let err = adapter
+            .drive(
+                "herdr:pane:absent",
+                DriveCommand::Prompt { text: "hi".into() },
+            )
+            .await;
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "herdr:pane:absent"));
     }
 
-    #[test]
-    fn drive_rejects_unknown_agents() {
+    #[tokio::test]
+    async fn drive_rejects_unknown_agents() {
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
         assert!(!adapter.knows_agent("nope"));
-        let err = adapter.drive("nope", DriveCommand::Prompt { text: "hi".into() });
+        let err = adapter
+            .drive("nope", DriveCommand::Prompt { text: "hi".into() })
+            .await;
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
     }
 
-    #[test]
-    fn approve_dispatches_via_agent_prompt() {
+    #[tokio::test]
+    async fn approve_dispatches_via_agent_prompt() {
         // The pane's approve is an input send; herdr exposes no
         // approve-shaped RPC, so the choice goes through agent.prompt (the
         // same input-send the human typing into the pane produces).
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
         assert!(!adapter.knows_agent("nope"));
-        let err = adapter.drive("nope", DriveCommand::Approve { choice: "y".into() });
+        let err = adapter
+            .drive("nope", DriveCommand::Approve { choice: "y".into() })
+            .await;
         assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
     }
 
@@ -2351,14 +2525,15 @@ mod tests {
     // (D9) and bounds (D5) the tail before it leaves the machine.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn drive_refuses_read_tail_fire_and_forget() {
+    #[tokio::test]
+    async fn drive_refuses_read_tail_fallback() {
         // read_tail is the one capability whose whole point is a response:
-        // drive() (fire-and-forget) must refuse it so a silent fallback to
-        // the discarded-response path is impossible; the API layer routes it
-        // through Adapter::read_tail.
+        // the API layer routes it through Adapter::read_tail, and this path
+        // refuses it rather than discarding the result.
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        let err = adapter.drive("herdr:a", DriveCommand::ReadTail { lines: Some(5) });
+        let err = adapter
+            .drive("herdr:a", DriveCommand::ReadTail { lines: Some(5) })
+            .await;
         assert!(matches!(err, Err(DriveError::NotImplemented("read_tail"))));
     }
 
@@ -2835,9 +3010,11 @@ mod tests {
                     text: "hello".into(),
                 },
             )
+            .await
             .expect("prompt dispatch accepted");
         adapter
             .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
+            .await
             .expect("approve dispatch accepted");
 
         let requests = tokio::time::timeout(Duration::from_secs(2), server)
@@ -2853,6 +3030,203 @@ mod tests {
         assert_eq!(requests[2]["method"], "agent.prompt");
         assert_eq!(requests[2]["params"]["target"], "new-target");
         assert_eq!(requests[2]["params"]["text"], "y");
+    }
+
+    #[tokio::test]
+    async fn server_agent_not_found_is_stale_for_read_prompt_and_approve() {
+        // This is a local JSON-RPC mock, not a live Herdr proof. It exercises
+        // the production response/error path for all three controls so an
+        // asynchronous server rejection cannot be reported as success.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                let line = lines.next_line().await.expect("request").expect("line");
+                let request: Value = serde_json::from_str(&line).expect("json request");
+                let response = json!({
+                    "id": request["id"],
+                    "error": {"code": "agent_not_found", "message": "agent not found"}
+                })
+                .to_string()
+                    + "\n";
+                write
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                requests.push(request);
+            }
+            requests
+        });
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let agent_id = "herdr:pane:p1";
+
+        let read = adapter.read_tail(agent_id, 10).await;
+        let prompt = adapter
+            .drive(
+                agent_id,
+                DriveCommand::Prompt {
+                    text: "hello".into(),
+                },
+            )
+            .await;
+        let approve = adapter
+            .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
+            .await;
+
+        for result in [read.map(|_| ()), prompt, approve] {
+            assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
+        }
+        let requests = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("three RPCs timeout")
+            .expect("server task");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["agent.read", "agent.prompt", "agent.prompt"]
+        );
+    }
+
+    #[tokio::test]
+    async fn late_pane_events_cannot_resurrect_migrated_pane() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-late"},
+            "agent_status": "working",
+            "name": "old-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let moved: PaneInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-late"},
+            "agent_status": "working",
+            "display_agent": "new-target",
+            "pane_id": "w-new:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter
+            .state
+            .lock()
+            .unwrap()
+            .subscribed_panes
+            .insert("w-new:p1".to_string());
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&moved, sink, &store).await;
+
+        let late: PaneInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-late"},
+            "agent_status": "blocked",
+            "display_agent": "late-old-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&late, sink, &store).await;
+        adapter
+            .handle_event(
+                "pane_agent_detected",
+                &json!({"pane_id": "w-old:p1", "agent": "opencode"}),
+                mpsc::channel(16).0,
+                &store,
+            )
+            .await;
+
+        assert_eq!(
+            adapter.drive_target("herdr:ses-late").unwrap(),
+            "new-target"
+        );
+        let (old_present, old_stale) = {
+            let state = adapter.state.lock().unwrap();
+            (
+                state.pane_agents.contains_key("w-old:p1"),
+                state.stale_panes.contains_key("w-old:p1"),
+            )
+        };
+        assert!(!old_present);
+        assert!(old_stale);
+        assert_eq!(store.snapshot().await.agents.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reconnect_list_remap_is_atomic_and_keeps_stable_agent_live() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-remap"},
+            "agent_status": "working",
+            "name": "old-target",
+            "pane_id": "w-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let list: AgentListWire = serde_json::from_value(json!({"agents": [{
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-remap"},
+            "agent_status": "working",
+            "name": "new-target",
+            "pane_id": "w-new:p1",
+            "state_labels": {}
+        }]}))
+        .unwrap();
+
+        adapter.reconcile_against_list(&list, &store).await;
+
+        assert_eq!(
+            adapter.drive_target("herdr:ses-remap").unwrap(),
+            "new-target"
+        );
+        let (agent_stale, old_present, old_stale) = {
+            let state = adapter.state.lock().unwrap();
+            (
+                state.stale_agents.contains_key("herdr:ses-remap"),
+                state.pane_agents.contains_key("w-old:p1"),
+                state.stale_panes.contains_key("w-old:p1"),
+            )
+        };
+        assert!(!agent_stale);
+        assert!(!old_present);
+        assert!(old_stale);
+        let snapshot = store.snapshot().await;
+        assert!(snapshot.agents.contains_key("herdr:ses-remap"));
+        assert!(!snapshot.agents.contains_key("herdr:pane:w-old:p1"));
+    }
+
+    #[test]
+    fn tombstones_are_bounded() {
+        let mut state = SessionState::default();
+        for i in 0..(STALE_TOMBSTONE_CAP + 17) {
+            state.mark_stale_agent(format!("agent-{i}"));
+            state.mark_stale_pane(format!("pane-{i}"));
+        }
+        assert!(state.stale_agents.len() <= STALE_TOMBSTONE_CAP);
+        assert!(state.stale_panes.len() <= STALE_TOMBSTONE_CAP);
     }
 
     // #105 regression: exercise the production reader -> forwarder -> sink
@@ -3457,6 +3831,7 @@ mod ac2_live_tests {
                     choice: approved.choice.clone(),
                 },
             )
+            .await
             .expect("approve dispatch accepted");
 
         // 7. The agent receives the input and leaves blocked (agent.wait is

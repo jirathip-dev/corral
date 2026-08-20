@@ -542,12 +542,14 @@ The linked-worktree root is `CORRAL_WORKTREES_ROOT` (default
 `~/.herdr/worktrees`) and keeps the established `<repo>/<label>` layout.
 
 The git plane supplies branch facts for each recognized root/worktree. On a
-supervised plane restart, the old branch cache is cleared; present paths are
-repopulated by the replacement plane's fresh git probes, while vanished paths
-cannot retain their old branch. Repo and branch matching accepts raw or
-symlink/canonical path spellings, so a Herdr cwd under a symlinked `$HOME`
-still joins the git record. The label, pane title, display name, and terminal
-text are not branch or repo sources.
+supervised plane restart, the old branch cache and stored branch fields for
+recognized agents are cleared before replacement-plane probes begin; present
+paths are repopulated by fresh git facts, while vanished paths cannot retain
+their old branch. Repo identity and the other workspace/GitHub fields are
+preserved, and unknown paths are not reconciled. Repo and branch matching
+accepts raw or symlink/canonical path spellings, so a Herdr cwd under a
+symlinked `$HOME` still joins the git record. The label, pane title, display
+name, and terminal text are not branch or repo sources.
 An agent whose `worktree_path` matches none of the configured roots or Herdr
 worktree layout is intentionally left with `repo: null` and remains in
 `(no repo)`; do not repair that bucket by guessing from a pane label.

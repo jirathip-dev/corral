@@ -142,6 +142,31 @@ impl Integrator {
         }
     }
 
+    /// Reconcile the read model before starting a replacement plane
+    /// generation. Branch facts are generation-scoped, so clear the shared
+    /// cache and the stored branch on every recognized path together. The
+    /// repo/path identity and every other workspace/GitHub field remain
+    /// untouched; unknown paths are deliberately not matched.
+    pub async fn reconcile_generation(&self) {
+        self.attribution.reset_branch_facts();
+        let attribution = self.attribution.clone();
+        self.store
+            .update_where(
+                |agent| {
+                    agent.workspace.branch.is_some()
+                        && agent
+                            .workspace
+                            .worktree_path
+                            .as_deref()
+                            .is_some_and(|path| attribution.repo_for(Path::new(path)).is_some())
+                },
+                |agent| {
+                    agent.workspace.branch = None;
+                },
+            )
+            .await;
+    }
+
     /// Drain the plane channel AND the store change signal until the channel
     /// closes. The daemon keeps the channel alive for the process's
     /// lifetime; the function returns when every plane drops its sink
@@ -280,9 +305,11 @@ impl Integrator {
                         && let Some(facts) = attribution.facts_for(Path::new(path))
                     {
                         agent.workspace.repo = facts.repo;
-                        if facts.branch_known {
-                            agent.workspace.branch = facts.branch;
-                        }
+                        // A known path with no current-generation probe is
+                        // intentionally branchless. Do not preserve a branch
+                        // left by the previous generation while the new git
+                        // plane is still booting.
+                        agent.workspace.branch = facts.branch;
                     }
                 },
             )

@@ -584,6 +584,7 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
     let worktrees = temp.path().join("worktrees");
     let present = worktrees.join("linked-repo/present");
     let vanished = worktrees.join("linked-repo/vanished");
+    let unknown = temp.path().join("unknown");
     std::fs::create_dir_all(&primary).unwrap();
     std::fs::create_dir_all(&present).unwrap();
     std::fs::create_dir_all(&vanished).unwrap();
@@ -599,26 +600,70 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
     attribution.record_branch(&vanished, "stale-vanished");
     let present_string = present.to_string_lossy().into_owned();
     let vanished_string = vanished.to_string_lossy().into_owned();
+    let unknown_string = unknown.to_string_lossy().into_owned();
 
     let store = Store::new();
     let first = Integrator::new_with_attribution(store.clone(), attribution.clone());
     let (first_sink, first_rx) = plane_channel();
     let first_task = tokio::spawn(async move { first.run(first_rx).await });
     store
+        .apply(Change::upsert(agent("old-present", Some(&present_string))))
+        .await;
+    store
         .apply(Change::upsert(agent(
             "old-vanished",
             Some(&vanished_string),
         )))
         .await;
+    let mut unknown_agent = agent("unknown", Some(&unknown_string));
+    unknown_agent.workspace.branch = Some("orphan-branch".to_string());
+    let unknown_before = unknown_agent.clone();
+    store.apply(Change::upsert(unknown_agent)).await;
+    first_sink
+        .send(head(&present_string, "old-present", "present-old-sha"))
+        .await
+        .unwrap();
+    first_sink
+        .send(PlaneEvent::Git(GitEvent::DirtyChanged {
+            worktree: PathBuf::from(&present_string),
+            status: GitStatus {
+                dirty_worktree: true,
+                ahead: 3,
+                behind: 2,
+                ..Default::default()
+            },
+        }))
+        .await
+        .unwrap();
     first_sink
         .send(head(&vanished_string, "stale-vanished", "old-sha"))
         .await
         .unwrap();
-    let old = wait_for(&store, "old-vanished", |agent| {
+    let mut present_pr = pr(7, "present-old-sha", "PENDING");
+    present_pr.repo = "linked-repo".to_string();
+    present_pr.closing_issues = vec![GhIssueRef {
+        repo: "linked-repo".to_string(),
+        number: 109,
+        state: "OPEN".to_string(),
+        title: "generation boundary".to_string(),
+    }];
+    first_sink
+        .send(PlaneEvent::Gh(gh_state("linked-repo", vec![present_pr])))
+        .await
+        .unwrap();
+
+    let old_present = wait_for(&store, "old-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("old-present")
+            && agent.workspace.pr_number == Some(7)
+            && agent.workspace.dirty
+    })
+    .await;
+    let old_vanished = wait_for(&store, "old-vanished", |agent| {
         agent.workspace.branch.as_deref() == Some("stale-vanished")
     })
     .await;
-    assert_eq!(old.workspace.repo.as_deref(), Some("linked-repo"));
+    assert_eq!(old_present.workspace.repo.as_deref(), Some("linked-repo"));
+    assert_eq!(old_vanished.workspace.repo.as_deref(), Some("linked-repo"));
 
     // The directory disappears while the first generation is unable to
     // deliver its removal event. Its sender then closes, just like a failed
@@ -627,18 +672,34 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
     drop(first_sink);
     first_task.await.expect("first integrator generation exits");
 
-    // The supervisor's generation boundary keeps repo/layout facts but
-    // invalidates every branch until the replacement GitPlane re-observes it.
-    attribution.reset_branch_facts();
+    // The supervisor's generation boundary clears both the shared branch
+    // cache and stored recognized rows before replacement-plane facts arrive.
+    // The repo/path identity and all other workspace/GitHub fields survive.
+    let second = Integrator::new_with_attribution(store.clone(), attribution.clone());
+    second.reconcile_generation().await;
+    let old_present_cleared = store.get("old-present").await.expect("old present agent");
+    let mut expected_present = old_present.clone();
+    expected_present.workspace.branch = None;
+    assert_eq!(old_present_cleared, expected_present);
+    let old_vanished_cleared = store.get("old-vanished").await.expect("old vanished agent");
+    assert_eq!(
+        old_vanished_cleared.workspace.repo.as_deref(),
+        Some("linked-repo")
+    );
+    assert_eq!(old_vanished_cleared.workspace.branch, None);
+    assert_eq!(
+        store.get("unknown").await.expect("unknown agent"),
+        unknown_before
+    );
+
     let vanished_facts = attribution
         .facts_for(&vanished)
         .expect("layout remains known");
     assert_eq!(vanished_facts.branch, None);
     assert!(!vanished_facts.branch_known);
 
-    let second = Integrator::new_with_attribution(store.clone(), attribution.clone());
     let (second_sink, second_rx) = plane_channel();
-    tokio::spawn(async move { second.run(second_rx).await });
+    let second_task = tokio::spawn(async move { second.run(second_rx).await });
     store
         .apply(Change::upsert(agent(
             "fresh-present",
@@ -656,6 +717,11 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
         .await
         .unwrap();
 
+    let old_present = wait_for(&store, "old-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("current-present")
+    })
+    .await;
+    assert_eq!(old_present.workspace.repo.as_deref(), Some("linked-repo"));
     let present = wait_for(&store, "fresh-present", |agent| {
         agent.workspace.branch.as_deref() == Some("current-present")
     })
@@ -666,6 +732,10 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
     })
     .await;
     assert_eq!(vanished.workspace.branch, None);
+    drop(second_sink);
+    second_task
+        .await
+        .expect("second integrator generation exits");
 }
 
 #[tokio::test]

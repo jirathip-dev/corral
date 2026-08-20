@@ -1406,8 +1406,23 @@ impl HerdrAdapter {
             {
                 agent.workspace.repo = ws.repo.clone();
             }
-            if !facts.as_ref().is_some_and(|facts| facts.branch_known) {
-                agent.workspace.branch = ws.branch.clone();
+            match facts {
+                Some(facts) if facts.branch_known => {
+                    // A current git fact is authoritative for recognized
+                    // paths, including a detached HEAD represented by None.
+                    agent.workspace.branch = facts.branch;
+                }
+                Some(_) => {
+                    // The path is recognized, but this generation has not
+                    // observed its branch yet. Never restore a stale branch
+                    // from the previous stored row during that gap.
+                    agent.workspace.branch = None;
+                }
+                None => {
+                    // Unknown paths retain the existing preservation
+                    // behavior; they receive no guessed repo or branch.
+                    agent.workspace.branch = ws.branch.clone();
+                }
             }
             agent.workspace.dirty = ws.dirty;
             agent.workspace.ahead = ws.ahead;

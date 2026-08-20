@@ -136,10 +136,12 @@ worktree uses the established `<worktrees_root>/<repo>/<label>` layout, with
 the `<label>` treated only as a path component—not as branch identity.
 Branches come from git HEAD facts; display names, pane labels, and terminal
 titles never participate. A supervised git-plane restart clears the previous
-generation's branch cache, then repopulates present paths from fresh probes;
-this prevents a missed removal event from reviving a vanished worktree's old
-branch. Paths that match neither source remain `workspace.repo: null` and
-therefore stay in the `(no repo)` orphan bucket.
+generation's branch cache and the branch field on already-stored recognized
+agents, then repopulates present paths from fresh probes. Repo identity and
+the other workspace/GitHub fields survive that boundary; this prevents a
+missed removal event from reviving a vanished worktree's old branch. Paths
+that match neither source are not reconciled and remain
+`workspace.repo: null`, therefore staying in the `(no repo)` orphan bucket.
 
 ## Write side: the signed drive plane
 

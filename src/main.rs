@@ -1247,13 +1247,6 @@ fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>)
 async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
-        // A replacement GitPlane has an empty registry and will re-observe
-        // present worktrees during its boot/sweep. Drop branch values from
-        // the previous generation first so a missed WorktreeRemoved cannot
-        // make a vanished worktree look current to a fresh Herdr record.
-        // Repo roots and linked-worktree layout remain intact and valid paths
-        // regain their branches from the new plane's git facts.
-        attribution.reset_branch_facts();
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
         // GitPlane must boot with an EMPTY registry so the boot rescan
         // re-emits every worktree fact into the new integrator's empty
@@ -1267,9 +1260,14 @@ async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
         ));
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
         let (sink, rx) = plane_channel();
+        let integrator = Integrator::new_with_attribution(store.clone(), attribution.clone());
+        // Clear both the shared branch facts and already-stored recognized
+        // rows before either replacement plane can emit. This closes the
+        // missed-WorktreeRemoved gap without erasing repo identity or other
+        // workspace/GitHub fields; unknown paths remain orphaned.
+        integrator.reconcile_generation().await;
         git_plane.start(sink.clone());
         gh_plane.start(sink.clone());
-        let integrator = Integrator::new_with_attribution(store.clone(), attribution.clone());
         let started = tokio::time::Instant::now();
         let generation = tokio::spawn(async move { integrator.run(rx).await });
         match generation.await {

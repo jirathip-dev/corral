@@ -46,7 +46,7 @@ INTEGRATION_SHA256 = {
     "tools/icon/from-user-png.py": "a933a13a1da7f8e51a9427a38cd612ec8e5d6eb444cef6f6c378a6287c6e47d9",
     "tools/icon/check-desktop-entry.py": "801960b07623033a96bf22360800be9806ef500c2a9e0f7253957dd03869ba54",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "93241932c3cbd975eaef3efed58e68f09bcfd5e19d496e1471bf8683f453368d",
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "abfceebe8b371643658c41909213d57cf70537785207df61661d3353253bcb80",
     "scripts/install-corral-ui.sh": "962b084810ed8d23f09fbe616037a9372641826cf3e9b53cfcb28dbc4715445f",
     "scripts/setup-corrald.sh": "6612c55a1174bbfbc673234ce24441642185a8a24478b1e3eb856a370c3dd33e",
     "scripts/test-icon-packaging.sh": "3839305fe3a2d7db82412902c3f9f3a5e7d24a34c79e565c59fcd4f92319b5c5",

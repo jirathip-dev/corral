@@ -216,6 +216,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 336005E97AE4AE2F281CFEF9 /* Build configuration list for PBXNativeTarget "FleetNotifier" */;
 			buildPhases = (
+				CAF65563C21E3A10667C2256 /* Embed Release source attestation */,
 				B70BB7CACB156FBC2A502268 /* Sources */,
 				75E7343EE79DBDCE0E0EEA25 /* Resources */,
 			);
@@ -279,6 +280,30 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		CAF65563C21E3A10667C2256 /* Embed Release source attestation */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../ios/FleetNotifier",
+			);
+			name = "Embed Release source attestation";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/corral-release-source-attestation",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$CONFIGURATION\" = \"Release\" ]; then\n  python3 \"$SRCROOT/embed-release-source-digest.py\" \\\n    --source-root \"$SRCROOT/..\" \\\n    --output \"$DERIVED_FILE_DIR/corral-release-source-attestation\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B70BB7CACB156FBC2A502268 /* Sources */ = {
@@ -370,6 +395,16 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-Xlinker",
+					"-sectcreate",
+					"-Xlinker",
+					__CORRAL,
+					"-Xlinker",
+					__source_digest,
+					"-Xlinker",
+					"$(DERIVED_FILE_DIR)/corral-release-source-attestation",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier;
 				PRODUCT_NAME = FleetNotifier;

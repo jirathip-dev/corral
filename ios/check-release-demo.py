@@ -26,8 +26,24 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from release_source_manifest import (
+    RELEASE_SOURCE_FILES,
+    attestation_marker,
+    release_source_digest,
+)
+
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# This binds an inspected executable to the exact Release app source set used
+# for the approved build.  The build generates the marker from its actual
+# inputs; this pinned hash is the allowlisted source set for this change.  Any
+# Release source change requires a deliberate proof refresh rather than
+# silently reusing an old binary.
+APPROVED_RELEASE_SOURCE_DIGEST = (
+    "c4cf9ee6b6de2e2b1d9048f6102c891ccb46b3ae8472e04ed6d7abdbb9e7cf87"
+)
+RELEASE_SOURCE_ATTESTATION_MARKER = attestation_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 
 SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/App/FleetNotifierApp.swift": (
@@ -126,7 +142,7 @@ BINARY_FORBIDDEN = (
 # calls rather than leave the slash-prefixed spelling in a C string section.
 # These type/error-path markers are the stable binary evidence, while the
 # source checks above require the concrete registration/SSE/drive calls.
-BINARY_REQUIRED = (
+BINARY_REQUIRED_BASE = (
     "CorraldClient",
     "DriveClient",
     "RegisterResponse",
@@ -134,8 +150,16 @@ BINARY_REQUIRED = (
     "events failed:",
     "unparseable drive response",
 )
+BINARY_REQUIRED = (*BINARY_REQUIRED_BASE, RELEASE_SOURCE_ATTESTATION_MARKER)
 
 SUPPORTED_CONDITIONS = {"true", "false", "DEBUG", "!DEBUG"}
+
+# A decoded line separator must never become a real newline in the string
+# view: that would shift source-line alignment with the syntax view.  Keep a
+# canonical escaped spelling instead.  It is deliberately not equivalent to
+# the decoded character for marker matching, so a malformed or split literal
+# cannot accidentally satisfy a marker.
+UNICODE_LINE_SEPARATOR_SCALARS = frozenset({0x000A, 0x000D, 0x0085, 0x2028, 0x2029})
 
 # These are intentionally limited to user-facing/argument literals.  Syntax
 # markers such as ``enterDemo`` and ``func register(`` must only be found in
@@ -248,11 +272,10 @@ def _unicode_scalar_escape(
     scalar = int(digits, 16)
     if scalar > 0x10FFFF or 0xD800 <= scalar <= 0xDFFF:
         raise CheckFailure("invalid Swift Unicode scalar escape")
-    decoded = chr(scalar)
-    if decoded in "\r\n":
-        raise CheckFailure(
-            "Unicode scalar escape changing source line layout is unsupported"
-        )
+    if scalar in UNICODE_LINE_SEPARATOR_SCALARS:
+        decoded = f"\\u{{{scalar:X}}}"
+    else:
+        decoded = chr(scalar)
     return end - index + 1, decoded
 
 
@@ -286,6 +309,12 @@ def _lex_source(text: str) -> tuple[str, str]:
     def append_code(source: str) -> None:
         code.extend(source)
         strings.extend(source)
+
+    def append_interpolation_code(source: str) -> None:
+        """Keep interpolation expressions in code, but not in literal view."""
+
+        code.extend(source)
+        strings.extend(_blank(item) for item in source)
 
     def scan_line_comment(index: int) -> int:
         while index < len(text):
@@ -333,18 +362,18 @@ def _lex_source(text: str) -> tuple[str, str]:
                 continue
             character = text[index]
             if character == "(":
-                append_masked(character)
+                append_interpolation_code(character)
                 depth += 1
                 index += 1
                 continue
             if character == ")":
-                append_masked(character)
+                append_interpolation_code(character)
                 depth -= 1
                 index += 1
                 if depth == 0:
                     return index
                 continue
-            append_masked(character)
+            append_interpolation_code(character)
             index += 1
         raise CheckFailure("unterminated Swift string interpolation")
 
@@ -606,6 +635,22 @@ def _check_release_source(path: Path, required: tuple[str, ...]) -> None:
         ]
         if not matching:
             raise CheckFailure(f"{_display_path(path)} is missing {marker!r}")
+
+
+def _release_source_digest(root: Path = ROOT) -> str:
+    try:
+        return release_source_digest(root)
+    except (OSError, ValueError) as error:
+        raise CheckFailure(str(error)) from error
+
+
+def _check_release_source_attestation(root: Path = ROOT) -> None:
+    actual_digest = _release_source_digest(root)
+    if actual_digest != APPROVED_RELEASE_SOURCE_DIGEST:
+        raise CheckFailure(
+            "Release source digest changed; refresh the approved source proof "
+            f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
+        )
 
 
 def _run_checked(command: list[str]) -> str:
@@ -973,12 +1018,59 @@ let rawPoundFake = "\(##"model.startLive()"##)"
         _typecheck_swift_fixture(positive_debug, debug=True)
         _check_required_source(positive_debug, ("#if DEBUG", "func enterDemo"))
 
+        expression_debug = root / "expression-debug.swift"
+        expression_debug.write_text(
+            r'''#if DEBUG
+let rendered = """
+\({ () -> String in
+    func enterDemo() -> String { "demo" }
+    return enterDemo()
+}())
+"""
+#endif
+''',
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(expression_debug, debug=True)
+        _check_required_source(expression_debug, ("func enterDemo",))
+        expression_debug_analysis = _source_analysis(
+            expression_debug.read_text(encoding="utf-8")
+        )
+        if not any(
+            line.debug_active and not line.release_active and "enterDemo()" in line.code
+            for line in expression_debug_analysis.lines
+        ):
+            raise CheckFailure("Debug interpolation expression code was masked")
+
         positive_release = root / "positive-release.swift"
         positive_release.write_text(
             "#if !DEBUG\nfunc startLive() {}\n#endif\n", encoding="utf-8"
         )
         _typecheck_swift_fixture(positive_release, debug=False)
         _check_release_source(positive_release, ("func startLive()",))
+
+        expression_release = root / "expression-release.swift"
+        expression_release.write_text(
+            r"""#if !DEBUG
+struct FixtureModel {
+    func startLive() -> String { "live" }
+}
+let model = FixtureModel()
+let rendered = "\(model.startLive())"
+#endif
+""",
+            encoding="utf-8",
+        )
+        _typecheck_swift_fixture(expression_release, debug=False)
+        _check_release_source(expression_release, ("model.startLive()",))
+        expression_release_analysis = _source_analysis(
+            expression_release.read_text(encoding="utf-8")
+        )
+        if not any(
+            line.release_active and "model.startLive()" in line.code
+            for line in expression_release_analysis.lines
+        ):
+            raise CheckFailure("Release interpolation expression code was masked")
 
         string_release = root / "string-release.swift"
         string_release.write_text(
@@ -1082,6 +1174,25 @@ suffix
                 f"Unicode-escaped user-facing literal in {name}",
             )
 
+        for scalar in sorted(UNICODE_LINE_SEPARATOR_SCALARS):
+            spelling = f"\\u{{{scalar:X}}}"
+            fixture = root / f"unicode-line-separator-{scalar:X}.swift"
+            fixture.write_text(
+                f'#if DEBUG\nlet banner = "{spelling}demo)"\n#endif\n',
+                encoding="utf-8",
+            )
+            _typecheck_swift_fixture(fixture, debug=True)
+            analysis = _source_analysis(fixture.read_text(encoding="utf-8"))
+            if len(analysis.lines) != 3:
+                raise CheckFailure(
+                    f"Unicode scalar {spelling} changed source-line alignment"
+                )
+            if not any(spelling in line.strings for line in analysis.lines):
+                raise CheckFailure(
+                    f"Unicode scalar {spelling} was not normalized in literal view"
+                )
+            _check_source(fixture, (r"\(demo\)",))
+
         malformed_unicode = root / "malformed-unicode.swift"
         malformed_unicode.write_text(
             r"""let banner = "\u{not-a-scalar}"
@@ -1112,6 +1223,93 @@ suffix
             lambda: _source_analysis("#if UNKNOWN\n#endif\n"),
             "unknown conditional expression",
         )
+
+        modified_source_root = root / "modified-checkout"
+        for relative in RELEASE_SOURCE_FILES:
+            source = ROOT / relative
+            destination = modified_source_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        modified_fleet_views = (
+            modified_source_root / "ios/FleetNotifier/UI/FleetViews.swift"
+        )
+        modified_fleet_views.write_text(
+            modified_fleet_views.read_text(encoding="utf-8")
+            + '\nlet escapedDemoFixture = "\\u{28}demo)"\n',
+            encoding="utf-8",
+        )
+        if (
+            _release_source_digest(modified_source_root)
+            == APPROVED_RELEASE_SOURCE_DIGEST
+        ):
+            raise CheckFailure("modified Release source reused the approved digest")
+        _expect_failure(
+            lambda: _check_release_source_attestation(modified_source_root),
+            "optimized binary built from modified Release source",
+        )
+        modified_attestation = root / "modified-release-attestation"
+        _run_checked(
+            [
+                sys.executable,
+                str(ROOT / "ios/embed-release-source-digest.py"),
+                "--source-root",
+                str(modified_source_root),
+                "--output",
+                str(modified_attestation),
+            ]
+        )
+        modified_binary = root / "modified-release-binary"
+        sdk_path = _run_checked(
+            ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"]
+        ).strip()
+        modified_sources = [
+            str(modified_source_root / relative) for relative in RELEASE_SOURCE_FILES
+        ]
+        _run_checked(
+            [
+                "swiftc",
+                "-O",
+                "-parse-as-library",
+                "-swift-version",
+                "5",
+                "-target",
+                "arm64-apple-ios17.0",
+                "-sdk",
+                sdk_path,
+                *modified_sources,
+                "-Xlinker",
+                "-sectcreate",
+                "-Xlinker",
+                "__CORRAL",
+                "-Xlinker",
+                "__source_digest",
+                "-Xlinker",
+                str(modified_attestation),
+                "-o",
+                str(modified_binary),
+            ]
+        )
+        public_binary_check = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "ios/check-release-demo.py"),
+                "--binary",
+                str(modified_binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT / "ios",
+        )
+        if public_binary_check.returncode == 0:
+            raise CheckFailure(
+                "public --binary proof accepted a Mach-O built from modified sources"
+            )
+        if "lacks real-path marker" not in public_binary_check.stderr:
+            raise CheckFailure(
+                "modified-source binary failure did not come from attestation evidence: "
+                f"{public_binary_check.stderr.strip()}"
+            )
 
         for marker in BINARY_REQUIRED:
             fixture = _valid_binary_fixture().replace(marker, "")
@@ -1197,6 +1395,7 @@ def main() -> int:
     try:
         if args.self_test:
             _self_test()
+        _check_release_source_attestation()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

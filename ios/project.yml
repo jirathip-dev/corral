@@ -23,6 +23,19 @@ targets:
       - FleetNotifier
       - path: FleetNotifier/Assets.xcassets
         buildPhase: resources
+    preBuildScripts:
+      - name: Embed Release source attestation
+        script: |
+          if [ "$CONFIGURATION" = "Release" ]; then
+            python3 "$SRCROOT/embed-release-source-digest.py" \
+              --source-root "$SRCROOT/.." \
+              --output "$DERIVED_FILE_DIR/corral-release-source-attestation"
+          fi
+        inputFiles:
+          - "$(SRCROOT)/../ios/FleetNotifier"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/corral-release-source-attestation"
+        basedOnDependencyAnalysis: false
     info:
       path: FleetNotifier/Info.plist
       properties:
@@ -57,6 +70,17 @@ targets:
         PRODUCT_NAME: FleetNotifier
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
+      configs:
+        Release:
+          OTHER_LDFLAGS:
+            - "-Xlinker"
+            - "-sectcreate"
+            - "-Xlinker"
+            - "__CORRAL"
+            - "-Xlinker"
+            - "__source_digest"
+            - "-Xlinker"
+            - "$(DERIVED_FILE_DIR)/corral-release-source-attestation"
   FleetNotifierTests:
     type: bundle.unit-test
     platform: iOS

@@ -30,6 +30,8 @@ ios/
     UI/                           fleet list, tappable agent detail/actions, claim cards, registration, settings
     FleetNotifierTests/            unit tests (canonical bytes, SSE, claims, controls, step-up, demo)
   check-release-demo.py           source and Release-binary demo boundary gate
+  embed-release-source-digest.py  Release build-phase source attestation generator
+  release_source_manifest.py      shared source manifest/digest implementation
 ```
 
 ## Build
@@ -68,6 +70,15 @@ with successful `file`/`otool` iOS or iOS Simulator platform checks and scans
 each slice independently. Release must retain the real registration, SSE, and
 drive client/error paths in every slice while containing no demo entrypoint,
 menu label, or seeded fake-agent identifier.
+
+The binary proof also requires the Release-only
+`corral-release-source-sha256:<digest>` attestation. The Release build phase
+generates that marker from the complete app Swift source manifest and embeds it
+in a dedicated Mach-O linker section; the checker pins the approved digest and
+requires the generated marker in every inspected architecture slice. A source
+edit or an executable built from a different checked-out source set therefore
+fails closed; this is source/build provenance, not code signing or a
+physical-device/TestFlight validation claim.
 
 ## Signing / distribution status
 

@@ -831,72 +831,358 @@ final class StepUpDriveFlowTests: XCTestCase {
 
 // MARK: - Tappable drive safety (#110)
 
+/// Awaitable, lock-protected request observation. URLProtocol callbacks run
+/// off the main actor, so tests must not inspect a bare mutable array while a
+/// drive task is still running.
+private final class AsyncCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let updates: AsyncStream<Int>
+    private let continuation: AsyncStream<Int>.Continuation
+
+    init() {
+        var continuation: AsyncStream<Int>.Continuation?
+        let updates = AsyncStream<Int>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        self.updates = updates
+        self.continuation = continuation!
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        let next = count
+        lock.unlock()
+        continuation.yield(next)
+    }
+
+    func waitFor(atLeast target: Int,
+                 timeoutNanoseconds: UInt64 = 2_000_000_000) async -> Bool {
+        if value >= target { return true }
+        let updates = self.updates
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = updates.makeAsyncIterator()
+                while let next = await iterator.next() {
+                    if next >= target { return true }
+                }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class DriveRequestLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requestStorage: [URLRequest] = []
+    let observed = AsyncCount()
+    let completed = AsyncCount()
+    let cancelled = AsyncCount()
+
+    func record(_ request: URLRequest) {
+        lock.lock()
+        requestStorage.append(request)
+        lock.unlock()
+        observed.increment()
+    }
+
+    var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestStorage
+    }
+}
+
+private final class DriveRequestGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+    private var cancelled = false
+
+    func wait() -> Bool {
+        condition.lock()
+        while !released && !cancelled {
+            condition.wait()
+        }
+        let canRespond = !cancelled
+        condition.unlock()
+        return canRespond
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func cancel() {
+        condition.lock()
+        cancelled = true
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class DeterministicDriveScript: @unchecked Sendable {
+    let log = DriveRequestLog()
+    let response: Data
+    let gate: DriveRequestGate?
+
+    init(response: Data, gate: DriveRequestGate? = nil) {
+        self.response = response
+        self.gate = gate
+    }
+}
+
+/// Immediate and gated responses share one URLProtocol so the tests exercise
+/// AppModel's real DriveClient path while retaining deterministic barriers.
+private final class DeterministicDriveURLProtocol: URLProtocol {
+    static var script: DeterministicDriveScript?
+    private var stopWasRecorded = false
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let script = Self.script, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        script.log.record(request)
+        let canRespond = script.gate?.wait() ?? true
+        if canRespond {
+            let response = HTTPURLResponse(url: url, statusCode: 200,
+                                           httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: script.response)
+            client?.urlProtocolDidFinishLoading(self)
+        } else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        }
+        script.log.completed.increment()
+    }
+
+    override func stopLoading() {
+        guard !stopWasRecorded else { return }
+        stopWasRecorded = true
+        guard let script = Self.script, script.gate != nil else { return }
+        script.log.cancelled.increment()
+        script.gate?.cancel()
+    }
+}
+
 @MainActor
 final class TappableDriveSafetyTests: XCTestCase {
-    private func scriptedSession() -> URLSession {
+    private func session(for script: DeterministicDriveScript) -> URLSession {
+        DeterministicDriveURLProtocol.script = script
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [StepUpDriveFlowTests.ScriptedURLProtocol.self]
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
         return URLSession(configuration: config)
     }
 
-    private func configure(_ model: AppModel, agent: Agent) {
+    private func configure(_ model: AppModel, agent: Agent,
+                           grants: [String] = ["read_tail"]) {
         model.mode = .live
         model.keyId = "k"
         model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
-        model.grants = ["read_tail"]
+        model.grants = grants
+        model.hostURL = URL(string: "http://daemon")!
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
                                              agents: [agent.agentId: agent])))
     }
 
-    func testDeletedDetailTargetCannotDispatchTail() async {
-        StepUpDriveFlowTests.ScriptedURLProtocol.requests = []
-        StepUpDriveFlowTests.ScriptedURLProtocol.responses = [:]
+    private func agent(_ id: String, state: AgentState = .working,
+                       capabilities: [String]) -> Agent {
+        Agent(agentId: id, state: state, capabilities: capabilities,
+              displayName: id)
+    }
+
+    private func blockedAgent(_ id: String = "herdr:blocked") -> Agent {
+        let hash = "sha256:claim"
+        return Agent(agentId: id, state: .blocked,
+                     capabilities: ["approve", "prompt", "interrupt", "read_tail"],
+                     waitingOn: WaitingOn(kind: .menu, prompt: "go?", promptHash: hash,
+                                          approvalId: Claim.approvalId(agentId: id, promptHash: hash),
+                                          choices: ["y", "n"]),
+                     displayName: id)
+    }
+
+    private func envelope(of request: URLRequest) throws -> [String: Any] {
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody ?? Data())
+            as? [String: Any])
+        return try XCTUnwrap(root["envelope"] as? [String: Any])
+    }
+
+    func testDeletedDetailTargetCannotDispatchTail() {
         let model = AppModel()
-        let stale = Agent(agentId: "herdr:deleted", state: .working,
-                          capabilities: ["read_tail"])
+        let stale = agent("herdr:deleted", capabilities: ["read_tail"])
         model.mode = .live
         model.keyId = "k"
         model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
         model.grants = ["read_tail"]
+        let script = DeterministicDriveScript(response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
 
         model.driveReadTail(agent: stale,
                             driveClient: DriveClient(host: URL(string: "http://daemon")!,
-                                                     session: scriptedSession()))
+                                                     session: session))
 
-        XCTAssertEqual(StepUpDriveFlowTests.ScriptedURLProtocol.requests.count, 0,
-                       "a deleted selection must not reach /drive")
+        XCTAssertTrue(script.log.requests.isEmpty, "a deleted selection must not reach /drive")
         XCTAssertEqual(model.banner?.kind, "stale_agent")
     }
 
-    func testDuplicateTailTapUsesOneInFlightRequestAndTail200() async {
-        let driveURL = URL(string: "http://daemon/drive")!
-        StepUpDriveFlowTests.ScriptedURLProtocol.requests = []
-        StepUpDriveFlowTests.ScriptedURLProtocol.responses = [
-            driveURL: (HTTPURLResponse(url: driveURL, statusCode: 200,
-                                       httpVersion: nil, headerFields: nil)!,
-                       Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"lines":[]}}"#.utf8))
-        ]
-        let model = AppModel()
-        let live = Agent(agentId: "herdr:live", state: .working,
-                         capabilities: ["read_tail"])
-        configure(model, agent: live)
-        let client = DriveClient(host: URL(string: "http://daemon")!, session: scriptedSession())
-
-        model.driveReadTail(agent: live, driveClient: client)
-        XCTAssertTrue(model.isActionInFlight(agentId: live.agentId, capability: .readTail))
-        model.driveReadTail(agent: live, driveClient: client)
-
-        for _ in 0..<20 where StepUpDriveFlowTests.ScriptedURLProtocol.requests.isEmpty {
-            await Task.yield()
+    func testDirectPromptInterruptAndApprovalDispatchPaths() async throws {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
         }
-        let drives = StepUpDriveFlowTests.ScriptedURLProtocol.requests.filter { $0.url?.path == "/drive" }
-        XCTAssertEqual(drives.count, 1, "duplicate taps must not create a second signed action")
-        guard let drive = drives.first else { return }
-        let body = try? JSONSerialization.jsonObject(with: drive.httpBody ?? Data()) as? [String: Any]
-        let envelope = body?["envelope"] as? [String: Any]
-        let payload = envelope?["payload"] as? [String: Any]
-        XCTAssertEqual(payload?["lines"] as? Int, 200)
-        XCTAssertEqual(payload?["kind"] as? String, "read_tail")
+        let model = AppModel()
+        let live = blockedAgent()
+        configure(model, agent: live,
+                  grants: ["prompt", "interrupt", "approve", "read_tail"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.drivePrompt(agent: live, text: "continue", driveClient: client)
+        let promptObserved = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(promptObserved)
+        let promptCompleted = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(promptCompleted)
+        let promptEnvelope = try envelope(of: try XCTUnwrap(script.log.requests.first))
+        XCTAssertEqual(promptEnvelope["capability"] as? String, "prompt")
+        XCTAssertEqual((promptEnvelope["payload"] as? [String: Any])?["text"] as? String,
+                       "continue")
+
+        model.driveInterrupt(agent: live, driveClient: client)
+        let interruptObserved = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(interruptObserved)
+        let interruptCompleted = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(interruptCompleted)
+        let interruptEnvelope = try envelope(of: script.log.requests[1])
+        XCTAssertEqual(interruptEnvelope["capability"] as? String, "interrupt")
+        XCTAssertTrue(interruptEnvelope["payload"] is NSNull, "Interrupt uses the null payload")
+
+        model.driveApprove(agent: live, choice: "y", driveClient: client)
+        let approvalObserved = await script.log.observed.waitFor(atLeast: 3)
+        XCTAssertTrue(approvalObserved)
+        let approvalCompleted = await script.log.completed.waitFor(atLeast: 3)
+        XCTAssertTrue(approvalCompleted)
+        let approvalEnvelope = try envelope(of: script.log.requests[2])
+        XCTAssertEqual(approvalEnvelope["capability"] as? String, "approve")
+        let approvalPayload = try XCTUnwrap(approvalEnvelope["payload"] as? [String: Any])
+        XCTAssertEqual(approvalPayload["approval_id"] as? String, live.waitingOn?.approvalId)
+        XCTAssertEqual(approvalPayload["prompt_hash"] as? String, live.waitingOn?.promptHash)
+        XCTAssertEqual(approvalPayload["choice"] as? String, "y")
+    }
+
+    func testDuplicateApprovalChoicesShareOneDirectClaimKey() async {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8), gate: gate)
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let model = AppModel()
+        let live = blockedAgent()
+        configure(model, agent: live, grants: ["approve"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.driveApprove(agent: live, choice: "y", driveClient: client)
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+        model.driveApprove(agent: live, choice: "n", driveClient: client)
+
+        XCTAssertEqual(script.log.requests.count, 1,
+                       "Approve and Deny must share one in-flight claim key")
+        XCTAssertTrue(model.isActionInFlight(agentId: live.agentId, capability: .approve))
+        gate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(completed)
+    }
+
+    func testDuplicateApprovalChoicesShareOneNotificationClaimKey() async throws {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8), gate: gate)
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let model = AppModel()
+        let live = blockedAgent("herdr:notification")
+        configure(model, agent: live, grants: ["approve"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let waiting = try XCTUnwrap(live.waitingOn)
+        let payload = PushPayload.blocked(agent: live, waiting: waiting)
+
+        model.handleNotificationReply(payload: payload, action: .approve, driveClient: client)
+        model.handleNotificationReply(payload: payload, action: .deny, driveClient: client)
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+
+        XCTAssertEqual(script.log.requests.count, 1,
+                       "notification Approve and Deny must share one in-flight claim key")
+        gate.release()
+        let completed = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(completed)
+        await Task.yield()
+    }
+
+    func testDemoBoundaryCancelsEveryInFlightDriveTask() async {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8), gate: gate)
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.script = nil
+        }
+        let model = AppModel()
+        let live = agent("herdr:boundary", capabilities: ["read_tail", "prompt"])
+        configure(model, agent: live, grants: ["read_tail", "prompt"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.driveReadTail(agent: live, driveClient: client)
+        model.drivePrompt(agent: live, text: "keep working", driveClient: client)
+        let observed = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(observed, "both drives must be in flight before the boundary")
+        XCTAssertEqual(model.inFlightDriveCount, 2)
+
+        model.enterDemo()
+        XCTAssertEqual(model.inFlightDriveCount, 0)
+        let cancelledAll = await script.log.cancelled.waitFor(atLeast: 2)
+        XCTAssertTrue(cancelledAll,
+                      "enterDemo must cancel every live drive task, not only the latest")
+        XCTAssertEqual(model.mode, .demo)
+        let completed = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(completed)
     }
 }
 
@@ -1201,7 +1487,7 @@ final class BoardModelTests: XCTestCase {
     }
 }
 
-// MARK: - Tappable controls, grant explanations, and selection (#110)
+// MARK: - Tappable controls, grant explanations, and navigation (#110)
 
 final class RowActionTests: XCTestCase {
 
@@ -1273,29 +1559,35 @@ final class RowActionTests: XCTestCase {
 }
 
 final class TappableControlStateTests: XCTestCase {
-    func testIdleDoneDisclosureTogglesCollapsedToExpanded() {
-        var disclosure = IdleDoneDisclosure()
-        XCTAssertFalse(disclosure.isExpanded)
-        XCTAssertEqual(disclosure.stateLabel, "Collapsed")
-        disclosure.toggle()
-        XCTAssertTrue(disclosure.isExpanded)
-        XCTAssertEqual(disclosure.stateLabel, "Expanded")
+    func testFleetViewStateDrivesIdleDoneDisclosure() {
+        var state = FleetViewState()
+        XCTAssertFalse(state.idleDoneDisclosure.isExpanded)
+        XCTAssertEqual(state.idleDoneDisclosure.stateLabel, "Collapsed")
+
+        // FleetView wires IdleDoneHeader's action to this exact state method.
+        state.toggleIdleDone()
+        XCTAssertTrue(state.idleDoneDisclosure.isExpanded)
+        XCTAssertEqual(state.idleDoneDisclosure.stateLabel, "Expanded")
+        state.setIdleDoneExpanded(false)
+        XCTAssertEqual(state.idleDoneDisclosure.stateLabel, "Collapsed")
+        XCTAssertEqual(IdleDoneHeaderLayout.minimumHitHeight, 44)
     }
 
-    func testRowSelectionReconcilesWhenTheSelectedAgentIsDeleted() {
-        var selection = AgentSelection()
-        selection.select("herdr:selected")
-        XCTAssertEqual(selection.route, AgentRoute(agentId: "herdr:selected"))
+    func testFleetNavigationPathReconcilesWhenTheRoutedAgentIsDeleted() {
+        var state = FleetViewState()
+        state.open(agentId: "herdr:selected")
+        XCTAssertEqual(state.navigationPath, [AgentRoute(agentId: "herdr:selected")])
 
-        selection.reconcile(availableAgentIds: ["herdr:other"])
-        XCTAssertNil(selection.route, "deleted detail routes must not remain actionable")
+        state.reconcile(availableAgentIds: ["herdr:other"])
+        XCTAssertTrue(state.navigationPath.isEmpty,
+                      "deleted detail routes must be removed from NavigationStack's path")
     }
 
-    func testRowSelectionSurvivesUnrelatedFleetUpdates() {
-        var selection = AgentSelection()
-        selection.select("herdr:selected")
-        selection.reconcile(availableAgentIds: ["herdr:selected", "herdr:new"])
-        XCTAssertEqual(selection.route?.agentId, "herdr:selected")
+    func testFleetNavigationPathSurvivesUnrelatedFleetUpdates() {
+        var state = FleetViewState()
+        state.open(agentId: "herdr:selected")
+        state.reconcile(availableAgentIds: ["herdr:selected", "herdr:new"])
+        XCTAssertEqual(state.navigationPath, [AgentRoute(agentId: "herdr:selected")])
     }
 
     func testExplicitStateTextCoversEveryLifecycleState() {

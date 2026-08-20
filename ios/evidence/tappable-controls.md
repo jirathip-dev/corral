@@ -11,11 +11,17 @@ This evidence accompanies the iOS board/detail-control work.
   XCTest framework path.
 - `git diff --check` passed.
 
-The state tests cover the Idle / done disclosure transition, live row-route
-reconciliation after deletion, explicit lifecycle labels, action availability
-and grant explanations, Tail 200 payload construction, null Interrupt payload
-construction, claim-bound approval availability, deleted-target refusal, and
-duplicate Tail suppression.
+The compiled test target includes `FleetViewState` coverage for the Idle / done
+disclosure and the actual `NavigationStack` path reconciliation after
+deletion. It also includes deterministic URLProtocol-backed drive tests that
+await request observation and completion for Prompt, Interrupt, direct
+approval, notification approval, duplicate claim replies, deleted-target
+refusal, and two simultaneous live drives cancelled at the demo boundary.
+Separate policy tests cover explicit lifecycle labels, action
+availability/grant explanations, Tail 200 payload construction, null
+Interrupt payload construction, and claim-bound approval availability. These
+tests were type-checked but could not execute because this host has no iOS
+runtime.
 
 ## Runtime limitation
 

@@ -137,9 +137,13 @@ Working, Idle, Done, and Blocked text alongside their color cues. Disabled
 controls retain a plain-language explanation naming the missing agent
 capability or device grant.
 
-The iOS unit suite covers the disclosure transition, route reconciliation when
-an agent is deleted, explicit lifecycle labels, bounded Tail 200 and null
-Interrupt payloads, claim-bound approval availability, and grant explanations.
+The iOS test target includes coverage for the disclosure transition and the actual
+`NavigationStack` path reconciliation when an agent is deleted, explicit
+lifecycle labels, bounded Tail 200 and null Interrupt payloads, and grant
+explanations. The type-checked deterministic URLProtocol-backed action tests
+cover Prompt, Interrupt, direct approval, notification approval, duplicate
+claim replies, and cancellation of multiple live drives at the demo boundary;
+runtime execution remains pending an installed iOS runtime.
 The current verification host has the iOS SDK but no installed iOS runtime or
 device platform, so no simulator/device interaction evidence is claimed here;
 see `ios/evidence/tappable-controls.md` for the source/type-check record.

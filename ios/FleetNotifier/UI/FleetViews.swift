@@ -706,16 +706,35 @@ struct CiGlyph: View {
 /// matches the default row content inset so header text aligns with row
 /// content instead of sitting one notch deeper (round-1 finding F4).
 struct PinnedHeader<Content: View>: View {
+    let fillsInteractiveWidth: Bool
     @ViewBuilder var content: () -> Content
 
+    init(fillsInteractiveWidth: Bool = false,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.fillsInteractiveWidth = fillsInteractiveWidth
+        self.content = content
+    }
+
+    @ViewBuilder
     var body: some View {
-        content()
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 20)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.bar, ignoresSafeAreaEdges: [])
-            .listRowInsets(EdgeInsets())
+        if fillsInteractiveWidth {
+            // Interactive content owns its own insets. Keeping padding out
+            // here makes the rendered pinned header area identical to the
+            // Button hit target instead of leaving dead outer margins.
+            content()
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar, ignoresSafeAreaEdges: [])
+                .listRowInsets(EdgeInsets())
+        } else {
+            content()
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar, ignoresSafeAreaEdges: [])
+                .listRowInsets(EdgeInsets())
+        }
     }
 }
 
@@ -725,13 +744,20 @@ struct PinnedHeader<Content: View>: View {
 /// Expanded/Collapsed value complements the chevron and is also exposed as
 /// the accessibility value, so the state is clear without relying on shape
 /// or color.
+enum IdleDoneHeaderLayout {
+    static let horizontalPadding: CGFloat = 20
+    static let verticalPadding: CGFloat = 6
+    static let minimumHitHeight: CGFloat = 44
+}
+
 struct IdleDoneHeader: View {
     let count: Int
-    @Binding var isExpanded: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
 
     var body: some View {
         Button {
-            withAnimation { isExpanded.toggle() }
+            withAnimation { onToggle() }
         } label: {
             HStack(spacing: 8) {
                 Text("Idle / done (\(count))")
@@ -743,9 +769,12 @@ struct IdleDoneHeader: View {
                     .font(.caption2)
                     .accessibilityHidden(true)
             }
-            // A minimum hit height plus max width makes the whole pinned
-            // header tappable, including trailing whitespace.
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, IdleDoneHeaderLayout.horizontalPadding)
+            .padding(.vertical, IdleDoneHeaderLayout.verticalPadding)
+            // This frame is the entire interactive pinned-header surface;
+            // PinnedHeader does not add an external padded margin for it.
+            .frame(maxWidth: .infinity, minHeight: IdleDoneHeaderLayout.minimumHitHeight,
+                   alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -761,7 +790,7 @@ struct FleetView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        NavigationStack(path: $navigationPath) {
+        NavigationStack(path: $viewState.navigationPath) {
             List {
                 if let banner = model.banner {
                     BannerView(banner: banner) {
@@ -785,19 +814,7 @@ struct FleetView: View {
             // matter — and not on keystrokes (see promptDrafts above).
             .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
                 promptDrafts.prune(to: agentIds)
-                var nextSelection = selection
-                nextSelection.reconcile(availableAgentIds: agentIds)
-                selection = nextSelection
-                navigationPath.removeAll { !agentIds.contains($0.agentId) }
-            }
-            .onChange(of: navigationPath) { _, path in
-                var nextSelection = selection
-                if let route = path.last {
-                    nextSelection.select(route.agentId)
-                } else {
-                    nextSelection.clear()
-                }
-                selection = nextSelection
+                viewState.reconcile(availableAgentIds: agentIds)
             }
             .navigationDestination(for: AgentRoute.self) { route in
                 AgentDetailView(agentId: route.agentId, model: model, drafts: promptDrafts)
@@ -828,9 +845,7 @@ struct FleetView: View {
     }
 
     @State private var showSettings = false
-    @State private var idleDoneDisclosure = IdleDoneDisclosure()
-    @State private var navigationPath: [AgentRoute] = []
-    @State private var selection = AgentSelection()
+    @State private var viewState = FleetViewState()
     /// Per-agent prompt drafts (R2-B). Held in `@State`, DELIBERATELY not
     /// `@StateObject`: `@State` keeps the object's identity across renders
     /// but does not subscribe to `objectWillChange`, so keystrokes do not
@@ -879,22 +894,24 @@ struct FleetView: View {
             }
         }
         Section {
-            if idleDoneDisclosure.isExpanded {
+            if viewState.idleDoneDisclosure.isExpanded {
                 ForEach(sections.idleDone) { agent in
                     agentRow(agent)
                 }
             }
         } header: {
-            pinnedHeader {
+            pinnedHeader(fillsInteractiveWidth: true) {
                 IdleDoneHeader(count: sections.idleDone.count,
-                               isExpanded: $idleDoneDisclosure.isExpanded)
+                               isExpanded: viewState.idleDoneDisclosure.isExpanded,
+                               onToggle: { viewState.toggleIdleDone() })
             }
         }
     }
 
     @ViewBuilder
-    private func pinnedHeader<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
-        PinnedHeader(content: content)
+    private func pinnedHeader<Content: View>(fillsInteractiveWidth: Bool = false,
+                                             @ViewBuilder content: @escaping () -> Content) -> some View {
+        PinnedHeader(fillsInteractiveWidth: fillsInteractiveWidth, content: content)
     }
 
     @ViewBuilder

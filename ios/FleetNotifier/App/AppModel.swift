@@ -51,7 +51,10 @@ final class AppModel: ObservableObject {
     private var notifier: LocalNotifier?
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
-    private var driveTask: Task<Void, Never>?
+    /// Every live drive gets its own task handle. A mode/device boundary must
+    /// cancel all of them: retaining only the latest handle lets an earlier
+    /// Tail/Prompt/Interrupt finish against the old identity after reset.
+    private var driveTasks: [String: Task<Void, Never>] = [:]
     @Published private var inFlightDriveKeys: Set<DriveActionKey> = []
     private var driveGeneration = 0
     /// In-flight notification-reply validation (cold-start snapshot fetch).
@@ -85,6 +88,8 @@ final class AppModel: ObservableObject {
         guard let capability else { return false }
         return inFlightDriveKeys.contains { $0.target == agentId && $0.capability == capability }
     }
+
+    var inFlightDriveCount: Int { inFlightDriveKeys.count }
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -296,14 +301,15 @@ final class AppModel: ObservableObject {
     /// `hash_mismatch`). Simple approve/deny/continue replies never carry
     /// free text, so the lock-screen surface cannot trip the destructive
     /// step-up gate; destructive drives happen in-app where Face ID runs.
-    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action) {
+    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
+                                 driveClient injectedDriveClient: DriveClient? = nil) {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             // R-N1: bind to the CURRENT host at reply time — never a
             // client captured at startLive() time (it can be stale after
             // a device reset + re-registration).
             guard let hostURL = self.hostURL else { return }
-            let driveClient = DriveClient(host: hostURL)
+            let driveClient = injectedDriveClient ?? DriveClient(host: hostURL)
             let live = await self.resolveLiveAgent(payload: payload)
             switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
             case .failure(.stale):
@@ -367,8 +373,8 @@ final class AppModel: ObservableObject {
         let approvePayload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                           promptHash: promptHash,
                                                           choice: choice)
-        let key = DriveActionKey(capability: .approve, target: payload.agentId,
-                                 identity: "\(approvalId)|\(promptHash)|\(choice)")
+        let key = approvalActionKey(agentId: payload.agentId, approvalId: approvalId,
+                                   promptHash: promptHash)
         guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: payload.agentId, payload: approvePayload,
               driveClient: driveClient, keyId: keyId, signer: signer,
@@ -410,8 +416,8 @@ final class AppModel: ObservableObject {
         let payload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                    promptHash: waiting.promptHash,
                                                    choice: choice)
-        let key = DriveActionKey(capability: .approve, target: live.agentId,
-                                 identity: "\(approvalId)|\(waiting.promptHash)|\(choice)")
+        let key = approvalActionKey(agentId: live.agentId, approvalId: approvalId,
+                                   promptHash: waiting.promptHash)
         guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: agent.agentId, payload: payload,
               driveClient: driveClient, keyId: keyId, signer: signer,
@@ -507,22 +513,33 @@ final class AppModel: ObservableObject {
         return DriveClient.newRequestId()
     }
 
+    /// Approval identity is the live claim, not the selected choice. Approve
+    /// and Deny must share one in-flight key so two surfaces cannot answer the
+    /// same claim concurrently with different choices.
+    private func approvalActionKey(agentId: String, approvalId: String,
+                                   promptHash: String) -> DriveActionKey {
+        DriveActionKey(capability: .approve, target: agentId,
+                        identity: "\(approvalId)|\(promptHash)")
+    }
+
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                        driveClient: DriveClient, keyId: String, signer: DeviceSigner,
                        actionKey: DriveActionKey, requestId: String) {
         let generation = driveGeneration
-        driveTask = Task { [weak self] in
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
                 if self.driveGeneration == generation {
                     self.inFlightDriveKeys.remove(actionKey)
+                    self.driveTasks.removeValue(forKey: requestId)
                 }
             }
+            guard !Task.isCancelled else { return }
             let result = await driveClient.drive(capability: capability, target: target,
                                                  payload: payload, rev: self.fleet.lastEventId,
                                                  requestId: requestId,
                                                  keyId: keyId, signer: signer)
-            guard self.driveGeneration == generation else { return }
+            guard !Task.isCancelled, self.driveGeneration == generation else { return }
             switch result {
             case .dispatched(let response):
                 if response.ok {
@@ -564,6 +581,19 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        driveTasks[requestId] = task
+    }
+
+    /// Invalidate the current identity before cancelling handles. Results from
+    /// cancellation races then fail the generation check even if URLSession
+    /// delivers one final callback on another queue.
+    private func cancelDriveTasks() {
+        driveGeneration &+= 1
+        for task in driveTasks.values {
+            task.cancel()
+        }
+        driveTasks.removeAll()
+        inFlightDriveKeys.removeAll()
     }
 
     /// Stale target handling is deliberately shared by the HTTP 409 path and
@@ -585,10 +615,7 @@ final class AppModel: ObservableObject {
     // MARK: - Demo mode (App Review 4.2)
 
     func enterDemo() {
-        driveGeneration &+= 1
-        driveTask?.cancel()
-        driveTask = nil
-        inFlightDriveKeys.removeAll()
+        cancelDriveTasks()
         notificationTask?.cancel()
         fleet.disconnect()
         fleet.reset()
@@ -640,11 +667,8 @@ final class AppModel: ObservableObject {
     // MARK: - Identity management
 
     func resetDevice() {
-        driveGeneration &+= 1
+        cancelDriveTasks()
         stopLive()
-        driveTask?.cancel()
-        driveTask = nil
-        inFlightDriveKeys.removeAll()
         DeviceKeyStore.wipe()
         defaults.removeObject(forKey: "fleetnotifier.host")
         fleet.reset()

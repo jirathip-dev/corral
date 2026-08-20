@@ -142,26 +142,6 @@ struct AgentRoute: Hashable, Sendable {
     let agentId: String
 }
 
-/// Small state machine for row selection. Keeping reconciliation pure makes
-/// the stale/deleted-row rule testable without a SwiftUI rendering harness.
-struct AgentSelection: Equatable, Sendable {
-    private(set) var route: AgentRoute?
-
-    mutating func select(_ agentId: String) {
-        route = AgentRoute(agentId: agentId)
-    }
-
-    mutating func clear() {
-        route = nil
-    }
-
-    /// A deleted row must never remain an actionable selection.
-    mutating func reconcile(availableAgentIds: Set<String>) {
-        guard let route, !availableAgentIds.contains(route.agentId) else { return }
-        self.route = nil
-    }
-}
-
 /// State for the Idle/Done disclosure header. The UI owns the animation;
 /// this value owns the testable collapsed → expanded transition.
 struct IdleDoneDisclosure: Equatable, Sendable {
@@ -172,6 +152,34 @@ struct IdleDoneDisclosure: Equatable, Sendable {
     }
 
     var stateLabel: String { isExpanded ? "Expanded" : "Collapsed" }
+}
+
+/// The state that FleetView actually binds to for both disclosure and
+/// navigation. Keeping the route array here means deletion reconciliation
+/// mutates the same path that NavigationStack renders, rather than a shadow
+/// selection bookkeeping object that can drift from the visible destination.
+struct FleetViewState: Equatable, Sendable {
+    var idleDoneDisclosure = IdleDoneDisclosure()
+    var navigationPath: [AgentRoute] = []
+
+    mutating func toggleIdleDone() {
+        idleDoneDisclosure.toggle()
+    }
+
+    mutating func setIdleDoneExpanded(_ expanded: Bool) {
+        idleDoneDisclosure.isExpanded = expanded
+    }
+
+    /// Test and non-SwiftUI callers can open the same route value used by the
+    /// row NavigationLink.
+    mutating func open(agentId: String) {
+        navigationPath = [AgentRoute(agentId: agentId)]
+    }
+
+    /// A deleted agent must be removed from the actual NavigationStack path.
+    mutating func reconcile(availableAgentIds: Set<String>) {
+        navigationPath.removeAll { !availableAgentIds.contains($0.agentId) }
+    }
 }
 
 /// The actions exposed by the per-agent detail surface. The board renders

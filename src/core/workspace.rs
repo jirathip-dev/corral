@@ -41,7 +41,9 @@ pub struct WorkspaceAttribution {
 impl WorkspaceAttribution {
     /// Build an attribution map from explicit repo roots. Paths are
     /// canonicalized best-effort so a symlinked HOME or an APFS firmlink does
-    /// not create a second identity for the same checkout.
+    /// not create a second identity for the same checkout. When canonical
+    /// roots collide, the first root wins; callers must order roots by their
+    /// source precedence.
     pub fn from_roots<I>(roots: I, worktrees_root: PathBuf) -> Self
     where
         I: IntoIterator<Item = RepoRoot>,
@@ -69,7 +71,9 @@ impl WorkspaceAttribution {
     }
 
     /// Add a known primary checkout. A conflicting duplicate canonical path
-    /// is rejected rather than selected by insertion order.
+    /// is rejected, leaving the first source's identity in place. The daemon
+    /// orders fleet-registry roots before the configured fallback so the
+    /// registry's canonical `gh_repo` identity wins that collision.
     pub fn add_root(&self, root: RepoRoot) -> bool {
         if root.repo.is_empty() {
             return false;
@@ -139,6 +143,15 @@ impl WorkspaceAttribution {
         self.branches.write().unwrap().insert(key, branch);
     }
 
+    /// Start a new git-plane generation. Repo roots and the linked-worktree
+    /// layout remain valid, but branch values are only valid when the current
+    /// generation has re-observed them. This prevents a replacement plane
+    /// from handing a vanished worktree's old branch to a fresh Herdr record
+    /// when the previous generation lost its removal event.
+    pub fn reset_branch_facts(&self) {
+        self.branches.write().unwrap().clear();
+    }
+
     pub fn clear_branch(&self, path: &Path) {
         self.branches
             .write()
@@ -195,5 +208,46 @@ mod tests {
         assert!(attribution.facts_for(&unknown).is_none());
         attribution.record_branch(&unknown, "do-not-infer");
         assert!(attribution.facts_for(&unknown).is_none());
+    }
+
+    #[test]
+    fn generation_reset_clears_vanished_branch_and_reaccepts_present_fact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("primary-repo");
+        let worktrees = temp.path().join("worktrees");
+        let present = worktrees.join("linked-repo/present");
+        let vanished = worktrees.join("linked-repo/vanished");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&present).unwrap();
+        fs::create_dir_all(&vanished).unwrap();
+
+        let attribution = WorkspaceAttribution::from_roots(
+            [RepoRoot {
+                path: primary,
+                repo: "primary-repo".to_string(),
+            }],
+            worktrees,
+        );
+        attribution.record_branch(&present, "old-present");
+        attribution.record_branch(&vanished, "stale-vanished");
+        fs::remove_dir_all(&vanished).unwrap();
+
+        // A replacement GitPlane starts with no path registry. Clearing only
+        // branch facts keeps repo/layout attribution while requiring the new
+        // generation to re-observe every present worktree.
+        attribution.reset_branch_facts();
+
+        let vanished_facts = attribution.facts_for(&vanished).expect("known layout");
+        assert_eq!(vanished_facts.repo.as_deref(), Some("linked-repo"));
+        assert_eq!(vanished_facts.branch, None);
+        assert!(!vanished_facts.branch_known);
+        let present_facts = attribution.facts_for(&present).expect("present path");
+        assert_eq!(present_facts.branch, None);
+        assert!(!present_facts.branch_known);
+
+        attribution.record_branch(&present, "current-present");
+        let present_facts = attribution.facts_for(&present).expect("reconciled path");
+        assert_eq!(present_facts.branch.as_deref(), Some("current-present"));
+        assert!(present_facts.branch_known);
     }
 }

@@ -576,6 +576,98 @@ async fn shared_attribution_merges_primary_alias_and_keeps_unknown_orphaned() {
     assert_eq!(unknown.workspace.branch, None);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn generation_restart_clears_vanished_branch_and_reconciles_present_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let primary = temp.path().join("primary");
+    let worktrees = temp.path().join("worktrees");
+    let present = worktrees.join("linked-repo/present");
+    let vanished = worktrees.join("linked-repo/vanished");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::create_dir_all(&present).unwrap();
+    std::fs::create_dir_all(&vanished).unwrap();
+
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: primary,
+            repo: "primary-repo".to_string(),
+        }],
+        worktrees,
+    );
+    attribution.record_branch(&present, "old-present");
+    attribution.record_branch(&vanished, "stale-vanished");
+    let present_string = present.to_string_lossy().into_owned();
+    let vanished_string = vanished.to_string_lossy().into_owned();
+
+    let store = Store::new();
+    let first = Integrator::new_with_attribution(store.clone(), attribution.clone());
+    let (first_sink, first_rx) = plane_channel();
+    let first_task = tokio::spawn(async move { first.run(first_rx).await });
+    store
+        .apply(Change::upsert(agent(
+            "old-vanished",
+            Some(&vanished_string),
+        )))
+        .await;
+    first_sink
+        .send(head(&vanished_string, "stale-vanished", "old-sha"))
+        .await
+        .unwrap();
+    let old = wait_for(&store, "old-vanished", |agent| {
+        agent.workspace.branch.as_deref() == Some("stale-vanished")
+    })
+    .await;
+    assert_eq!(old.workspace.repo.as_deref(), Some("linked-repo"));
+
+    // The directory disappears while the first generation is unable to
+    // deliver its removal event. Its sender then closes, just like a failed
+    // plane/integrator generation in production.
+    std::fs::remove_dir_all(&vanished).unwrap();
+    drop(first_sink);
+    first_task.await.expect("first integrator generation exits");
+
+    // The supervisor's generation boundary keeps repo/layout facts but
+    // invalidates every branch until the replacement GitPlane re-observes it.
+    attribution.reset_branch_facts();
+    let vanished_facts = attribution
+        .facts_for(&vanished)
+        .expect("layout remains known");
+    assert_eq!(vanished_facts.branch, None);
+    assert!(!vanished_facts.branch_known);
+
+    let second = Integrator::new_with_attribution(store.clone(), attribution.clone());
+    let (second_sink, second_rx) = plane_channel();
+    tokio::spawn(async move { second.run(second_rx).await });
+    store
+        .apply(Change::upsert(agent(
+            "fresh-present",
+            Some(&present_string),
+        )))
+        .await;
+    store
+        .apply(Change::upsert(agent(
+            "fresh-vanished",
+            Some(&vanished_string),
+        )))
+        .await;
+    second_sink
+        .send(head(&present_string, "current-present", "current-sha"))
+        .await
+        .unwrap();
+
+    let present = wait_for(&store, "fresh-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("current-present")
+    })
+    .await;
+    assert_eq!(present.workspace.repo.as_deref(), Some("linked-repo"));
+    let vanished = wait_for(&store, "fresh-vanished", |agent| {
+        agent.workspace.repo.as_deref() == Some("linked-repo") && agent.workspace.branch.is_none()
+    })
+    .await;
+    assert_eq!(vanished.workspace.branch, None);
+}
+
 #[tokio::test]
 async fn topology_events_never_create_or_remove_agents() {
     let (store, sink) = setup().await;

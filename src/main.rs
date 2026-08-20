@@ -1185,37 +1185,56 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
 /// planes. The configured Corral root is always known; fleet-registry locals
 /// add other primary checkouts when the registry exists. The registry's
 /// `gh_repo` is the canonical repo identity, so agent names and pane labels
-/// never participate in attribution.
+/// never participate in attribution. Registry roots are ordered first and
+/// the configured root is appended as a fallback: when both spellings
+/// canonicalize to one path, the fleet registry's `gh_repo` wins over the
+/// configured directory basename.
 fn workspace_attribution(repo_root: &Path, worktrees_root: &Path) -> WorkspaceAttribution {
-    let configured = repo_root.file_name().map(|name| RepoRoot {
-        path: repo_root.to_path_buf(),
-        repo: name.to_string_lossy().into_owned(),
-    });
-    let mut roots = configured.into_iter().collect::<Vec<_>>();
     let registry_path = fleet::config::default_path();
-    if registry_path.is_file() {
+    let registry = if registry_path.is_file() {
         match fleet::config::load(&registry_path) {
-            Ok(registry) => {
-                for fleet in registry.fleets {
-                    let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
-                        continue;
-                    };
-                    roots.push(RepoRoot {
-                        path: fleet.local_path(),
-                        repo: repo.to_string(),
-                    });
-                }
-            }
+            Ok(registry) => Some(registry),
             Err(error) => {
                 tracing::warn!(
                     path = %registry_path.display(),
                     error = %error,
                     "fleet registry unavailable for workspace attribution"
                 );
+                None
             }
         }
+    } else {
+        None
+    };
+    WorkspaceAttribution::from_roots(
+        workspace_roots(repo_root, registry.as_ref()),
+        worktrees_root.to_path_buf(),
+    )
+}
+
+/// Return roots in attribution precedence order. Fleet registry identities
+/// are canonical for a local checkout; the configured root's basename is only
+/// a fallback when no registry entry claims the same canonical path.
+fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>) -> Vec<RepoRoot> {
+    let mut roots = Vec::new();
+    if let Some(registry) = registry {
+        for fleet in &registry.fleets {
+            let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
+                continue;
+            };
+            roots.push(RepoRoot {
+                path: fleet.local_path(),
+                repo: repo.to_string(),
+            });
+        }
     }
-    WorkspaceAttribution::from_roots(roots, worktrees_root.to_path_buf())
+    if let Some(name) = repo_root.file_name() {
+        roots.push(RepoRoot {
+            path: repo_root.to_path_buf(),
+            repo: name.to_string_lossy().into_owned(),
+        });
+    }
+    roots
 }
 
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
@@ -1228,6 +1247,13 @@ fn workspace_attribution(repo_root: &Path, worktrees_root: &Path) -> WorkspaceAt
 async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
+        // A replacement GitPlane has an empty registry and will re-observe
+        // present worktrees during its boot/sweep. Drop branch values from
+        // the previous generation first so a missed WorktreeRemoved cannot
+        // make a vanished worktree look current to a fresh Herdr record.
+        // Repo roots and linked-worktree layout remain intact and valid paths
+        // regain their branches from the new plane's git facts.
+        attribution.reset_branch_facts();
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
         // GitPlane must boot with an EMPTY registry so the boot rescan
         // re-emits every worktree fact into the new integrator's empty
@@ -1261,6 +1287,12 @@ async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
 #[cfg(test)]
 mod tests {
     use super::bind_permitted;
+    #[cfg(unix)]
+    use super::workspace_roots;
+    #[cfg(unix)]
+    use corrald::core::workspace::WorkspaceAttribution;
+    #[cfg(unix)]
+    use corrald::fleet::config::{Fleet, Models, Registry};
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
@@ -1321,5 +1353,54 @@ mod tests {
         ] {
             assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_registry_identity_wins_configured_canonical_alias() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("configured-directory-name");
+        let alias = temp.path().join("fleet-alias");
+        let worktrees = temp.path().join("worktrees");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::os::unix::fs::symlink(&primary, &alias).unwrap();
+        let registry = Registry {
+            fleets: vec![Fleet {
+                name: "fleet-name".to_string(),
+                gh_repo: "owner/canonical-repo".to_string(),
+                local: alias.to_string_lossy().into_owned(),
+                worktree_dir: "worktrees".to_string(),
+                orch: "orch".to_string(),
+                workers: Vec::new(),
+                paused: false,
+                models: Models {
+                    orch: "orch-model".to_string(),
+                    impl_: "impl-model".to_string(),
+                    review: "review-model".to_string(),
+                    impl_alt: None,
+                    impl_alt2: None,
+                },
+            }],
+        };
+
+        let attribution =
+            WorkspaceAttribution::from_roots(workspace_roots(&primary, Some(&registry)), worktrees);
+        assert_eq!(
+            attribution
+                .facts_for(&primary)
+                .expect("configured root facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
+        assert_eq!(
+            attribution
+                .facts_for(&alias)
+                .expect("canonical alias facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
     }
 }

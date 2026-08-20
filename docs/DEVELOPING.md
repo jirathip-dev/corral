@@ -124,9 +124,11 @@ creating payload directories and recheck before commit; a device mismatch is
 an error rather than a cross-filesystem fallback. Rollback diagnostics
 distinguish a payload-restore failure, which retains the old payload, from a
 cleanup-only failure, which reports that the payload was restored and names
-the rollback-directory inspection path. The multi-file Linux commit remains
-rollback-based; the installer does not claim one atomic operation for the
-whole payload.
+the rollback-directory inspection path. If cleanup fails after a fresh
+install, the diagnostic instead identifies an empty rollback directory for
+inspection rather than claiming a rollback copy exists. The multi-file Linux
+commit remains rollback-based; the installer does not claim one atomic
+operation for the whole payload.
 
 `scripts/setup-corrald.sh` delegates desktop installation to
 `scripts/install-corral-ui.sh`. The installer builds and validates the entire

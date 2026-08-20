@@ -133,6 +133,24 @@ assert_cleanup_label() {
   fi
 }
 
+assert_fresh_cleanup_label() {
+  local log="$1"
+  grep -Fq 'installed desktop payload; rollback directory is empty; inspect rollback directory:' "$log" \
+    || fail "fresh-install cleanup log label is not truthful: $log"
+  if grep -Eq 'rollback cop(y|ies) retained|prior desktop payload is retained' "$log"; then
+    fail "fresh-install cleanup failure was reported as payload retention: $log"
+  fi
+}
+
+assert_empty_rollback_directory() {
+  local rollback_dir="$1"
+  [[ -d "$rollback_dir" ]] || fail "reported fresh-install rollback directory is missing: $rollback_dir"
+  local candidate
+  for candidate in "$rollback_dir"/* "$rollback_dir"/.[!.]* "$rollback_dir"/..?*; do
+    [[ ! -e "$candidate" && ! -L "$candidate" ]] || fail "fresh-install rollback directory is not empty: $candidate"
+  done
+}
+
 assert_retained_file() {
   local rollback_dir="$1"
   local relative="$2"
@@ -179,6 +197,21 @@ run_installer Darwin > "$TEST_ROOT/macos-success.log" 2>&1
 assert_executable "$MAC_DEST/Contents/MacOS/corrald-ui"
 assert_file "$MAC_DEST/Contents/Resources/Corral.icns"
 grep -Fq '<key>CFBundleIconFile</key><string>Corral</string>' "$MAC_DEST/Contents/Info.plist"
+assert_no_temporary_entries "$MAC_PARENT"
+
+rm -rf -- "$MAC_DEST"
+clear_failures
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if ! run_installer Darwin > "$TEST_ROOT/macos-fresh-rm.log" 2>&1; then
+  fail "macOS fresh rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$MAC_DEST/Contents/MacOS/corrald-ui"
+assert_file "$MAC_DEST/Contents/Resources/Corral.icns"
+assert_fresh_cleanup_label "$TEST_ROOT/macos-fresh-rm.log"
+mac_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/macos-fresh-rm.log")"
+assert_empty_rollback_directory "$mac_fresh_rollback"
+rm -rf -- "$mac_fresh_rollback"
+clear_failures
 assert_no_temporary_entries "$MAC_PARENT"
 
 for failure in cp sips iconutil plutil; do
@@ -296,6 +329,22 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate "$LINUX_PREFIX/share/applications/corral.desktop"
 fi
 grep -Fqx 'Icon=corral' "$LINUX_PREFIX/share/applications/corral.desktop"
+assert_no_temporary_entries "$LINUX_PREFIX"
+
+rm -rf -- "$LINUX_PREFIX"
+clear_failures
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if ! run_installer Linux > "$TEST_ROOT/linux-fresh-rm.log" 2>&1; then
+  fail "Linux fresh rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$LINUX_PREFIX/bin/corrald-ui"
+assert_file "$LINUX_PREFIX/share/icons/hicolor/256x256/apps/corral.png"
+assert_file "$LINUX_PREFIX/share/applications/corral.desktop"
+assert_fresh_cleanup_label "$TEST_ROOT/linux-fresh-rm.log"
+linux_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/linux-fresh-rm.log")"
+assert_empty_rollback_directory "$linux_fresh_rollback"
+rm -rf -- "$linux_fresh_rollback"
+clear_failures
 assert_no_temporary_entries "$LINUX_PREFIX"
 
 DEVICE_LINUX_PREFIX="$TEST_ROOT/device-linux/.local"
@@ -457,6 +506,21 @@ mkdir -p "$OTHER_PARENT"
 clear_failures
 run_installer Other > "$TEST_ROOT/other-success.log" 2>&1
 assert_executable "$OTHER_PREFIX/bin/corrald-ui"
+assert_no_temporary_entries "$OTHER_PREFIX"
+
+rm -rf -- "$OTHER_PREFIX"
+mkdir -p "$OTHER_PREFIX"
+clear_failures
+export CORRAL_TEST_FAIL_RM_ROLLBACK=1
+if ! run_installer Other > "$TEST_ROOT/other-fresh-rm.log" 2>&1; then
+  fail "Other fresh rollback-directory rm injection unexpectedly failed"
+fi
+assert_executable "$OTHER_PREFIX/bin/corrald-ui"
+assert_fresh_cleanup_label "$TEST_ROOT/other-fresh-rm.log"
+other_fresh_rollback="$(rollback_path_from_log "$TEST_ROOT/other-fresh-rm.log")"
+assert_empty_rollback_directory "$other_fresh_rollback"
+rm -rf -- "$other_fresh_rollback"
+clear_failures
 assert_no_temporary_entries "$OTHER_PREFIX"
 
 rm -rf -- "$OTHER_PREFIX"

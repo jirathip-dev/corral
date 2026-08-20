@@ -66,8 +66,9 @@ cross-filesystem rename is atomic. If payload restoration fails, the old
 payload is retained in the reported rollback directory; if only rollback
 directory cleanup fails, the payload-restored diagnostic names the
 rollback-directory inspection path without claiming it contains the old
-payload. The multi-file Linux commit is rollback-based rather than one
-single atomic operation.
+payload. After a fresh install, the cleanup-failure diagnostic instead names
+an empty rollback directory for inspection. The multi-file Linux commit is
+rollback-based rather than one single atomic operation.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

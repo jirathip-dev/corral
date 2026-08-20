@@ -324,7 +324,11 @@ commit_directory() {
   fi
 
   if ! rm -rf "$rollback_dir"; then
-    echo "!! installed desktop payload; rollback copy retained at $rollback_dir" >&2
+    if [[ "$had_destination" == "1" ]]; then
+      echo "!! installed desktop payload; rollback copy retained at $rollback_dir" >&2
+    else
+      echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+    fi
   fi
 }
 
@@ -456,7 +460,11 @@ commit_files() {
   done
 
   if ! rm -rf "$rollback_dir"; then
-    echo "!! installed desktop payload; rollback copies retained at $rollback_dir" >&2
+    if [[ "${#backed_up[@]}" -gt 0 ]]; then
+      echo "!! installed desktop payload; rollback copies retained at $rollback_dir" >&2
+    else
+      echo "!! installed desktop payload; rollback directory is empty; inspect rollback directory: $rollback_dir" >&2
+    fi
   fi
 }
 

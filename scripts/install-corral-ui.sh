@@ -60,14 +60,22 @@ rollback_directory() {
   local rollback_ok=0
 
   if [[ -e "$destination" || -L "$destination" ]]; then
-    rm -rf "$destination" || rollback_ok=1
+    if ! rm -rf "$destination"; then
+      rollback_ok=1
+    fi
   fi
-  if [[ "$had_destination" == "1" ]]; then
-    mv "$rollback_dir/previous" "$destination" || rollback_ok=1
+  if [[ "$rollback_ok" == "0" && "$had_destination" == "1" ]]; then
+    if ! mv "$rollback_dir/previous" "$destination"; then
+      rollback_ok=1
+    fi
   fi
-  rm -rf "$rollback_dir" || rollback_ok=1
+  if [[ "$rollback_ok" == "0" ]]; then
+    if ! rm -rf "$rollback_dir"; then
+      rollback_ok=1
+    fi
+  fi
   if [[ "$rollback_ok" != "0" ]]; then
-    echo "!! rollback failed; prior app is retained at $rollback_dir" >&2
+    echo "!! rollback failed; prior app is retained in rollback directory: $rollback_dir" >&2
   fi
   return "$rollback_ok"
 }
@@ -124,19 +132,35 @@ commit_files() {
       relative="${installed[$index]}"
       target="$prefix/$relative"
       if [[ -e "$target" || -L "$target" ]]; then
-        rm -rf "$target" || rollback_ok=1
+        if ! rm -rf "$target"; then
+          rollback_ok=1
+          continue
+        fi
       fi
     done
     for ((index = ${#backed_up[@]} - 1; index >= 0; index--)); do
       relative="${backed_up[$index]}"
       target="$prefix/$relative"
       backup="$rollback_dir/$relative"
-      mkdir -p "$(dirname "$target")"
-      mv "$backup" "$target" || rollback_ok=1
+      if ! mkdir -p "$(dirname "$target")"; then
+        rollback_ok=1
+        continue
+      fi
+      if [[ ! -e "$backup" && ! -L "$backup" ]]; then
+        rollback_ok=1
+        continue
+      fi
+      if ! mv "$backup" "$target"; then
+        rollback_ok=1
+      fi
     done
-    rm -rf "$rollback_dir" || rollback_ok=1
+    if [[ "$rollback_ok" == "0" ]]; then
+      if ! rm -rf "$rollback_dir"; then
+        rollback_ok=1
+      fi
+    fi
     if [[ "$rollback_ok" != "0" ]]; then
-      echo "!! rollback failed; prior Linux payload is retained at $rollback_dir" >&2
+      echo "!! rollback failed; prior Linux payload is retained in rollback directory: $rollback_dir" >&2
     fi
     return "$rollback_ok"
   }
@@ -285,6 +309,28 @@ install_linux() (
     exit 1
   }
 
+  desktop_exec_quote() {
+    local value="$1"
+    local output='"'
+    local character
+    while [[ -n "$value" ]]; do
+      character="${value%"${value#?}"}"
+      value="${value#?}"
+      case "$character" in
+        \\) output+='\\' ;;
+        \") output+='\"' ;;
+        %) output+='%%' ;;
+        $'\n'|$'\r')
+          echo "!! Linux executable path contains a desktop-entry newline" >&2
+          exit 1
+          ;;
+        *) output+="$character" ;;
+      esac
+    done
+    output+='"'
+    printf '%s' "$output"
+  }
+
   local stage
   stage="$(mktemp -d "$LINUX_PREFIX/.corral-ui.stage.XXXXXX")"
   cleanup_linux() {
@@ -296,12 +342,14 @@ install_linux() (
   cp "$UI_BIN" "$stage/bin/corrald-ui"
   chmod +x "$stage/bin/corrald-ui"
   cp "$LINUX_ICON" "$stage/share/icons/hicolor/256x256/apps/corral.png"
+  local desktop_exec
+  desktop_exec="$(desktop_exec_quote "$LINUX_PREFIX/bin/corrald-ui")"
   cat > "$stage/share/applications/corral.desktop" <<DESKTOP_EOF
 [Desktop Entry]
 Type=Application
 Name=Corral
 Comment=Corral agent-fleet board
-Exec=$LINUX_PREFIX/bin/corrald-ui
+Exec=$desktop_exec
 Icon=corral
 Terminal=false
 Categories=Development;
@@ -309,7 +357,7 @@ DESKTOP_EOF
 
   [[ -x "$stage/bin/corrald-ui" ]]
   [[ -s "$stage/share/icons/hicolor/256x256/apps/corral.png" ]]
-  grep -Fqx "Exec=$LINUX_PREFIX/bin/corrald-ui" "$stage/share/applications/corral.desktop"
+  grep -Fqx "Exec=$desktop_exec" "$stage/share/applications/corral.desktop"
   grep -Fqx 'Icon=corral' "$stage/share/applications/corral.desktop"
 
   commit_files "$stage" "$LINUX_PREFIX" \

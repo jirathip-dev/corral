@@ -2,9 +2,9 @@
 """Validate the approved Corral icon outputs and their integrations.
 
 The default check is read-only and does not build or install anything. It
-pins the approved bytes as well as checking image structure, generator
-relationships, parsed project metadata, shell syntax, and the egui source
-tokens that make the icon application real code rather than a comment.
+pins the approved bytes and the complete active integration source files,
+then checks image structure, parsed project metadata, shell syntax, and the
+release binary's embedded icon bytes.
 
 Use ``--require-build`` after a release build to prove that the 256px PNG is
 present in the produced ``corrald-ui`` executable. ``--self-test`` runs the
@@ -14,7 +14,6 @@ same checks against temporary fixtures with deliberate corruptions.
 from __future__ import annotations
 
 import argparse
-import ast
 import hashlib
 import json
 import plistlib
@@ -23,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Callable
@@ -39,6 +39,17 @@ APPROVED_SHA256 = {
     "assets/icon/corral-icon-macos.png": "d63c1aa4568deeadf046bf129e0550f396bc639d92f611b340603a28cd080b73",
     "assets/icon/social-preview.png": "9d8ec825b05cb8655fe9aef6d73e61e7ff443b54854b3d502078e3a01d4103ec",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
+}
+
+INTEGRATION_SHA256 = {
+    "clients/egui/src/main.rs": "09e3162acf7a21fe76efbd869a8b2550ab52fd942b461c4fd7d52a9934202287",
+    "tools/icon/from-user-png.py": "a933a13a1da7f8e51a9427a38cd612ec8e5d6eb444cef6f6c378a6287c6e47d9",
+    "tools/icon/check-desktop-entry.py": "39a354f2dd0ac2f35d029eeea63bbe09c3c4480ff79ed7c202e1ee1db8b11731",
+    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "93241932c3cbd975eaef3efed58e68f09bcfd5e19d496e1471bf8683f453368d",
+    "scripts/install-corral-ui.sh": "1387919fd2bfafa951fe4b0aedac8345c53edaabc1df796a5dad8fce95f21478",
+    "scripts/setup-corrald.sh": "6612c55a1174bbfbc673234ce24441642185a8a24478b1e3eb856a370c3dd33e",
+    "scripts/test-icon-packaging.sh": "13c04ce623f54b30441e07d6777e4293c2d42a281b9de1fec8d055aa0a4f18f2",
 }
 
 PNG_SPECS = {
@@ -87,6 +98,7 @@ FIXTURE_FILES = [
     "scripts/setup-corrald.sh",
     "scripts/install-corral-ui.sh",
     "scripts/test-icon-packaging.sh",
+    "tools/icon/check-desktop-entry.py",
     "tools/icon/from-user-png.py",
 ]
 
@@ -94,6 +106,14 @@ FIXTURE_FILES = [
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"icon check failed: {message}")
+
+
+def compatible_pixel_data(image: Image.Image) -> list[int | tuple[int, ...]]:
+    """Read pixels through the Pillow API supported by the repository floor."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return list(image.getdata())
 
 
 def read_text(root: Path, relative: str) -> str:
@@ -122,12 +142,20 @@ def load_png(root: Path, relative: str) -> Image.Image:
     return image
 
 
-def check_hashes(root: Path) -> None:
-    for relative, expected in APPROVED_SHA256.items():
+def check_manifest(root: Path, manifest: dict[str, str], label: str) -> None:
+    for relative, expected in manifest.items():
         path = root / relative
         require(path.is_file(), f"missing {relative}")
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        require(actual == expected, f"{relative} does not match the approved SHA-256")
+        require(actual == expected, f"{relative} does not match the approved {label} SHA-256")
+
+
+def check_hashes(root: Path) -> None:
+    check_manifest(root, APPROVED_SHA256, "asset")
+
+
+def check_integration_hashes(root: Path) -> None:
+    check_manifest(root, INTEGRATION_SHA256, "integration source")
 
 
 def region_stats(
@@ -183,7 +211,7 @@ def check_pixels(root: Path) -> None:
         ImageChops.difference(mac.convert("RGB"), expected_1024).getbbox() is None,
         "macOS output RGB does not match the 1024 output",
     )
-    alpha_histogram = Counter(mac.getchannel("A").get_flattened_data())
+    alpha_histogram = Counter(compatible_pixel_data(mac.getchannel("A")))
     require(
         dict(alpha_histogram) == MAC_ALPHA_HISTOGRAM,
         "macOS alpha mask differs from the approved complete mask",
@@ -213,158 +241,11 @@ def check_pixels(root: Path) -> None:
     )
 
 
-def rust_tokens(source: str) -> list[tuple[str, str]]:
-    """Tokenize enough Rust to distinguish code from comments and strings."""
+def check_pillow_compatibility() -> None:
+    """Exercise the pixel API available on the repository's Pillow floor."""
 
-    tokens: list[tuple[str, str]] = []
-    index = 0
-    length = len(source)
-    while index < length:
-        if source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            index = length if newline == -1 else newline + 1
-            continue
-        if source.startswith("/*", index):
-            depth = 1
-            index += 2
-            while index < length and depth:
-                if source.startswith("/*", index):
-                    depth += 1
-                    index += 2
-                elif source.startswith("*/", index):
-                    depth -= 1
-                    index += 2
-                else:
-                    index += 1
-            continue
-        if source[index] == '"':
-            start = index + 1
-            index = start
-            escaped = False
-            while index < length:
-                character = source[index]
-                if character == '"' and not escaped:
-                    break
-                if character == "\\" and not escaped:
-                    escaped = True
-                else:
-                    escaped = False
-                index += 1
-            tokens.append(("string", source[start:index]))
-            index = min(index + 1, length)
-            continue
-        raw_match = re.match(r'r(#+)"', source[index:])
-        if raw_match:
-            hashes = raw_match.group(1)
-            start = index + len(raw_match.group(0))
-            terminator = '"' + hashes
-            end = source.find(terminator, start)
-            if end == -1:
-                end = length
-            tokens.append(("string", source[start:end]))
-            index = min(end + len(terminator), length)
-            continue
-        identifier = re.match(r"[A-Za-z_][A-Za-z0-9_]*", source[index:])
-        if identifier:
-            value = identifier.group(0)
-            tokens.append(("ident", value))
-            index += len(value)
-            continue
-        if source[index].isspace():
-            index += 1
-            continue
-        tokens.append(("punct", source[index]))
-        index += 1
-    return tokens
-
-
-def has_tokens(tokens: list[tuple[str, str]], expected: list[tuple[str, str]]) -> bool:
-    width = len(expected)
-    return any(tokens[index : index + width] == expected for index in range(len(tokens)))
-
-
-def check_egui_source(root: Path) -> None:
-    source = read_text(root, "clients/egui/src/main.rs")
-    tokens = rust_tokens(source)
-    include = [
-        ("ident", "include_bytes"),
-        ("punct", "!"),
-        ("punct", "("),
-        ("string", "../../../assets/icon/corral-icon-256.png"),
-        ("punct", ")"),
-    ]
-    require(has_tokens(tokens, include), "egui does not embed the 256 icon in code")
-    require(
-        has_tokens(
-            tokens,
-            [
-                ("punct", "."),
-                ("ident", "with_icon"),
-                ("punct", "("),
-                ("ident", "app_icon"),
-                ("punct", "("),
-                ("punct", ")"),
-                ("punct", ")"),
-            ],
-        ),
-        "egui viewport does not apply the embedded icon in code",
-    )
-
-
-def check_generator(root: Path) -> None:
-    relative = "tools/icon/from-user-png.py"
-    source = read_text(root, relative)
-    try:
-        tree = ast.parse(source, filename=relative)
-    except SyntaxError as error:
-        raise SystemExit(f"icon check failed: generator syntax error: {error}") from error
-
-    strings = {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-    attributes = {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-    }
-    calls = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    called_attributes = {
-        node.func.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-
-    require("assets/icon" in strings, "generator does not use the approved icon output directory")
-    for output in (
-        "corral-icon-macos.png",
-        "corral-icon-1024.png",
-        "corral-icon-256.png",
-        "social-preview.png",
-    ):
-        require(output in strings, f"generator does not write {output}")
-    for required_attribute in ("BOX", "rounded_rectangle", "putalpha", "truetype"):
-        require(
-            required_attribute in attributes or required_attribute in called_attributes,
-            f"generator is missing deterministic {required_attribute} processing",
-        )
-    require(
-        "sha256" in calls or "sha256" in called_attributes,
-        "generator does not fingerprint its required font",
-    )
-    require("load_default" not in calls, "generator silently falls back to a different font")
-    require(
-        "APPROVED_WORDMARK_FONT_SHA256" in names,
-        "generator does not pin the approved wordmark font fingerprint",
-    )
-    require(
-        "2bfd40dc72e6759e248f82a52a40d551338979fffc9b5c070e685b4b7ad19e66" in strings,
-        "generator is missing the approved wordmark font SHA-256",
-    )
+    image = Image.new("L", (2, 2), 7)
+    require(compatible_pixel_data(image) == [7, 7, 7, 7], "Pillow pixel iteration API is unavailable")
 
 
 def run_bash_syntax(root: Path, relative: str) -> None:
@@ -374,6 +255,15 @@ def run_bash_syntax(root: Path, relative: str) -> None:
         ["bash", "-n", str(path)], capture_output=True, text=True, check=False
     )
     require(result.returncode == 0, f"{relative} fails bash -n: {result.stderr.strip()}")
+
+
+def run_python_syntax(root: Path, relative: str) -> None:
+    path = root / relative
+    require(path.is_file(), f"missing {relative}")
+    try:
+        compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    except (OSError, SyntaxError) as error:
+        raise SystemExit(f"icon check failed: {relative} has invalid Python: {error}") from error
 
 
 def check_references(root: Path) -> None:
@@ -402,44 +292,48 @@ def check_references(root: Path) -> None:
         raise SystemExit(f"icon check failed: invalid iOS Info.plist: {error}") from error
 
     project = read_text(root, "ios/FleetNotifier.xcodeproj/project.pbxproj")
+    resources_section = re.search(
+        r"/\* Begin PBXResourcesBuildPhase section \*/(?P<section>.*?)/\* End PBXResourcesBuildPhase section \*/",
+        project,
+        re.DOTALL,
+    )
+    require(resources_section is not None, "Xcode project has no resources build phase")
+    asset_build_file = re.search(
+        r"(?P<build_id>[A-F0-9]+) /\* Assets\.xcassets in Resources \*/ = \{"
+        r"isa = PBXBuildFile; fileRef = (?P<file_ref>[A-F0-9]+) /\* Assets\.xcassets \*/; \};",
+        project,
+    )
+    require(asset_build_file is not None, "Xcode project has no Assets.xcassets build file")
+    build_id = asset_build_file.group("build_id")
+    file_ref = asset_build_file.group("file_ref")
     require(
-        re.search(r"PBXResourcesBuildPhase[^;]*Assets\.xcassets", project, re.DOTALL)
-        or "Assets.xcassets in Resources" in project,
-        "Xcode project omits Assets.xcassets from resources",
+        re.search(
+            rf"^\s*{re.escape(build_id)} /\* Assets\.xcassets in Resources \*/,?\s*$",
+            resources_section.group("section"),
+            re.MULTILINE,
+        )
+        is not None,
+        "Xcode project omits Assets.xcassets from the actual resources phase",
+    )
+    require(
+        re.search(
+            rf"{re.escape(file_ref)} /\* Assets\.xcassets \*/ = \{{"
+            r"isa = PBXFileReference;[^}]*path = Assets\.xcassets;",
+            project,
+        )
+        is not None,
+        "Xcode project has no Assets.xcassets file reference",
     )
     require(
         re.search(r"ASSETCATALOG_COMPILER_APPICON_NAME\s*=\s*AppIcon;", project),
         "Xcode project does not select AppIcon",
     )
 
-    check_egui_source(root)
-
-    setup = read_text(root, "scripts/setup-corrald.sh")
-    require(
-        re.search(
-            r"bash\s+\"\$REPO_DIR/scripts/install-corral-ui\.sh\"\s+--binary\s+\"\$UI_BIN\"",
-            setup,
-        ),
-        "setup script does not invoke the transactional desktop installer",
-    )
-    helper = read_text(root, "scripts/install-corral-ui.sh")
-    for pattern, message in (
-        (r"install_macos\s*\(\)", "macOS installer function is missing"),
-        (r"iconutil\s+-c\s+icns", "macOS installer does not create an icns"),
-        (r"CFBundleIconFile.*Corral", "macOS bundle does not declare CFBundleIconFile"),
-        (
-            r"commit_directory\s+\"\$stage\"\s+\"\$MACOS_APP_DEST\"",
-            "macOS installer is not transactional",
-        ),
-        (r"install_linux\s*\(\)", "Linux installer function is missing"),
-        (r"corral-icon-256\.png", "Linux installer does not use the approved icon"),
-        (r"Icon=corral", "Linux desktop entry does not reference corral"),
-        (r"commit_files", "Linux installer has no transactional payload commit"),
-    ):
-        require(re.search(pattern, helper, re.DOTALL) is not None, message)
     run_bash_syntax(root, "scripts/setup-corrald.sh")
     run_bash_syntax(root, "scripts/install-corral-ui.sh")
     run_bash_syntax(root, "scripts/test-icon-packaging.sh")
+    run_python_syntax(root, "tools/icon/from-user-png.py")
+    run_python_syntax(root, "tools/icon/check-desktop-entry.py")
 
 
 def check_build_embedding(root: Path) -> None:
@@ -452,9 +346,10 @@ def check_build_embedding(root: Path) -> None:
 
 def check_all(root: Path, require_build: bool = False) -> None:
     check_hashes(root)
+    check_integration_hashes(root)
+    check_pillow_compatibility()
     check_pixels(root)
     check_references(root)
-    check_generator(root)
     if require_build:
         check_build_embedding(root)
 
@@ -538,6 +433,32 @@ def mutate_egui_icon_application(root: Path) -> None:
     )
 
 
+def mutate_egui_detached_icon(root: Path) -> None:
+    path = root / "clients/egui/src/main.rs"
+    source = path.read_text(encoding="utf-8")
+    path.write_text(
+        source.replace("viewport: viewport_builder(),", "viewport: egui::ViewportBuilder::default(),", 1),
+        encoding="utf-8",
+    )
+
+
+def mutate_generator_noop(root: Path) -> None:
+    path = root / "tools/icon/from-user-png.py"
+    source = path.read_text(encoding="utf-8")
+    path.write_text(
+        source.replace("def main() -> None:\n", "def main() -> None:\n    return\n", 1),
+        encoding="utf-8",
+    )
+
+
+def mutate_appicon_resources_phase(root: Path) -> None:
+    path = root / "ios/FleetNotifier.xcodeproj/project.pbxproj"
+    source = path.read_text(encoding="utf-8")
+    resource_line = "\t\t\t\t21CE07E2350DAFAF99DDC395 /* Assets.xcassets in Resources */,\n"
+    require(resource_line in source, "self-test fixture could not find the AppIcon resource phase entry")
+    path.write_text(source.replace(resource_line, "", 1), encoding="utf-8")
+
+
 def mutate_packager(root: Path) -> None:
     path = root / "scripts/install-corral-ui.sh"
     source = path.read_text(encoding="utf-8")
@@ -582,6 +503,9 @@ def self_test() -> None:
             ("iOS AppIcon catalog filename", mutate_appicon_catalog),
             ("missing egui include", mutate_egui_include),
             ("commented-out egui icon application", mutate_egui_icon_application),
+            ("detached egui icon application", mutate_egui_detached_icon),
+            ("immediate-return generator", mutate_generator_noop),
+            ("AppIcon removed from Resources phase", mutate_appicon_resources_phase),
             ("packager icon conversion", mutate_packager),
             ("generator mask resampling", mutate_generator_mask),
             ("generator font fallback", mutate_generator_fallback),

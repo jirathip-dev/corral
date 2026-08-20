@@ -43,10 +43,13 @@ and writes `CFBundleIconFile=Corral` in `Info.plist` before touching the live
 destination. Linux stages the binary, the 256px
 `assets/icon/corral-icon-256.png`, and the
 `~/.local/share/applications/corral.desktop` entry together. Only a validated
-staged payload is committed; a failed copy, converter, plist check, or final
-rename leaves the existing installation in place and rolls back any partial
-commit. A missing icon or failed macOS icon conversion is an installation
-error rather than a silent fallback.
+staged payload is committed; the desktop entry quotes and escapes executable
+paths containing spaces, `%`, quotes, or backslashes according to desktop-entry
+syntax. A failed copy, converter, plist check, or final rename leaves the
+existing installation in place and rolls back any partial commit. If rollback
+restoration itself fails, the installer keeps and reports the exact rollback
+directory so the old payload remains recoverable. A missing icon or failed
+macOS icon conversion is an installation error rather than a silent fallback.
 
 `--uninstall` removes the launchd agent and leaves the config directory; it
 does not remove an installed desktop app.

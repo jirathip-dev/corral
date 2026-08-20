@@ -17,6 +17,14 @@ fn app_icon() -> egui::IconData {
     }
 }
 
+fn viewport_builder() -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_inner_size([1320.0, 860.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_title("corral fleet")
+        .with_icon(app_icon())
+}
+
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -31,11 +39,7 @@ fn main() -> eframe::Result {
         .expect("tokio runtime");
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1320.0, 860.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_title("corral fleet")
-            .with_icon(app_icon()),
+        viewport: viewport_builder(),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -50,4 +54,21 @@ fn main() -> eframe::Result {
             )))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::viewport_builder;
+
+    #[test]
+    fn viewport_builder_applies_embedded_icon() {
+        let viewport = viewport_builder();
+        let icon = viewport.icon.expect("viewport icon");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(
+            icon.rgba.len(),
+            icon.width as usize * icon.height as usize * 4
+        );
+        assert!(icon.rgba.iter().any(|pixel| *pixel != 0));
+    }
 }

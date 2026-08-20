@@ -83,10 +83,11 @@ different. A machine with the exact approved font at another path may set
 silent Pillow fallback. The checked-in social preview is the approved output
 and should not be regenerated without an approved visual-equivalent change.
 
-`check-assets.py` is read-only: it checks the pinned SHA-256 manifest, PNG
-dimensions/modes/alpha, social wordmark/caption structure, generator
-relationships, the egui token structure, the iOS asset catalog, shell syntax,
-and the desktop packaging references. The egui binary embeds
+`check-assets.py` is read-only: it checks the pinned SHA-256 manifest for the
+approved assets and the complete active icon-integration sources, PNG
+dimensions/modes/alpha, social wordmark/caption structure, the parsed iOS
+asset-catalog resource phase, Python/shell syntax, and the release embedding
+gate. The egui binary embeds
 `corral-icon-256.png` at compile time; after a release build, prove that
 embedding with:
 
@@ -96,10 +97,18 @@ mise exec -- python tools/icon/check-assets.py --require-build
 ```
 
 The negative self-tests mutate temporary fixtures, including the macOS alpha
-mask, social copy, the AppIcon catalog, and a commented-out egui icon call.
-`scripts/test-icon-packaging.sh` similarly uses only a temporary destination
-and failing converter/copy/rename stubs to verify staging cleanup and rollback;
-it never targets `/Applications` or a user config directory.
+mask, social copy, the AppIcon catalog's actual Resources phase, an
+immediate-return generator, and both detached and commented-out egui icon
+applications. Full-source hashes plus compile/build-derived checks make those
+mutations fail even when a token or comment is left behind. Pillow checks use
+the repository's documented `getdata()` pixel API rather than a newer-only
+helper. `scripts/test-icon-packaging.sh` uses only temporary destinations and
+failing converter/copy/rename stubs to verify macOS, Linux, and Other-platform
+staging, special-character desktop-entry `Exec` escaping, cleanup, and
+single- and double-failure rollback. If both restoration renames fail, the
+installer reports the exact retained rollback directory instead of deleting
+the only recoverable old payload; it never targets `/Applications` or a user
+config directory.
 
 `scripts/setup-corrald.sh` delegates desktop installation to
 `scripts/install-corral-ui.sh`. The installer builds and validates the entire

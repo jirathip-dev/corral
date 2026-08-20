@@ -24,7 +24,13 @@ cancellation during held biometrics with no `/step-up` or `/drive` request.
 Registration tests hold `/register` across both demo and reset boundaries,
 reject a concurrent registration, and verify that no metadata or `/events`
 stream is resurrected. An injected APNs reset race holds the upload before
-`/device-token` and verifies that cancellation prevents the retired request.
+`/device-token` and verifies that cancellation prevents the retired request;
+a deterministically held upload following an APNs callback delivered during
+demo is retained and produces exactly one current-identity `/device-token`
+request after exit, while reset clears the retained token. FleetStore cursor
+persistence is injected, and the existing cursor tests use unique UserDefaults
+suites; reset clears the injected suite without writing process-global test
+state.
 Exit-demo tests verify persisted host/key/signer restoration, demo row and
 cursor clearing, a fresh live snapshot before actions, and a needs-setup
 fallback with no live dispatch when the identity is absent.

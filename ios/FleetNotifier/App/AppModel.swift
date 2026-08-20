@@ -154,7 +154,7 @@ final class AppModel: ObservableObject {
     }
 
     @Published var mode: Mode = .needsSetup
-    @Published var fleet = FleetStore()
+    @Published var fleet: FleetStore
     @Published var banner: DriveBanner?
     @Published var grants: [String] = []
     @Published var keyId: String?
@@ -261,6 +261,7 @@ final class AppModel: ObservableObject {
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
         self.wipeIdentity = wipeIdentity
+        self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -483,6 +484,11 @@ final class AppModel: ObservableObject {
             }
         }
         fleet.connect(client: client)
+        // APNs upload/retry is independent from one-time local notification
+        // setup. A token callback can arrive during demo; retry it now that
+        // the shared lifecycle is live, even when notificationsConfigured is
+        // already true.
+        AppDelegate.shared?.retryPendingDeviceTokenUpload()
         // #79 review F4: only connect() is idempotent by itself (its
         // streamTask guard). The notification/APNs setup below is NOT —
         // re-running it allocates a fresh LocalNotifier (dropping the
@@ -996,6 +1002,7 @@ final class AppModel: ObservableObject {
 
     func resetDevice() {
         cancelLifecycleTasks()
+        AppDelegate.shared?.clearRetainedDeviceToken()
         stopLive()
         wipeIdentity()
         defaults.removeObject(forKey: "fleetnotifier.host")

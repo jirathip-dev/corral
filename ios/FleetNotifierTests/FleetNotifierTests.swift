@@ -1376,7 +1376,7 @@ final class TappableDriveSafetyTests: XCTestCase {
             DeterministicDriveURLProtocol.clearScript()
         }
 
-        let upload = delegate.startDeviceTokenUpload("retired-token")
+        let upload = delegate.receiveDeviceToken("retired-token")
         XCTAssertNotNil(upload)
         let entered = await heldUpload.entered.waitFor(atLeast: 1)
         XCTAssertTrue(entered)
@@ -1389,6 +1389,74 @@ final class TappableDriveSafetyTests: XCTestCase {
                       "reset must prevent a retired identity's device-token upload")
         XCTAssertEqual(model.mode, .needsSetup)
         XCTAssertEqual(lifecycle.current().mode, .needsSetup)
+        lifecycle.setCurrent(mode: .live, hostURL: URL(string: "http://old-daemon"),
+                             keyId: "old-key", signerPublicKeyB64: signer.publicKeyB64)
+        XCTAssertNil(delegate.retryPendingDeviceTokenUpload(),
+                     "reset must clear the retained APNs token")
+    }
+
+    func testDemoAPNsCallbackRetriesExactlyOnceAfterLiveTransition() async throws {
+        let eventsGate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: ["/device-token": Data(#"{"ok":true,"key_id":"current-key","push_registered":true}"#.utf8)],
+            gates: ["/events": eventsGate])
+        let session = session(for: script)
+        let lifecycle = IdentityLifecycle()
+        let suiteName = "corral.apns.demo-exit.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let meta = DeviceKeyStore.DeviceMeta(keyId: "current-key", host: "http://daemon",
+                                             grants: ["read_tail"], expiryTs: 99, registeredAt: 1)
+        let heldUpload = HeldAsyncBoundary()
+        let delegate = AppDelegate(
+            identityLifecycle: lifecycle,
+            session: session,
+            identityProvider: { signer },
+            beforeDeviceTokenUpload: { await heldUpload.wait() })
+        defaults.set(meta.host, forKey: "fleetnotifier.host")
+        let model = AppModel(
+            session: session,
+            identityLifecycle: lifecycle,
+            defaults: defaults,
+            identityLoader: { (signer, .insecureFallback) },
+            loadMeta: { meta },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        defer {
+            eventsGate.cancel()
+            heldUpload.release()
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+
+        model.enterDemo()
+        delegate.receiveDeviceToken("current-token")
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/device-token" }.count, 0,
+                       "demo callback must retain, not upload, the token")
+        XCTAssertEqual(heldUpload.entered.value, 0)
+
+        model.exitDemo()
+        let entered = await heldUpload.entered.waitFor(atLeast: 1)
+        XCTAssertTrue(entered, "returning live must retry the retained token")
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/device-token" }.isEmpty,
+                      "the held callback must not dispatch before the lifecycle gate is released")
+
+        heldUpload.release()
+        let completed = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(completed)
+        let deviceRequests = script.log.requests.filter { $0.url?.path == "/device-token" }
+        XCTAssertEqual(deviceRequests.count, 1,
+                       "demo→live must upload the current token exactly once")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: deviceRequests[0].httpBody ?? Data()) as? [String: Any])
+        XCTAssertEqual(body["key_id"] as? String, meta.keyId)
+        let request = try XCTUnwrap(body["request"] as? [String: Any])
+        XCTAssertEqual(request["key_id"] as? String, meta.keyId)
+        XCTAssertEqual(request["device_token"] as? String, "current-token")
+        XCTAssertEqual(lifecycle.current().mode, .live)
+        XCTAssertEqual(lifecycle.current().keyId, meta.keyId)
     }
 
     func testExitDemoRestoresPersistedIdentityAndRequiresLiveSnapshot() async throws {
@@ -1417,13 +1485,13 @@ final class TappableDriveSafetyTests: XCTestCase {
             model.stopLive()
             session.invalidateAndCancel()
             defaults.removePersistentDomain(forName: suiteName)
-            UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId")
+            defaults.removeObject(forKey: "fleetnotifier.lastEventId")
             DeterministicDriveURLProtocol.clearScript()
         }
 
         model.enterDemo()
         let demoAgent = try XCTUnwrap(model.fleet.agents.values.first)
-        UserDefaults.standard.set("9001", forKey: "fleetnotifier.lastEventId")
+        defaults.set("9001", forKey: "fleetnotifier.lastEventId")
         XCTAssertEqual(model.mode, .demo)
         XCTAssertEqual(model.fleet.lastEventId, 1)
         XCTAssertEqual(lifecycle.current().mode, .demo)
@@ -1445,7 +1513,7 @@ final class TappableDriveSafetyTests: XCTestCase {
                       "leaving demo must discard every demo row")
         XCTAssertNil(model.fleet.lastEventId,
                      "leaving demo must clear the demo cursor")
-        XCTAssertNil(UserDefaults.standard.string(forKey: "fleetnotifier.lastEventId"),
+        XCTAssertNil(defaults.string(forKey: "fleetnotifier.lastEventId"),
                      "the persisted cursor must not resume demo state")
         let streamRequest = try XCTUnwrap(script.log.requests.first { $0.url?.path == "/events" })
         XCTAssertNil(streamRequest.value(forHTTPHeaderField: "Last-Event-ID"),
@@ -2790,18 +2858,20 @@ final class StaleCursorTests: XCTestCase {
     /// On the unfixed code the stale cursor survives, the header is sent,
     /// and the daemon answers deltas-only: the board never populates.
     func testEmptyStoreDropsPersistedCursor() async throws {
-        UserDefaults.standard.set("8089", forKey: "fleetnotifier.lastEventId")
-        defer { UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId") }
+        let suiteName = "corral.cursor.empty.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("8089", forKey: "fleetnotifier.lastEventId")
         LastEventIDCapturingURLProtocol.reset()
 
-        let store = FleetStore()
+        let store = FleetStore(defaults: defaults)
         store.restoreCursor()
         XCTAssertEqual(store.lastEventId, 8089, "precondition: the stale cursor was restored")
 
         let (session, client) = makeStreamingClient()
         store.connect(client: client)
         await waitForFirstRequest()
-        store.disconnect()
+        store.reset()
         session.invalidateAndCancel()
 
         XCTAssertGreaterThanOrEqual(
@@ -2811,6 +2881,8 @@ final class StaleCursorTests: XCTestCase {
             LastEventIDCapturingURLProtocol.capturedHeader,
             "an EMPTY store holds no state to resume — the stale cursor must be dropped, "
                 + "not sent as Last-Event-ID (the daemon would reply deltas-only and the board stays empty)")
+        XCTAssertNil(defaults.string(forKey: "fleetnotifier.lastEventId"),
+                     "reset must clear the injected cursor store")
     }
 
     /// Acceptance: a POPULATED store keeps its cursor — applying a snapshot
@@ -2818,9 +2890,12 @@ final class StaleCursorTests: XCTestCase {
     /// must send that rev, so delta resume survives and a full snapshot is
     /// NOT forced on every reconnect.
     func testPopulatedStoreKeepsCursor() async throws {
+        let suiteName = "corral.cursor.populated.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         LastEventIDCapturingURLProtocol.reset()
 
-        let store = FleetStore()
+        let store = FleetStore(defaults: defaults)
         let snapshotJSON = """
         {"schema_version":4,"rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
         """

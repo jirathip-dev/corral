@@ -80,8 +80,13 @@ final class FleetStore: ObservableObject {
     /// stored so `ingest` is a plain testable method — review F5).
     private var streamSeen: [String: WaitingOn] = [:]
     private let cursorBox = CursorBox()
+    private let cursorDefaults: UserDefaults
     /// Shadow of last-seen agent states for done-transition detection.
     private var previousStates: [String: AgentState] = [:]
+
+    init(defaults: UserDefaults = .standard) {
+        self.cursorDefaults = defaults
+    }
 
     // MARK: - Application
 
@@ -387,7 +392,7 @@ final class FleetStore: ObservableObject {
         cursorBox.write(nil)
         // A reset abandons the delta base; retaining it would let a later
         // live connection resume from demo or otherwise unrelated state.
-        UserDefaults.standard.removeObject(forKey: "fleetnotifier.lastEventId")
+        cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
         connectionState = .disconnected
     }
@@ -410,12 +415,12 @@ final class FleetStore: ObservableObject {
 
     func persistCursor() {
         if let lastEventId {
-            UserDefaults.standard.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
+            cursorDefaults.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
         }
     }
 
     func restoreCursor() {
-        if let raw = UserDefaults.standard.string(forKey: "fleetnotifier.lastEventId"),
+        if let raw = cursorDefaults.string(forKey: "fleetnotifier.lastEventId"),
            let rev = UInt64(raw) {
             lastEventId = rev
             cursorBox.write(rev)

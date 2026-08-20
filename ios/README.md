@@ -149,6 +149,11 @@ during biometrics before either `/step-up` or `/drive` is sent.
 Registration and APNs identity transitions are lifecycle-owned: reset/demo
 cannot resurrect a late `/register` response, live SSE, metadata write, or
 retired `/device-token` upload, and concurrent registration is refused.
+An APNs callback received outside live mode retains only the latest token in
+memory and retries it exactly once under the restored live identity; reset
+clears that retained token and the APNs bridge state. Fleet cursor persistence
+is injected into `FleetStore` (production defaults to `UserDefaults.standard`),
+so reset clears only the configured store.
 Exiting demo is also model-owned: it validates the persisted live identity,
 clears demo rows and cursors so a fresh snapshot is required, and falls back
 to setup without dispatch when that identity is missing or inconsistent.

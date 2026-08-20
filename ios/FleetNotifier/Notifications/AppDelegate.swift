@@ -1,6 +1,73 @@
 import Foundation
 import UIKit
 
+private final class DeviceTokenState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latestToken: String?
+    private var accepted: (IdentityLifecycle.Context, String)?
+    private var uploaded: (IdentityLifecycle.Context, String)?
+
+    func remember(_ token: String) {
+        lock.lock()
+        latestToken = token
+        lock.unlock()
+    }
+
+    var pending: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestToken
+    }
+
+    /// Suppress duplicate callbacks for the same lifecycle identity while
+    /// still allowing a token retained during demo to retry under the next
+    /// live generation.
+    func begin(_ context: IdentityLifecycle.Context, token: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let uploaded,
+           sameIdentity(uploaded.0, context), uploaded.1 == token {
+            return false
+        }
+        if let accepted, accepted.0 == context, accepted.1 == token {
+            return false
+        }
+        accepted = (context, token)
+        return true
+    }
+
+    func succeeded(_ context: IdentityLifecycle.Context, token: String) {
+        lock.lock()
+        if let accepted, accepted.0 == context, accepted.1 == token {
+            uploaded = (context, token)
+        }
+        lock.unlock()
+    }
+
+    func failed(_ context: IdentityLifecycle.Context, token: String) {
+        lock.lock()
+        if let accepted, accepted.0 == context, accepted.1 == token {
+            self.accepted = nil
+        }
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        latestToken = nil
+        accepted = nil
+        uploaded = nil
+        lock.unlock()
+    }
+
+    private func sameIdentity(_ lhs: IdentityLifecycle.Context,
+                              _ rhs: IdentityLifecycle.Context) -> Bool {
+        lhs.hostURL == rhs.hostURL
+            && lhs.keyId == rhs.keyId
+            && lhs.signerPublicKeyB64 == rhs.signerPublicKeyB64
+    }
+}
+
 /// APNs registration (D16): receives the device token from
 /// `UIApplication` and enrolls it on the daemon via the signed
 /// `POST /device-token` — the same proof-of-possession shape as /step-up,
@@ -14,11 +81,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// is active ONLY while this is false — a real device must not get
     /// doubled notifications (SSE bridge + APNs).
     static var apnsRegistered = false
+    static weak var shared: AppDelegate?
 
     private let identityLifecycle: IdentityLifecycle
     private let session: URLSession
     private let identityProvider: @Sendable () -> DeviceSigner?
     private let beforeDeviceTokenUpload: @Sendable () async -> Void
+    private let deviceTokenState = DeviceTokenState()
 
     /// Dependencies are injectable so lifecycle races can be tested with a
     /// URLProtocol session and an in-memory identity, without touching APNs or
@@ -34,13 +103,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         self.identityProvider = identityProvider
         self.beforeDeviceTokenUpload = beforeDeviceTokenUpload
         super.init()
+        Self.shared = self
     }
 
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        _ = receiveDeviceToken(hex)
+    }
+
+    /// Testable equivalent of the OS callback. The token is retained before
+    /// checking lifecycle mode, so a callback delivered during demo can be
+    /// retried after the app returns to a valid live identity.
+    @discardableResult
+    func receiveDeviceToken(_ hex: String) -> Task<Void, Never>? {
         Self.apnsRegistered = true
-        _ = startDeviceTokenUpload(hex)
+        deviceTokenState.remember(hex)
+        return startDeviceTokenUploadIfPossible(hex)
     }
 
     func application(_ application: UIApplication,
@@ -56,6 +135,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// suspension is followed by a generation/identity check.
     @discardableResult
     func startDeviceTokenUpload(_ hex: String) -> Task<Void, Never>? {
+        deviceTokenState.remember(hex)
+        return startDeviceTokenUploadIfPossible(hex)
+    }
+
+    /// Retry a token retained while the lifecycle was non-live. AppModel
+    /// calls this independently of one-time notification setup whenever it
+    /// has installed a valid live identity.
+    @discardableResult
+    func retryPendingDeviceTokenUpload() -> Task<Void, Never>? {
+        guard let token = deviceTokenState.pending else { return nil }
+        return startDeviceTokenUploadIfPossible(token)
+    }
+
+    /// Reset retires the token as well as the identity that could authorize
+    /// it. A future registration must wait for a fresh OS callback.
+    func clearRetainedDeviceToken() {
+        deviceTokenState.clear()
+        Self.apnsRegistered = false
+    }
+
+    @discardableResult
+    private func startDeviceTokenUploadIfPossible(_ hex: String) -> Task<Void, Never>? {
         let lifecycle = identityLifecycle
         let expected = lifecycle.current()
         guard expected.mode == .live,
@@ -67,10 +168,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
               lifecycle.isCurrent(expected) else {
             return nil
         }
+        guard deviceTokenState.begin(expected, token: hex) else { return nil }
         let session = self.session
         let beforeUpload = self.beforeDeviceTokenUpload
+        let tokenState = self.deviceTokenState
         return lifecycle.launch { context in
-            guard context.mode == .live,
+            guard context == expected,
+                  context.mode == .live,
                   let hostURL = context.hostURL,
                   let keyId = context.keyId,
                   context.signerPublicKeyB64 == signer.publicKeyB64,
@@ -83,8 +187,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             // can invalidate the context while the preflight boundary was
             // suspended, and no retired token should cross this point.
             guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
-            _ = try? await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
-            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            do {
+                _ = try await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
+                guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+                tokenState.succeeded(context, token: hex)
+            } catch {
+                guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+                tokenState.failed(context, token: hex)
+            }
         }
     }
 }

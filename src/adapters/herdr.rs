@@ -12,7 +12,10 @@
 //!   pane afterwards), while request/response work (agent.list bootstrap,
 //!   drive commands) opens a fresh short-lived connection per call.
 //! - On subscribe, the server replays current pane state (pane.updated), so
-//!   the adapter converges without polling.
+//!   the adapter converges without polling. If bounded event delivery
+//!   overflows, the stream is retired after its pending subscribe response;
+//!   the global stream re-bootstraps, while a pane stream reconnects and
+//!   re-subscribes with its bounded retry delay.
 //!
 //! Bootstrap is one `agent.list` call on connect (initial state — never a
 //! poll loop; AC5: no sleep-loops calling `herdr agent list`).
@@ -202,34 +205,50 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-/// Pending request id -> response oneshot.
-type PendingCalls = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, Value>>>>>;
+/// Pending requests and the terminal state of their reader, guarded as one
+/// unit so call registration cannot race reader teardown.
+struct PendingState {
+    closed: bool,
+    calls: HashMap<String, oneshot::Sender<Result<Value, RpcError>>>,
+}
+
+type PendingCalls = Arc<Mutex<PendingState>>;
 
 /// JSON-RPC client over a unix socket. One reader task parses
 /// newline-delimited frames: responses (with `id`) resolve pending calls
-/// inline; pushed events are forwarded to the returned receiver.
+/// inline; pushed events are forwarded to the returned receiver. The
+/// reader is the ONLY task that reads the socket, so the client owns it:
+/// dropping the client aborts the reader (and with it the read half), so a
+/// connection is never left half-open after its caller is done.
 struct RpcClient {
     writer: AsyncMutex<OwnedWriteHalf>,
     pending: PendingCalls,
     id_seq: AtomicU64,
+    reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RpcClient {
     fn new(stream: UnixStream) -> (Arc<Self>, mpsc::Receiver<EventFrame>) {
         let (read, write) = stream.into_split();
         let (events_tx, events_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
+        let pending: PendingCalls = Arc::new(Mutex::new(PendingState {
+            closed: false,
+            calls: HashMap::new(),
+        }));
         let client = Arc::new(Self {
             writer: AsyncMutex::new(write),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: pending.clone(),
             id_seq: AtomicU64::new(0),
+            reader: Mutex::new(None),
         });
-        let reader = Self::reader(read, client.pending.clone(), events_tx);
-        tokio::spawn(reader);
+        let handle = tokio::spawn(Self::reader(read, pending, events_tx));
+        *client.reader.lock().unwrap() = Some(handle);
         (client, events_rx)
     }
 
     async fn reader(read: OwnedReadHalf, pending: PendingCalls, events: mpsc::Sender<EventFrame>) {
         let mut lines = BufReader::new(read).lines();
+        let mut overflowed = false;
         loop {
             let line = match lines.next_line().await {
                 Ok(Some(line)) => line,
@@ -250,13 +269,33 @@ impl RpcClient {
                 }
             };
             if let Some(id) = value.get("id").and_then(|i| i.as_str()) {
-                if let Some(tx) = pending.lock().unwrap().remove(id) {
+                if let Some(tx) = pending.lock().unwrap().calls.remove(id) {
                     let result = match value.get("error") {
-                        Some(err) => Err(err.clone()),
+                        Some(err) => Err(RpcError::Server {
+                            code: err
+                                .get("code")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("error")
+                                .to_string(),
+                            message: err
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("unknown error")
+                                .to_string(),
+                        }),
                         None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
                     };
                     let _ = tx.send(result);
                 }
+                if overflowed {
+                    break;
+                }
+                continue;
+            }
+            if overflowed {
+                // The stream is being retired after an overflow. Keep
+                // reading long enough to resolve the in-flight subscribe,
+                // but never deliver more potentially incomplete state.
                 continue;
             }
             let kind = value
@@ -265,9 +304,29 @@ impl RpcClient {
                 .unwrap_or_default()
                 .to_string();
             let data = value.get("data").cloned().unwrap_or(Value::Null);
-            if events.send(EventFrame { kind, data }).await.is_err() {
-                break;
+            match events.try_send(EventFrame { kind, data }) {
+                Ok(()) => {}
+                // #105: a full channel means canonical state may have
+                // missed an event. Retire this stream so the session
+                // re-bootstraps; do not silently drop live state. If the
+                // overflow happened before the subscribe response, keep
+                // reading only until that response has been resolved.
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    overflowed = true;
+                    if pending.lock().unwrap().calls.is_empty() {
+                        break;
+                    }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
             }
+        }
+        let calls = {
+            let mut state = pending.lock().unwrap();
+            state.closed = true;
+            std::mem::take(&mut state.calls)
+        };
+        for (_, tx) in calls {
+            let _ = tx.send(Err(RpcError::Disconnected));
         }
     }
 
@@ -277,34 +336,42 @@ impl RpcClient {
     async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = format!("corral:{}", self.id_seq.fetch_add(1, Ordering::SeqCst));
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id.clone(), tx);
+        {
+            let mut state = self.pending.lock().unwrap();
+            if state.closed {
+                return Err(RpcError::Disconnected);
+            }
+            state.calls.insert(id.clone(), tx);
+        }
         let frame = json!({ "id": id, "method": method, "params": params });
         let mut line = frame.to_string();
         line.push('\n');
         {
             let mut writer = self.writer.lock().await;
             if writer.write_all(line.as_bytes()).await.is_err() {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock().unwrap().calls.remove(&id);
                 return Err(RpcError::Disconnected);
             }
             let _ = writer.flush().await;
         }
         match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(err))) => Err(RpcError::Server {
-                code: err
-                    .get("code")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("error")
-                    .to_string(),
-                message: err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error")
-                    .to_string(),
-            }),
+            Ok(Ok(Err(err))) => Err(err),
             Ok(Err(_)) => Err(RpcError::Disconnected),
             Err(_) => Err(RpcError::Timeout),
+        }
+    }
+}
+
+impl Drop for RpcClient {
+    fn drop(&mut self) {
+        // Tear down the reader (and with it the read half) so the fd is
+        // released the moment the connection's last owner is gone. Without
+        // this, a reader blocked on next_line keeps the socket open until
+        // herdr closes the idle connection — every failed subscribe and
+        // one-shot rpc_call leaks a descriptor during a timeout storm.
+        if let Some(reader) = self.reader.lock().unwrap().take() {
+            reader.abort();
         }
     }
 }
@@ -1943,6 +2010,146 @@ mod tests {
             .expect("read_tail");
         server.await.unwrap();
         assert!(tail.is_empty(), "no output -> clean empty lines");
+    }
+
+    // #105 regression: exercise the production reader -> forwarder -> sink
+    // topology. Overflow must resolve the subscribe response, then close
+    // the stream so the session can re-bootstrap instead of losing state.
+    #[tokio::test]
+    async fn subscribe_response_is_not_starved_by_replay_flood() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (server, _) = listener.accept().await.expect("accept");
+            let (read, mut write) = server.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let _request = lines.next_line().await.expect("subscribe request");
+            let mut flood = String::new();
+            for i in 0..(FRAME_CHANNEL_CAP * 2 + 64) {
+                flood.push_str(
+                    &json!({
+                        "event": "pane_updated",
+                        "data": {"pane": {"pane_id": i.to_string(), "agent": "codex"}}
+                    })
+                    .to_string(),
+                );
+                flood.push('\n');
+            }
+            write
+                .write_all(flood.as_bytes())
+                .await
+                .expect("write flood");
+            write.flush().await.expect("flush flood");
+            let response = json!({ "id": "corral:0", "result": { "ok": true } }).to_string() + "\n";
+            write
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            write.flush().await.expect("flush response");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        });
+
+        let (sink, mut sink_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_event_stream(socket_path, vec![], sink, StreamKey::Global),
+        )
+        .await
+        .expect("subscribe response timeout");
+        assert!(result, "subscribe must resolve before overflow reconnect");
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match sink_rx.recv().await {
+                    Some(SinkFrame::Closed {
+                        key: StreamKey::Global,
+                    }) => break true,
+                    Some(SinkFrame::Event { .. }) => {}
+                    Some(SinkFrame::Closed { .. }) => panic!("wrong stream closed"),
+                    None => break false,
+                }
+            }
+        })
+        .await
+        .expect("overflow reconnect signal timeout");
+        assert!(
+            closed,
+            "overflow must close the stream for resynchronization"
+        );
+        server.abort();
+    }
+
+    // #105 fd teardown: a dropped client must close its socket promptly.
+    // The reader task owns the read half; without deterministic teardown it
+    // lingers (blocked on next_line) until herdr closes the idle connection,
+    // so every failed subscribe and one-shot rpc_call leaks a descriptor
+    // while the timeout storm rages.
+    //
+    // NOTE: dropping the write half alone must NOT count as teardown —
+    // tokio's OwnedWriteHalf::drop only shutdown(SHUT_WR)s, and a live
+    // reader keeps the fd (and its read half) open. The observable that
+    // discriminates is whether the reader still forwards frames after the
+    // client is dropped: an unfixed reader does (RED), a torn-down one
+    // cannot (GREEN).
+    #[tokio::test]
+    async fn dropped_client_stops_the_reader() {
+        let (server, client) = UnixStream::pair().expect("socketpair");
+        let (write_now, write_later) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut server = server;
+            write_later.await.expect("drop synchronization");
+            let frame = json!({ "event": "pane_updated", "data": {} }).to_string() + "\n";
+            let _ = server.write_all(frame.as_bytes()).await;
+        });
+
+        let (client, mut events) = RpcClient::new(client);
+        drop(client); // last Arc: must abort the reader (read half teardown)
+        write_now.send(()).expect("server still waiting");
+        let closed = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("receiver closure timeout");
+        server.abort();
+        assert!(closed.is_none(), "dropped client must close event receiver");
+    }
+
+    #[tokio::test]
+    async fn reader_exit_cancels_pending_call() {
+        let (server, client) = UnixStream::pair().expect("socketpair");
+        let server = tokio::spawn(async move {
+            let (read, _) = server.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let _request = lines.next_line().await.expect("request");
+            // Closing the read half makes the client reader exit without a
+            // response; the pending call must fail immediately, not timeout.
+        });
+        let (client, _events) = RpcClient::new(client);
+        let call = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("agent.list", json!({})).await }
+        });
+        let result = tokio::time::timeout(Duration::from_secs(1), call)
+            .await
+            .expect("pending call cancellation timeout")
+            .expect("call task panicked");
+        server.await.expect("server task panicked");
+        assert!(matches!(result, Err(RpcError::Disconnected)));
+    }
+
+    #[tokio::test]
+    async fn call_after_reader_exit_is_rejected_without_timeout() {
+        let (server, client) = UnixStream::pair().expect("socketpair");
+        let (client, mut events) = RpcClient::new(client);
+        drop(server);
+
+        let closed = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("reader exit timeout");
+        assert!(closed.is_none(), "reader exit must close event receiver");
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), client.call("agent.list", json!({})))
+                .await
+                .expect("closed-call registration timeout");
+        assert!(matches!(result, Err(RpcError::Disconnected)));
     }
 }
 

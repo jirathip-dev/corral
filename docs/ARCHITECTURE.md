@@ -75,7 +75,13 @@ Every adapter normalizes into the canonical `Agent` record
 adapter is push-only — it subscribes once and converges on pushed
 `pane_*` events, never a poll loop (grep-able standing rule; the gh
 plane is the sanctioned exception, poll-by-design at one round-trip
-per poll).
+per poll). The reader is the ONLY task that reads the herdr socket, so
+a slow event consumer can never block it. A full events channel retires
+the stream as a resynchronization condition; the reader still drains a
+pre-subscribe response. For the global stream, the session then
+re-bootstraps to reconcile state; a pane stream instead reconnects and
+re-subscribes after its bounded retry delay. Dropping the client aborts
+the reader so a failed connection never leaks its descriptor (#105).
 
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see

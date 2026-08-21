@@ -10,7 +10,7 @@ may have introduced.
 
 1. **LICENSE**: `LICENSE-MIT` + `LICENSE-APACHE` added; `Cargo.toml` →
    `license = "MIT OR Apache-2.0"`.
-2. **launchd label**: `com.jirathip.corrald` → `com.corral.corrald`
+2. **launchd label**: the old project-specific label → `com.corral.corrald`
    (`scripts/setup-corrald.sh`, `docs/OPERATIONS.md`).
 3. **setup-corrald.sh**: bootout-before-bootstrap (re-run applies new
    --bind), bootstrap failure fatal, health check retries 10x + `exit 1` on
@@ -24,7 +24,7 @@ may have introduced.
    + "sendmeter pattern" de-jargoned. `fastlane/.env.example` ASC_KEY_PATH
    contract fixed (resolved relative to fastlane/, basename).
 7. **asc-beta-state.rb**: APP_ID env-overridable (`CORRAL_ASC_APP_ID`).
-8. **docs/OPERATIONS.md**: "Hermes gateway" → "automation gateway";
+8. **docs/OPERATIONS.md**: "automation gateway" wording;
    launchd label updated.
 9. **NOT changed (deliberately — orch-territory, filed as issues)**: the
    stale loopback guard message at `src/main.rs:571-579` (lands with #65);

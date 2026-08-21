@@ -16,9 +16,9 @@ Spawning, watchdogs, reaping and worktree pruning land in later phases of
 ## Registry schema
 
 Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
-`$HOME/.config/corral/fleets.json`; a pre-existing legacy
-`$HOME/.hermes/scripts/fleets.json` is honoured as a migration fallback
-when — and only when — the corral-owned file does not exist (#66); the
+`$HOME/.config/corral/fleets.json`; a pre-existing legacy fleet registry is
+honoured as a migration fallback when — and only when — the corral-owned file
+does not exist (#66); the
 corral-owned dir honours `$CORRAL_CONFIG_DIR` like every other consumer
 of the config dir. Corral is taking ownership of the schema: it
 originated in the legacy fleet tooling, which still writes the
@@ -31,8 +31,8 @@ stderr note when it is taken) exists.
   "fleets": [
     {
       "name": "corral",
-      "gh_repo": "jirathip-k/corral",
-      "local": "~/Projects/corral",
+      "gh_repo": "owner/repo",
+      "local": "~/Projects/<repo>",
       "worktree_dir": "corral",
       "orch": "orch-corral",
       "workers": ["p4-w1", "p4-w1-reviewer"],
@@ -73,7 +73,7 @@ corrald fleet watch [--registry <path>]
 `list` — one greppable line per fleet:
 
 ```
-corral jirathip-k/corral workers=2 paused=true orch=fable impl=opencode-go/deepseek-v4-flash review=opus
+repo owner/repo workers=2 paused=true orch=orchestrator impl=implementer review=reviewer
 ```
 
 `check` — parse + validate, then verify each fleet's `local_path()` exists,

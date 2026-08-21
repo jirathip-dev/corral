@@ -21,7 +21,7 @@ License section (`README.md:188-190`). Exactly as recommended.
 
 **MF2 — launchd label: RESOLVED.** `com.corral.corrald` at
 `scripts/setup-corrald.sh:48-49` and `docs/OPERATIONS.md:14`. No remaining
-`com.jirathip.*` in any file I read.
+project-specific launchd labels in any file I read.
 
 **MF3 — ASC key-path contradiction: RESOLVED.** `.env.example:6-8` now
 documents the actual contract ("resolved relative to fastlane/ by the lane
@@ -107,8 +107,8 @@ final argument still dies on `set -u` unbound `$2` (`:23`) — both minor,
 pre-existing-class.
 
 **N6 — internal-jargon stragglers round 1 missed** (no secrets, all polish):
-`docs/ARCHITECTURE.md:5-7` cites a private machine path
-(`~/Projects/hermes-brain/plans/corral/DECISIONS.md`) as "Design authority";
+`docs/ARCHITECTURE.md:5-7` cites the repository decision record
+(`docs/corral/DECISIONS.md`) as "Design authority";
 `docs/corral/DECISIONS.md:1-8` opens as an internal mirror addressed to
 "Guy/orchestrator" while `README.md:147` sends users there for the D34
 writeup; `src/cost/mod.rs:95` says "a provider Guy doesn't use";
@@ -146,10 +146,10 @@ keys on `format!("{tool}:{worktree_path}")`
 (`src/cost/agent_cache.rs:41-43`), accumulated from each provider store's own
 `workspace_path` (`:88-94`), joined to agents in the adapter
 (`herdr.rs:681-685`). `fleets.json` appears only in `src/fleet/`, and its
-default path is still `~/.hermes/scripts/fleets.json`
+default path is still a legacy fleet registry fallback
 (`src/fleet/config.rs:181-188`) — correctly deferred to #66, and
 `docs/OPERATIONS.md:212-213` documents the env override, so a stranger is not
-blocked, just pointed at a Hermes-flavored default.
+blocked, just pointed at a legacy default.
 
 ## 4. Verdict
 

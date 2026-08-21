@@ -6,7 +6,7 @@ from the file contents (the sandbox denies tool use).
 
 ## Context
 
-Corral (`jirathip-k/corral`) is an agent-fleet control plane daemon
+Corral (`owner/repo`) is an agent-fleet control plane daemon
 (`corrald`, Rust) with a desktop egui client, an iOS FleetNotifier app
 (TestFlight build 2 live), and a planned public release. The repo wants to
 become PUBLIC on GitHub. Current state on `main`:
@@ -90,7 +90,7 @@ become PUBLIC on GitHub. Current state on `main`:
 
 ## Output
 
-Write your review to `~/Projects/corral/docs/corral/public-review.md`:
+Write your review to `docs/corral/public-review.md`:
 - Numbered answers to Q1–Q7.
 - A "MUST-FIX (blocking)" numbered list with file:line citations.
 - A "SHOULD-FIX" numbered list.

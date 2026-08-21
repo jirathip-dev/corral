@@ -5,7 +5,7 @@
 
 Branch: feat/corral-p2 (worktrees per workstream). P1 shipped corrald's
 canonical model + herdr push adapter + snapshot/SSE (PR #2, merged).
-DECISIONS.md (hermes-brain/plans/corral/) is the authoritative design.
+`docs/corral/DECISIONS.md` is the authoritative design record.
 
 ## Goal
 

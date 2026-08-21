@@ -2,17 +2,19 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
 
-**Corral is a control plane for fleets of AI coding agents.** If you run
-several coding agents in git worktrees — Claude Code, Codex CLI, OpenCode,
-or any other agent harness — each with its own terminal, you need: one live
-board of what every agent is doing, signed remote control from your phone
-(devices connect over loopback by default, or over your tailnet), and
-cost visibility before a provider bill surprises you. Corral gives you
-that.
+**Corral is the control plane for your herdr fleet.** [Install
+herdr](https://github.com/herdrdev/herdr) first: it is the runtime that
+spawns and supervises agents in panes and worktrees. Corral gives that fleet
+one live board, signed remote control from your phone (loopback by default,
+or over your tailnet), and cost visibility before a provider bill surprises
+you.
 
-Corral is **harness-agnostic**: it treats any coding agent as the same
-canonical record, so the board, the signed drive plane, and the cost meter
-work the same no matter which harness an agent runs on.
+At the harness layer, Corral is **harness-agnostic**: Claude Code, Codex CLI,
+OpenCode, and other agent harnesses become the same canonical record, so the
+board and signed drive plane work the same regardless of which harness an
+agent runs on. The cost meter still reads each provider's own session-store
+format; its pricing and plan-cap caveat is documented in [Cost meter
+(G34)](#cost-meter-g34).
 
 Corral reads every worktree / agent / PR / CI fact into a snapshot read
 model served over HTTP + SSE (loopback by default; tailnet/private
@@ -24,11 +26,8 @@ board (`corrald-ui`, egui) and an iOS notifier app alongside it.
 ## Requirements
 
 - **Rust toolchain** (pinned by `rust-toolchain.toml`).
-- **A runtime that supervises the agents.** Today that is
-  [herdr](https://github.com/herdrdev/herdr) — the layer that spawns
-  agents in panes/worktrees. Corral's core model, drive plane, and HTTP
-  surface are runtime-neutral; the herdr adapter is what feeds the live
-  agent state (see
+- **herdr**, the runtime that supervises the agents in panes/worktrees. The
+  herdr adapter feeds Corral's live agent state (see
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#stack-terminology-model--harness--runtime--control-plane)
   for the model→harness→runtime→control-plane layering). Without herdr,
   `corrald` still serves HTTP but shows no agents.
@@ -41,6 +40,23 @@ gh (GraphQL) ─┘   read model     ├─ GET /cost   (per-provider spend, 5h/
                                  ├─ POST /device-token (APNs registration, signed)
                                  └─ POST /drive (Ed25519-signed, capability-gated)
 ```
+
+## Herdr plugin
+
+The root [`herdr-plugin.toml`](herdr-plugin.toml) provides real `setup` and
+read-only `status` actions. From a clean checkout, link it locally and list
+the actions:
+
+```sh
+herdr plugin link .
+herdr plugin action list --plugin corral.control-plane
+```
+
+`setup` invokes `scripts/setup-corrald.sh`. `status` checks `/healthz`, then
+prints only the agent count and snapshot cursors from `/snapshot`; it never
+prints the snapshot body. These actions do not need a Herdr RPC callback. If a
+future Corral action needs to call Herdr, use the injected `HERDR_BIN_PATH`
+provided by Herdr rather than assuming `herdr` is on `PATH`.
 
 ## Quickstart
 
@@ -187,6 +203,7 @@ exhaustion both come from the same meter.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — read model, signed drive plane, security boundaries
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, grants, remote access from iOS (Tailscale Serve), macOS keychain how-to, audit log, troubleshooting
 - [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, module map, quality gates, how to add a capability
+- [docs/corral/visibility-topic-flip-checklist.md](docs/corral/visibility-topic-flip-checklist.md) — human-only public visibility and marketplace flip checklist
 - [docs/corral/P4-conformance.md](docs/corral/P4-conformance.md) — normative wire contract, scenarios R1–R10
 - [docs/corral/P1-brief.md](docs/corral/P1-brief.md), [P2](docs/corral/P2-brief.md), [P3](docs/corral/P3-brief.md) — historical phase briefs
 - [docs/corral/P4-brief.md](docs/corral/P4-brief.md) — current phase brief (client stack)

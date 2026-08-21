@@ -104,7 +104,7 @@ clients.
 - **Zero polling in the herdr adapter.** Push from `events.subscribe`,
   converge on events, never a sleep-loop calling `herdr agent list`.
   The gh plane is poll-by-design (one GraphQL round-trip per poll, SWR);
-  the git plane is fsevents push with commondirs registered in one batch and a
+  the git plane is fsevents push with one immutable watcher per commondir and a
   10s sweep safety net. When in doubt, grep: `rg "sleep|interval" src/adapters/`.
 - **Additive-only versioned schema.** New fields/variants extend the
   model (`SCHEMA_VERSION` bumps additively); existing shapes never

@@ -3,9 +3,10 @@
 //! - `temp_repo_commit_emits_events_under_second` — full pipeline against a
 //!   throwaway repo in a temp dir (real fsevents, real `git`), asserting the
 //!   <1s acceptance latency for a commit.
-//! - `multiple_commondirs_batch_registration_preserves_event_delivery` — a
-//!   production-shaped multi-repo watch set, plus worktree churn, exercises
-//!   batched commondir registration and event delivery from every stream.
+//! - `multiple_commondirs_register_immutable_watchers_and_preserve_event_delivery`
+//!   — a production-shaped multi-repo watch set, post-boot repository
+//!   discovery, plus worktree churn exercises fresh watcher registration and
+//!   event delivery from every stream.
 //! - `live_herdr_repo_commit_under_one_second` — the acceptance harness
 //!   against the real herdr repo (`#[ignore]`d; run explicitly with
 //!   `cargo test --test git_plane -- --ignored --nocapture`).
@@ -263,10 +264,11 @@ async fn temp_repo_commit_emits_events_under_second() {
 
 /// A production-shaped profile has more than one repository under the
 /// worktrees root, which means the plane discovers more than one commondir.
-/// All commondirs must be registered without sacrificing event delivery, and
-/// repeated worktree add/remove churn must not disturb the streams.
+/// All commondirs must be registered without sacrificing event delivery. A
+/// repository discovered after boot must get a fresh stream, while repeated
+/// worktree add/remove churn must not disturb any existing stream.
 #[tokio::test(flavor = "multi_thread")]
-async fn multiple_commondirs_batch_registration_preserves_event_delivery() {
+async fn multiple_commondirs_register_immutable_watchers_and_preserve_event_delivery() {
     let root = temp_root("multi-commondir");
     let repo = root.join("repo");
     let wts = root.join("wts");
@@ -298,8 +300,14 @@ async fn multiple_commondirs_batch_registration_preserves_event_delivery() {
         }
     }
 
-    // Confirm that both commondir streams deliver normal head events after
-    // the one-time multi-path registration.
+    // Boot registration happens immediately after the initial rescan emits
+    // these inventory facts. Give the watcher task a setup boundary before
+    // the first post-boot mutation, so this test never confuses a commit
+    // racing stream creation with an event-delivery failure.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Confirm that each boot-time commondir stream delivers normal head
+    // events. Each stream was created with one path and is never reopened.
     for (repo, subject) in [(&repo, "primary event"), (&second_repo, "secondary event")] {
         fs::write(repo.join("event.txt"), format!("{subject}\n")).unwrap();
         git(repo, &["add", "event.txt"]);
@@ -319,6 +327,49 @@ async fn multiple_commondirs_batch_registration_preserves_event_delivery() {
             "HeadMoved for {repo:?} after {subject:?}"
         );
     }
+
+    // Discover a completely new repository after boot. It is outside both
+    // existing commondirs, so the 10s safety-net rescan is the intentional
+    // topology-discovery path. The watcher task then creates one fresh stream
+    // for it; no existing stream is mutated.
+    let third_repo_path = wts.join("third-repo");
+    init_repo(&third_repo_path, "main");
+    let third_repo = fs::canonicalize(&third_repo_path).unwrap();
+    assert!(
+        wait_for(
+            &mut rx,
+            |e| matches!(
+                e,
+                PlaneEvent::Git(GitEvent::WorktreeAdded { worktree })
+                    if worktree == &third_repo
+            ),
+            Duration::from_secs(15),
+        )
+        .await
+        .is_some(),
+        "WorktreeAdded for post-boot repository {third_repo:?} within one sweep"
+    );
+    // Allow the watcher command queued by the sweep to finish before sending
+    // the first event through the new stream. This is a setup boundary, not
+    // an event-delivery retry; the event itself must arrive from FSEvents.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    fs::write(third_repo.join("post-boot.txt"), "post-boot\n").unwrap();
+    git(&third_repo, &["add", "post-boot.txt"]);
+    git(&third_repo, &["commit", "-m", "post-boot event"]);
+    assert!(
+        wait_for(
+            &mut rx,
+            |e| matches!(
+                e,
+                PlaneEvent::Git(GitEvent::HeadMoved { worktree, subject, .. })
+                    if worktree == &third_repo && subject.as_deref() == Some("post-boot event")
+            ),
+            Duration::from_secs(5),
+        )
+        .await
+        .is_some(),
+        "HeadMoved for post-boot repository {third_repo:?}"
+    );
 
     // Worktree churn is the topology change that causes registry rescans.
     // Keep it in the same test so a future registration change cannot trade

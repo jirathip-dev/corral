@@ -14,10 +14,11 @@
 //! - On subscribe, the server replays current pane state (pane.updated), so
 //!   the adapter converges without polling. If bounded event delivery
 //!   overflows, the stream is retired after its pending subscribe response;
-//!   a successfully subscribed global stream re-bootstraps the session, while
-//!   a pane stream reconnects and re-subscribes with its capped retry delay.
-//!   Connection and subscribe failures are retried inside the owning stream
-//!   task and do not trigger a global re-bootstrap.
+//!   a successfully subscribed global stream re-bootstraps the session after
+//!   the same capped outage backoff as connect/subscribe failures, while a
+//!   pane stream reconnects and re-subscribes with its capped retry delay.
+//!   Connection and subscribe failures do not trigger a global re-bootstrap
+//!   until their owning retry delay has elapsed.
 //!
 //! Bootstrap is one `agent.list` call on connect (initial state — never a
 //! poll loop; AC5: no sleep-loops calling `herdr agent list`).
@@ -49,7 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -122,9 +123,26 @@ impl RetryBackoff {
     }
 }
 
-/// Subscription failures are one outage, not one new warning per retry. The
-/// first failure is useful operational evidence; subsequent attempts stay
-/// silent at the default log level until the stream recovers.
+#[derive(Debug, Clone, Copy)]
+struct StreamRetryPolicy {
+    base: Duration,
+    max: Duration,
+    reset_after: Duration,
+}
+
+impl StreamRetryPolicy {
+    fn production() -> Self {
+        Self {
+            base: RECONNECT_BASE,
+            max: RECONNECT_MAX,
+            reset_after: RECONNECT_RESET_AFTER,
+        }
+    }
+}
+
+/// Stream failures are one outage, not one new warning per retry. The first
+/// failure is useful operational evidence; subsequent attempts stay silent at
+/// the default log level until the stream recovers.
 #[derive(Debug, Default)]
 struct SubscriptionFailureLog {
     attempts: u32,
@@ -155,6 +173,54 @@ impl SubscriptionFailureLog {
         }
         self.attempts = 0;
         self.warned = false;
+    }
+
+    fn closed(&mut self, key: &StreamKey, stable_for: Duration) {
+        self.attempts = self.attempts.saturating_add(1);
+        if !self.warned {
+            warn!(
+                key = ?key,
+                attempt = self.attempts,
+                stable_for = ?stable_for,
+                "event stream closed; retrying with backoff"
+            );
+            self.warned = true;
+        }
+    }
+}
+
+/// Global stream failures and accepted-then-closed streams share one outage
+/// ladder. The state survives the session's delayed re-bootstrap so a stream
+/// that accepts and closes repeatedly cannot reset to the base delay on every
+/// new subscription.
+#[derive(Debug)]
+struct GlobalStreamRetry {
+    backoff: RetryBackoff,
+    failures: SubscriptionFailureLog,
+    reset_after: Duration,
+}
+
+impl GlobalStreamRetry {
+    fn new(policy: StreamRetryPolicy) -> Self {
+        Self {
+            backoff: RetryBackoff::new(policy.base, policy.max),
+            failures: SubscriptionFailureLog::default(),
+            reset_after: policy.reset_after,
+        }
+    }
+
+    fn subscription_failed(&mut self, key: &StreamKey, error: &RpcError) -> Duration {
+        self.failures.failed(key, error);
+        self.backoff.next_delay()
+    }
+
+    fn stream_closed(&mut self, key: &StreamKey, stable_for: Duration) -> Duration {
+        if stable_for >= self.reset_after {
+            self.backoff.reset();
+            self.failures.recovered(key);
+        }
+        self.failures.closed(key, stable_for);
+        self.backoff.next_delay()
     }
 }
 
@@ -574,6 +640,7 @@ impl Drop for AbortOnDrop {
 #[derive(Debug)]
 struct LiveEventStream {
     handle: tokio::task::JoinHandle<()>,
+    started_at: Instant,
 }
 
 impl Drop for LiveEventStream {
@@ -606,7 +673,7 @@ impl HerdrAdapter {
     async fn run_forever(&self, store: Store) {
         let mut backoff = RECONNECT_BASE;
         loop {
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             match self.session(&store).await {
                 Ok(()) => info!("herdr connection ended cleanly"),
                 Err(e) => warn!(error = %e, "herdr adapter error"),
@@ -625,6 +692,15 @@ impl HerdrAdapter {
 
     /// One connect → bootstrap → event streams → sink loop cycle.
     async fn session(&self, store: &Store) -> Result<(), RpcError> {
+        self.session_with_policy(store, StreamRetryPolicy::production())
+            .await
+    }
+
+    async fn session_with_policy(
+        &self,
+        store: &Store,
+        stream_policy: StreamRetryPolicy,
+    ) -> Result<(), RpcError> {
         info!(socket = %self.socket_path.display(), "connecting to herdr");
 
         // Bootstrap: one agent.list (initial state, never a poll loop).
@@ -642,7 +718,8 @@ impl HerdrAdapter {
 
         // Main event stream: global subs + per-pane subs for all known panes
         // in ONE events.subscribe request (the only one this connection gets).
-        self.spawn_event_stream(StreamKey::Global, sink_tx.clone());
+        let global_retry = Arc::new(Mutex::new(GlobalStreamRetry::new(stream_policy)));
+        self.spawn_event_stream(StreamKey::Global, sink_tx.clone(), global_retry.clone());
         loop {
             match sink_rx.recv().await {
                 Some(SinkFrame::Event { kind, data, .. }) => {
@@ -663,7 +740,11 @@ impl HerdrAdapter {
                                     message: e.to_string(),
                                 })?;
                             self.reconcile_against_list(&list, store).await;
-                            self.spawn_event_stream(StreamKey::Global, sink_tx.clone());
+                            self.spawn_event_stream(
+                                StreamKey::Global,
+                                sink_tx.clone(),
+                                global_retry.clone(),
+                            );
                         }
                         StreamKey::Pane(_) => {
                             // The pane retry task owns its live forwarder and
@@ -714,35 +795,48 @@ impl HerdrAdapter {
     /// Spawn a push-only event stream. Subscription failures retry in the
     /// stream task with capped exponential backoff, so a herdr outage does not
     /// make the session re-bootstrap in a hot loop. A successfully subscribed
-    /// global stream stays owned until its forwarder closes so the session can
-    /// reconcile; pane streams keep ownership in their retry task and never
-    /// need a separate session-level respawn.
-    fn spawn_event_stream(&self, key: StreamKey, sink: mpsc::Sender<SinkFrame>) {
+    /// global stream stays owned until its forwarder closes; the same global
+    /// backoff delays its close notification so the session can reconcile without
+    /// a hot loop. Pane streams keep ownership in their retry task and never need
+    /// a separate session-level respawn.
+    fn spawn_event_stream(
+        &self,
+        key: StreamKey,
+        sink: mpsc::Sender<SinkFrame>,
+        global_retry: Arc<Mutex<GlobalStreamRetry>>,
+    ) {
         match key {
             StreamKey::Global => {
                 let socket_path = self.socket_path.clone();
                 let subs = self.global_subscriptions();
                 tokio::spawn(async move {
                     let key = StreamKey::Global;
-                    let mut backoff = RetryBackoff::new(RECONNECT_BASE, RECONNECT_MAX);
-                    let mut failures = SubscriptionFailureLog::default();
                     loop {
-                        match run_event_stream(
-                            socket_path.clone(),
-                            subs.clone(),
-                            sink.clone(),
-                            key.clone(),
-                        )
-                        .await
+                        match run_event_stream(socket_path.clone(), subs.clone(), sink.clone())
+                            .await
                         {
                             EventStreamExit::SubscriptionFailed(error) => {
-                                failures.failed(&key, &error);
-                                let delay = backoff.next_delay();
+                                let delay = global_retry
+                                    .lock()
+                                    .unwrap()
+                                    .subscription_failed(&key, &error);
                                 tokio::time::sleep(delay).await;
                             }
                             EventStreamExit::Subscribed(mut live) => {
-                                failures.recovered(&key);
-                                let _ = (&mut live.handle).await;
+                                let stable_for = {
+                                    let result = (&mut live.handle).await;
+                                    if let Err(error) = result {
+                                        warn!(error = %error, ?key, "global event stream task ended");
+                                    }
+                                    live.started_at.elapsed()
+                                };
+                                let delay =
+                                    global_retry.lock().unwrap().stream_closed(&key, stable_for);
+                                tokio::time::sleep(delay).await;
+                                // Delay the close notification itself. The
+                                // session must not agent.list/reconcile until
+                                // the same outage backoff has elapsed.
+                                let _ = sink.send(SinkFrame::Closed { key: key.clone() }).await;
                                 break;
                             }
                         }
@@ -1228,7 +1322,6 @@ fn spawn_pane_event_stream(
                     socket_path.clone(),
                     subs.clone(),
                     sink.clone(),
-                    key.clone(),
                 ) => outcome,
                 changed = cancel.changed() => {
                     if changed.is_err() || *cancel.borrow() {
@@ -1281,12 +1374,12 @@ async fn sleep_or_cancel(delay: Duration, cancel: &mut watch::Receiver<bool>) ->
 
 /// One event-stream connection: subscribe once, forward pushed events into
 /// `sink` until the socket dies. Subscription/connect failures are returned
-/// to the caller, which owns the retry schedule and warning policy.
+/// to the caller, which owns the retry schedule and warning policy; the
+/// returned live handle tells the caller when an accepted stream closes.
 async fn run_event_stream(
     socket_path: PathBuf,
     subs: Vec<Value>,
     sink: mpsc::Sender<SinkFrame>,
-    key: StreamKey,
 ) -> EventStreamExit {
     let stream = match UnixStream::connect(&socket_path).await {
         Ok(s) => s,
@@ -1298,7 +1391,6 @@ async fn run_event_stream(
         }
     };
     let (client, mut rx) = RpcClient::new(stream);
-    let key2 = key.clone();
     let forwarder_sink = sink.clone();
     let client_for_forwarder = client.clone();
     let mut forwarder = AbortOnDrop(Some(tokio::spawn(async move {
@@ -1313,7 +1405,6 @@ async fn run_event_stream(
                 break;
             }
         }
-        let _ = forwarder_sink.send(SinkFrame::Closed { key: key2 }).await;
     })));
     if let Err(e) = client
         .call("events.subscribe", json!({ "subscriptions": subs }))
@@ -1328,7 +1419,10 @@ async fn run_event_stream(
         .0
         .take()
         .expect("forwarder guard still owns a live task after subscribe");
-    EventStreamExit::Subscribed(LiveEventStream { handle: forwarder })
+    EventStreamExit::Subscribed(LiveEventStream {
+        handle: forwarder,
+        started_at: Instant::now(),
+    })
 }
 
 fn pane_subscriptions(pane_id: &str) -> Vec<Value> {
@@ -1680,6 +1774,42 @@ mod tests {
         failures.recovered(&key);
         assert_eq!(failures.attempts, 0);
         assert!(!failures.warned);
+    }
+
+    #[test]
+    fn global_closed_streams_share_backoff_and_reset_after_stability() {
+        let key = StreamKey::Global;
+        let mut retry = GlobalStreamRetry::new(StreamRetryPolicy {
+            base: Duration::from_millis(10),
+            max: Duration::from_millis(40),
+            reset_after: Duration::from_millis(30),
+        });
+
+        assert_eq!(
+            retry.stream_closed(&key, Duration::from_millis(1)),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            retry.stream_closed(&key, Duration::from_millis(1)),
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            retry.stream_closed(&key, Duration::from_millis(1)),
+            Duration::from_millis(40)
+        );
+        assert_eq!(retry.failures.attempts, 3);
+        assert!(retry.failures.warned, "one outage warning remains active");
+
+        assert_eq!(
+            retry.stream_closed(&key, Duration::from_millis(30)),
+            Duration::from_millis(10),
+            "only a stable stream resets to the base delay"
+        );
+        assert_eq!(retry.failures.attempts, 1);
+        assert!(
+            retry.failures.warned,
+            "the new closure starts one new outage"
+        );
     }
 
     #[tokio::test]
@@ -2525,33 +2655,265 @@ mod tests {
         let (sink, mut sink_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            run_event_stream(socket_path, vec![], sink, StreamKey::Global),
+            run_event_stream(socket_path, vec![], sink),
         )
         .await
         .expect("subscribe response timeout");
-        let EventStreamExit::Subscribed(live) = result else {
+        let EventStreamExit::Subscribed(mut live) = result else {
             panic!("subscribe must resolve before overflow reconnect");
         };
-        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                match sink_rx.recv().await {
-                    Some(SinkFrame::Closed {
-                        key: StreamKey::Global,
-                    }) => break true,
-                    Some(SinkFrame::Event { .. }) => {}
-                    Some(SinkFrame::Closed { .. }) => panic!("wrong stream closed"),
-                    None => break false,
+                tokio::select! {
+                    result = &mut live.handle => {
+                        result.expect("forwarder task must not panic");
+                        break;
+                    }
+                    frame = sink_rx.recv() => {
+                        match frame {
+                            Some(SinkFrame::Event { .. }) => {}
+                            None => {
+                                (&mut live.handle)
+                                    .await
+                                    .expect("forwarder task must not panic");
+                                break;
+                            }
+                            Some(SinkFrame::Closed { .. }) => {
+                                panic!("run_event_stream must not close the session sink")
+                            }
+                        }
+                    }
                 }
             }
         })
         .await
-        .expect("overflow reconnect signal timeout");
-        assert!(
-            closed,
-            "overflow must close the stream for resynchronization"
-        );
-        drop(live);
+        .expect("overflow must retire the forwarder");
         server.abort();
+    }
+
+    // #117 regression: a fake herdr that accepts every global subscription and
+    // then closes it must not make the session re-bootstrap and resubscribe at
+    // full speed. The policy is intentionally short here so the test proves
+    // the production supervisor's timing and cap without taking minutes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum GlobalServerEvent {
+        AgentList,
+        Subscription(usize),
+        ConnectionClosed(usize),
+    }
+
+    async fn wait_for_client_close(lines: &mut tokio::io::Lines<BufReader<OwnedReadHalf>>) {
+        let result = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .expect("fake herdr client close timeout")
+            .expect("fake herdr client close read");
+        assert!(result.is_none(), "fake herdr client must close its socket");
+    }
+
+    async fn serve_repeatedly_closed_global_stream(
+        listener: tokio::net::UnixListener,
+        close_count: usize,
+        stable_for: Duration,
+        events: mpsc::Sender<(GlobalServerEvent, Instant)>,
+        stop: oneshot::Receiver<()>,
+    ) {
+        let mut stop = std::pin::pin!(stop);
+        let mut subscriptions = 0;
+        loop {
+            let (stream, _) = tokio::select! {
+                accepted = listener.accept() => accepted.expect("fake herdr accept"),
+                _ = &mut stop => return,
+            };
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request = lines
+                .next_line()
+                .await
+                .expect("fake herdr request read")
+                .expect("fake herdr request");
+            let request: Value = serde_json::from_str(&request).expect("fake herdr request json");
+            let id = request["id"].clone();
+            match request["method"].as_str() {
+                Some("agent.list") => {
+                    events
+                        .send((GlobalServerEvent::AgentList, Instant::now()))
+                        .await
+                        .expect("regression receiver alive");
+                    let response = json!({ "id": id, "result": { "agents": [] } });
+                    write_json_line(&mut write, response).await;
+                    drop(write);
+                    wait_for_client_close(&mut lines).await;
+                }
+                Some("events.subscribe") => {
+                    let index = subscriptions;
+                    subscriptions += 1;
+                    events
+                        .send((GlobalServerEvent::Subscription(index), Instant::now()))
+                        .await
+                        .expect("regression receiver alive");
+                    let response = json!({ "id": id, "result": null });
+                    write_json_line(&mut write, response).await;
+                    if index == close_count {
+                        // One genuinely stable stream must reset the outage
+                        // ladder before it closes, then the next stream is
+                        // kept alive for the recovery assertion.
+                        tokio::time::sleep(stable_for).await;
+                        drop(write);
+                        wait_for_client_close(&mut lines).await;
+                        events
+                            .send((GlobalServerEvent::ConnectionClosed(index), Instant::now()))
+                            .await
+                            .expect("regression receiver alive");
+                    } else if index > close_count {
+                        // Keep the recovered stream alive until the test has
+                        // observed a full stable interval. This is recovery
+                        // on the same fake daemon, not a restart.
+                        let _ = stop.await;
+                        drop(write);
+                        wait_for_client_close(&mut lines).await;
+                        events
+                            .send((GlobalServerEvent::ConnectionClosed(index), Instant::now()))
+                            .await
+                            .expect("regression receiver alive");
+                        return;
+                    } else {
+                        drop(write);
+                        wait_for_client_close(&mut lines).await;
+                        events
+                            .send((GlobalServerEvent::ConnectionClosed(index), Instant::now()))
+                            .await
+                            .expect("regression receiver alive");
+                    }
+                }
+                method => panic!("unexpected fake herdr method: {method:?}"),
+            }
+        }
+    }
+
+    async fn write_json_line(write: &mut tokio::net::unix::OwnedWriteHalf, value: Value) {
+        let mut wire = value.to_string();
+        wire.push('\n');
+        write
+            .write_all(wire.as_bytes())
+            .await
+            .expect("fake herdr response write");
+        write.flush().await.expect("fake herdr response flush");
+    }
+
+    #[tokio::test]
+    async fn accepted_then_closed_global_streams_back_off_and_recover() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let (events_tx, mut events_rx) = mpsc::channel(32);
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let close_count = 4;
+        let stable_for = Duration::from_millis(40);
+        let server = tokio::spawn(serve_repeatedly_closed_global_stream(
+            listener,
+            close_count,
+            stable_for,
+            events_tx,
+            stop_rx,
+        ));
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from(&socket_path));
+        let session = tokio::spawn(async move {
+            adapter
+                .session_with_policy(
+                    &store,
+                    StreamRetryPolicy {
+                        base: Duration::from_millis(10),
+                        max: Duration::from_millis(40),
+                        reset_after: Duration::from_millis(30),
+                    },
+                )
+                .await
+        });
+
+        let mut agent_lists = 0;
+        let mut subscriptions = Vec::new();
+        let mut closed_connections = 0;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while subscriptions.len() <= close_count + 1 {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .expect("fake herdr regression timed out");
+            let (event, at) = tokio::time::timeout(remaining, events_rx.recv())
+                .await
+                .expect("fake herdr event timeout")
+                .expect("fake herdr server still running");
+            match event {
+                GlobalServerEvent::AgentList => agent_lists += 1,
+                GlobalServerEvent::Subscription(index) => {
+                    assert_eq!(index, subscriptions.len(), "subscription order");
+                    subscriptions.push(at);
+                }
+                GlobalServerEvent::ConnectionClosed(index) => {
+                    assert_eq!(index, closed_connections, "closed socket order");
+                    closed_connections += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            agent_lists,
+            close_count + 2,
+            "one delayed reconcile per closed stream"
+        );
+        assert_eq!(subscriptions.len(), close_count + 2);
+        let gaps: Vec<Duration> = subscriptions
+            .windows(2)
+            .map(|window| window[1].duration_since(window[0]))
+            .collect();
+        assert!(
+            gaps[0] >= Duration::from_millis(8),
+            "base retry gap: {gaps:?}"
+        );
+        assert!(
+            gaps[1] >= Duration::from_millis(18),
+            "doubled retry gap: {gaps:?}"
+        );
+        assert!(
+            gaps[2] >= Duration::from_millis(38),
+            "capped retry gap: {gaps:?}"
+        );
+        assert!(
+            gaps[3] >= Duration::from_millis(38),
+            "capped retry gap: {gaps:?}"
+        );
+        assert!(
+            gaps[4] >= stable_for + Duration::from_millis(8),
+            "stable stream still needs the reset base delay: {gaps:?}"
+        );
+        assert!(
+            gaps[4] < stable_for + Duration::from_millis(25),
+            "stable stream resets instead of using the capped delay: {gaps:?}"
+        );
+
+        // The final subscription remains live on the same fake socket. Wait
+        // beyond the stable interval and prove the session does not churn a
+        // new task or re-bootstrap while the stream is healthy.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            events_rx.try_recv().is_err(),
+            "stable stream must stay quiet"
+        );
+
+        let _ = stop_tx.send(());
+        session.abort();
+        let _ = session.await;
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("final stream socket teardown timeout")
+            .expect("fake herdr server task");
+        while let Ok(event) = events_rx.try_recv() {
+            if let GlobalServerEvent::ConnectionClosed(index) = event.0 {
+                assert_eq!(index, closed_connections, "closed socket order");
+                closed_connections += 1;
+            }
+        }
+        assert_eq!(closed_connections, close_count + 2);
     }
 
     // #105 fd teardown: a dropped client must close its socket promptly.

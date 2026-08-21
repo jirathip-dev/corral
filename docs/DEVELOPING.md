@@ -104,8 +104,8 @@ clients.
 - **Zero polling in the herdr adapter.** Push from `events.subscribe`,
   converge on events, never a sleep-loop calling `herdr agent list`.
   The gh plane is poll-by-design (one GraphQL round-trip per poll, SWR);
-  the git plane is fsevents push with a 10s sweep safety net. When in
-  doubt, grep: `rg "sleep|interval" src/adapters/`.
+  the git plane is fsevents push with commondirs registered in one batch and a
+  10s sweep safety net. When in doubt, grep: `rg "sleep|interval" src/adapters/`.
 - **Additive-only versioned schema.** New fields/variants extend the
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add

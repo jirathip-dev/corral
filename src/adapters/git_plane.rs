@@ -16,9 +16,11 @@
 //! A single watch is a deliberate constraint: notify's fsevents backend
 //! *restarts the whole stream* (with `kFSEventStreamEventIdSinceNow`) on
 //! every added path, so adding per-worktree watches later would silently
-//! drop events for anything that changed during the restart. One watch,
-//! registered once at boot, covers future worktrees too; the 10s sweep is
-//! the backstop for anything outside it.
+//! drop events for anything that changed during the restart. Commondirs are
+//! staged through one `PathsMut` transaction, so a multi-repo boot or a
+//! later topology change performs one stream rebuild for the whole batch.
+//! One watch per commondir covers future worktrees too; the 10s sweep is the
+//! backstop for anything outside it.
 //!
 //! Every fs event is mapped to the worktree(s) it concerns (most-specific
 //! gitdir prefix, then `refs/heads/<branch>` → the worktree checked out on
@@ -253,12 +255,11 @@ impl GitPlane {
             }
         };
         // Warm the registry (resolves the commondirs), then register the
-        // watches. Each commondir gets ONE recursive watch; registering more
-        // watches later would restart the fsevents stream and drop events,
-        // so per-commondir watches are added once, in one boot batch.
+        // watches in one batch. Each commondir gets ONE recursive watch;
+        // notify's fsevents backend rebuilds the stream when paths change,
+        // so `register_commondir_watches` must commit all additions together.
         self.rescan(&sink).await;
-        let mut watch_registered = self.register_commondir_watches(&mut watcher);
-        if watch_registered {
+        if self.register_commondir_watches(&mut watcher) {
             info!(
                 repo = %self.repo_root.display(),
                 root = %self.worktrees_root.display(),
@@ -293,11 +294,8 @@ impl GitPlane {
                             // Unthrottled: a worktree registered *while* an
                             // earlier rescan was in flight is caught here.
                             self.rescan(&sink).await;
-                            if !watch_registered {
-                                watch_registered = self.register_commondir_watches(&mut watcher);
-                                if watch_registered {
-                                    info!("git plane: fsevents watchers live");
-                                }
+                            if self.register_commondir_watches(&mut watcher) {
+                                info!("git plane: fsevents watchers live");
                             }
                         }
                         None => {
@@ -312,35 +310,53 @@ impl GitPlane {
 
     /// Register one recursive watch per known commondir (each scanned repo
     /// has its own; the herdr worktrees root holds worktrees of many repos —
-    /// WS3 F2). `true` when at least one watch is live. Watches are added
-    /// once per commondir, in a boot batch, because notify's fsevents
-    /// backend restarts the whole stream — `kFSEventStreamEventIdSinceNow` —
-    /// on every added path, dropping events that change during the restart.
+    /// WS3 F2). `true` when at least one new watch is live. All new paths are
+    /// added through one `PathsMut` transaction: notify's fsevents backend
+    /// restarts the whole stream — `kFSEventStreamEventIdSinceNow` — when its
+    /// path set changes, so one commit avoids a stop/start per commondir and
+    /// the associated busy-loop under repeated registration.
     fn register_commondir_watches(&self, watcher: &mut RecommendedWatcher) -> bool {
-        let mut any = false;
         let commondirs: Vec<PathBuf> = {
             let state = self.state.lock().unwrap();
-            state.commondirs.clone()
+            state
+                .commondirs
+                .iter()
+                .filter(|cd| !state.watched.contains(*cd))
+                .cloned()
+                .collect()
         };
-        for cd in commondirs {
-            {
-                let state = self.state.lock().unwrap();
-                if state.watched.contains(&cd) {
-                    continue; // already watched
-                }
-            }
-            match watcher.watch(&cd, RecursiveMode::Recursive) {
+
+        if commondirs.is_empty() {
+            return false;
+        }
+
+        let mut paths = watcher.paths_mut();
+        let mut added = Vec::new();
+        for cd in &commondirs {
+            match paths.add(cd, RecursiveMode::Recursive) {
                 Ok(()) => {
-                    self.state.lock().unwrap().watched.insert(cd.clone());
-                    any = true;
-                    info!(gitdir = %cd.display(), "git plane: commondir watch live");
+                    added.push(cd.clone());
                 }
                 Err(e) => {
                     warn!(gitdir = %cd.display(), error = %e, "git plane: commondir watch registration failed");
                 }
             }
         }
-        any
+        if let Err(e) = paths.commit() {
+            warn!(error = %e, "git plane: commondir watch batch commit failed");
+            return false;
+        }
+
+        if added.is_empty() {
+            return false;
+        }
+
+        let mut state = self.state.lock().unwrap();
+        for cd in added {
+            state.watched.insert(cd.clone());
+            info!(gitdir = %cd.display(), "git plane: commondir watch live");
+        }
+        true
     }
 
     /// Resolve an fs event to the worktrees it concerns (rescanning the

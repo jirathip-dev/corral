@@ -13,12 +13,16 @@
 //! linked worktrees, whose `gitdir: <path>` target always lives under the
 //! commondir — resolved by reading the file, never by guessing).
 //!
-//! A single watch is a deliberate constraint: notify's fsevents backend
-//! *restarts the whole stream* (with `kFSEventStreamEventIdSinceNow`) on
-//! every added path, so adding per-worktree watches later would silently
-//! drop events for anything that changed during the restart. One watch,
-//! registered once at boot, covers future worktrees too; the 10s sweep is
-//! the backstop for anything outside it.
+//! A single watch per commondir is a deliberate constraint: notify 8.2.0's
+//! fsevents backend *restarts the whole stream* (with
+//! `kFSEventStreamEventIdSinceNow`) whenever `watch()` adds a path to an
+//! existing watcher. The plane therefore creates a fresh watcher for each
+//! commondir and registers exactly one path before keeping that stream alive;
+//! later topology discovery adds another fresh watcher and never mutates an
+//! existing stream. This avoids notify's stop/restart busy-yield path and
+//! keeps event delivery independent across repositories. One watch per
+//! commondir covers future worktrees too; the 10s sweep is the backstop for
+//! anything outside it.
 //!
 //! Every fs event is mapped to the worktree(s) it concerns (most-specific
 //! gitdir prefix, then `refs/heads/<branch>` → the worktree checked out on
@@ -52,6 +56,7 @@
 //!   also emit, so consumers converge the snapshot immediately.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -78,12 +83,22 @@ const EVENT_BUDGET: Duration = Duration::from_millis(200);
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Concurrent `git` subprocesses during the sweep (one per worktree, bounded).
 const MAX_CONCURRENT_PROBES: usize = 4;
-/// Throttle on fsevents-triggered registry rescans (they re-add watchers).
+/// Throttle on fsevents-triggered registry rescans (which may discover a new
+/// commondir and create one fresh watcher).
 const RESCAN_THROTTLE_MILLIS: u64 = 1000;
 /// Delay before the one-shot retry of a registry rescan that found nothing:
 /// `git worktree add` registers the entry *while* the events are still
 /// arriving, so the first rescan can race the registration.
 const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
+
+/// Commands sent to the watcher task by fsevents handling and the safety-net
+/// sweep. Registration is intentionally separate from rescanning: the sweep
+/// already has the fresh topology, while an event-triggered retry needs both.
+#[derive(Debug, Clone, Copy)]
+enum WatcherCommand {
+    RegisterNew,
+    RescanAndRegister,
+}
 
 /// Total `git` subprocess invocations since the test binary started (G21
 /// acceptance 2: the head fields must add ZERO git calls — the probe tests
@@ -136,8 +151,6 @@ struct PlaneState {
     /// commondir -> main checkout path (commondir root files like `HEAD`/
     /// `index` belong to the main checkout).
     main_checkouts: HashMap<PathBuf, PathBuf>,
-    /// Commondirs with an active fsevents watch (watches are added once).
-    watched: HashSet<PathBuf>,
     /// Worktrees currently inside their debounce window.
     pending: HashSet<PathBuf>,
     /// Worktree paths a rescan skip has already been warned about (once per
@@ -234,31 +247,26 @@ impl GitPlane {
 
     // -- watcher (primary signal) -------------------------------------------
 
-    async fn run_watcher(self: Arc<Self>, sink: PlaneSink) {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<()>();
-        let mut watcher = match RecommendedWatcher::new(
-            move |res: notify::Result<Event>| {
-                let _ = tx.send(res);
-            },
-            Config::default(),
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "git plane: fsevents unavailable — degraded to sweep-only safety net"
-                );
-                return;
-            }
-        };
-        // Warm the registry (resolves the commondirs), then register the
-        // watches. Each commondir gets ONE recursive watch; registering more
-        // watches later would restart the fsevents stream and drop events,
-        // so per-commondir watches are added once, in one boot batch.
+    async fn run_watcher(
+        self: Arc<Self>,
+        sink: PlaneSink,
+        mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>,
+        cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
+    ) {
+        // A callback fan-in channel lets each commondir keep its own
+        // RecommendedWatcher/FSEventStream alive without requiring a mutable
+        // watcher to be selected from the event loop.
+        let (event_tx, mut event_rx) =
+            mpsc::unbounded_channel::<(PathBuf, notify::Result<Event>)>();
+        let mut watchers = HashMap::<PathBuf, RecommendedWatcher>::new();
+
+        // Warm the registry before creating streams. Every watcher below is
+        // fresh and receives exactly one path, so notify 8.2.0 never has to
+        // stop/restart an existing FSEventStream to add another commondir.
         self.rescan(&sink).await;
-        let mut watch_registered = self.register_commondir_watches(&mut watcher);
-        if watch_registered {
+        if self.register_new_commondir_watchers(&mut watchers, |cd| {
+            Self::new_commondir_watcher(cd, &event_tx)
+        }) {
             info!(
                 repo = %self.repo_root.display(),
                 root = %self.worktrees_root.display(),
@@ -271,15 +279,17 @@ impl GitPlane {
                 break;
             }
             tokio::select! {
-                res = rx.recv() => {
-                    match res {
-                        Some(Ok(event)) => {
+                item = event_rx.recv() => {
+                    match item {
+                        Some((_commondir, Ok(event))) => {
                             let affected = self.handle_fs_event(&event, &sink, &cmd_tx).await;
                             for wt in affected {
                                 self.debounce(wt, sink.clone());
                             }
                         }
-                        Some(Err(e)) => warn!(error = %e, "git plane: fsevents error"),
+                        Some((commondir, Err(e))) => {
+                            warn!(gitdir = %commondir.display(), error = %e, "git plane: fsevents error");
+                        }
                         None => {
                             info!("git plane: fsevents stream ended");
                             break;
@@ -288,16 +298,23 @@ impl GitPlane {
                 }
                 msg = cmd_rx.recv() => {
                     match msg {
-                        Some(()) => {
+                        Some(WatcherCommand::RegisterNew) => {
+                            if self.register_new_commondir_watchers(&mut watchers, |cd| {
+                                Self::new_commondir_watcher(cd, &event_tx)
+                            }) {
+                                info!("git plane: fsevents watchers live");
+                            }
+                        }
+                        Some(WatcherCommand::RescanAndRegister) => {
                             self.retry_scheduled.store(false, Ordering::Relaxed);
-                            // Unthrottled: a worktree registered *while* an
-                            // earlier rescan was in flight is caught here.
+                            // Unthrottled: a worktree or repository registered
+                            // while an earlier rescan was in flight is caught
+                            // here, then gets its own immutable stream.
                             self.rescan(&sink).await;
-                            if !watch_registered {
-                                watch_registered = self.register_commondir_watches(&mut watcher);
-                                if watch_registered {
-                                    info!("git plane: fsevents watchers live");
-                                }
+                            if self.register_new_commondir_watchers(&mut watchers, |cd| {
+                                Self::new_commondir_watcher(cd, &event_tx)
+                            }) {
+                                info!("git plane: fsevents watchers live");
                             }
                         }
                         None => {
@@ -310,37 +327,66 @@ impl GitPlane {
         }
     }
 
-    /// Register one recursive watch per known commondir (each scanned repo
-    /// has its own; the herdr worktrees root holds worktrees of many repos —
-    /// WS3 F2). `true` when at least one watch is live. Watches are added
-    /// once per commondir, in a boot batch, because notify's fsevents
-    /// backend restarts the whole stream — `kFSEventStreamEventIdSinceNow` —
-    /// on every added path, dropping events that change during the restart.
-    fn register_commondir_watches(&self, watcher: &mut RecommendedWatcher) -> bool {
-        let mut any = false;
+    /// Construct one watcher for one commondir. This is the only `watch` call
+    /// for the returned watcher.
+    fn new_commondir_watcher(
+        commondir: &Path,
+        event_tx: &mpsc::UnboundedSender<(PathBuf, notify::Result<Event>)>,
+    ) -> notify::Result<RecommendedWatcher> {
+        let callback_source = commondir.to_path_buf();
+        let callback_tx = event_tx.clone();
+        let mut watcher = RecommendedWatcher::new(
+            move |res: notify::Result<Event>| {
+                let _ = callback_tx.send((callback_source.clone(), res));
+            },
+            Config::default(),
+        )?;
+        // This is the only `watch` call for this watcher. In notify 8.2.0 a
+        // second call would stop and rebuild its entire FSEventStream.
+        watcher.watch(commondir, RecursiveMode::Recursive)?;
+        Ok(watcher)
+    }
+
+    /// Add one immutable watcher per known commondir (each scanned repo has
+    /// its own; the herdr worktrees root holds worktrees of many repos — WS3
+    /// F2). `true` when at least one new watcher is live.
+    ///
+    /// The factory is deliberately generic so the lifecycle contract can be
+    /// tested without racing real FSEvents: a successful factory call creates
+    /// one watcher and registers one path. Existing entries are never passed
+    /// to the factory again, so no existing notify stream can enter
+    /// `stop()`/`run()` merely because topology was rescanned.
+    fn register_new_commondir_watchers<W, E, F>(
+        &self,
+        watchers: &mut HashMap<PathBuf, W>,
+        mut create: F,
+    ) -> bool
+    where
+        E: Display,
+        F: FnMut(&Path) -> Result<W, E>,
+    {
         let commondirs: Vec<PathBuf> = {
             let state = self.state.lock().unwrap();
             state.commondirs.clone()
         };
+
+        let mut added = false;
         for cd in commondirs {
-            {
-                let state = self.state.lock().unwrap();
-                if state.watched.contains(&cd) {
-                    continue; // already watched
-                }
+            if watchers.contains_key(&cd) {
+                continue;
             }
-            match watcher.watch(&cd, RecursiveMode::Recursive) {
-                Ok(()) => {
-                    self.state.lock().unwrap().watched.insert(cd.clone());
-                    any = true;
+            match create(&cd) {
+                Ok(watcher) => {
+                    watchers.insert(cd.clone(), watcher);
                     info!(gitdir = %cd.display(), "git plane: commondir watch live");
+                    added = true;
                 }
                 Err(e) => {
                     warn!(gitdir = %cd.display(), error = %e, "git plane: commondir watch registration failed");
                 }
             }
         }
-        any
+        added
     }
 
     /// Resolve an fs event to the worktrees it concerns (rescanning the
@@ -350,7 +396,7 @@ impl GitPlane {
         &self,
         event: &Event,
         sink: &PlaneSink,
-        cmd_tx: &mpsc::UnboundedSender<()>,
+        cmd_tx: &mpsc::UnboundedSender<WatcherCommand>,
     ) -> Vec<PathBuf> {
         let mut affected: Vec<PathBuf> = Vec::new();
         let mut need_rescan = false;
@@ -384,6 +430,11 @@ impl GitPlane {
                     affected.push(wt.clone());
                 }
             }
+            // The rescan may have discovered a new repository along with
+            // its first worktree. Request registration regardless of the
+            // added count; topology discovery must not depend on the retry
+            // branch below.
+            let _ = cmd_tx.send(WatcherCommand::RegisterNew);
             if added.is_empty() && !self.retry_scheduled.swap(true, Ordering::Relaxed) {
                 // The rescan found nothing: `git worktree add` registers the
                 // entry while its events are still arriving, so retry once
@@ -391,7 +442,7 @@ impl GitPlane {
                 let tx = cmd_tx.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(RESCAN_RETRY_DELAY).await;
-                    let _ = tx.send(());
+                    let _ = tx.send(WatcherCommand::RescanAndRegister);
                 });
             }
         }
@@ -527,7 +578,11 @@ impl GitPlane {
     /// change. Also rescans the registry so WorktreeAdded/WorktreeRemoved
     /// are detected even when fsevents missed them. The primary mechanism
     /// remains the fsevents watcher; this only catches up what it missed.
-    async fn run_sweep(&self, sink: PlaneSink) {
+    async fn run_sweep(
+        &self,
+        sink: PlaneSink,
+        watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
+    ) {
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -540,6 +595,10 @@ impl GitPlane {
             if self.stopped.load(Ordering::Relaxed) {
                 break;
             }
+            // `rescan` refreshes commondirs as well as worktrees. Ask the
+            // watcher task to add only topology it has not seen; it never
+            // reopens an existing stream.
+            let _ = watcher_cmd_tx.send(WatcherCommand::RegisterNew);
             let worktrees: Vec<PathBuf> = {
                 let state = self.state.lock().unwrap();
                 state.worktrees.keys().cloned().collect()
@@ -1191,17 +1250,18 @@ impl Plane for GitPlane {
     /// sink-close flag so a supervised restart can re-arm cleanly (WS3 F4).
     fn start(self: Arc<Self>, sink: PlaneSink) {
         self.stopped.store(false, Ordering::Relaxed);
-        // The previous generation's watcher is gone; its watch registrations
-        // died with it, so the fresh watcher must re-register every commondir.
-        self.state.lock().unwrap().watched.clear();
+        let (watcher_cmd_tx, watcher_cmd_rx) = mpsc::unbounded_channel();
         let watcher_sink = sink.clone();
         let watcher_plane = self.clone();
+        let watcher_cmd_tx_for_events = watcher_cmd_tx.clone();
         tokio::spawn(async move {
-            watcher_plane.run_watcher(watcher_sink).await;
+            watcher_plane
+                .run_watcher(watcher_sink, watcher_cmd_rx, watcher_cmd_tx_for_events)
+                .await;
         });
         let sweep_plane = self.clone();
         tokio::spawn(async move {
-            sweep_plane.run_sweep(sink).await;
+            sweep_plane.run_sweep(sink, watcher_cmd_tx).await;
         });
     }
 }
@@ -1311,6 +1371,88 @@ mod tests {
         assert_eq!(entries[0].1.as_deref(), Some("main"));
         assert_eq!(entries[1].1.as_deref(), Some("ws1/git-plane"));
         assert_eq!(entries[2].1, None, "detached worktree has no branch");
+    }
+
+    #[test]
+    fn commondir_watchers_are_fresh_additive_and_idempotent() {
+        // This deterministic factory is the lifecycle seam for #115. The
+        // parent implementation had one mutable watcher and would enter
+        // PathsMut/stop/run when registration was revisited; this contract
+        // requires one factory call per commondir for the whole generation.
+        let plane = GitPlane::new(
+            PathBuf::from("/fake/repo"),
+            PathBuf::from("/fake/worktrees"),
+        );
+        let boot = [
+            PathBuf::from("/fake/repo-one/.git"),
+            PathBuf::from("/fake/repo-two/.git"),
+        ];
+        {
+            let mut state = plane.state.lock().unwrap();
+            state.commondirs = boot.to_vec();
+        }
+
+        // A Vec<PathBuf> stands in for a watcher and records the paths
+        // installed into it. Production's factory puts exactly one path in
+        // each RecommendedWatcher before it enters the event loop.
+        let mut watchers = HashMap::<PathBuf, Vec<PathBuf>>::new();
+        let installs = std::cell::RefCell::new(Vec::new());
+        let mut create = |commondir: &Path| {
+            installs.borrow_mut().push(commondir.to_path_buf());
+            Ok::<Vec<PathBuf>, &'static str>(vec![commondir.to_path_buf()])
+        };
+
+        assert!(plane.register_new_commondir_watchers(&mut watchers, &mut create));
+        assert_eq!(*installs.borrow(), boot);
+        assert_eq!(watchers.len(), 2);
+        for commondir in &boot {
+            assert_eq!(watchers.get(commondir).unwrap(), &vec![commondir.clone()]);
+        }
+
+        // Re-running registration for the same boot topology must not touch
+        // either existing watcher.
+        assert!(!plane.register_new_commondir_watchers(&mut watchers, &mut create));
+        assert_eq!(*installs.borrow(), boot);
+
+        // A newly discovered repository gets one fresh watcher; the boot
+        // entries remain immutable.
+        let later = PathBuf::from("/fake/repo-three/.git");
+        {
+            let mut state = plane.state.lock().unwrap();
+            state.commondirs.push(later.clone());
+        }
+        assert!(plane.register_new_commondir_watchers(&mut watchers, &mut create));
+        assert_eq!(
+            *installs.borrow(),
+            vec![boot[0].clone(), boot[1].clone(), later.clone()]
+        );
+        assert_eq!(watchers.get(&later), Some(&vec![later.clone()]));
+
+        // Worktree add/remove churn does not alter commondir topology, so
+        // repeated discovery requests cannot restart any existing stream.
+        for _ in 0..3 {
+            assert!(!plane.register_new_commondir_watchers(&mut watchers, &mut create));
+        }
+        assert_eq!(installs.borrow().len(), 3);
+
+        // A failed new registration remains retryable, but it must not cause
+        // the already-live watchers to be recreated on the next discovery
+        // request. This is the partial-failure case that used to rebuild the
+        // entire shared stream.
+        let failed = PathBuf::from("/fake/repo-four/.git");
+        {
+            let mut state = plane.state.lock().unwrap();
+            state.commondirs.push(failed.clone());
+        }
+        let attempts = std::cell::RefCell::new(Vec::new());
+        let mut fail = |commondir: &Path| {
+            attempts.borrow_mut().push(commondir.to_path_buf());
+            Err::<Vec<PathBuf>, &'static str>("test registration failure")
+        };
+        assert!(!plane.register_new_commondir_watchers(&mut watchers, &mut fail));
+        assert!(!plane.register_new_commondir_watchers(&mut watchers, &mut fail));
+        assert_eq!(*attempts.borrow(), vec![failed.clone(), failed.clone()]);
+        assert_eq!(watchers.len(), 3, "failed path is not marked live");
     }
 
     #[test]
@@ -1898,7 +2040,7 @@ mod tests {
         assert!(!wt.exists(), "precondition: worktree directory is gone");
         assert!(!gitdir.exists(), "precondition: gitdir is gone");
 
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<()>();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
         let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
             .add_path(gitdir);
         let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;
@@ -2021,7 +2163,7 @@ mod tests {
             "precondition: raw spelling is gone too"
         );
 
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<()>();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
         let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
             .add_path(raw_event_path);
         let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;

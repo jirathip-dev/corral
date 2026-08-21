@@ -18,6 +18,11 @@ fi
 
 CURL_ARGS=(--fail --silent --show-error --max-time "$TIMEOUT")
 
+if ! command -v "$CURL_BIN" >/dev/null 2>&1; then
+  echo "corral status: corrald is unavailable (GET /healthz failed)" >&2
+  exit 1
+fi
+
 if ! health="$("$CURL_BIN" "${CURL_ARGS[@]}" "$BASE_URL/healthz")"; then
   echo "corral status: corrald is unavailable (GET /healthz failed)" >&2
   exit 1

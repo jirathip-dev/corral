@@ -34,11 +34,11 @@ stderr note when it is taken) exists.
       "gh_repo": "owner/repo",
       "local": "~/Projects/<repo>",
       "worktree_dir": "corral",
-      "orch": "orch-corral",
-      "workers": ["p4-w1", "p4-w1-reviewer"],
+      "orch": "orchestrator",
+      "workers": ["worker-a", "worker-b"],
       "paused": true,
-      "models": { "orch": "fable", "impl": "opencode-go/deepseek-v4-flash", "review": "opus",
-                  "impl_alt": "opencode-go/deepseek-v4-flash", "impl_alt2": "dsh" }
+      "models": { "orch": "orchestrator-model", "impl": "implementation-model", "review": "review-model",
+                  "impl_alt": "fallback-implementation", "impl_alt2": "last-resort-backend" }
     }
   ]
 }

@@ -12,6 +12,7 @@ the final flip is never performed by a script or plugin action.
   retained.
 - [x] W3: `herdr-plugin.toml` links setup and read-only status actions using
   auditable argv arrays.
+- [ ] W1–W3 are merged to `main`.
 - [x] W4 docs pass: public docs contain no machine-specific internal paths or
   hostnames.
 - [ ] W4 secret sweep: rerun the index and reachable-history checks immediately
@@ -20,6 +21,8 @@ the final flip is never performed by a script or plugin action.
 ## Human-only final steps
 
 - [ ] Guy changes the GitHub repository visibility to public.
+- [ ] Guy sets the GitHub repository social preview to
+  `assets/icon/social-preview.png`.
 - [ ] Guy adds the `herdr-plugin` topic. This topic intentionally remains absent
   until the visibility flip because it triggers marketplace indexing.
 - [ ] Confirm the next marketplace index refresh discovers `herdr-plugin.toml`.

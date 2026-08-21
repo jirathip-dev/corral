@@ -82,9 +82,12 @@ pre-subscribe response. Subscription/connect failures retry in the stream
 task with exponential backoff capped at 30 seconds; only the first failure
 of an outage is WARN-logged. For the global stream, a live stream closure
 causes the session to re-bootstrap to reconcile state; a pane stream
-reconnects after its delayed restart, and keeps retrying until the pane is
-removed or herdr recovers. Dropping the client aborts the reader so a
-failed connection never leaks its descriptor (#105).
+reconnects from its owning retry task after the capped delay, and keeps its
+live forwarder owned until the stream closes or the pane is removed or
+recreated. Pane removal or replacement cancels that generation before a new
+one can attach; subscribe failures never trigger a global re-bootstrap.
+Dropping the client aborts the reader so a failed connection never leaks its
+descriptor (#105).
 
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see

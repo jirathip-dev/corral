@@ -67,7 +67,7 @@ Overall a decent script (`set -euo pipefail`, index-loop arg parsing, `plutil
    `--bind` with no value silently defaults to loopback instead of erroring.
    Minor, but a typo'd invocation should fail loudly, not quietly bind loopback.
 
-Also: the launchd label `com.jirathip.corrald` (lines 40–41, echoed at
+Also: the old project-specific launchd label (lines 40–41, echoed at
 `docs/OPERATIONS.md:14`) carries a personal identifier into every public user's
 LaunchAgents dir — rename to `com.corral.corrald` before release. And line 68
 hardcodes the herdr socket into the plist; fine today, but it's a runtime-coupling
@@ -160,10 +160,10 @@ What a stranger hits, top to bottom:
   statement that herdr is optional for the HTTP surface but required to see
   agents. Skip brew for now — a tap before an audience is noise.
 - **Embarrassment scan:** no Thai text and no personal paths in README —
-  clean. The jargon leaks elsewhere: "Hermes gateway" at `docs/OPERATIONS.md:23`
+  clean. The jargon leaks elsewhere: "automation gateway" at `docs/OPERATIONS.md:23`
   (undefined, internal), "the proven sendmeter pattern" at `fastlane/Fastfile:2`
   (private project reference), your legal name in a comment at
-  `fastlane/Fastfile:106`, and the launchd label `com.jirathip.corrald`. The
+  `fastlane/Fastfile:106`, and the old project-specific launchd label. The
   P1–P4 phase briefs linked at `README.md:158` are internal process docs; fine to
   keep, but label them "historical/internal" so nobody reads them as user docs.
 
@@ -225,15 +225,15 @@ harness invents its own store format — and additive.
    (`src/core/model.rs:44-53` — the one herdr-named API on the core model,
    though it's a constructor, not a field).
 2. **Wiring defaults in `main.rs`** — socket default (`:562-564`), and the
-   worktree conventions `~/Projects/herdr-board` + `~/.herdr/worktrees`
-   (`:607-612`, env-overridable).
+   worktree conventions (a repo checkout plus the Herdr worktree root;
+   `:607-612`, env-overridable).
 3. **Worktree layout assumption** — `src/integrate/mod.rs:121` documents
    `<root>/<repo>/<label>` and `:402` derives the repo from the first path
    component. This is the subtlest coupling: it leaks into PR/CI binding and
    cost attribution keys.
-4. **Fleet registry default path** — `~/.hermes/scripts/fleets.json`
-   (`src/fleet/config.rs:180-188`), a Hermes-machine convention, though
-   `$CORRAL_FLEETS_PATH` already overrides it.
+4. **Fleet registry default path** — the legacy fleet registry fallback
+   (`src/fleet/config.rs:180-188`), though `$CORRAL_FLEETS_PATH` already
+   overrides it.
 5. **The setup script** bakes the herdr socket into the launchd plist
    (`scripts/setup-corrald.sh:68`).
 
@@ -245,10 +245,8 @@ drive capability beyond `read_tail`. Read-only fleet visibility for non-herdr
 users; drive stays herdr-only until someone writes a supervising adapter.
 Effort: **M** (the model needs nothing; the work is the adapter, a watcher, and
 tests). It is **not a blocker** for public release — ship it as a documented
-limitation: one sentence in README ("herdr is currently the only runtime
-adapter; the core model, drive plane, and HTTP surface are runtime-neutral —
-see issue #NN for a generic adapter"). File it as a **separate issue**, not in
-#35 — #35 is the fleet registry, and mixing "second runtime adapter" into it
+limitation in README and file it as a **separate issue**, not in #35 — #35 is
+the fleet registry, and mixing "second runtime adapter" into it
 would bloat a nearly-done slice.
 
 ## Q9 — Fleet registry + cost attribution
@@ -269,9 +267,9 @@ trait. `fleets.json` is a file format with one schema (`G35-registry.md`) and an
 env-overridable path; a trait with exactly one real implementation is
 speculative structure. The **minimal change** that makes the whole story
 runtime-agnostic without touching the herdr path: (a) change the default
-registry path from `~/.hermes/scripts/fleets.json` to
+registry path from the legacy fleet registry fallback to
 `~/.config/corral/fleets.json`, keeping `$CORRAL_FLEETS_PATH` (and honoring the
-old Hermes path as a documented fallback for your machines); (b) declare the
+old legacy path as a documented fallback); (b) declare the
 schema corral-owned in G35-registry.md rather than "herdr convention". Introduce
 the trait only when a second registry *source* (not path) actually exists.
 
@@ -282,7 +280,7 @@ the trait only when a second registry *source* (not path) actually exists.
 1. **Add LICENSE file(s)** — `Cargo.toml:15` declares MIT with no LICENSE in the
    tree. Recommend `LICENSE-MIT` + `LICENSE-APACHE` and
    `license = "MIT OR Apache-2.0"`.
-2. **Rename the launchd label** `com.jirathip.corrald` →
+2. **Rename the old project-specific launchd label** →
    `com.corral.corrald` — `scripts/setup-corrald.sh:40-41`,
    `docs/OPERATIONS.md:14` (personal identifier installed onto every user's
    machine).
@@ -318,10 +316,10 @@ the trait only when a second registry *source* (not path) actually exists.
 4. **Validate `--bind`** in `scripts/setup-corrald.sh:28` (regex the address;
    error on missing value instead of defaulting) and lengthen/retry the health
    check at `:88-90`.
-5. **De-jargon internal references**: "Hermes gateway" at
-   `docs/OPERATIONS.md:23`, "sendmeter pattern" at `fastlane/Fastfile:2`; move
-   the fleets.json default off `~/.hermes/scripts/` (`src/fleet/config.rs:186`)
-   to `~/.config/corral/fleets.json` per Q9.
+5. **De-jargon internal references**: use "automation gateway" in
+   `docs/OPERATIONS.md:23` and remove private project references from the
+   historical review notes; move the fleets.json default to
+   `~/.config/corral/fleets.json` per Q9.
 
 ## Verdict
 

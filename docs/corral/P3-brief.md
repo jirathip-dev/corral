@@ -5,7 +5,7 @@
 > docs/OPERATIONS.md.
 
 Branch: feat/corral-p3. P2 shipped the three data planes (PR #6, merged).
-DECISIONS.md (hermes-brain/plans/corral/) is the authoritative design.
+`docs/corral/DECISIONS.md` is the authoritative design record.
 P3 is the WRITE side of corrald — everything from D3/D8/D10/D13 that turns
 the snapshot/SSE read model into a safe remote control surface. P4 (UI)
 builds on this; P3 must be complete and hardened first (Guy decision

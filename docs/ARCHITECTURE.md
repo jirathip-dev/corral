@@ -24,6 +24,9 @@ opencode — all flow through the same canonical `Agent` record. It is
 model has no live agent feed (the daemon still serves HTTP, just no
 agents).
 
+The core model, signed drive plane, and HTTP surface are runtime-neutral; the
+current runtime coupling is isolated in the herdr adapter described above.
+
 **The one harness-specific exception: the cost meter.** `src/cost/` parses
 each harness's own session-store format — opencode.db (SQLite), Claude Code
 JSONL transcripts, codex rollouts. That is the only place corral understands

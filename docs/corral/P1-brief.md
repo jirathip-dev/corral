@@ -84,9 +84,8 @@ curl localhost:PORT/snapshot
 
 - The herdr socket is at `~/.config/herdr/herdr.sock` (JSON-RPC over unix
   socket; `herdr api schema --json` documents request/response shapes).
-  Read `~/.hermes/scripts/herdr-status.py` and `board_data.py` (reference
-  only) for how agent state is currently scraped — you're replacing that
-  with push.
+  Read the historical fleet-status scripts (reference only) for how agent
+  state is currently scraped — you're replacing that with push.
 - Keep the canonical model in its own module (`model.rs`), adapter behind a
   trait (`adapter.rs`), so P2/P3 add adapters without touching core.
 - Version the schema (`schema_version` in the snapshot), additive-only.

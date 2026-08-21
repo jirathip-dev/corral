@@ -1,8 +1,8 @@
 # Corral — P4 brief: the client stack (egui desktop ∥ SwiftUI iOS ∥ shared client layer)
 
 Branch: feat/corral-p4 (from main). P3 shipped the drive plane (PR #11,
-merged). DECISIONS.md (hermes-brain/plans/corral/) is the authoritative
-design — D14 (2026-08-15, Guy) fixes the stack: Rust egui desktop + SwiftUI
+merged). `docs/corral/DECISIONS.md` is the authoritative design record — D14
+(2026-08-15) fixes the stack: Rust egui desktop + SwiftUI
 iOS ONLY, no SwiftUI on macOS, Windows is a free bonus target. This brief
 ships the D14 v1.1 desktop surface + the iOS-first MVP ("Fleet Notifier").
 P4 has NO merges of backend behavior: corrald on main is the contract.
@@ -129,7 +129,8 @@ or a scratch UI run churned a new restricted-ACL item.
 
 1. D14 licensing split: apps proprietary (GPLv3-family) — confirm before
    repo setup/TestFlight.
-2. Open questions 1-4 in DECISIONS.md (Python-vs-Rust hermesd is moot —
+2. Open questions 1-4 in DECISIONS.md (the separate Python-vs-Rust daemon is
+   moot —
    corrald is Rust; AGPL-vs-MIT for daemon half; MCP server distribution
    play; hosted relay in/out) — none block P4 code, but 2 + 3 affect repo
    layout and marketing.

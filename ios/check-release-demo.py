@@ -7,11 +7,14 @@ review of Swift source.  Debug still owns the demo fixtures and tests, while a
 Release app must retain the real registration/SSE/drive client and error paths
 in every architecture slice.
 
-Source proof is intentionally limited to the supported conditional expressions
+The source proof is intentionally limited to the supported conditional expressions
 ``true``, ``false``, ``DEBUG``, and ``!DEBUG``.  Comments and inactive branches
 are not evidence, and any other conditional expression fails closed.  Binary
 proof requires every architecture slice to be an iOS or iOS Simulator Mach-O
-before inspecting that slice's strings and symbols independently.
+before inspecting that slice's strings and symbols independently.  The
+Release source digest is a consistency marker emitted by the declared build
+phase; it provides no cryptographic authenticity, code signing, or protection
+against a builder deliberately reusing or forging an unkeyed marker.
 """
 
 from __future__ import annotations
@@ -28,22 +31,28 @@ from pathlib import Path
 
 from release_source_manifest import (
     RELEASE_SOURCE_FILES,
-    attestation_marker,
     release_source_digest,
+    source_digest_marker,
 )
 
 
 ROOT = Path(__file__).resolve().parent.parent
 
 # This binds an inspected executable to the exact Release app source set used
-# for the approved build.  The build generates the marker from its actual
-# inputs; this pinned hash is the allowlisted source set for this change.  Any
-# Release source change requires a deliberate proof refresh rather than
-# silently reusing an old binary.
+# for the approved build.  The declared build phase generates the marker from
+# its actual inputs; this pinned hash is the expected source set for this
+# checkout.  It catches ordinary source drift or a mismatched artifact when
+# that phase runs; it is not an authenticity mechanism.
 APPROVED_RELEASE_SOURCE_DIGEST = (
     "c4cf9ee6b6de2e2b1d9048f6102c891ccb46b3ae8472e04ed6d7abdbb9e7cf87"
 )
-RELEASE_SOURCE_ATTESTATION_MARKER = attestation_marker(APPROVED_RELEASE_SOURCE_DIGEST)
+RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
+RELEASE_BUILD_INPUTS = (
+    "$(SRCROOT)/../ios/FleetNotifier",
+    "$(SRCROOT)/embed-release-source-digest.py",
+    "$(SRCROOT)/release_source_manifest.py",
+)
+RELEASE_BUILD_OUTPUT = "$(DERIVED_FILE_DIR)/corral-release-source-digest"
 
 SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/App/FleetNotifierApp.swift": (
@@ -150,7 +159,7 @@ BINARY_REQUIRED_BASE = (
     "events failed:",
     "unparseable drive response",
 )
-BINARY_REQUIRED = (*BINARY_REQUIRED_BASE, RELEASE_SOURCE_ATTESTATION_MARKER)
+BINARY_REQUIRED = (*BINARY_REQUIRED_BASE, RELEASE_SOURCE_DIGEST_MARKER)
 
 SUPPORTED_CONDITIONS = {"true", "false", "DEBUG", "!DEBUG"}
 
@@ -644,13 +653,44 @@ def _release_source_digest(root: Path = ROOT) -> str:
         raise CheckFailure(str(error)) from error
 
 
-def _check_release_source_attestation(root: Path = ROOT) -> None:
+def _check_release_source_digest(root: Path = ROOT) -> None:
     actual_digest = _release_source_digest(root)
     if actual_digest != APPROVED_RELEASE_SOURCE_DIGEST:
         raise CheckFailure(
-            "Release source digest changed; refresh the approved source proof "
+            "Release build source digest differs from the expected checkout "
             f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
         )
+
+
+def _check_release_build_phase_configuration() -> None:
+    spec_path = ROOT / "ios/project.yml"
+    project_path = ROOT / "ios/FleetNotifier.xcodeproj/project.pbxproj"
+    try:
+        spec = spec_path.read_text(encoding="utf-8")
+        project = project_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CheckFailure(
+            f"cannot read Release build phase configuration: {error}"
+        ) from error
+
+    for input_path in RELEASE_BUILD_INPUTS:
+        quoted = f'"{input_path}"'
+        if quoted not in spec or quoted not in project:
+            raise CheckFailure(
+                f"Release build phase is missing explicit input {input_path!r}"
+            )
+    quoted_output = f'"{RELEASE_BUILD_OUTPUT}"'
+    if quoted_output not in spec or quoted_output not in project:
+        raise CheckFailure("Release build phase is missing its declared output")
+    for quoted_script_path in (
+        '"$SRCROOT/embed-release-source-digest.py"',
+        '"$SRCROOT/.."',
+        '"$DERIVED_FILE_DIR/corral-release-source-digest"',
+    ):
+        if quoted_script_path not in spec:
+            raise CheckFailure(
+                f"Release build phase does not quote path {quoted_script_path}"
+            )
 
 
 def _run_checked(command: list[str]) -> str:
@@ -1224,7 +1264,7 @@ suffix
             "unknown conditional expression",
         )
 
-        modified_source_root = root / "modified-checkout"
+        modified_source_root = root / "modified checkout with spaces"
         for relative in RELEASE_SOURCE_FILES:
             source = ROOT / relative
             destination = modified_source_root / relative
@@ -1244,10 +1284,10 @@ suffix
         ):
             raise CheckFailure("modified Release source reused the approved digest")
         _expect_failure(
-            lambda: _check_release_source_attestation(modified_source_root),
-            "optimized binary built from modified Release source",
+            lambda: _check_release_source_digest(modified_source_root),
+            "modified source rejected by the expected Release digest",
         )
-        modified_attestation = root / "modified-release-attestation"
+        modified_digest = root / "modified release digest with spaces"
         _run_checked(
             [
                 sys.executable,
@@ -1255,10 +1295,10 @@ suffix
                 "--source-root",
                 str(modified_source_root),
                 "--output",
-                str(modified_attestation),
+                str(modified_digest),
             ]
         )
-        modified_binary = root / "modified-release-binary"
+        modified_binary = root / "modified release binary with spaces"
         sdk_path = _run_checked(
             ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"]
         ).strip()
@@ -1284,7 +1324,7 @@ suffix
                 "-Xlinker",
                 "__source_digest",
                 "-Xlinker",
-                str(modified_attestation),
+                str(modified_digest),
                 "-o",
                 str(modified_binary),
             ]
@@ -1303,11 +1343,13 @@ suffix
         )
         if public_binary_check.returncode == 0:
             raise CheckFailure(
-                "public --binary proof accepted a Mach-O built from modified sources"
+                "public --binary proof accepted a Mach-O built from modified sources "
+                "using the declared generator"
             )
         if "lacks real-path marker" not in public_binary_check.stderr:
             raise CheckFailure(
-                "modified-source binary failure did not come from attestation evidence: "
+                "modified-source binary failure did not come from source-digest "
+                "marker evidence: "
                 f"{public_binary_check.stderr.strip()}"
             )
 
@@ -1395,7 +1437,8 @@ def main() -> int:
     try:
         if args.self_test:
             _self_test()
-        _check_release_source_attestation()
+        _check_release_build_phase_configuration()
+        _check_release_source_digest()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

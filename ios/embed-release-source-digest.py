@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the Release source marker consumed by the linker."""
+"""Generate the Release build source-digest marker consumed by the linker."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from release_source_manifest import attestation_marker, release_source_digest
+from release_source_manifest import release_source_digest, source_digest_marker
 
 
 def main() -> int:
@@ -17,7 +17,7 @@ def main() -> int:
 
     digest = release_source_digest(args.source_root)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(attestation_marker(digest) + "\n", encoding="utf-8")
+    args.output.write_text(source_digest_marker(digest) + "\n", encoding="utf-8")
     print(f"embedded Release source digest {digest} into {args.output}")
     return 0
 

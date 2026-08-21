@@ -1,4 +1,4 @@
-"""Shared manifest and digest logic for the Release source attestation."""
+"""Shared manifest and digest logic for the Release build workflow."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/Wire/DestructivePatterns.swift",
     "ios/FleetNotifier/Wire/DriveClient.swift",
 )
-ATTESTATION_PREFIX = "corral-release-source-sha256:"
+SOURCE_DIGEST_PREFIX = "corral-release-source-sha256:"
 
 
 def release_source_digest(root: Path) -> str:
@@ -56,5 +56,7 @@ def release_source_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def attestation_marker(digest: str) -> str:
-    return f"{ATTESTATION_PREFIX}{digest}"
+def source_digest_marker(digest: str) -> str:
+    """Return the compatibility marker emitted by the declared Release phase."""
+
+    return f"{SOURCE_DIGEST_PREFIX}{digest}"

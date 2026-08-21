@@ -30,7 +30,7 @@ ios/
     UI/                           fleet list, tappable agent detail/actions, claim cards, registration, settings
     FleetNotifierTests/            unit tests (canonical bytes, SSE, claims, controls, step-up, demo)
   check-release-demo.py           source and Release-binary demo boundary gate
-  embed-release-source-digest.py  Release build-phase source attestation generator
+  embed-release-source-digest.py  Release build-phase source-digest generator
   release_source_manifest.py      shared source manifest/digest implementation
 ```
 
@@ -72,13 +72,22 @@ drive client/error paths in every slice while containing no demo entrypoint,
 menu label, or seeded fake-agent identifier.
 
 The binary proof also requires the Release-only
-`corral-release-source-sha256:<digest>` attestation. The Release build phase
-generates that marker from the complete app Swift source manifest and embeds it
-in a dedicated Mach-O linker section; the checker pins the approved digest and
-requires the generated marker in every inspected architecture slice. A source
-edit or an executable built from a different checked-out source set therefore
-fails closed; this is source/build provenance, not code signing or a
-physical-device/TestFlight validation claim.
+`corral-release-source-sha256:<digest>` source-digest marker. The declared
+Release build phase generates it from the complete app Swift source manifest
+and embeds it in a dedicated Mach-O linker section; the checker compares that
+marker in every architecture slice with the expected digest for this checkout.
+This catches ordinary source drift and mismatched artifacts when the declared
+generator phase runs. It is a build-workflow consistency check, not
+cryptographic authenticity, code signing, or protection against a deliberate
+builder reusing or forging the unkeyed marker. The self-test covers a
+modified-source build produced by the documented generator and intentionally
+does not claim resistance to manual stale-marker injection.
+
+The XcodeGen spec declares the app source directory and both digest helper
+scripts as explicit Release `inputFiles`; the generated project preserves
+those declarations and quotes its `SRCROOT`/`DERIVED_FILE_DIR` paths. This
+keeps the user-script sandbox inputs explicit and supports build paths with
+spaces.
 
 ## Signing / distribution status
 

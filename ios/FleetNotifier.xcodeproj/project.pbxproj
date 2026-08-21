@@ -216,7 +216,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 336005E97AE4AE2F281CFEF9 /* Build configuration list for PBXNativeTarget "FleetNotifier" */;
 			buildPhases = (
-				CAF65563C21E3A10667C2256 /* Embed Release source attestation */,
+				F6207AF155842583C8143257 /* Embed Release source digest */,
 				B70BB7CACB156FBC2A502268 /* Sources */,
 				75E7343EE79DBDCE0E0EEA25 /* Resources */,
 			);
@@ -282,7 +282,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		CAF65563C21E3A10667C2256 /* Embed Release source attestation */ = {
+		F6207AF155842583C8143257 /* Embed Release source digest */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -292,16 +292,18 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/../ios/FleetNotifier",
+				"$(SRCROOT)/embed-release-source-digest.py",
+				"$(SRCROOT)/release_source_manifest.py",
 			);
-			name = "Embed Release source attestation";
+			name = "Embed Release source digest";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(DERIVED_FILE_DIR)/corral-release-source-attestation",
+				"$(DERIVED_FILE_DIR)/corral-release-source-digest",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$CONFIGURATION\" = \"Release\" ]; then\n  python3 \"$SRCROOT/embed-release-source-digest.py\" \\\n    --source-root \"$SRCROOT/..\" \\\n    --output \"$DERIVED_FILE_DIR/corral-release-source-attestation\"\nfi\n";
+			shellScript = "if [ \"$CONFIGURATION\" = \"Release\" ]; then\n  python3 \"$SRCROOT/embed-release-source-digest.py\" \\\n    --source-root \"$SRCROOT/..\" \\\n    --output \"$DERIVED_FILE_DIR/corral-release-source-digest\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -404,7 +406,7 @@
 					"-Xlinker",
 					__source_digest,
 					"-Xlinker",
-					"$(DERIVED_FILE_DIR)/corral-release-source-attestation",
+					"$(DERIVED_FILE_DIR)/corral-release-source-digest",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier;
 				PRODUCT_NAME = FleetNotifier;

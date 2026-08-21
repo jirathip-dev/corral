@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # checkout.  It catches ordinary source drift or a mismatched artifact when
 # that phase runs; it is not an authenticity mechanism.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "c4cf9ee6b6de2e2b1d9048f6102c891ccb46b3ae8472e04ed6d7abdbb9e7cf87"
+    "3282fea0a6702d64007f7bd01808483dba5e05b314e64a4d6ab2496902155145"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = (

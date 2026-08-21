@@ -911,7 +911,6 @@ mod tests {
                 approval_id: "herdr:race:sha256:x".to_string(),
                 choices: Vec::new(),
             }),
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Default::default(),

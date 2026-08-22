@@ -395,8 +395,6 @@ if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
     rm -rf -- "$RELEASE_DIR.previous"
   fi
   mv -- "$RELEASE_DIR" "$RELEASE_DIR.previous"
-elif [[ -e "$RELEASE_DIR.previous" || -L "$RELEASE_DIR.previous" ]]; then
-  mv -- "$RELEASE_DIR.previous" "$RELEASE_DIR"
 fi
 if ! mv -- "$STAGE_DIR" "$RELEASE_DIR"; then
   if [[ -e "$RELEASE_DIR.previous" ]]; then

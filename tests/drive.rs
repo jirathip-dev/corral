@@ -1480,3 +1480,42 @@ async fn start_worktree_payload_maps_to_issue_or_free_request() {
         "unknown mode is a typed refusal"
     );
 }
+
+/// #113 review 2: the signed envelope `target` is the repo the audit will
+/// record. A granted client must not sign target=A + payload.repo=B, because
+/// that would create a worktree on B while the audit says A. The handler must
+/// refuse with a typed payload error BEFORE any dispatch.
+#[tokio::test]
+async fn start_worktree_refuses_target_payload_repo_mismatch() {
+    let h = harness();
+    let payload = json!({
+        "kind": "start_worktree",
+        "mode": "issue",
+        "repo": "plush",
+        "number": 5,
+        "issue_url": "https://github.com/jirathip-dev/plush-meadow/issues/5",
+    });
+    // Sign for target "corral" but request repo "plush": mismatch.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "wt-mismatch",
+            Capability::StartWorktree,
+            "corral",
+            payload,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(value["kind"], "payload");
+    assert_eq!(
+        h.adapter.dispatch_count(),
+        0,
+        "nothing dispatches on a mismatch"
+    );
+    assert!(
+        h.audit_entries().is_empty(),
+        "payload refusals are not audited"
+    );
+}

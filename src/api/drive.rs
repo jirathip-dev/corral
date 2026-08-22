@@ -298,6 +298,7 @@ enum PendingCommand {
 fn command_for(
     capability: Capability,
     payload: &serde_json::Value,
+    target: &str,
 ) -> Result<PendingCommand, PayloadError> {
     match capability {
         Capability::Prompt | Capability::ReadTail | Capability::Approve => {
@@ -355,6 +356,20 @@ fn command_for(
                 unreachable!("DrivePayload::parse returned the wrong variant");
             };
             let request = worktree_request(&mode, &repo, number, issue_url, name)?;
+            // #113 review 2: the signed envelope `target` is the repo the
+            // audit will record — it MUST equal the payload `repo` the
+            // worktree is actually created against. A granted client signing
+            // target=A + payload.repo=B must be refused before dispatch so
+            // the audit trail reflects the real repo.
+            if target != request.repo() {
+                return Err(PayloadError {
+                    capability: Capability::StartWorktree,
+                    detail: format!(
+                        "envelope target {target:?} does not match payload repo {:?}",
+                        request.repo()
+                    ),
+                });
+            }
             Ok(PendingCommand::Worktree(request))
         }
     }
@@ -739,11 +754,14 @@ pub async fn drive(
 
     // Parse BEFORE claiming: a payload error is deterministic and must not
     // occupy the id's slot.
-    let pending = command_for(capability, &authorized.envelope.payload).map_err(|error| {
-        DriveApiError::Payload {
-            error,
-            request_id: Some(authorized.envelope.request_id.clone()),
-        }
+    let pending = command_for(
+        capability,
+        &authorized.envelope.payload,
+        &authorized.envelope.target,
+    )
+    .map_err(|error| DriveApiError::Payload {
+        error,
+        request_id: Some(authorized.envelope.request_id.clone()),
     })?;
 
     // #113: start_worktree is a fleet-level operation, not an agent drive —
@@ -912,7 +930,7 @@ async fn dispatch_worktree(
         Claim::Claimed => {}
     }
 
-    let (ok, error, error_kind, outcome, result) = match worktree_dispatch(state, &request).await {
+    let (ok, error, error_kind, outcome, result) = match worktree_dispatch(state, request).await {
         Ok(result) => result,
         Err(error) => {
             let outcome = worktree_outcome(&error);
@@ -948,7 +966,7 @@ async fn dispatch_worktree(
 /// `error_kind`, `outcome`, `result`).
 async fn worktree_dispatch(
     state: &AppState,
-    request: &WorktreeRequest,
+    request: WorktreeRequest,
 ) -> Result<
     (
         bool,
@@ -967,6 +985,26 @@ async fn worktree_dispatch(
         .find(|fleet| fleet.name == request.repo())
         .cloned()
         .ok_or_else(|| WorktreeError::UnknownFleet(request.repo().to_string()))?;
+
+    // #113 review 3: the issue URL in the audit/metadata is derived from the
+    // daemon's authoritative issue ref, never trusted from the client. A
+    // client could sign a bogus URL; the worktree action echoes the SAME
+    // fetched set it validates against.
+    let request = match request {
+        WorktreeRequest::Issue { repo, number, .. } => {
+            let authoritative_url = state
+                .issues
+                .get(&fleet.name, number)
+                .map(|issue| issue.url)
+                .unwrap_or_default();
+            WorktreeRequest::Issue {
+                repo,
+                number,
+                issue_url: authoritative_url,
+            }
+        }
+        free => free,
+    };
 
     // The stale/closed-issue guard runs against the SAME repo-level issue set
     // the browser renders (the integrator's cache), never a guess.
@@ -989,7 +1027,7 @@ async fn worktree_dispatch(
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let outcome = worktree::start(
         &fleet,
-        request,
+        &request,
         "HEAD",
         &home,
         issue_check,

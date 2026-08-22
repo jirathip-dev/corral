@@ -61,23 +61,14 @@ pub fn show(
     drive: &mut dyn FnMut(DriveIntent),
     refresh_issues: &mut dyn FnMut(),
 ) {
-    if !fleet.issues_loaded {
-        egui::CollapsingHeader::new("issues")
-            .id_salt("corral-ui-issues")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("issue view not loaded — connect to corrald and refresh")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-            });
-        return;
-    }
-
     let total: usize = fleet.issues.values().map(Vec::len).sum();
+    let title = if fleet.issues_loaded {
+        format!("issues  ({total})")
+    } else {
+        "issues".to_string()
+    };
     egui::CollapsingHeader::new(
-        RichText::new(format!("issues  ({total})"))
+        RichText::new(title)
             .monospace()
             .color(theme::ui::TEXT_STRONG),
     )
@@ -86,47 +77,56 @@ pub fn show(
     .show(ui, |ui| {
         toolbar(ui, fleet, allowed, drive, refresh_issues);
         ui.separator();
-        if total == 0 {
+        if !fleet.issues_loaded {
+            ui.label(
+                RichText::new("issue view not loaded — connect to corrald and refresh")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        } else if total == 0 {
+            // The issue-free path is explicitly reachable even when a
+            // configured fleet has zero fetched issues (or before the first
+            // poll); the section below renders unconditionally.
             ui.label(
                 RichText::new("no repo-level issues fetched")
                     .small()
                     .color(theme::ui::TEXT_MUTED),
             );
-            return;
-        }
-        let filter = StateFilter::from_memory(ui);
-        let query = search_query(ui).to_lowercase();
-        ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-            for (repo, issues) in &fleet.issues {
-                if issues.is_empty() {
-                    continue;
-                }
-                let shown = issues
-                    .iter()
-                    .filter(|i| filter.keeps(&i.state))
-                    .filter(|i| matches_query(i, &query))
-                    .count();
-                if shown == 0 {
-                    continue;
-                }
-                let title = format!("{repo}  ({shown})");
-                egui::CollapsingHeader::new(
-                    RichText::new(title)
-                        .monospace()
-                        .color(theme::ui::TEXT_STRONG),
-                )
-                .id_salt(("corral-ui-issues-repo", repo))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for issue in issues {
-                        if !filter.keeps(&issue.state) || !matches_query(issue, &query) {
-                            continue;
-                        }
-                        issue_row(ui, fleet, repo, issue, allowed, drive);
+        } else {
+            let filter = StateFilter::from_memory(ui);
+            let query = search_query(ui).to_lowercase();
+            ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                for (repo, issues) in &fleet.issues {
+                    if issues.is_empty() {
+                        continue;
                     }
-                });
-            }
-        });
+                    let shown = issues
+                        .iter()
+                        .filter(|i| filter.keeps(&i.state))
+                        .filter(|i| matches_query(i, &query))
+                        .count();
+                    if shown == 0 {
+                        continue;
+                    }
+                    let title = format!("{repo}  ({shown})");
+                    egui::CollapsingHeader::new(
+                        RichText::new(title)
+                            .monospace()
+                            .color(theme::ui::TEXT_STRONG),
+                    )
+                    .id_salt(("corral-ui-issues-repo", repo))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for issue in issues {
+                            if !filter.keeps(&issue.state) || !matches_query(issue, &query) {
+                                continue;
+                            }
+                            issue_row(ui, fleet, repo, issue, allowed, drive);
+                        }
+                    });
+                }
+            });
+        }
         ui.separator();
         free_path(ui, fleet, allowed, drive);
     });
@@ -255,6 +255,22 @@ fn confirm_buttons(
     issue: &GhIssueRef,
     drive: &mut dyn FnMut(DriveIntent),
 ) {
+    // #113 review 7: a visible in-flight indicator while the daemon creates
+    // the worktree. The drive state is keyed by the repo/fleet target.
+    if matches!(
+        fleet.latest_drive(&key.0),
+        Some(crate::state::DriveState::Sending { .. })
+    ) {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(
+                RichText::new("creating worktree…")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        });
+        return;
+    }
     let confirming = confirming(ui, key);
     if !confirming {
         if ui.small_button("start worktree").clicked() {
@@ -284,6 +300,23 @@ fn confirm_buttons(
 /// The explicit, intentional issue-free path. This is its OWN section — a
 /// failed issue lookup never reaches it, because the daemon refuses the
 /// issue-linked request and this section is only shown via this button.
+fn free_repos(fleet: &Fleet) -> Vec<String> {
+    // Offer every repo the board knows: the fetched issue view PLUS any
+    // agent workspace repo. An issue-free start can target a repo even before
+    // its issues are fetched (the daemon's `/issues` view lists every
+    // configured fleet, so a repo with zero fetched issues still appears).
+    let mut repos: Vec<String> = fleet.issues.keys().cloned().collect();
+    for agent in fleet.agents.values() {
+        if let Some(repo) = &agent.workspace.repo
+            && !repos.contains(repo)
+        {
+            repos.push(repo.clone());
+        }
+    }
+    repos.sort();
+    repos
+}
+
 fn free_path(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -295,21 +328,14 @@ fn free_path(
             .strong()
             .color(theme::ui::TEXT_STRONG),
     );
-    // The target is a fleet/repo name, so offer every repo the board knows:
-    // the fetched issue view PLUS any agent workspace repo (an issue-free
-    // start can target a repo even before its issues are fetched).
-    let mut repos: Vec<String> = fleet.issues.keys().cloned().collect();
-    for agent in fleet.agents.values() {
-        if let Some(repo) = &agent.workspace.repo
-            && !repos.contains(repo)
-        {
-            repos.push(repo.clone());
-        }
-    }
-    repos.sort();
+    let repos = free_repos(fleet);
+    // The section ALWAYS renders so the explicit choice stays reachable even
+    // when no issues were fetched (or before the first poll). A fleet with a
+    // configured repo but zero fetched issues appears once `/issues` lists
+    // the configured fleet; if the board truly knows no repo, show that.
     if repos.is_empty() {
         ui.label(
-            RichText::new("no repo available — connect a fleet first")
+            RichText::new("no repo available — connect a fleet (or refresh issues) first")
                 .small()
                 .color(theme::ui::TEXT_MUTED),
         );
@@ -319,6 +345,10 @@ fn free_path(
     if !repos.contains(&repo) {
         repo = repos[0].clone();
     }
+    let creating_free = matches!(
+        fleet.latest_drive(&repo),
+        Some(crate::state::DriveState::Sending { .. })
+    );
     let mut name = free_name(ui);
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("repo").small().color(theme::ui::TEXT_MUTED));
@@ -342,7 +372,14 @@ fn free_path(
                     .insert_temp(egui::Id::new("corral-ui-issues-free-name"), name.clone())
             });
         }
-        if name.trim().is_empty() {
+        if creating_free {
+            ui.spinner();
+            ui.label(
+                RichText::new("creating issue-free worktree…")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        } else if name.trim().is_empty() {
             crate::ui::disabled_button_with_reason(
                 ui,
                 "start issue-free worktree",
@@ -540,5 +577,22 @@ mod tests {
         assert_eq!(label_color("d4c5f9"), Color32::from_rgb(0xd4, 0xc5, 0xf9));
         assert_eq!(label_color(""), theme::ui::TEXT_MUTED);
         assert_eq!(label_color("#zzzzzz"), theme::ui::TEXT_MUTED);
+    }
+
+    #[test]
+    fn free_repos_reachable_with_zero_fetched_issues() {
+        // A configured fleet that has been polled but returned zero issues is
+        // still offered in the issue-free path (the daemon `/issues` view
+        // lists every configured fleet). The explicit choice must stay
+        // reachable even when no issue rows are rendered.
+        let mut fleet = Fleet::default();
+        fleet.issues.insert("corral".to_string(), Vec::new());
+        assert_eq!(free_repos(&fleet), vec!["corral"]);
+
+        // Fresh connect: no issues fetched and no agent workspace repo. The
+        // free path shows the "no repo available" hint instead of assuming an
+        // issue repo from branch inference.
+        let empty = Fleet::default();
+        assert!(free_repos(&empty).is_empty());
     }
 }

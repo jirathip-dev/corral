@@ -272,6 +272,14 @@ impl Fleet {
             deque.pop_back();
         }
     }
+
+    /// The newest in-flight drive state for a target (agent id or, for the
+    /// fleet-level worktree start, the fleet/repo name). Used by the issue
+    /// browser to render a pending indicator while the daemon creates the
+    /// worktree.
+    pub fn latest_drive(&self, target: &str) -> Option<&DriveState> {
+        self.recent_drives.get(target).and_then(|d| d.front())
+    }
 }
 
 /// The single source of truth for device capability gating: an agent's

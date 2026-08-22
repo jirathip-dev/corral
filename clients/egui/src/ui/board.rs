@@ -27,6 +27,26 @@ const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
 const COL_DRIVE: f32 = 400.0;
 
+/// Board columns in render order. Both the header and every agent row draw
+/// from this one width source so labels and values start at identical x
+/// positions.
+const BOARD_COLUMNS: [(&str, f32); 10] = [
+    ("AGENT", COL_AGENT),
+    ("STATE", COL_STATE),
+    ("WAITING ON", COL_WAITING),
+    ("REPO", COL_REPO),
+    ("BRANCH", COL_BRANCH),
+    ("DIRTY", COL_DIRTY),
+    ("A/B", COL_AB),
+    ("PR", COL_PR),
+    ("CI", COL_CI),
+    ("DRIVE", COL_DRIVE),
+];
+
+/// Keep at least this much branch text even when the inferred marker is
+/// unusually long; the marker segment is bounded to the remaining width.
+const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
+
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
@@ -73,16 +93,7 @@ pub fn show(
         return;
     }
 
-    let total_width = COL_AGENT
-        + COL_STATE
-        + COL_WAITING
-        + COL_REPO
-        + COL_BRANCH
-        + COL_DIRTY
-        + COL_AB
-        + COL_PR
-        + COL_CI
-        + COL_DRIVE;
+    let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
 
     let ids: Vec<String> = fleet.agents.keys().cloned().collect();
     ui.horizontal(|ui| {
@@ -197,28 +208,38 @@ fn board_row(
 }
 
 fn header(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        header_cell(ui, COL_AGENT, "AGENT");
-        header_cell(ui, COL_STATE, "STATE");
-        header_cell(ui, COL_WAITING, "WAITING ON");
-        header_cell(ui, COL_REPO, "REPO");
-        header_cell(ui, COL_BRANCH, "BRANCH");
-        header_cell(ui, COL_DIRTY, "DIRTY");
-        header_cell(ui, COL_AB, "A/B");
-        header_cell(ui, COL_PR, "PR");
-        header_cell(ui, COL_CI, "CI");
-        header_cell(ui, COL_DRIVE, "DRIVE");
-    });
+    let _ = header_cells(ui);
 }
 
-fn header_cell(ui: &mut Ui, width: f32, text: &str) {
-    ui.add_sized(
-        [width, 20.0],
-        egui::Label::new(RichText::new(text).monospace().color(theme::ui::TEXT_MUTED)),
-    );
+fn header_cells(ui: &mut Ui) -> [egui::Response; 10] {
+    ui.horizontal(|ui| BOARD_COLUMNS.map(|(label, width)| header_cell(ui, width, label)))
+        .inner
 }
 
-#[allow(clippy::too_many_arguments)]
+fn header_cell(ui: &mut Ui, width: f32, text: &str) -> egui::Response {
+    fixed_cell(ui, width, |ui| {
+        ui.add_sized(
+            [width, 20.0],
+            egui::Label::new(RichText::new(text).monospace().color(theme::ui::TEXT_MUTED)),
+        );
+    })
+}
+
+/// Allocate exactly one board column and bind content to that width. Keeping
+/// the minimum AND maximum at the shared column width prevents a long
+/// truncated label, badge, or drive control from moving the next column.
+fn fixed_cell<R>(
+    ui: &mut Ui,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::Response {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        add_contents(ui);
+    })
+    .response
+}
+
 fn agent_row(
     ui: &mut Ui,
     agent: &Agent,
@@ -235,15 +256,11 @@ fn agent_row(
     let mut expanded = false;
     let response = egui::Frame::NONE
         .fill(bg)
-        .inner_margin(egui::Margin::symmetric(2, 4))
+        // Keep only vertical padding: any left/right margin would shift row
+        // cells against the header, which has none.
+        .inner_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                agent_cell(ui, agent);
-                state_cell(ui, agent);
-                waiting_cell(ui, agent);
-                topology_cells(ui, agent);
-                drive_cell(ui, agent, allowed, fleet, &mut actions.drive);
-            })
+            agent_row_cells(ui, agent, allowed, fleet, actions);
         })
         .response;
 
@@ -255,11 +272,64 @@ fn agent_row(
     (expanded, response)
 }
 
-fn agent_cell(ui: &mut Ui, agent: &Agent) {
-    ui.vertical(|ui| {
+fn agent_row_cells(
+    ui: &mut Ui,
+    agent: &Agent,
+    allowed: &dyn Fn(&str) -> bool,
+    fleet: &Fleet,
+    actions: &mut BoardActions,
+) -> [egui::Response; 10] {
+    let ws = &agent.workspace;
+    let ab = if ws.ahead == 0 && ws.behind == 0 {
+        "".to_string()
+    } else {
+        format!("+{}/−{}", ws.ahead, ws.behind)
+    };
+    let ab_color = if ws.ahead > 0 {
+        theme::ui::WARN
+    } else {
+        theme::ui::TEXT_MUTED
+    };
+    ui.horizontal(|ui| {
+        [
+            agent_cell(ui, agent),
+            state_cell(ui, agent),
+            waiting_cell(ui, agent),
+            topology_cell(
+                ui,
+                COL_REPO,
+                ws.repo.clone().unwrap_or_else(|| "—".into()),
+                theme::ui::TEXT_MUTED,
+            ),
+            branch_cell(ui, agent),
+            topology_cell(
+                ui,
+                COL_DIRTY,
+                if ws.dirty { "●".into() } else { "".into() },
+                theme::ui::DIRTY,
+            ),
+            topology_cell(ui, COL_AB, ab, ab_color),
+            topology_cell(
+                ui,
+                COL_PR,
+                ws.pr_number
+                    .map(|n| format!("#{n}"))
+                    .unwrap_or_else(|| "—".into()),
+                theme::ui::TEXT_MUTED,
+            ),
+            ci_cell(ui, ws.ci_status),
+            drive_cell(ui, agent, allowed, fleet, &mut actions.drive),
+        ]
+    })
+    .inner
+}
+
+fn agent_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
+    fixed_cell(ui, COL_AGENT, |ui| {
         ui.add_sized(
             [COL_AGENT - 8.0, 18.0],
-            egui::Label::new(RichText::new(agent.display()).color(theme::ui::TEXT_STRONG)),
+            egui::Label::new(RichText::new(agent.display()).color(theme::ui::TEXT_STRONG))
+                .truncate(),
         );
         ui.add_sized(
             [COL_AGENT - 8.0, 14.0],
@@ -267,13 +337,14 @@ fn agent_cell(ui: &mut Ui, agent: &Agent) {
                 RichText::new(format!("{} · {}", agent.source, agent.tool))
                     .small()
                     .color(theme::ui::TEXT_MUTED),
-            ),
+            )
+            .truncate(),
         );
-    });
+    })
 }
 
-fn state_cell(ui: &mut Ui, agent: &Agent) {
-    ui.vertical(|ui| {
+fn state_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
+    fixed_cell(ui, COL_STATE, |ui| {
         badge(ui, agent.state.label(), state::of(agent.state.into()));
         if let Some(reason) = &agent.reason {
             let truncated: String = reason.chars().take(40).collect();
@@ -283,15 +354,16 @@ fn state_cell(ui: &mut Ui, agent: &Agent) {
                     RichText::new(truncated)
                         .small()
                         .color(theme::ui::TEXT_MUTED),
-                ),
+                )
+                .truncate(),
             )
             .on_hover_text(reason);
         }
-    });
+    })
 }
 
-fn waiting_cell(ui: &mut Ui, agent: &Agent) {
-    ui.vertical(|ui| {
+fn waiting_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
+    fixed_cell(ui, COL_WAITING, |ui| {
         let Some(w) = &agent.waiting_on else {
             ui.add_sized([COL_WAITING - 8.0, 18.0], egui::Label::new(""));
             return;
@@ -308,106 +380,91 @@ fn waiting_cell(ui: &mut Ui, agent: &Agent) {
             .truncate(),
         )
         .on_hover_text(w.prompt.clone());
-    });
+    })
 }
 
-fn topology_cells(ui: &mut Ui, agent: &Agent) {
-    let ws = &agent.workspace;
-    let cell = |ui: &mut Ui, width: f32, text: String, color: Color32| {
-        ui.add_sized(
-            [width - 4.0, 18.0],
-            egui::Label::new(RichText::new(text).monospace().small().color(color)),
-        );
-    };
-    ui.vertical(|ui| {
-        cell(
-            ui,
-            COL_REPO,
-            ws.repo.clone().unwrap_or_else(|| "—".into()),
-            theme::ui::TEXT_MUTED,
-        );
-        branch_cell(ui, agent, &cell);
-        cell(
-            ui,
-            COL_DIRTY,
-            if ws.dirty { "●".into() } else { "".into() },
-            theme::ui::DIRTY,
-        );
-        let ab = if ws.ahead == 0 && ws.behind == 0 {
-            "".to_string()
-        } else {
-            format!("+{}/−{}", ws.ahead, ws.behind)
-        };
-        cell(
-            ui,
-            COL_AB,
-            ab,
-            if ws.ahead > 0 {
-                theme::ui::WARN
-            } else {
-                theme::ui::TEXT_MUTED
-            },
-        );
-        cell(
-            ui,
-            COL_PR,
-            ws.pr_number
-                .map(|n| format!("#{n}"))
-                .unwrap_or_else(|| "—".into()),
-            theme::ui::TEXT_MUTED,
-        );
-        match ws.ci_status {
-            Some(status) => {
-                ui.add_sized([COL_CI - 4.0, 18.0], egui::Label::new(RichText::new("")));
-                badge(ui, status.label(), ci::of(status.into()));
-            }
-            None => cell(ui, COL_CI, "—".into(), theme::ui::TEXT_MUTED),
+fn topology_cell(ui: &mut Ui, width: f32, text: String, color: Color32) -> egui::Response {
+    fixed_cell(ui, width, |ui| topology_content(ui, width, text, color))
+}
+
+fn ci_cell(ui: &mut Ui, status: Option<crate::model::CiStatus>) -> egui::Response {
+    fixed_cell(ui, COL_CI, |ui| match status {
+        Some(status) => {
+            badge(ui, status.label(), ci::of(status.into()));
         }
-    });
+        None => topology_content(ui, COL_CI, "—".into(), theme::ui::TEXT_MUTED),
+    })
+}
+
+fn topology_content(ui: &mut Ui, width: f32, text: String, color: Color32) {
+    ui.add_sized(
+        [width, 18.0],
+        egui::Label::new(RichText::new(text).monospace().small().color(color)).truncate(),
+    );
 }
 
 /// The branch cell: the branch name plus, when the name infers an issue
 /// (D21, display-only), the distinct `~#N` / `~#N?` marker in a
 /// validating/flagging color. The marker is pure + deterministic, so the
 /// cell is stable across frames.
-fn branch_cell(ui: &mut Ui, agent: &Agent, plain: &dyn Fn(&mut Ui, f32, String, Color32)) {
+fn branch_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
     let ws = &agent.workspace;
-    let Some(branch) = ws.branch.as_deref() else {
-        plain(ui, COL_BRANCH, "—".into(), theme::ui::TEXT_STRONG);
-        return;
-    };
-    let Some(inferred) = crate::infer::infer(ws.branch.as_deref(), &agent.known_issue_numbers())
-    else {
-        plain(ui, COL_BRANCH, branch.to_string(), theme::ui::TEXT_STRONG);
-        return;
-    };
-    let marker = inferred.marker();
-    let (color, tip) = inferred_marker_ui(&inferred);
-    // F1 (review): the marker must survive truncation — truncate ONLY the
-    // branch text, then append the marker as its own segment so long
-    // branches (issue-431-embed-project-management) keep the ~#N signal.
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        branch,
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::monospace(11.0),
-            color: theme::ui::TEXT_STRONG,
-            ..Default::default()
-        },
-    );
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_sized([COL_BRANCH - 36.0, 18.0], egui::Label::new(job).truncate());
-        ui.label(
-            egui::RichText::new(format!(" {marker}"))
-                .monospace()
-                .size(11.0)
-                .color(color),
+    fixed_cell(ui, COL_BRANCH, |ui| {
+        let Some(branch) = ws.branch.as_deref() else {
+            topology_content(ui, COL_BRANCH, "—".into(), theme::ui::TEXT_STRONG);
+            return;
+        };
+        let Some(inferred) =
+            crate::infer::infer(ws.branch.as_deref(), &agent.known_issue_numbers())
+        else {
+            topology_content(ui, COL_BRANCH, branch.to_string(), theme::ui::TEXT_STRONG);
+            return;
+        };
+        let marker = inferred.marker();
+        let (color, tip) = inferred_marker_ui(&inferred);
+        let marker_text = format!(" {marker}");
+        let marker_font = egui::FontId::monospace(11.0);
+        let marker_width = ui
+            .fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(marker_text.clone(), marker_font.clone(), color)
+                    .size()
+                    .x
+            })
+            .min(COL_BRANCH - BRANCH_MIN_TEXT_WIDTH)
+            .ceil();
+        let branch_width = COL_BRANCH - marker_width;
+        // F1 (review): the marker must survive truncation — truncate ONLY the
+        // branch text and reserve an exact, bounded marker segment so long
+        // branches (issue-431-embed-project-management) keep the ~#N signal
+        // without pushing later columns out of the fixed cell.
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            branch,
+            0.0,
+            egui::TextFormat {
+                font_id: marker_font,
+                color: theme::ui::TEXT_STRONG,
+                ..Default::default()
+            },
         );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_sized([branch_width, 18.0], egui::Label::new(job).truncate());
+            ui.add_sized(
+                [marker_width, 18.0],
+                egui::Label::new(
+                    egui::RichText::new(marker_text)
+                        .monospace()
+                        .size(11.0)
+                        .color(color),
+                )
+                .truncate(),
+            );
+        })
+        .response
+        .on_hover_text(tip);
     })
-    .response
-    .on_hover_text(tip);
 }
 
 /// Marker color + hover explanation for an inferred issue (D21: the `~`
@@ -449,9 +506,9 @@ fn drive_cell(
     allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
-) {
+) -> egui::Response {
     let rev = fleet.rev;
-    ui.vertical(|ui| {
+    fixed_cell(ui, COL_DRIVE, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -522,7 +579,7 @@ fn drive_cell(
                     .color(theme::ui::TEXT_MUTED),
             );
         }
-    });
+    })
 }
 
 fn approve_choices(
@@ -1179,6 +1236,95 @@ mod tests {
     #[test]
     fn group_by_repo_empty_fleet_has_no_groups() {
         assert!(group_by_repo(&Fleet::default()).is_empty());
+    }
+
+    #[test]
+    fn board_header_and_agent_row_columns_start_at_identical_x_positions() {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(crate::theme::dark_dashboard());
+        let mut agent = agent_with_caps(&[]);
+        agent.reason = Some("state reason ".repeat(80));
+        agent.waiting_on = Some(crate::model::WaitingOn {
+            kind: crate::model::WaitingOnKind::Menu,
+            prompt: "waiting prompt ".repeat(200),
+            prompt_hash: "sha256:test".into(),
+            approval_id: String::new(),
+            choices: vec![],
+        });
+        agent.workspace.repo = Some("very-long-repository/name/that/keeps/going ".repeat(30));
+        // Regression (#131 review): exercise the inferred-marker path with a
+        // long, truncated branch so an unbound marker cannot shift later cells.
+        agent.workspace.branch = Some(format!("issue-431-{}", "a".repeat(200)));
+        agent.issues = vec![crate::model::GhIssueRef {
+            repo: "corral".into(),
+            number: 431,
+            state: "open".into(),
+            title: "long branch marker".into(),
+            labels: vec![],
+            url: String::new(),
+        }];
+        assert_eq!(
+            inferred_marker(&agent).as_deref(),
+            Some("~#431"),
+            "the branch must actually render the inferred marker"
+        );
+        agent.workspace.pr_number = Some(123_456);
+        agent.workspace.ci_status = Some(crate::model::CiStatus::Pending);
+        agent.workspace.dirty = true;
+        agent.workspace.ahead = 12;
+        agent.workspace.behind = 3;
+
+        let mut measured = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // Match the app's board style (app.rs configure_fonts).
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+            let header = header_cells(ui)
+                .into_iter()
+                .map(|cell| cell.rect)
+                .collect::<Vec<_>>();
+            let mut actions = BoardActions {
+                drive: &mut |_| {},
+                transcript: &mut |_| {},
+                refresh_issues: &mut || {},
+            };
+            let row = egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(0, 4))
+                .show(ui, |ui| {
+                    agent_row_cells(ui, &agent, &|_| false, &Fleet::default(), &mut actions)
+                        .into_iter()
+                        .map(|cell| cell.rect)
+                        .collect::<Vec<_>>()
+                })
+                .inner;
+            measured = Some((header, row));
+        });
+        output.textures_delta.clear();
+        let (header, row) = measured.expect("header and row rendered");
+
+        assert_eq!(header.len(), BOARD_COLUMNS.len());
+        assert_eq!(row.len(), BOARD_COLUMNS.len());
+        for (i, (header, row)) in header.iter().zip(&row).enumerate() {
+            let expected_width = BOARD_COLUMNS[i].1;
+            assert!(
+                (header.left() - row.left()).abs() <= 0.01,
+                "column {i} starts at header.x={} but row.x={}",
+                header.left(),
+                row.left()
+            );
+            assert!(
+                (header.width() - expected_width).abs() <= 0.01,
+                "header column {i} width {} != {}",
+                header.width(),
+                expected_width
+            );
+            assert!(
+                (row.width() - expected_width).abs() <= 0.01,
+                "row column {i} width {} != {}",
+                row.width(),
+                expected_width
+            );
+        }
     }
 
     #[test]

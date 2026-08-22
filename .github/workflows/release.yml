@@ -76,7 +76,8 @@ jobs:
           test -x "$stage/corrald-ui"
           test -d "$stage/docs"
 
-          bundle="$RUNNER_TEMP/corral-$GITHUB_REF_NAME-macos.tar.gz"
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
           rm -f "$bundle" "$bundle.sha256"
           tar -C "$stage" -czf "$bundle" \
             corrald \
@@ -98,7 +99,8 @@ jobs:
       - name: Create GitHub release
         run: |
           set -euo pipefail
-          bundle="$RUNNER_TEMP/corral-$GITHUB_REF_NAME-macos.tar.gz"
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
           notes="$RUNNER_TEMP/corral-release-notes.md"
           printf '%s\n' \
             "## Corral macOS release" \

@@ -91,6 +91,15 @@ cancels that generation before a new one can attach; subscribe failures never
 trigger a global re-bootstrap. Dropping the client aborts the reader so a
 failed connection never leaks its descriptor (#105).
 
+The gh plane also publishes the *repo-level* issue set it fetches into a
+read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's
+issue browser renders — separate from the per-agent `closingIssuesReferences`
+join in the snapshot. The write side has one fleet-level capability,
+`start_worktree` (#113), routed by `src/api/drive.rs` to
+`src/fleet/worktree.rs` (validate → plan → idempotent create → herdr
+handoff) instead of the per-agent adapter dispatch. GitHub stays READ-ONLY:
+no issue create/edit/close surface exists.
+
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see
 [Trust boundaries](#trust-boundaries).

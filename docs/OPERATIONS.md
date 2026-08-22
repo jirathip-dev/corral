@@ -20,7 +20,7 @@ login and stays up (KeepAlive). It also installs the release desktop client:
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
 scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (desktop/daemon only)
-scripts/setup-corrald.sh --uninstall         # remove the launchd agent (keeps config)
+scripts/setup-corrald.sh --uninstall         # remove both launchd agents (keeps config)
 ```
 
 `--bind <tailnet-ip>` serves DESKTOP clients on the tailnet; the iOS
@@ -77,8 +77,15 @@ inspection or recoverability claim; and an existing but uninspectable root is
 reported as indeterminate. The multi-file Linux commit is rollback-based
 rather than one single atomic operation.
 
-`--uninstall` removes the launchd agent and leaves the config directory; it
-does not remove an installed desktop app.
+`--uninstall` removes both launchd agents and leaves the config directory; it
+does not remove an installed desktop app. Use
+`scripts/install-corral.sh --uninstall` to also remove the staged release
+files and the `Corral.app` desktop payload.
+
+Prebuilt tagged releases can be installed without a Rust toolchain using
+`scripts/install-corral.sh`; see the README install section. In that mode
+`scripts/setup-corrald.sh --from-release <binary>` skips the cargo build and
+uses the bundled `corrald` and `corrald-ui` binaries instead.
 
 ### `scripts/corrald-grant.sh`
 

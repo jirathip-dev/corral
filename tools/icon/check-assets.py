@@ -48,7 +48,7 @@ INTEGRATION_SHA256 = {
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
     "ios/FleetNotifier.xcodeproj/project.pbxproj": "de7e82ee51d62a549c25ca3e15ea28f4d48c4f25fc887575c7b98fa13395d243",
     "scripts/install-corral-ui.sh": "962b084810ed8d23f09fbe616037a9372641826cf3e9b53cfcb28dbc4715445f",
-    "scripts/setup-corrald.sh": "6612c55a1174bbfbc673234ce24441642185a8a24478b1e3eb856a370c3dd33e",
+    "scripts/setup-corrald.sh": "e213e77278019798a21c05321233c1b6be2ef1de24771341aebeaba8b31a57b2",
     "scripts/test-icon-packaging.sh": "3839305fe3a2d7db82412902c3f9f3a5e7d24a34c79e565c59fcd4f92319b5c5",
 }
 

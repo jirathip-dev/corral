@@ -33,6 +33,10 @@ file_mtime() {  # epoch mtime; 0 when missing/unreadable
 cd "$REPO_DIR"
 
 # --- Guards: skip when the main checkout is not in a pullable state ---------
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  log "skip: not a source checkout; release installs are updated with scripts/install-corral.sh"
+  exit 0
+fi
 if [[ "$(git branch --show-current)" != "main" ]]; then
   log "skip: not on main (branch=$(git branch --show-current))"
   exit 0

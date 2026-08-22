@@ -39,6 +39,39 @@ git watcher ──┤ → integrator →   ├─ GET /history (event ring, ?sin
                                  └─ POST /drive (Ed25519-signed, capability-gated)
 ```
 
+## Install from release (macOS)
+
+No Rust toolchain is needed to install a tagged macOS release. The installer
+downloads the checksummed bundle, verifies its SHA-256 before touching the
+machine, installs `corrald` under launchd, and stages the egui board:
+
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
+```
+
+From a checkout, the same script can be run directly:
+
+```sh
+bash scripts/install-corral.sh
+bash scripts/install-corral.sh --release v0.1.0
+```
+
+Release/tag resolution uses `gh`; a direct artifact URL bypasses it:
+
+```sh
+RELEASE_URL=https://example.com/corral-vX-macos.tar.gz \
+  bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
+```
+
+Uninstall removes the launchd agents and the staged app, and keeps your config
+and keys:
+
+```sh
+bash scripts/install-corral.sh --uninstall
+```
+
+The from-source setup below remains the primary development path.
+
 ## Herdr plugin
 
 The root [`herdr-plugin.toml`](herdr-plugin.toml) provides real `setup` and

@@ -7,18 +7,21 @@
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
+#   scripts/setup-corrald.sh --from-release <binary-path>  # prebuilt corrald, no cargo
 #   scripts/setup-corrald.sh --bind 100.67.222.5   # Tailscale/private IP (desktop/daemon
 #                                                  # only; iOS needs Tailscale Serve —
 #                                                  # see docs/OPERATIONS.md)
 #   scripts/setup-corrald.sh --uninstall
 #
-# Prereqs: rustup (pinned toolchain auto-installs), herdr running (optional;
-# corrald serves without it, just shows no agents).
+# Prereqs (source mode): rustup (pinned toolchain auto-installs), herdr running
+# (optional; corrald serves without it, just shows no agents). Release mode uses
+# a prebuilt corrald + sibling corrald-ui and needs no Rust toolchain.
 set -euo pipefail
 
 BIND="127.0.0.1"
 PORT="8474"
 UNINSTALL=0
+FROM_RELEASE=""
 
 # Parse args with an index loop so --bind can consume its value.
 i=0
@@ -38,30 +41,65 @@ while [[ $i -lt ${#args[@]} ]]; do
         echo "!! invalid --bind address (IPv4 or IPv6 only): $BIND" >&2; exit 2
       fi
       ;;
+    --port)
+      i=$((i+1))
+      if [[ $i -ge ${#args[@]} || -z "${args[$i]}" || ! "${args[$i]}" =~ ^[0-9]+$ || "${args[$i]}" -lt 1 || "${args[$i]}" -gt 65535 ]]; then
+        echo "!! --port requires a value from 1-65535" >&2; exit 2
+      fi
+      PORT="${args[$i]}"
+      ;;
+    --from-release)
+      i=$((i+1))
+      if [[ $i -ge ${#args[@]} || -z "${args[$i]}" ]]; then
+        echo "!! --from-release requires a path to a prebuilt corrald" >&2; exit 2
+      fi
+      FROM_RELEASE="${args[$i]}"
+      ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown arg: ${args[$i]}" >&2; exit 2 ;;
   esac
   i=$((i+1))
 done
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FROM_RELEASE_DIR=""
 BIN="$REPO_DIR/target/release/corrald"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
+UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
 LABEL="com.corral.corrald"
 LOG="$CONFIG_DIR/corrald-launchd.log"
 
+if [[ -n "$FROM_RELEASE" ]]; then
+  FROM_RELEASE="$(cd "$(dirname "$FROM_RELEASE")" && pwd)/$(basename "$FROM_RELEASE")"
+  [[ -f "$FROM_RELEASE" && -x "$FROM_RELEASE" ]] || {
+    echo "!! --from-release binary is missing or not executable: $FROM_RELEASE" >&2
+    exit 2
+  }
+  FROM_RELEASE_DIR="$(dirname "$FROM_RELEASE")"
+  BIN="$FROM_RELEASE"
+  if [[ -x "$FROM_RELEASE_DIR/corrald-ui" && -f "$FROM_RELEASE_DIR/scripts/setup-corrald.sh" ]]; then
+    REPO_DIR="$FROM_RELEASE_DIR"
+  fi
+fi
+
 if [[ "$UNINSTALL" == "1" ]]; then
-  echo ">> Uninstalling corrald launchd agent"
+  echo ">> Uninstalling corrald launchd agents"
   launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
   rm -f "$PLIST"
-  echo ">> Removed $PLIST. Config/keys kept at $CONFIG_DIR (delete manually to wipe)."
+  rm -f "$UPDATE_PLIST"
+  echo ">> Removed $PLIST and $UPDATE_PLIST. Config/keys kept at $CONFIG_DIR (delete manually to wipe)."
   exit 0
 fi
 
-echo ">> Building corrald (release)..."
-cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
+if [[ -n "$FROM_RELEASE" ]]; then
+  echo ">> Using prebuilt corrald: $BIN"
+else
+  echo ">> Building corrald (release)..."
+  cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
+fi
 
 mkdir -p "$CONFIG_DIR"
 
@@ -71,6 +109,7 @@ echo ">> Installing launchd agent: $PLIST"
 # rewritten plist on kickstart, so a re-run with changed --bind would
 # silently restart the old config. bootout + bootstrap applies the new file.
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+launchctl enable "gui/$(id -u)/$LABEL" 2>/dev/null || true
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -138,8 +177,8 @@ fi
 echo
 echo ">> Installing auto-update agent (com.corral.corrald-update)..."
 chmod +x "$REPO_DIR/scripts/update-corral.sh"
-UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
 launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
+launchctl enable "gui/$(id -u)/com.corral.corrald-update" 2>/dev/null || true
 cat > "$UPDATE_PLIST" <<UPDATE_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -167,7 +206,7 @@ UPDATE_EOF
 plutil -lint "$UPDATE_PLIST" >/dev/null
 if launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1 \
   || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1; }; then
-  echo "   ✓ update agent loaded (checks hourly at :17; pulls main, rebuilds, restarts)"
+  echo "   ✓ update agent loaded (checks hourly at :17)"
 else
   echo "   ✗ update agent bootstrap failed — see output above" >&2
 fi
@@ -178,7 +217,13 @@ fi
 # --- Desktop client install (platform-aware) ---------------------------------
 install_desktop_client() {
   local UI_BIN="$REPO_DIR/target/release/corrald-ui"
-  if [[ ! -x "$UI_BIN" ]]; then
+  if [[ -n "$FROM_RELEASE" ]]; then
+    UI_BIN="$FROM_RELEASE_DIR/corrald-ui"
+    if [[ ! -x "$UI_BIN" ]]; then
+      echo "!! prebuilt corrald-ui binary is missing or not executable: $UI_BIN" >&2
+      return 1
+    fi
+  elif [[ ! -x "$UI_BIN" ]]; then
     echo ">> corrald-ui binary missing — building..." >&2
     cargo build --release 2>>"$LOG" || { echo "   ✗ build failed" >&2; return 1; }
   fi
@@ -190,7 +235,11 @@ install_desktop_client
 
 echo
 echo ">> Next:"
-echo "   - client (egui):   cargo run -p corrald-ui --release   (auto-registers on localhost)"
-echo "   - device grant:    scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt"
+if [[ -n "$FROM_RELEASE" ]]; then
+  echo "   - board:           open ${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
+else
+  echo "   - client (egui):   cargo run -p corrald-ui --release   (auto-registers on localhost)"
+  echo "   - device grant:    scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt"
+fi
 echo "   - view config:     ls -la $CONFIG_DIR"
 echo "   - logs:            tail -f $LOG"

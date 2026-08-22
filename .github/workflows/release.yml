@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: blacksmith-6vcpu-macos-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Same single-source parse as rust.yml: rust-toolchain.toml owns the
+      # pinned version and dtolnay/rust-toolchain does not read it itself.
+      - name: Read pinned toolchain
+        id: pinned
+        run: |
+          set -euo pipefail
+          channel="$(awk '
+            /^[[:space:]]*\[toolchain\][[:space:]]*$/ { in_tc = 1; next }
+            /^[[:space:]]*\[/                         { in_tc = 0 }
+            in_tc && /^[[:space:]]*channel[[:space:]]*=/ {
+              if (match($0, /"[^"]*"/) || match($0, /'"'"'[^'"'"']*'"'"'/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+              }
+            }
+          ' rust-toolchain.toml)"
+          if [ -z "$channel" ]; then
+            echo "::error::could not parse a channel from [toolchain] in rust-toolchain.toml"
+            exit 1
+          fi
+          echo "Pinned toolchain: $channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.pinned.outputs.channel }}
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          cargo build --release
+          test -x target/release/corrald
+          test -x target/release/corrald-ui
+          echo "Built:"
+          ls -lh target/release/corrald target/release/corrald-ui
+
+      - name: Assemble release bundle
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/corral-release"
+          rm -rf "$stage"
+          mkdir -p "$stage/scripts" "$stage/docs" "$stage/assets/icon"
+
+          cp target/release/corrald "$stage/corrald"
+          cp target/release/corrald-ui "$stage/corrald-ui"
+          cp scripts/setup-corrald.sh "$stage/scripts/setup-corrald.sh"
+          cp scripts/install-corral-ui.sh "$stage/scripts/install-corral-ui.sh"
+          cp scripts/install-corral.sh "$stage/scripts/install-corral.sh"
+          cp scripts/update-corral.sh "$stage/scripts/update-corral.sh"
+          cp herdr-plugin.toml "$stage/herdr-plugin.toml"
+          cp README.md "$stage/README.md"
+          cp -R docs/. "$stage/docs/"
+          cp LICENSE-APACHE "$stage/LICENSE-APACHE"
+          cp LICENSE-MIT "$stage/LICENSE-MIT"
+          cp assets/icon/corral-icon-macos.png "$stage/assets/icon/corral-icon-macos.png"
+          cp assets/icon/corral-icon-256.png "$stage/assets/icon/corral-icon-256.png"
+
+          chmod +x "$stage/scripts"/*.sh
+          test -x "$stage/corrald"
+          test -x "$stage/corrald-ui"
+          test -d "$stage/docs"
+
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
+          rm -f "$bundle" "$bundle.sha256"
+          tar -C "$stage" -czf "$bundle" \
+            corrald \
+            corrald-ui \
+            scripts \
+            herdr-plugin.toml \
+            README.md \
+            docs \
+            LICENSE-APACHE \
+            LICENSE-MIT \
+            assets/icon/corral-icon-macos.png \
+            assets/icon/corral-icon-256.png
+          shasum -a 256 "$bundle" | awk '{print $1}' > "$bundle.sha256"
+          echo "Bundle: $bundle"
+          echo "Checksum: $(cat "$bundle.sha256")"
+          echo "Files:"
+          tar -tzf "$bundle"
+
+      - name: Create GitHub release
+        run: |
+          set -euo pipefail
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
+          notes="$RUNNER_TEMP/corral-release-notes.md"
+          printf '%s\n' \
+            "## Corral macOS release" \
+            "" \
+            "This release contains the prebuilt \`corrald\` daemon and the egui" \
+            "\`corrald-ui\` board, plus the release install scripts and documentation." \
+            "Install with:" \
+            "" \
+            "\`\`\`sh" \
+            "bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)" \
+            "\`\`\`" \
+            "" \
+            "The bundle is checksummed by the adjacent" \
+            "\`corral-<tag>-macos.tar.gz.sha256\` asset;" \
+            "\`scripts/install-corral.sh\` verifies it before installing anything." \
+            "" \
+            "**iOS \`FleetNotifier\` is NOT included in this release.** It is a signed" \
+            "TestFlight lane built and signed locally on the developer machine." > "$notes"
+          gh release create "$GITHUB_REF_NAME" \
+            "$bundle" "$bundle.sha256" \
+            --title "Corral $GITHUB_REF_NAME" \
+            --notes-file "$notes"
+          gh release view "$GITHUB_REF_NAME" --json tagName,assets \
+            --jq '{tagName, assets: [.assets[].name]}'

@@ -15,7 +15,7 @@
 #     changed (killing a running editor window is a deliberate act — logged).
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 LOG="$CONFIG_DIR/corral-update.log"
 mkdir -p "$CONFIG_DIR"
@@ -32,7 +32,14 @@ file_mtime() {  # epoch mtime; 0 when missing/unreadable
 
 cd "$REPO_DIR"
 
-# --- Guards: skip when the main checkout is not in a pullable state ---------
+# --- Guards: skip when this is not the actual source checkout ----------------
+# `git rev-parse` walks up parent directories, so compare the resolved top
+# level instead. A release copy nested in an unrelated git worktree must not
+# fetch/pull that outer repository and try to cargo-build from the release dir.
+if [[ "$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || true)" != "$REPO_DIR" ]]; then
+  log "skip: not a source checkout; release installs are updated with scripts/install-corral.sh"
+  exit 0
+fi
 if [[ "$(git branch --show-current)" != "main" ]]; then
   log "skip: not on main (branch=$(git branch --show-current))"
   exit 0

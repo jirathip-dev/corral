@@ -1,16 +1,23 @@
 //! #35 phase 1: fleet registry config — parse, validate, default path, write.
 //!
-//! The registry is the `fleets.json` file corral is TAKING ownership of
-//! (#35/#66): the format originated in the separate legacy fleet tooling,
-//! which still writes the legacy-path file today — hence `default_path`'s
-//! migration fallback. corrald adopts the format unchanged. `load()` parses and validates, and validation fails loudly
-//! (hard error, not silent acceptance) on unknown fields anywhere, empty
-//! required fields, whitespace inside `name`/`gh_repo`, a `gh_repo` that is
-//! not a single `owner/repo`, a `local` that begins with a bare `~`, and
-//! duplicate fleet names. The write side (`write_atomic`) is the first
-//! registry-WRITING surface (#35 slice 1): it serialises back to the same
-//! schema and replaces the file via temp-file-in-same-dir + rename, so a
-//! refused or failed write leaves the original byte-identical.
+//! The registry is the `fleets.json` file corral shares with the
+//! fleet-operations controller (#35/#66): the format originated in the
+//! separate legacy fleet tooling, which still writes the legacy-path file
+//! today — hence `default_path`'s migration fallback. corrald adopts the
+//! format unchanged but reads a tolerant subset: fleet-operations owns the
+//! full schema (`models.*`,
+//! `reasoning_effort`, top-level `admit`, roles), while corral only needs
+//! `fleets[].gh_repo` and `fleets[].local` for `/issues` and workspace
+//! attribution. Unknown fields are ignored on load and retained across a
+//! rewrite, so a forward-compatible fleet-operations schema addition cannot
+//! break the board or silently disappear through a corral registry write.
+//! Validation still fails loudly on empty required fields, whitespace inside
+//! `name`/`gh_repo`, a `gh_repo` that is not a single `owner/repo`, a `local`
+//! that begins with a bare `~`, and duplicate fleet names. The write side
+//! (`write_atomic`) is the first registry-WRITING surface (#35 slice 1): it
+//! serialises back to the same schema and replaces the file via
+//! temp-file-in-same-dir + rename, so a refused or failed write leaves the
+//! original byte-identical.
 
 use std::fmt;
 use std::io::Write;
@@ -20,7 +27,6 @@ use serde::{Deserialize, Serialize};
 
 /// A whole fleet registry file: `{ "fleets": [...] }`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Registry {
     pub fleets: Vec<Fleet>,
 }
@@ -31,7 +37,6 @@ pub struct Registry {
 /// - `models` — required object with required string keys.
 /// - `paused` — optional, defaults to `false`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Fleet {
     pub name: String,
     pub gh_repo: String,
@@ -53,7 +58,6 @@ pub struct Fleet {
 /// from the written JSON when absent, so an unrelated rewrite never grows
 /// `"impl_alt": null` into a registry that did not have them.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Models {
     pub orch: String,
     #[serde(rename = "impl")]
@@ -74,6 +78,97 @@ pub struct Models {
 /// explicitly, not buried in a derive.
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// The registry keys corral understands at each level. Unknown keys from
+/// fleet-operations are intentionally excluded, so they can be preserved as
+/// data rather than rejected or rewritten away.
+const KNOWN_REGISTRY_FIELDS: &[&str] = &["fleets"];
+const KNOWN_FLEET_FIELDS: &[&str] = &[
+    "name",
+    "gh_repo",
+    "local",
+    "worktree_dir",
+    "orch",
+    "workers",
+    "paused",
+    "models",
+];
+const KNOWN_MODEL_FIELDS: &[&str] = &["orch", "impl", "review", "impl_alt", "impl_alt2"];
+
+/// Copy every current field not named in `known` onto the candidate object.
+/// `known` (not "keys already present in the candidate") is the source of
+/// truth so corral's skip rules still win: for example `paused: false` is
+/// deliberately omitted on write and must not be resurrected from the old
+/// file just because the candidate lacks the key.
+fn retain_unknown_fields(
+    current: &serde_json::Map<String, serde_json::Value>,
+    candidate: &mut serde_json::Map<String, serde_json::Value>,
+    known: &[&str],
+) {
+    for (key, value) in current {
+        if !known.contains(&key.as_str()) {
+            candidate.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Re-apply fleet-operations fields corral does not model before an atomic
+/// write. `load()` silently drops them today, but the registry is shared with
+/// the schema-authoring writer; without this merge, `corrald fleet models`
+/// would erase `models.reasoning_effort`, and any mutation would erase the
+/// top-level `admit` block.
+fn preserve_unknown_fields(path: &Path, candidate: &mut serde_json::Value) {
+    let Ok(current) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(current) = serde_json::from_str::<serde_json::Value>(&current) else {
+        return;
+    };
+    let (Some(current), Some(candidate)) = (current.as_object(), candidate.as_object_mut()) else {
+        return;
+    };
+    retain_unknown_fields(current, candidate, KNOWN_REGISTRY_FIELDS);
+
+    let (Some(current_fleets), Some(candidate_fleets)) = (
+        current.get("fleets").and_then(serde_json::Value::as_array),
+        candidate
+            .get_mut("fleets")
+            .and_then(serde_json::Value::as_array_mut),
+    ) else {
+        return;
+    };
+    for candidate_fleet in candidate_fleets {
+        let Some(candidate_name) = candidate_fleet
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(current_fleet) = current_fleets.iter().find(|fleet| {
+            fleet.get("name").and_then(serde_json::Value::as_str) == Some(candidate_name)
+        }) else {
+            continue;
+        };
+        let (Some(current_fleet), Some(candidate_fleet)) =
+            (current_fleet.as_object(), candidate_fleet.as_object_mut())
+        else {
+            continue;
+        };
+        retain_unknown_fields(current_fleet, candidate_fleet, KNOWN_FLEET_FIELDS);
+
+        let (Some(current_models), Some(candidate_models)) = (
+            current_fleet
+                .get("models")
+                .and_then(serde_json::Value::as_object),
+            candidate_fleet
+                .get_mut("models")
+                .and_then(serde_json::Value::as_object_mut),
+        ) else {
+            continue;
+        };
+        retain_unknown_fields(current_models, candidate_models, KNOWN_MODEL_FIELDS);
+    }
 }
 
 impl Registry {
@@ -409,11 +504,14 @@ pub fn load(path: &Path) -> Result<Registry, ConfigError> {
 /// writer's fields are clobbered). Single-writer discipline is assumed for
 /// the #35 migration window; a lockfile is a follow-up.
 ///
-/// Serialisation uses `serde_json::to_string_pretty` (2-space indent, struct
-/// field order) plus a trailing newline. The round-trip is semantically exact
+/// Serialisation uses `serde_json::Value` plus `to_string_pretty` (2-space
+/// indent) and a trailing newline. The round-trip is semantically exact
 /// — `Models::impl_` writes back as the JSON key `impl`, `paused` is skipped
 /// when false (see [`is_false`]) — but the first write NORMALISES any
-/// hand-maintained formatting to this canonical shape.
+/// hand-maintained formatting (including serde_json's default object-key
+/// ordering) to a canonical shape. Unknown fleet-ops fields are also retained
+/// (see [`preserve_unknown_fields`]), so the write stays subset-compatible
+/// instead of silently dropping schema the fleet controller owns.
 pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError> {
     // Follow a symlinked registry so the rename replaces the target file,
     // not the link (a dotfiles-checkout registry keeps working).
@@ -459,7 +557,12 @@ pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError>
 /// (this schema is all-strings), so errors are surfaced rather than written
 /// off as impossible.
 fn serialize(path: &Path, registry: &Registry) -> Result<Vec<u8>, ConfigError> {
-    let mut json = serde_json::to_string_pretty(registry).map_err(|source| ConfigError::Write {
+    let mut value = serde_json::to_value(registry).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source: std::io::Error::other(source),
+    })?;
+    preserve_unknown_fields(path, &mut value);
+    let mut json = serde_json::to_string_pretty(&value).map_err(|source| ConfigError::Write {
         path: path.to_path_buf(),
         source: std::io::Error::other(source),
     })?;
@@ -475,8 +578,9 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    /// The file is not valid registry JSON (missing required fields,
-    /// unknown fields, type mismatches).
+    /// The file is not valid registry JSON (malformed JSON, missing required
+    /// fields, or type mismatches). Unknown fields are accepted and preserved:
+    /// corral reads a tolerant subset of the fleet-operations schema.
     Parse {
         path: PathBuf,
         source: serde_json::Error,

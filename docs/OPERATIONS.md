@@ -560,10 +560,12 @@ shrink guard, failed identity check, git/gh/herdr failure);
 **2** usage error, or (every subcommand except `watch`) an
 unreadable/unparseable/invalid registry.
 Validation is strict on
-purpose — unknown fields, empty required fields, whitespace inside
+purpose — empty required fields, whitespace inside
 `name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
 `owner/repo`, a `local` starting with a bare `~`, and duplicate names all
-fail loudly. Model map: required `orch`/`impl`/`review`, optional
+fail loudly. Unknown fleet-operations fields (`models.reasoning_effort`,
+top-level `admit`, and future additions) are accepted by the subset reader
+and preserved through corral rewrites. Model map: required `orch`/`impl`/`review`, optional
 `impl_alt`/`impl_alt2` fallback slots that `fleet models` can set or clear
 (`--impl-alt ''`; `models all` applies to every fleet — `all` is a
 reserved fleet name). Full schema and the per-command exit-code table:

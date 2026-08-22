@@ -220,7 +220,7 @@ fn add_inherits_alt_slots_from_the_first_fleet_when_present() {
 }
 
 #[test]
-fn typoed_alt_key_is_a_hard_error() {
+fn typoed_alt_key_is_ignored_for_forward_compatibility() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(
         dir.path(),
@@ -228,12 +228,9 @@ fn typoed_alt_key_is_a_hard_error() {
             "worktree_dir": "corral", "orch": "o", "workers": [],
             "models": {"orch": "f", "impl": "i", "review": "r", "imp1_alt": "x"}}]}"#,
     );
-    let err = load(&path).expect_err("typo'd alt key must fail");
-    assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
-    assert!(
-        err.to_string().contains("imp1_alt"),
-        "names the typo field: {err}"
-    );
+    let registry = load(&path).expect("unrecognised models key is ignored");
+    assert_eq!(registry.fleets[0].models.impl_, "i");
+    assert_eq!(registry.fleets[0].models.impl_alt, None);
 }
 
 #[test]
@@ -271,41 +268,57 @@ fn empty_or_whitespace_impl_alt_is_refused_by_validate() {
 }
 
 #[test]
-fn unknown_field_is_a_hard_error() {
+fn fleet_ops_fields_parse_and_survive_a_write_round_trip() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(
         dir.path(),
-        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
-            "worktree_dir": "corral", "orch": "o", "workers": [], "paused": false,
-            "models": {"orch": "f", "impl": "i", "review": "r"}, "surprise": 1}]}"#,
+        r#"{
+            "fleets": [{
+                "name": "corral",
+                "gh_repo": "jirathip-k/corral",
+                "local": "~/Projects/corral",
+                "worktree_dir": "corral",
+                "orch": "o",
+                "workers": [],
+                "models": {
+                    "orch": "f",
+                    "impl": "i",
+                    "review": "r",
+                    "reasoning_effort": {"orch": "medium", "impl": "max", "review": "xhigh"}
+                },
+                "future_fleet_field": {"nested": true}
+            }],
+            "admit": {"enabled": true, "budget_mb": 16000}
+        }"#,
     );
-    let err = load(&path).expect_err("unknown field must fail");
-    let msg = err.to_string();
-    assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
-    assert!(msg.contains("surprise"), "names the field: {msg}");
-}
 
-#[test]
-fn unknown_field_inside_models_is_a_hard_error() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = write_registry(
-        dir.path(),
-        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
-            "worktree_dir": "corral", "orch": "o", "workers": [],
-            "models": {"orch": "f", "impl": "i", "review": "r", "junk": "x"}}]}"#,
+    let registry = load(&path).expect("fleet-ops registry loads");
+    assert_eq!(registry.fleets[0].name, "corral");
+    write_atomic(&path, &registry).expect("write");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read back"))
+            .expect("written registry is valid JSON");
+    let fleet = &written["fleets"][0];
+    assert_eq!(fleet["name"], "corral");
+    assert_eq!(
+        fleet["models"]["reasoning_effort"],
+        serde_json::json!({"orch": "medium", "impl": "max", "review": "xhigh"})
     );
-    let err = load(&path).expect_err("unknown models field must fail");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-    assert!(err.to_string().contains("junk"));
-}
-
-#[test]
-fn unknown_top_level_field_is_a_hard_error() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let path = write_registry(dir.path(), r#"{"fleets": [], "extra": true}"#);
-    let err = load(&path).expect_err("unknown top-level field must fail");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-    assert!(err.to_string().contains("extra"));
+    assert_eq!(
+        fleet["future_fleet_field"],
+        serde_json::json!({"nested": true})
+    );
+    assert_eq!(
+        written["admit"],
+        serde_json::json!({"enabled": true, "budget_mb": 16000})
+    );
+    assert_eq!(
+        load(&path).expect("written registry re-loads").fleets[0]
+            .models
+            .impl_,
+        "i"
+    );
 }
 
 #[test]

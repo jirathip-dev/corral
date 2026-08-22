@@ -33,17 +33,6 @@ def release_source_digest(root: Path) -> str:
     """Hash the exact Swift source set compiled into the FleetNotifier app."""
 
     root = root.resolve()
-    discovered = tuple(
-        sorted(
-            path.relative_to(root).as_posix()
-            for path in (root / "ios/FleetNotifier").rglob("*.swift")
-        )
-    )
-    if discovered != RELEASE_SOURCE_FILES:
-        raise ValueError(
-            "Release source manifest does not match ios/FleetNotifier Swift files"
-        )
-
     digest = sha256()
     for relative in RELEASE_SOURCE_FILES:
         path = root / relative

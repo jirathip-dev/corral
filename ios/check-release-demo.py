@@ -47,8 +47,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     "7ce04c483fb52474a0546449ee75c7cf476b2bd29a343e8fd182b890f8f91e30"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
-RELEASE_BUILD_INPUTS = (
-    "$(SRCROOT)/../ios/FleetNotifier",
+RELEASE_BUILD_INPUTS = tuple(
+    f"$(SRCROOT)/{relative.removeprefix('ios/')}" for relative in RELEASE_SOURCE_FILES
+) + (
     "$(SRCROOT)/embed-release-source-digest.py",
     "$(SRCROOT)/release_source_manifest.py",
 )

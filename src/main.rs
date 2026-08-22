@@ -1124,7 +1124,16 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     ));
     adapter.clone().start(store.clone());
 
-    tokio::spawn(supervise_planes(store.clone(), attribution.clone()));
+    // #113: the read-only repo-level issue view shared between the planes
+    // integrator and the API, so `GET /issues` sees the facts the worktree
+    // action validates a selected issue against.
+    let issues_cache: Arc<corrald::api::issues::IssuesCache> =
+        Arc::new(corrald::api::issues::IssuesCache::default());
+    tokio::spawn(supervise_planes(
+        store.clone(),
+        attribution.clone(),
+        issues_cache.clone(),
+    ));
     tracing::info!(
         repo_roots = ?attribution.repo_roots(),
         worktrees_root = %attribution.worktrees_root().display(),
@@ -1148,6 +1157,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         auth,
         adapter,
         replay: Arc::new(ReplayTable::default()),
+        issues: issues_cache.clone(),
         transcript_roots: corrald::transcript::bind::TranscriptRoots::from_env(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
@@ -1233,7 +1243,11 @@ fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>)
 /// supervisor therefore owns the channel and re-arms both planes per
 /// generation. Residual: a previous generation's gh loop notices the dead
 /// sink only at its next poll send, so a restart can briefly double-poll.
-async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
+async fn supervise_planes(
+    store: Store,
+    attribution: WorkspaceAttribution,
+    issues: Arc<corrald::api::issues::IssuesCache>,
+) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
@@ -1249,7 +1263,8 @@ async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
         ));
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
         let (sink, rx) = plane_channel();
-        let integrator = Integrator::new_with_attribution(store.clone(), attribution.clone());
+        let integrator =
+            Integrator::with_issues(store.clone(), attribution.clone(), issues.clone());
         // Clear both the shared branch facts and already-stored recognized
         // rows before either replacement plane can emit. This closes the
         // missed-WorktreeRemoved gap without erasing repo identity or other

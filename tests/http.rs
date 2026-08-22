@@ -259,3 +259,42 @@ async fn resume_semantics_are_exposed_by_store() {
     store.flush().await;
     assert!(matches!(store.resume_from(None).await, Resume::Snapshot(_)));
 }
+
+/// #113: `GET /issues` serves the read-only repo-level issue view without
+/// touching GitHub — the cache is the only source, and it is populated via
+/// the integrator (here injected directly for the hermetic test).
+#[tokio::test]
+async fn issues_endpoint_serves_last_known_repo_issues() {
+    let state = AppState::default();
+    state.issues.update(
+        "herdr-board",
+        vec![corrald::core::events::GhIssueRef {
+            repo: "herdr-board".to_string(),
+            number: 4,
+            state: "OPEN".to_string(),
+            title: "P2 planes".to_string(),
+            labels: vec![corrald::core::events::GhIssueLabel {
+                name: "p2".to_string(),
+                color: "5319E7".to_string(),
+            }],
+            url: "https://github.com/herdr-board/herdr-board/issues/4".to_string(),
+        }],
+    );
+    let app = router(state);
+    let res = app
+        .oneshot(Request::get("/issues").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let repos = &json["repos"];
+    assert_eq!(repos["herdr-board"][0]["number"], 4);
+    assert_eq!(repos["herdr-board"][0]["state"], "OPEN");
+    assert_eq!(repos["herdr-board"][0]["title"], "P2 planes");
+    assert_eq!(
+        repos["herdr-board"][0]["url"],
+        "https://github.com/herdr-board/herdr-board/issues/4"
+    );
+    assert_eq!(repos["herdr-board"][0]["labels"][0]["name"], "p2");
+}

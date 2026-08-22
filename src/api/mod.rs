@@ -37,6 +37,7 @@
 //! provisioning inputs (the `.p8` push key is Guy's).
 
 pub mod drive;
+pub mod issues;
 pub mod transcript;
 
 use std::convert::Infallible;
@@ -81,6 +82,10 @@ pub struct AppState {
     pub adapter: Arc<dyn Adapter>,
     /// Idempotency table keyed by request_id (bounded, LRU-ish).
     pub replay: Arc<ReplayTable>,
+    /// #113: read-only repo-level issues cache (written by the integrator,
+    /// served by [`issues::issues`]). The browser and the worktree action
+    /// read this; nothing here mutates GitHub.
+    pub issues: Arc<issues::IssuesCache>,
     /// #63: where `/transcript` looks for the three session stores.
     /// `main.rs` passes [`TranscriptRoots::from_env`]; tests point this at
     /// fixtures — the Default is hermetic (a throwaway temp dir, so no
@@ -120,6 +125,7 @@ impl Default for AppState {
             auth,
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
+            issues: Arc::new(issues::IssuesCache::default()),
             // Hermetic: nonexistent per-process paths, nothing created —
             // a default-built state can never read this machine's live
             // session stores (mirrors the N6 no-ambient-env discipline).
@@ -144,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(events))
         .route("/history", get(history))
         .route("/transcript", get(self::transcript::transcript))
+        .route("/issues", get(issues::issues))
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))

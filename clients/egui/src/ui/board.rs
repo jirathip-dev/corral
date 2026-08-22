@@ -43,6 +43,10 @@ const BOARD_COLUMNS: [(&str, f32); 10] = [
     ("DRIVE", COL_DRIVE),
 ];
 
+/// Keep at least this much branch text even when the inferred marker is
+/// unusually long; the marker segment is bounded to the remaining width.
+const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
+
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
@@ -418,27 +422,44 @@ fn branch_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
         };
         let marker = inferred.marker();
         let (color, tip) = inferred_marker_ui(&inferred);
+        let marker_text = format!(" {marker}");
+        let marker_font = egui::FontId::monospace(11.0);
+        let marker_width = ui
+            .fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(marker_text.clone(), marker_font.clone(), color)
+                    .size()
+                    .x
+            })
+            .min(COL_BRANCH - BRANCH_MIN_TEXT_WIDTH)
+            .ceil();
+        let branch_width = COL_BRANCH - marker_width;
         // F1 (review): the marker must survive truncation — truncate ONLY the
-        // branch text, then append the marker as its own segment so long
-        // branches (issue-431-embed-project-management) keep the ~#N signal.
+        // branch text and reserve an exact, bounded marker segment so long
+        // branches (issue-431-embed-project-management) keep the ~#N signal
+        // without pushing later columns out of the fixed cell.
         let mut job = egui::text::LayoutJob::default();
         job.append(
             branch,
             0.0,
             egui::TextFormat {
-                font_id: egui::FontId::monospace(11.0),
+                font_id: marker_font,
                 color: theme::ui::TEXT_STRONG,
                 ..Default::default()
             },
         );
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_sized([COL_BRANCH - 36.0, 18.0], egui::Label::new(job).truncate());
-            ui.label(
-                egui::RichText::new(format!(" {marker}"))
-                    .monospace()
-                    .size(11.0)
-                    .color(color),
+            ui.add_sized([branch_width, 18.0], egui::Label::new(job).truncate());
+            ui.add_sized(
+                [marker_width, 18.0],
+                egui::Label::new(
+                    egui::RichText::new(marker_text)
+                        .monospace()
+                        .size(11.0)
+                        .color(color),
+                )
+                .truncate(),
             );
         })
         .response
@@ -1231,7 +1252,22 @@ mod tests {
             choices: vec![],
         });
         agent.workspace.repo = Some("very-long-repository/name/that/keeps/going ".repeat(30));
-        agent.workspace.branch = Some("a-very-long-branch-name-that-should-truncate ".repeat(30));
+        // Regression (#131 review): exercise the inferred-marker path with a
+        // long, truncated branch so an unbound marker cannot shift later cells.
+        agent.workspace.branch = Some(format!("issue-431-{}", "a".repeat(200)));
+        agent.issues = vec![crate::model::GhIssueRef {
+            repo: "corral".into(),
+            number: 431,
+            state: "open".into(),
+            title: "long branch marker".into(),
+            labels: vec![],
+            url: String::new(),
+        }];
+        assert_eq!(
+            inferred_marker(&agent).as_deref(),
+            Some("~#431"),
+            "the branch must actually render the inferred marker"
+        );
         agent.workspace.pr_number = Some(123_456);
         agent.workspace.ci_status = Some(crate::model::CiStatus::Pending);
         agent.workspace.dirty = true;

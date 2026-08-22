@@ -78,10 +78,18 @@ plane is the sanctioned exception, poll-by-design at one round-trip
 per poll). The reader is the ONLY task that reads the herdr socket, so
 a slow event consumer can never block it. A full events channel retires
 the stream as a resynchronization condition; the reader still drains a
-pre-subscribe response. For the global stream, the session then
-re-bootstraps to reconcile state; a pane stream instead reconnects and
-re-subscribes after its bounded retry delay. Dropping the client aborts
-the reader so a failed connection never leaks its descriptor (#105).
+pre-subscribe response. Subscription/connect failures retry in the stream
+task with exponential backoff capped at 30 seconds; only the first failure
+of an outage is WARN-logged. An accepted global stream that closes belongs to
+the same outage domain: its close notification, re-bootstrap, and
+resubscribe are delayed by that capped ladder. The ladder resets only after a
+meaningful stable stream interval, so a successful subscribe response alone
+cannot create a hot loop. A pane stream reconnects from its owning retry task
+after the capped delay, and keeps its live forwarder owned until the stream
+closes or the pane is removed or recreated. Pane removal or replacement
+cancels that generation before a new one can attach; subscribe failures never
+trigger a global re-bootstrap. Dropping the client aborts the reader so a
+failed connection never leaks its descriptor (#105).
 
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see

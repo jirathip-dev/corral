@@ -271,6 +271,13 @@ before expiry.
   content — same trust decision, same device registry). NOTE: this
   widens what `read_tail` reaches — see "Grant scope" under "Transcript
   read-path" below and re-review existing grants.
+- `GET /issues` (#113) is part of the credential-free read plane: it
+  exposes only the public repo-level issue metadata the gh poller already
+  fetches (number, state, title, labels, url) and no per-agent
+  transcript/tail content. Same network rule as `/snapshot`/`/events`:
+  serve it only on loopback or a private/tailnet interface. Creating a
+  worktree from an issue is a WRITE and separately requires the
+  `start_worktree` drive grant — this GET never mutates GitHub.
 - Grant/replace the whole set (verified):
 
 ```sh

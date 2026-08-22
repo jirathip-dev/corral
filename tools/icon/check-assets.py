@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import plistlib
 import re
@@ -25,6 +26,7 @@ import tempfile
 import warnings
 from collections import Counter
 from pathlib import Path
+from types import ModuleType
 from typing import Callable
 
 from PIL import Image, ImageChops, ImageDraw
@@ -36,17 +38,17 @@ APPROVED_SHA256 = {
     "assets/icon/corral-master.png": "f2274158afa6bda99b9e2a64a140096f5c55aa4daae7dabe89132f8afe385873",
     "assets/icon/corral-icon-1024.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
     "assets/icon/corral-icon-256.png": "b3b59cb2c51564ac7aa8d1fe6ffcde0897d83676ed585eedd4284346ca7ae58a",
-    "assets/icon/corral-icon-macos.png": "d63c1aa4568deeadf046bf129e0550f396bc639d92f611b340603a28cd080b73",
+    "assets/icon/corral-icon-macos.png": "7c078ebcd1f4650979db1edc05f599b9d0a522c85e58cc755a21348d601ae2d7",
     "assets/icon/social-preview.png": "9d8ec825b05cb8655fe9aef6d73e61e7ff443b54854b3d502078e3a01d4103ec",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
 }
 
 INTEGRATION_SHA256 = {
     "clients/egui/src/main.rs": "09e3162acf7a21fe76efbd869a8b2550ab52fd942b461c4fd7d52a9934202287",
-    "tools/icon/from-user-png.py": "a933a13a1da7f8e51a9427a38cd612ec8e5d6eb444cef6f6c378a6287c6e47d9",
+    "tools/icon/from-user-png.py": "a1ff1b31bb4155e75387f9dd31fe0af93345c4255d1ae3df16774822ec277512",
     "tools/icon/check-desktop-entry.py": "801960b07623033a96bf22360800be9806ef500c2a9e0f7253957dd03869ba54",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "de7e82ee51d62a549c25ca3e15ea28f4d48c4f25fc887575c7b98fa13395d243",
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "6f220fa5539fcd1adbd53e771c1d7232305058dbf69ef5f730ff6166e2041d45",
     "scripts/install-corral-ui.sh": "962b084810ed8d23f09fbe616037a9372641826cf3e9b53cfcb28dbc4715445f",
     "scripts/setup-corrald.sh": "e213e77278019798a21c05321233c1b6be2ef1de24771341aebeaba8b31a57b2",
     "scripts/test-icon-packaging.sh": "3839305fe3a2d7db82412902c3f9f3a5e7d24a34c79e565c59fcd4f92319b5c5",
@@ -64,26 +66,10 @@ PNG_SPECS = {
     "assets/icon/corral-icon-macos.png": ((1024, 1024), "RGBA"),
 }
 
-MAC_ALPHA_HISTOGRAM = {
-    0: 44_432,
-    16: 120,
-    32: 118,
-    48: 110,
-    64: 82,
-    80: 38,
-    96: 84,
-    112: 64,
-    128: 108,
-    144: 44,
-    160: 88,
-    175: 34,
-    176: 26,
-    191: 134,
-    207: 88,
-    223: 74,
-    239: 156,
-    255: 1_002_776,
-}
+MAC_ALPHA_HISTOGRAM = {255: 1024 * 1024}
+MAC_SAFE_EXTENT = 824
+MAC_PLATE_SIZE = 1024
+MAC_CENTER_TOLERANCE = 1
 
 SOCIAL_BACKGROUND = (1, 1, 1)
 SOCIAL_WORDMARK_STATS = (2_775, (423, 284, 622, 330), ((245, 245, 245), 2_122))
@@ -120,6 +106,16 @@ def read_text(root: Path, relative: str) -> str:
     path = root / relative
     require(path.is_file(), f"missing {relative}")
     return path.read_text(encoding="utf-8")
+
+
+def load_icon_generator(root: Path) -> ModuleType:
+    path = root / "tools/icon/from-user-png.py"
+    require(path.is_file(), f"missing {path.relative_to(root)}")
+    spec = importlib.util.spec_from_file_location("corral_icon_generator", path)
+    require(spec is not None and spec.loader is not None, "cannot load icon generator module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_png(root: Path, relative: str) -> Image.Image:
@@ -207,23 +203,40 @@ def check_pixels(root: Path) -> None:
         "256 output does not match the master resize",
     )
 
+    generator = load_icon_generator(root)
+    expected_mac = generator.macos_fullbleed(icon_1024)
     require(
-        ImageChops.difference(mac.convert("RGB"), expected_1024).getbbox() is None,
-        "macOS output RGB does not match the 1024 output",
+        ImageChops.difference(mac, expected_mac).getbbox() is None,
+        "macOS output does not match the full-bleed generator derivation",
     )
     alpha_histogram = Counter(compatible_pixel_data(mac.getchannel("A")))
     require(
         dict(alpha_histogram) == MAC_ALPHA_HISTOGRAM,
-        "macOS alpha mask differs from the approved complete mask",
+        "macOS output is not fully opaque",
     )
     require(
         all(
-            mac.getpixel(point)[3] == 0
+            mac.getpixel(point)[3] == 255
             for point in ((0, 0), (1023, 0), (0, 1023), (1023, 1023))
         ),
-        "macOS output corners are not transparent",
+        "macOS output corners are not opaque",
     )
     require(mac.getpixel((512, 512))[3] == 255, "macOS output center is not opaque")
+    mac_bbox = generator.content_bbox(mac.convert("RGB"))
+    require(mac_bbox is not None, "macOS output has no visible content")
+    mac_left, mac_top, mac_right, mac_bottom = mac_bbox
+    mac_width = mac_right - mac_left + 1
+    mac_height = mac_bottom - mac_top + 1
+    require(mac_width <= MAC_SAFE_EXTENT, f"macOS content width {mac_width} exceeds safe extent")
+    require(mac_height <= MAC_SAFE_EXTENT, f"macOS content height {mac_height} exceeds safe extent")
+    require(
+        abs((mac_left + mac_right + 1) / 2 - MAC_PLATE_SIZE / 2) <= MAC_CENTER_TOLERANCE,
+        "macOS content is not horizontally centered",
+    )
+    require(
+        abs((mac_top + mac_bottom + 1) / 2 - MAC_PLATE_SIZE / 2) <= MAC_CENTER_TOLERANCE,
+        "macOS content is not vertically centered",
+    )
 
     social_icon = social.crop((70, 170, 370, 470))
     expected_social_icon = master.resize((300, 300), Image.Resampling.LANCZOS)
@@ -376,6 +389,28 @@ def expect_rejection(label: str, mutate: Callable[[Path], None]) -> None:
         raise AssertionError(f"self-test mutation was accepted: {label}")
 
 
+def expect_image_rejection(
+    label: str,
+    relative: str,
+    mutate: Callable[[Path], None],
+) -> None:
+    original_sha = APPROVED_SHA256[relative]
+    try:
+        with tempfile.TemporaryDirectory(prefix="corral-icon-check-") as temporary:
+            fixture = make_fixture(Path(temporary))
+            check_all(fixture)
+            mutate(fixture)
+            path = fixture / relative
+            APPROVED_SHA256[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            try:
+                check_all(fixture)
+            except SystemExit:
+                return
+            raise AssertionError(f"self-test mutation was accepted: {label}")
+    finally:
+        APPROVED_SHA256[relative] = original_sha
+
+
 def mutate_bytes(relative: str) -> Callable[[Path], None]:
     def mutate(root: Path) -> None:
         path = root / relative
@@ -393,6 +428,31 @@ def mutate_mac_alpha(root: Path) -> None:
     red, green, blue, _ = image.getpixel((512, 512))
     image.putpixel((512, 512), (red, green, blue, 0))
     image.save(path)
+
+
+def mutate_mac_corner_alpha(root: Path) -> None:
+    path = root / "assets/icon/corral-icon-macos.png"
+    with Image.open(path) as source:
+        image = source.copy()
+    red, green, blue, _ = image.getpixel((0, 0))
+    image.putpixel((0, 0), (red, green, blue, 0))
+    image.save(path)
+
+
+def mutate_mac_unpadded(root: Path) -> None:
+    source = root / "assets/icon/corral-icon-1024.png"
+    target = root / "assets/icon/corral-icon-macos.png"
+    with Image.open(source) as image:
+        image.convert("RGBA").save(target)
+
+
+def mutate_mac_off_center(root: Path) -> None:
+    path = root / "assets/icon/corral-icon-macos.png"
+    with Image.open(path) as source:
+        image = source.copy()
+    shifted = Image.new("RGBA", image.size, (1, 1, 1, 255))
+    shifted.paste(image.convert("RGB"), (16, 0))
+    shifted.save(path)
 
 
 def mutate_social_wordmark(root: Path) -> None:
@@ -451,6 +511,13 @@ def mutate_generator_noop(root: Path) -> None:
     )
 
 
+def mutate_generator_hash(root: Path) -> None:
+    path = root / "tools/icon/from-user-png.py"
+    data = bytearray(path.read_bytes())
+    data[len(data) // 2] ^= 1
+    path.write_bytes(data)
+
+
 def mutate_appicon_resources_phase(root: Path) -> None:
     path = root / "ios/FleetNotifier.xcodeproj/project.pbxproj"
     source = path.read_text(encoding="utf-8")
@@ -465,10 +532,10 @@ def mutate_packager(root: Path) -> None:
     path.write_text(source.replace("iconutil -c icns", "iconutil -c invalid-mode"), encoding="utf-8")
 
 
-def mutate_generator_mask(root: Path) -> None:
+def mutate_generator_padding(root: Path) -> None:
     path = root / "tools/icon/from-user-png.py"
     source = path.read_text(encoding="utf-8")
-    path.write_text(source.replace("Image.BOX", "Image.NEAREST"), encoding="utf-8")
+    path.write_text(source.replace("MAC_SAFE_EXTENT = 824", "MAC_SAFE_EXTENT = 1024", 1), encoding="utf-8")
 
 
 def mutate_generator_fallback(root: Path) -> None:
@@ -497,7 +564,6 @@ def self_test() -> None:
     ]
     mutations.extend(
         [
-            ("macOS alpha hole", mutate_mac_alpha),
             ("social wordmark corruption", mutate_social_wordmark),
             ("social caption corruption", mutate_social_caption),
             ("iOS AppIcon catalog filename", mutate_appicon_catalog),
@@ -505,14 +571,27 @@ def self_test() -> None:
             ("commented-out egui icon application", mutate_egui_icon_application),
             ("detached egui icon application", mutate_egui_detached_icon),
             ("immediate-return generator", mutate_generator_noop),
+            ("generator source hash", mutate_generator_hash),
             ("AppIcon removed from Resources phase", mutate_appicon_resources_phase),
             ("packager icon conversion", mutate_packager),
-            ("generator mask resampling", mutate_generator_mask),
+            ("generator padding extent", mutate_generator_padding),
             ("generator font fallback", mutate_generator_fallback),
         ]
     )
     for label, mutation in mutations:
         expect_rejection(label, mutation)
+
+    for label, mutation in [
+        ("macOS alpha hole", mutate_mac_alpha),
+        ("macOS transparent corner", mutate_mac_corner_alpha),
+        ("macOS missing padding", mutate_mac_unpadded),
+        ("macOS off-center glyph", mutate_mac_off_center),
+    ]:
+        expect_image_rejection(
+            label,
+            "assets/icon/corral-icon-macos.png",
+            mutation,
+        )
 
     with tempfile.TemporaryDirectory(prefix="corral-icon-build-") as temporary:
         fixture = make_fixture(Path(temporary))

@@ -61,8 +61,9 @@ AppIcon catalog:
 - `corral-master.png` is the cropped square reference.
 - `corral-icon-1024.png` is the opaque repository/reference output.
 - `corral-icon-256.png` is the opaque egui/Linux desktop output.
-- `corral-icon-macos.png` is the 1024px squircle-masked macOS output with
-  transparent corners.
+- `corral-icon-macos.png` is the 1024px full-bleed opaque macOS output.
+  macOS applies the squircle mask itself, and `macos_fullbleed()` keeps the
+  glyph inside the standard ~80% safe region.
 - `social-preview.png` is the 1280×640 repository preview asset. Committing
   it does not change GitHub's social-preview setting; that remains a manual
   repository-settings step.
@@ -84,6 +85,9 @@ different. A machine with the exact approved font at another path may set
 `CORRAL_ICON_FONT`; the fixed fingerprint is still enforced and there is no
 silent Pillow fallback. The checked-in social preview is the approved output
 and should not be regenerated without an approved visual-equivalent change.
+The macOS output can also be derived directly from the checked-in canonical
+`corral-icon-1024.png` with `macos_fullbleed()`; the approved source image is
+not checked in.
 
 `check-assets.py` is read-only: it checks the pinned SHA-256 manifest for the
 approved assets and the complete active icon-integration sources, PNG
@@ -98,21 +102,22 @@ cargo build --release -p corrald-ui
 mise exec -- python tools/icon/check-assets.py --require-build
 ```
 
-The negative self-tests mutate temporary fixtures, including the macOS alpha
-mask, social copy, the AppIcon catalog's actual Resources phase, an
-immediate-return generator, and both detached and commented-out egui icon
-applications. Full-source hashes plus compile/build-derived checks make those
-mutations fail even when a token or comment is left behind. Pillow checks use
-the repository's documented `getdata()` pixel API rather than a newer-only
-helper. `scripts/test-icon-packaging.sh` uses only temporary destinations and
-failing converter/copy/rename stubs to verify macOS, Linux, and Other-platform
-staging, special-character desktop-entry `Exec` escaping, cleanup, and
-single- and double-failure rollback. If both restoration renames fail, the
-installer reports the exact retained rollback directory instead of deleting
-the only recoverable old payload; it never targets `/Applications` or a user
-config directory. Linux `Exec` values are encoded in the two required passes:
-command quoting is followed by desktop-entry general-string escaping, so the
-on-disk forms use doubled backslashes for quotes, `$`, and backticks, four for
+The negative self-tests mutate temporary fixtures, including macOS full
+opacity, corner opacity, safe padding, and centering, social copy, the
+AppIcon catalog's actual Resources phase, an immediate-return generator, and
+both detached and commented-out egui icon applications. Full-source hashes
+plus compile/build-derived checks make those mutations fail even when a token
+or comment is left behind. Pillow checks use the repository's documented
+`getdata()` pixel API rather than a newer-only helper.
+`scripts/test-icon-packaging.sh` uses only temporary destinations and failing
+converter/copy/rename stubs to verify macOS, Linux, and Other-platform staging,
+special-character desktop-entry `Exec` escaping, cleanup, and single- and
+double-failure rollback. If both restoration renames fail, the installer
+reports the exact retained rollback directory instead of deleting the only
+recoverable old payload; it never targets `/Applications` or a user config
+directory. Linux `Exec` values are encoded in the two required passes: command
+quoting is followed by desktop-entry general-string escaping, so the on-disk
+forms use doubled backslashes for quotes, `$`, and backticks, four for
 a literal backslash, and `%%` for a literal percent. Newline- or
 carriage-return-containing requested prefixes, and executable paths containing
 `=`, are rejected before destination directories are created.

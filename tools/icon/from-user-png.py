@@ -6,8 +6,8 @@ Process:
   1. Load the source (1254x1254 RGB, near-black bg).
   2. Auto-crop to content (threshold on near-black) + keep a ~9% safe
      margin so the subject fills the icon without touching the squircle.
-  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 masked, repo 1024,
-     social preview.
+  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 full-bleed opaque,
+     repo 1024, social preview.
 
 Usage: python3 tools/icon/from-user-png.py <input.png>
 
@@ -32,6 +32,9 @@ APPROVED_WORDMARK_FONT_SHA256 = (
     "2bfd40dc72e6759e248f82a52a40d551338979fffc9b5c070e685b4b7ad19e66"
 )
 WORDMARK_FONT_ENV = "CORRAL_ICON_FONT"
+MAC_SAFE_EXTENT = 824
+MAC_PLATE_SIZE = 1024
+MAC_PLATE_BACKGROUND = (1, 1, 1)
 
 
 def content_bbox(img: Image.Image, bg_thresh: int = 18) -> tuple[int, int, int, int]:
@@ -69,6 +72,36 @@ def content_bbox(img: Image.Image, bg_thresh: int = 18) -> tuple[int, int, int, 
                 max_y = max(max_y, y)
                 break
     return min_x, min_y, max_x, max_y
+
+
+def macos_fullbleed(icon_1024: Image.Image) -> Image.Image:
+    """Return the full-bleed opaque macOS plate with safe inner padding.
+
+    macOS itself applies the rounded squircle mask, so the artwork must remain
+    opaque edge to edge. The canonical 1024 output is scaled only when needed to
+    keep the visible subject inside the standard central safe region, then pasted
+    centered on the artwork background with alpha left at 255 everywhere.
+    """
+
+    if icon_1024.size != (MAC_PLATE_SIZE, MAC_PLATE_SIZE):
+        raise ValueError(f"expected a {MAC_PLATE_SIZE}x{MAC_PLATE_SIZE} plate, got {icon_1024.size}")
+
+    source = icon_1024.convert("RGB")
+    min_x, min_y, max_x, max_y = content_bbox(source)
+    max_extent = max(max_x - min_x + 1, max_y - min_y + 1)
+    side = MAC_PLATE_SIZE
+    if max_extent > MAC_SAFE_EXTENT:
+        side = round(MAC_PLATE_SIZE * MAC_SAFE_EXTENT / max_extent)
+
+    subject = source.resize((side, side), Image.LANCZOS) if side != MAC_PLATE_SIZE else source
+    plate = Image.new(
+        "RGBA",
+        (MAC_PLATE_SIZE, MAC_PLATE_SIZE),
+        (*MAC_PLATE_BACKGROUND, 255),
+    )
+    offset = ((MAC_PLATE_SIZE - side) // 2, (MAC_PLATE_SIZE - side) // 2)
+    plate.paste(subject, offset)
+    return plate
 
 
 def approved_wordmark_fonts() -> tuple[ImageFont.FreeTypeFont, ImageFont.FreeTypeFont]:
@@ -141,21 +174,12 @@ def main() -> None:
     egui.save(assets_dir / "corral-icon-256.png")
     print("  ✓ egui icon (256)")
 
-    # 3b. macOS app icon: squircle-masked, transparent corners (the Dock,
-    # Launchpad, and Finder show app icons rounded; an opaque square looks
-    # wrong). Supersampled mask, corner radius ~0.2237x (Apple ratio).
-    mac = square.resize((1024, 1024), Image.LANCZOS).convert("RGBA")
-    supersample = 4
-    mask = Image.new("L", (1024 * supersample, 1024 * supersample), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, 1024 * supersample - 1, 1024 * supersample - 1],
-        radius=0.2237 * 1024 * supersample,
-        fill=255,
-    )
-    mask = mask.resize((1024, 1024), Image.BOX)
-    mac.putalpha(mask)
+    # 3b. macOS app icon: full-bleed opaque. macOS applies its own squircle
+    # mask, so the artwork must cover every pixel and keep the glyph inside the
+    # standard ~10% safe margin instead of baking transparency into the PNG.
+    mac = macos_fullbleed(ios)
     mac.save(assets_dir / "corral-icon-macos.png")
-    print("  ✓ macOS app icon (1024 squircle-masked)")
+    print("  ✓ macOS app icon (1024 full-bleed opaque)")
 
     # 4. Repository reference 1024.
     ios.save(assets_dir / "corral-icon-1024.png")

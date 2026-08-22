@@ -166,6 +166,51 @@ pub const TRACKED_REPOS: &[TrackedRepo] = &[
     },
 ];
 
+/// One GitHub repo the gh plane polls, plus the keys the polled facts fold
+/// onto. A single query aliases every spec (`q0..qN`), so the fleet registry
+/// can join the poll without a second round-trip.
+///
+/// #113: `issues_key` is the fleet/repo name the read-only issue view groups
+/// issues under. `None` for a tracked repo that is NOT a configured fleet —
+/// such a repo is still polled for the PR read model but is deliberately not
+/// issue-startable, so the browser never offers a non-fleet issue action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhRepoSpec {
+    pub owner: String,
+    /// GitHub repository name.
+    pub name: String,
+    /// The `GhRepoState.repo` key the PR read model folds onto
+    /// (`workspace.repo`). For a tracked repo it is [`TrackedRepo::name`];
+    /// for a configured fleet it is the `gh_repo` basename so PR attribution
+    /// matches the fleet's checkout/worktree path repo.
+    pub key: String,
+    /// The fleet name the issue view + worktree guard group issues under.
+    pub issues_key: Option<String>,
+}
+
+impl GhRepoSpec {
+    /// Unique dedupe identity for the internal last-known map: the GitHub
+    /// `owner/name` slug (two fleets can share a repo name under different
+    /// owners, so the display key is NOT a safe dedupe key).
+    pub fn slug(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
+}
+
+/// The compile-time tracked repo set expressed as [`GhRepoSpec`]s (no fleet
+/// issue key — these are polled for the PR read model only).
+pub fn tracked_specs() -> Vec<GhRepoSpec> {
+    TRACKED_REPOS
+        .iter()
+        .map(|r| GhRepoSpec {
+            owner: r.owner.to_string(),
+            name: r.repo.to_string(),
+            key: r.name.to_string(),
+            issues_key: None,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -408,6 +453,7 @@ pub struct GhPlane {
     transport: Arc<dyn GhTransport>,
     token: Option<String>,
     config: GhPlaneConfig,
+    specs: Vec<GhRepoSpec>,
 }
 
 impl fmt::Debug for GhPlane {
@@ -428,6 +474,21 @@ impl GhPlane {
             transport: Arc::new(ReqwestTransport::new()),
             token: None,
             config: GhPlaneConfig::default(),
+            specs: tracked_specs(),
+        }
+    }
+
+    /// Production constructor with an explicit repo-spec set (the fleet
+    /// registry drives the polled set); real transport, token resolved
+    /// lazily. Used by the daemon supervisor so every configured fleet's
+    /// issues are fetched and grouped by fleet name (#113).
+    pub fn with_specs(store: Arc<Store>, specs: Vec<GhRepoSpec>) -> Self {
+        Self {
+            store,
+            transport: Arc::new(ReqwestTransport::new()),
+            token: None,
+            config: GhPlaneConfig::default(),
+            specs,
         }
     }
 
@@ -444,6 +505,25 @@ impl GhPlane {
             transport,
             token,
             config,
+            specs: tracked_specs(),
+        }
+    }
+
+    /// Test/embedding constructor with both a custom cadence AND an explicit
+    /// spec set (for registry-driven hermetic tests).
+    pub fn with_config_and_specs(
+        store: Arc<Store>,
+        transport: Arc<dyn GhTransport>,
+        token: Option<String>,
+        config: GhPlaneConfig,
+        specs: Vec<GhRepoSpec>,
+    ) -> Self {
+        Self {
+            store,
+            transport,
+            token,
+            config,
+            specs,
         }
     }
 
@@ -457,6 +537,7 @@ impl GhPlane {
             transport: Arc::new(ReqwestTransport::new()),
             token: Some(token),
             config: GhPlaneConfig::default(),
+            specs: tracked_specs(),
         }
     }
 
@@ -471,7 +552,7 @@ impl GhPlane {
                 }
             },
         };
-        let query = build_query();
+        let query = build_query(&self.specs);
         let mut last: BTreeMap<String, GhRepoState> = BTreeMap::new();
         let mut ever_connected = false;
         let mut prev_subscribers = 0usize;
@@ -575,7 +656,7 @@ impl GhPlane {
 
         let (new_last, changed) =
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                process_response(data, last)
+                process_response(data, last, &self.specs)
             })) {
                 Ok(result) => result,
                 Err(payload) => return Err(GhError::Panic(panic_message(&payload))),
@@ -588,7 +669,7 @@ impl GhPlane {
         }
         info!(
             latency_ms,
-            repos = TRACKED_REPOS.len(),
+            repos = self.specs.len(),
             changed = changed.len(),
             "gh plane round-trip complete"
         );
@@ -614,26 +695,30 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 fn process_response(
     data: &serde_json::Map<String, Value>,
     last: &BTreeMap<String, GhRepoState>,
+    specs: &[GhRepoSpec],
 ) -> (BTreeMap<String, GhRepoState>, Vec<GhRepoState>) {
     let mut new_last = last.clone();
     let mut changed = Vec::new();
-    for (i, repo) in TRACKED_REPOS.iter().enumerate() {
+    for (i, spec) in specs.iter().enumerate() {
         let key = format!("q{i}");
         let Some(wire) = data
             .get(&key)
             .and_then(|v| serde_json::from_value::<RepoWire>(v.clone()).ok())
         else {
             warn!(
-                repo = repo.name,
+                repo = spec.key,
                 "repo alias null or undecodable; skipping this poll"
             );
             continue;
         };
-        let state = build_repo_state(*repo, &wire);
-        if new_last.get(repo.name).is_some_and(|prev| *prev == state) {
+        let state = build_repo_state(spec, &wire);
+        if new_last
+            .get(&spec.slug())
+            .is_some_and(|prev| *prev == state)
+        {
             continue;
         }
-        new_last.insert(repo.name.to_string(), state.clone());
+        new_last.insert(spec.slug(), state.clone());
         changed.push(state);
     }
     (new_last, changed)
@@ -655,11 +740,11 @@ impl Plane for GhPlane {
 
 /// One aliased query for all repos: `q0..q7` each spread the shared fragment.
 /// Literals are JSON-escaped so the query is valid for any owner/name.
-fn build_query() -> String {
+fn build_query(specs: &[GhRepoSpec]) -> String {
     let mut query = String::from("query {\n");
-    for (i, repo) in TRACKED_REPOS.iter().enumerate() {
-        let owner = serde_json::to_string(repo.owner).expect("static owner json-escapes");
-        let name = serde_json::to_string(repo.repo).expect("static repo json-escapes");
+    for (i, spec) in specs.iter().enumerate() {
+        let owner = serde_json::to_string(&spec.owner).expect("owner json-escapes");
+        let name = serde_json::to_string(&spec.name).expect("name json-escapes");
         query.push_str(&format!(
             "  q{i}: repository(owner: {owner}, name: {name}) {{ ...GhPlaneRepo }}\n"
         ));
@@ -884,7 +969,7 @@ fn collapse_items(items: &[RollupItemWire]) -> Option<String> {
     }
 }
 
-fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
+fn build_repo_state(spec: &GhRepoSpec, wire: &RepoWire) -> GhRepoState {
     let issues_wire: &[IssueWire] = wire
         .issues
         .as_ref()
@@ -898,7 +983,7 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
         .map(|nodes| {
             nodes
                 .iter()
-                .map(|pr| normalize_pr(repo, pr, issues_wire))
+                .map(|pr| normalize_pr(spec, pr, issues_wire))
                 .collect()
         })
         .unwrap_or_default();
@@ -910,7 +995,7 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
             nodes
                 .iter()
                 .map(|issue| GhIssueRef {
-                    repo: repo.name.to_string(),
+                    repo: spec.key.clone(),
                     number: issue.number,
                     state: issue.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
                     title: issue.title.clone().unwrap_or_default(),
@@ -925,7 +1010,8 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
     prs.sort_by_key(|pr| pr.pr_number);
     issues.sort_by_key(|issue| issue.number);
     GhRepoState {
-        repo: repo.name.to_string(),
+        repo: spec.key.clone(),
+        issue_repo: spec.issues_key.clone(),
         default_branch: wire
             .default_branch_ref
             .as_ref()
@@ -940,7 +1026,7 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
     }
 }
 
-fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> GhPrState {
+fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> GhPrState {
     // #23: the authoritative linkage is the PR's closingIssuesReferences.
     // `state` is not on the fragment — it is enriched from the SAME poll's
     // repo-level issues fetch (already fetched, zero extra requests) when
@@ -960,7 +1046,7 @@ fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
                         .and_then(|issue| issue.state.clone())
                         .unwrap_or_else(|| "UNKNOWN".to_string());
                     GhIssueRef {
-                        repo: repo.name.to_string(),
+                        repo: spec.key.clone(),
                         number: closing.number,
                         state,
                         title: closing.title.clone().unwrap_or_default(),
@@ -972,7 +1058,7 @@ fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
         })
         .unwrap_or_default();
     GhPrState {
-        repo: repo.name.to_string(),
+        repo: spec.key.clone(),
         pr_number: pr.number,
         title: pr.title.clone().unwrap_or_default(),
         state: pr.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
@@ -993,21 +1079,19 @@ mod tests {
 
     #[test]
     fn query_covers_all_repos_once() {
-        let query = build_query();
-        for (i, repo) in TRACKED_REPOS.iter().enumerate() {
+        let specs = tracked_specs();
+        let query = build_query(&specs);
+        for (i, spec) in specs.iter().enumerate() {
             assert!(
                 query.contains(&format!(
                     "q{i}: repository(owner: \"{}\", name: \"{}\")",
-                    repo.owner, repo.repo
+                    spec.owner, spec.name
                 )),
                 "alias q{i} for {} must be in the query",
-                repo.name
+                spec.key
             );
         }
-        assert_eq!(
-            query.matches("repository(owner:").count(),
-            TRACKED_REPOS.len()
-        );
+        assert_eq!(query.matches("repository(owner:").count(), specs.len());
         assert!(query.contains("fragment GhPlaneRepo on Repository"));
         // #22/#23: the branch-fallback and issue-linkage surfaces ride the
         // SAME fragment — one extra field each, never an extra request.
@@ -1207,11 +1291,11 @@ mod tests {
             ]}
         }))
         .unwrap();
-        let repo = TRACKED_REPOS
-            .iter()
-            .find(|r| r.name == "herdr-board")
+        let spec = tracked_specs()
+            .into_iter()
+            .find(|s| s.key == "herdr-board")
             .expect("tracked");
-        let state = build_repo_state(*repo, &wire);
+        let state = build_repo_state(&spec, &wire);
         assert_eq!(state.repo, "herdr-board");
         assert_eq!(state.default_branch, "main");
         assert_eq!(state.ahead, 0);
@@ -1293,14 +1377,56 @@ mod tests {
             "issues": null
         }))
         .unwrap();
-        let repo = TRACKED_REPOS
-            .iter()
-            .find(|r| r.name == "dotfiles")
+        let spec = tracked_specs()
+            .into_iter()
+            .find(|s| s.key == "dotfiles")
             .expect("tracked");
-        let state = build_repo_state(*repo, &wire);
+        let state = build_repo_state(&spec, &wire);
         assert_eq!(state.default_branch, "", "missing default branch -> empty");
         assert!(state.prs.is_empty());
         assert!(state.issues.is_empty());
+    }
+
+    #[test]
+    fn fleet_spec_carries_the_issue_display_key() {
+        // A registry-driven fleet spec (e.g. `corral`) must publish issues
+        // under the FLEET name while keeping the PR attribution key = the
+        // `gh_repo` basename, so PR facts still fold onto the fleet agents.
+        let spec = GhRepoSpec {
+            owner: "jirathip-dev".into(),
+            name: "corral".into(),
+            key: "corral".into(),
+            issues_key: Some("corral".into()),
+        };
+        let wire: RepoWire = serde_json::from_value(json!({
+            "name": "corral",
+            "defaultBranchRef": { "name": "main" },
+            "issues": { "nodes": [
+                { "number": 113, "state": "OPEN", "title": "browse issues" }
+            ]}
+        }))
+        .unwrap();
+        let state = build_repo_state(&spec, &wire);
+        assert_eq!(state.repo, "corral", "PR attribution key");
+        assert_eq!(
+            state.issue_repo.as_deref(),
+            Some("corral"),
+            "issue view key"
+        );
+        assert_eq!(state.issues.len(), 1);
+        assert_eq!(state.issues[0].repo, "corral");
+    }
+
+    #[test]
+    fn tracked_non_fleet_spec_is_not_issue_startable() {
+        let spec = tracked_specs()
+            .into_iter()
+            .find(|s| s.key == "herdr-board")
+            .expect("tracked");
+        assert_eq!(
+            spec.issues_key, None,
+            "non-fleet tracked repo has no issue key"
+        );
     }
 
     // -----------------------------------------------------------------------

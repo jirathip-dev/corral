@@ -89,6 +89,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private let beforeDeviceTokenUpload: @Sendable () async -> Void
     private let deviceTokenState = DeviceTokenState()
 
+    /// SwiftUI's `@UIApplicationDelegateAdaptor` constructs the delegate with
+    /// the zero-argument `NSObject` entrypoint. Delegate to the injectable
+    /// initializer so launch uses the same production defaults as the DI path.
+    convenience override init() {
+        self.init(identityLifecycle: .shared,
+                  session: .shared,
+                  identityProvider: { try? DeviceKeyStore.loadOrCreate().0 },
+                  beforeDeviceTokenUpload: {})
+    }
+
     /// Dependencies are injectable so lifecycle races can be tested with a
     /// URLProtocol session and an in-memory identity, without touching APNs or
     /// the device key store.

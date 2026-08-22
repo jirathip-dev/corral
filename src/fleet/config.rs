@@ -12,7 +12,8 @@
 //! on rewrite, so a forward-compatible fleet-operations schema addition cannot
 //! break the board or silently disappear through a corral registry write.
 //! Corral still owns strict validation: an unknown key one edit away from an
-//! owned field (`pausd`, `imp1_alt`) is refused rather than silently defaulted.
+//! owned field (`pausd`, `imp1_alt`, `puased`, `imlp_alt`) is refused rather
+//! than silently defaulted.
 //! Validation still fails loudly on empty required fields, whitespace inside
 //! `name`/`gh_repo`, a `gh_repo` that is not a single `owner/repo`, a `local`
 //! that begins with a bare `~`, and duplicate fleet names. The write side
@@ -153,7 +154,8 @@ fn is_false(value: &bool) -> bool {
 /// Field names corral owns and validates. Fleet-operations current fields
 /// (`admit`, `reasoning_effort`) are modeled explicitly below, so they never
 /// appear in an unknown map; future foreign keys are accepted unless they are
-/// a one-edit obvious typo of one of these owned names.
+/// a one-edit obvious typo (including an adjacent transposition) of one of
+/// these owned names.
 const CORRAL_OWNED_REGISTRY_FIELDS: &[&str] = &["fleets"];
 const CORRAL_OWNED_FLEET_FIELDS: &[&str] = &[
     "name",
@@ -167,9 +169,10 @@ const CORRAL_OWNED_FLEET_FIELDS: &[&str] = &[
 ];
 const CORRAL_OWNED_MODEL_FIELDS: &[&str] = &["orch", "impl", "review", "impl_alt", "impl_alt2"];
 
-/// Merely one character away from a Corral-owned key is almost certainly a
-/// typo; anything farther is treated as a genuine forward-compatible foreign
-/// key and preserved rather than guessed at.
+/// Merely one edit away from a Corral-owned key is almost certainly a typo;
+/// one edit includes substitution, insertion, deletion, and adjacent
+/// transposition. Anything farther is treated as a genuine forward-compatible
+/// foreign key and preserved rather than guessed at.
 fn edit_distance_at_most_one(first: &str, second: &str) -> bool {
     let first: Vec<char> = first.chars().collect();
     let second: Vec<char> = second.chars().collect();
@@ -182,7 +185,24 @@ fn edit_distance_at_most_one(first: &str, second: &str) -> bool {
         return false;
     }
     if first.len() == second.len() {
-        return first.iter().zip(&second).filter(|(a, b)| a != b).count() <= 1;
+        let differences: Vec<usize> = first
+            .iter()
+            .zip(&second)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(index, _)| index)
+            .collect();
+        return match differences.as_slice() {
+            [] | [_] => true,
+            [left, right]
+                if *right == left + 1
+                    && first[*left] == second[*right]
+                    && first[*right] == second[*left] =>
+            {
+                true
+            }
+            _ => false,
+        };
     }
     let mut first_index = 0;
     let mut second_index = 0;
@@ -803,7 +823,8 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     /// The file is not valid registry JSON (malformed JSON, missing required
-    /// fields, type mismatches, or a one-edit typo of a Corral-owned field).
+    /// fields, type mismatches, or a one-edit typo (including an adjacent
+    /// transposition) of a Corral-owned field).
     /// Genuine fleet-operations forward fields are accepted and preserved.
     Parse {
         path: PathBuf,

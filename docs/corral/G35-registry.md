@@ -20,8 +20,9 @@ across a corral rewrite, so a fleet-ops schema addition cannot empty
 `GET /issues` or silently disappear through `fleet models`. This tolerance
 does not weaken validation of fields Corral owns: an unknown key one edit
 away from `paused`, `impl_alt`, or another owned name is refused loudly
-rather than silently defaulting (`pausd`, `imp1_alt`), while genuinely
-farther foreign keys stay accepted.
+rather than silently defaulting (`pausd`, `imp1_alt`, `puased`,
+`imlp_alt`), while genuinely farther foreign keys stay accepted. One edit
+includes substitution, insertion, deletion, and adjacent transposition.
 
 ## Registry schema
 
@@ -75,8 +76,9 @@ loud stderr note when it is taken) exists.
 - `local` may start with `~/` — expanded against `$HOME`.
 - Unknown fields anywhere (top level, fleet, models) are retained through a
   rewrite. A deterministic typo guard rejects an unknown key one edit away
-  from a Corral-owned field; all other forward keys, including future
-  fleet-operations additions, are accepted. Duplicate fleet names → hard error.
+  from a Corral-owned field, where an edit includes adjacent transposition;
+  all other forward keys, including future fleet-operations additions, are
+  accepted. Duplicate fleet names → hard error.
 
 ## Commands
 

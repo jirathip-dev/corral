@@ -268,7 +268,7 @@ fn add_inherits_and_preserves_fleet_ops_forward_fields() {
         "new fleet inherits reasoning_effort from the template"
     );
     assert_eq!(
-        added["future_model_field"], source["future_model_field"],
+        added["models"]["future_model_field"], source["models"]["future_model_field"],
         "new fleet inherits unknown model forward fields"
     );
     assert_eq!(
@@ -285,22 +285,43 @@ fn add_inherits_and_preserves_fleet_ops_forward_fields() {
 #[test]
 fn typoed_owned_optional_fields_are_hard_errors() {
     let dir = tempfile::tempdir().expect("temp dir");
-    for body in [
-        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
-            "worktree_dir": "corral", "orch": "o", "workers": [],
-            "models": {"orch": "f", "impl": "i", "review": "r", "imp1_alt": "x"}}]}"#,
-        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
-            "worktree_dir": "corral", "orch": "o", "workers": [], "pausd": true,
-            "models": {"orch": "f", "impl": "i", "review": "r"}}]}"#,
+    for (body, typo) in [
+        (
+            r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+                "worktree_dir": "corral", "orch": "o", "workers": [],
+                "models": {"orch": "f", "impl": "i", "review": "r", "imp1_alt": "x"}}]}"#,
+            "imp1_alt",
+        ),
+        (
+            r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+                "worktree_dir": "corral", "orch": "o", "workers": [], "pausd": true,
+                "models": {"orch": "f", "impl": "i", "review": "r"}}]}"#,
+            "pausd",
+        ),
+        (
+            r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+                "worktree_dir": "corral", "orch": "o", "workers": [], "puased": true,
+                "models": {"orch": "f", "impl": "i", "review": "r"}}]}"#,
+            "puased",
+        ),
+        (
+            r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+                "worktree_dir": "corral", "orch": "o", "workers": [],
+                "models": {"orch": "f", "impl": "i", "review": "r", "imlp_alt": "x"}}]}"#,
+            "imlp_alt",
+        ),
+        (
+            r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+                "worktree_dir": "corral", "orch": "o", "workers": [],
+                "models": {"orch": "f", "impl": "i", "review": "r", "imlp_alt2": "x"}}]}"#,
+            "imlp_alt2",
+        ),
     ] {
         let path = write_registry(dir.path(), body);
         let err = load(&path).expect_err("typo in Corral-owned field must fail");
         assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
         let msg = err.to_string();
-        assert!(
-            msg.contains("imp1_alt") || msg.contains("pausd"),
-            "names the typo: {msg}"
-        );
+        assert!(msg.contains(typo), "names {typo:?}: {msg}");
     }
 }
 

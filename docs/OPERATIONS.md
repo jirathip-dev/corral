@@ -566,8 +566,9 @@ purpose — empty required fields, whitespace inside
 fail loudly. Unknown fleet-operations fields (`models.reasoning_effort`,
 top-level `admit`, and future additions) are accepted by the subset reader
 and preserved through corral rewrites; an unknown key that is one edit away
-from a Corral-owned field (`pausd`, `imp1_alt`) is still refused, so a typo
-never silently defaults or drops a gate. Model map: required `orch`/`impl`/`review`, optional
+from a Corral-owned field — including an adjacent transposition (`pausd`,
+`imp1_alt`, `puased`, `imlp_alt`) — is still refused, so a typo never silently
+defaults or drops a gate. Model map: required `orch`/`impl`/`review`, optional
 `impl_alt`/`impl_alt2` fallback slots that `fleet models` can set or clear
 (`--impl-alt ''`; `models all` applies to every fleet — `all` is a
 reserved fleet name). Full schema and the per-command exit-code table:

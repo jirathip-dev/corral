@@ -132,10 +132,11 @@ fn run_digest(args: &[String]) {
     print!("{}", digest.render());
 }
 
-/// `corrald fleet` — read/write views over the fleet registry (#35). Read
-/// side: `list`, `check`. Write side (slice 1): `add`, `remove`; (slice 2):
-/// `pause`, `resume`, `models` — all behind atomic-write discipline and
-/// validation in [`crate::fleet::ops`]. All accept `--registry <path>` to
+/// `corrald fleet` — registry and fleet-operation surface (#35). Read side:
+/// `list`, `check`, `watch`. Registry writes: `add`, `remove`, `pause`,
+/// `resume`, `models`, behind atomic-write discipline and validation in
+/// [`crate::fleet::ops`]. Destructive ops: `switch`, `reap`, `prune`. All
+/// accept `--registry <path>` to
 /// override `$CORRAL_FLEETS_PATH` / `$CORRAL_CONFIG_DIR/fleets.json`
 /// (default `~/.config/corral/fleets.json`; legacy
 /// `~/.hermes/scripts/fleets.json` honoured as a fallback — #66).
@@ -144,7 +145,7 @@ fn run_digest(args: &[String]) {
 fn run_fleet(args: &[String]) {
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!(
-            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models | watch (see --help)"
+            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models | switch | watch | reap | prune (see --help)"
         );
         std::process::exit(2);
     };
@@ -159,7 +160,10 @@ fn run_fleet(args: &[String]) {
         "pause" => run_fleet_pause_resume("pause", &args[1..]),
         "resume" => run_fleet_pause_resume("resume", &args[1..]),
         "models" => run_fleet_models(&args[1..]),
+        "switch" => run_fleet_switch(&args[1..]),
         "watch" => run_fleet_watch(&args[1..]),
+        "reap" => run_fleet_reap(&args[1..]),
+        "prune" => run_fleet_prune(&args[1..]),
         other => {
             eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
             std::process::exit(2);
@@ -182,7 +186,12 @@ fn print_fleet_help() {
          USAGE: corrald fleet pause <name> [--registry <path>]\n\
          USAGE: corrald fleet resume <name> [--registry <path>]\n\
          USAGE: corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]\n\
-         \t[--impl-alt2 M] [--review M] [--registry <path>]\n\n\
+         \t[--impl-alt2 M] [--review M] [--registry <path>]\n\
+         USAGE: corrald fleet switch <name> [--pane <id>] [--registry <path>]\n\
+         USAGE: corrald fleet reap <fleet|all> [--apply] [--max-done N]\n\
+         \t[--max-fraction F] --dry-run [--registry <path>]\n\
+         USAGE: corrald fleet prune [--apply|--yes] [--max-prune N]\n\
+         \t[--min-age DAYS] [--worktrees <path>] [--registry <path>]\n\n\
          list     one line per fleet: name, gh_repo, worker count,\n\
          \tpaused flag, and the three model ids\n\
          check    parse + validate, then verify each fleet's local\n\
@@ -208,6 +217,23 @@ fn print_fleet_help() {
          \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
          \tempty value for the required orch/impl/review slots is a\n\
          \tusage error\n\
+         switch   auth-gated re-arm: validate every harness the fleet's\n\
+         \tmodel map implies, kill the old registered orchestrator only\n\
+         \tafter verified process identity, then start it on the new\n\
+         \tmodel. A failed switch cannot un-pause the fleet; the fleet\n\
+         \tstays paused until an explicit `fleet resume`\n\
+         reap     destroy finished agent processes and idle processes in\n\
+         \tpaused fleets. Dry-run by default; --apply is the only mode\n\
+         \tthat signals anything. The shrink guard refuses a sweep that\n\
+         \twould kill more than --max-done (default 5) or the\n\
+         \t--max-fraction threshold (default 0.25, floored at 2)\n\
+         \tfinished agents -- everything stays untouched\n\
+         prune    report (default) or remove provably-dead worktrees:\n\
+         \tclean git tree, no agent cwd, no open/unverifiable PR,\n\
+         \tHEAD ancestor of origin/staging (else origin/main), not at\n\
+         \tintegration tip, no protected ignored files. `--apply`/`--yes`\n\
+         \tis required to remove; non-force `git worktree remove` remains\n\
+         \tthe final authority; cap via --max-prune (default 10)\n\
          watch    one READ-ONLY health pass over unpaused fleets: herdr\n\
          \tserver reachability, missing orchestrators, stall flavors\n\
          \t(open PRs / workers still working / plain), missing workers;\n\
@@ -220,7 +246,9 @@ fn print_fleet_help() {
          \tidempotent no-op — already paused/resumed, models unchanged);\n\
          \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
          \twrite failed — the registry is left byte-identical;\n\
-         \t2 = usage error or unreadable/unparseable/invalid registry\n\n\
+         \t2 = usage error or unreadable/unparseable/invalid registry.\n\
+         \tswitch/reap/prune use 0 success, 1 operational refusal or\n\
+         \tcheck failure, 2 usage error\n\n\
          \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
          \tor $CORRAL_CONFIG_DIR/fleets.json, default\n\
          \t~/.config/corral/fleets.json; a pre-existing legacy\n\
@@ -682,6 +710,324 @@ fn run_fleet_models(args: &[String]) {
             change.before.review,
             change.after.review
         );
+    }
+}
+
+/// `corrald fleet switch <name>`: auth-gated model re-arm. The registry is
+/// never rewritten by this command, so a failed or successful switch cannot
+/// itself un-pause a fleet.
+fn run_fleet_switch(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut pane: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet switch: --registry needs a value");
+                }
+            }
+            "--pane" => {
+                i += 1;
+                pane = args.get(i).cloned();
+                if pane.is_none() {
+                    usage("fleet switch: --pane needs a value");
+                }
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                if other.starts_with('-') {
+                    usage(&format!("fleet switch: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage("fleet switch: exactly one fleet name");
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage("fleet switch: need a fleet name");
+    };
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let result = fleet::switch::switch_fleet(
+        &path,
+        &name,
+        pane.as_deref(),
+        &fleet::switch::CliAuthChecker,
+    );
+    match result {
+        Ok(()) => {
+            println!("switched fleet {name} — auth passed and orchestrator re-armed");
+            println!(
+                "fleet {name} remains in its current registry state; run `fleet resume {name}` to un-pause"
+            );
+        }
+        Err(error) => {
+            eprintln!("corrald fleet switch: {error}");
+            std::process::exit(error.exit_code());
+        }
+    }
+}
+
+/// `corrald fleet reap <fleet|all>`: dry-run by default, `--apply` signals.
+/// The module performs the identity checks and the shrink guard before any
+/// kill; this function only parses arguments and reports the result.
+fn run_fleet_reap(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut apply = false;
+    let mut max_done = 5usize;
+    let mut max_fraction = 0.25f64;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet reap: --registry needs a value");
+                }
+            }
+            "--apply" => apply = true,
+            "--dry-run" => apply = false,
+            "--max-done" => {
+                i += 1;
+                let Some(value) = args.get(i).and_then(|v| v.parse::<usize>().ok()) else {
+                    usage("fleet reap: --max-done needs a positive integer");
+                };
+                max_done = value;
+            }
+            "--max-fraction" => {
+                i += 1;
+                let Some(value) = args.get(i).and_then(|v| v.parse::<f64>().ok()) else {
+                    usage("fleet reap: --max-fraction needs a number");
+                };
+                max_fraction = value;
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => {
+                if other.starts_with('-') {
+                    usage(&format!("fleet reap: unknown argument: {other}"));
+                }
+                if name.is_some() {
+                    usage("fleet reap: exactly one fleet name (or `all`)");
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        usage("fleet reap: need a fleet name (or `all`)");
+    };
+    if max_done == 0 {
+        usage("fleet reap: --max-done must be >= 1");
+    }
+    if !(0.0 < max_fraction && max_fraction <= 1.0) {
+        usage("fleet reap: --max-fraction must be in (0, 1]");
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let registry = match fleet::config::load(&path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("corrald fleet reap: {error}");
+            std::process::exit(error.exit_code());
+        }
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let opts = fleet::reap::ReapOptions {
+        apply,
+        max_done,
+        max_fraction,
+    };
+    let inspector = fleet::reap::HerdrPaneInspector;
+    let killer = fleet::reap::SystemKiller;
+    let report = match fleet::reap::reap(
+        &registry,
+        &name,
+        &opts,
+        &home,
+        fleet::reap::list_agents,
+        &inspector,
+        &killer,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("corrald fleet reap: {error}");
+            std::process::exit(1);
+        }
+    };
+    for skip in &report.skipped {
+        println!("{skip}");
+    }
+    if report.killed.is_empty() {
+        println!("fleet {name}: nothing to reap");
+        return;
+    }
+    for killed in &report.killed {
+        println!(
+            "{} reaped {killed}",
+            if apply { "applied" } else { "would reap" }
+        );
+    }
+    if !apply {
+        println!("DRY-RUN — pass --apply to actually kill.");
+    }
+}
+
+/// `corrald fleet prune`: dry-run by default; `--apply`/`--yes` are the only
+/// modes that remove anything. Non-force git remains the final authority.
+fn run_fleet_prune(args: &[String]) {
+    let mut registry: Option<PathBuf> = None;
+    let mut worktrees: Option<PathBuf> = None;
+    let mut apply = false;
+    let mut max_prune = 10usize;
+    let mut min_age = 1u64;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--registry" => {
+                i += 1;
+                registry = args.get(i).map(PathBuf::from);
+                if registry.is_none() {
+                    usage("fleet prune: --registry needs a value");
+                }
+            }
+            "--worktrees" => {
+                i += 1;
+                worktrees = args.get(i).map(PathBuf::from);
+                if worktrees.is_none() {
+                    usage("fleet prune: --worktrees needs a path");
+                }
+            }
+            "--apply" | "--yes" => apply = true,
+            "--dry-run" => apply = false,
+            "--max-prune" => {
+                i += 1;
+                let Some(value) = args.get(i).and_then(|v| v.parse::<usize>().ok()) else {
+                    usage("fleet prune: --max-prune needs a positive integer");
+                };
+                max_prune = value;
+            }
+            "--min-age" => {
+                i += 1;
+                let Some(value) = args.get(i).and_then(|v| v.parse::<u64>().ok()) else {
+                    usage("fleet prune: --min-age needs days");
+                };
+                min_age = value;
+            }
+            "--help" | "-h" => {
+                print_fleet_help();
+                std::process::exit(0);
+            }
+            other => usage(&format!("fleet prune: unknown argument: {other}")),
+        }
+        i += 1;
+    }
+    if max_prune == 0 {
+        usage("fleet prune: --max-prune must be >= 1");
+    }
+    let path = registry.unwrap_or_else(fleet::config::default_path);
+    let registry = match fleet::config::load(&path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("corrald fleet prune: {error}");
+            std::process::exit(error.exit_code());
+        }
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let worktrees = worktrees.unwrap_or_else(|| {
+        std::env::var("CORRAL_WORKTREES_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"))
+    });
+    let opts = fleet::prune::PruneOptions {
+        apply,
+        max_prune,
+        min_age_days: min_age,
+    };
+    let shell = fleet::prune::SystemCommandRunner;
+    let now = fleet::prune::now_unix();
+    if !apply {
+        let agents = fleet::prune::list_agents();
+        match fleet::prune::plan(&registry, &worktrees, &agents, &shell, &opts, now) {
+            Ok(plan) => {
+                for candidate in &plan.candidates {
+                    println!(
+                        "PRUNE {} ({}/{}) — clean, no agent, no open PR, ancestor of {}, {} own commit(s)",
+                        candidate.path.display(),
+                        candidate.fleet,
+                        candidate.branch,
+                        candidate.integration,
+                        candidate.own_commits
+                    );
+                }
+                for kept in &plan.kept {
+                    println!("KEEP {kept}");
+                }
+                println!(
+                    "Evaluated {} worktrees — {} prunable.",
+                    plan.evaluated,
+                    plan.candidates.len()
+                );
+                println!("DRY RUN — nothing deleted. Re-run with --apply/--yes to prune.");
+                return;
+            }
+            Err(error) => {
+                eprintln!("corrald fleet prune: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let report = match fleet::prune::prune(
+        &registry,
+        &worktrees,
+        &opts,
+        fleet::prune::list_agents,
+        &shell,
+        now,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("corrald fleet prune: {error}");
+            std::process::exit(1);
+        }
+    };
+    for candidate in &report.candidates {
+        println!(
+            "PRUNE {} ({}/{}) — {} own commit(s), ancestor of {}",
+            candidate.path.display(),
+            candidate.fleet,
+            candidate.branch,
+            candidate.own_commits,
+            candidate.integration
+        );
+    }
+    for removed in &report.removed {
+        println!("REMOVED {}", removed.display());
+    }
+    for skipped in &report.skipped {
+        println!("SKIP {skipped}");
+    }
+    for failure in &report.failures {
+        eprintln!("corrald fleet prune: {failure}");
+    }
+    if !report.failures.is_empty() {
+        std::process::exit(1);
+    }
+    if report.removed.is_empty() {
+        println!("Removed 0 worktrees.");
     }
 }
 

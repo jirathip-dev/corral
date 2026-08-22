@@ -115,12 +115,14 @@ inputs are files on disk rather than plane events:
   on-demand, grant-gated read path; it does not compute provider usage or
   alter the fleet snapshot.
 - **Fleet registry** (`src/fleet/`,
-  `corrald fleet list|check|add|remove|pause|resume|models`)
+  `corrald fleet list|check|watch|add|remove|pause|resume|models|switch|reap|prune`)
   — parses, validates and atomically rewrites the `fleets.json`
-  control-plane registry. The daemon read path may consult the validated
-  registry for primary-checkout attribution, but never mutates it or controls
-  processes; the registry subcommands dispatch before the tokio runtime is
-  built.
+  control-plane registry, and owns the CLI-only destructive ops half:
+  auth-gated orchestrator switch, verified-agent reaping, and provably-dead
+  worktree pruning. The daemon read path may consult the validated registry
+  for primary-checkout attribution, but never mutates it; the registry
+  subcommands dispatch before the tokio runtime is built and never talk to a
+  running daemon.
 
 ### Workspace attribution
 
@@ -292,7 +294,7 @@ src/transcript/      D35: per-store paged transcript readers (opencode
                      agent→session binding by worktree; redaction inside
                      the module boundary
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
-src/fleet/           fleets.json registry: parse + validate + atomic CRUD writes
+src/fleet/           fleets.json registry: parse + validate + atomic CRUD + CLI ops
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite

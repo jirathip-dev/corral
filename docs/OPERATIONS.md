@@ -503,14 +503,15 @@ transcript-reader env overrides (`$CORRAL_OPENCODE_DB`,
 
 ## Fleet registry
 
-`corrald fleet` reads — and, since #35 slices 1–2, edits — the control-plane
-registry describing each fleet's repo, local checkout, worktree dir,
-orchestrator, workers and per-role models. `list`/`check` are read-only;
-**`add`/`remove`** (slice 1) and **`pause`/`resume`/`models`** (slice 2)
-rewrite the registry file (atomically, validated, with the repo resolved via
-`gh` before an add). Nothing touches a running agent — `pause`/`resume` here
-mutate the `paused` flag only; the ops half (halting working agents, the
-auth-gated model-switch re-arm) is a later #35 slice.
+`corrald fleet` reads and edits the control-plane registry describing each
+fleet's repo, local checkout, worktree dir, orchestrator, workers and
+per-role models. `list`/`check`/`watch` are read-only; **`add`/`remove`**
+and **`pause`/`resume`/`models`** rewrite the registry file (atomically,
+validated, with the repo resolved via `gh` before an add). Registry mutation
+never touches a running agent. The destructive #35 surface is also present:
+`switch` re-arms the orchestrator after an auth gate, `reap` clears verified
+finished/paused-idle panes, and `prune` removes only provably-dead worktrees.
+Those commands never rewrite the registry.
 
 ```sh
 corrald fleet list                    # one greppable line per fleet
@@ -523,6 +524,9 @@ corrald fleet resume <name>           # clear paused (WRITES; idempotent)
 corrald fleet models <name> --impl m  # update only the model slots named
 corrald fleet models all --impl m     # ... applied to every fleet
 corrald fleet models <name> --impl-alt ''   # CLEAR the optional alt slot
+corrald fleet switch <name>           # auth-gated orchestrator re-arm
+corrald fleet reap <fleet|all>        # dry-run; --apply kills verified panes
+corrald fleet prune [--apply|--yes]   # dry-run; --apply/--yes removes dead trees
 corrald fleet list --registry <path>  # override the default
 ```
 
@@ -540,11 +544,12 @@ writing, so a missing parent dir surfaces as the plain
 `mkdir -p ~/.config/corral` followed by
 `echo '{"fleets": []}' > ~/.config/corral/fleets.json`.
 Exit codes: **0** all good, **1** an operation failed — a fleet failed
-`check`, a write command (`add`/`remove`/`pause`/`resume`/`models`)
-refused (duplicate name, unresolvable repo, unknown name, no models to
-inherit) or could not write (registry left byte-identical), or `watch`
-found problems — for `watch` this INCLUDES an unreadable/invalid
-registry, reported as a `PROBLEM:` line with exit 1 (monitor safety);
+`check`, a registry write (`add`/`remove`/`pause`/`resume`/`models`)
+refused or could not write (registry left byte-identical), `watch` found
+problems (for `watch` this INCLUDES an unreadable/invalid registry, reported
+as a `PROBLEM:` line with exit 1 for monitor safety), or `switch`/`reap`/
+`prune` hit an operational refusal/failure (unauthenticated runtime,
+shrink guard, failed identity check, git/gh/herdr failure);
 **2** usage error, or (every subcommand except `watch`) an
 unreadable/unparseable/invalid registry.
 Validation is strict on

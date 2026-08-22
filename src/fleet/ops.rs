@@ -1,5 +1,5 @@
-//! #35 slices 1–2: registry-WRITING operations — `fleet add` / `remove`
-//! (slice 1) and `pause` / `resume` / `models` (slice 2).
+//! #35 registry-WRITING operations — `fleet add`, `remove`, `pause`,
+//! `resume`, and `models`.
 //!
 //! These are the commands that mutate the registry, so the discipline here is
 //! the load-bearing part:

@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::drive::{DriveFailure, DriveOutcome};
-use crate::model::Agent;
+use crate::model::{Agent, GhIssueRef};
 
 /// Registration record persisted per host fingerprint.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -104,6 +104,12 @@ pub struct Fleet {
     pub transcript_clock: u64,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
+    /// #113: repo-level issue set from the daemon's read-only `GET /issues`
+    /// view, keyed by repo/fleet name. Empty until the first fetch — the
+    /// issue browser renders from this (never from branch inference).
+    pub issues: BTreeMap<String, Vec<GhIssueRef>>,
+    /// Whether the repo-level issues have been fetched at least once.
+    pub issues_loaded: bool,
 }
 
 impl Fleet {
@@ -153,6 +159,14 @@ impl Fleet {
 
     pub fn is_expanded(&self, agent_id: &str) -> bool {
         self.expanded.iter().any(|e| e == agent_id)
+    }
+
+    /// #113: replace the repo-level issue view (from `GET /issues`). The
+    /// browser sorts/renders it; the daemon remains the authority on which
+    /// issue is startable.
+    pub fn set_issues(&mut self, issues: BTreeMap<String, Vec<GhIssueRef>>) {
+        self.issues = issues;
+        self.issues_loaded = true;
     }
 
     pub fn toggle_expanded(&mut self, agent_id: &str) {

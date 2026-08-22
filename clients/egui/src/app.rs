@@ -307,6 +307,8 @@ impl CorralApp {
             ApplyMsg::Conn(protocol::Live::Connected) => {
                 self.conn = ConnState::Connected;
                 self.conn_detail = None;
+                // #113: fetch the repo-level issue view on each connection.
+                self.refresh_issues(false);
             }
             ApplyMsg::Conn(protocol::Live::Disconnected) => {
                 self.conn = ConnState::Connecting;
@@ -324,7 +326,33 @@ impl CorralApp {
                 self.conn = ConnState::Down;
                 self.conn_detail = Some(e);
             }
+            ApplyMsg::Issues(issues) => {
+                self.fleet.set_issues(issues);
+            }
         }
+    }
+
+    /// #113: fetch the daemon's read-only repo-level issue view once per
+    /// connection. The board renders from this authoritative set (never
+    /// from branch inference); a failed/absent endpoint leaves the browser
+    /// empty with a hint instead of guessing.
+    fn refresh_issues(&mut self, force: bool) {
+        if !force && self.fleet.issues_loaded {
+            return;
+        }
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            match protocol::fetch_issues(&client, &base_url).await {
+                Ok(issues) => {
+                    let _ = tx.send(ApplyMsg::Issues(issues));
+                }
+                Err(error) => {
+                    tracing::warn!(error, "GET /issues unavailable");
+                }
+            }
+        });
     }
 
     fn on_drive(&mut self, msg: DriveMsg) {
@@ -332,14 +360,29 @@ impl CorralApp {
         let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
         self.fleet.remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
-            DriveOutcome::Ok { rev, .. } => {
+            DriveOutcome::Ok { rev, result } => {
                 self.ledger.note_success(&capability);
                 self.persist_ledger();
                 // If the daemon ever grows a read_tail result, surface it.
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
                 }
-                self.toast(Level::Info, format!("{capability} → ok (rev {rev})"));
+                let text = if capability == "start_worktree" {
+                    let wt_state = result
+                        .as_ref()
+                        .and_then(|v| v.get("state"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ok");
+                    let branch = result
+                        .as_ref()
+                        .and_then(|v| v.get("branch"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    format!("start_worktree → {wt_state} (rev {rev}) {branch}")
+                } else {
+                    format!("{capability} → ok (rev {rev})")
+                };
+                self.toast(Level::Info, text);
             }
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
@@ -889,6 +932,7 @@ impl eframe::App for CorralApp {
                 let rt = self.rt.clone();
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
+                let mut refresh_issues = false;
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,
@@ -896,10 +940,14 @@ impl eframe::App for CorralApp {
                     &mut crate::ui::board::BoardActions {
                         drive: &mut |intent| pending.push(intent),
                         transcript: &mut |request| pending_transcripts.push(request),
+                        refresh_issues: &mut || refresh_issues = true,
                     },
                 );
                 for request in pending_transcripts {
                     self.request_transcript_page(request);
+                }
+                if refresh_issues {
+                    self.refresh_issues(true);
                 }
                 // Dispatch after board::show returns (no overlapping
                 // borrows of fleet/toasts).

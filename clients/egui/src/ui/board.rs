@@ -40,6 +40,8 @@ const FLAT_VIEW: &str = "corral-ui-board-flat";
 pub struct BoardActions<'a> {
     pub drive: &'a mut dyn FnMut(DriveIntent),
     pub transcript: &'a mut dyn FnMut(crate::transcript::TranscriptRequest),
+    /// #113: ask the app to re-fetch the repo-level issue view.
+    pub refresh_issues: &'a mut dyn FnMut(),
 }
 
 /// Render the fleet board.
@@ -49,6 +51,17 @@ pub fn show(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    // #113: repo-level issue browser. It is independent of the agent rows —
+    // it renders even when the fleet has no agents, so a just-connected
+    // board can still show issues before any worktree exists.
+    crate::ui::issues::show(
+        ui,
+        fleet,
+        allowed,
+        &mut *actions.drive,
+        &mut *actions.refresh_issues,
+    );
+
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
@@ -1184,6 +1197,8 @@ mod tests {
             number: 24,
             state: "open".into(),
             title: "widget".into(),
+            labels: vec![],
+            url: String::new(),
         }];
         assert_eq!(
             inferred_marker(&agent).as_deref(),

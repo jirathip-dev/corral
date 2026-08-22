@@ -10,11 +10,12 @@
 //! is unavailable, so a restart with dropped SSE support still shows live
 //! state (client-side polling only — never in the daemon).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, Snapshot};
+use crate::model::{Delta, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
@@ -114,6 +115,33 @@ pub async fn fetch_snapshot(client: &reqwest::Client, base_url: &str) -> Result<
         return Err(format!("GET /snapshot -> {}", response.status()));
     }
     response.json().await.map_err(|e| format!("body: {e}"))
+}
+
+/// #113: `GET /issues` — the daemon's read-only repo-level issue view, the
+/// same set the worktree action validates a selected issue against. The
+/// response is `{ "repos": { repo: [GhIssueRef...] } }`; older daemons
+/// without the endpoint return an error, which the UI surfaces politely
+/// (the board still renders from agent-joined issues).
+pub async fn fetch_issues(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<BTreeMap<String, Vec<GhIssueRef>>, String> {
+    let url = format!("{}/issues", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GET /issues -> {}", response.status()));
+    }
+    #[derive(Deserialize)]
+    struct Wire {
+        repos: BTreeMap<String, Vec<GhIssueRef>>,
+    }
+    let wire: Wire = response.json().await.map_err(|e| format!("body: {e}"))?;
+    Ok(wire.repos)
 }
 
 /// `POST /register` with the routing-only registration token and the
@@ -510,6 +538,9 @@ pub enum ApplyMsg {
     Fingerprint(String),
     /// Registration round-trip result: `(key_id, grants)`.
     RegisterResult(Result<(String, Vec<String>), String>),
+    /// #113: repo-level issue view arrived from the read-only `GET /issues`
+    /// endpoint (keyed by repo/fleet name).
+    Issues(BTreeMap<String, Vec<GhIssueRef>>),
 }
 
 #[derive(Debug, Clone)]

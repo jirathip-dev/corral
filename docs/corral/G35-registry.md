@@ -24,61 +24,206 @@ rather than silently defaulting (`pausd`, `imp1_alt`, `puased`,
 `imlp_alt`), while genuinely farther foreign keys stay accepted. One edit
 includes substitution, insertion, deletion, and adjacent transposition.
 
+## Path resolution
+
+The registry name is always `fleets.json`; the file itself is resolved by
+`corrald` in this order:
+
+1. `$CORRAL_FLEETS_PATH` when set. This env value always wins, including when
+   the file does not exist, so a test or one-off override is unambiguous.
+2. The corral-owned config file `$CORRAL_CONFIG_DIR/fleets.json`, where
+   `$CORRAL_CONFIG_DIR` defaults to `$HOME/.config/corral`
+   (`~/.config/corral/fleets.json`). The relocated config dir is honoured like
+   every other Corral consumer.
+3. The legacy `~/.hermes/scripts/fleets.json` fallback (#66) — used only when
+   the corral-owned file does **not** exist. When it is taken, `corrald` prints
+   a loud stderr note asking the operator to migrate it.
+
+If no file exists, `corrald` still targets the corral-owned path and reports a
+normal missing-file error; it never silently creates an empty registry or
+switches away from a configured fallback. Every `corrald fleet` command
+additionally accepts `--registry <path>` to bypass the ladder for that
+invocation.
+
+The fleet-operations side resolves the same canonical
+`~/.config/corral/fleets.json` through its own resolver, with `FLEETS_JSON` /
+`HERMES_FLEETS_JSON` test overrides; its legacy file is never used by default.
+Both sides deliberately point at one live file, so a Corral `--registry`
+override affects only that Corral CLI invocation, not `herdr-fleet`, the
+controllers, or the daemon.
+
 ## Registry schema
 
-Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
-`$HOME/.config/corral/fleets.json`; a pre-existing legacy fleet registry is
-honoured as a migration fallback when — and only when — the corral-owned file
-does not exist (#66); the
-corral-owned dir honours `$CORRAL_CONFIG_DIR` like every other consumer
-of the config dir. The format originated in the legacy fleet tooling and is
-now co-read with fleet-operations — that is exactly why the fallback (and the
-loud stderr note when it is taken) exists.
-(any command accepts `--registry <path>` to override).
+The checked-in `fleets.example.json` at the Corral repo root is the complete
+seed template below. It uses placeholder repo/path/agent values and contains no
+secrets; replace them before using it as more than a parse check.
 
 ```json
 {
   "fleets": [
     {
-      "name": "corral",
-      "gh_repo": "owner/repo",
-      "local": "~/Projects/<repo>",
-      "worktree_dir": "corral",
-      "orch": "orchestrator",
-      "workers": ["worker-a", "worker-b"],
-      "paused": true,
-      "models": { "orch": "orchestrator-model", "impl": "implementation-model", "review": "review-model",
-                  "impl_alt": "fallback-implementation", "impl_alt2": "last-resort-backend",
-                  "reasoning_effort": { "orch": "medium", "impl": "max", "review": "xhigh" } }
+      "name": "example",
+      "gh_repo": "example/example",
+      "local": "~/Projects/example",
+      "worktree_dir": "example",
+      "orch": "orch-example",
+      "workers": [],
+      "paused": false,
+      "models": {
+        "orch": "codex/deepseek-v4-flash-vision-exp",
+        "impl": "codex/deepseek-v4-flash-vision-exp",
+        "review": "codex/deepseek-v4-flash-vision-exp",
+        "impl_alt": "opencode-go/deepseek-v4-flash",
+        "impl_alt2": "codex/deepseek-v4-flash",
+        "reasoning_effort": {
+          "orch": "medium",
+          "impl": "max",
+          "review": "high"
+        }
+      }
     }
   ],
-  "admit": { "enabled": true, "budget_mb": 16000 }
+  "admit": {
+    "enabled": true,
+    "budget_mb": 16000,
+    "working_charge_mb": 1000,
+    "idle_charge_mb": 150,
+    "sim_max": 1,
+    "min_spawn_gap_sec": 45,
+    "burst": 3,
+    "pressure_refuse_at": "warn",
+    "swapout_rate_refuse": 2000,
+    "load_per_cpu_critical": 2.5
+  }
 }
 ```
 
-- `name`, `gh_repo`, `local`, `worktree_dir`, `orch` — required, non-empty strings.
-- `workers` — required array of strings; may be empty.
-- `models` — required object with required string keys `orch`, `impl`, `review`
-  and optional string keys `impl_alt` (fallback implementer) and `impl_alt2`
-  (last-resort backend). Absent alt keys stay absent through any rewrite (an explicit `null` is
-  read as absent and is not written back); a present key must be non-empty
-  and whitespace-free, like the other model slots.
-- `models.reasoning_effort` and top-level `admit` are recognized as
-  fleet-operations-owned schema and preserved verbatim; corral does not model
-  their contents as typed fields.
-- All `models.*` slots (required and alt) must be whitespace-free — the
-  required three feed the whitespace-delimited `fleet list` line; the alt
-  slots follow the same rule for consistency.
-- `paused` — optional bool, defaults to `false` when absent. Set/cleared
-  by `fleet pause`/`resume`. The skip rule: `false` is never
-  serialized — a resumed fleet omits the key entirely (this is the rule
-  the pause/resume section refers to).
-- `local` may start with `~/` — expanded against `$HOME`.
-- Unknown fields anywhere (top level, fleet, models) are retained through a
-  rewrite. A deterministic typo guard rejects an unknown key one edit away
-  from a Corral-owned field, where an edit includes adjacent transposition;
-  all other forward keys, including future fleet-operations additions, are
-  accepted. Duplicate fleet names → hard error.
+The top level is a `fleets` array plus the optional fleet-operations-owned
+`admit` object. `fleets` may be empty for a bootstrap registry, but a missing
+or non-array value fails both parsers.
+
+### Per-fleet fields
+
+- `name` — required, non-empty string. Corral-owned; duplicate names are a hard
+  error. `all` is reserved by the `fleet models` wildcard and cannot be used.
+- `gh_repo` — required string in `owner/repo` form (Corral-owned), no internal
+  whitespace. This is the GitHub identity used for attribution and checks.
+- `local` — required string path to the primary checkout; may start with `~/`,
+  expanded against `$HOME`. `fleet check` verifies it exists with a `.git`
+  entry.
+- `worktree_dir` — required string naming the fleet's worktree root component
+  under the worktrees root; Corral validates it as a single path component.
+- `orch` — required string naming the registered orchestrator agent.
+- `workers` — required array of strings; may be empty. Each entry is
+  non-empty.
+- `paused` — optional bool, defaults to `false`. `fleet pause`/`resume` set and
+  clear it. The skip rule is fixed: `false` is never serialized, so a resumed
+  fleet omits the key rather than writing `"paused": false`.
+- `models` — required object; see below.
+
+### Per-fleet `models`
+
+- Required slots: `orch`, `impl`, `review` — each a non-empty, whitespace-free
+  model id string. The required three feed the whitespace-delimited
+  `corrald fleet list` line.
+- Optional `impl_alt` (fallback implementer) and `impl_alt2` (last-resort
+  backend), same non-empty, whitespace-free rules. Absent alt keys stay absent
+  through a Corral rewrite; an explicit `null` is read as absent and not
+  written back.
+- `models.reasoning_effort` — optional runtime object keyed by the same three
+  roles: `orch`, `impl`, `review`. Fleet-operations validates each present
+  value against `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
+  or `ultra`, requires it for a `codex/...` role, and rejects it for a bare
+  Claude or opencode-backed role. Corral preserves the object verbatim and
+  does not model its contents as typed fields.
+
+### Top-level `admit`
+
+`admit` is fleet-operations-owned admission-control configuration. Corral
+preserves the whole object across a rewrite without interpreting it. The
+complete key set used by the shared loader:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `enabled` | bool | Master admission switch; explicit `false` blocks new spawns at the shared load/swap gate. |
+| `budget_mb` | number | Peak-MB weighted budget: working agents × `working_charge_mb`, idle agents × `idle_charge_mb`, plus the new spawn's weight must be less than this; the loader refuses once the projection reaches it. |
+| `working_charge_mb` | number | Charge applied per live working agent. |
+| `idle_charge_mb` | number | Flat charge applied per idle agent. |
+| `sim_max` | integer | Hard semaphore limiting concurrent simulator users. |
+| `min_spawn_gap_sec` | number | Minimum spacing in the spawn pacing token bucket. |
+| `burst` | integer | Number of tokens/spawns allowed inside the pacing window. |
+| `pressure_refuse_at` | string | Memory-pressure level at which a spawn is refused; the live loader uses `warn` or `critical`. |
+| `swapout_rate_refuse` | number | Swap-out rate threshold in pages per 2-second sample; above it a spawn is refused. |
+| `load_per_cpu_critical` | number | Maximum 1-minute load average per CPU before a spawn is refused. |
+
+Omitted `admit` keys fall back to the fleet-operations `load_admit.py`
+defaults (`budget_mb` 9000, `working_charge_mb` 1500, `idle_charge_mb` 300,
+`sim_max` 1, `min_spawn_gap_sec` 45, `burst` 3, `pressure_refuse_at` `warn`,
+`swapout_rate_refuse` 2000, `load_per_cpu_critical` 2.5). The checked-in
+example deliberately sets a tighter working charge and a different budget; an
+`allow` override or other forward key is preserved by Corral even though it is
+not modeled here.
+
+### Forward compatibility
+
+Unknown fields anywhere — top level, fleet, or `models` — are retained through
+a Corral rewrite, so a fleet-operations schema addition cannot empty
+`GET /issues` or silently disappear through `fleet models`. `admit` and
+`reasoning_effort` are explicitly recognized, not lumped in the unknown map.
+The typo guard remains: an unknown key one edit away from a Corral-owned field
+(including adjacent transposition, e.g. `pausd`, `imp1_alt`, `puased`,
+`imlp_alt`) is refused loudly rather than silently defaulted. Genuinely
+forward-compatible foreign keys stay accepted.
+
+## Setup and handoff
+
+Fresh-machine setup from the Corral checkout:
+
+```sh
+REPO_ROOT="$(git rev-parse --show-toplevel)"   # the Corral checkout
+CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
+mkdir -p "$CONFIG_DIR"
+cp -n "$REPO_ROOT/fleets.example.json" "$CONFIG_DIR/fleets.json"
+corrald fleet list
+corrald fleet check   # placeholders must be replaced before this passes
+```
+
+The seed is a schema template, not a runnable live entry: replace
+`example/example`, `~/Projects/example`, `orch-example`, and the model ids
+with the host's real fleet before relying on `check`, `watch`, or the control
+plane. `corrald fleet list --registry "$REPO_ROOT/fleets.example.json"` is a
+useful parse-only check that never touches the live file. `cp -n` never
+overwrites an existing canonical registry; use `herdr-fleet doctor --seed
+--force` only after reviewing the backup behavior.
+
+On a machine with the legacy `~/.hermes/scripts/fleets.json` but no corral-owned
+file, `corrald fleet list` finds and reads it automatically and prints the
+migration note (#66). Migrate deliberately rather than letting the fallback stay
+ambiguous: `herdr-fleet doctor` reports canonical/legacy/seed state, then
+`herdr-fleet doctor --migrate` copies the legacy file to the canonical path
+(`--force` first backs up a differing canonical file). The legacy file is never
+deleted. Use `mv`, not `cp`, if migrating that file manually: a copy would leave
+legacy tooling writing one path while Corral reads the other.
+
+After setup, all of these consume the same file:
+
+- `corrald fleet list/check/watch` read it; `add/remove/pause/resume/models`
+  rewrite it atomically. All accept `--registry <path>` for an invocation-level
+  override.
+- `herdr-fleet list/doctor/check/models/...` and the fleet-operations
+  controllers use the shared resolver's canonical path
+  (`~/.config/corral/fleets.json`; `FLEETS_JSON` / `HERMES_FLEETS_JSON` for
+  tests/instrumentation). `herdr-fleet doctor --seed` seeds from the
+  fleet-operations template; this checked-in template is kept in schema
+  lockstep with it.
+- The `corrald` daemon's `GET /issues` loads the same default path, inserts a
+  key for every fleet name, and workspace attribution uses each fleet's
+  `gh_repo`/`local` identity. The daemon has no `--registry` flag, so a CLI-only
+  override cannot silently change what it attributes.
+
+The canonical path may also be overridden for Corral with
+`$CORRAL_FLEETS_PATH` or `$CORRAL_CONFIG_DIR`; the checked-in template itself is
+never read as the live registry just because it exists in the source tree.
 
 ## Commands
 
@@ -162,8 +307,9 @@ for `--worktree` — both spellings match the legacy fleet CLI. Defaults:
 `local` → `~/Projects/<name>`, `worktree_dir` → `<name>`, `orch` →
 `orch-<name>`, `workers` → empty, `models` inherited from the **first**
 fleet in the registry — `impl_alt`/`impl_alt2` included (an empty registry
-requires `--models`). The alt slots are not settable from `--models`; they
-inherit, or are edited in the registry directly. The repo
+requires `--models`). `models.reasoning_effort` is inherited with the rest of
+the model object. The alt slots and `reasoning_effort` are not settable from
+Corral's `--models`; they inherit, or are edited in the registry directly. The repo
 must resolve via `gh repo view <owner/repo>` before anything is written;
 the candidate registry is validated with the same rules `load()` applies;
 the write is a PID-suffixed temp file in the registry's directory,
@@ -190,7 +336,7 @@ message says so ("already paused"). Per the schema's skip rule, a resumed
 fleet omits `paused` entirely (false is never written).
 
 `models` updates **only the flags given**, leaving every other slot —
-including the optional alt slots — untouched. At least one flag is
+including the optional alt slots and `models.reasoning_effort` — untouched. At least one flag is
 required (usage error, exit 2, otherwise). Empty values for the required
 `orch`/`impl`/`review` slots are a usage error (exit 2); empty values for
 the optional slots CLEAR them: `--impl-alt ''` removes `impl_alt` from the
@@ -209,7 +355,10 @@ board models changed: orch fable -> fable; impl sonnet -> gpt-5.6-luna; impl_alt
 
 All three refuse an unknown fleet name (exit 1, `FleetNotFound`) writing
 nothing, validate the candidate registry before writing, and leave the
-file byte-identical on any refusal, no-op, or write failure.
+file byte-identical on any refusal, no-op, or write failure. `admit` and
+`models.reasoning_effort` survive every one of these rewrites; use
+`herdr-fleet models --orch-effort/--impl-effort/--review-effort` or edit the
+file directly to change reasoning efforts.
 
 ## Fleet operations (switch/reap/prune)
 

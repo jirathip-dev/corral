@@ -1,0 +1,37 @@
+{
+  "fleets": [
+    {
+      "name": "example",
+      "gh_repo": "example/example",
+      "local": "~/Projects/example",
+      "worktree_dir": "example",
+      "orch": "orch-example",
+      "workers": [],
+      "paused": false,
+      "models": {
+        "orch": "codex/deepseek-v4-flash-vision-exp",
+        "impl": "codex/deepseek-v4-flash-vision-exp",
+        "review": "codex/deepseek-v4-flash-vision-exp",
+        "impl_alt": "opencode-go/deepseek-v4-flash",
+        "impl_alt2": "codex/deepseek-v4-flash",
+        "reasoning_effort": {
+          "orch": "medium",
+          "impl": "max",
+          "review": "high"
+        }
+      }
+    }
+  ],
+  "admit": {
+    "enabled": true,
+    "budget_mb": 16000,
+    "working_charge_mb": 1000,
+    "idle_charge_mb": 150,
+    "sim_max": 1,
+    "min_spawn_gap_sec": 45,
+    "burst": 3,
+    "pressure_refuse_at": "warn",
+    "swapout_rate_refuse": 2000,
+    "load_per_cpu_critical": 2.5
+  }
+}

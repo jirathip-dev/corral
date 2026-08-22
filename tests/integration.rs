@@ -234,6 +234,8 @@ async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
         number: 4,
         state: "OPEN".to_string(),
         title: "P2 planes".to_string(),
+        labels: vec![],
+        url: String::new(),
     }];
     let state = gh_state("herdr-board", vec![bound]);
 
@@ -258,6 +260,8 @@ async fn issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only() {
         number: 99,
         state: "OPEN".to_string(),
         title: "unrelated".to_string(),
+        labels: vec![],
+        url: String::new(),
     }];
     sink.send(PlaneEvent::Gh(repo_with_more)).await.unwrap();
     let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(42)).await;
@@ -645,6 +649,8 @@ async fn generation_restart_clears_vanished_branch_and_reconciles_present_path()
         number: 109,
         state: "OPEN".to_string(),
         title: "generation boundary".to_string(),
+        labels: vec![],
+        url: String::new(),
     }];
     first_sink
         .send(PlaneEvent::Gh(gh_state("linked-repo", vec![present_pr])))

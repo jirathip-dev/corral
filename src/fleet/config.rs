@@ -173,6 +173,16 @@ impl Registry {
                     value: fleet.local.clone(),
                 });
             }
+            // #113: `worktree_dir` is joined under the daemon's worktrees
+            // root, so a separator/`..`/absolute value would let a fleet
+            // escape that root. Refuse it at validation so the worktree
+            // operation never builds an out-of-root path.
+            if !is_safe_worktree_dir(&fleet.worktree_dir) {
+                return Err(ConfigError::BadWorktreeDir {
+                    fleet: fleet_locator(index, fleet, "worktree_dir"),
+                    value: fleet.worktree_dir.clone(),
+                });
+            }
             // `all` is the `fleet models` wildcard (and pause/resume do NOT
             // accept it) — a fleet actually named `all` would be shadowed by
             // the keyword with no escape hatch, so the name is reserved.
@@ -208,6 +218,16 @@ fn fleet_locator(index: usize, fleet: &Fleet, field: &str) -> String {
 fn is_repo_slug(slug: &str) -> bool {
     let (owner, repo) = slug.split_once('/').unwrap_or(("", ""));
     !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
+}
+
+/// A worktree directory name must be a single path component that cannot
+/// escape the daemon's worktrees root: no separator, no `..`, not absolute.
+fn is_safe_worktree_dir(dir: &str) -> bool {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed != "." && trimmed != ".." && !trimmed.contains('/') && !trimmed.contains('\\')
 }
 
 impl Fleet {
@@ -473,6 +493,9 @@ pub enum ConfigError {
     /// `local` begins with a bare `~` (not `~/`), which would be passed
     /// through literally instead of expanded against `$HOME`.
     BadTilde { fleet: String, value: String },
+    /// `worktree_dir` is not a single path component (contains a separator,
+    /// is `..`/`.`, or is absolute) — it would escape the worktrees root.
+    BadWorktreeDir { fleet: String, value: String },
     /// Two fleets share a `name`.
     DuplicateFleet { name: String },
     /// The fleet name is a reserved word (`all` — the `fleet models`
@@ -532,6 +555,7 @@ impl ConfigError {
             | ConfigError::Whitespace { .. }
             | ConfigError::GhRepoShape { .. }
             | ConfigError::BadTilde { .. }
+            | ConfigError::BadWorktreeDir { .. }
             | ConfigError::ModelsRequest { .. }
             | ConfigError::ReservedFleetName { .. } => 2,
         }
@@ -573,6 +597,13 @@ impl fmt::Display for ConfigError {
                 write!(
                     f,
                     "fleet {fleet}: local {value:?} must start with ~/ to be tilde-expanded"
+                )
+            }
+            ConfigError::BadWorktreeDir { fleet, value } => {
+                write!(
+                    f,
+                    "fleet {fleet}: worktree_dir {value:?} must be a single path component \
+                     (no separators, not '..', not absolute)"
                 )
             }
             ConfigError::DuplicateFleet { name } => {
@@ -641,6 +672,7 @@ impl std::error::Error for ConfigError {
             | ConfigError::Whitespace { .. }
             | ConfigError::GhRepoShape { .. }
             | ConfigError::BadTilde { .. }
+            | ConfigError::BadWorktreeDir { .. }
             | ConfigError::DuplicateFleet { .. }
             | ConfigError::AddRepoUnresolved { .. }
             | ConfigError::AddNeedsModels
@@ -650,5 +682,48 @@ impl std::error::Error for ConfigError {
             | ConfigError::ModelsRequest { .. }
             | ConfigError::ReservedFleetName { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod worktree_dir_validation_tests {
+    use super::*;
+
+    fn fleet_with_worktree_dir(worktree_dir: &str) -> Registry {
+        Registry {
+            fleets: vec![Fleet {
+                name: "corral".into(),
+                gh_repo: "jirathip-dev/corral".into(),
+                local: "~/Projects/corral".into(),
+                worktree_dir: worktree_dir.into(),
+                orch: "orch-corral".into(),
+                workers: vec![],
+                paused: false,
+                models: Models {
+                    orch: "o".into(),
+                    impl_: "i".into(),
+                    review: "r".into(),
+                    impl_alt: None,
+                    impl_alt2: None,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_separator_dotdot_and_absolute_worktree_dir() {
+        for bad in ["../corral", "a/b", "..", ".", "/corral", "\\corral"] {
+            let err = fleet_with_worktree_dir(bad).validate().unwrap_err();
+            assert!(
+                matches!(err, ConfigError::BadWorktreeDir { .. }),
+                "worktree_dir {bad:?} must be refused, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_a_single_component_worktree_dir() {
+        let ok = fleet_with_worktree_dir("corral");
+        assert!(ok.validate().is_ok());
     }
 }

@@ -2578,6 +2578,8 @@ mod tests {
             number: 109,
             state: "OPEN".to_string(),
             title: "primary attribution".to_string(),
+            labels: vec![],
+            url: String::new(),
         }];
         store.apply(Change::upsert(existing)).await;
         adapter

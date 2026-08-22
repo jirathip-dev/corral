@@ -80,12 +80,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::core::events::{GhRepoState, GitEvent, GitStatus, PlaneEvent};
+use crate::api::issues::IssuesCache;
+use crate::core::events::{GhIssueRef, GhRepoState, GitEvent, GitStatus, PlaneEvent};
 use crate::core::model::{CiStatus, Workspace};
 use crate::core::redact::redact;
 use crate::core::store::Store;
@@ -126,6 +127,8 @@ pub struct Integrator {
     git: Mutex<HashMap<PathBuf, GitFacts>>,
     /// repo name -> last-known gh state (repo-keyed re-apply).
     gh: Mutex<HashMap<String, GhRepoState>>,
+    /// #113: read-only repo-level issue view published to the API.
+    issues: Arc<IssuesCache>,
 }
 
 impl Integrator {
@@ -134,12 +137,30 @@ impl Integrator {
     }
 
     pub fn new_with_attribution(store: Store, attribution: WorkspaceAttribution) -> Self {
+        Self::with_issues(store, attribution, Arc::new(IssuesCache::default()))
+    }
+
+    /// Construct the integrator sharing an [`IssuesCache`] with the API so
+    /// the read-only `/issues` view sees the same facts the worktree
+    /// operation validates against.
+    pub fn with_issues(
+        store: Store,
+        attribution: WorkspaceAttribution,
+        issues: Arc<IssuesCache>,
+    ) -> Self {
         Self {
             store,
             attribution,
             git: Mutex::new(HashMap::new()),
             gh: Mutex::new(HashMap::new()),
+            issues,
         }
+    }
+
+    /// Read-only view of the last-known repo-level issues (shared with the
+    /// API handler).
+    pub fn issues(&self) -> Arc<IssuesCache> {
+        self.issues.clone()
     }
 
     /// Reconcile the read model before starting a replacement plane
@@ -273,6 +294,16 @@ impl Integrator {
         {
             let mut gh = self.gh.lock().unwrap();
             gh.insert(repo.clone(), state.clone());
+        }
+        // #113: publish the repo-level issues to the read-only view so the
+        // browser can render them and the worktree action can validate a
+        // selected issue against the SAME recent set (never a stale guess).
+        // Only a configured fleet (`issue_repo` present) is startable; a
+        // tracked repo that is NOT a fleet is deliberately excluded from the
+        // startable browser so the UI never offers a non-fleet issue action.
+        if let Some(issue_repo) = state.issue_repo.clone() {
+            let issues: Vec<GhIssueRef> = state.issues.clone();
+            self.issues.update(&issue_repo, issues);
         }
         self.converge().await;
     }
@@ -736,6 +767,8 @@ mod tests {
             number,
             state: state.to_string(),
             title: title.to_string(),
+            labels: vec![],
+            url: String::new(),
         }
     }
 
@@ -932,6 +965,72 @@ mod tests {
                 issue(3, "UNKNOWN", "long-closed")
             ],
             "issues mirror the bound PR's authoritative closing refs"
+        );
+    }
+
+    #[tokio::test]
+    async fn issues_cache_is_keyed_by_fleet_name_from_issue_repo() {
+        let store = Store::new();
+        let issues = Arc::new(IssuesCache::default());
+        let integrator = Integrator::with_issues(
+            store.clone(),
+            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            issues.clone(),
+        );
+        // A fleet-state gh fact: the PR attribution key is the gh_repo
+        // basename, while the issue view key is the FLEET name (#113).
+        let state = GhRepoState {
+            repo: "plush-meadow".to_string(),
+            issue_repo: Some("plush".to_string()),
+            default_branch: "main".to_string(),
+            issues: vec![GhIssueRef {
+                repo: "plush-meadow".to_string(),
+                number: 5,
+                state: "OPEN".to_string(),
+                title: "x".to_string(),
+                labels: vec![],
+                url: String::new(),
+            }],
+            ..Default::default()
+        };
+        integrator.handle_gh(state).await;
+        assert!(
+            issues.get("plush", 5).is_some(),
+            "fleet-name key carries the fetched issue"
+        );
+        assert!(
+            issues.get("plush-meadow", 5).is_none(),
+            "the attribution key never leaks into the issue view"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_non_fleet_gh_fact_does_not_publish_issues() {
+        let store = Store::new();
+        let issues = Arc::new(IssuesCache::default());
+        let integrator = Integrator::with_issues(
+            store.clone(),
+            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            issues.clone(),
+        );
+        let state = GhRepoState {
+            repo: "herdr-board".to_string(),
+            issue_repo: None,
+            default_branch: "main".to_string(),
+            issues: vec![GhIssueRef {
+                repo: "herdr-board".to_string(),
+                number: 7,
+                state: "OPEN".to_string(),
+                title: "x".to_string(),
+                labels: vec![],
+                url: String::new(),
+            }],
+            ..Default::default()
+        };
+        integrator.handle_gh(state).await;
+        assert!(
+            issues.snapshot().is_empty(),
+            "a non-fleet tracked repo is not issue-startable — no cache entry"
         );
     }
 }

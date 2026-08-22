@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::WaitingOn;
 
-/// The six canonical drive capabilities (mirrors corrald `Capability`).
+/// The canonical drive capabilities (mirrors corrald `Capability`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -32,6 +32,9 @@ pub enum Capability {
     ReadTail,
     Kill,
     Attach,
+    /// #113: start an issue-linked or issue-free worktree. Fleet-level (not
+    /// an agent drive) — the board's issue browser is the only caller.
+    StartWorktree,
 }
 
 /// Canonical rendering order (board buttons).
@@ -53,6 +56,7 @@ impl Capability {
             Self::ReadTail => "read_tail",
             Self::Kill => "kill",
             Self::Attach => "attach",
+            Self::StartWorktree => "start_worktree",
         }
     }
 }
@@ -220,6 +224,48 @@ impl DriveIntent {
             capability: Capability::Attach,
             target: agent_id.to_string(),
             payload: serde_json::Value::Null,
+            rev,
+        }
+    }
+
+    /// #113: start a worktree from a selected, fetched GitHub issue. The
+    /// `target` is the fleet/repo name (not an agent id). The daemon refuses
+    /// a stale/closed issue and NEVER falls through to the free path.
+    pub fn start_worktree_issue(
+        repo: &str,
+        number: u64,
+        issue_url: &str,
+        rev: Option<u64>,
+    ) -> Self {
+        Self {
+            request_id: new_request_id("wt-issue"),
+            capability: Capability::StartWorktree,
+            target: repo.to_string(),
+            payload: serde_json::json!({
+                "kind": "start_worktree",
+                "mode": "issue",
+                "repo": repo,
+                "number": number,
+                "issue_url": issue_url,
+            }),
+            rev,
+        }
+    }
+
+    /// #113: start an explicitly issue-free worktree. `name` is the
+    /// user-chosen label; the daemon prefixes it with `w2/free-` so it can
+    /// never read as an issue-linked branch.
+    pub fn start_worktree_free(repo: &str, name: &str, rev: Option<u64>) -> Self {
+        Self {
+            request_id: new_request_id("wt-free"),
+            capability: Capability::StartWorktree,
+            target: repo.to_string(),
+            payload: serde_json::json!({
+                "kind": "start_worktree",
+                "mode": "free",
+                "repo": repo,
+                "name": name,
+            }),
             rev,
         }
     }

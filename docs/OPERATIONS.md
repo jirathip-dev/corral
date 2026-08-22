@@ -271,6 +271,13 @@ before expiry.
   content — same trust decision, same device registry). NOTE: this
   widens what `read_tail` reaches — see "Grant scope" under "Transcript
   read-path" below and re-review existing grants.
+- `GET /issues` (#113) is part of the credential-free read plane: it
+  exposes only the public repo-level issue metadata the gh poller already
+  fetches (number, state, title, labels, url) and no per-agent
+  transcript/tail content. Same network rule as `/snapshot`/`/events`:
+  serve it only on loopback or a private/tailnet interface. Creating a
+  worktree from an issue is a WRITE and separately requires the
+  `start_worktree` drive grant — this GET never mutates GitHub.
 - Grant/replace the whole set (verified):
 
 ```sh
@@ -573,6 +580,42 @@ name, and terminal text are not branch or repo sources.
 An agent whose `worktree_path` matches none of the configured roots or Herdr
 worktree layout is intentionally left with `repo: null` and remains in
 `(no repo)`; do not repair that bucket by guessing from a pane label.
+
+## Issue-linked and issue-free worktrees (#113, slice 1)
+
+The desktop board's issue browser renders the daemon's read-only
+`GET /issues` view (keyed by repo/fleet name) and can start a worktree two
+explicit ways, both gated by confirmation in the UI and the `start_worktree`
+grant on the host:
+
+- **Issue-linked**: from a selected, open issue. The daemon validates the
+  issue against the SAME fetched set the browser renders, creates exactly one
+  branch/worktree under `<home>/.herdr/worktrees/<fleet.worktree_dir>`, and
+  carries the issue number in the branch (`issue-<N>-…`). A closed or missing
+  issue is a typed refusal (`issue_closed` / `issue_not_found`) — it never
+  falls through to the free path.
+- **Issue-free**: a separate, clearly-marked control takes a user-chosen
+  label; the branch is prefixed `w2/free-` and never carries an issue number.
+  It is only reachable by explicitly choosing it.
+
+The git step and the herdr handoff are injectable seams
+(`src/fleet/worktree.rs`). Slice-1 keeps the handoff typed but deferred:
+the worktree/branch is created, the launcher reports `deferred`, and the
+agent-spawn RPC is a later slice. Duplicate taps/retries are idempotent on
+`request_id` — a second request returns `already_started`, never a second
+worktree. `error_kind`s: `unknown_fleet`, `issue_not_found`, `issue_closed`,
+`already_started`, `invalid_name`, `git_failure`, `launch_failure`.
+
+To make the desktop browser able to start worktrees, grant the device the
+capability (read-only default denies it):
+
+```sh
+scripts/corrald-grant.sh --key <key_id> --caps start_worktree
+```
+
+See `docs/corral/G35-registry.md` for the registry fields the worktree
+creation reads (`name`, `worktree_dir`); READ-ONLY GitHub access is
+unchanged — this slice never issues a GitHub write.
 
 ## Security model summary
 

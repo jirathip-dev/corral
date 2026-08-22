@@ -294,6 +294,7 @@ async fn http_app() -> (Arc<AuthPlane>, tempfile::TempDir, axum::Router) {
         auth: auth.clone(),
         adapter,
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
+        issues: Arc::new(corrald::api::issues::IssuesCache::default()),
         transcript_roots: corrald::transcript::bind::TranscriptRoots::hermetic(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),

@@ -133,6 +133,16 @@ pub struct Attachment {
     pub reference: String,
 }
 
+/// One label attached to a GitHub issue (mirrors corrald's `GhIssueLabel`;
+/// #113 wires `labels` + `url` onto the issue ref).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueLabel {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
 /// Authoritative GitHub issue ref joined into the snapshot from the PR's
 /// `closingIssuesReferences` (mirrors corrald's `GhIssueRef`; G23 wires the
 /// daemon join — this client mirror decodes it via `#[serde(default)]` on
@@ -143,6 +153,13 @@ pub struct GhIssueRef {
     pub number: u64,
     pub state: String,
     pub title: String,
+    /// Labels (name + color). Empty on older daemons — never a guess.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<GhIssueLabel>,
+    /// Canonical HTML URL. Empty on older daemons — the row renders without
+    /// a clickable link.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 /// Canonical agent record (mirrors corrald's `Agent`).

@@ -120,20 +120,47 @@ pub struct GhPrState {
     pub closing_issues: Vec<GhIssueRef>,
 }
 
+/// One label attached to a GitHub issue (WS2, #113): the display name and
+/// the GitHub hex color. The color is the last 6 hex digits (no leading `#`);
+/// GitHub reports it uppercase, and it is carried verbatim so clients render
+/// the chip with the same color the API does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueLabel {
+    pub name: String,
+    pub color: String,
+}
+
 /// Issue reference for one repo (WS2) — "issue refs" leg of the aliased
-/// query: number, current state, title.
+/// query: number, current state, title, labels, and the canonical HTML url.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhIssueRef {
     pub repo: String,
     pub number: u64,
     pub state: String,
     pub title: String,
+    /// Labels on the issue (name + color). Empty when GitHub reports none
+    /// (and on older daemons that did not fetch them) — never a guess.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<GhIssueLabel>,
+    /// Canonical HTML URL for the issue (e.g.
+    /// `https://github.com/owner/repo/issues/3`). Empty when GitHub reports
+    /// none (and on older daemons) — a client can still render the row, just
+    /// without a clickable link.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 /// Repo-level gh facts for one poll round-trip (WS2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhRepoState {
     pub repo: String,
+    /// #113: the fleet/repo key the read-only issue view (`GET /issues`) and
+    /// the worktree issue-guard group issues under. `None` for a tracked repo
+    /// that is NOT a configured fleet — in that case the integrator does not
+    /// publish the issues to the startable browser (only configured fleets
+    /// are startable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_repo: Option<String>,
     pub default_branch: String,
     /// Local tracking info, where the poller can observe it.
     pub ahead: u64,
@@ -243,6 +270,8 @@ mod tests {
                         number: 4,
                         state: "OPEN".to_string(),
                         title: "P2 planes".to_string(),
+                        labels: vec![],
+                        url: String::new(),
                     }],
                 }],
                 ..Default::default()

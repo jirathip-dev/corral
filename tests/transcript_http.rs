@@ -237,6 +237,7 @@ fn harness_with_limiter(limiter: corrald::api::transcript::TranscriptLimiter) ->
         auth: auth.clone(),
         adapter: Arc::new(corrald::api::drive::NoopAdapter),
         replay: Arc::new(ReplayTable::default()),
+        issues: Arc::new(corrald::api::issues::IssuesCache::default()),
         transcript_roots: roots,
         transcript_limiter: limiter.clone(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),

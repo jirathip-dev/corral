@@ -186,13 +186,14 @@ impl Adapter for RecordingAdapter {
 }
 
 /// Every capability the drive tests exercise, granted to the harness device.
-const ALL_CAPABILITIES: [Capability; 6] = [
+const ALL_CAPABILITIES: [Capability; 7] = [
     Capability::Prompt,
     Capability::Interrupt,
     Capability::Approve,
     Capability::ReadTail,
     Capability::Kill,
     Capability::Attach,
+    Capability::StartWorktree,
 ];
 
 /// Real W3 auth plane over a temp dir + a registered, fully-granted device.
@@ -295,6 +296,7 @@ fn harness() -> Harness {
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
+        issues: Arc::new(corrald::api::issues::IssuesCache::default()),
         transcript_roots: corrald::transcript::bind::TranscriptRoots::hermetic(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
@@ -1389,4 +1391,131 @@ async fn audit_grows_only_on_writes() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
+}
+
+/// #113: `start_worktree` is capability-gated like every write — a device
+/// WITHOUT the grant is refused 403 `not_granted` before ANY worktree is
+/// touched (read-only default).
+#[tokio::test]
+async fn start_worktree_needs_the_capability_grant() {
+    let h = harness();
+    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
+    let payload = json!({
+        "kind": "start_worktree",
+        "mode": "issue",
+        "repo": "corral",
+        "number": 113,
+        "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
+    });
+    let (status, value) = post(
+        &h.app,
+        h.body_from(
+            &other_signing,
+            other_pubkey,
+            "wt-1",
+            Capability::StartWorktree,
+            "corral",
+            payload,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "not_granted");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert_eq!(
+        h.audit_entries().len(),
+        0,
+        "auth failures are never audited"
+    );
+}
+
+/// #113: the `start_worktree` payload maps into a typed `WorktreeRequest`
+/// (issue-linked vs issue-free) so a malformed request is refused before any
+/// filesystem work. This is the pre-dispatch parse seam.
+#[tokio::test]
+async fn start_worktree_payload_maps_to_issue_or_free_request() {
+    // A well-formed issue-linked payload is accepted by the parse seam.
+    let issue_payload = json!({
+        "kind": "start_worktree",
+        "mode": "issue",
+        "repo": "corral",
+        "number": 113,
+        "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
+    });
+    let parsed = corrald::drive::DrivePayload::parse(Capability::StartWorktree, &issue_payload)
+        .expect("issue payload parses");
+    assert_eq!(
+        parsed,
+        corrald::drive::DrivePayload::StartWorktree {
+            mode: "issue".into(),
+            repo: "corral".into(),
+            number: Some(113),
+            issue_url: Some("https://github.com/jirathip-dev/corral/issues/113".into()),
+            name: None,
+        }
+    );
+
+    // A free payload is accepted; an empty free name is a typed refusal.
+    let free_payload =
+        json!({ "kind": "start_worktree", "mode": "free", "repo": "corral", "name": "explore" });
+    assert!(matches!(
+        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &free_payload),
+        Ok(corrald::drive::DrivePayload::StartWorktree { mode, name: Some(_), .. }) if mode == "free"
+    ));
+    // A free payload with an empty name still parses at the serde layer; the
+    // non-empty-name validation is the pre-dispatch `command_for` seam (see
+    // the drive.rs unit test).
+    let bad_free =
+        json!({ "kind": "start_worktree", "mode": "free", "repo": "corral", "name": "" });
+    assert!(matches!(
+        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &bad_free),
+        Ok(corrald::drive::DrivePayload::StartWorktree { name: Some(name), .. }) if name.is_empty()
+    ));
+
+    // An unknown mode is refused at the serde layer (no matching variant).
+    let bad_mode = json!({ "kind": "start_worktree", "mode": "chaos", "repo": "corral" });
+    assert!(
+        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &bad_mode).is_err(),
+        "unknown mode is a typed refusal"
+    );
+}
+
+/// #113 review 2: the signed envelope `target` is the repo the audit will
+/// record. A granted client must not sign target=A + payload.repo=B, because
+/// that would create a worktree on B while the audit says A. The handler must
+/// refuse with a typed payload error BEFORE any dispatch.
+#[tokio::test]
+async fn start_worktree_refuses_target_payload_repo_mismatch() {
+    let h = harness();
+    let payload = json!({
+        "kind": "start_worktree",
+        "mode": "issue",
+        "repo": "plush",
+        "number": 5,
+        "issue_url": "https://github.com/jirathip-dev/plush-meadow/issues/5",
+    });
+    // Sign for target "corral" but request repo "plush": mismatch.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "wt-mismatch",
+            Capability::StartWorktree,
+            "corral",
+            payload,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(value["kind"], "payload");
+    assert_eq!(
+        h.adapter.dispatch_count(),
+        0,
+        "nothing dispatches on a mismatch"
+    );
+    assert!(
+        h.audit_entries().is_empty(),
+        "payload refusals are not audited"
+    );
 }

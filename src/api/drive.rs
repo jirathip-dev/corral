@@ -79,6 +79,11 @@ use crate::drive::{
     AuditEntry, AuditLog, AuditOutcome, AuthError, AuthorizedDrive, Capability, DriveEnvelope,
     DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive, UnknownCapability,
 };
+use crate::fleet::config;
+use crate::fleet::worktree::{
+    self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
+    WorktreeRequest,
+};
 
 use super::AppState;
 
@@ -283,6 +288,8 @@ enum PendingCommand {
         prompt_hash: String,
         choice: String,
     },
+    /// #113: a fleet-level worktree start (not an agent drive).
+    Worktree(WorktreeRequest),
 }
 
 /// Map a verified capability + payload onto the adapter command vocabulary.
@@ -291,6 +298,7 @@ enum PendingCommand {
 fn command_for(
     capability: Capability,
     payload: &serde_json::Value,
+    target: &str,
 ) -> Result<PendingCommand, PayloadError> {
     match capability {
         Capability::Prompt | Capability::ReadTail | Capability::Approve => {
@@ -313,6 +321,9 @@ fn command_for(
                     prompt_hash,
                     choice,
                 },
+                DrivePayload::StartWorktree { .. } => {
+                    unreachable!("start_worktree is dispatched by its own arm")
+                }
             })
         }
         Capability::Interrupt | Capability::Kill | Capability::Attach => {
@@ -326,9 +337,86 @@ fn command_for(
                 Capability::Interrupt => PendingCommand::Command(DriveCommand::Interrupt),
                 Capability::Kill => PendingCommand::Command(DriveCommand::Kill),
                 Capability::Attach => PendingCommand::Command(DriveCommand::Attach),
-                Capability::Prompt | Capability::ReadTail | Capability::Approve => unreachable!(),
+                Capability::Prompt
+                | Capability::ReadTail
+                | Capability::Approve
+                | Capability::StartWorktree => unreachable!(),
             })
         }
+        Capability::StartWorktree => {
+            let parsed = DrivePayload::parse(capability, payload)?;
+            let DrivePayload::StartWorktree {
+                mode,
+                repo,
+                number,
+                issue_url,
+                name,
+            } = parsed
+            else {
+                unreachable!("DrivePayload::parse returned the wrong variant");
+            };
+            let request = worktree_request(&mode, &repo, number, issue_url, name)?;
+            // #113 review 2: the signed envelope `target` is the repo the
+            // audit will record — it MUST equal the payload `repo` the
+            // worktree is actually created against. A granted client signing
+            // target=A + payload.repo=B must be refused before dispatch so
+            // the audit trail reflects the real repo.
+            if target != request.repo() {
+                return Err(PayloadError {
+                    capability: Capability::StartWorktree,
+                    detail: format!(
+                        "envelope target {target:?} does not match payload repo {:?}",
+                        request.repo()
+                    ),
+                });
+            }
+            Ok(PendingCommand::Worktree(request))
+        }
+    }
+}
+
+/// Convert a `start_worktree` payload into a [`WorktreeRequest`]. An unknown
+/// `kind` or a missing required field is a typed refusal (the client must
+/// resend a well-formed request; nothing is created).
+fn worktree_request(
+    mode: &str,
+    repo: &str,
+    number: Option<u64>,
+    issue_url: Option<String>,
+    name: Option<String>,
+) -> Result<WorktreeRequest, PayloadError> {
+    let validate = |detail: &str| PayloadError {
+        capability: Capability::StartWorktree,
+        detail: detail.to_string(),
+    };
+    if repo.trim().is_empty() {
+        return Err(validate("repo must not be empty"));
+    }
+    match mode {
+        "issue" => {
+            let number = number.ok_or_else(|| validate("issue start needs number"))?;
+            if number == 0 {
+                return Err(validate("issue number must be > 0"));
+            }
+            Ok(WorktreeRequest::Issue {
+                repo: repo.to_string(),
+                number,
+                issue_url: issue_url.unwrap_or_default(),
+            })
+        }
+        "free" => {
+            let name = name.unwrap_or_default();
+            if name.trim().is_empty() {
+                return Err(validate("free start needs a name"));
+            }
+            Ok(WorktreeRequest::Free {
+                repo: repo.to_string(),
+                name,
+            })
+        }
+        other => Err(validate(&format!(
+            "unknown worktree mode {other:?}; expected \"issue\" or \"free\""
+        ))),
     }
 }
 
@@ -666,12 +754,25 @@ pub async fn drive(
 
     // Parse BEFORE claiming: a payload error is deterministic and must not
     // occupy the id's slot.
-    let pending = command_for(capability, &authorized.envelope.payload).map_err(|error| {
-        DriveApiError::Payload {
-            error,
-            request_id: Some(authorized.envelope.request_id.clone()),
-        }
+    let pending = command_for(
+        capability,
+        &authorized.envelope.payload,
+        &authorized.envelope.target,
+    )
+    .map_err(|error| DriveApiError::Payload {
+        error,
+        request_id: Some(authorized.envelope.request_id.clone()),
     })?;
+
+    // #113: start_worktree is a fleet-level operation, not an agent drive —
+    // it must not run the per-agent (tomestone / approve / adapter) path.
+    // The dispatch handles the replay/audit/write side itself.
+    let pending = match pending {
+        PendingCommand::Worktree(request) => {
+            return dispatch_worktree(&state, &authorized, request).await;
+        }
+        other => other,
+    };
 
     // A completed request is an immutable response, even if its target has
     // disappeared since the original dispatch. Peek before any current
@@ -697,6 +798,9 @@ pub async fn drive(
     // Refusals here are client errors: no replay entry, no audit entry.
     let command = match pending {
         PendingCommand::Command(command) => command,
+        PendingCommand::Worktree(_) => {
+            unreachable!("worktree requests are dispatched before the agent path")
+        }
         PendingCommand::Approve {
             approval_id,
             prompt_hash,
@@ -797,6 +901,192 @@ fn drive_refusal(
         }
     };
     (false, Some(text), error_kind, outcome, None)
+}
+
+/// #113: dispatch a fleet-level worktree start. Reuses the drive plane's
+/// replay idempotency + audit so a duplicate tap/retry is byte-identical and
+/// the write is auditable. The operation is gated upstream by the capability
+/// grant (the authorizer) and by the issue selector's closed/stale guard.
+async fn dispatch_worktree(
+    state: &AppState,
+    authorized: &AuthorizedDrive,
+    request: WorktreeRequest,
+) -> Result<Json<DriveResponse>, DriveApiError> {
+    let request_id = authorized.envelope.request_id.clone();
+
+    // A completed request is immutable — retries return the first response.
+    if let Some(response) = state.replay.completed(&request_id) {
+        return Ok(Json(response));
+    }
+
+    // Claim the id exactly once so concurrent duplicates (two taps of the
+    // same logical action) cannot both dispatch a worktree. The loser gets
+    // a refreshable `409 in_flight` and can retry for the stored response.
+    match state.replay.claim(&request_id) {
+        Claim::Done(response) => return Ok(Json(response)),
+        Claim::Pending => {
+            return Err(DriveApiError::InFlight { request_id });
+        }
+        Claim::Claimed => {}
+    }
+
+    let (ok, error, error_kind, outcome, result) = match worktree_dispatch(state, request).await {
+        Ok(result) => result,
+        Err(error) => {
+            let outcome = worktree_outcome(&error);
+            let kind = worktree_error_kind(&error);
+            (
+                false,
+                Some(error.to_string()),
+                Some(kind.to_string()),
+                outcome,
+                None,
+            )
+        }
+    };
+
+    append_audit(state.auth.audit.as_ref(), authorized, outcome);
+    let rev = state.store.snapshot().await.rev;
+    let response = DriveResponse {
+        request_id,
+        ok,
+        error,
+        error_kind,
+        rev,
+        result,
+    };
+    state
+        .replay
+        .complete(&authorized.envelope.request_id, response.clone());
+    Ok(Json(response))
+}
+
+/// The pure worktree dispatch: resolve the fleet, run the stale/closed guard,
+/// and create + hand off. Returns the response tuple (`ok`, `error`,
+/// `error_kind`, `outcome`, `result`).
+async fn worktree_dispatch(
+    state: &AppState,
+    request: WorktreeRequest,
+) -> Result<
+    (
+        bool,
+        Option<String>,
+        Option<String>,
+        AuditOutcome,
+        Option<serde_json::Value>,
+    ),
+    WorktreeError,
+> {
+    let registry = config::load(&config::default_path())
+        .map_err(|error| WorktreeError::InvalidName(format!("fleet registry: {error}")))?;
+    let fleet = registry
+        .fleets
+        .iter()
+        .find(|fleet| fleet.name == request.repo())
+        .cloned()
+        .ok_or_else(|| WorktreeError::UnknownFleet(request.repo().to_string()))?;
+
+    // #113 review 3: the issue URL in the audit/metadata is derived from the
+    // daemon's authoritative issue ref, never trusted from the client. A
+    // client could sign a bogus URL; the worktree action echoes the SAME
+    // fetched set it validates against.
+    let request = match request {
+        WorktreeRequest::Issue { repo, number, .. } => {
+            let authoritative_url = state
+                .issues
+                .get(&fleet.name, number)
+                .map(|issue| issue.url)
+                .unwrap_or_default();
+            WorktreeRequest::Issue {
+                repo,
+                number,
+                issue_url: authoritative_url,
+            }
+        }
+        free => free,
+    };
+
+    // The stale/closed-issue guard runs against the SAME repo-level issue set
+    // the browser renders (the integrator's cache), never a guess.
+    let issues: Vec<IssueSummary> = state
+        .issues
+        .snapshot()
+        .into_iter()
+        .flat_map(|(repo, iss)| {
+            iss.into_iter().map(move |issue| IssueSummary {
+                repo: repo.clone(),
+                number: issue.number,
+                state: issue.state,
+            })
+        })
+        .collect();
+    let issue_check = IssueCheck::new(&issues);
+
+    let creator = GitCreator;
+    let launcher = HerdrLauncher;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let outcome = worktree::start(
+        &fleet,
+        &request,
+        "HEAD",
+        &home,
+        issue_check,
+        &creator,
+        &launcher,
+    )?;
+
+    match outcome {
+        WorktreeOutcome::Started {
+            branch,
+            path,
+            handoff,
+        } => {
+            let handoff_state = match handoff {
+                worktree::Handoff::Launched => "launched",
+                worktree::Handoff::Deferred => "deferred",
+                worktree::Handoff::Failed(msg) => {
+                    return Err(WorktreeError::Launch(msg));
+                }
+            };
+            let result = serde_json::json!({
+                "state": "started",
+                "branch": branch,
+                "path": path.to_string_lossy(),
+                "handoff": handoff_state,
+            });
+            Ok((true, None, None, AuditOutcome::Executed, Some(result)))
+        }
+        WorktreeOutcome::AlreadyStarted { branch, path } => {
+            let result = serde_json::json!({
+                "state": "already_started",
+                "branch": branch,
+                "path": path.to_string_lossy(),
+            });
+            Ok((true, None, None, AuditOutcome::Executed, Some(result)))
+        }
+    }
+}
+
+/// Stable wire `error_kind` for a typed worktree failure.
+fn worktree_error_kind(error: &WorktreeError) -> &'static str {
+    match error {
+        WorktreeError::UnknownFleet(_) => "unknown_fleet",
+        WorktreeError::IssueNotFound { .. } => "issue_not_found",
+        WorktreeError::IssueClosed { .. } => "issue_closed",
+        WorktreeError::AlreadyStarted { .. } => "already_started",
+        WorktreeError::InvalidName(_) => "invalid_name",
+        WorktreeError::Git(_) => "git_failure",
+        WorktreeError::Launch(_) => "launch_failure",
+    }
+}
+
+/// Audit outcome for a worktree failure: pre-dispatch validation refusals are
+/// `Refused`; a git/launch failure that consumed the id is `Failed`.
+fn worktree_outcome(error: &WorktreeError) -> AuditOutcome {
+    match error {
+        WorktreeError::Git(_) | WorktreeError::Launch(_) => AuditOutcome::Failed(error.to_string()),
+        _ => AuditOutcome::Refused(error.to_string()),
+    }
 }
 
 fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {

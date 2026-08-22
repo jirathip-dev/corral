@@ -69,6 +69,16 @@ pub enum CiStatus {
 /// `state` is `"UNKNOWN"` when the closing ref's issue is not among the
 /// repo's recently-fetched issues (the daemon enriches it from the same
 /// poll's repo-level issues fetch when available).
+/// One label attached to a GitHub issue (mirrors corrald's `GhIssueLabel`;
+/// #113 wires `labels` + `url` onto the issue ref).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueLabel {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhIssueRef {
     #[serde(default)]
@@ -79,6 +89,10 @@ pub struct GhIssueRef {
     pub state: String,
     #[serde(default)]
     pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<GhIssueLabel>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 /// Git topology + task-centric read-model fields (P2). Every field defaults
@@ -255,6 +269,8 @@ mod tests {
                 number: 22,
                 state: "OPEN".to_string(),
                 title: "t".to_string(),
+                labels: vec![],
+                url: String::new(),
             }],
             ..Default::default()
         };

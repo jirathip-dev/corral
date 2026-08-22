@@ -19,12 +19,13 @@ src/drive/mod.rs and src/api/* on main.
 | `/grants` | POST | admin Bearer token | `{action: set_grants\|revoke, key_id, grants[]}` |
 | `/audit` | GET | admin Bearer token | `{entries[], valid}` — hash-chained log, grows only on writes |
 | `/drive` | POST | device signature | signed command envelope |
+| `/issues` | GET | none (read-only) | `{repos: {repo: [GhIssueRef…]}}` — repo-level issue view |
 
 ## Drive wire shapes (normative)
 
 ```
 SignedDrive   { key_id: String, signature: String, envelope: DriveEnvelope }
-DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"read_tail"|"kill"|"attach",
+DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"read_tail"|"kill"|"attach"|"start_worktree",
                 target: String (agent_id), payload: Value, rev: Option<u64> }
 ```
 - `signature` = device Ed25519 signature over the canonical envelope bytes
@@ -34,6 +35,14 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   - prompt: `{"kind":"prompt","text":String}`
   - read_tail: `{"kind":"read_tail","lines":Option<u32>}` (clamped 1..=200)
   - approve: `{"kind":"approve","approval_id":String,"prompt_hash":String,"choice":String}`
+  - start_worktree (fleet-level; `target` is the fleet/repo name, not an agent id):
+    - issue-linked: `{"kind":"start_worktree","mode":"issue","repo":String,"number":u64,"issue_url":String}`
+    - issue-free: `{"kind":"start_worktree","mode":"free","repo":String,"name":String}`
+- `start_worktree` result (`result` on `ok:true`):
+  - started: `{"state":"started","branch":String,"path":String,"handoff":"launched"|"deferred"}`
+  - already-started (idempotent replay): `{"state":"already_started","branch":String,"path":String}`
+  - typed `error_kind`s: `unknown_fleet`, `issue_not_found`, `issue_closed`,
+    `already_started`, `invalid_name`, `git_failure`, `launch_failure`
 - Responses: success → 200 `DriveResponse {request_id, ok, error?, error_kind?, rev, result?}`;
   typed refusals ride the body (`ok:false` + human `error` and stable
   `error_kind`). Client errors:

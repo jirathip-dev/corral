@@ -1124,7 +1124,16 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     ));
     adapter.clone().start(store.clone());
 
-    tokio::spawn(supervise_planes(store.clone(), attribution.clone()));
+    // #113: the read-only repo-level issue view shared between the planes
+    // integrator and the API, so `GET /issues` sees the facts the worktree
+    // action validates a selected issue against.
+    let issues_cache: Arc<corrald::api::issues::IssuesCache> =
+        Arc::new(corrald::api::issues::IssuesCache::default());
+    tokio::spawn(supervise_planes(
+        store.clone(),
+        attribution.clone(),
+        issues_cache.clone(),
+    ));
     tracing::info!(
         repo_roots = ?attribution.repo_roots(),
         worktrees_root = %attribution.worktrees_root().display(),
@@ -1148,6 +1157,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         auth,
         adapter,
         replay: Arc::new(ReplayTable::default()),
+        issues: issues_cache.clone(),
         transcript_roots: corrald::transcript::bind::TranscriptRoots::from_env(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
@@ -1226,6 +1236,62 @@ fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>)
     roots
 }
 
+/// Build the gh-plane repo-spec set: the compile-time tracked repos (PR read
+/// model) PLUS every configured fleet's `gh_repo` so #113 can issue-start any
+/// fleet, grouped by fleet name. A fleet whose `gh_repo` points at a repo
+/// that shares a workspace-repo name with a tracked repo is authoritative for
+/// that identity (the configured fleet is what the operator is working on).
+fn gh_repo_specs() -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
+    let mut specs = corrald::adapters::gh_plane::tracked_specs();
+    let registry_path = fleet::config::default_path();
+    match fleet::config::load(&registry_path) {
+        Ok(registry) => {
+            add_fleet_specs(&mut specs, &registry.fleets);
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %registry_path.display(),
+                error = %error,
+                "fleet registry unavailable for gh issue specs; falling back to tracked repos only"
+            );
+        }
+    }
+    specs
+}
+
+/// Fold each fleet's `gh_repo` into the gh spec set, keyed by fleet name.
+fn add_fleet_specs(
+    specs: &mut Vec<corrald::adapters::gh_plane::GhRepoSpec>,
+    fleets: &[fleet::config::Fleet],
+) {
+    for fleet in fleets {
+        let Some((owner, name)) = fleet.gh_repo.split_once('/') else {
+            continue;
+        };
+        let slug = format!("{owner}/{name}");
+        // Same GitHub repo: fold the fleet's issue-view key onto the existing
+        // spec (the PR attribution key already matches the fleet basename for
+        // a tracked repo that IS a fleet).
+        if let Some(existing) = specs.iter_mut().find(|s| s.slug() == slug) {
+            if existing.issues_key.is_none() {
+                existing.issues_key = Some(fleet.name.clone());
+            }
+            continue;
+        }
+        // A different repo that shares the workspace repo basename: the
+        // configured fleet is authoritative for that workspace identity.
+        if let Some(pos) = specs.iter().position(|s| s.key == name) {
+            specs.remove(pos);
+        }
+        specs.push(corrald::adapters::gh_plane::GhRepoSpec {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            key: name.to_string(),
+            issues_key: Some(fleet.name.clone()),
+        });
+    }
+}
+
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
 /// adapter's reconnect loop. A panicking integrator would drop the plane
 /// channel receiver; both planes then stop on SinkClosed (gh by contract,
@@ -1233,7 +1299,11 @@ fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>)
 /// supervisor therefore owns the channel and re-arms both planes per
 /// generation. Residual: a previous generation's gh loop notices the dead
 /// sink only at its next poll send, so a restart can briefly double-poll.
-async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
+async fn supervise_planes(
+    store: Store,
+    attribution: WorkspaceAttribution,
+    issues: Arc<corrald::api::issues::IssuesCache>,
+) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
@@ -1247,9 +1317,13 @@ async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
             attribution.repo_roots(),
             attribution.worktrees_root(),
         ));
-        let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
+        let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
+            Arc::new(store.clone()),
+            gh_repo_specs(),
+        ));
         let (sink, rx) = plane_channel();
-        let integrator = Integrator::new_with_attribution(store.clone(), attribution.clone());
+        let integrator =
+            Integrator::with_issues(store.clone(), attribution.clone(), issues.clone());
         // Clear both the shared branch facts and already-stored recognized
         // rows before either replacement plane can emit. This closes the
         // missed-WorktreeRemoved gap without erasing repo identity or other
@@ -1388,6 +1462,78 @@ mod tests {
                 .repo
                 .as_deref(),
             Some("canonical-repo")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_specs_make_corral_issue_startable() {
+        // #113 review 1: a configured fleet whose `gh_repo` is NOT in the
+        // compile-time tracked set (e.g. `corral`) must still get its issues
+        // fetched, grouped by the FLEET name so the worktree action can start
+        // an issue against it.
+        let registry = Registry {
+            fleets: vec![
+                Fleet {
+                    name: "corral".to_string(),
+                    gh_repo: "jirathip-dev/corral".to_string(),
+                    local: "~/Projects/corral".to_string(),
+                    worktree_dir: "corral".to_string(),
+                    orch: "orch-corral".to_string(),
+                    workers: Vec::new(),
+                    paused: false,
+                    models: Models {
+                        orch: "o".to_string(),
+                        impl_: "i".to_string(),
+                        review: "r".to_string(),
+                        impl_alt: None,
+                        impl_alt2: None,
+                    },
+                },
+                Fleet {
+                    name: "plush".to_string(),
+                    gh_repo: "jirathip-dev/plush-meadow".to_string(),
+                    local: "~/Projects/plush-meadow".to_string(),
+                    worktree_dir: "plush-meadow".to_string(),
+                    orch: "orch-plush".to_string(),
+                    workers: Vec::new(),
+                    paused: false,
+                    models: Models {
+                        orch: "o".to_string(),
+                        impl_: "i".to_string(),
+                        review: "r".to_string(),
+                        impl_alt: None,
+                        impl_alt2: None,
+                    },
+                },
+            ],
+        };
+        let mut specs = corrald::adapters::gh_plane::tracked_specs();
+        super::add_fleet_specs(&mut specs, &registry.fleets);
+
+        let corral = specs
+            .iter()
+            .find(|s| s.owner == "jirathip-dev" && s.name == "corral")
+            .expect("corral fleet spec present");
+        assert_eq!(
+            corral.key, "corral",
+            "PR attribution key == gh_repo basename"
+        );
+        assert_eq!(
+            corral.issues_key.as_deref(),
+            Some("corral"),
+            "issues grouped by the fleet name"
+        );
+
+        let plush = specs
+            .iter()
+            .find(|s| s.owner == "jirathip-dev" && s.name == "plush-meadow")
+            .expect("plush fleet spec present");
+        assert_eq!(plush.key, "plush-meadow", "attribution key stays basename");
+        assert_eq!(
+            plush.issues_key.as_deref(),
+            Some("plush"),
+            "issue view keyed by the fleet name, not the basename"
         );
     }
 }

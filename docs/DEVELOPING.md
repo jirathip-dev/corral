@@ -245,6 +245,13 @@ clients.
    against a scratch daemon (recipe in `tests/common/mod.rs` —
    `spawn_live_daemon`).
 
+Fleet-level capabilities (e.g. `start_worktree`, #113) do NOT dispatch
+through the per-agent adapter: `src/api/drive.rs` routes them to
+`dispatch_worktree` before the agent/tombstone/replay-claim path, so a
+worktree start is idempotent on its own `request_id` and audited once. The
+`target` is the fleet/repo name, not an `agent_id`. The client still names
+the capability in `POST /grants` exactly like an agent capability.
+
 ## Testing a scratch daemon by hand
 
 The conformance suite spawns its own daemon; for manual poking use a

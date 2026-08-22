@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 pub const READ_TAIL_MAX_LINES: u32 = 200;
 pub const READ_TAIL_MAX_BYTES: usize = 32 * 1024;
 
-/// The six canonical drive capabilities (D7). Server refuses anything not
+/// The canonical drive capabilities (D7). Server refuses anything not
 /// in this set with a typed error, before dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +43,9 @@ pub enum Capability {
     ReadTail,
     Kill,
     Attach,
+    /// #113: start an issue-linked or issue-free worktree. A fleet-level
+    /// operation (not an agent drive); the `target` carries the fleet name.
+    StartWorktree,
 }
 
 impl fmt::Display for Capability {
@@ -54,6 +57,7 @@ impl fmt::Display for Capability {
             Self::ReadTail => "read_tail",
             Self::Kill => "kill",
             Self::Attach => "attach",
+            Self::StartWorktree => "start_worktree",
         })
     }
 }
@@ -69,6 +73,7 @@ impl FromStr for Capability {
             "read_tail" => Ok(Self::ReadTail),
             "kill" => Ok(Self::Kill),
             "attach" => Ok(Self::Attach),
+            "start_worktree" => Ok(Self::StartWorktree),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -107,6 +112,23 @@ pub enum DrivePayload {
         prompt_hash: String,
         choice: String,
     },
+    /// #113: start a worktree. `kind` is `"issue"` (issue-linked; carries
+    /// `number`/`issue_url`) or `"free"` (issue-free; carries `name`). The
+    /// daemon NEVER fabricates an issue number and NEVER falls through from
+    /// a failed issue lookup to the free path.
+    StartWorktree {
+        /// `"issue"` (issue-linked) or `"free"` (issue-free). Named `mode`
+        /// because the enum's own serde tag is `kind` — the two discriminators
+        /// cannot share a key at the same level.
+        mode: String,
+        repo: String,
+        #[serde(default)]
+        number: Option<u64>,
+        #[serde(default)]
+        issue_url: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+    },
 }
 
 impl DrivePayload {
@@ -120,10 +142,24 @@ impl DrivePayload {
             capability,
             detail: e.to_string(),
         })?;
+        // #113: `mode` is a plain string on the wire so we can refuse an
+        // unknown discriminator with a typed error (serde would otherwise
+        // accept it and fail later, after the payload already consumed the
+        // request id slot).
+        if let Self::StartWorktree { mode, .. } = &typed
+            && mode != "issue"
+            && mode != "free"
+        {
+            return Err(PayloadError {
+                capability,
+                detail: format!("unknown worktree mode {mode:?}; expected \"issue\" or \"free\""),
+            });
+        }
         match (&typed, capability) {
             (Self::Prompt { .. }, Capability::Prompt)
             | (Self::ReadTail { .. }, Capability::ReadTail)
-            | (Self::Approve { .. }, Capability::Approve) => Ok(typed),
+            | (Self::Approve { .. }, Capability::Approve)
+            | (Self::StartWorktree { .. }, Capability::StartWorktree) => Ok(typed),
             _ => Err(PayloadError {
                 capability,
                 detail: "payload kind does not match capability".to_string(),
@@ -284,6 +320,7 @@ mod tests {
             Capability::ReadTail,
             Capability::Kill,
             Capability::Attach,
+            Capability::StartWorktree,
         ] {
             let s = cap.to_string();
             assert_eq!(s.parse::<Capability>().unwrap(), cap);

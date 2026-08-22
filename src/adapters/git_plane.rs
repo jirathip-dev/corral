@@ -21,7 +21,7 @@
 //! later topology discovery adds another fresh watcher and never mutates an
 //! existing stream. This avoids notify's stop/restart busy-yield path and
 //! keeps event delivery independent across repositories. One watch per
-//! commondir covers future worktrees too; the 10s sweep is the backstop for
+//! commondir covers future worktrees too; the 60s sweep is the backstop for
 //! anything outside it.
 //!
 //! Every fs event is mapped to the worktree(s) it concerns (most-specific
@@ -29,13 +29,14 @@
 //! that branch). Events for a path under `commondir/worktrees/` that matches
 //! no known gitdir trigger a registry rescan, so `git worktree add` is
 //! discovered within one event, not one sweep. Debounced 300ms per worktree;
-//! each debounced batch re-reads HEAD + `git status` and emits only on
+//! each debounced batch re-reads one `git status --porcelain=v2 --branch`
+//! snapshot (plus a subject read only when HEAD moved) and emits only on
 //! change. Each reconcile cycle is measured against a 200ms budget and
 //! logged with `warn!` when exceeded.
 //!
 //! ## Safety net (never the primary signal)
 //!
-//! A 10s `git status` sweep across all watched worktrees — one concurrent
+//! A 60s `git status` sweep across all watched worktrees — one concurrent
 //! `git` subprocess per worktree — re-verifies head + status and emits only
 //! when something changed. The sweep also rescans the worktree registry
 //! (`git worktree list --porcelain`), so WorktreeAdded/WorktreeRemoved are
@@ -75,8 +76,18 @@ use crate::core::util::{canonicalize_existing_prefix, now_millis};
 
 /// Per-worktree debounce window (the brief's 300ms).
 const DEBOUNCE: Duration = Duration::from_millis(300);
-/// Safety-net sweep cadence.
-const SWEEP_INTERVAL: Duration = Duration::from_secs(10);
+/// Safety-net sweep cadence. FSEvents is the primary signal; this is only a
+/// bounded backstop for events the OS coalesced or missed, so it must not be
+/// a hot poll loop of its own.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+/// Registry-only safety-net cadence. FSEvents plus a one-shot startup rescan
+/// are the primary topology signals; this is a bounded backstop for repos or
+/// worktrees registered without a deliverable event.
+const TOPOLOGY_INTERVAL: Duration = Duration::from_secs(10);
+/// One-shot startup rescan after the watcher warm-up. This closes the race
+/// where `git worktree add` completes before the initial FSEvents stream is
+/// live, without polling repeatedly during idle operation.
+const STARTUP_RESCAN_DELAY: Duration = Duration::from_millis(500);
 /// Per-event processing budget; exceedances are logged (`warn!`).
 const EVENT_BUDGET: Duration = Duration::from_millis(200);
 /// Upper bound on a single `git` subprocess.
@@ -90,11 +101,14 @@ const RESCAN_THROTTLE_MILLIS: u64 = 1000;
 /// `git worktree add` registers the entry *while* the events are still
 /// arriving, so the first rescan can race the registration.
 const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
+/// Upper bound on fsevents frames coalesced into one watcher batch before
+/// the loop yields again.
+const FS_EVENT_BATCH_MAX: usize = 256;
 
 /// Commands sent to the watcher task by fsevents handling and the safety-net
 /// sweep. Registration is intentionally separate from rescanning: the sweep
 /// already has the fresh topology, while an event-triggered retry needs both.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatcherCommand {
     RegisterNew,
     RescanAndRegister,
@@ -134,6 +148,7 @@ struct WorktreeState {
     gitdir: Option<PathBuf>,
     branch: Option<String>,
     commit: Option<String>,
+    subject: Option<String>,
     status: Option<GitStatus>,
 }
 
@@ -182,7 +197,7 @@ enum ProbeError {
 // Plane
 // ---------------------------------------------------------------------------
 
-/// git data plane: fsevents watcher (primary) + 10s status sweep (safety
+/// git data plane: fsevents watcher (primary) + 60s status sweep (safety
 /// net) over a repo's main checkout and herdr-managed linked worktrees.
 #[derive(Debug)]
 pub struct GitPlane {
@@ -264,8 +279,8 @@ impl GitPlane {
     async fn run_watcher(
         self: Arc<Self>,
         sink: PlaneSink,
-        mut cmd_rx: mpsc::UnboundedReceiver<WatcherCommand>,
-        cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
+        mut cmd_rx: mpsc::Receiver<WatcherCommand>,
+        cmd_tx: mpsc::Sender<WatcherCommand>,
     ) {
         // A callback fan-in channel lets each commondir keep its own
         // RecommendedWatcher/FSEventStream alive without requiring a mutable
@@ -295,10 +310,35 @@ impl GitPlane {
             tokio::select! {
                 item = event_rx.recv() => {
                     match item {
-                        Some((_commondir, Ok(event))) => {
-                            let affected = self.handle_fs_event(&event, &sink, &cmd_tx).await;
+                        Some((_commondir, Ok(first))) => {
+                            let mut batch = Vec::with_capacity(FS_EVENT_BATCH_MAX);
+                            batch.push(first);
+                            let mut stream_ended = false;
+                            while batch.len() < FS_EVENT_BATCH_MAX {
+                                match event_rx.try_recv() {
+                                    Ok((_, Ok(event))) => batch.push(event),
+                                    Ok((commondir, Err(e))) => {
+                                        warn!(
+                                            gitdir = %commondir.display(),
+                                            error = %e,
+                                            "git plane: fsevents error"
+                                        );
+                                    }
+                                    Err(mpsc::error::TryRecvError::Empty) => break,
+                                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                                        stream_ended = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            let affected =
+                                self.handle_fs_event_batch(&batch, &sink, &cmd_tx).await;
                             for wt in affected {
                                 self.debounce(wt, sink.clone());
+                            }
+                            if stream_ended {
+                                info!("git plane: fsevents stream ended");
+                                break;
                             }
                         }
                         Some((commondir, Err(e))) => {
@@ -312,23 +352,38 @@ impl GitPlane {
                 }
                 msg = cmd_rx.recv() => {
                     match msg {
-                        Some(WatcherCommand::RegisterNew) => {
-                            if self.register_new_commondir_watchers(&mut watchers, |cd| {
-                                Self::new_commondir_watcher(cd, &event_tx)
-                            }) {
-                                info!("git plane: fsevents watchers live");
+                        Some(first) => {
+                            // Coalesce a burst of registration requests: only
+                            // the strongest pending command matters, and
+                            // registration itself is idempotent.
+                            let mut command = first;
+                            while let Ok(next) = cmd_rx.try_recv() {
+                                if next == WatcherCommand::RescanAndRegister {
+                                    command = next;
+                                }
                             }
-                        }
-                        Some(WatcherCommand::RescanAndRegister) => {
-                            self.retry_scheduled.store(false, Ordering::Relaxed);
-                            // Unthrottled: a worktree or repository registered
-                            // while an earlier rescan was in flight is caught
-                            // here, then gets its own immutable stream.
-                            self.rescan(&sink).await;
-                            if self.register_new_commondir_watchers(&mut watchers, |cd| {
-                                Self::new_commondir_watcher(cd, &event_tx)
-                            }) {
-                                info!("git plane: fsevents watchers live");
+                            match command {
+                                WatcherCommand::RegisterNew => {
+                                    if self.register_new_commondir_watchers(&mut watchers, |cd| {
+                                        Self::new_commondir_watcher(cd, &event_tx)
+                                    }) {
+                                        info!("git plane: fsevents watchers live");
+                                    }
+                                }
+                                WatcherCommand::RescanAndRegister => {
+                                    self.retry_scheduled.store(false, Ordering::Relaxed);
+                                    // Unthrottled: a worktree or repository
+                                    // registered while an earlier rescan was in
+                                    // flight is caught here, then gets its own
+                                    // immutable stream.
+                                    self.rescan(&sink).await;
+                                    if self.register_new_commondir_watchers(
+                                        &mut watchers,
+                                        |cd| Self::new_commondir_watcher(cd, &event_tx),
+                                    ) {
+                                        info!("git plane: fsevents watchers live");
+                                    }
+                                }
                             }
                         }
                         None => {
@@ -403,33 +458,26 @@ impl GitPlane {
         added
     }
 
-    /// Resolve an fs event to the worktrees it concerns (rescanning the
-    /// registry when a path under `commondir/worktrees/` matches nothing —
-    /// a worktree may have appeared).
-    async fn handle_fs_event(
+    /// Resolve a batch of fs events to the worktrees they concern (rescanning
+    /// the registry once when any path under `commondir/worktrees/` matches
+    /// nothing — a worktree may have appeared).
+    async fn handle_fs_event_batch(
         &self,
-        event: &Event,
+        events: &[Event],
         sink: &PlaneSink,
-        cmd_tx: &mpsc::UnboundedSender<WatcherCommand>,
+        cmd_tx: &mpsc::Sender<WatcherCommand>,
     ) -> Vec<PathBuf> {
         let mut affected: Vec<PathBuf> = Vec::new();
         let mut need_rescan = false;
-        for path in &event.paths {
-            // Same canonicalization discipline as `watches()` (#43): a
-            // DELETE event names a path that no longer exists, so
-            // `fs::canonicalize` fails and the raw spelling would be
-            // compared against gitdirs/commondirs that were canonicalized at
-            // registry-scan time. Resolving the existing prefix keeps both
-            // sides canonical. FSEvents usually hands us device-resolved
-            // paths already, so this is belt-and-braces rather than an
-            // observed miss — but the two code paths must not disagree about
-            // how a path becomes canonical.
-            let canon = canonicalize_existing_prefix(path);
-            let (worktrees, maybe_new) = self.map_event_path(&canon);
-            need_rescan |= maybe_new;
-            for wt in worktrees {
-                if !affected.contains(&wt) {
-                    affected.push(wt);
+        for event in events {
+            for path in &event.paths {
+                let canon = canonicalize_existing_prefix(path);
+                let (worktrees, maybe_new) = self.map_event_path(&canon);
+                need_rescan |= maybe_new;
+                for wt in worktrees {
+                    if !affected.contains(&wt) {
+                        affected.push(wt);
+                    }
                 }
             }
         }
@@ -438,7 +486,7 @@ impl GitPlane {
             // The triggering events were mapped against the pre-rescan
             // state, so the new worktrees are not in `affected` — debounce
             // them now or their first observation would wait for the next
-            // sweep (≤10s).
+            // sweep (≤60s).
             for wt in &added {
                 if !affected.contains(wt) {
                     affected.push(wt.clone());
@@ -448,7 +496,7 @@ impl GitPlane {
             // its first worktree. Request registration regardless of the
             // added count; topology discovery must not depend on the retry
             // branch below.
-            let _ = cmd_tx.send(WatcherCommand::RegisterNew);
+            let _ = cmd_tx.try_send(WatcherCommand::RegisterNew);
             if added.is_empty() && !self.retry_scheduled.swap(true, Ordering::Relaxed) {
                 // The rescan found nothing: `git worktree add` registers the
                 // entry while its events are still arriving, so retry once
@@ -456,11 +504,23 @@ impl GitPlane {
                 let tx = cmd_tx.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(RESCAN_RETRY_DELAY).await;
-                    let _ = tx.send(WatcherCommand::RescanAndRegister);
+                    let _ = tx.send(WatcherCommand::RescanAndRegister).await;
                 });
             }
         }
         affected
+    }
+
+    /// Test/debug wrapper for a single fs event.
+    #[cfg(test)]
+    async fn handle_fs_event(
+        &self,
+        event: &Event,
+        sink: &PlaneSink,
+        cmd_tx: &mpsc::Sender<WatcherCommand>,
+    ) -> Vec<PathBuf> {
+        self.handle_fs_event_batch(std::slice::from_ref(event), sink, cmd_tx)
+            .await
     }
 
     /// Map one fs event path to the worktree(s) it concerns. The second
@@ -580,7 +640,16 @@ impl GitPlane {
             // outside the 200ms per-event budget) but covers the probe —
             // the dominant cost — through the emits.
             let started = Instant::now();
-            let probe = probe_worktree(&wt).await;
+            let (cached_commit, cached_subject) = {
+                let state = plane.state.lock().unwrap();
+                state
+                    .worktrees
+                    .get(&wt)
+                    .map(|st| (st.commit.clone(), st.subject.clone()))
+                    .unwrap_or_default()
+            };
+            let probe =
+                probe_worktree(&wt, cached_commit.as_deref(), cached_subject.as_deref()).await;
             plane.apply_probe(&wt, started, probe, &sink).await;
         });
     }
@@ -593,47 +662,94 @@ impl GitPlane {
     /// are detected even when fsevents missed them. The primary mechanism
     /// remains the fsevents watcher; this only catches up what it missed.
     async fn run_sweep(
-        &self,
+        self: Arc<Self>,
         sink: PlaneSink,
-        watcher_cmd_tx: mpsc::UnboundedSender<WatcherCommand>,
+        watcher_cmd_tx: mpsc::Sender<WatcherCommand>,
     ) {
-        let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Close the startup race once: a worktree added before the fsevents
+        // stream is live is caught by this bounded one-shot rescan.
+        tokio::time::sleep(STARTUP_RESCAN_DELAY).await;
+        if self.stopped.load(Ordering::Relaxed) {
+            info!("git plane: safety-net sweep exiting (sink closed)");
+            return;
+        }
+        let added = self.rescan(&sink).await;
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let _ = watcher_cmd_tx.try_send(WatcherCommand::RegisterNew);
+        for wt in added {
+            self.debounce(wt, sink.clone());
+        }
+
+        let mut topology_ticker = tokio::time::interval(TOPOLOGY_INTERVAL);
+        topology_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut status_ticker = tokio::time::interval(SWEEP_INTERVAL);
+        status_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Consume the immediate first tick; the watcher already did the boot
+        // rescan and the startup rescan above ran the same reconciliation.
+        topology_ticker.tick().await;
         loop {
-            ticker.tick().await;
-            if self.stopped.load(Ordering::Relaxed) {
-                info!("git plane: safety-net sweep exiting (sink closed)");
-                break;
+            tokio::select! {
+                _ = topology_ticker.tick() => {
+                    if self.stopped.load(Ordering::Relaxed) {
+                        info!("git plane: safety-net sweep exiting (sink closed)");
+                        break;
+                    }
+                    let added = self.rescan(&sink).await;
+                    if self.stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = watcher_cmd_tx.try_send(WatcherCommand::RegisterNew);
+                    for wt in added {
+                        self.debounce(wt, sink.clone());
+                    }
+                }
+                _ = status_ticker.tick() => {
+                    if self.stopped.load(Ordering::Relaxed) {
+                        info!("git plane: safety-net sweep exiting (sink closed)");
+                        break;
+                    }
+                    self.rescan(&sink).await;
+                    if self.stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // `rescan` refreshes commondirs as well as worktrees. Ask
+                    // the watcher task to add only topology it has not seen;
+                    // it never reopens an existing stream.
+                    let _ = watcher_cmd_tx.try_send(WatcherCommand::RegisterNew);
+                    let worktrees: Vec<(PathBuf, Option<String>, Option<String>)> = {
+                        let state = self.state.lock().unwrap();
+                        state
+                            .worktrees
+                            .iter()
+                            .map(|(wt, st)| (wt.clone(), st.commit.clone(), st.subject.clone()))
+                            .collect()
+                    };
+                    let sweep_started = Instant::now();
+                    let mut probes = futures::stream::iter(worktrees)
+                        .map(|(wt, cached_commit, cached_subject)| async move {
+                            // Budget clock starts at probe start (the sweep
+                            // has no debounce) and measures through the emits.
+                            let started = Instant::now();
+                            let probe = probe_worktree(
+                                &wt,
+                                cached_commit.as_deref(),
+                                cached_subject.as_deref(),
+                            )
+                            .await;
+                            (wt, started, probe)
+                        })
+                        .buffer_unordered(MAX_CONCURRENT_PROBES);
+                    while let Some((wt, started, probe)) = probes.next().await {
+                        self.apply_probe(&wt, started, probe, &sink).await;
+                    }
+                    debug!(
+                        took_ms = sweep_started.elapsed().as_millis() as u64,
+                        "git plane: safety-net sweep complete"
+                    );
+                }
             }
-            self.rescan(&sink).await;
-            if self.stopped.load(Ordering::Relaxed) {
-                break;
-            }
-            // `rescan` refreshes commondirs as well as worktrees. Ask the
-            // watcher task to add only topology it has not seen; it never
-            // reopens an existing stream.
-            let _ = watcher_cmd_tx.send(WatcherCommand::RegisterNew);
-            let worktrees: Vec<PathBuf> = {
-                let state = self.state.lock().unwrap();
-                state.worktrees.keys().cloned().collect()
-            };
-            let sweep_started = Instant::now();
-            let mut probes = futures::stream::iter(worktrees)
-                .map(|wt| async move {
-                    // Budget clock starts at probe start (the sweep has no
-                    // debounce) and measures through the emits.
-                    let started = Instant::now();
-                    let probe = probe_worktree(&wt).await;
-                    (wt, started, probe)
-                })
-                .buffer_unordered(MAX_CONCURRENT_PROBES);
-            while let Some((wt, started, probe)) = probes.next().await {
-                self.apply_probe(&wt, started, probe, &sink).await;
-            }
-            debug!(
-                took_ms = sweep_started.elapsed().as_millis() as u64,
-                "git plane: safety-net sweep complete"
-            );
         }
     }
 
@@ -709,6 +825,7 @@ impl GitPlane {
             }
             st.branch = Some(probe.branch.clone());
             st.commit = Some(probe.commit.clone());
+            st.subject = probe.subject.clone();
             st.status = Some(probe.status.clone());
         }
         let took = started.elapsed();
@@ -1088,44 +1205,43 @@ fn resolve_gitdir(wt: &Path) -> Option<PathBuf> {
     None
 }
 
-/// One worktree snapshot. Three `git` subprocesses; never mutates anything
+/// One worktree snapshot. One `git status` subprocess; `git log` runs only
+/// when the cached HEAD changed (or no cache exists). Never mutates anything
 /// (`--no-optional-locks` so `status` cannot rewrite the index).
-async fn probe_worktree(wt: &Path) -> Result<Probe, ProbeError> {
+async fn probe_worktree(
+    wt: &Path,
+    cached_commit: Option<&str>,
+    cached_subject: Option<&str>,
+) -> Result<Probe, ProbeError> {
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
-    let branch = run_git(wt, &["rev-parse", "--abbrev-ref", "HEAD"])
+    let status = run_git(wt, &["status", "--porcelain=v2", "--branch"])
         .await
         .map_err(ProbeError::Git)?;
-    // P4 G21: ONE invocation resolves both the head commit AND its first-line
-    // subject (`%H%n%s`), so `head_sha`/`head_subject` on the snapshot cost
-    // zero extra git calls. Fails like `rev-parse HEAD` on an unborn HEAD
-    // (exit 128), keeping the unborn case a clean probe failure.
-    //
-    // Parity caveat (G21 re-review F3): on a PARTIAL/TREELESS clone whose
-    // HEAD commit object is missing, `git log -1` may attempt a lazy fetch
-    // (bounded by GIT_TIMEOUT) where `rev-parse HEAD` would fail fast —
-    // acceptable for herdr-managed worktrees, and the probe stays
-    // all-or-nothing (a head-read failure suppresses the whole fact, like
-    // any other probe failure).
-    let head = run_git(wt, &["log", "-1", "--format=%H%n%s"])
-        .await
-        .map_err(ProbeError::Git)?;
-    let mut lines = head.lines();
-    let commit = lines.next().unwrap_or_default().trim().to_string();
-    let subject = lines
-        .next()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let status = run_git(wt, &["status", "--porcelain=v1", "-b"])
-        .await
-        .map_err(ProbeError::Git)?;
+    let (branch, mut commit, status) = parse_status_v2(&status)?;
+    let subject = if cached_commit == Some(commit.as_str()) {
+        cached_subject.map(str::to_string)
+    } else {
+        // P4 G21: ONE invocation resolves both the head commit AND its
+        // first-line subject when HEAD moved. The status probe already
+        // carries `oid`, so no `rev-parse` is needed on the hot path.
+        let head = run_git(wt, &["log", "-1", "--format=%H%n%s"])
+            .await
+            .map_err(ProbeError::Git)?;
+        let mut lines = head.lines();
+        commit = lines.next().unwrap_or_default().trim().to_string();
+        lines
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     Ok(Probe {
-        branch: branch.trim().to_string(),
+        branch,
         commit,
         subject,
-        status: parse_status(&status),
+        status,
     })
 }
 
@@ -1160,7 +1276,9 @@ async fn run_git(wt: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Parse `git status --porcelain=v1 -b` into the canonical summary.
+/// Parse `git status --porcelain=v1 -b` (kept for precise regression
+/// coverage only; production uses the v2 parser).
+#[cfg(test)]
 fn parse_status(output: &str) -> GitStatus {
     let mut status = GitStatus::default();
     for line in output.lines() {
@@ -1186,18 +1304,90 @@ fn parse_status(output: &str) -> GitStatus {
             }
             continue;
         }
-        let bytes = line.as_bytes();
-        if bytes.len() < 2 {
+        if line.starts_with('#') {
             continue;
         }
-        match (bytes[0], bytes[1]) {
-            (b'?', b'?') => status.dirty_worktree = true, // untracked
-            (x, _) if x != b' ' => status.dirty_index = true,
-            (_, y) if y != b' ' => status.dirty_worktree = true,
-            _ => {}
-        }
+        parse_status_line(line, &mut status);
     }
     status
+}
+
+#[cfg(test)]
+fn parse_status_line(line: &str, status: &mut GitStatus) {
+    let bytes = line.as_bytes();
+    if bytes.len() < 2 {
+        return;
+    }
+    match (bytes[0], bytes[1]) {
+        (b'?', _) => status.dirty_worktree = true, // untracked (v1 `??`, v2 `?`)
+        (x, _) if x != b' ' => status.dirty_index = true,
+        (_, y) if y != b' ' => status.dirty_worktree = true,
+        _ => {}
+    }
+}
+
+/// Parse one porcelain v2 status record. Unlike v1, the XY state is at bytes
+/// 2..4 (`1 <XY> ...`), so the shared v1 parser must not be reused here.
+fn parse_status_v2_record(line: &str, status: &mut GitStatus) {
+    let bytes = line.as_bytes();
+    if line.starts_with("? ") {
+        status.dirty_worktree = true;
+        return;
+    }
+    if bytes.len() >= 4
+        && (bytes[0] == b'1' || bytes[0] == b'2' || bytes[0] == b'u')
+        && bytes[1] == b' '
+    {
+        // Porcelain v2 uses `.` in place of the v1 ` ` clean marker.
+        if bytes[2] != b'.' && bytes[2] != b' ' {
+            status.dirty_index = true;
+        }
+        if bytes[3] != b'.' && bytes[3] != b' ' {
+            status.dirty_worktree = true;
+        }
+    }
+}
+
+/// Parse `git status --porcelain=v2 --branch` into branch, HEAD oid and the
+/// canonical summary. Unborn HEAD is a probe failure, matching the old
+/// `rev-parse` + `git log` all-or-nothing semantics.
+fn parse_status_v2(output: &str) -> Result<(String, String, GitStatus), ProbeError> {
+    let mut branch = String::new();
+    let mut commit = None;
+    let mut status = GitStatus::default();
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.oid ") {
+            let oid = rest.trim();
+            if oid != "(initial)" {
+                commit = Some(oid.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("# branch.head ") {
+            let head = rest.trim();
+            branch = if head == "(detached)" {
+                "HEAD".to_string()
+            } else {
+                head.to_string()
+            };
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            for part in rest.split_whitespace() {
+                if let Some(n) = part.strip_prefix('+').and_then(|n| n.parse().ok()) {
+                    status.ahead = n;
+                } else if let Some(n) = part.strip_prefix('-').and_then(|n| n.parse().ok()) {
+                    status.behind = n;
+                }
+            }
+            continue;
+        }
+        if !line.starts_with('#') {
+            parse_status_v2_record(line, &mut status);
+        }
+    }
+    let commit = commit.ok_or_else(|| ProbeError::Git("unborn HEAD has no commit".to_string()))?;
+    Ok((branch, commit, status))
 }
 
 fn event_kind(event: &GitEvent) -> &'static str {
@@ -1215,12 +1405,12 @@ impl Plane for GitPlane {
         "git"
     }
 
-    /// Spawn the fsevents watcher (primary) and the 10s sweep (safety net).
+    /// Spawn the fsevents watcher (primary) and the 60s sweep (safety net).
     /// Never blocks: all work happens on background tasks. Resets the
     /// sink-close flag so a supervised restart can re-arm cleanly (WS3 F4).
     fn start(self: Arc<Self>, sink: PlaneSink) {
         self.stopped.store(false, Ordering::Relaxed);
-        let (watcher_cmd_tx, watcher_cmd_rx) = mpsc::unbounded_channel();
+        let (watcher_cmd_tx, watcher_cmd_rx) = mpsc::channel::<WatcherCommand>(1);
         let watcher_sink = sink.clone();
         let watcher_plane = self.clone();
         let watcher_cmd_tx_for_events = watcher_cmd_tx.clone();
@@ -1317,6 +1507,69 @@ mod tests {
                 behind: 3,
             }
         );
+    }
+
+    #[test]
+    fn parses_status_v2_branch_oid_and_dirty_flags() {
+        let out = "# branch.oid abc123def\n\
+                   # branch.head feat/topic\n\
+                   # branch.upstream origin/feat/topic\n\
+                   # branch.ab +1 -2\n\
+                   1 M. path/a\n\
+                   ? path/b\n";
+        let (branch, commit, status) = parse_status_v2(out).expect("v2 status parses");
+        assert_eq!(branch, "feat/topic");
+        assert_eq!(commit, "abc123def");
+        assert!(status.dirty_index);
+        assert!(status.dirty_worktree);
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 2);
+    }
+
+    #[test]
+    fn parses_status_v2_xy_at_correct_offset_and_untracked() {
+        let header = "# branch.oid abc123def\n\
+                      # branch.head feat/topic\n\
+                      # branch.ab +0 -0\n";
+        let cases = [
+            (
+                "1 .M N... 000000 000000 000000 000000 000000 path/a\n",
+                false,
+                true,
+            ),
+            (
+                "1 MM N... 000000 000000 000000 000000 000000 path/a\n",
+                true,
+                true,
+            ),
+            (
+                "1 M. N... 000000 000000 000000 000000 000000 path/a\n",
+                true,
+                false,
+            ),
+            ("? untracked\n", false, true),
+        ];
+        for (record, dirty_index, dirty_worktree) in cases {
+            let out = format!("{header}{record}");
+            let (_, _, status) = parse_status_v2(&out).expect("v2 status parses");
+            assert_eq!(
+                status.dirty_index, dirty_index,
+                "dirty_index for {record:?}"
+            );
+            assert_eq!(
+                status.dirty_worktree, dirty_worktree,
+                "dirty_worktree for {record:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_status_v2_detached_head() {
+        let out = "# branch.oid abc123def\n# branch.head (detached)\n";
+        let (branch, commit, status) = parse_status_v2(out).expect("detached v2 parses");
+        assert_eq!(branch, "HEAD");
+        assert_eq!(commit, "abc123def");
+        assert_eq!(status, GitStatus::default());
     }
 
     #[test]
@@ -1823,6 +2076,36 @@ mod tests {
         assert!(!maybe_new);
     }
 
+    #[tokio::test]
+    async fn fs_event_batch_coalesces_burst_to_one_worktree() {
+        let commondir = PathBuf::from("/fake/repo/.git");
+        let wt = PathBuf::from("/fake/wts/wt");
+        let gitdir = commondir.join("worktrees/wt");
+        let plane = plane_with_state(|state| {
+            state.worktrees.insert(
+                wt.clone(),
+                WorktreeState {
+                    gitdir: Some(gitdir.clone()),
+                    ..Default::default()
+                },
+            );
+        });
+        let (sink, _rx) = crate::core::plane_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<WatcherCommand>(1);
+        let events: Vec<Event> = (0..8)
+            .map(|_| {
+                Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+                    .add_path(gitdir.join("HEAD"))
+            })
+            .collect();
+        let affected = plane.handle_fs_event_batch(&events, &sink, &cmd_tx).await;
+        assert_eq!(
+            affected,
+            vec![wt],
+            "a burst of events for one worktree must coalesce to one debounce target"
+        );
+    }
+
     /// A throwaway repo with one committed file, returning (root, HEAD sha).
     fn scratch_repo(tag: &str) -> (PathBuf, String) {
         let root = std::env::temp_dir().join(format!(
@@ -1855,13 +2138,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn probe_returns_sha_and_first_line_subject_in_three_git_calls() {
+    async fn probe_returns_sha_and_first_line_subject_in_two_git_calls() {
         // F2: serialize against the other probe test — GIT_CALLS is shared.
         let _guard = PROBE_LOCK.lock().await;
-        // G21 acceptance 2: the head fields ride the commit probe — the
-        // subject is read by the SAME `git log` that resolves the sha, so a
-        // probe is exactly three git invocations (branch, head+subject,
-        // status), never four.
+        // G21 acceptance 2: `status --porcelain=v2 --branch` carries the head
+        // oid and branch; the subject is read by a single `git log` only when
+        // HEAD is uncached, so a fresh probe is two git invocations, never
+        // four.
         let (root, _) = scratch_repo("head-fields");
         // Multi-line message: the subject is the FIRST line only.
         let git = |args: &[&str]| {
@@ -1887,11 +2170,13 @@ mod tests {
             .to_string();
 
         let before = GIT_CALLS.load(Ordering::Relaxed);
-        let probe = probe_worktree(&root).await.expect("probe succeeds");
+        let probe = probe_worktree(&root, None, None)
+            .await
+            .expect("probe succeeds");
         let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
         assert_eq!(
-            delta, 3,
-            "head_sha/head_subject must add zero git calls (probe = 3)"
+            delta, 2,
+            "one status + one subject read when HEAD is uncached (probe = 2)"
         );
         assert_eq!(
             probe.commit, sha,
@@ -1903,6 +2188,23 @@ mod tests {
             "subject is the commit's first line"
         );
         assert_eq!(probe.branch, "main");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn probe_reuses_cached_subject_without_log_on_unchanged_head() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (root, _) = scratch_repo("head-cache");
+        let first = probe_worktree(&root, None, None)
+            .await
+            .expect("first probe");
+        let before = GIT_CALLS.load(Ordering::Relaxed);
+        let second = probe_worktree(&root, Some(first.commit.as_str()), first.subject.as_deref())
+            .await
+            .expect("cached probe");
+        let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
+        assert_eq!(delta, 1, "unchanged HEAD needs only one status call");
+        assert_eq!(second, first);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1927,7 +2229,7 @@ mod tests {
             .expect("git subprocess runs");
         assert!(init.status.success());
         assert!(
-            probe_worktree(&root).await.is_err(),
+            probe_worktree(&root, None, None).await.is_err(),
             "unborn HEAD must fail the probe"
         );
         let _ = fs::remove_dir_all(&root);
@@ -2010,7 +2312,7 @@ mod tests {
         assert!(!wt.exists(), "precondition: worktree directory is gone");
         assert!(!gitdir.exists(), "precondition: gitdir is gone");
 
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<WatcherCommand>(1);
         let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
             .add_path(gitdir);
         let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;
@@ -2133,7 +2435,7 @@ mod tests {
             "precondition: raw spelling is gone too"
         );
 
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<WatcherCommand>();
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<WatcherCommand>(1);
         let event = Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
             .add_path(raw_event_path);
         let affected = plane.handle_fs_event(&event, &sink, &cmd_tx).await;

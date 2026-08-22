@@ -56,7 +56,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -317,15 +317,96 @@ struct AgentListWire {
     agents: Vec<AgentInfoWire>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+struct WireEnvelope {
+    id: Option<String>,
+    error: Option<Box<RawValue>>,
+    result: Option<Box<RawValue>>,
+    event: Option<String>,
+    data: Option<Box<RawValue>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireError {
+    code: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct PaneUpdatedData {
+    pane: PaneInfoWire,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct PaneLifecycleData {
+    pane_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // RPC framing
 // ---------------------------------------------------------------------------
 
 /// A pushed event (responses are resolved inline by the reader).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+enum ParsedEvent {
+    PaneUpdated(Box<PaneInfoWire>),
+    StatusChanged(StatusChangedWire),
+    OutputMatched(OutputMatchedWire),
+    AgentDetected(AgentDetectedWire),
+    PaneClosed { pane_id: String },
+    PaneCreated,
+}
+
+#[derive(Debug)]
 struct EventFrame {
-    kind: String,
-    data: Value,
+    event: ParsedEvent,
+}
+
+/// Decode one pushed event exactly once, at the socket boundary. Unknown
+/// event kinds are ignored without building a generic JSON tree; known kinds
+/// deserialize directly into the wire type the handler needs.
+fn decode_event(
+    kind: &str,
+    data: Option<&RawValue>,
+) -> Result<Option<ParsedEvent>, serde_json::Error> {
+    let raw = data.map(RawValue::get).unwrap_or("null");
+    match kind {
+        "pane_updated" => Ok(Some(ParsedEvent::PaneUpdated(Box::new(
+            serde_json::from_str::<PaneUpdatedData>(raw)?.pane,
+        )))),
+        "pane_agent_status_changed" => {
+            Ok(Some(ParsedEvent::StatusChanged(serde_json::from_str(raw)?)))
+        }
+        "pane_output_matched" => Ok(Some(ParsedEvent::OutputMatched(serde_json::from_str(raw)?))),
+        "pane_agent_detected" => Ok(Some(ParsedEvent::AgentDetected(serde_json::from_str(raw)?))),
+        "pane_closed" | "pane_exited" => Ok(Some(ParsedEvent::PaneClosed {
+            pane_id: serde_json::from_str::<PaneLifecycleData>(raw)?.pane_id,
+        })),
+        "pane_created" => Ok(Some(ParsedEvent::PaneCreated)),
+        _ => Ok(None),
+    }
+}
+
+fn decode_wire_error(raw: &str) -> RpcError {
+    match serde_json::from_str::<WireError>(raw) {
+        Ok(error) => RpcError::Server {
+            code: error.code.unwrap_or_else(|| "error".to_string()),
+            message: error.message.unwrap_or_else(|| "unknown error".to_string()),
+        },
+        Err(_) => RpcError::Server {
+            code: "error".to_string(),
+            message: "malformed error response".to_string(),
+        },
+    }
+}
+
+fn decode_wire_result(raw: Option<&RawValue>) -> Value {
+    raw.map(RawValue::get)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null)
 }
 
 #[derive(Debug)]
@@ -403,29 +484,18 @@ impl RpcClient {
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
+            let frame: WireEnvelope = match serde_json::from_str(&line) {
+                Ok(frame) => frame,
                 Err(e) => {
                     warn!(error = %e, "herdr frame parse error");
                     continue;
                 }
             };
-            if let Some(id) = value.get("id").and_then(|i| i.as_str()) {
+            if let Some(id) = frame.id.as_deref() {
                 if let Some(tx) = pending.lock().unwrap().calls.remove(id) {
-                    let result = match value.get("error") {
-                        Some(err) => Err(RpcError::Server {
-                            code: err
-                                .get("code")
-                                .and_then(|c| c.as_str())
-                                .unwrap_or("error")
-                                .to_string(),
-                            message: err
-                                .get("message")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("unknown error")
-                                .to_string(),
-                        }),
-                        None => Ok(value.get("result").cloned().unwrap_or(Value::Null)),
+                    let result = match frame.error.as_deref() {
+                        Some(error) => Err(decode_wire_error(error.get())),
+                        None => Ok(decode_wire_result(frame.result.as_deref())),
                     };
                     let _ = tx.send(result);
                 }
@@ -440,13 +510,18 @@ impl RpcClient {
                 // but never deliver more potentially incomplete state.
                 continue;
             }
-            let kind = value
-                .get("event")
-                .and_then(|e| e.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let data = value.get("data").cloned().unwrap_or(Value::Null);
-            match events.try_send(EventFrame { kind, data }) {
+            let Some(kind) = frame.event.as_deref() else {
+                continue;
+            };
+            let event = match decode_event(kind, frame.data.as_deref()) {
+                Ok(Some(event)) => event,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(event = kind, error = %e, "herdr event decode failed");
+                    continue;
+                }
+            };
+            match events.try_send(EventFrame { event }) {
                 Ok(()) => {}
                 // #105: a full channel means canonical state may have
                 // missed an event. Retire this stream so the session
@@ -706,15 +781,30 @@ impl SessionState {
         }
     }
 
-    fn retire_pane(&mut self, pane_id: &str, tombstone_agent: bool) -> Option<String> {
-        self.prune_tombstones();
+    /// Cancel a pane's dedicated stream and drop its per-pane membership.
+    /// Used when a pane is retired or migrates to a new pane id, so the old
+    /// id cannot spawn a second stream while the global stream remains live.
+    fn cancel_pane_stream(&mut self, pane_id: &str) {
         self.subscribed_panes.remove(pane_id);
-        self.mark_stale_pane(pane_id);
-        // Always cancel a live pane stream, even when the pane had no agent
-        // mapping left: a removed-and-recreated pane must not leak a task.
         if let Some(cancel) = self.pane_streams.remove(pane_id) {
             let _ = cancel.send(true);
         }
+    }
+
+    /// Cancel every dedicated pane stream before the global stream takes
+    /// over their subscriptions on a re-bootstrap. Membership is preserved
+    /// for all panes that survived reconciliation; the global subscription
+    /// owns per-pane events from then on.
+    fn cancel_all_pane_streams(&mut self) {
+        for (_, cancel) in self.pane_streams.drain() {
+            let _ = cancel.send(true);
+        }
+    }
+
+    fn retire_pane(&mut self, pane_id: &str, tombstone_agent: bool) -> Option<String> {
+        self.prune_tombstones();
+        self.cancel_pane_stream(pane_id);
+        self.mark_stale_pane(pane_id);
         let agent_id = self.pane_agents.remove(pane_id)?;
         // A pane can send a late close/status event after the same agent has
         // already migrated to a new pane. Do not let that late event remove
@@ -754,7 +844,7 @@ enum StreamKey {
 /// Frames from all event streams, funnelled into one sink.
 #[derive(Debug)]
 enum SinkFrame {
-    Event { kind: String, data: Value },
+    Event { event: Box<ParsedEvent> },
     Closed { key: StreamKey },
 }
 
@@ -919,9 +1009,8 @@ impl HerdrAdapter {
         self.spawn_event_stream(StreamKey::Global, sink_tx.clone(), global_retry.clone());
         loop {
             match sink_rx.recv().await {
-                Some(SinkFrame::Event { kind, data, .. }) => {
-                    self.handle_event(&kind, &data, sink_tx.clone(), store)
-                        .await;
+                Some(SinkFrame::Event { event, .. }) => {
+                    self.handle_event(*event, sink_tx.clone(), store).await;
                 }
                 Some(SinkFrame::Closed { key }) => {
                     match key {
@@ -929,6 +1018,10 @@ impl HerdrAdapter {
                             // Server restarted or stream dropped: re-bootstrap
                             // to reconcile (dropping ghost agents whose panes
                             // closed while the stream was down), then reopen.
+                            // Cancel dedicated pane streams first: the global
+                            // re-subscription carries their per-pane subs, so
+                            // keeping them would double every event.
+                            self.state.lock().unwrap().cancel_all_pane_streams();
                             info!("main event stream closed, re-bootstrapping");
                             let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
                             let list: AgentListWire =
@@ -1217,7 +1310,7 @@ impl HerdrAdapter {
             if state.pane_agents.get(&previous_pane).map(String::as_str) == Some(agent_id) {
                 state.pane_agents.remove(&previous_pane);
             }
-            state.subscribed_panes.remove(&previous_pane);
+            state.cancel_pane_stream(&previous_pane);
             state.mark_stale_pane(previous_pane);
         }
 
@@ -1427,54 +1520,18 @@ impl HerdrAdapter {
         agent
     }
 
-    async fn handle_event(
-        &self,
-        kind: &str,
-        data: &Value,
-        sink: mpsc::Sender<SinkFrame>,
-        store: &Store,
-    ) {
-        match kind {
-            "pane_updated" => {
-                let pane: PaneInfoWire = match serde_json::from_value(
-                    data.get("pane").cloned().unwrap_or(Value::Null),
-                ) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!(error = %e, "pane.updated decode failed");
-                        return;
-                    }
-                };
-                self.handle_pane_updated(&pane, sink.clone(), store).await;
+    async fn handle_event(&self, event: ParsedEvent, sink: mpsc::Sender<SinkFrame>, store: &Store) {
+        match event {
+            ParsedEvent::PaneUpdated(pane) => {
+                self.handle_pane_updated(&pane, sink, store).await;
             }
-            "pane_agent_status_changed" => {
-                let ev: StatusChangedWire = match serde_json::from_value(data.clone()) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        warn!(error = %e, "pane.agent_status_changed decode failed");
-                        return;
-                    }
-                };
+            ParsedEvent::StatusChanged(ev) => {
                 self.handle_status_changed(&ev, store).await;
             }
-            "pane_output_matched" => {
-                let ev: OutputMatchedWire = match serde_json::from_value(data.clone()) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        warn!(error = %e, "pane.output_matched decode failed");
-                        return;
-                    }
-                };
+            ParsedEvent::OutputMatched(ev) => {
                 self.handle_output_matched(&ev, store).await;
             }
-            "pane_agent_detected" => {
-                let ev: AgentDetectedWire = match serde_json::from_value(data.clone()) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        warn!(error = %e, "pane.agent_detected decode failed");
-                        return;
-                    }
-                };
+            ParsedEvent::AgentDetected(ev) => {
                 if ev.released.unwrap_or(false) || ev.agent.is_none() {
                     let removed = self.state.lock().unwrap().remove(&ev.pane_id);
                     if let Some(agent_id) = removed {
@@ -1510,19 +1567,16 @@ impl HerdrAdapter {
                         .await;
                 }
             }
-            "pane_exited" | "pane_closed" => {
-                if let Some(pane_id) = data.get("pane_id").and_then(|p| p.as_str()) {
-                    let removed = self.state.lock().unwrap().remove(pane_id);
-                    if let Some(agent_id) = removed {
-                        self.remove_if_unmapped(store, &agent_id).await;
-                    }
+            ParsedEvent::PaneClosed { pane_id } => {
+                let removed = self.state.lock().unwrap().remove(&pane_id);
+                if let Some(agent_id) = removed {
+                    self.remove_if_unmapped(store, &agent_id).await;
                 }
             }
-            "pane_created" => {
+            ParsedEvent::PaneCreated => {
                 // Nothing to do: agent panes announce themselves via
                 // pane.agent_detected / pane.updated.
             }
-            _ => {}
         }
     }
 
@@ -1832,9 +1886,11 @@ async fn run_event_stream(
     let mut forwarder = AbortOnDrop(Some(tokio::spawn(async move {
         // Keep the client (and its write half) alive for the whole stream.
         let _client = client_for_forwarder;
-        while let Some(EventFrame { kind, data }) = rx.recv().await {
+        while let Some(EventFrame { event }) = rx.recv().await {
             if forwarder_sink
-                .send(SinkFrame::Event { kind, data })
+                .send(SinkFrame::Event {
+                    event: Box::new(event),
+                })
                 .await
                 .is_err()
             {
@@ -2219,6 +2275,7 @@ mod tests {
     use super::*;
     use crate::core::model::Change;
     use serde_json::json;
+    use serde_json::value::RawValue;
 
     /// Real `agent.list` entry captured from the live herdr socket: a claude
     /// agent with a session id, and an opencode agent without one.
@@ -2279,6 +2336,31 @@ mod tests {
 
         backoff.reset();
         assert_eq!(backoff.next_delay(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn decode_event_parses_known_pane_payload_directly() {
+        let raw: Box<RawValue> = serde_json::from_str(
+            r#"{"pane":{"pane_id":"w1:p1","agent":"opencode","agent_status":"working","state_labels":{}}}"#,
+        )
+        .unwrap();
+        let parsed = decode_event("pane_updated", Some(raw.as_ref())).expect("decode");
+        let ParsedEvent::PaneUpdated(pane) = parsed.expect("known event") else {
+            panic!("expected pane_updated");
+        };
+        assert_eq!(pane.pane_id, "w1:p1");
+        assert_eq!(pane.agent.as_deref(), Some("opencode"));
+    }
+
+    #[test]
+    fn decode_event_skips_unknown_kind_without_wire_typed_value() {
+        let raw: Box<RawValue> =
+            serde_json::from_str(r#"{"pane_id":"w1:p1","unused":"large payload"}"#).unwrap();
+        assert!(
+            decode_event("pane_unknown_kind", Some(raw.as_ref()))
+                .expect("unknown kind is not a decode failure")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2844,8 +2926,9 @@ mod tests {
         let (sink, _rx) = mpsc::channel(16);
         adapter
             .handle_event(
-                "pane_closed",
-                &json!({"pane_id": "w-stale:p1"}),
+                ParsedEvent::PaneClosed {
+                    pane_id: "w-stale:p1".to_string(),
+                },
                 sink,
                 &store,
             )
@@ -3211,6 +3294,90 @@ mod tests {
         assert!(!state.lock().unwrap().pane_streams.contains_key("p1"));
         expect_pane_server_event(&mut events_rx, PaneServerEvent::Closed(0)).await;
 
+        server.await.expect("pane server task");
+    }
+
+    #[tokio::test]
+    async fn cancel_all_pane_streams_preserves_membership_and_closes_socket() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let server = tokio::spawn(serve_pane_streams(
+            listener,
+            vec![PaneServerReply::AcceptSubscription],
+            events_tx,
+        ));
+        let state = subscribed_pane_state("p1");
+        let (sink, _sink_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
+
+        spawn_pane_event_stream(socket_path, "p1".to_string(), sink, state.clone());
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Connected(0)).await;
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Ready(0)).await;
+
+        let (stream_cancelled, membership_kept) = {
+            let mut state = state.lock().unwrap();
+            state.cancel_all_pane_streams();
+            (
+                !state.pane_streams.contains_key("p1"),
+                state.subscribed_panes.contains("p1"),
+            )
+        };
+        assert!(stream_cancelled, "global re-bootstrap cancels pane task");
+        assert!(
+            membership_kept,
+            "global re-subscription keeps the pane known so reconcile can reuse it"
+        );
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Closed(0)).await;
+        server.await.expect("pane server task");
+    }
+
+    #[tokio::test]
+    async fn pane_migration_cancels_old_dedicated_stream_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let server = tokio::spawn(serve_pane_streams(
+            listener,
+            vec![PaneServerReply::AcceptSubscription],
+            events_tx,
+        ));
+        let mut initial = SessionState::default();
+        initial.subscribed_panes.insert("p1".to_string());
+        initial
+            .pane_agents
+            .insert("p1".to_string(), "herdr:session".to_string());
+        initial
+            .agent_panes
+            .insert("herdr:session".to_string(), "p1".to_string());
+        let state = Arc::new(Mutex::new(initial));
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        let (sink, _sink_rx) = mpsc::channel(FRAME_CHANNEL_CAP);
+
+        spawn_pane_event_stream(socket_path, "p1".to_string(), sink, state.clone());
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Connected(0)).await;
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Ready(0)).await;
+
+        {
+            let mut state = state.lock().unwrap();
+            adapter.register_pane(&mut state, "p2", "herdr:session", None);
+        }
+        let (old_cancelled, old_membership, new_pane) = {
+            let state = state.lock().unwrap();
+            (
+                !state.pane_streams.contains_key("p1"),
+                !state.subscribed_panes.contains("p1"),
+                state.agent_panes.get("herdr:session").map(String::as_str) == Some("p2"),
+            )
+        };
+        assert!(old_cancelled, "migration cancels the old per-pane task");
+        assert!(
+            old_membership,
+            "migration must not leave the old pane eligible for a second stream"
+        );
+        assert!(new_pane, "drive mapping follows the migrated pane");
+        expect_pane_server_event(&mut events_rx, PaneServerEvent::Closed(0)).await;
         server.await.expect("pane server task");
     }
 
@@ -3857,8 +4024,11 @@ mod tests {
         adapter.handle_pane_updated(&late, sink, &store).await;
         adapter
             .handle_event(
-                "pane_agent_detected",
-                &json!({"pane_id": "w-old:p1", "agent": "opencode"}),
+                ParsedEvent::AgentDetected(AgentDetectedWire {
+                    pane_id: "w-old:p1".to_string(),
+                    agent: Some("opencode".to_string()),
+                    released: None,
+                }),
                 mpsc::channel(16).0,
                 &store,
             )

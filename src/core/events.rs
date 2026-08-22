@@ -13,7 +13,7 @@
 //! - Additive only. New event kinds extend [`PlaneEvent`]; existing variants
 //!   and field types never change shape.
 //! - The primary signal for every plane is push-only (zero polling). A
-//!   bounded, documented safety-net sweep is allowed (WS1's 10s `git status`
+//!   bounded, documented safety-net sweep is allowed (WS1's 60s `git status`
 //!   catch-up); it must never be the primary source of events.
 //! - Events are facts about a worktree/repo, never about an agent id — the
 //!   agent linkage is the integrator's job, keyed on the path/repo strings
@@ -36,7 +36,7 @@ pub const PLANE_CHANNEL_CAP: usize = 4096;
 ///
 /// `dirty_index` / `dirty_worktree` mirror `git status` (index = staged,
 /// worktree = unstaged modifications + untracked files); `ahead`/`behind`
-/// are commits vs the upstream branch. The 10s safety-net sweep emits this
+/// are commits vs the upstream branch. The 60s safety-net sweep emits this
 /// after any detected change so the `dirty` field can never go stale.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitStatus {
@@ -72,7 +72,7 @@ pub enum GitEvent {
         #[serde(default)]
         subject: Option<String>,
     },
-    /// Dirty state changed (or the 10s sweep refreshed it).
+    /// Dirty state changed (or the 60s sweep refreshed it).
     DirtyChanged {
         worktree: PathBuf,
         status: GitStatus,

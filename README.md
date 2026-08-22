@@ -2,6 +2,8 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
 
+**See every agent. Steer the fleet.**
+
 **Corral is the control plane for your herdr fleet.** [Install
 herdr](https://github.com/herdrdev/herdr) first: it is the runtime that
 spawns and supervises agents in panes and worktrees. Corral gives that fleet

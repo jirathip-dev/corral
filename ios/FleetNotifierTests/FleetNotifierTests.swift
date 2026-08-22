@@ -1145,6 +1145,11 @@ final class TappableDriveSafetyTests: XCTestCase {
         return try XCTUnwrap(root["envelope"] as? [String: Any])
     }
 
+    func testNoArgInitializerBuildsDelegateForSwiftUIAdaptor() {
+        let delegate = AppDelegate()
+        XCTAssertTrue(AppDelegate.shared === delegate)
+    }
+
     func testDeletedDetailTargetCannotDispatchTail() {
         let model = AppModel()
         let stale = agent("herdr:deleted", capabilities: ["read_tail"])

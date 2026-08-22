@@ -12,6 +12,18 @@ The destructive ops half — `switch`, `reap`, and `prune` — is implemented
 beside it: those commands can halt a verified agent pane or remove a
 provably-dead worktree, but they never rewrite the registry themselves.
 
+Corral is a **tolerant subset reader**: fleet-operations owns the full
+schema (model roles, `reasoning_effort`, top-level `admit`, and future
+additions), while corral consumes only the identity fields it needs. Unknown
+keys at the registry, fleet, or `models` level are accepted and retained
+across a corral rewrite, so a fleet-ops schema addition cannot empty
+`GET /issues` or silently disappear through `fleet models`. This tolerance
+does not weaken validation of fields Corral owns: an unknown key one edit
+away from `paused`, `impl_alt`, or another owned name is refused loudly
+rather than silently defaulting (`pausd`, `imp1_alt`, `puased`,
+`imlp_alt`), while genuinely farther foreign keys stay accepted. One edit
+includes substitution, insertion, deletion, and adjacent transposition.
+
 ## Registry schema
 
 Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
@@ -19,10 +31,9 @@ Default path: `$CORRAL_FLEETS_PATH`, else the corral-owned
 honoured as a migration fallback when — and only when — the corral-owned file
 does not exist (#66); the
 corral-owned dir honours `$CORRAL_CONFIG_DIR` like every other consumer
-of the config dir. Corral is taking ownership of the schema: it
-originated in the legacy fleet tooling, which still writes the
-legacy-path file today — that is exactly why the fallback (and the loud
-stderr note when it is taken) exists.
+of the config dir. The format originated in the legacy fleet tooling and is
+now co-read with fleet-operations — that is exactly why the fallback (and the
+loud stderr note when it is taken) exists.
 (any command accepts `--registry <path>` to override).
 
 ```json
@@ -37,9 +48,11 @@ stderr note when it is taken) exists.
       "workers": ["worker-a", "worker-b"],
       "paused": true,
       "models": { "orch": "orchestrator-model", "impl": "implementation-model", "review": "review-model",
-                  "impl_alt": "fallback-implementation", "impl_alt2": "last-resort-backend" }
+                  "impl_alt": "fallback-implementation", "impl_alt2": "last-resort-backend",
+                  "reasoning_effort": { "orch": "medium", "impl": "max", "review": "xhigh" } }
     }
-  ]
+  ],
+  "admit": { "enabled": true, "budget_mb": 16000 }
 }
 ```
 
@@ -50,6 +63,9 @@ stderr note when it is taken) exists.
   (last-resort backend). Absent alt keys stay absent through any rewrite (an explicit `null` is
   read as absent and is not written back); a present key must be non-empty
   and whitespace-free, like the other model slots.
+- `models.reasoning_effort` and top-level `admit` are recognized as
+  fleet-operations-owned schema and preserved verbatim; corral does not model
+  their contents as typed fields.
 - All `models.*` slots (required and alt) must be whitespace-free — the
   required three feed the whitespace-delimited `fleet list` line; the alt
   slots follow the same rule for consistency.
@@ -58,8 +74,11 @@ stderr note when it is taken) exists.
   serialized — a resumed fleet omits the key entirely (this is the rule
   the pause/resume section refers to).
 - `local` may start with `~/` — expanded against `$HOME`.
-- Unknown fields anywhere (top level, fleet, models) → hard error, not silent
-  acceptance. Duplicate fleet names → hard error.
+- Unknown fields anywhere (top level, fleet, models) are retained through a
+  rewrite. A deterministic typo guard rejects an unknown key one edit away
+  from a Corral-owned field, where an edit includes adjacent transposition;
+  all other forward keys, including future fleet-operations additions, are
+  accepted. Duplicate fleet names → hard error.
 
 ## Commands
 

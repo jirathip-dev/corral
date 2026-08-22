@@ -1772,24 +1772,22 @@ mod tests {
         std::fs::create_dir_all(&primary).unwrap();
         std::fs::create_dir_all(&worktrees).unwrap();
         std::os::unix::fs::symlink(&primary, &alias).unwrap();
-        let registry = Registry {
-            fleets: vec![Fleet {
-                name: "fleet-name".to_string(),
-                gh_repo: "owner/canonical-repo".to_string(),
-                local: alias.to_string_lossy().into_owned(),
-                worktree_dir: "worktrees".to_string(),
-                orch: "orch".to_string(),
-                workers: Vec::new(),
-                paused: false,
-                models: Models {
-                    orch: "orch-model".to_string(),
-                    impl_: "impl-model".to_string(),
-                    review: "review-model".to_string(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            }],
-        };
+        let registry = Registry::new(vec![Fleet {
+            name: "fleet-name".to_string(),
+            gh_repo: "owner/canonical-repo".to_string(),
+            local: alias.to_string_lossy().into_owned(),
+            worktree_dir: "worktrees".to_string(),
+            orch: "orch".to_string(),
+            workers: Vec::new(),
+            paused: false,
+            models: Models {
+                orch: "orch-model".to_string(),
+                impl_: "impl-model".to_string(),
+                review: "review-model".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }]);
 
         let attribution =
             WorkspaceAttribution::from_roots(workspace_roots(&primary, Some(&registry)), worktrees);
@@ -1818,42 +1816,40 @@ mod tests {
         // compile-time tracked set (e.g. `corral`) must still get its issues
         // fetched, grouped by the FLEET name so the worktree action can start
         // an issue against it.
-        let registry = Registry {
-            fleets: vec![
-                Fleet {
-                    name: "corral".to_string(),
-                    gh_repo: "jirathip-dev/corral".to_string(),
-                    local: "~/Projects/corral".to_string(),
-                    worktree_dir: "corral".to_string(),
-                    orch: "orch-corral".to_string(),
-                    workers: Vec::new(),
-                    paused: false,
-                    models: Models {
-                        orch: "o".to_string(),
-                        impl_: "i".to_string(),
-                        review: "r".to_string(),
-                        impl_alt: None,
-                        impl_alt2: None,
-                    },
+        let registry = Registry::new(vec![
+            Fleet {
+                name: "corral".to_string(),
+                gh_repo: "jirathip-dev/corral".to_string(),
+                local: "~/Projects/corral".to_string(),
+                worktree_dir: "corral".to_string(),
+                orch: "orch-corral".to_string(),
+                workers: Vec::new(),
+                paused: false,
+                models: Models {
+                    orch: "o".to_string(),
+                    impl_: "i".to_string(),
+                    review: "r".to_string(),
+                    impl_alt: None,
+                    impl_alt2: None,
                 },
-                Fleet {
-                    name: "plush".to_string(),
-                    gh_repo: "jirathip-dev/plush-meadow".to_string(),
-                    local: "~/Projects/plush-meadow".to_string(),
-                    worktree_dir: "plush-meadow".to_string(),
-                    orch: "orch-plush".to_string(),
-                    workers: Vec::new(),
-                    paused: false,
-                    models: Models {
-                        orch: "o".to_string(),
-                        impl_: "i".to_string(),
-                        review: "r".to_string(),
-                        impl_alt: None,
-                        impl_alt2: None,
-                    },
+            },
+            Fleet {
+                name: "plush".to_string(),
+                gh_repo: "jirathip-dev/plush-meadow".to_string(),
+                local: "~/Projects/plush-meadow".to_string(),
+                worktree_dir: "plush-meadow".to_string(),
+                orch: "orch-plush".to_string(),
+                workers: Vec::new(),
+                paused: false,
+                models: Models {
+                    orch: "o".to_string(),
+                    impl_: "i".to_string(),
+                    review: "r".to_string(),
+                    impl_alt: None,
+                    impl_alt2: None,
                 },
-            ],
-        };
+            },
+        ]);
         let mut specs = corrald::adapters::gh_plane::tracked_specs();
         super::add_fleet_specs(&mut specs, &registry.fleets);
 

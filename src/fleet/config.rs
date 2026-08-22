@@ -1,16 +1,26 @@
 //! #35 phase 1: fleet registry config — parse, validate, default path, write.
 //!
-//! The registry is the `fleets.json` file corral is TAKING ownership of
-//! (#35/#66): the format originated in the separate legacy fleet tooling,
-//! which still writes the legacy-path file today — hence `default_path`'s
-//! migration fallback. corrald adopts the format unchanged. `load()` parses and validates, and validation fails loudly
-//! (hard error, not silent acceptance) on unknown fields anywhere, empty
-//! required fields, whitespace inside `name`/`gh_repo`, a `gh_repo` that is
-//! not a single `owner/repo`, a `local` that begins with a bare `~`, and
-//! duplicate fleet names. The write side (`write_atomic`) is the first
-//! registry-WRITING surface (#35 slice 1): it serialises back to the same
-//! schema and replaces the file via temp-file-in-same-dir + rename, so a
-//! refused or failed write leaves the original byte-identical.
+//! The registry is the `fleets.json` file corral shares with the
+//! fleet-operations controller (#35/#66): the format originated in the
+//! separate legacy fleet tooling, which still writes the legacy-path file
+//! today — hence `default_path`'s migration fallback. corrald adopts the
+//! format unchanged but reads a tolerant subset: fleet-operations owns the
+//! full schema (`models.*`,
+//! `reasoning_effort`, top-level `admit`, roles), while corral only needs
+//! `fleets[].gh_repo` and `fleets[].local` for `/issues` and workspace
+//! attribution. Unknown fields are retained in memory on load and re-applied
+//! on rewrite, so a forward-compatible fleet-operations schema addition cannot
+//! break the board or silently disappear through a corral registry write.
+//! Corral still owns strict validation: an unknown key one edit away from an
+//! owned field (`pausd`, `imp1_alt`, `puased`, `imlp_alt`) is refused rather
+//! than silently defaulted.
+//! Validation still fails loudly on empty required fields, whitespace inside
+//! `name`/`gh_repo`, a `gh_repo` that is not a single `owner/repo`, a `local`
+//! that begins with a bare `~`, and duplicate fleet names. The write side
+//! (`write_atomic`) is the first registry-WRITING surface (#35 slice 1): it
+//! serialises back to the same schema and replaces the file via
+//! temp-file-in-same-dir + rename, so a refused or failed write leaves the
+//! original byte-identical.
 
 use std::fmt;
 use std::io::Write;
@@ -18,11 +28,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use serde_json::{Map, Value};
+
 /// A whole fleet registry file: `{ "fleets": [...] }`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Registry {
     pub fleets: Vec<Fleet>,
+    /// Forward-compatible fleet-operations fields retained across a rewrite
+    /// (`admit`, per-fleet/per-models unknown keys, `reasoning_effort`).
+    /// Serde consumes this on deserialization and `write_atomic` merges it
+    /// back into the serialized candidate; it is deliberately absent from
+    /// manually-constructed registries.
+    #[serde(skip)]
+    foreign: RegistryForeign,
 }
 
 /// One fleet entry. Field rules (from #35):
@@ -31,7 +49,6 @@ pub struct Registry {
 /// - `models` — required object with required string keys.
 /// - `paused` — optional, defaults to `false`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Fleet {
     pub name: String,
     pub gh_repo: String,
@@ -53,7 +70,6 @@ pub struct Fleet {
 /// from the written JSON when absent, so an unrelated rewrite never grows
 /// `"impl_alt": null` into a registry that did not have them.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Models {
     pub orch: String,
     #[serde(rename = "impl")]
@@ -65,6 +81,65 @@ pub struct Models {
     pub impl_alt2: Option<String>,
 }
 
+/// Fleet-operations keys that corral recognizes but does not model as typed
+/// Rust fields, retained verbatim so a rewrite cannot drop them.
+#[derive(Debug, Clone, Default)]
+struct RegistryForeign {
+    admit: Option<Value>,
+    unknown: Map<String, Value>,
+    fleets: Vec<FleetForeign>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FleetForeign {
+    name: String,
+    unknown: Map<String, Value>,
+    reasoning_effort: Option<Value>,
+    unknown_models: Map<String, Value>,
+}
+
+/// Raw deserialization intermediate: captures the current fleet-operations
+/// schema explicitly while leaving future keys in each `unknown` map.
+#[derive(Deserialize)]
+struct RawRegistry {
+    fleets: Vec<RawFleet>,
+    #[serde(default)]
+    admit: Option<Value>,
+    #[serde(flatten)]
+    unknown: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct RawFleet {
+    name: String,
+    gh_repo: String,
+    local: String,
+    worktree_dir: String,
+    orch: String,
+    workers: Vec<String>,
+    #[serde(default)]
+    paused: bool,
+    models: RawModels,
+    #[serde(flatten)]
+    unknown: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct RawModels {
+    orch: String,
+    #[serde(rename = "impl")]
+    impl_: String,
+    review: String,
+    #[serde(default)]
+    impl_alt: Option<String>,
+    #[serde(default)]
+    impl_alt2: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<Value>,
+    #[serde(flatten)]
+    unknown: Map<String, Value>,
+}
+
 /// `paused` is `#[serde(default)]` and intentionally SKIPPED when false, so a
 /// freshly added fleet (and any fleet a `load()` -> write round-trip touches)
 /// omits the field exactly as the existing live registries do. `true` is
@@ -74,6 +149,250 @@ pub struct Models {
 /// explicitly, not buried in a derive.
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Field names corral owns and validates. Fleet-operations current fields
+/// (`admit`, `reasoning_effort`) are modeled explicitly below, so they never
+/// appear in an unknown map; future foreign keys are accepted unless they are
+/// a one-edit obvious typo (including an adjacent transposition) of one of
+/// these owned names.
+const CORRAL_OWNED_REGISTRY_FIELDS: &[&str] = &["fleets"];
+const CORRAL_OWNED_FLEET_FIELDS: &[&str] = &[
+    "name",
+    "gh_repo",
+    "local",
+    "worktree_dir",
+    "orch",
+    "workers",
+    "paused",
+    "models",
+];
+const CORRAL_OWNED_MODEL_FIELDS: &[&str] = &["orch", "impl", "review", "impl_alt", "impl_alt2"];
+
+/// Merely one edit away from a Corral-owned key is almost certainly a typo;
+/// one edit includes substitution, insertion, deletion, and adjacent
+/// transposition. Anything farther is treated as a genuine forward-compatible
+/// foreign key and preserved rather than guessed at.
+fn edit_distance_at_most_one(first: &str, second: &str) -> bool {
+    let first: Vec<char> = first.chars().collect();
+    let second: Vec<char> = second.chars().collect();
+    let (first, second) = if first.len() <= second.len() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if second.len() - first.len() > 1 {
+        return false;
+    }
+    if first.len() == second.len() {
+        let differences: Vec<usize> = first
+            .iter()
+            .zip(&second)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(index, _)| index)
+            .collect();
+        return match differences.as_slice() {
+            [] | [_] => true,
+            [left, right]
+                if *right == left + 1
+                    && first[*left] == second[*right]
+                    && first[*right] == second[*left] =>
+            {
+                true
+            }
+            _ => false,
+        };
+    }
+    let mut first_index = 0;
+    let mut second_index = 0;
+    let mut skipped = false;
+    while first_index < first.len() && second_index < second.len() {
+        if first[first_index] == second[second_index] {
+            first_index += 1;
+            second_index += 1;
+        } else if skipped {
+            return false;
+        } else {
+            skipped = true;
+            second_index += 1;
+        }
+    }
+    true
+}
+
+fn validate_typo_map(
+    unknown: &Map<String, Value>,
+    owned: &[&str],
+    location: &str,
+) -> Result<(), String> {
+    for key in unknown.keys() {
+        if let Some(hint) = owned
+            .iter()
+            .find(|known| edit_distance_at_most_one(key, known))
+        {
+            return Err(format!(
+                "unknown field {key:?} in {location} looks like a typo of {hint:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_forward_keys(raw: &RawRegistry) -> Result<(), String> {
+    validate_typo_map(&raw.unknown, CORRAL_OWNED_REGISTRY_FIELDS, "the registry")?;
+    for (index, fleet) in raw.fleets.iter().enumerate() {
+        let location = format!("#{} (name {:?})", index + 1, fleet.name);
+        validate_typo_map(&fleet.unknown, CORRAL_OWNED_FLEET_FIELDS, &location)?;
+        validate_typo_map(
+            &fleet.models.unknown,
+            CORRAL_OWNED_MODEL_FIELDS,
+            &format!("{location} models"),
+        )?;
+    }
+    Ok(())
+}
+
+impl RegistryForeign {
+    fn apply(&self, candidate: &mut Value) {
+        let Some(candidate) = candidate.as_object_mut() else {
+            return;
+        };
+        if let Some(admit) = &self.admit {
+            candidate.insert("admit".to_string(), admit.clone());
+        }
+        for (key, value) in &self.unknown {
+            candidate.insert(key.clone(), value.clone());
+        }
+        let Some(candidate_fleets) = candidate.get_mut("fleets").and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        for candidate_fleet in candidate_fleets {
+            let Some(name) = candidate_fleet.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(foreign) = self.fleets.iter().find(|fleet| fleet.name == name) else {
+                continue;
+            };
+            let Some(candidate_fleet) = candidate_fleet.as_object_mut() else {
+                continue;
+            };
+            for (key, value) in &foreign.unknown {
+                candidate_fleet.insert(key.clone(), value.clone());
+            }
+            let Some(candidate_models) = candidate_fleet
+                .get_mut("models")
+                .and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            if let Some(reasoning_effort) = &foreign.reasoning_effort {
+                candidate_models.insert("reasoning_effort".to_string(), reasoning_effort.clone());
+            }
+            for (key, value) in &foreign.unknown_models {
+                candidate_models.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    fn inherit_fleet(&mut self, source: &str, target: &str) {
+        let mut inherited = self
+            .fleets
+            .iter()
+            .find(|fleet| fleet.name == source)
+            .cloned()
+            .unwrap_or_default();
+        inherited.name = target.to_string();
+        self.fleets.retain(|fleet| fleet.name != target);
+        self.fleets.push(inherited);
+    }
+
+    fn forget_fleet(&mut self, name: &str) {
+        self.fleets.retain(|fleet| fleet.name != name);
+    }
+}
+
+impl<'de> Deserialize<'de> for Registry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawRegistry::deserialize(deserializer)?;
+        validate_forward_keys(&raw).map_err(serde::de::Error::custom)?;
+
+        let mut foreign = RegistryForeign {
+            admit: raw.admit,
+            unknown: raw.unknown,
+            fleets: Vec::with_capacity(raw.fleets.len()),
+        };
+        let mut fleets = Vec::with_capacity(raw.fleets.len());
+        for raw_fleet in raw.fleets {
+            let RawFleet {
+                name,
+                gh_repo,
+                local,
+                worktree_dir,
+                orch,
+                workers,
+                paused,
+                models: raw_models,
+                unknown,
+            } = raw_fleet;
+            let RawModels {
+                orch: model_orch,
+                impl_: model_impl,
+                review,
+                impl_alt,
+                impl_alt2,
+                reasoning_effort,
+                unknown: unknown_models,
+            } = raw_models;
+            foreign.fleets.push(FleetForeign {
+                name: name.clone(),
+                unknown,
+                reasoning_effort,
+                unknown_models,
+            });
+            fleets.push(Fleet {
+                name,
+                gh_repo,
+                local,
+                worktree_dir,
+                orch,
+                workers,
+                paused,
+                models: Models {
+                    orch: model_orch,
+                    impl_: model_impl,
+                    review,
+                    impl_alt,
+                    impl_alt2,
+                },
+            });
+        }
+        Ok(Self { fleets, foreign })
+    }
+}
+
+impl Registry {
+    /// Build a registry without forward fields. Used by unit/integration
+    /// fixtures and the code paths that synthesize registry data; `load()`
+    /// always supplies the forward-fields wrapper.
+    pub fn new(fleets: Vec<Fleet>) -> Self {
+        Self {
+            fleets,
+            foreign: RegistryForeign::default(),
+        }
+    }
+
+    pub(crate) fn inherit_forward_fields(&mut self, source: &str, target: &str) {
+        self.foreign.inherit_fleet(source, target);
+    }
+
+    pub(crate) fn forget_forward_fields(&mut self, name: &str) {
+        self.foreign.forget_fleet(name);
+    }
 }
 
 impl Registry {
@@ -409,16 +728,23 @@ pub fn load(path: &Path) -> Result<Registry, ConfigError> {
 /// writer's fields are clobbered). Single-writer discipline is assumed for
 /// the #35 migration window; a lockfile is a follow-up.
 ///
-/// Serialisation uses `serde_json::to_string_pretty` (2-space indent, struct
-/// field order) plus a trailing newline. The round-trip is semantically exact
+/// Serialisation uses `serde_json::Value` plus `to_string_pretty` (2-space
+/// indent) and a trailing newline. The round-trip is semantically exact
 /// — `Models::impl_` writes back as the JSON key `impl`, `paused` is skipped
 /// when false (see [`is_false`]) — but the first write NORMALISES any
-/// hand-maintained formatting to this canonical shape.
+/// hand-maintained formatting (including serde_json's default object-key
+/// ordering) to a canonical shape. Fleet-operations fields (`admit`,
+/// `reasoning_effort`, and future keys) are carried in the in-memory
+/// `Registry` and re-applied, so the write cannot drop schema the fleet
+/// controller owns unless the candidate never loaded from disk. The current
+/// on-disk file is re-parsed first, so a concurrent corrupt/typo'd rewrite
+/// fails loudly instead of being overwritten.
 pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError> {
     // Follow a symlinked registry so the rename replaces the target file,
     // not the link (a dotfiles-checkout registry keeps working).
     let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    ensure_current_registry_parses(path)?;
     let bytes = serialize(path, registry)?;
     let temp_path = parent.join(format!(
         ".{}.corrald-tmp.{}",
@@ -454,12 +780,33 @@ pub fn write_atomic(path: &Path, registry: &Registry) -> Result<(), ConfigError>
     Ok(())
 }
 
+/// A rewrite must not clobber an on-disk registry it can no longer read or
+/// parse: that would silently replace fleet-operations schema with a
+/// stripped candidate. A missing file is fine (first bootstrap write); an
+/// unreadable or invalid one is a loud refusal that leaves the original
+/// byte-identical.
+fn ensure_current_registry_parses(path: &Path) -> Result<(), ConfigError> {
+    match std::fs::read_to_string(path) {
+        Ok(_) => load(path).map(|_| ()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// `serde_json::to_string_pretty` + a trailing newline, so a written registry
 /// stays diffable in git. Serialisation itself is fallible only on non-UTF-8
 /// (this schema is all-strings), so errors are surfaced rather than written
 /// off as impossible.
 fn serialize(path: &Path, registry: &Registry) -> Result<Vec<u8>, ConfigError> {
-    let mut json = serde_json::to_string_pretty(registry).map_err(|source| ConfigError::Write {
+    let mut value = serde_json::to_value(registry).map_err(|source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source: std::io::Error::other(source),
+    })?;
+    registry.foreign.apply(&mut value);
+    let mut json = serde_json::to_string_pretty(&value).map_err(|source| ConfigError::Write {
         path: path.to_path_buf(),
         source: std::io::Error::other(source),
     })?;
@@ -475,8 +822,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    /// The file is not valid registry JSON (missing required fields,
-    /// unknown fields, type mismatches).
+    /// The file is not valid registry JSON (malformed JSON, missing required
+    /// fields, type mismatches, or a one-edit typo (including an adjacent
+    /// transposition) of a Corral-owned field).
+    /// Genuine fleet-operations forward fields are accepted and preserved.
     Parse {
         path: PathBuf,
         source: serde_json::Error,
@@ -690,24 +1039,22 @@ mod worktree_dir_validation_tests {
     use super::*;
 
     fn fleet_with_worktree_dir(worktree_dir: &str) -> Registry {
-        Registry {
-            fleets: vec![Fleet {
-                name: "corral".into(),
-                gh_repo: "jirathip-dev/corral".into(),
-                local: "~/Projects/corral".into(),
-                worktree_dir: worktree_dir.into(),
-                orch: "orch-corral".into(),
-                workers: vec![],
-                paused: false,
-                models: Models {
-                    orch: "o".into(),
-                    impl_: "i".into(),
-                    review: "r".into(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            }],
-        }
+        Registry::new(vec![Fleet {
+            name: "corral".into(),
+            gh_repo: "jirathip-dev/corral".into(),
+            local: "~/Projects/corral".into(),
+            worktree_dir: worktree_dir.into(),
+            orch: "orch-corral".into(),
+            workers: vec![],
+            paused: false,
+            models: Models {
+                orch: "o".into(),
+                impl_: "i".into(),
+                review: "r".into(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }])
     }
 
     #[test]

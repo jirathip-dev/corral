@@ -156,13 +156,8 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
             impl_alt2: None,
         },
     };
-    corrald::fleet::config::write_atomic(
-        &registry_path,
-        &Registry {
-            fleets: vec![fleet],
-        },
-    )
-    .expect("write fleet registry");
+    corrald::fleet::config::write_atomic(&registry_path, &Registry::new(vec![fleet]))
+        .expect("write fleet registry");
 
     let _home_guard = EnvRestore::set("HOME", home_dir.path());
     let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &registry_path);

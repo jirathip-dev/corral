@@ -120,10 +120,11 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   summary offline with `corrald digest`. See
   [docs/OPERATIONS.md](docs/OPERATIONS.md).
 - **Fleet registry** — `corrald fleet list|check` read, and `corrald fleet
-  add|remove|pause|resume|models` atomically rewrite, the `fleets.json` registry
-  (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree dir,
-  workers and per-role models. Full schema and exit codes in
-  `docs/corral/G35-registry.md`.
+  add|remove|pause|resume|models` atomically rewrite, the `fleets.json`
+  registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree
+  dir, workers and per-role models. `fleet switch|reap|prune` add the
+  auth-gated process/worktree ops half. Full schema, safety gates and exit
+  codes in `docs/corral/G35-registry.md`.
 - **APNs notifier (iOS)** — blocked/done transitions push to a registered
   device, with canned lock-screen replies bound to the prompt's
   `prompt_hash` and a biometric step-up on destructive payloads. Armed with

@@ -1,16 +1,23 @@
-//! #35 phase 1: corrald's fleet registry.
+//! #35: corrald's fleet control plane.
 //!
 //! The fleet registry — `fleets.json`, today the single source of truth for
 //! the separate fleet tooling — is becoming corrald's own config (issue #35
 //! consolidation). This module parses, validates, and WRITES the registry:
-//! `fleet add` / `fleet remove` (slice 1) and `fleet pause` / `resume` /
-//! `models` (slice 2) are the commands that mutate it ([`ops`]), behind
-//! atomic-write discipline and a repo-resolves-before-add check. `config::load`
-//! remains the read side; mutation of running agents (spawning, watchdogs,
-//! reaping, worktree pruning, the auth-gated switch) lands in later phases of
-//! #35 and is out of scope — slice 2 is pure registry mutation.
+//! `fleet add` / `remove` / `pause` / `resume` / `models` mutate it through
+//! [`ops`], behind atomic-write discipline and a
+//! repo-resolves-before-add check. Reading stays on [`config::load`].
+//!
+//! The destructive side of #35 lives beside the registry mutation: [`reap`]
+//! reclaims finished and paused-idle agent panes, [`prune`] removes only
+//! provably-dead worktrees, and [`switch`] re-arms the orchestrator on the
+//! registry's current model map after an auth gate. These CLI operations run
+//! before the tokio runtime, apply verified process/worktree identity checks,
+//! and never rewrite the registry themselves.
 
 pub mod config;
 pub mod ops;
+pub mod prune;
+pub mod reap;
+pub mod switch;
 pub mod watch;
 pub mod worktree;

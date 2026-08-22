@@ -3,15 +3,14 @@
 Issue #35 (fleet control-plane consolidation): corrald reads the fleet
 registry — `fleets.json` — a format corral is taking ownership of from the
 legacy fleet tooling (which still writes the legacy-path file, hence the
-migration fallback below) — and, as of slices 1–2, also WRITES it. `list` /
-`check` are read-only views; **`add` / `remove`** (slice 1) and **`pause` /
-`resume` / `models`** (slice 2) mutate the registry behind candidate
-validation and an atomic temp-file+rename write that leaves the original
-byte-identical on any refusal or failure. Nothing touches a running agent —
-pause/resume here are pure registry mutations; the auth-gated ops half
-(halting working agents, the model-switch re-arm) is a later #35 slice.
-Spawning, watchdogs, reaping and worktree pruning land in later phases of
-#35 too.
+migration fallback below) — and also WRITES it. `list`, `check`, and
+`watch` are read-only views; **`add` / `remove`** and **`pause` / `resume` /
+`models`** mutate the registry behind candidate validation and an atomic
+temp-file+rename write that leaves the original byte-identical on any
+refusal or failure. Registry mutation never touches a running agent.
+The destructive ops half — `switch`, `reap`, and `prune` — is implemented
+beside it: those commands can halt a verified agent pane or remove a
+provably-dead worktree, but they never rewrite the registry themselves.
 
 ## Registry schema
 
@@ -55,7 +54,7 @@ stderr note when it is taken) exists.
   required three feed the whitespace-delimited `fleet list` line; the alt
   slots follow the same rule for consistency.
 - `paused` — optional bool, defaults to `false` when absent. Set/cleared
-  by `fleet pause`/`resume` (slice 2). The skip rule: `false` is never
+  by `fleet pause`/`resume`. The skip rule: `false` is never
   serialized — a resumed fleet omits the key entirely (this is the rule
   the pause/resume section refers to).
 - `local` may start with `~/` — expanded against `$HOME`.
@@ -130,7 +129,7 @@ output notifies once) and
 UNSHIPPED-WORK detection (local commits with no remote branch/PR read as
 a plain stall here, not as the "work never left the machine" alarm).
 
-## Write commands (slice 1: add/remove)
+## Registry write commands (add/remove)
 
 ```
 corrald fleet add <name> --gh <owner/repo> [--local <path>] [--worktree <path>]
@@ -156,7 +155,7 @@ bootstrap with `mkdir -p ~/.config/corral && echo '{"fleets": []}' >
 the legacy tooling) can lose the load→rename race; single-writer
 discipline is assumed during the migration window.
 
-## Write commands (slice 2: pause/resume/models)
+## Registry write commands (pause/resume/models)
 
 ```
 corrald fleet pause <name> [--registry <path>]
@@ -193,18 +192,106 @@ All three refuse an unknown fleet name (exit 1, `FleetNotFound`) writing
 nothing, validate the candidate registry before writing, and leave the
 file byte-identical on any refusal, no-op, or write failure.
 
+## Fleet operations (switch/reap/prune)
+
+### Auth-gated model switch
+
+```
+corrald fleet switch <name> [--pane <id>] [--registry <path>]
+```
+
+`switch` is the re-arm half of pause/resume. The model map is the source of
+the new command line, so it:
+
+1. validates every role's model id against the harness mapping — unqualified
+   ids imply `claude`; `codex/<model>` implies `codex`; the known opencode
+   provider prefixes (`commandcode`, `deepseek`, `openai`, `opencode`,
+   `opencode-go`) imply `opencode`; any other `provider/model` is refused
+   before anything is touched;
+2. checks authentication for **every** implied harness — `claude auth
+   status` (`loggedIn: true`), `codex login status`, or `opencode auth list`
+   — and refuses before killing the incumbent if any check is false or
+   unavailable;
+3. kills only the registered `orch` incumbent, and only after the reaper's
+   verified-pane identity check (argv0 allowlist, exclusion of the pane
+   shell, sane pgid, exact cwd match); it never auto-discovers and kills an
+   unregistered orchestrator;
+4. sends `TERM` to that verified process group, then only sends `KILL` after
+   checking that one of the verified pids still belongs to the same group;
+5. resolves the destination pane from `--pane`, or from a single herdr pane
+   whose cwd equals the fleet's `local` (ambiguous/missing is a refusal),
+   and starts `fleet.orch` on `models.orch` through `herdr agent start`;
+6. leaves the registry and its `paused` flag untouched — after either a
+   failure or a success the fleet stays paused until an explicit
+   `fleet resume`.
+
+### Reaper
+
+```
+corrald fleet reap <fleet|all> [--apply] [--max-done N]
+    [--max-fraction F] [--registry <path>]
+```
+
+`reap` is dry-run by default; `--apply` is the only mode that signals
+anything. It targets `done`/`completed` agents plus `idle` agents whose cwd
+belongs to a `paused: true` fleet; the canonical paused orchestrator is not
+treated as an idle victim. A `done` agent whose pane still contains a live
+claude/codex process is a resumable session and is skipped.
+
+Every victim passes the same process-identity checks as `switch` before
+TERM, and every agent/pane is re-fetched and re-validated immediately before
+signalling. `TERM` is followed by a recheck; `KILL` is sent only when a
+previously verified pid still belongs to the original process group. An
+unreadable/unavailable herdr agent listing refuses the whole run.
+
+The shrink guard counts all finished agents — including `done` agents whose
+pane id is gone or uninspectable, so a broken pane cannot bypass it — and
+refuses before any kill when the count exceeds `--max-done` (default 5) or
+`--max-fraction` of the fleet (default 0.25, fraction floor at 2).
+
+### Worktree pruning
+
+```
+corrald fleet prune [--apply|--yes] [--max-prune N] [--min-age DAYS]
+    [--worktrees <path>] [--registry <path>]
+```
+
+`prune` is dry-run by default; `--apply`/`--yes` are the only modes that
+remove anything. A worktree is a candidate only when ALL of these are
+verified:
+
+1. clean git tree — nothing tracked, modified, or untracked except the root
+   `.brief.md` scaffold, which is moved aside immediately before removal and
+   restored if git refuses;
+2. no herdr agent cwd inside it;
+3. no open PR on its branch, and the `gh pr list` check itself succeeded
+   (an unreadable/unavailable result keeps it);
+4. HEAD is an ancestor of `origin/staging` when that ref exists, else of
+   `origin/main`, and is not equal to the integration tip;
+5. no protected gitignored files (env/secrets/session/PR-review patterns)
+   and no skip-worktree/assume-unchanged index marks;
+6. the resolved path is exactly `<worktrees root>/<fleet.worktree_dir>/<one
+   branch component>`, so a fleet root cannot authorize a sibling path.
+
+`--min-age` (default 1 day) keeps recently touched HEADs, and
+`--max-prune` (default 10) is checked on apply before anything is removed.
+Removal is always a NON-FORCE `git worktree remove`, revalidated
+immediately before each deletion, so git remains the final authority.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | success — `list` printed; `check` found every fleet OK; `add`/`remove`/`pause`/`resume`/`models` wrote the registry (or were an idempotent no-op) |
-| 1    | `check`: at least one fleet failed verification; write commands: refused (duplicate name, unresolvable repo, unknown name, no models to inherit) or the write failed — the registry is left byte-identical; `watch`: problems found — INCLUDING an unreadable/invalid registry, which `watch` reports as a `PROBLEM:` line with exit 1 (monitor safety) |
+| 0    | success — read command completed; registry write happened (or was an idempotent no-op); `switch` re-armed the orchestrator; reap/prune completed/planned a run |
+| 1    | `check`: at least one fleet failed verification; registry writes: refused or failed, with the registry byte-identical; `watch`: problems found — INCLUDING an unreadable/invalid registry, which `watch` reports as a `PROBLEM:` line with exit 1 (monitor safety); `switch`/`reap`/`prune`: operational refusal or failure (auth failed, shrink guard, identity check failed, cap, git/gh/herdr failure) |
 | 2    | usage error; for every subcommand EXCEPT `watch`: also an unreadable/unparseable registry or validation failure |
 
-## Phase boundary (explicitly out of scope)
+## Scope boundary
 
-- No `fleet switch`, and no ops half of pause/resume (halting working
-  agents, auth-gated model-switch re-arm) — later phases.
-- No status/reap/prune consolidation — later phases (`watch` shipped
-  with this slice; see the watch section above).
-- No change to the running agent, session, or `src/drive/` contract.
+- The registry remains the single source of truth; `switch`, `reap`, and
+  `prune` never rewrite it, and `reap`/`prune` only touch verified
+  processes/worktrees.
+- No change to how running agents execute, how sessions persist, the
+  `src/drive/` contract, or READ-ONLY GitHub access.
+- CLI execution happens before the tokio runtime; these commands never talk
+  to a running daemon.

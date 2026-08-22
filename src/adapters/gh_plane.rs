@@ -77,7 +77,9 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 use tracing::{info, warn};
 
-use crate::core::events::{GhIssueRef, GhPrState, GhRepoState, Plane, PlaneEvent, PlaneSink};
+use crate::core::events::{
+    GhIssueLabel, GhIssueRef, GhPrState, GhRepoState, Plane, PlaneEvent, PlaneSink,
+};
 use crate::core::store::Store;
 
 /// GitHub GraphQL endpoint (read-only query).
@@ -675,7 +677,7 @@ fragment GhPlaneRepo on Repository {{
       headRefOid
       headRefName
       closingIssuesReferences(first: {CLOSING_ISSUES_LIMIT}) {{
-        nodes {{ number title }}
+        nodes {{ number title url labels(first: 10) {{ nodes {{ name color }} }} }}
       }}
       statusCheckRollup {{
         state
@@ -690,7 +692,7 @@ fragment GhPlaneRepo on Repository {{
     }}
   }}
   issues(first: {ISSUE_LIMIT}, orderBy: {{field: UPDATED_AT, direction: DESC}}, states: [OPEN, CLOSED]) {{
-    nodes {{ number state title }}
+    nodes {{ number state title url labels(first: 10) {{ nodes {{ name color }} }} }}
   }}
 }}
 "#,
@@ -732,13 +734,16 @@ struct PrWire {
 }
 
 /// One node of a PR's `closingIssuesReferences` (the #23 authoritative
-/// linkage): number + title only — the same-poll repo-level `issues` leg
-/// enriches the state, so no extra fields hit the wire.
+/// linkage): number + title, url, and labels — the same-poll repo-level
+/// `issues` leg enriches the state, so only number/title/url/labels query
+/// the closing refs directly.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ClosingIssueWire {
     number: u64,
     title: Option<String>,
+    url: Option<String>,
+    labels: Option<NodesWire<LabelWire>>,
 }
 
 /// `statusCheckRollup` (2026 schema): a single object carrying the aggregate
@@ -769,10 +774,44 @@ struct RollupItemWire {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+struct LabelWire {
+    name: Option<String>,
+    color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 struct IssueWire {
     number: u64,
     state: Option<String>,
     title: Option<String>,
+    url: Option<String>,
+    labels: Option<NodesWire<LabelWire>>,
+}
+
+/// Normalize a GraphQL `labels` connection into [`GhIssueLabel`]s. A label
+/// with no name is dropped; a missing color becomes empty (the client
+/// renders the fallback). Empty/missing connection -> empty vec, never a
+/// guess.
+fn labels_from(wire: &Option<NodesWire<LabelWire>>) -> Vec<GhIssueLabel> {
+    wire.as_ref()
+        .and_then(|w| w.nodes.as_ref())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|label| {
+                    let name = label.name.clone()?;
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(GhIssueLabel {
+                        name,
+                        color: label.color.clone().unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Collapse a PR's rollup into the canonical SUCCESS/FAILURE/PENDING/UNKNOWN.
@@ -875,6 +914,8 @@ fn build_repo_state(repo: TrackedRepo, wire: &RepoWire) -> GhRepoState {
                     number: issue.number,
                     state: issue.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
                     title: issue.title.clone().unwrap_or_default(),
+                    labels: labels_from(&issue.labels),
+                    url: issue.url.clone().unwrap_or_default(),
                 })
                 .collect()
         })
@@ -923,6 +964,8 @@ fn normalize_pr(repo: TrackedRepo, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
                         number: closing.number,
                         state,
                         title: closing.title.clone().unwrap_or_default(),
+                        labels: labels_from(&closing.labels),
+                        url: closing.url.clone().unwrap_or_default(),
                     }
                 })
                 .collect()
@@ -1122,7 +1165,12 @@ mod tests {
                     "headRefOid": "abc123",
                     "headRefName": "ws2/gh-plane",
                     "closingIssuesReferences": { "nodes": [
-                        { "number": 4, "title": "P2 planes" },
+                        {
+                          "number": 4,
+                          "title": "P2 planes",
+                          "url": "https://github.com/herdr-board/herdr-board/issues/4",
+                          "labels": { "nodes": [ { "name": "p2", "color": "5319E7" } ] }
+                        },
                         { "number": 99, "title": "long-closed" }
                     ]},
                     "statusCheckRollup": {
@@ -1145,7 +1193,16 @@ mod tests {
                 }
             ]},
             "issues": { "nodes": [
-                { "number": 4, "state": "OPEN", "title": "P2 planes" },
+                {
+                  "number": 4,
+                  "state": "OPEN",
+                  "title": "P2 planes",
+                  "url": "https://github.com/herdr-board/herdr-board/issues/4",
+                  "labels": { "nodes": [
+                    { "name": "p2", "color": "5319E7" },
+                    { "name": "bug", "color": "D73A4A" }
+                  ]}
+                },
                 { "number": 3, "state": "CLOSED", "title": "P1 shipped" }
             ]}
         }))
@@ -1197,6 +1254,35 @@ mod tests {
         assert_eq!(state.issues[1].number, 4);
         assert_eq!(state.issues[1].state, "OPEN");
         assert_eq!(state.issues[1].title, "P2 planes");
+        // #113: repo-level issues carry labels (name + color) and the url.
+        assert_eq!(
+            state.issues[1].url,
+            "https://github.com/herdr-board/herdr-board/issues/4"
+        );
+        assert_eq!(state.issues[1].labels.len(), 2);
+        assert_eq!(state.issues[1].labels[0].name, "p2");
+        assert_eq!(state.issues[1].labels[0].color, "5319E7");
+        assert_eq!(state.issues[1].labels[1].name, "bug");
+        assert_eq!(state.issues[1].labels[1].color, "D73A4A");
+        // #113: closing-issue refs carry labels + url too (not just title).
+        assert_eq!(
+            state.prs[1].closing_issues[0].url,
+            "https://github.com/herdr-board/herdr-board/issues/4"
+        );
+        assert_eq!(state.prs[1].closing_issues[0].labels.len(), 1);
+        assert_eq!(state.prs[1].closing_issues[0].labels[0].name, "p2");
+        assert_eq!(
+            state.prs[1].closing_issues[0].labels[0].color, "5319E7",
+            "closing ref labels carry the GitHub color"
+        );
+        assert_eq!(
+            state.prs[1].closing_issues[1].url, "",
+            "a closing ref without url stays empty — never a guess"
+        );
+        assert!(
+            state.prs[1].closing_issues[1].labels.is_empty(),
+            "a closing ref without labels stays empty — never a guess"
+        );
     }
 
     #[test]

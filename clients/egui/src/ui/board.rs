@@ -1413,12 +1413,54 @@ mod tests {
         text_rects(output, needle).into_iter().next()
     }
 
+    fn board_row_frame(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        id: &str,
+        input: egui::RawInput,
+        actions: &mut BoardActions,
+    ) -> (Vec<String>, egui::FullOutput) {
+        let mut toggles = Vec::new();
+        let output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            board_row(ui, id, fleet, &|_| true, actions, &mut toggles);
+        });
+        (toggles, output)
+    }
+
+    fn board_row_click(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        id: &str,
+        pos: egui::Pos2,
+        actions: &mut BoardActions,
+    ) -> Vec<String> {
+        let (down_toggles, mut output) =
+            board_row_frame(ctx, fleet, id, pointer_down_input(pos), actions);
+        assert!(
+            down_toggles.is_empty(),
+            "pointer press alone must not emit a row toggle"
+        );
+        clear_textures(&mut output);
+        let (up_toggles, mut output) =
+            board_row_frame(ctx, fleet, id, pointer_up_input(pos), actions);
+        clear_textures(&mut output);
+        up_toggles
+    }
+
+    fn apply_row_toggles(fleet: &mut Fleet, toggles: Vec<String>) {
+        for id in toggles {
+            fleet.toggle_expanded(&id);
+        }
+    }
+
     #[test]
-    fn agent_row_blank_click_toggles_unnamed_row_and_renders_tail_detail() {
+    fn agent_row_board_row_blank_click_toggles_and_renders_tail_detail() {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&[]);
-        agent.agent_id = "herdr:unnamed".into();
+        agent.agent_id = "herdr:e2e".into();
         let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
         fleet
             .tails
             .insert(agent.agent_id.clone(), vec!["tail line".into()]);
@@ -1440,30 +1482,35 @@ mod tests {
         });
         let row_rect = row_rect.expect("row rendered");
         assert!(
-            text_rect(&output, "herdr:unnamed").is_some(),
+            text_rect(&output, "herdr:e2e").is_some(),
             "display_name=None must fall back to agent_id"
         );
         clear_textures(&mut output);
 
-        let click = egui::pos2(row_rect.left() + 2.0, row_rect.top() + 1.0);
-        output = ctx.run_ui(pointer_down_input(click), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, false, &|_| false, &fleet, &mut actions);
-        });
-        clear_textures(&mut output);
+        let blank_click = egui::pos2(row_rect.left() + 2.0, row_rect.top() + 2.0);
+        let toggles = board_row_click(&ctx, &fleet, &agent.agent_id, blank_click, &mut actions);
+        assert_eq!(
+            toggles,
+            vec![agent.agent_id.clone()],
+            "blank board-row click must request the row toggle"
+        );
+        apply_row_toggles(&mut fleet, toggles);
+        assert!(
+            fleet.is_expanded(&agent.agent_id),
+            "applying the board toggle must expand the row"
+        );
 
-        let mut expanded = false;
-        output = ctx.run_ui(pointer_up_input(click), |ui| {
-            row_test_style(ui);
-            let clicked = agent_row(ui, &agent, expanded, &|_| false, &fleet, &mut actions).0;
-            if clicked {
-                expanded = !expanded;
-            }
-            if expanded {
-                detail(ui, &agent, &fleet, &|_| true, &mut actions);
-            }
-        });
-        assert!(expanded, "blank row click must expand the row");
+        let (toggles, mut output) = board_row_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &mut actions,
+        );
+        assert!(
+            toggles.is_empty(),
+            "an idle expanded frame must not emit another toggle"
+        );
         assert!(
             text_rect(&output, "read_tail output (daemon-redacted, latest tap)").is_some(),
             "expanded detail must render the tail header"
@@ -1474,28 +1521,37 @@ mod tests {
         );
         clear_textures(&mut output);
 
-        output = ctx.run_ui(pointer_down_input(click), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, expanded, &|_| false, &fleet, &mut actions);
-        });
-        clear_textures(&mut output);
-        let mut clicked_again = None;
-        let mut output = ctx.run_ui(pointer_up_input(click), |ui| {
-            row_test_style(ui);
-            clicked_again =
-                Some(agent_row(ui, &agent, expanded, &|_| false, &fleet, &mut actions).0);
-        });
+        let toggles = board_row_click(&ctx, &fleet, &agent.agent_id, blank_click, &mut actions);
         assert_eq!(
-            clicked_again,
-            Some(true),
-            "the expanded row is clickable again"
+            toggles,
+            vec![agent.agent_id.clone()],
+            "clicking the expanded row again must request another toggle"
         );
-        if expanded {
-            expanded = false;
-        }
+        apply_row_toggles(&mut fleet, toggles);
         assert!(
-            !expanded,
-            "clicking the expanded row again must collapse it"
+            !fleet.is_expanded(&agent.agent_id),
+            "applying the second board toggle must collapse the row"
+        );
+
+        fleet.tails.insert(agent.agent_id.clone(), Vec::new());
+        let toggles = board_row_click(&ctx, &fleet, &agent.agent_id, blank_click, &mut actions);
+        assert_eq!(
+            toggles,
+            vec![agent.agent_id.clone()],
+            "an empty-tail row must still expand on click"
+        );
+        apply_row_toggles(&mut fleet, toggles);
+        let (toggles, mut output) = board_row_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &mut actions,
+        );
+        assert!(toggles.is_empty());
+        assert!(
+            text_rect(&output, "no recent output for this agent").is_some(),
+            "empty tail must keep its existing empty-state copy"
         );
         clear_textures(&mut output);
     }
@@ -1505,7 +1561,8 @@ mod tests {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&["read_tail"]);
         agent.agent_id = "herdr:read-tail".into();
-        let fleet = Fleet::default();
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
@@ -1513,36 +1570,42 @@ mod tests {
             refresh_issues: &mut || {},
         };
 
-        let mut drive_rect = None;
+        let mut row_rect = None;
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            drive_rect = Some(agent_row_cells(ui, &agent, &|_| true, &fleet, &mut actions)[9].rect);
+            row_rect = Some(
+                agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions)
+                    .1
+                    .rect,
+            );
         });
-        let drive_rect = drive_rect.expect("drive cell rendered");
+        let row_rect = row_rect.expect("row rendered");
         let button_rect = text_rect(&output, "read_tail").expect("read_tail button rendered");
         assert!(
-            drive_rect.contains(button_rect.center()),
-            "read_tail button must sit inside the drive cell"
+            row_rect.contains(button_rect.center()),
+            "read_tail button must sit inside the rendered row"
         );
         clear_textures(&mut output);
 
-        let click = button_rect.center();
-        output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions);
-        });
-        clear_textures(&mut output);
-        output = ctx.run_ui(pointer_down_input(click), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions);
-        });
-        clear_textures(&mut output);
-        let mut clicked = None;
-        let mut output = ctx.run_ui(pointer_up_input(click), |ui| {
-            row_test_style(ui);
-            clicked = Some(agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions).0);
-        });
-        assert_eq!(clicked, Some(false), "drive click must not toggle the row");
+        let blank_click = egui::pos2(row_rect.left() + 2.0, row_rect.top() + 2.0);
+        let toggles = board_row_click(&ctx, &fleet, &agent.agent_id, blank_click, &mut actions);
+        assert_eq!(
+            toggles,
+            vec![agent.agent_id.clone()],
+            "the row background must be clickable before checking child precedence"
+        );
+
+        let toggles = board_row_click(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            button_rect.center(),
+            &mut actions,
+        );
+        assert!(
+            toggles.is_empty(),
+            "drive-button click must not request a row toggle"
+        );
         assert_eq!(
             intents.len(),
             1,
@@ -1550,32 +1613,6 @@ mod tests {
         );
         assert_eq!(intents[0].capability, crate::drive::Capability::ReadTail);
         assert_eq!(intents[0].target, "herdr:read-tail");
-        clear_textures(&mut output);
-    }
-
-    #[test]
-    fn agent_row_expanded_detail_keeps_empty_tail_state() {
-        let ctx = row_test_context();
-        let mut agent = agent_with_caps(&["read_tail"]);
-        agent.agent_id = "herdr:empty-tail".into();
-        let mut fleet = Fleet::default();
-        fleet.tails.insert(agent.agent_id.clone(), vec![]);
-        let mut intents = Vec::new();
-        let mut actions = BoardActions {
-            drive: &mut |intent| intents.push(intent),
-            transcript: &mut |_| {},
-            refresh_issues: &mut || {},
-        };
-
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            detail(ui, &agent, &fleet, &|_| true, &mut actions);
-        });
-        assert!(
-            text_rect(&output, "no recent output for this agent").is_some(),
-            "empty tail must keep its existing empty-state copy"
-        );
-        clear_textures(&mut output);
     }
 
     #[test]

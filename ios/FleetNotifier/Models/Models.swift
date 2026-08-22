@@ -1,11 +1,25 @@
 import Foundation
 
-// MARK: - Read model (mirror of src/core/model.rs, schema v3)
+// MARK: - Read model (mirror of src/core/model.rs, schema v5)
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waitingOn`, not here.
 enum AgentState: String, Codable, CaseIterable, Sendable {
     case idle, working, blocked, done, unknown
+
+    /// Human-facing state text. The board intentionally renders this beside
+    /// the color cue so state is never communicated by color alone.
+    var displayName: String {
+        switch self {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .blocked: return "Blocked"
+        case .done: return "Done"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    var accessibilityLabel: String { "State: \(displayName)" }
 }
 
 /// Why an agent is blocked. "Blocked" is not one UI: an approve-tool prompt,
@@ -87,7 +101,7 @@ struct Workspace: Codable, Equatable, Sendable {
     var dirty: Bool
     var ahead: UInt64
     var behind: UInt64
-    /// Issues the bound PR closes (schema v4, G23) — this is the wire
+    /// Issues the bound PR closes (introduced in schema v4, G23) — this is the wire
     /// location the daemon emits (`src/core/model.rs` puts `issues` on
     /// `Workspace`, not on `Agent`; pinned there by `tests/model.rs`).
     /// Serde-defaulted on the daemon, so absent decodes as empty.
@@ -170,8 +184,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     var ts: UInt64
     var capabilities: [String]
     var waitingOn: WaitingOn?
-    /// Cumulative spend in USD, nullable (P1: always null from herdr).
-    var cost: Double?
     /// Topology: reviewer belongs to its implementation agent (P2+).
     var parentId: String?
     /// Host public-key identity (D10).
@@ -185,7 +197,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         case agentId = "agent_id"
         case source, tool, state, reason, seq, ts, capabilities
         case waitingOn = "waiting_on"
-        case cost
         case parentId = "parent_id"
         case host, workspace, attachment
         case displayName = "display_name"
@@ -194,7 +205,7 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
 
     init(agentId: String, source: String = "herdr", tool: String = "claude", state: AgentState = .unknown,
          reason: String? = nil, seq: UInt64 = 0, ts: UInt64 = 0, capabilities: [String] = [],
-         waitingOn: WaitingOn? = nil, cost: Double? = nil, parentId: String? = nil,
+         waitingOn: WaitingOn? = nil, parentId: String? = nil,
          host: String? = nil, workspace: Workspace = Workspace(), attachment: Attachment? = nil,
          displayName: String? = nil, title: String? = nil) {
         self.agentId = agentId
@@ -206,7 +217,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         self.ts = ts
         self.capabilities = capabilities
         self.waitingOn = waitingOn
-        self.cost = cost
         self.parentId = parentId
         self.host = host
         self.workspace = workspace
@@ -226,7 +236,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         ts = try c.decodeIfPresent(UInt64.self, forKey: .ts) ?? 0
         capabilities = try c.decodeIfPresent([String].self, forKey: .capabilities) ?? []
         waitingOn = try c.decodeIfPresent(WaitingOn.self, forKey: .waitingOn)
-        cost = try c.decodeIfPresent(Double.self, forKey: .cost)
         parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
         host = try c.decodeIfPresent(String.self, forKey: .host)
         workspace = try c.decodeIfPresent(Workspace.self, forKey: .workspace) ?? Workspace()
@@ -280,17 +289,20 @@ struct Delta: Codable, Equatable, Sendable {
     var del: [String]
 }
 
-/// Response to a drive write: `{request_id, ok, error?, rev, result?}`.
+/// Response to a drive write: `{request_id, ok, error?, error_kind?, rev, result?}`.
 struct DriveResponse: Codable, Equatable, Sendable {
     var requestId: String
     var ok: Bool
     var error: String?
+    var errorKind: String?
     var rev: UInt64
     var result: CodableValue?
 
     enum CodingKeys: String, CodingKey {
         case requestId = "request_id"
-        case ok, error, rev, result
+        case ok, error
+        case errorKind = "error_kind"
+        case rev, result
     }
 }
 
@@ -386,7 +398,9 @@ struct GrantsReadResponse: Codable, Equatable, Sendable {
     }
 }
 
-/// Opaque JSON value for `DriveResponse.result` (never touched in v1).
+/// JSON value for `DriveResponse.result`. The daemon's read_tail result is
+/// intentionally small and shaped as `{"lines": [String]}`; other result
+/// fields remain opaque to this client.
 enum CodableValue: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
@@ -396,6 +410,18 @@ enum CodableValue: Codable, Equatable, Sendable {
     case string(String)
     case array([CodableValue])
     case object([String: CodableValue])
+
+    var tailLines: [String]? {
+        guard case .object(let object) = self,
+              case .array(let values) = object["lines"] else {
+            return nil
+        }
+        let lines = values.compactMap { value -> String? in
+            guard case .string(let line) = value else { return nil }
+            return line
+        }
+        return lines.count == values.count ? lines : nil
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()

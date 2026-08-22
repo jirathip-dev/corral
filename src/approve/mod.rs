@@ -45,7 +45,7 @@
 //!     &payload.prompt_hash,
 //!     &payload.choice,
 //! )?;                                    // typed ApprovalError -> typed HTTP error
-//! adapter.drive(&agent.agent_id, DriveCommand::Approve { choice: approved.choice })?;
+//! adapter.drive(&agent.agent_id, DriveCommand::Approve { choice: approved.choice }).await?;
 //! ```
 
 use serde::Serialize;

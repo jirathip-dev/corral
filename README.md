@@ -6,15 +6,12 @@
 herdr](https://github.com/herdrdev/herdr) first: it is the runtime that
 spawns and supervises agents in panes and worktrees. Corral gives that fleet
 one live board, signed remote control from your phone (loopback by default,
-or over your tailnet), and cost visibility before a provider bill surprises
-you.
+or over your tailnet).
 
 At the harness layer, Corral is **harness-agnostic**: Claude Code, Codex CLI,
 OpenCode, and other agent harnesses become the same canonical record, so the
 board and signed drive plane work the same regardless of which harness an
-agent runs on. The cost meter still reads each provider's own session-store
-format; its pricing and plan-cap caveat is documented in [Cost meter
-(G34)](#cost-meter-g34).
+agent runs on.
 
 Corral reads every worktree / agent / PR / CI fact into a snapshot read
 model served over HTTP + SSE (loopback by default; tailnet/private
@@ -35,7 +32,6 @@ board (`corrald-ui`, egui) and an iOS notifier app alongside it.
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)
 git watcher ──┤ → integrator →   ├─ GET /history (event ring, ?since= &limit=)
-gh (GraphQL) ─┘   read model     ├─ GET /cost   (per-provider spend, 5h/weekly/monthly)
                                  ├─ POST /register, /step-up, /grants, GET /host-key, /audit
                                  ├─ POST /device-token (APNs registration, signed)
                                  └─ POST /drive (Ed25519-signed, capability-gated)
@@ -100,7 +96,7 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   by default; `--bind` also accepts tailnet (100.64/10), RFC 1918 private,
   and IPv6 unique-local addresses (#65) — public IPs and `0.0.0.0` are
   hard refusals. Writes are device-signed on every interface; the read
-  plane (`/healthz`, `/snapshot`, `/events`, `/history`, `/cost`) is
+  plane (`/healthz`, `/snapshot`, `/events`, `/history`) is
   credential-free, so its boundary on a non-loopback bind — or a
   loopback bind fronted by Tailscale Serve — is the network itself:
   prefer a tailnet (WireGuard device auth) over a plain LAN.
@@ -121,11 +117,6 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   `GET /history?since=<epoch-ms>&limit=<n>`, or take a per-agent daily
   summary offline with `corrald digest`. See
   [docs/OPERATIONS.md](docs/OPERATIONS.md).
-- **Cost / usage meter** — per-provider spend over rolling 5h / weekly /
-  monthly windows on `GET /cost`, with a board COST column and per-provider
-  dashboard tiles. **The plan caps and the claude/codex pricing table are
-  placeholders** until real subscription limits are supplied — see
-  [Cost meter (G34)](#cost-meter-g34) below.
 - **Fleet registry** — `corrald fleet list|check` read, and `corrald fleet
   add|remove|pause|resume|models` atomically rewrite, the `fleets.json` registry
   (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree dir,
@@ -163,39 +154,14 @@ auth), P4 (shared `corrald-client` crate with R1–R10 conformance, the
 round-trip, repo grouping, PR/issue binding, and the event-history ring +
 daily digest.
 
-Landing alongside this documentation: hosted CI, the cost/usage meter, and
-the fleet registry commands.
+Landing alongside this documentation: hosted CI and the fleet registry
+commands.
 
 **Honest verification status of the APNs notifier:** the daemon and iOS code
 are written and unit-tested, but every test mocks the provider seam. Real
 APNs delivery, the lock-screen reply round-trip, and the Face ID step-up
 have **not** been exercised on hardware — they need a TestFlight build on a
 real device. Treat the notifier as unproven end to end until that happens.
-
-## Cost meter (G34)
-
-`GET /cost` reports per-provider (opencode/claude/codex) USD spend and %
-of a configured cap over rolling 5h/weekly/monthly windows, read-only and
-bounded from each provider's own session store — see `src/cost/mod.rs` for
-the data flow and `docs/corral/DECISIONS.md` (D34) for the design writeup.
-**The default caps are invented.** Real opencode-go / claude / codex
-subscription limits have not been supplied, and the claude/codex pricing
-table is a documented guess (neither provider exposes a cost field — only
-tokens). So every unset cap is a placeholder: the API marks it
-`cap_is_placeholder: true`, the desktop tiles prefix such percentages with
-`~`, and a provider with no session store renders "no store" rather than
-`$0.00` — which would read as "nothing spent", the opposite of the truth.
-**Do not act on a percentage until you have set the real cap:**
-
-```sh
-CORRAL_COST_CAP_<PROVIDER>_<WINDOW>_USD   # e.g. CORRAL_COST_CAP_CLAUDE_WEEKLY_USD=100
-CORRAL_COST_WARN_THRESHOLD_PCT=70         # window status -> warning at/above
-CORRAL_COST_ALERT_THRESHOLD_PCT=90        # window status -> problem at/above
-```
-
-See `src/cost/config.rs` for the full variable list. The board's per-agent
-cost column and a `tracing::warn!` watchdog before any window nears
-exhaustion both come from the same meter.
 
 ## Docs
 

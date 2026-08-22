@@ -16,7 +16,6 @@ fn agent(id: &str) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),
@@ -40,7 +39,7 @@ async fn snapshot_flushes_and_bumps_rev_once_per_batch() {
     assert_eq!(snap.agents.len(), 3);
     // v4 (P4 G21): Workspace gained `head_sha` + `head_subject` — versioned
     // strictly.
-    assert_eq!(snap.schema_version, 4);
+    assert_eq!(snap.schema_version, 5);
 }
 
 #[tokio::test]
@@ -52,6 +51,39 @@ async fn remove_emits_del_delta() {
     assert_eq!(d.rev, 1);
     assert!(d.del.contains(&"a".to_string()));
     assert!(store.snapshot().await.agents.is_empty());
+}
+
+#[tokio::test]
+async fn remove_then_upsert_emits_only_update_for_clients() {
+    let store = Store::new();
+    let initial = agent("a");
+    store.apply(Change::upsert(initial.clone())).await;
+    store.flush().await;
+
+    let mut replacement = initial.clone();
+    replacement.seq = 2;
+    replacement.title = Some("replacement".to_string());
+    store.apply(Change::Remove("a".to_string())).await;
+    store.apply(Change::upsert(replacement.clone())).await;
+
+    let delta = store.flush().await.expect("replacement delta");
+    assert!(
+        delta.del.is_empty(),
+        "replacement must cancel the queued delete"
+    );
+    assert_eq!(delta.upd, vec![replacement.clone()]);
+
+    // Mirror a client reducer's upd-then-del application order. A live
+    // replacement must remain visible after one coalesced delta.
+    let mut client_agents = std::collections::BTreeMap::from([("a".to_string(), initial)]);
+    for updated in &delta.upd {
+        client_agents.insert(updated.agent_id.clone(), updated.clone());
+    }
+    for agent_id in &delta.del {
+        client_agents.remove(agent_id);
+    }
+    assert_eq!(client_agents.get("a"), Some(&replacement));
+    assert_eq!(store.get("a").await, Some(replacement));
 }
 
 #[tokio::test]

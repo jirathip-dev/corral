@@ -80,7 +80,7 @@ async fn live_register_read_drive_audit() {
         .await
         .expect("snapshot");
     assert!(
-        snapshot.schema_version >= 3,
+        snapshot.schema_version >= 5,
         "schema {}",
         snapshot.schema_version
     );

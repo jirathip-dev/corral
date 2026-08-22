@@ -40,6 +40,10 @@ struct RecordingAdapter {
     dispatches: AtomicUsize,
     commands: Mutex<Vec<(String, DriveCommand)>>,
     known: Mutex<HashSet<String>>,
+    stale: Mutex<HashSet<String>>,
+    /// Hide one tombstone check so a test can model disappearance after the
+    /// handler's initial stale check but before its store lookup.
+    deferred_stale: Mutex<HashSet<String>>,
     mode: Mutex<Mode>,
     /// When Some, drive() notifies `started` and blocks on the receiver
     /// before returning (concurrency test support — never in production).
@@ -58,6 +62,8 @@ impl Default for RecordingAdapter {
             dispatches: AtomicUsize::new(0),
             commands: Mutex::new(Vec::new()),
             known: Mutex::new(HashSet::new()),
+            stale: Mutex::new(HashSet::new()),
+            deferred_stale: Mutex::new(HashSet::new()),
             mode: Mutex::new(Mode::Ok),
             hold: Mutex::new(None),
             started: Arc::new(tokio::sync::Notify::new()),
@@ -75,6 +81,20 @@ impl RecordingAdapter {
 
     fn mode(&self, mode: Mode) -> &Self {
         *self.mode.lock().unwrap() = mode;
+        self
+    }
+
+    fn stale(&self, agent_id: &str) -> &Self {
+        self.stale.lock().unwrap().insert(agent_id.to_string());
+        self
+    }
+
+    fn stale_after_initial_check(&self, agent_id: &str) -> &Self {
+        self.stale(agent_id);
+        self.deferred_stale
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_string());
         self
     }
 
@@ -99,32 +119,46 @@ impl Adapter for RecordingAdapter {
 
     fn start(self: Arc<Self>, _store: Store) {}
 
-    fn drive(&self, agent_id: &str, command: DriveCommand) -> Result<(), DriveError> {
-        self.dispatches.fetch_add(1, Ordering::SeqCst);
-        self.commands
-            .lock()
-            .unwrap()
-            .push((agent_id.to_string(), command.clone()));
-        let hold = self.hold.lock().unwrap().take();
-        if let Some(rx) = hold {
-            self.started.notify_waiters();
-            let _ = rx.recv();
-        }
-        match *self.mode.lock().unwrap() {
-            Mode::Ok => {
-                if self.known.lock().unwrap().contains(agent_id) {
-                    Ok(())
-                } else {
-                    Err(DriveError::UnknownAgent(agent_id.to_string()))
-                }
+    fn drive<'a>(
+        &'a self,
+        agent_id: &'a str,
+        command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+        let agent_id = agent_id.to_string();
+        Box::pin(async move {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            self.commands
+                .lock()
+                .unwrap()
+                .push((agent_id.clone(), command));
+            let hold = self.hold.lock().unwrap().take();
+            if let Some(rx) = hold {
+                self.started.notify_waiters();
+                let _ = tokio::task::block_in_place(|| rx.recv());
             }
-            Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
-            Mode::Transport => Err(DriveError::Transport("boom".to_string())),
-        }
+            match *self.mode.lock().unwrap() {
+                Mode::Ok => {
+                    if self.known.lock().unwrap().contains(&agent_id) {
+                        Ok(())
+                    } else {
+                        Err(DriveError::UnknownAgent(agent_id))
+                    }
+                }
+                Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
+                Mode::Transport => Err(DriveError::Transport("boom".to_string())),
+            }
+        })
     }
 
     fn knows_agent(&self, agent_id: &str) -> bool {
         self.known.lock().unwrap().contains(agent_id)
+    }
+
+    fn is_stale_agent(&self, agent_id: &str) -> bool {
+        if self.deferred_stale.lock().unwrap().remove(agent_id) {
+            return false;
+        }
+        self.stale.lock().unwrap().contains(agent_id)
     }
 
     fn read_tail<'a>(
@@ -432,7 +466,6 @@ async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
             approval_id,
             choices,
         }),
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),
@@ -545,7 +578,7 @@ async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() 
 // read_tail result path (P4 W2.1): DriveResponse.result carries the lines
 // the adapter returned (redacted, bounded), the audit entry stays
 // `executed`, and the seam is the dedicated Adapter::read_tail — never the
-// fire-and-forget drive() path.
+// command-returning Adapter::drive path.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -573,7 +606,7 @@ async fn read_tail_result_carries_lines_and_audits_executed() {
     let rev = h.store.snapshot().await.rev;
     assert_eq!(value["rev"].as_u64(), Some(rev));
 
-    // Routed through Adapter::read_tail, not the drive() fire-and-forget
+    // Routed through Adapter::read_tail, not the command-returning drive
     // path: exactly one dispatch, zero drive() commands, the requested
     // line count passed through.
     assert_eq!(h.adapter.dispatch_count(), 1);
@@ -673,6 +706,135 @@ async fn read_tail_unknown_agent_is_typed_refusal() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
+}
+
+#[tokio::test]
+async fn stale_agent_is_typed_conflict_before_dispatch() {
+    let h = harness();
+    h.adapter.stale("herdr:gone");
+
+    for (request_id, capability, payload) in [
+        (
+            "req-stale-prompt",
+            Capability::Prompt,
+            prompt_payload("hello"),
+        ),
+        (
+            "req-stale-tail",
+            Capability::ReadTail,
+            json!({ "kind": "read_tail", "lines": 10 }),
+        ),
+    ] {
+        let (status, value) = post(
+            &h.app,
+            h.body(request_id, capability, "herdr:gone", payload, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{capability}");
+        assert_eq!(value["kind"], "stale_agent", "{capability}");
+        assert_eq!(value["request_id"], request_id, "{capability}");
+    }
+    assert_eq!(h.adapter.dispatch_count(), 0, "stale rows never dispatch");
+    assert!(
+        h.audit_entries().is_empty(),
+        "pre-dispatch stale is not audited"
+    );
+}
+
+#[tokio::test]
+async fn stale_approve_is_conflict_before_current_claim_validation() {
+    let h = harness();
+    // The live store has already dropped the blocked row, but the adapter
+    // still remembers its canonical id as a stale Herdr target. The stale
+    // classification must win over the approval lookup's generic 404.
+    h.adapter.stale(W2_AGENT);
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-stale-approve",
+            Capability::Approve,
+            W2_AGENT,
+            json!({
+                "kind": "approve",
+                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+                "prompt_hash": W2_HASH,
+                "choice": "yes"
+            }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["kind"], "stale_agent");
+    assert_eq!(value["request_id"], "req-stale-approve");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert!(h.audit_entries().is_empty());
+}
+
+#[tokio::test]
+async fn approve_missing_row_after_initial_stale_check_is_reclassified_stale() {
+    let h = harness();
+    h.adapter.stale_after_initial_check(W2_AGENT);
+    seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into()]).await;
+    h.store
+        .apply(corrald::core::model::Change::Remove(W2_AGENT.to_string()))
+        .await;
+
+    // The first adapter check intentionally says "not stale"; the row is
+    // already gone by the time the first approval store.get runs, and the
+    // classification check must observe the tombstone instead of returning a
+    // generic 404.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-approve-first-read-race",
+            Capability::Approve,
+            W2_AGENT,
+            json!({
+                "kind": "approve",
+                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+                "prompt_hash": W2_HASH,
+                "choice": "yes"
+            }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(value["kind"], "stale_agent");
+    assert_eq!(value["request_id"], "req-approve-first-read-race");
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert!(h.audit_entries().is_empty());
+}
+
+#[tokio::test]
+async fn completed_request_replays_after_target_becomes_stale() {
+    let h = harness();
+    let target = "herdr:replay";
+    h.adapter.knows(target);
+    let body = h.body(
+        "req-replay-after-stale",
+        Capability::Prompt,
+        target,
+        prompt_payload("hello"),
+        None,
+    );
+
+    let (first_status, first) = post(&h.app, body.clone()).await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(first["ok"], true);
+
+    h.adapter.stale(target);
+    let (second_status, second) = post(&h.app, body).await;
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(
+        second, first,
+        "completed request ids replay byte-identically"
+    );
+    assert_eq!(h.adapter.dispatch_count(), 1, "replay does not redispatch");
+    assert_eq!(h.audit_entries().len(), 1, "replay does not re-audit");
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +990,74 @@ async fn not_implemented_and_transport_are_typed() {
         &h.audit_entries()[0].outcome,
         AuditOutcome::Failed(_)
     ));
+}
+
+#[tokio::test]
+async fn awaited_prompt_and_approve_refusals_are_cached_as_failures() {
+    let h = harness();
+    h.adapter.knows(W2_AGENT).mode(Mode::Transport);
+    seed_blocked_agent(&h.store, "Continue?", vec!["y".into()]).await;
+
+    let (status, prompt_failure) = post(
+        &h.app,
+        h.body(
+            "req-prompt-failure",
+            Capability::Prompt,
+            W2_AGENT,
+            prompt_payload("hello"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(prompt_failure["ok"], false);
+    assert_eq!(prompt_failure["error"], "transport error: boom");
+    assert_eq!(h.audit_entries().len(), 1, "RPC refusal is audited once");
+
+    let (status, replayed) = post(
+        &h.app,
+        h.body(
+            "req-prompt-failure",
+            Capability::Prompt,
+            W2_AGENT,
+            prompt_payload("hello"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replayed, prompt_failure, "failure replay is byte-identical");
+    assert_eq!(
+        h.adapter.dispatch_count(),
+        1,
+        "prompt retry does not redispatch"
+    );
+
+    let approve_payload = json!({
+        "kind": "approve",
+        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
+        "prompt_hash": W2_HASH,
+        "choice": "y"
+    });
+    let (status, approve_failure) = post(
+        &h.app,
+        h.body(
+            "req-approve-failure",
+            Capability::Approve,
+            W2_AGENT,
+            approve_payload,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(approve_failure["ok"], false);
+    assert_eq!(approve_failure["error"], "transport error: boom");
+    assert_eq!(
+        h.audit_entries().len(),
+        2,
+        "approve RPC refusal is audited once"
+    );
 }
 
 // ---------------------------------------------------------------------------

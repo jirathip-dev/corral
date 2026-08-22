@@ -13,7 +13,9 @@ For a new machine / public install, two scripts make the daemon turnkey:
 
 Builds the release binary, creates `~/.config/corral` (keys, tokens), and
 installs a **launchd agent** (`com.corral.corrald`) so the daemon runs at
-login and stays up (KeepAlive). Idempotent; safe to re-run.
+login and stays up (KeepAlive). It also installs the release desktop client:
+`/Applications/Corral.app` on macOS or `~/.local/bin/corrald-ui` plus a
+`.desktop` entry on Linux. Idempotent; safe to re-run.
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
@@ -32,6 +34,51 @@ own Terminal. If the daemon is already up under launchd, the script's
 `bootout` + `bootstrap` applies a changed config (a plain `launchctl
 kickstart -k` only restarts the process; it does not re-read a rewritten
 plist).
+
+The macOS desktop install is handled by `scripts/install-corral-ui.sh`. It
+stages the complete `Corral.app` beside `/Applications/Corral.app`, builds and
+round-trips `Contents/Resources/Corral.icns` from the checked-in
+squircle-masked `assets/icon/corral-icon-macos.png`, validates the executable,
+and writes `CFBundleIconFile=Corral` in `Info.plist` before touching the live
+destination. Linux stages the binary, the 256px
+`assets/icon/corral-icon-256.png`, and the
+`~/.local/share/applications/corral.desktop` entry together. Only a validated
+staged payload is committed; the desktop entry quotes and escapes executable
+paths containing spaces, `%`, quotes, `$`, backticks, or backslashes according
+to desktop-entry syntax. A failed copy, converter, plist check, or final rename leaves the
+existing installation in place and rolls back any partial commit. If rollback
+restoration itself fails, the installer keeps and reports the exact rollback
+directory so the old payload remains recoverable. A missing icon or failed
+macOS icon conversion is an installation error rather than a silent fallback.
+The Linux `Exec` value uses command quoting followed by desktop-entry
+general-string escaping: quotes, `$`, and backticks receive doubled on-disk
+backslashes, a literal backslash receives four, and `%` is written as `%%`.
+Newline- or carriage-return-containing requested prefixes and executable paths
+containing `=` fail before destination directories are created. Install
+prefixes and the macOS app parent are physically
+canonicalized before safety checks; root/`..` paths and symlinked `bin` or
+`share` payload parents are rejected, while a safe symlinked prefix is
+resolved to its canonical target. Staging and final renames stay beside the
+resolved destination on one filesystem. Linux and Other explicitly compare
+the device of every target parent with the staging prefix before mutation and
+again before commit; device mismatches fail rather than pretending a
+cross-filesystem rename is atomic. If payload restoration fails, the old
+payload is retained in the reported rollback directory; if only rollback
+directory cleanup fails after a failed install, an existing empty or partial
+rollback directory is named for inspection, a missing root is reported
+without a path or recoverability claim, and an uninspectable root is reported
+as indeterminate with its path. After a fresh install, the cleanup-failure
+diagnostic instead names an empty rollback directory for inspection. After a replacement, the
+diagnostic checks the expected rollback paths after failed cleanup and reports
+all, some, or none of the prior Linux/Other backups (or the macOS previous
+path) without promising recoverability from a pre-cleanup count. An existing
+empty rollback directory is named for inspection; a missing root has no
+inspection or recoverability claim; and an existing but uninspectable root is
+reported as indeterminate. The multi-file Linux commit is rollback-based
+rather than one single atomic operation.
+
+`--uninstall` removes the launchd agent and leaves the config directory; it
+does not remove an installed desktop app.
 
 ### `scripts/corrald-grant.sh`
 
@@ -54,7 +101,7 @@ LAN is **real TLS via Tailscale Serve fronting a loopback-only daemon**
 process never listens beyond loopback), and it is the path ATS accepts
 with no certificate plumbing of your own. It does NOT narrow exposure:
 `tailscale serve` publishes to the WHOLE tailnet, and corral's read
-plane (`/snapshot`, `/events`, `/history`, `/cost`) is credential-free
+plane (`/snapshot`, `/events`, `/history`) is credential-free
 — every device on the tailnet can read full fleet state, exactly as
 with a tailnet `--bind`. Use it only on a tailnet whose every device
 may see fleet state (same rule as binding beyond loopback).
@@ -142,11 +189,12 @@ tailscale serve reset
 ```
 
 Include the `https://` scheme — the app assumes `http://` when the
-scheme is omitted, which lands on the ATS error above. Device leg
-verified 2026-08-19 (TestFlight build 5): registration plus holding the
-`/events` SSE stream through the Serve proxy populates the live board
-on hardware. The drive legs (tail/prompt/approve) were promoted the same
-day but remain pending on-device confirmation.
+scheme is omitted, which lands on the ATS error above. This repository's
+local gate does not claim physical-device or TestFlight verification. When a
+Release build is distributed, its only product path is the real registration,
+`/events` SSE stream, and signed drive plane; the Debug-only seeded demo is
+not part of that build. Validate the Release artifact with
+`ios/check-release-demo.py` before any later hardware or TestFlight pass.
 
 ### The FleetNotifier app (iOS)
 
@@ -164,6 +212,10 @@ Capabilities, grant-gated per device (see "Grants model" below):
   canned replies answer a waiting agent in-app; the same actions work
   from the lock-screen notification, validated against the live claim
   (`prompt_hash` / `stale_approval` refusals surface as typed banners).
+- If a target disappears or moves while a drive is in flight, the daemon
+  returns `stale_agent` (409 before dispatch when observed). The app removes
+  the stale row, shows a refresh banner, and fetches one fresh snapshot; the
+  SSE stream then supplies the authoritative replacement row.
 - Biometric step-up (Face ID) runs in-app for destructive payloads; the
   lock-screen path is bounded to non-destructive canned replies.
 
@@ -206,7 +258,7 @@ before expiry.
 ### Grants model
 
 - Registered device: read plane only (`/healthz`, `/snapshot`, `/events`,
-  `/history`, `/cost` — credential-free; on a non-loopback bind — or a
+  `/history` — credential-free; on a non-loopback bind — or a
   loopback bind fronted by Tailscale Serve — the tailnet/private network
   itself is the read boundary, so expose it only on networks whose every
   device may see fleet state — a plain LAN offers no device auth, prefer
@@ -438,37 +490,9 @@ tool's store when the tool is recognized (`opencode`/`claude`/`codex` —
 an agent reporting any other tool string consults all three stores),
 most recent match wins. Path comparisons use raw-then-
 canonical matching (symlinked `$HOME` safe). Store locations honour the
-same env overrides as the cost meter (`$CORRAL_OPENCODE_DB`,
+transcript-reader env overrides (`$CORRAL_OPENCODE_DB`,
 `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
 (opencode via `sqlite3 -readonly`).
-
-## Cost / usage meter
-
-`GET /cost` reports per-provider spend over rolling 5h / weekly / monthly
-windows, read straight from each tool's own session store (read-only).
-
-> **The default caps are invented.** Nobody has supplied the real
-> opencode-go / claude / codex subscription limits, so every unset cap is a
-> placeholder and the response marks it `cap_is_placeholder: true` (the UI
-> prefixes such percentages with `~`). **Do not act on a percentage until
-> you have set the real cap.** A meter that looks authoritative while
-> resting on a guess is worse than no meter — the outage this feature
-> exists to prevent was a silent credit exhaustion.
-
-Set the real limits before trusting the alert:
-
-```sh
-CORRAL_COST_CAP_OPENCODE_5H_USD=...   CORRAL_COST_CAP_OPENCODE_WEEKLY_USD=...   CORRAL_COST_CAP_OPENCODE_MONTHLY_USD=...
-CORRAL_COST_CAP_CLAUDE_5H_USD=...     CORRAL_COST_CAP_CLAUDE_WEEKLY_USD=...     CORRAL_COST_CAP_CLAUDE_MONTHLY_USD=...
-CORRAL_COST_CAP_CODEX_5H_USD=...      CORRAL_COST_CAP_CODEX_WEEKLY_USD=...      CORRAL_COST_CAP_CODEX_MONTHLY_USD=...
-
-CORRAL_COST_WARN_THRESHOLD_PCT=70     # window status -> warning at/above
-CORRAL_COST_ALERT_THRESHOLD_PCT=90    # window status -> problem at/above
-```
-
-A provider whose store is absent reports `store_found: false` and renders
-as "no store" — distinct from `$0.00`, which would wrongly read as "you
-have spent nothing".
 
 ## Fleet registry
 
@@ -525,6 +549,30 @@ fail loudly. Model map: required `orch`/`impl`/`review`, optional
 (`--impl-alt ''`; `models all` applies to every fleet — `all` is a
 reserved fleet name). Full schema and the per-command exit-code table:
 `docs/corral/G35-registry.md`.
+
+## Workspace/repo attribution
+
+The daemon's board grouping uses canonical workspace facts, not the name of
+an orchestrator pane. `CORRAL_REPO_ROOT` is always a known primary checkout;
+entries in the fleet registry add more known primary roots from their
+`local` paths, with repository identity taken from the corresponding
+`gh_repo` slug. Registry identity wins when a fleet `local` canonicalizes to
+`CORRAL_REPO_ROOT`; the configured directory basename is only the fallback.
+The linked-worktree root is `CORRAL_WORKTREES_ROOT` (default
+`~/.herdr/worktrees`) and keeps the established `<repo>/<label>` layout.
+
+The git plane supplies branch facts for each recognized root/worktree. On a
+supervised plane restart, the old branch cache and stored branch fields for
+recognized agents are cleared before replacement-plane probes begin; present
+paths are repopulated by fresh git facts, while vanished paths cannot retain
+their old branch. Repo identity and the other workspace/GitHub fields are
+preserved, and unknown paths are not reconciled. Repo and branch matching
+accepts raw or symlink/canonical path spellings, so a Herdr cwd under a
+symlinked `$HOME` still joins the git record. The label, pane title, display
+name, and terminal text are not branch or repo sources.
+An agent whose `worktree_path` matches none of the configured roots or Herdr
+worktree layout is intentionally left with `repo: null` and remains in
+`(no repo)`; do not repair that bucket by guessing from a pane label.
 
 ## Security model summary
 

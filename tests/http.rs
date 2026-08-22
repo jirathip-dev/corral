@@ -23,7 +23,6 @@ fn agent(id: &str, state: AgentState) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),
@@ -68,6 +67,24 @@ async fn healthz_ok() {
 }
 
 #[tokio::test]
+async fn removed_cost_route_is_not_a_json_fallback() {
+    let (_store, app) = app().await;
+    let res = app
+        .oneshot(Request::get("/cost").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(
+        res.headers().get(header::CONTENT_TYPE).is_none(),
+        "the removed route must not fall through to a JSON handler"
+    );
+    assert_eq!(
+        res.into_body().collect().await.unwrap().to_bytes().as_ref(),
+        b""
+    );
+}
+
+#[tokio::test]
 async fn snapshot_returns_json_with_rev_and_agents() {
     let (store, app) = app().await;
     store
@@ -90,7 +107,7 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     // v4 (P4 G21): Workspace gained `head_sha` + `head_subject` — versioned
     // strictly.
-    assert_eq!(v["schema_version"], 4);
+    assert_eq!(v["schema_version"], 5);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }

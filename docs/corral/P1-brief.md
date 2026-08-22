@@ -1,5 +1,8 @@
 # Corral — P1 brief: corrald core (Rust)
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 > **Historical phase brief** (shipped, superseded). Kept as design
 > history — current docs: README + docs/QUICKSTART.md, ARCHITECTURE.md,
 > OPERATIONS.md, DEVELOPING.md.

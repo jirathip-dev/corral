@@ -1,5 +1,8 @@
 # Corral — public-readiness re-review (Fable round 2, delta)
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 Reviewer: Claude (Fable 5), static review, 2026-08-18. Baseline:
 `docs/corral/public-review.md`. Delta files read in full: `README.md`,
 `Cargo.toml`, `LICENSE-MIT`, `LICENSE-APACHE`, `scripts/setup-corrald.sh`,
@@ -146,7 +149,7 @@ keys on `format!("{tool}:{worktree_path}")`
 (`src/cost/agent_cache.rs:41-43`), accumulated from each provider store's own
 `workspace_path` (`:88-94`), joined to agents in the adapter
 (`herdr.rs:681-685`). `fleets.json` appears only in `src/fleet/`, and its
-default path is still a legacy fleet registry fallback
+default path is still `~/.hermes/scripts/fleets.json`
 (`src/fleet/config.rs:181-188`) — correctly deferred to #66, and
 `docs/OPERATIONS.md:212-213` documents the env override, so a stranger is not
 blocked, just pointed at a legacy default.

@@ -49,6 +49,11 @@ enum CanonicalJSON {
                  (key: "lines", value: lines.map { .uint(UInt64($0)) } ?? .null)])
     }
 
+    /// Interrupt/kill/attach commands take a JSON null payload in the drive
+    /// contract. Keeping the builder named prevents the UI from accidentally
+    /// inventing a prompt-shaped payload for an interrupt.
+    static func interruptPayload() -> Value { .null }
+
     /// `{"approval_id":...,"choice":...,"kind":"approve","prompt_hash":...}`
     /// — sorted byte order: approval_id < choice < kind < prompt_hash.
     static func approvePayload(approvalId: String, promptHash: String, choice: String) -> Value {

@@ -27,20 +27,19 @@ agents).
 The core model, signed drive plane, and HTTP surface are runtime-neutral; the
 current runtime coupling is isolated in the herdr adapter described above.
 
-**The one harness-specific exception: the cost meter.** `src/cost/` parses
-each harness's own session-store format — opencode.db (SQLite), Claude Code
-JSONL transcripts, codex rollouts. That is the only place corral understands
-harness-native file formats. Every path is env-overridable
+The canonical board model contains no provider-specific pricing, quota, or
+transcript fields. Provider session stores are consulted only by the
+on-demand transcript boundary (`GET /transcript`), whose store binding and
+redaction live under `src/transcript/` and never feed the snapshot model.
+The three transcript store roots are env-overridable
 (`CORRAL_OPENCODE_DB`, `CORRAL_CLAUDE_DIR`, `CORRAL_CODEX_DIR`) so a
-different install layout or harness works without code changes; a store that
-is absent reports `store_found: false`, never a misleading zero.
+different install layout can be used without changing the core model.
 
-**Implication for a "no-herdr" mode.** The cost meter is not the coupling
-problem (it is tool-native); the adapter is. A second-runtime / no-runtime
-mode would add an `Adapter` implementation that derives agents from git
-worktrees + a mapping file (or another runtime's socket) instead of herdr's.
-That is a documented limitation today, not a bug — see
-`docs/corral/DECISIONS.md` for the phased plan.
+**Implication for a "no-herdr" mode.** The adapter is the runtime coupling
+point. A second-runtime / no-runtime mode would add an `Adapter`
+implementation that derives agents from git worktrees + a mapping file (or
+another runtime's socket) instead of herdr's. That is a documented limitation
+today, not a bug.
 
 ## Read side: planes → integrator → store → HTTP/SSE
 
@@ -71,7 +70,8 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
 ```
 
 Every adapter normalizes into the canonical `Agent` record
-(`src/core/model.rs`, `schema_version` 4, additive-only). The herdr
+(`src/core/model.rs`, `schema_version` 5, versioned for additive and breaking
+changes). The herdr
 adapter is push-only — it subscribes once and converges on pushed
 `pane_*` events, never a poll loop (grep-able standing rule; the gh
 plane is the sanctioned exception, poll-by-design at one round-trip
@@ -100,23 +100,42 @@ before any bytes leave the machine. The APNs path re-redacts anyway — see
 Two subsystems answer from outside the agent read model, because their
 inputs are files on disk rather than plane events:
 
-- **Cost meter** (`src/cost/`, `GET /cost`) — reads each provider's own
-  session store directly: `opencode.db` (SQLite, read-only, bounded — the
-  file runs to double-digit GB, so no unbounded scans), Claude Code JSONL
-  transcripts, and codex rollouts. Usage is aggregated from the stores'
-  own timestamps into rolling 5h / weekly / monthly windows, then divided
-  by a per-provider cap to produce a percentage and an `ok`/`warning`/
-  `problem` status. A missing store yields `store_found: false`, never a
-  zero that would read as "nothing spent". **Caps and the claude/codex
-  pricing table are placeholders** until real plan limits are supplied;
-  synthetic caps are flagged `cap_is_placeholder: true` so no client can
-  present them as fact.
+- **Transcript reader** (`src/transcript/`, `GET /transcript`) — binds an
+  agent to its own tool's session store, reads one bounded page at a time,
+  and redacts entries before they cross the module boundary. It is an
+  on-demand, grant-gated read path; it does not compute provider usage or
+  alter the fleet snapshot.
 - **Fleet registry** (`src/fleet/`,
   `corrald fleet list|check|add|remove|pause|resume|models`)
   — parses, validates and atomically rewrites the `fleets.json`
-  control-plane registry. No process control, and the daemon runtime path
-  never touches it (the subcommands dispatch before the tokio runtime is
-  built).
+  control-plane registry. The daemon read path may consult the validated
+  registry for primary-checkout attribution, but never mutates it or controls
+  processes; the registry subcommands dispatch before the tokio runtime is
+  built.
+
+### Workspace attribution
+
+Repo/branch grouping is one shared read-side fact flow. The daemon seeds
+explicit primary checkout roots from `CORRAL_REPO_ROOT` and, when present,
+the fleet registry's `local` + `gh_repo` pairs. Registry roots have
+precedence: if a registry `local` canonicalizes to `CORRAL_REPO_ROOT`, its
+`gh_repo` basename wins over the configured directory basename. The git plane
+probes those roots and the Herdr linked-worktree root; the integrator records
+branch facts by canonical worktree path, and the Herdr adapter reads the same
+facts while building a fresh agent record.
+
+Path identity is raw-then-canonical, including symlinked `$HOME` and missing
+path tails. A primary checkout must match a known root exactly. A linked
+worktree uses the established `<worktrees_root>/<repo>/<label>` layout, with
+the `<label>` treated only as a path component—not as branch identity.
+Branches come from git HEAD facts; display names, pane labels, and terminal
+titles never participate. A supervised git-plane restart clears the previous
+generation's branch cache and the branch field on already-stored recognized
+agents, then repopulates present paths from fresh probes. Repo identity and
+the other workspace/GitHub fields survive that boundary; this prevents a
+missed removal event from reviving a vanished worktree's old branch. Paths
+that match neither source are not reconciled and remain
+`workspace.repo: null`, therefore staying in the `(no repo)` orphan bucket.
 
 ## Write side: the signed drive plane
 
@@ -159,6 +178,13 @@ signed envelope {key_id, signature,       POST /drive
   before any dispatch.
 - The daemon never sends keys by coordinates: the adapter resolves the
   canonical `agent_id` to its own transport target.
+- Herdr keeps the canonical agent-to-pane target and its reverse mapping under
+  one state lock. A stable session moving panes evicts the old pane, and a
+  disappeared or moved target leaves a stale-agent tombstone. Dispatch
+  observes that tombstone as `stale_agent` (HTTP 409 before replay claim when
+  possible; a typed refusal if the adapter loses the race). Desktop and iOS
+  clients remove the stale row immediately and refresh their snapshot; the
+  live SSE stream remains the authority for the replacement row.
 
 ## Capabilities
 
@@ -173,8 +199,7 @@ dispatch.
   by default; `--bind` also accepts private (RFC 1918), Tailscale/CGNAT
   (100.64/10), and IPv6 unique-local addresses (#65) — public IPs and
   0.0.0.0 are hard refusals. The WRITE plane is device-signed everywhere.
-  The READ plane — `/healthz`, `/snapshot`, `/events`, `/history`, and
-  `/cost` (fleet state, transition history, provider spend) — is
+  The READ plane — `/healthz`, `/snapshot`, `/events`, and `/history` — is
   credential-free: on loopback that is process-local trust — unless the
   loopback daemon is fronted by Tailscale Serve, where the boundary is
   the tailnet again; on a tailnet bind the boundary is the tailnet
@@ -219,9 +244,8 @@ Four places where data crosses a trust line, and what guards each:
    has moved on. Destructive payloads still require biometric step-up, and
    the check is server-side — a compromised client cannot skip it.
 
-The session stores the cost meter reads (`opencode.db`, claude JSONL,
-codex rollouts) are opened **read-only and bounded**; they are inputs, and
-corral never writes to another tool's state.
+Transcript session stores are opened **read-only and bounded**; they are
+inputs, and corral never writes to another tool's state.
 
 ## Clients
 
@@ -230,8 +254,7 @@ corral never writes to another tool's state.
   step-up flow, approval claims. No GUI.
 - `clients/egui` (`corrald-ui`) — desktop fleet board (egui/wgpu), macOS +
   Linux. Device keys in the OS keychain; auto-register on localhost; drive
-  buttons rendered from `agent.capabilities` + the device grant ledger;
-  the COST column and per-provider cost tiles.
+  buttons rendered from `agent.capabilities` + the device grant ledger.
 - `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive,
   APNs registration, and canned lock-screen replies bound to
   `prompt_hash`. See the README's Status section for what is and is not
@@ -252,7 +275,7 @@ src/drive/           frozen P3 contract: capabilities, envelope, signing,
 src/approve/         claim-based approvals (prompt_hash checks)
 src/auth/            host identity, device registry, authorizer, step-up,
                      hash-chained audit, HTTP routes
-src/api/             router, /snapshot /events /history /cost /healthz,
+src/api/             router, /snapshot /events /history /healthz,
                      GET /transcript (read_tail-gated), POST /drive,
                      POST /device-token
 src/transcript/      D35: per-store paged transcript readers (opencode
@@ -260,13 +283,11 @@ src/transcript/      D35: per-store paged transcript readers (opencode
                      agent→session binding by worktree; redaction inside
                      the module boundary
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
-src/cost/            per-provider spend readers (opencode.db, claude JSONL,
-                     codex rollouts), rolling windows, pricing, caps
 src/fleet/           fleets.json registry: parse + validate + atomic CRUD writes
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
-clients/egui/        corrald-ui desktop board (board, cost tiles, audit)
+clients/egui/        corrald-ui desktop board (board, audit)
 ios/FleetNotifier/   iOS client: SSE, drive, APNs, lock-screen replies
 tests/               integration tests per module
 ```

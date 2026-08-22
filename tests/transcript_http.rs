@@ -181,7 +181,6 @@ impl Harness {
             ts: 0,
             capabilities: vec![],
             waiting_on: None,
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Default::default(),

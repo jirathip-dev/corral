@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import os
 
@@ -143,3 +144,4 @@ private struct AdminGrants: Encodable {
         case keyId = "key_id"
     }
 }
+#endif

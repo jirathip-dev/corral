@@ -46,6 +46,8 @@ enum DriveResult: Equatable, Sendable {
 /// - Step-up: destructive payloads require Face ID → `POST /step-up` mint →
 ///   retry with `X-Step-Up-Token`. Mirrored pre-flight AND reactive on 403.
 struct DriveClient: Sendable {
+    private static let cancellationMessage = "drive cancelled"
+
     let host: URL
     let session: URLSession
 
@@ -57,6 +59,7 @@ struct DriveClient: Sendable {
     // MARK: - Request plumbing
 
     private func post(_ path: String, body: Data, headers: [String: String] = [:]) async throws -> (Int, Data) {
+        try Task.checkCancellation()
         var request = URLRequest(url: host.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -64,7 +67,9 @@ struct DriveClient: Sendable {
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
+        try Task.checkCancellation()
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else {
             throw DriveError.network("non-HTTP response")
         }
@@ -176,6 +181,7 @@ struct DriveClient: Sendable {
     func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                rev: UInt64?, requestId: String? = nil, keyId: String, signer: DeviceSigner,
                biometrics: Biometrics = Biometrics(), stepUp: Bool = true) async -> DriveResult {
+        guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         let rid = requestId ?? Self.newRequestId()
         let bytes = CanonicalJSON.envelopeBytes(requestId: rid, capability: capability.rawValue,
                                                 target: target, payload: payload, rev: rev)
@@ -186,30 +192,47 @@ struct DriveClient: Sendable {
 
         var result: DriveResult
         if stepUp && DestructivePatterns.required(payload) {
-            guard await biometrics.authenticate() else {
+            let authenticated = await biometrics.authenticate()
+            // Biometrics is an injected async boundary in tests and a
+            // LocalAuthentication boundary in production. Cancellation must
+            // win over a late success before minting any token.
+            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
+            guard authenticated else {
                 return .refused(.server(status: 403, kind: "step_up_denied",
                                         message: "Face ID step-up declined; the destructive command was not sent",
                                         requestId: rid))
             }
             do {
                 let minted = try await mintStepUpToken(keyId: keyId, signer: signer)
+                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
                 result = await send(body: body, rid: rid, stepUpToken: minted.token)
+                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
+            } catch is CancellationError {
+                return .refused(.network(Self.cancellationMessage))
             } catch {
                 return .refused(error as? DriveError ?? .network(error.localizedDescription))
             }
         } else {
+            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
             result = await send(body: body, rid: rid, stepUpToken: nil)
         }
 
+        guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         if stepUp, case .refused(let error) = result, error.isStepUpRequired {
-            guard await biometrics.authenticate() else {
+            let authenticated = await biometrics.authenticate()
+            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
+            guard authenticated else {
                 return .refused(.server(status: 403, kind: "step_up_denied",
                                         message: "Face ID step-up declined; the destructive command was not sent",
                                         requestId: rid))
             }
             do {
                 let minted = try await mintStepUpToken(keyId: keyId, signer: signer)
+                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
                 result = await send(body: body, rid: rid, stepUpToken: minted.token)
+                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
+            } catch is CancellationError {
+                return .refused(.network(Self.cancellationMessage))
             } catch {
                 return .refused(error as? DriveError ?? .network(error.localizedDescription))
             }
@@ -218,6 +241,7 @@ struct DriveClient: Sendable {
     }
 
     private func send(body: Data, rid: String, stepUpToken: String?) async -> DriveResult {
+        guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         do {
             var headers: [String: String] = [:]
             if let stepUpToken { headers["X-Step-Up-Token"] = stepUpToken }
@@ -231,6 +255,8 @@ struct DriveClient: Sendable {
             let typed = (try? JSONDecoder().decode(DriveErrorBody.self, from: data)) ??
                 DriveErrorBody(kind: "http_\(status)", message: String(data: data, encoding: .utf8) ?? "HTTP \(status)", requestId: rid)
             return .refused(.server(status: status, kind: typed.kind, message: typed.message, requestId: typed.requestId))
+        } catch is CancellationError {
+            return .refused(.network(Self.cancellationMessage))
         } catch {
             return .refused(.network(error.localizedDescription))
         }

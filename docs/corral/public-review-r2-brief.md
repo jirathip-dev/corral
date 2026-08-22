@@ -1,5 +1,8 @@
 # Corral — delta re-review after MUST-FIX round (Fable round 2)
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 You reviewed this repo before. Your round-1 review is at
 `docs/corral/public-review.md` (baseline). The fixes landed in commits
 `1c9bda6`, `2f30383`, `6de5eb6`. Re-review the DELTA: verify each of your

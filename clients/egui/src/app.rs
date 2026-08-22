@@ -80,9 +80,6 @@ pub struct CorralApp {
     conn: ConnState,
     conn_detail: Option<String>,
     toasts: VecDeque<Toast>,
-    /// G34 cost-meter state (polled from the background, applied over the
-    /// same channel snapshots use; the tiles degrade to "unknown" on error).
-    cost: crate::state::CostState,
 
     // Device identity.
     device_key: Option<DeviceKey>,
@@ -160,7 +157,6 @@ impl CorralApp {
             conn: ConnState::Connecting,
             conn_detail: None,
             toasts: VecDeque::new(),
-            cost: crate::state::CostState::default(),
             device_key: None,
             device_key_store_warning: false,
             ledger: GrantLedger::default(),
@@ -231,10 +227,6 @@ impl CorralApp {
             tx.clone(),
             stop_rx.clone(),
         );
-        // G34: the cost meter is a polled snapshot endpoint, not SSE —
-        // one fetch per minute on the same stop signal (host changes stop
-        // both loops together).
-        protocol::spawn_cost_poll(self.rt.clone(), self.client.clone(), host_url, tx, stop_rx);
     }
 
     fn tx_apply(&self) -> UnboundedSender<ApplyMsg> {
@@ -303,7 +295,6 @@ impl CorralApp {
         match msg {
             ApplyMsg::Fingerprint(fp) => self.apply_fingerprint(fp),
             ApplyMsg::RegisterResult(result) => self.handle_register_result(result),
-            ApplyMsg::Cost(result) => self.cost.apply(result),
             ApplyMsg::Sse(protocol::SseEvent::Snapshot(snap)) => {
                 self.fleet.apply_snapshot(&snap);
             }
@@ -353,6 +344,18 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
+                if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
+                    // A stale tap is a read-model event, not a generic drive
+                    // failure: remove the row before the next frame renders
+                    // controls, then refresh once for the current identity.
+                    self.fleet.remove_agent(&msg.agent_id);
+                    self.refresh_snapshot();
+                    self.toast(
+                        Level::Warn,
+                        format!("{} disappeared; refreshing the fleet", msg.agent_id),
+                    );
+                    return;
+                }
                 let level = if failure.suggests_re_registration() {
                     Level::Warn
                 } else {
@@ -367,6 +370,20 @@ impl CorralApp {
                 }
             }
         }
+    }
+
+    /// One-shot read-model refresh after a typed stale-target refusal. The
+    /// live SSE loop remains authoritative; this closes the tap-to-refresh
+    /// gap without creating a daemon poll loop.
+    fn refresh_snapshot(&self) {
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            if let Ok(snapshot) = protocol::fetch_snapshot(&client, &base_url).await {
+                let _ = tx.send(ApplyMsg::Sse(protocol::SseEvent::Snapshot(snapshot)));
+            }
+        });
     }
 
     /// #64: one transcript page arrived (or failed). Correlation and
@@ -649,7 +666,6 @@ impl CorralApp {
                     self.registration = None;
                     self.ledger = GrantLedger::default();
                     self.host_fingerprint = None;
-                    self.cost = crate::state::CostState::default();
                     self.config.persist(&self.config_path);
                     self.spawn_read_loop(url.clone());
                     self.resolve_fingerprint(url);
@@ -873,9 +889,6 @@ impl eframe::App for CorralApp {
                 let rt = self.rt.clone();
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
-                crate::ui::cost::show(ui, &self.cost.report);
-                ui.add_space(6.0);
-                ui.separator();
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,

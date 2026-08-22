@@ -12,7 +12,7 @@
 //!   (see `crate::fleet` for the registry format and validation).
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +25,7 @@ use corrald::api::drive::ReplayTable;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
 use corrald::fleet;
 use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
@@ -42,11 +43,6 @@ const INTEGRATOR_RECONNECT_MAX: Duration = Duration::from_secs(30);
 const INTEGRATOR_RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
 /// `corrald digest` default window when `--since` is omitted: the last 24h.
 const DIGEST_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
-/// G34: how often the D30 per-agent cost cache and the cost-alert watchdog
-/// recompute. Bounded reads (SQL WHERE clauses, mtime-skipped file walks)
-/// keep this cheap even on a 13GB+ opencode.db, so 5 minutes is plenty
-/// fresh without hammering the stores.
-const COST_METER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// $CORRAL_CONFIG_DIR, or ~/.config/corral.
 fn config_dir() -> PathBuf {
@@ -1108,9 +1104,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
             .unwrap_or_else(|e| panic!("auth plane init failed in {:?}: {e}", config_dir())),
     );
 
-    let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new(socket_path.clone()));
-    adapter.clone().start(store.clone());
-
     // The two P2 data planes + the integrator that folds their facts onto
     // the agent records. `CORRAL_REPO_ROOT`/`CORRAL_WORKTREES_ROOT` override
     // the HOME-derived defaults. The planes keep their push-only contract;
@@ -1123,23 +1116,20 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     let worktrees_root = std::env::var("CORRAL_WORKTREES_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"));
+    let attribution = workspace_attribution(&repo_root, &worktrees_root);
 
-    tokio::spawn(supervise_planes(
-        store.clone(),
-        repo_root.clone(),
-        worktrees_root.clone(),
+    let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new_with_attribution(
+        socket_path.clone(),
+        attribution.clone(),
     ));
+    adapter.clone().start(store.clone());
+
+    tokio::spawn(supervise_planes(store.clone(), attribution.clone()));
     tracing::info!(
-        repo_root = %repo_root.display(),
-        worktrees_root = %worktrees_root.display(),
+        repo_roots = ?attribution.repo_roots(),
+        worktrees_root = %attribution.worktrees_root().display(),
         "planes supervisor live: git watcher + gh poller -> integrator -> store"
     );
-
-    // G34: D30 per-agent cost cache (herdr.rs reads it synchronously on
-    // every pane rebuild) and the cost-alert watchdog (flags a window at
-    // its threshold before agents idle from exhaustion).
-    corrald::cost::agent_cache::spawn_refresh_loop(COST_METER_INTERVAL);
-    corrald::cost::spawn_alert_watchdog(COST_METER_INTERVAL);
 
     // N6: arm the APNs notifier HERE — the daemon entrypoint — not as a
     // side effect of router() (which is also the test constructor; reading
@@ -1180,6 +1170,62 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     axum::serve(listener, app).await.expect("axum server");
 }
 
+/// Build the explicit repo-root view shared by Herdr and the git/integrator
+/// planes. The configured Corral root is always known; fleet-registry locals
+/// add other primary checkouts when the registry exists. The registry's
+/// `gh_repo` is the canonical repo identity, so agent names and pane labels
+/// never participate in attribution. Registry roots are ordered first and
+/// the configured root is appended as a fallback: when both spellings
+/// canonicalize to one path, the fleet registry's `gh_repo` wins over the
+/// configured directory basename.
+fn workspace_attribution(repo_root: &Path, worktrees_root: &Path) -> WorkspaceAttribution {
+    let registry_path = fleet::config::default_path();
+    let registry = if registry_path.is_file() {
+        match fleet::config::load(&registry_path) {
+            Ok(registry) => Some(registry),
+            Err(error) => {
+                tracing::warn!(
+                    path = %registry_path.display(),
+                    error = %error,
+                    "fleet registry unavailable for workspace attribution"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    WorkspaceAttribution::from_roots(
+        workspace_roots(repo_root, registry.as_ref()),
+        worktrees_root.to_path_buf(),
+    )
+}
+
+/// Return roots in attribution precedence order. Fleet registry identities
+/// are canonical for a local checkout; the configured root's basename is only
+/// a fallback when no registry entry claims the same canonical path.
+fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>) -> Vec<RepoRoot> {
+    let mut roots = Vec::new();
+    if let Some(registry) = registry {
+        for fleet in &registry.fleets {
+            let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
+                continue;
+            };
+            roots.push(RepoRoot {
+                path: fleet.local_path(),
+                repo: repo.to_string(),
+            });
+        }
+    }
+    if let Some(name) = repo_root.file_name() {
+        roots.push(RepoRoot {
+            path: repo_root.to_path_buf(),
+            repo: name.to_string_lossy().into_owned(),
+        });
+    }
+    roots
+}
+
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
 /// adapter's reconnect loop. A panicking integrator would drop the plane
 /// channel receiver; both planes then stop on SinkClosed (gh by contract,
@@ -1187,7 +1233,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
 /// supervisor therefore owns the channel and re-arms both planes per
 /// generation. Residual: a previous generation's gh loop notices the dead
 /// sink only at its next poll send, so a restart can briefly double-poll.
-async fn supervise_planes(store: Store, repo_root: PathBuf, worktrees_root: PathBuf) {
+async fn supervise_planes(store: Store, attribution: WorkspaceAttribution) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
@@ -1197,13 +1243,20 @@ async fn supervise_planes(store: Store, repo_root: PathBuf, worktrees_root: Path
         // emit nothing until the next real change), and the per-instance
         // stopped flag must not couple generations (a lingering old
         // watcher's sink failure must not kill the new watcher too).
-        let git_plane: Arc<dyn Plane> =
-            Arc::new(GitPlane::new(repo_root.clone(), worktrees_root.clone()));
+        let git_plane: Arc<dyn Plane> = Arc::new(GitPlane::with_repo_roots(
+            attribution.repo_roots(),
+            attribution.worktrees_root(),
+        ));
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::new(Arc::new(store.clone())));
         let (sink, rx) = plane_channel();
+        let integrator = Integrator::new_with_attribution(store.clone(), attribution.clone());
+        // Clear both the shared branch facts and already-stored recognized
+        // rows before either replacement plane can emit. This closes the
+        // missed-WorktreeRemoved gap without erasing repo identity or other
+        // workspace/GitHub fields; unknown paths remain orphaned.
+        integrator.reconcile_generation().await;
         git_plane.start(sink.clone());
         gh_plane.start(sink.clone());
-        let integrator = Integrator::new(store.clone(), repo_root.clone(), worktrees_root.clone());
         let started = tokio::time::Instant::now();
         let generation = tokio::spawn(async move { integrator.run(rx).await });
         match generation.await {
@@ -1221,6 +1274,12 @@ async fn supervise_planes(store: Store, repo_root: PathBuf, worktrees_root: Path
 #[cfg(test)]
 mod tests {
     use super::bind_permitted;
+    #[cfg(unix)]
+    use super::workspace_roots;
+    #[cfg(unix)]
+    use corrald::core::workspace::WorkspaceAttribution;
+    #[cfg(unix)]
+    use corrald::fleet::config::{Fleet, Models, Registry};
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
@@ -1281,5 +1340,54 @@ mod tests {
         ] {
             assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_registry_identity_wins_configured_canonical_alias() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("configured-directory-name");
+        let alias = temp.path().join("fleet-alias");
+        let worktrees = temp.path().join("worktrees");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::os::unix::fs::symlink(&primary, &alias).unwrap();
+        let registry = Registry {
+            fleets: vec![Fleet {
+                name: "fleet-name".to_string(),
+                gh_repo: "owner/canonical-repo".to_string(),
+                local: alias.to_string_lossy().into_owned(),
+                worktree_dir: "worktrees".to_string(),
+                orch: "orch".to_string(),
+                workers: Vec::new(),
+                paused: false,
+                models: Models {
+                    orch: "orch-model".to_string(),
+                    impl_: "impl-model".to_string(),
+                    review: "review-model".to_string(),
+                    impl_alt: None,
+                    impl_alt2: None,
+                },
+            }],
+        };
+
+        let attribution =
+            WorkspaceAttribution::from_roots(workspace_roots(&primary, Some(&registry)), worktrees);
+        assert_eq!(
+            attribution
+                .facts_for(&primary)
+                .expect("configured root facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
+        assert_eq!(
+            attribution
+                .facts_for(&alias)
+                .expect("canonical alias facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
     }
 }

@@ -14,6 +14,7 @@ use corrald::core::events::{
 };
 use corrald::core::model::{Agent, AgentState, Change, CiStatus, Workspace};
 use corrald::core::store::Store;
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
 use corrald::integrate::Integrator;
 
 const REPO_ROOT: &str = "/Users/jirathip/Projects/herdr-board";
@@ -32,7 +33,6 @@ fn agent(id: &str, worktree: Option<&str>) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Workspace {
@@ -520,6 +520,221 @@ async fn main_checkout_derives_repo_from_root_name() {
         "main checkout repo = root dir name"
     );
     assert_eq!(a.workspace.branch.as_deref(), Some("main"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_attribution_merges_primary_alias_and_keeps_unknown_orphaned() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let primary = temp.path().join("primary");
+    let worktrees = temp.path().join("worktrees");
+    let alias = temp.path().join("primary-alias");
+    let unknown = temp.path().join("unknown");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::create_dir_all(&worktrees).unwrap();
+    std::fs::create_dir_all(&unknown).unwrap();
+    std::os::unix::fs::symlink(&primary, &alias).unwrap();
+
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: primary.clone(),
+            repo: "registry-repo".to_string(),
+        }],
+        worktrees,
+    );
+    let store = Store::new();
+    let integrator = Integrator::new_with_attribution(store.clone(), attribution);
+    let (sink, rx) = plane_channel();
+    tokio::spawn(async move { integrator.run(rx).await });
+
+    let alias_string = alias.to_string_lossy().into_owned();
+    let unknown_string = unknown.to_string_lossy().into_owned();
+    let primary_string = primary.to_string_lossy().into_owned();
+    store
+        .apply(Change::upsert(agent("primary", Some(&alias_string))))
+        .await;
+    store
+        .apply(Change::upsert(agent("unknown", Some(&unknown_string))))
+        .await;
+    sink.send(head(&primary_string, "main", "abc123"))
+        .await
+        .unwrap();
+    sink.send(head(&unknown_string, "should-not-attribute", "def456"))
+        .await
+        .unwrap();
+
+    let primary = wait_for(&store, "primary", |agent| {
+        agent.workspace.repo.as_deref() == Some("registry-repo")
+            && agent.workspace.branch.as_deref() == Some("main")
+    })
+    .await;
+    assert_eq!(primary.workspace.repo.as_deref(), Some("registry-repo"));
+    assert_eq!(primary.workspace.branch.as_deref(), Some("main"));
+    let unknown = store.get("unknown").await.expect("unknown agent");
+    assert_eq!(unknown.workspace.repo, None);
+    assert_eq!(unknown.workspace.branch, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generation_restart_clears_vanished_branch_and_reconciles_present_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let primary = temp.path().join("primary");
+    let worktrees = temp.path().join("worktrees");
+    let present = worktrees.join("linked-repo/present");
+    let vanished = worktrees.join("linked-repo/vanished");
+    let unknown = temp.path().join("unknown");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::create_dir_all(&present).unwrap();
+    std::fs::create_dir_all(&vanished).unwrap();
+
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: primary,
+            repo: "primary-repo".to_string(),
+        }],
+        worktrees,
+    );
+    attribution.record_branch(&present, "old-present");
+    attribution.record_branch(&vanished, "stale-vanished");
+    let present_string = present.to_string_lossy().into_owned();
+    let vanished_string = vanished.to_string_lossy().into_owned();
+    let unknown_string = unknown.to_string_lossy().into_owned();
+
+    let store = Store::new();
+    let first = Integrator::new_with_attribution(store.clone(), attribution.clone());
+    let (first_sink, first_rx) = plane_channel();
+    let first_task = tokio::spawn(async move { first.run(first_rx).await });
+    store
+        .apply(Change::upsert(agent("old-present", Some(&present_string))))
+        .await;
+    store
+        .apply(Change::upsert(agent(
+            "old-vanished",
+            Some(&vanished_string),
+        )))
+        .await;
+    let mut unknown_agent = agent("unknown", Some(&unknown_string));
+    unknown_agent.workspace.branch = Some("orphan-branch".to_string());
+    let unknown_before = unknown_agent.clone();
+    store.apply(Change::upsert(unknown_agent)).await;
+    first_sink
+        .send(head(&present_string, "old-present", "present-old-sha"))
+        .await
+        .unwrap();
+    first_sink
+        .send(PlaneEvent::Git(GitEvent::DirtyChanged {
+            worktree: PathBuf::from(&present_string),
+            status: GitStatus {
+                dirty_worktree: true,
+                ahead: 3,
+                behind: 2,
+                ..Default::default()
+            },
+        }))
+        .await
+        .unwrap();
+    first_sink
+        .send(head(&vanished_string, "stale-vanished", "old-sha"))
+        .await
+        .unwrap();
+    let mut present_pr = pr(7, "present-old-sha", "PENDING");
+    present_pr.repo = "linked-repo".to_string();
+    present_pr.closing_issues = vec![GhIssueRef {
+        repo: "linked-repo".to_string(),
+        number: 109,
+        state: "OPEN".to_string(),
+        title: "generation boundary".to_string(),
+    }];
+    first_sink
+        .send(PlaneEvent::Gh(gh_state("linked-repo", vec![present_pr])))
+        .await
+        .unwrap();
+
+    let old_present = wait_for(&store, "old-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("old-present")
+            && agent.workspace.pr_number == Some(7)
+            && agent.workspace.dirty
+    })
+    .await;
+    let old_vanished = wait_for(&store, "old-vanished", |agent| {
+        agent.workspace.branch.as_deref() == Some("stale-vanished")
+    })
+    .await;
+    assert_eq!(old_present.workspace.repo.as_deref(), Some("linked-repo"));
+    assert_eq!(old_vanished.workspace.repo.as_deref(), Some("linked-repo"));
+
+    // The directory disappears while the first generation is unable to
+    // deliver its removal event. Its sender then closes, just like a failed
+    // plane/integrator generation in production.
+    std::fs::remove_dir_all(&vanished).unwrap();
+    drop(first_sink);
+    first_task.await.expect("first integrator generation exits");
+
+    // The supervisor's generation boundary clears both the shared branch
+    // cache and stored recognized rows before replacement-plane facts arrive.
+    // The repo/path identity and all other workspace/GitHub fields survive.
+    let second = Integrator::new_with_attribution(store.clone(), attribution.clone());
+    second.reconcile_generation().await;
+    let old_present_cleared = store.get("old-present").await.expect("old present agent");
+    let mut expected_present = old_present.clone();
+    expected_present.workspace.branch = None;
+    assert_eq!(old_present_cleared, expected_present);
+    let old_vanished_cleared = store.get("old-vanished").await.expect("old vanished agent");
+    assert_eq!(
+        old_vanished_cleared.workspace.repo.as_deref(),
+        Some("linked-repo")
+    );
+    assert_eq!(old_vanished_cleared.workspace.branch, None);
+    assert_eq!(
+        store.get("unknown").await.expect("unknown agent"),
+        unknown_before
+    );
+
+    let vanished_facts = attribution
+        .facts_for(&vanished)
+        .expect("layout remains known");
+    assert_eq!(vanished_facts.branch, None);
+    assert!(!vanished_facts.branch_known);
+
+    let (second_sink, second_rx) = plane_channel();
+    let second_task = tokio::spawn(async move { second.run(second_rx).await });
+    store
+        .apply(Change::upsert(agent(
+            "fresh-present",
+            Some(&present_string),
+        )))
+        .await;
+    store
+        .apply(Change::upsert(agent(
+            "fresh-vanished",
+            Some(&vanished_string),
+        )))
+        .await;
+    second_sink
+        .send(head(&present_string, "current-present", "current-sha"))
+        .await
+        .unwrap();
+
+    let old_present = wait_for(&store, "old-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("current-present")
+    })
+    .await;
+    assert_eq!(old_present.workspace.repo.as_deref(), Some("linked-repo"));
+    let present = wait_for(&store, "fresh-present", |agent| {
+        agent.workspace.branch.as_deref() == Some("current-present")
+    })
+    .await;
+    assert_eq!(present.workspace.repo.as_deref(), Some("linked-repo"));
+    let vanished = wait_for(&store, "fresh-vanished", |agent| {
+        agent.workspace.repo.as_deref() == Some("linked-repo") && agent.workspace.branch.is_none()
+    })
+    .await;
+    assert_eq!(vanished.workspace.branch, None);
+    drop(second_sink);
+    second_task
+        .await
+        .expect("second integrator generation exits");
 }
 
 #[tokio::test]

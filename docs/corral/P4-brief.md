@@ -80,7 +80,7 @@ appear when READING an item created by an older binary identity. If a
 session hits the prompts again, the binary was rebuilt without re-signing
 or a scratch UI run churned a new restricted-ACL item.
 
-### W3 — iOS SwiftUI "Fleet Notifier" (MVP, iOS-first, per D12/TestFlight)
+### W3 — iOS SwiftUI "Fleet Notifier" (MVP, iOS-first)
 - Fleet list + blocked agents surfaced; push when blocked/done (APNs —
   P4 scope: the LOCAL notification path on the phone + a documented hook
   for a relay/push later; no relay in v1).
@@ -90,6 +90,9 @@ or a scratch UI run churned a new restricted-ACL item.
   Face ID for destructive patterns.
 - Tails: 200 lines on tap, never prefetch (D5). Backgrounded = no
   connection (D5).
+- Debug/simulator development retains a seeded deterministic demo fixture;
+  Release/distribution builds expose only real registration, live SSE, and
+  signed drives. The fixture is not an App Review or TestFlight product path.
 
 ## Non-negotiable
 
@@ -107,9 +110,10 @@ or a scratch UI run churned a new restricted-ACL item.
    prompt/interrupt/read_tail/approve round-trip against real herdr agents
    through the signed drive plane (approval with correct prompt_hash
    executes; stale is refused; step-up required for destructive payloads).
-2. iOS client (simulator + device where available): fleet renders, blocked
-   agent surfaces the claim with choices, canned answer executes the
-   approve with the correct prompt_hash, read-only default enforced.
+2. iOS Debug client (simulator where available): fleet renders, blocked agent
+   surfaces the claim with choices, canned answer executes the approve with
+   the correct prompt_hash, read-only default enforced. Physical-device and
+   TestFlight verification remain separate future gates.
 3. W1 conformance suite green: register → read → sign → drive → step-up →
    approve against a real corrald, from BOTH client implementations.
 4. Desktop: dark-dashboard theme pass done (not default egui flat).
@@ -117,9 +121,10 @@ or a scratch UI run churned a new restricted-ACL item.
 
 ## Risks
 
-- App Store 4.2 (minimal functionality — demo mode with seeded data planned)
-  and 3.1.1 (no IAP; hosted relay sells on web only) per D12.
-- TestFlight logistics; no Apple Developer account in-repo (needs Guy).
+- App Review 4.2 evidence must use the real product path; the seeded fixture
+  is Debug-only and is not shipped in Release.
+- Distribution and physical-device verification require the eventual Apple
+  Developer/TestFlight setup; no such result is claimed by this brief.
 - Secure Enclave/Keychain vs simulator constraints.
 - egui theme pass effort (immediate-mode styling is manual).
 - Daemon discovery: loopback default; Tailscale hostname config needed for
@@ -134,8 +139,7 @@ or a scratch UI run churned a new restricted-ACL item.
    corrald is Rust; AGPL-vs-MIT for daemon half; MCP server distribution
    play; hosted relay in/out) — none block P4 code, but 2 + 3 affect repo
    layout and marketing.
-3. P4 demo mode (seeded data) for App Review 4.2 — confirm scope.
-4. iOS push: local notifications only for v1, or should P4 also stub the
+3. iOS push: local notifications only for v1, or should P4 also stub the
    relay-side APNs hook? (Relay itself is out.)
 
 ## Sequencing

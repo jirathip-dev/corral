@@ -108,31 +108,47 @@ pub struct Fleet {
 
 impl Fleet {
     pub fn apply_snapshot(&mut self, snap: &crate::model::Snapshot) {
+        if snap.rev < self.rev.unwrap_or(0) {
+            // A stale-agent recovery fetch races the SSE stream. A response
+            // from before the current cursor must not roll the board back.
+            return;
+        }
         self.agents = snap.agents.clone();
         self.rev = Some(snap.rev);
         self.generated_at = Some(snap.generated_at);
         // #64 review R8: a reconnect snapshot that dropped an agent must
         // not leave an orphan transcript pane (a stale-cursor auto-reload
-        // against it would burn an audited unknown_agent fetch). `tails`
-        // has the same pre-existing gap; pruning it is out of #64's scope.
+        // against it would burn an audited unknown_agent fetch). The bounded
+        // read_tail cache follows the same removal rule.
         let agents = &self.agents;
         self.transcripts.retain(|id, _| agents.contains_key(id));
     }
 
     pub fn apply_delta(&mut self, delta: &crate::model::Delta) {
+        if delta.rev <= self.rev.unwrap_or(0) {
+            // Duplicate and late SSE frames are already represented by the
+            // current read model; applying their payload could regress an
+            // agent even though the cursor stays monotonic.
+            return;
+        }
         for agent in &delta.upd {
             self.agents.insert(agent.agent_id.clone(), agent.clone());
         }
         for id in &delta.del {
-            self.agents.remove(id);
-            self.tails.remove(id);
-            self.transcripts.remove(id);
-            self.recent_drives.remove(id);
-            self.expanded.retain(|e| e != id);
+            self.remove_agent(id);
         }
-        if delta.rev > self.rev.unwrap_or(0) {
-            self.rev = Some(delta.rev);
-        }
+        self.rev = Some(delta.rev);
+    }
+
+    /// Remove a target immediately when a drive reports that its snapshot
+    /// identity is stale. The next snapshot/SSE delta may re-add a genuinely
+    /// current identity, but no controls remain usable during the refresh.
+    pub fn remove_agent(&mut self, agent_id: &str) {
+        self.agents.remove(agent_id);
+        self.tails.remove(agent_id);
+        self.transcripts.remove(agent_id);
+        self.recent_drives.remove(agent_id);
+        self.expanded.retain(|id| id != agent_id);
     }
 
     pub fn is_expanded(&self, agent_id: &str) -> bool {
@@ -244,21 +260,6 @@ impl Fleet {
     }
 }
 
-/// G34 cost-meter view state: the last `GET /cost` result, delivered over
-/// the same channel snapshots arrive on. `None` before the first poll;
-/// `Err` (daemon down, non-2xx, malformed body) degrades the tiles to
-/// "unknown" — never a panic.
-#[derive(Debug, Clone, Default)]
-pub struct CostState {
-    pub report: Option<Result<crate::model::CostReport, String>>,
-}
-
-impl CostState {
-    pub fn apply(&mut self, result: Result<crate::model::CostReport, String>) {
-        self.report = Some(result);
-    }
-}
-
 /// The single source of truth for device capability gating: an agent's
 /// capability button renders only if the agent advertises it AND the
 /// device's grant record (registration grants, minus observed
@@ -347,7 +348,6 @@ mod tests {
             ts: 0,
             capabilities: vec!["prompt".into()],
             waiting_on: None,
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Default::default(),
@@ -362,7 +362,7 @@ mod tests {
     fn delta_upserts_deletes_and_tracks_rev() {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
-            schema_version: 3,
+            schema_version: 5,
             rev: 10,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -389,7 +389,7 @@ mod tests {
     fn older_deltas_do_not_regress_rev() {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
-            schema_version: 3,
+            schema_version: 5,
             rev: 20,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -402,14 +402,48 @@ mod tests {
             del: vec![],
         });
         assert_eq!(fleet.rev, Some(20), "rev is monotonic");
-        assert!(fleet.agents.contains_key("c"));
+        assert!(!fleet.agents.contains_key("c"), "late payload is ignored");
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_overwrite_newer_sse_state() {
+        let mut fleet = Fleet::default();
+        let mut current = agent("a");
+        current.title = Some("newer SSE".into());
+        let mut current_snapshot = crate::model::Snapshot {
+            schema_version: 3,
+            rev: 20,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        current_snapshot.agents.insert("a".into(), agent("a"));
+        fleet.apply_snapshot(&current_snapshot);
+        fleet.apply_delta(&Delta {
+            rev: 21,
+            upd: vec![current.clone()],
+            del: vec![],
+        });
+
+        let mut stale_fetch = current_snapshot;
+        stale_fetch.rev = 20;
+        stale_fetch.agents.insert("a".into(), agent("old fetch"));
+        fleet.apply_snapshot(&stale_fetch);
+        fleet.apply_delta(&Delta {
+            rev: 20,
+            upd: vec![agent("late")],
+            del: vec![],
+        });
+
+        assert_eq!(fleet.rev, Some(21));
+        assert_eq!(fleet.agents["a"].title.as_deref(), Some("newer SSE"));
+        assert!(!fleet.agents.contains_key("late"));
     }
 
     #[test]
     fn deletion_cleans_derived_state() {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
-            schema_version: 3,
+            schema_version: 5,
             rev: 1,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -467,7 +501,7 @@ mod tests {
     fn snapshot_prunes_orphan_transcript_panes() {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
-            schema_version: 3,
+            schema_version: 5,
             rev: 1,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -479,7 +513,7 @@ mod tests {
 
         // Reconnect: a fresh snapshot without the agent.
         let empty = crate::model::Snapshot {
-            schema_version: 3,
+            schema_version: 5,
             rev: 2,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -685,22 +719,5 @@ mod tests {
             );
         }
         assert_eq!(fleet.recent_drives["a"].len(), 8);
-    }
-
-    #[test]
-    fn cost_state_holds_the_last_poll_outcome() {
-        // G34: the cost poll delivers over the same channel snapshots use;
-        // the state holds the last outcome so the tiles never refetch per
-        // frame, and an error degrades to "unknown" instead of a panic.
-        let mut state = CostState::default();
-        assert!(state.report.is_none(), "no poll yet → unknown");
-        let report = crate::model::CostReport {
-            generated_at: 0,
-            providers: vec![],
-        };
-        state.apply(Ok(report.clone()));
-        assert_eq!(state.report, Some(Ok(report)));
-        state.apply(Err("daemon down".into()));
-        assert!(matches!(state.report, Some(Err(_))));
     }
 }

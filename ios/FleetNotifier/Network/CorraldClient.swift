@@ -22,7 +22,7 @@ struct CorraldClient: Sendable {
         self.session = session
     }
 
-    /// Full point-in-time state (schema v3).
+    /// Full point-in-time state (schema v5).
     func fetchSnapshot() async throws -> Snapshot {
         var request = URLRequest(url: host.appendingPathComponent("/snapshot"))
         request.timeoutInterval = 15

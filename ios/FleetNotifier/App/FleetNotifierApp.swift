@@ -11,11 +11,13 @@ struct FleetNotifierApp: App {
             RootView(model: model)
                 .task {
                     // Dev-only launch-arg harnesses (see LiveVerifyRunner).
+#if DEBUG
                     if CommandLine.arguments.contains("-liveVerify") {
                         LiveVerifyRunner(model: model).run()
                     } else if CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
+#endif
                 }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {

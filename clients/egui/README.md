@@ -30,6 +30,9 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   key to re-learn the host's current grant set and re-enable re-granted
   capabilities). Every agent-advertised capability renders SOMETHING —
   a disabled button with the reason when the ledger lacks it.
+- A known Herdr target that disappears or moves returns the typed
+  `stale_agent` refusal. The board removes that row immediately and performs
+  one snapshot refresh while SSE remains authoritative for the replacement.
 - **Drive controls from capabilities** — prompt (Enter sends), interrupt,
   read_tail (bounded 200 lines, on tap only — never prefetch), approve
   (choice buttons from `waiting_on.choices`; the claim echoes
@@ -58,6 +61,11 @@ cargo build --release -p corrald-ui
 CORRAL_UI_CONFIG_DIR=~/.config/corral/ui ./target/release/corrald-ui
 RUST_LOG=info ./target/release/corrald-ui        # SSE connect is logged
 ```
+
+The desktop window icon is embedded at compile time from
+`assets/icon/corral-icon-256.png` and supplied to eframe's native viewport.
+Regenerate/check the repository icon outputs with the commands in
+[`docs/DEVELOPING.md`](../../docs/DEVELOPING.md#icon-assets-and-packaging).
 
 Client config lives in `$CORRAL_UI_CONFIG_DIR` (default
 `~/.config/corral/ui`): `config.json` (host URL + registration record),

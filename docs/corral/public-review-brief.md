@@ -1,5 +1,8 @@
 # Corral — public-readiness + scripts adversarial review (Fable)
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 Reviewer: run headless, reason statically, READ the actual files, cite exact
 lines. Do NOT run shell commands or read files with tools — reason STATICALLY
 from the file contents (the sandbox denies tool use).
@@ -7,8 +10,9 @@ from the file contents (the sandbox denies tool use).
 ## Context
 
 Corral (`owner/repo`) is an agent-fleet control plane daemon
-(`corrald`, Rust) with a desktop egui client, an iOS FleetNotifier app
-(TestFlight build 2 live), and a planned public release. The repo wants to
+(`corrald`, Rust) with a desktop egui client, an iOS FleetNotifier app, and a
+planned public release. This branch does not claim physical-device or
+TestFlight verification. The repo wants to
 become PUBLIC on GitHub. Current state on `main`:
 
 - `Cargo.toml` declares `license = "MIT"` but **there is no LICENSE file**.

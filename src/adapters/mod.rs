@@ -42,6 +42,11 @@ pub enum DriveError {
     NotImplemented(&'static str),
     /// The given agent_id is not known to this adapter.
     UnknownAgent(String),
+    /// The adapter knew this agent, but its live target disappeared or moved
+    /// before the command could be dispatched. This is actionable client
+    /// state, not a generic transport failure: refresh the snapshot before
+    /// offering the row's controls again.
+    StaleAgent(String),
     /// Transport-level failure reaching the source.
     Transport(String),
 }
@@ -51,12 +56,26 @@ impl std::fmt::Display for DriveError {
         match self {
             Self::NotImplemented(cmd) => write!(f, "command not implemented: {cmd}"),
             Self::UnknownAgent(id) => write!(f, "unknown agent: {id}"),
+            Self::StaleAgent(id) => write!(f, "stale agent: {id}"),
             Self::Transport(msg) => write!(f, "transport error: {msg}"),
         }
     }
 }
 
 impl std::error::Error for DriveError {}
+
+impl DriveError {
+    /// Stable wire kind for dispatch-level outcomes. Clients use this field
+    /// instead of parsing human-facing error text.
+    pub fn wire_kind(&self) -> &'static str {
+        match self {
+            Self::NotImplemented(_) => "not_implemented",
+            Self::UnknownAgent(_) => "unknown_agent",
+            Self::StaleAgent(_) => "stale_agent",
+            Self::Transport(_) => "transport",
+        }
+    }
+}
 
 /// A source of canonical agent records.
 pub trait Adapter: Debug + Send + Sync {
@@ -69,19 +88,23 @@ pub trait Adapter: Debug + Send + Sync {
     /// a poll loop).
     fn start(self: Arc<Self>, store: Store);
 
-    /// Drive path: issue a command to `agent_id`. Synchronous validation,
-    /// transport happens in the background; failures are logged by the
-    /// adapter. Fire-and-forget by contract — every capability except
-    /// `read_tail` (whose whole point is a response) dispatches this way.
-    fn drive(&self, agent_id: &str, command: DriveCommand) -> Result<(), DriveError>;
+    /// Drive path: issue a command to `agent_id` and await the source's
+    /// response. The adapter owns target resolution and maps source-level
+    /// agent disappearance to [`DriveError::StaleAgent`]; callers must not
+    /// report success until this future completes.
+    fn drive<'a>(
+        &'a self,
+        agent_id: &'a str,
+        command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>>;
 
-    /// Synchronous `read_tail`: fetch `agent_id`'s recent output and return
+    /// `read_tail`: fetch `agent_id`'s recent output and return
     /// it to the caller. The returned lines are redacted at the adapter
     /// boundary (D9) and bounded (D5: `READ_TAIL_MAX_LINES` /
     /// `READ_TAIL_MAX_BYTES`) BEFORE they leave the machine — the caller
     /// serializes them verbatim. An empty vec means "no output". The API
     /// layer routes `DriveCommand::ReadTail` here and never through
-    /// [`Adapter::drive`] (the `drive` path stays fire-and-forget).
+    /// [`Adapter::drive`] (the drive future also awaits the source outcome).
     /// Default: this adapter does not implement the command.
     ///
     /// A boxed future keeps the trait dyn-compatible (callers hold
@@ -97,6 +120,14 @@ pub trait Adapter: Debug + Send + Sync {
 
     /// True if `agent_id` is currently tracked by this adapter.
     fn knows_agent(&self, agent_id: &str) -> bool;
+
+    /// True if this adapter previously tracked `agent_id` but has since
+    /// removed it. The drive API uses this distinction to return a typed
+    /// refreshable stale-target result while preserving `unknown_agent` for
+    /// ids that were never present.
+    fn is_stale_agent(&self, _agent_id: &str) -> bool {
+        false
+    }
 }
 
 /// Convenience: canonical record with its agent_id, as adapters hand off to

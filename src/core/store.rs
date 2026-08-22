@@ -105,7 +105,23 @@ impl Store {
     /// is recorded into the history ring while the lock is held, so ring
     /// order matches apply order exactly.
     pub async fn apply(&self, change: Change) {
+        self.apply_if(change, || true).await;
+    }
+
+    /// Apply an upsert only if the synchronous predicate agrees while the
+    /// Store lock is held. This is the write-side counterpart to
+    /// [`Store::remove_if`]: an adapter can validate its in-memory mapping at
+    /// the same commit point as the row mutation, closing a read/modify/write
+    /// gap without awaiting while either lock is held.
+    pub async fn upsert_if(&self, agent: Agent, should_apply: impl FnOnce() -> bool) -> bool {
+        self.apply_if(Change::upsert(agent), should_apply).await
+    }
+
+    async fn apply_if(&self, change: Change, should_apply: impl FnOnce() -> bool) -> bool {
         let mut inner = self.inner.lock().await;
+        if !should_apply() {
+            return false;
+        }
         let mut event: Option<HistoryEvent> = None;
         match change {
             Change::Upsert(agent) => {
@@ -122,6 +138,11 @@ impl Store {
                         repo: agent.workspace.repo.clone(),
                     });
                 }
+                // A remove followed by a replacement in one coalescing
+                // window is one live upsert, not a delete followed by an
+                // upsert. A client that applies `del` after `upd` would erase
+                // the replacement if the stale delete remained queued.
+                inner.pending_del.retain(|pending| pending != &agent_id);
                 inner.pending_upd.insert(agent_id.clone(), (*agent).clone());
                 inner.agents.insert(agent_id, *agent);
             }
@@ -142,6 +163,7 @@ impl Store {
         if let Some(event) = event {
             self.history.push(event);
         }
+        true
     }
 
     /// Atomically read-compare-apply a transformation to every record
@@ -245,6 +267,29 @@ impl Store {
     /// waiting_on, which depend on the current state).
     pub async fn get(&self, agent_id: &str) -> Option<Agent> {
         self.inner.lock().await.agents.get(agent_id).cloned()
+    }
+
+    /// Remove a row only when the synchronous predicate agrees while the
+    /// Store lock is held. The predicate is deliberately synchronous: callers
+    /// may inspect another in-memory state machine at this exact mutation
+    /// point, but must never await while either lock is held.
+    pub async fn remove_if(&self, agent_id: &str, should_remove: impl FnOnce() -> bool) -> bool {
+        let mut inner = self.inner.lock().await;
+        if !inner.agents.contains_key(agent_id) || !should_remove() {
+            return false;
+        }
+        if inner.agents.remove(agent_id).is_none() {
+            return false;
+        }
+        inner.pending_upd.remove(agent_id);
+        if !inner.pending_del.contains(&agent_id.to_string()) {
+            inner.pending_del.push(agent_id.to_string());
+        }
+        inner.pending_any = true;
+        self.notify.notify_one();
+        let next = self.version.borrow().wrapping_add(1);
+        let _ = self.version.send(next);
+        true
     }
 
     /// Read-only lookup of every record satisfying `f`.

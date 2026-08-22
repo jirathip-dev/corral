@@ -26,6 +26,9 @@ final class CursorBox: @unchecked Sendable {
 @MainActor
 final class FleetStore: ObservableObject {
     @Published private(set) var agents: [String: Agent] = [:]
+    /// Last successful bounded read_tail result per agent. This is deliberately
+    /// client-side display state, not part of the SSE read model.
+    @Published private(set) var tails: [String: [String]] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
 
@@ -77,15 +80,36 @@ final class FleetStore: ObservableObject {
     /// stored so `ingest` is a plain testable method — review F5).
     private var streamSeen: [String: WaitingOn] = [:]
     private let cursorBox = CursorBox()
+    private let cursorDefaults: UserDefaults
     /// Shadow of last-seen agent states for done-transition detection.
     private var previousStates: [String: AgentState] = [:]
 
+    init(defaults: UserDefaults = .standard) {
+        self.cursorDefaults = defaults
+    }
+
     // MARK: - Application
 
+    private func accepts(_ event: FleetEvent) -> Bool {
+        let current = lastEventId ?? 0
+        switch event {
+        case .snapshot(let snapshot):
+            // Recovery snapshots may race a newer SSE delta. Equal revisions
+            // are safe replacements; older snapshots are stale responses.
+            return snapshot.rev >= current
+        case .delta(let delta):
+            // A duplicate/late delta must not mutate records even if its
+            // cursor is already behind the current state.
+            return delta.rev > current
+        }
+    }
+
     func apply(_ event: FleetEvent) {
+        guard accepts(event) else { return }
         switch event {
         case .snapshot(let snapshot):
             agents = snapshot.agents
+            tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
         case .delta(let delta):
@@ -95,6 +119,7 @@ final class FleetStore: ObservableObject {
             }
             for id in delta.del {
                 next.removeValue(forKey: id)
+                tails.removeValue(forKey: id)
             }
             agents = next
             lastEventId = delta.rev
@@ -136,6 +161,7 @@ final class FleetStore: ObservableObject {
     /// on a NEW prompt (state→blocked, or prompt_hash changed while
     /// blocked). Idempotent per prompt_hash.
     func apply(_ event: FleetEvent, previous: inout [String: WaitingOn]) {
+        guard accepts(event) else { return }
         let before = previous
         switch event {
         case .snapshot(let snapshot):
@@ -172,15 +198,18 @@ final class FleetStore: ObservableObject {
     }
 
     private func apply(withoutDiff event: FleetEvent) {
+        guard accepts(event) else { return }
         switch event {
         case .snapshot(let snapshot):
             agents = snapshot.agents
+            tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
         case .delta(let delta):
             var next = agents
             for agent in delta.upd { next[agent.agentId] = agent }
             for id in delta.del { next.removeValue(forKey: id) }
+            for id in delta.del { tails.removeValue(forKey: id) }
             agents = next
             lastEventId = delta.rev
             cursorBox.write(delta.rev)
@@ -191,6 +220,36 @@ final class FleetStore: ObservableObject {
 
     func agent(_ id: String) -> Agent? {
         agents[id]
+    }
+
+    func tail(for id: String) -> [String]? {
+        tails[id]
+    }
+
+    /// Store only the daemon's bounded result, with a small client-side
+    /// defense in depth for malformed or future servers.
+    func rememberTail(_ lines: [String], for id: String) {
+        let maxLines = 200
+        let maxBytes = 32 * 1024
+        var bounded: [String] = []
+        var bytes = 0
+        for line in lines.prefix(maxLines) {
+            let lineBytes = line.utf8.count + (bounded.isEmpty ? 0 : 1)
+            guard bytes + lineBytes <= maxBytes else { break }
+            bounded.append(line)
+            bytes += lineBytes
+        }
+        tails[id] = bounded
+    }
+
+    /// Remove a target immediately after a typed stale-agent refusal. The
+    /// subsequent snapshot/SSE update may re-add a current identity, but the
+    /// old row cannot keep rendering usable controls during the refresh.
+    func removeAgent(_ id: String) {
+        agents.removeValue(forKey: id)
+        tails.removeValue(forKey: id)
+        previousStates.removeValue(forKey: id)
+        streamSeen.removeValue(forKey: id)
     }
 
     // NOTE: the pre-D25 `blockedAgents`/`sortedAgents` accessors were
@@ -219,7 +278,11 @@ final class FleetStore: ObservableObject {
             await client.stream(lastEventId: { [weak self] in
                 self?.cursorBox.read()
             }, onEvent: { [weak self] frame in
-                self?.ingest(frame)
+                // The stream callback can race disconnect/demo after the
+                // frame has been decoded. Pass the connection identity into
+                // the main-actor hop so a late frame cannot overwrite the
+                // replacement fleet.
+                self?.ingest(frame, generation: generation)
             }, onConnected: { [weak self] in
                 // The stream callback runs off the main actor; hop once.
                 // F3: guard the hop — it must not land after disconnect()
@@ -279,9 +342,14 @@ final class FleetStore: ObservableObject {
     /// await it deterministically (round-3 R-N5). Testable without a
     /// network (review F5).
     @discardableResult
-    nonisolated func ingest(_ frame: SSEFrame) -> Task<Void, Never> {
+    nonisolated func ingest(_ frame: SSEFrame,
+                            generation: Int? = nil) -> Task<Void, Never> {
         let outcome = CorraldClient.decode(frame)
         return Task { @MainActor in
+            if let generation {
+                guard self.streamTask != nil,
+                      self.connectionGeneration == generation else { return }
+            }
             switch outcome {
             case .event(let event):
                 self.apply(event, previous: &self.streamSeen)
@@ -319,15 +387,21 @@ final class FleetStore: ObservableObject {
     func reset() {
         disconnect()
         agents = [:]
+        tails = [:]
         lastEventId = nil
         cursorBox.write(nil)
+        // A reset abandons the delta base; retaining it would let a later
+        // live connection resume from demo or otherwise unrelated state.
+        cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
         connectionState = .disconnected
     }
 
-    /// Demo mode: seed the store directly (no daemon).
+#if DEBUG
+    /// Debug-only demo mode: seed the store directly (no daemon).
     func seedDemo(agents: [String: Agent], rev: UInt64) {
         self.agents = agents
+        tails = tails.filter { agents[$0.key] != nil }
         lastEventId = rev
         cursorBox.write(rev)
         connectionState = .disconnected
@@ -339,15 +413,16 @@ final class FleetStore: ObservableObject {
         next[agent.agentId] = agent
         agents = next
     }
+#endif
 
     func persistCursor() {
         if let lastEventId {
-            UserDefaults.standard.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
+            cursorDefaults.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
         }
     }
 
     func restoreCursor() {
-        if let raw = UserDefaults.standard.string(forKey: "fleetnotifier.lastEventId"),
+        if let raw = cursorDefaults.string(forKey: "fleetnotifier.lastEventId"),
            let rev = UInt64(raw) {
             lastEventId = rev
             cursorBox.write(rev)

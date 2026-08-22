@@ -110,6 +110,8 @@ pub struct DriveResponse {
     pub ok: bool,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub error_kind: Option<String>,
     pub rev: u64,
     #[serde(default)]
     pub result: Option<serde_json::Value>,
@@ -271,6 +273,7 @@ pub enum DriveFailure {
     StepUpFailed(String),
     InFlight(String),
     UnknownAgent(String),
+    StaleAgent(String),
     NoWaitingApproval,
     StaleApproval,
     HashMismatch,
@@ -304,6 +307,7 @@ impl std::fmt::Display for DriveFailure {
             Self::StepUpFailed(m) => write!(f, "step-up failed: {m}"),
             Self::InFlight(m) => write!(f, "in flight: {m}"),
             Self::UnknownAgent(m) => write!(f, "unknown agent: {m}"),
+            Self::StaleAgent(m) => write!(f, "stale agent: {m}"),
             Self::NoWaitingApproval => write!(f, "no waiting approval"),
             Self::StaleApproval => write!(f, "stale approval"),
             Self::HashMismatch => write!(f, "prompt hash mismatch (answered the wrong prompt)"),
@@ -333,6 +337,7 @@ impl DriveFailure {
             Self::StepUpFailed(_) => "step_up_failed",
             Self::InFlight(_) => "in_flight",
             Self::UnknownAgent(_) => "unknown_agent",
+            Self::StaleAgent(_) => "stale_agent",
             Self::NoWaitingApproval => "no_waiting_approval",
             Self::StaleApproval => "stale_approval",
             Self::HashMismatch => "hash_mismatch",
@@ -508,7 +513,11 @@ pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> Dr
                 // unknown agent at dispatch, transport failure): typed, no
                 // retry (the daemon already stored it in the replay table).
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
-                let failure = if message.contains("transport")
+                let failure = if outcome.error_kind.as_deref() == Some("stale_agent") {
+                    DriveFailure::StaleAgent(message)
+                } else if outcome.error_kind.as_deref() == Some("unknown_agent") {
+                    DriveFailure::UnknownAgent(message)
+                } else if message.contains("transport")
                     || message.contains("rpc")
                     || message.contains("failed")
                 {
@@ -575,7 +584,11 @@ async fn retry_loop(endpoint: &DriveEndpoint, signed: &SignedDrive, token: &str)
                     };
                 }
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
-                let failure = if message.contains("transport")
+                let failure = if outcome.error_kind.as_deref() == Some("stale_agent") {
+                    DriveFailure::StaleAgent(message)
+                } else if outcome.error_kind.as_deref() == Some("unknown_agent") {
+                    DriveFailure::UnknownAgent(message)
+                } else if message.contains("transport")
                     || message.contains("rpc")
                     || message.contains("failed")
                 {
@@ -656,6 +669,7 @@ pub fn classify_refusal(status: u16, kind: &str, message: &str) -> DriveFailure 
         (401, "step_up_failed") => DriveFailure::StepUpFailed(message),
         (409, "in_flight") => DriveFailure::InFlight(message),
         (404, "unknown_agent") => DriveFailure::UnknownAgent(message),
+        (409, "stale_agent") => DriveFailure::StaleAgent(message),
         (409, "no_waiting_approval") => DriveFailure::NoWaitingApproval,
         (409, "stale_approval") => DriveFailure::StaleApproval,
         (409, "hash_mismatch") => DriveFailure::HashMismatch,
@@ -985,6 +999,10 @@ mod tests {
             DriveFailure::UnknownAgent("a".into())
         );
         assert_eq!(
+            classify_refusal(409, "stale_agent", "moved"),
+            DriveFailure::StaleAgent("moved".into())
+        );
+        assert_eq!(
             classify_refusal(404, "unknown_key", "k"),
             DriveFailure::UnknownKey("k".into())
         );
@@ -1023,6 +1041,7 @@ mod tests {
             request_id: "r".into(),
             ok: false,
             error: Some(error.into()),
+            error_kind: None,
             rev: 1,
             result: None,
         };
@@ -1050,7 +1069,6 @@ mod tests {
                 approval_id: "herdr:a:sha256:x".into(),
                 choices: vec!["a".into(), "b".into()],
             }),
-            cost: None,
             parent_id: None,
             host: None,
             workspace: Workspace::default(),

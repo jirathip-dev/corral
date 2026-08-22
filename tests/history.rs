@@ -49,7 +49,6 @@ fn agent(id: &str, state: AgentState) -> Agent {
         ts: 0,
         capabilities: vec!["prompt".to_string()],
         waiting_on: None,
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Default::default(),

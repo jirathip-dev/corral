@@ -79,10 +79,10 @@ const CLAUDE_CWD_PROBE_LINES: usize = 8;
 /// per-worktree session count, and it bounds the row set by construction.
 const OPENCODE_FALLBACK_LIMIT: usize = 16;
 
-/// Where the three session stores live. Built from the same env-var
-/// overrides the cost meter uses (`$CORRAL_OPENCODE_DB`,
-/// `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`), so tests point the whole
-/// read path at fixtures without touching live stores.
+/// Where the three session stores live. Built from environment-variable
+/// overrides (`$CORRAL_OPENCODE_DB`, `$CORRAL_CLAUDE_DIR`,
+/// `$CORRAL_CODEX_DIR`), so tests point the whole read path at fixtures
+/// without touching live stores.
 #[derive(Debug, Clone)]
 pub struct TranscriptRoots {
     pub opencode_db: PathBuf,
@@ -92,10 +92,35 @@ pub struct TranscriptRoots {
 
 impl TranscriptRoots {
     pub fn from_env() -> Self {
+        let mut vars = std::collections::HashMap::new();
+        for var in [
+            "CORRAL_OPENCODE_DB",
+            "CORRAL_CLAUDE_DIR",
+            "CORRAL_CODEX_DIR",
+            "HOME",
+        ] {
+            if let Ok(value) = std::env::var(var) {
+                vars.insert(var.to_string(), value);
+            }
+        }
+        Self::from_env_vars(&vars)
+    }
+
+    /// Build the same paths as [`Self::from_env`] from an explicit variable
+    /// map. Keeping the selection seam separate makes its override/default
+    /// contract testable without mutating the process environment, which
+    /// would race the parallel Rust 2024 test suite.
+    fn from_env_vars(vars: &std::collections::HashMap<String, String>) -> Self {
+        let home = PathBuf::from(vars.get("HOME").map(String::as_str).unwrap_or("."));
+        let path = |key: &str, suffix: &str| {
+            vars.get(key)
+                .map(|value| PathBuf::from(value.as_str()))
+                .unwrap_or_else(|| home.join(suffix))
+        };
         Self {
-            opencode_db: crate::cost::opencode_db_path(),
-            claude_dir: crate::cost::claude_dir_path(),
-            codex_dir: crate::cost::codex_dir_path(),
+            opencode_db: path("CORRAL_OPENCODE_DB", ".local/share/opencode/opencode.db"),
+            claude_dir: path("CORRAL_CLAUDE_DIR", ".claude/projects"),
+            codex_dir: path("CORRAL_CODEX_DIR", ".codex/sessions"),
         }
     }
 
@@ -876,6 +901,74 @@ mod tests {
             v["cwd"] = serde_json::Value::String(cwd.to_string());
         }
         v.to_string()
+    }
+
+    /// Pin `from_env`'s override/default contract without mutating process
+    /// environment variables. The production method collects these same
+    /// names before delegating to `from_env_vars`; the explicit map keeps the
+    /// test hermetic under the parallel Rust 2024 test runner.
+    #[test]
+    fn from_env_paths_match_overrides_defaults_and_home_fallback() {
+        let mut vars = std::collections::HashMap::from([
+            ("HOME".to_string(), "/hermetic-home".to_string()),
+            (
+                "CORRAL_OPENCODE_DB".to_string(),
+                "/overrides/opencode.db".to_string(),
+            ),
+            (
+                "CORRAL_CLAUDE_DIR".to_string(),
+                "/overrides/claude".to_string(),
+            ),
+            (
+                "CORRAL_CODEX_DIR".to_string(),
+                "/overrides/codex".to_string(),
+            ),
+        ]);
+        let overridden = TranscriptRoots::from_env_vars(&vars);
+        assert_eq!(
+            overridden.opencode_db,
+            std::path::PathBuf::from("/overrides/opencode.db")
+        );
+        assert_eq!(
+            overridden.claude_dir,
+            std::path::PathBuf::from("/overrides/claude")
+        );
+        assert_eq!(
+            overridden.codex_dir,
+            std::path::PathBuf::from("/overrides/codex")
+        );
+
+        vars.remove("CORRAL_OPENCODE_DB");
+        vars.remove("CORRAL_CLAUDE_DIR");
+        vars.remove("CORRAL_CODEX_DIR");
+        let defaults = TranscriptRoots::from_env_vars(&vars);
+        assert_eq!(
+            defaults.opencode_db,
+            std::path::PathBuf::from("/hermetic-home/.local/share/opencode/opencode.db")
+        );
+        assert_eq!(
+            defaults.claude_dir,
+            std::path::PathBuf::from("/hermetic-home/.claude/projects")
+        );
+        assert_eq!(
+            defaults.codex_dir,
+            std::path::PathBuf::from("/hermetic-home/.codex/sessions")
+        );
+
+        vars.remove("HOME");
+        let no_home = TranscriptRoots::from_env_vars(&vars);
+        assert_eq!(
+            no_home.opencode_db,
+            std::path::PathBuf::from(".").join(".local/share/opencode/opencode.db")
+        );
+        assert_eq!(
+            no_home.claude_dir,
+            std::path::PathBuf::from(".").join(".claude/projects")
+        );
+        assert_eq!(
+            no_home.codex_dir,
+            std::path::PathBuf::from(".").join(".codex/sessions")
+        );
     }
 
     #[test]

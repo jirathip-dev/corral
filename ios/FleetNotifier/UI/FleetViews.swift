@@ -41,7 +41,8 @@ struct KindBadge: View {
 struct ClaimCard: View {
     let agent: Agent
     let waiting: WaitingOn
-    let grants: Set<Capability>
+    let approvalEnabled: Bool
+    let approvalDisabledReason: String?
     var onChoice: (String) -> Void
     var onCanned: (CannedChoice.Action) -> Void
 
@@ -59,7 +60,7 @@ struct ClaimCard: View {
             Text(waiting.prompt)
                 .font(.body)
                 .textSelection(.enabled)
-            if waiting.kind != .crash && grants.contains(.approve) {
+            if waiting.kind != .crash && approvalEnabled {
                 if !waiting.choices.isEmpty {
                     // Menu / approve-tool with known choices: exact buttons.
                     FlowLayout(spacing: 8) {
@@ -73,8 +74,8 @@ struct ClaimCard: View {
                     // Free-form answer (AnswerQuestion / empty menu).
                     CannedButtons(waiting: waiting, onCanned: onCanned)
                 }
-            } else if waiting.kind != .crash && !grants.contains(.approve) {
-                Text("The device has no `approve` grant — ask the host to promote capabilities.")
+            } else if let approvalDisabledReason {
+                Text(approvalDisabledReason)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -86,6 +87,8 @@ struct ClaimCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(KindBadgeStyle.color(waiting.kind).opacity(0.5), lineWidth: 1)
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Blocked approval claim for \(agent.displayName ?? agent.agentId)")
     }
 
     private var shortApprovalId: String {
@@ -184,37 +187,15 @@ final class PromptDrafts: ObservableObject {
     }
 }
 
-// MARK: - Agent row (D24 3-line dense anatomy)
+// MARK: - Agent row and detail/action surface
 
-/// One board row, D24 shape:
-///
-/// - line 1 — state dot + title (falling back to display name / id) + issue
-///   chip (`⑂ #N` authoritative / `~#N` inferred, display-only per D21) +
-///   CI glyph + tool badge;
-/// - line 2 — repo·branch·worktree basename (D26: no nesting level) with
-///   PR / dirty / `↑a↓b` trailing;
-/// - line 3 — the waiting-on claim card when blocked; hidden otherwise
-///   until the daemon grows `activity` (D22, out of this slice).
-///
-/// Idle/done rows dim and lose line 3 (D28). Row actions are limited to
-/// Approve/Deny (in the claim card), Prompt, and Tail 200 — all grant-gated
-/// (D30); Interrupt/Kill are deliberately NOT row actions (D29/D30).
+/// The row is deliberately a navigation label rather than a container for
+/// nested buttons. That makes the whole visible row tappable, including the
+/// whitespace at its trailing edge, while keeping action buttons reliable in
+/// the destination view. The destination resolves the live record again, so
+/// a stale/deleted row can never dispatch from its old snapshot.
 struct AgentRow: View {
     let agent: Agent
-    let grants: Set<Capability>
-    /// The shared draft store (R2-B): the ROW observes it, so keystrokes
-    /// re-render rows without touching `FleetView.body`. Rows of the same
-    /// agent share one draft (a blocked agent appears in both NEEDS YOU
-    /// and its repo section).
-    @ObservedObject var drafts: PromptDrafts
-    /// The row actions to render (D30 pin) — computed by the pure
-    /// `BoardModel.rowActions(agent:grants:)`; this view renders ONLY this
-    /// list, never its own capability/grants checks.
-    let actions: [RowAction]
-    var onChoice: (String) -> Void
-    var onCanned: (CannedChoice.Action) -> Void
-    var onReadTail: () -> Void
-    var onPrompt: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -222,6 +203,11 @@ struct AgentRow: View {
                 Circle()
                     .fill(stateColor)
                     .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                Text(agent.state.displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(stateColor)
+                    .accessibilityLabel(agent.state.accessibilityLabel)
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -255,39 +241,36 @@ struct AgentRow: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
             }
             WorkspaceLine(agent: agent)
-            if actions.contains(.approveDeny), let waiting = agent.waitingOn {
-                ClaimCard(agent: agent, waiting: waiting, grants: grants,
-                          onChoice: onChoice, onCanned: onCanned)
-            }
-            if actions.contains(.tail) {
-                HStack(spacing: 8) {
-                    Button("Tail 200") { onReadTail() }
-                        .buttonStyle(.bordered)
+            if let waiting = agent.waitingOn, agent.isBlocked {
+                HStack(alignment: .top, spacing: 6) {
+                    KindBadge(kind: waiting.kind)
+                    Text(waiting.prompt)
                         .font(.caption)
-                    Spacer()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
                 }
+                .accessibilityLabel("Blocked claim: \(waiting.prompt)")
             }
-            if actions.contains(.prompt) {
-                HStack {
-                    TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                    Button("Send") {
-                        let text = drafts.drafts[agent.agentId] ?? ""
-                        drafts.clear(agent.agentId)
-                        onPrompt(text)
-                    }
-                    .disabled((drafts.drafts[agent.agentId] ?? "").isEmpty)
-                    .buttonStyle(.borderedProminent)
-                    .font(.caption)
-                }
-            }
+            Text("Open details for Tail 200, Prompt, Interrupt, and approvals")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
-        .opacity(isDimmed ? 0.55 : 1)
+        .opacity(isDimmed ? 0.65 : 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityHint("Double tap to open agent details and actions")
     }
 
-    /// D28: idle/done rows dim (and have no line 3 by construction).
+    private var accessibilitySummary: String {
+        let title = agent.title ?? agent.displayName ?? agent.agentId
+        return "\(title), \(agent.state.displayName), agent row"
+    }
+
+    /// D28: idle/done rows dim, but their explicit state text remains.
     private var isDimmed: Bool {
         agent.state == .idle || agent.state == .done
     }
@@ -300,6 +283,286 @@ struct AgentRow: View {
         case .done: return .blue
         case .unknown: return .gray
         }
+    }
+}
+
+/// Detail destination for one route. `currentAgent` is intentionally looked
+/// up from the store on every render; a selected agent can disappear between
+/// the tap and an action response.
+struct AgentDetailView: View {
+    let agentId: String
+    @ObservedObject var model: AppModel
+    @ObservedObject var drafts: PromptDrafts
+
+    var body: some View {
+        Group {
+            if let agent = model.fleet.agent(agentId) {
+                AgentDetailContent(agent: agent, model: model, drafts: drafts)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Agent no longer available", systemImage: "exclamationmark.triangle")
+                        .font(.headline)
+                    Text("This agent was deleted or migrated. Refresh the fleet before sending an action.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Agent \(agentId) is no longer available; no actions are enabled")
+            }
+        }
+        .navigationTitle(model.fleet.agent(agentId)?.title
+                         ?? model.fleet.agent(agentId)?.displayName
+                         ?? agentId)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct AgentDetailContent: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+    @ObservedObject var drafts: PromptDrafts
+
+    private var grants: Set<Capability> { model.actionGrants }
+    private var availability: [AgentActionAvailability] {
+        BoardModel.actionAvailability(agent: agent, grants: grants)
+    }
+    private var driveClient: DriveClient {
+        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                AgentStateSummary(agent: agent)
+                if let reason = agent.reason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Text("Actions are checked against the current fleet record before dispatch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let waiting = agent.waitingOn, agent.isBlocked,
+                   let approval = availability.first(where: { $0.action == .approveDeny }) {
+                    let approvalInFlight = model.isActionInFlight(agentId: agent.agentId,
+                                                                  capability: .approve)
+                    ClaimCard(
+                        agent: agent,
+                        waiting: waiting,
+                        approvalEnabled: approval.isEnabled && !approvalInFlight,
+                        approvalDisabledReason: approval.disabledReason
+                            ?? (approvalInFlight ? "An approval action is already in progress." : nil),
+                        onChoice: { choice in
+                            dispatchApproval(choice, expectedPromptHash: waiting.promptHash)
+                        },
+                        onCanned: { action in
+                            dispatchCanned(action, expectedPromptHash: waiting.promptHash)
+                        })
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Controls")
+                        .font(.headline)
+                    actionButton(.tail, systemImage: "text.line.first.and.arrowtriangle.forward",
+                                 title: "Tail 200") {
+                        dispatchTail()
+                    }
+                    actionButton(.interrupt, systemImage: "stop.circle",
+                                 title: "Interrupt") {
+                        dispatchInterrupt()
+                    }
+                    promptControl
+                }
+
+                if let tail = model.fleet.tail(for: agent.agentId) {
+                    TailOutputView(lines: tail)
+                }
+            }
+            .padding()
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func actionButton(_ action: RowAction, systemImage: String,
+                              title: String, perform: @escaping () -> Void) -> some View {
+        if let item = availability.first(where: { $0.action == action }) {
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    perform()
+                } label: {
+                    Label(title, systemImage: systemImage)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!item.isEnabled || model.isActionInFlight(agentId: agent.agentId,
+                                                                     capability: action.capability))
+                .accessibilityLabel(item.isEnabled ? title : "\(title) unavailable")
+                if let reason = item.disabledReason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Why \(title) is disabled: \(reason)")
+                } else if model.isActionInFlight(agentId: agent.agentId,
+                                                 capability: action.capability) {
+                    Text("Action in progress")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var promptControl: some View {
+        if let item = availability.first(where: { $0.action == .prompt }) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Prompt")
+                    .font(.subheadline.weight(.semibold))
+                HStack {
+                    TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(!item.isEnabled)
+                    Button("Send Prompt") {
+                        dispatchPrompt()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!item.isEnabled
+                              || drafts.drafts[agent.agentId]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+                              || model.isActionInFlight(agentId: agent.agentId, capability: .prompt))
+                }
+                if let reason = item.disabledReason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Why Prompt is disabled: \(reason)")
+                }
+            }
+        }
+    }
+
+    private func dispatchTail() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .readTail, agent: live)
+            return
+        }
+#endif
+        model.driveReadTail(agent: live, driveClient: driveClient)
+    }
+
+    private func dispatchInterrupt() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .interrupt, agent: live)
+            return
+        }
+#endif
+        model.driveInterrupt(agent: live, driveClient: driveClient)
+    }
+
+    private func dispatchPrompt() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+        let text = drafts.drafts[agent.agentId] ?? ""
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        drafts.clear(agent.agentId)
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .prompt, agent: live, choice: text)
+            return
+        }
+#endif
+        model.drivePrompt(agent: live, text: text, driveClient: driveClient)
+    }
+
+    private func dispatchApproval(_ choice: String, expectedPromptHash: String) {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .approve, agent: live, choice: choice)
+            return
+        }
+#endif
+        model.driveApprove(agent: live, choice: choice, driveClient: driveClient,
+                           expectedPromptHash: expectedPromptHash)
+    }
+
+    private func dispatchCanned(_ action: CannedChoice.Action, expectedPromptHash: String) {
+#if DEBUG
+        if model.mode == .demo {
+            guard let live = model.fleet.agent(agent.agentId), let waiting = live.waitingOn,
+                  let choice = CannedChoice.choice(for: action, kind: waiting.kind,
+                                                   choices: waiting.choices) else { return }
+            model.driveDemo(capability: .approve, agent: live, choice: choice)
+            return
+        }
+#endif
+        model.handleCannedAction(agentId: agent.agentId, action: action,
+                                 driveClient: driveClient,
+                                 expectedPromptHash: expectedPromptHash)
+    }
+}
+
+private struct AgentStateSummary: View {
+    let agent: Agent
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "circle.fill")
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+            Text(agent.state.displayName)
+                .font(.headline)
+            Text(agent.tool)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.state.accessibilityLabel), \(agent.tool) agent")
+    }
+
+    private var color: Color {
+        switch agent.state {
+        case .blocked: return .red
+        case .working: return .green
+        case .idle: return .secondary
+        case .done: return .blue
+        case .unknown: return .gray
+        }
+    }
+}
+
+private struct TailOutputView: View {
+    let lines: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Latest tail (up to 200 lines)")
+                .font(.headline)
+            if lines.isEmpty {
+                Text("No output returned")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView([.vertical, .horizontal]) {
+                    Text(lines.joined(separator: "\n"))
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Latest bounded agent tail")
+                }
+                .frame(maxHeight: 220)
+                .padding(6)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -453,26 +716,91 @@ struct CiGlyph: View {
 /// matches the default row content inset so header text aligns with row
 /// content instead of sitting one notch deeper (round-1 finding F4).
 struct PinnedHeader<Content: View>: View {
+    let fillsInteractiveWidth: Bool
     @ViewBuilder var content: () -> Content
 
+    init(fillsInteractiveWidth: Bool = false,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.fillsInteractiveWidth = fillsInteractiveWidth
+        self.content = content
+    }
+
+    @ViewBuilder
     var body: some View {
-        content()
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 20)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.bar, ignoresSafeAreaEdges: [])
-            .listRowInsets(EdgeInsets())
+        if fillsInteractiveWidth {
+            // Interactive content owns its own insets. Keeping padding out
+            // here makes the rendered pinned header area identical to the
+            // Button hit target instead of leaving dead outer margins.
+            content()
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar, ignoresSafeAreaEdges: [])
+                .listRowInsets(EdgeInsets())
+        } else {
+            content()
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar, ignoresSafeAreaEdges: [])
+                .listRowInsets(EdgeInsets())
+        }
     }
 }
 
 // MARK: - Fleet list
 
+/// Full-width disclosure control for the low-priority bucket. The visible
+/// Expanded/Collapsed value complements the chevron and is also exposed as
+/// the accessibility value, so the state is clear without relying on shape
+/// or color.
+enum IdleDoneHeaderLayout {
+    static let horizontalPadding: CGFloat = 20
+    static let verticalPadding: CGFloat = 6
+    static let minimumHitHeight: CGFloat = 44
+}
+
+struct IdleDoneHeader: View {
+    let count: Int
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button {
+            withAnimation { onToggle() }
+        } label: {
+            HStack(spacing: 8) {
+                Text("Idle / done (\(count))")
+                Text(isExpanded ? "Expanded" : "Collapsed")
+                    .font(.caption.weight(.regular))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, IdleDoneHeaderLayout.horizontalPadding)
+            .padding(.vertical, IdleDoneHeaderLayout.verticalPadding)
+            // This frame is the entire interactive pinned-header surface;
+            // PinnedHeader does not add an external padded margin for it.
+            .frame(maxWidth: .infinity, minHeight: IdleDoneHeaderLayout.minimumHitHeight,
+                   alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Idle and done agents")
+        .accessibilityValue("\(count) agents, \(isExpanded ? "Expanded" : "Collapsed")")
+        .accessibilityHint(isExpanded ? "Double tap to collapse" : "Double tap to expand")
+    }
+}
+
 struct FleetView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $viewState.navigationPath) {
             List {
                 if let banner = model.banner {
                     BannerView(banner: banner) {
@@ -482,7 +810,11 @@ struct FleetView: View {
                 switch model.mode {
                 case .needsSetup:
                     RegistrationView(model: model)
-                case .demo, .live:
+#if DEBUG
+                case .demo:
+                    fleetList
+#endif
+                case .live:
                     fleetList
                 }
             }
@@ -496,18 +828,24 @@ struct FleetView: View {
             // matter — and not on keystrokes (see promptDrafts above).
             .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
                 promptDrafts.prune(to: agentIds)
+                viewState.reconcile(availableAgentIds: agentIds)
+            }
+            .navigationDestination(for: AgentRoute.self) { route in
+                AgentDetailView(agentId: route.agentId, model: model, drafts: promptDrafts)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+#if DEBUG
                         Button(model.mode == .demo ? "Exit demo" : "Demo mode",
                                systemImage: "sparkles") {
                             if model.mode == .demo {
-                                restartLive()
+                                model.exitDemo()
                             } else {
                                 model.enterDemo()
                             }
                         }
+#endif
                         Button("Settings", systemImage: "gearshape") {
                             showSettings = true
                         }
@@ -523,7 +861,7 @@ struct FleetView: View {
     }
 
     @State private var showSettings = false
-    @State private var showIdleDone = false
+    @State private var viewState = FleetViewState()
     /// Per-agent prompt drafts (R2-B). Held in `@State`, DELIBERATELY not
     /// `@StateObject`: `@State` keeps the object's identity across renders
     /// but does not subscribe to `objectWillChange`, so keystrokes do not
@@ -572,31 +910,24 @@ struct FleetView: View {
             }
         }
         Section {
-            if showIdleDone {
+            if viewState.idleDoneDisclosure.isExpanded {
                 ForEach(sections.idleDone) { agent in
                     agentRow(agent)
                 }
             }
         } header: {
-            pinnedHeader {
-                Button {
-                    withAnimation { showIdleDone.toggle() }
-                } label: {
-                    HStack {
-                        Text("Idle / done (\(sections.idleDone.count))")
-                        Spacer()
-                        Image(systemName: showIdleDone ? "chevron.down" : "chevron.right")
-                            .font(.caption2)
-                    }
-                }
-                .buttonStyle(.plain)
+            pinnedHeader(fillsInteractiveWidth: true) {
+                IdleDoneHeader(count: sections.idleDone.count,
+                               isExpanded: viewState.idleDoneDisclosure.isExpanded,
+                               onToggle: { viewState.toggleIdleDone() })
             }
         }
     }
 
     @ViewBuilder
-    private func pinnedHeader<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
-        PinnedHeader(content: content)
+    private func pinnedHeader<Content: View>(fillsInteractiveWidth: Bool = false,
+                                             @ViewBuilder content: @escaping () -> Content) -> some View {
+        PinnedHeader(fillsInteractiveWidth: fillsInteractiveWidth, content: content)
     }
 
     @ViewBuilder
@@ -611,47 +942,12 @@ struct FleetView: View {
     }
 
     private func agentRow(_ agent: Agent) -> some View {
-        let driveClient = DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
-        let grants = Set(model.grants.compactMap(Capability.init(rawValue:)))
-        return AgentRow(agent: agent,
-                        grants: grants,
-                        drafts: promptDrafts,
-                        actions: BoardModel.rowActions(agent: agent, grants: grants),
-                        onChoice: { choice in
-                            if model.mode == .demo {
-                                model.driveDemo(capability: .approve, agent: agent, choice: choice)
-                            } else {
-                                model.driveApprove(agent: agent, choice: choice, driveClient: driveClient)
-                            }
-                        },
-                        onCanned: { action in
-                            if model.mode == .demo {
-                                let waiting = agent.waitingOn
-                                let choice = waiting.flatMap { CannedChoice.choice(for: action, kind: $0.kind, choices: $0.choices) }
-                                model.driveDemo(capability: .approve, agent: agent, choice: choice ?? "y")
-                            } else {
-                                model.handleCannedAction(agentId: agent.agentId, action: action, driveClient: driveClient)
-                            }
-                        },
-                        onReadTail: {
-                            if model.mode == .demo {
-                                model.driveDemo(capability: .readTail, agent: agent)
-                            } else {
-                                model.driveReadTail(agent: agent, driveClient: driveClient)
-                            }
-                        },
-                        onPrompt: { text in
-                            // Send clears the SHARED draft, so both rows of
-                            // the agent (NEEDS YOU + repo section) reset.
-                            promptDrafts.clear(agent.agentId)
-                            model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
-                        })
+        NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
+            AgentRow(agent: agent)
+        }
+        .accessibilityHint("Double tap to open agent details and actions")
     }
 
-    private func restartLive() {
-        model.mode = .live
-        model.startLive()
-    }
 }
 
 struct BannerView: View {
@@ -721,17 +1017,19 @@ struct RegistrationView: View {
         } header: {
             PinnedHeader { Text("Connect") }
         }
+#if DEBUG
         Section {
-            Button("Try demo fleet (no daemon)") {
+            Button("Try demo fleet (Debug only; no daemon)") {
                 model.enterDemo()
             }
             .font(.subheadline)
-            Text("Seeded fake fleet for App Review 4.2 (minimal functionality).")
+            Text("Seeded fake fleet for local Debug/simulator testing only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } header: {
             PinnedHeader { Text("Demo") }
         }
+#endif
     }
 }
 

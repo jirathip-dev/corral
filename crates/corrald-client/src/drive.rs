@@ -129,14 +129,18 @@ pub struct SignedDrive {
 }
 
 /// Response to a drive write. `ok:false` + `error` is a dispatch-level
-/// refusal that still rides HTTP 200 (and is audited); auth/approval
-/// refusals are non-200 with a typed body (see [`crate::errors`]).
+/// refusal that still rides HTTP 200 (and is audited); `error_kind` is the
+/// stable machine-readable kind for that refusal. Auth/approval/stale-target
+/// pre-dispatch refusals are non-200 with a typed body (see
+/// [`crate::errors`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriveResponse {
     pub request_id: String,
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
     /// The store's new monotonic rev after the write.
     pub rev: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

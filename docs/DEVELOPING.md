@@ -24,7 +24,7 @@ src/lib.rs               library surface: adapters, api, approve, auth,
                          core, drive, integrate
 src/adapters/            herdr.rs (push, zero polling), git_plane.rs,
                          gh_plane.rs, mod.rs (Adapter trait)
-src/core/                model.rs (canonical Agent, schema v3),
+src/core/                model.rs (canonical Agent, schema v5),
                          events.rs (Plane trait + channel),
                          store.rs (revisioned store, coalescing, resume),
                          redact.rs (secret redaction at the boundary)
@@ -39,7 +39,9 @@ src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
                          audit, tokens), host_identity.rs, registry.rs,
                          authorizer.rs, step_up.rs, audit.rs, http.rs
 src/api/                 mod.rs (router: /healthz /snapshot /events
-                         /history), drive.rs (POST /drive handler)
+                         /history /transcript), drive.rs (POST /drive handler)
+src/transcript/          bounded, redacted session-transcript reads and
+                         agent-to-session binding
 src/history/             mod.rs, ring.rs (D23 persistent event ring),
                          digest.rs (D33 `corrald digest`)
 crates/corrald-client/   shared client layer: model, drive, keypair,
@@ -51,13 +53,110 @@ docs/corral/             P1–P4 briefs (history) + P4-conformance.md
                          (normative wire contract)
 ```
 
+## Icon assets and packaging
+
+The approved icon outputs are checked in under `assets/icon/` and the iOS
+AppIcon catalog:
+
+- `corral-master.png` is the cropped square reference.
+- `corral-icon-1024.png` is the opaque repository/reference output.
+- `corral-icon-256.png` is the opaque egui/Linux desktop output.
+- `corral-icon-macos.png` is the 1024px squircle-masked macOS output with
+  transparent corners.
+- `social-preview.png` is the 1280×640 repository preview asset. Committing
+  it does not change GitHub's social-preview setting; that remains a manual
+  repository-settings step.
+- `ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`
+  is the opaque 1024px iOS AppIcon selected by the Xcode project.
+
+When the approved source PNG is available, regenerate the outputs with:
+
+```sh
+mise exec -- python tools/icon/from-user-png.py <approved-source.png>
+mise exec -- python tools/icon/check-assets.py
+mise exec -- python tools/icon/check-assets.py --self-test
+```
+
+The generator pins the approved SFNS wordmark font by SHA-256
+(`2bfd40dc72e6759e248f82a52a40d551338979fffc9b5c070e685b4b7ad19e66`) and
+fails before writing outputs if `/System/Library/Fonts/SFNS.ttf` is absent or
+different. A machine with the exact approved font at another path may set
+`CORRAL_ICON_FONT`; the fixed fingerprint is still enforced and there is no
+silent Pillow fallback. The checked-in social preview is the approved output
+and should not be regenerated without an approved visual-equivalent change.
+
+`check-assets.py` is read-only: it checks the pinned SHA-256 manifest for the
+approved assets and the complete active icon-integration sources, PNG
+dimensions/modes/alpha, social wordmark/caption structure, the parsed iOS
+asset-catalog resource phase, Python/shell syntax, and the release embedding
+gate. The egui binary embeds
+`corral-icon-256.png` at compile time; after a release build, prove that
+embedding with:
+
+```sh
+cargo build --release -p corrald-ui
+mise exec -- python tools/icon/check-assets.py --require-build
+```
+
+The negative self-tests mutate temporary fixtures, including the macOS alpha
+mask, social copy, the AppIcon catalog's actual Resources phase, an
+immediate-return generator, and both detached and commented-out egui icon
+applications. Full-source hashes plus compile/build-derived checks make those
+mutations fail even when a token or comment is left behind. Pillow checks use
+the repository's documented `getdata()` pixel API rather than a newer-only
+helper. `scripts/test-icon-packaging.sh` uses only temporary destinations and
+failing converter/copy/rename stubs to verify macOS, Linux, and Other-platform
+staging, special-character desktop-entry `Exec` escaping, cleanup, and
+single- and double-failure rollback. If both restoration renames fail, the
+installer reports the exact retained rollback directory instead of deleting
+the only recoverable old payload; it never targets `/Applications` or a user
+config directory. Linux `Exec` values are encoded in the two required passes:
+command quoting is followed by desktop-entry general-string escaping, so the
+on-disk forms use doubled backslashes for quotes, `$`, and backticks, four for
+a literal backslash, and `%%` for a literal percent. Newline- or
+carriage-return-containing requested prefixes, and executable paths containing
+`=`, are rejected before destination directories are created.
+Install prefixes and the macOS app parent are physically canonicalized before
+guards; root-resolving paths, `..` traversal, and symlinked `bin`/`share`
+payload parents are refused. A symlinked prefix is accepted only by resolving
+it to its safe canonical target, and every stage is created beside that
+resolved target so final renames stay on one filesystem. Linux and Other
+preflight the device of every target parent against the staging prefix before
+creating payload directories and recheck before commit; a device mismatch is
+an error rather than a cross-filesystem fallback. Rollback diagnostics
+distinguish a payload-restore failure, which retains the old payload, from a
+cleanup-only failure, which reports that the payload was restored. For the
+cleanup-only case, an existing empty or partial rollback directory gets an
+inspection path, a missing root gets no path or recoverability claim, and an
+existing but uninspectable root is reported as indeterminate with its path.
+If cleanup fails after a fresh install, the diagnostic instead identifies an
+empty rollback directory for inspection rather than claiming a rollback copy
+exists. After a replacement, cleanup diagnostics inspect the expected rollback paths after the failed
+removal: macOS reports a remaining previous path only when it exists, while
+Linux and Other distinguish all, some, or none of the expected backup paths.
+An existing empty directory gets an inspection path; a missing rollback root
+gets no path or recoverability claim; and an existing but uninspectable root
+is reported as indeterminate without being called empty or retained. They
+never infer recoverability from pre-cleanup backup state. The multi-file Linux
+commit remains rollback-based; the installer does not claim one atomic
+operation for the whole payload.
+
+`scripts/setup-corrald.sh` delegates desktop installation to
+`scripts/install-corral-ui.sh`. The installer builds and validates the entire
+macOS bundle—including a round-tripped `Corral.icns`, `CFBundleIconFile`, and
+the executable—or the complete Linux binary/icon/`.desktop` payload in a
+sibling staging directory first. It commits only after validation; existing
+installations are moved into same-filesystem rollback storage and restored if
+a final rename fails. Linux installs the 256px PNG as the `corral` desktop
+icon.
+
 ## Quality gates (run all of these before merging)
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build --release
-cargo test
+cargo test --workspace
 cargo test -p corrald-client                       # client unit + wire pins
 cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
@@ -110,6 +209,10 @@ clients.
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add
   capabilities, never mutate.
+- **Provider-neutral canonical model.** The `Agent` and snapshot shapes carry
+  fleet state only; they do not represent provider pricing, quota, or spend.
+  Store-specific transcript parsing belongs in the bounded, redacted
+  `src/transcript/` boundary and must not feed the board model.
 - **Same quality bar for every phase.** No phase skips the four gates
   above; the conformance suite grows with each wire change.
 - **Signatures over canonical bytes.** `canonical_envelope_bytes` is the

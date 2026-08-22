@@ -1,15 +1,15 @@
 //! Typed read model, mirroring the daemon's canonical schema
-//! (`src/core/model.rs` on main) field-for-field. Additive-only alignment:
-//! decoding is tolerant of defaulted/missing fields so a client on schema
-//! v4 still reads snapshots from a daemon that has since added defaulted
-//! fields (unknown extra fields are ignored by serde by default).
+//! (`src/core/model.rs`) field-for-field. Decoding is tolerant of
+//! defaulted/missing fields so older clients can read snapshots that add
+//! defaulted fields (unknown extra fields are ignored by serde by default);
+//! breaking removals bump the schema version.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Snapshot/delta schema version served by corrald on main.
-pub const SCHEMA_VERSION: u32 = 4;
+/// Snapshot/delta schema version served by corrald.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives
 /// in `reason` / `waiting_on`.
@@ -156,9 +156,6 @@ pub struct Agent {
     pub ts: u64,
     pub capabilities: Vec<String>,
     pub waiting_on: Option<WaitingOn>,
-    /// Cumulative spend in USD, nullable.
-    #[serde(default)]
-    pub cost: Option<f64>,
     /// Topology: reviewer belongs to its implementation agent (P2+).
     #[serde(default)]
     pub parent_id: Option<String>,

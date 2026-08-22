@@ -50,7 +50,6 @@ fn blocked_agent(id: &str, hash: &str, prompt: &str) -> Agent {
             approval_id: format!("{id}:{hash}"),
             choices: vec!["y".to_string(), "n".to_string()],
         }),
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Workspace {

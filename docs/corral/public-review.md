@@ -1,11 +1,14 @@
 # Corral — public-readiness + scripts review
 
+> **Historical note — 2026-08-20:** Any cost-meter content in this historical review/brief describes Corral as it existed and the requirements under review at that time.
+> The cost meter was retired by issue #107. For the current design, see `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `docs/DEVELOPING.md`, and `docs/QUICKSTART.md`.
+
 Reviewer: Claude (Fable 5), static review, 2026-08-18. Files read in full:
 `scripts/setup-corrald.sh`, `scripts/corrald-grant.sh`, `scripts/asc-beta-state.rb`,
 `README.md`, `Cargo.toml`, `docs/QUICKSTART.md`, `docs/OPERATIONS.md`,
 `fastlane/Fastfile`, `fastlane/.env.example`, `ios/project.yml`, `.gitignore`,
 plus targeted reads of `src/main.rs`, `src/adapters/herdr.rs`, `src/core/model.rs`,
-`src/fleet/config.rs`, `src/cost/agent_cache.rs`, `src/integrate/mod.rs` for Q8/Q9.
+`src/fleet/config.rs`, `src/transcript/bind.rs`, `src/integrate/mod.rs` for Q8/Q9.
 
 ---
 
@@ -148,10 +151,9 @@ What a stranger hits, top to bottom:
   merged PR away from false is how you earn a "misleading security docs" issue.
   Same claim also lives at `docs/QUICKSTART.md:31-32`, `docs/OPERATIONS.md:221`
   and the troubleshooting row at `docs/OPERATIONS.md:242`.
-- **Cost-meter honesty: keep it.** Lines 77–79 and the whole G34 section
-  (135–145: "The default caps are invented… Do not act on a percentage until you
-  have set the real cap") are the most trust-building text in the repo. Do not
-  hide it; it's a differentiator.
+- **Retired provider-usage estimator:** issue #107 removes the estimator and
+  its UI/API claims; current docs should describe the board as
+  harness-agnostic and make no quota promises.
 - **Missing:** license badge + CI badge; one screenshot of the egui board and one
   of the iOS notifier (a fleet dashboard repo with zero pixels is a hard sell);
   a "Status: pre-1.0, macOS-first" line — launchd, Keychain, and the iOS app are
@@ -211,10 +213,10 @@ in `src/drive`, `src/approve`, or `src/api`. One precision on the brief's
 framing: `apply_agent_info` (`src/adapters/herdr.rs:583`) doesn't so much
 *normalize* harness kinds as **pass them through verbatim** —
 `tool: tool.unwrap_or("unknown")` at `herdr.rs:688-689` — which is the correct
-kind of agnosticism (uniform treatment, no per-harness logic). The only
-harness-*aware* code is the cost meter's per-provider session-store readers
-(`src/cost/claude.rs`, `codex.rs`, `opencode.rs`), which is unavoidable — each
-harness invents its own store format — and additive.
+kind of agnosticism (uniform treatment, no per-harness logic). The
+on-demand transcript reader's store binding (`src/transcript/`) is intentionally
+isolated from the canonical board model because each harness has its own
+session-store format.
 
 **Runtime-bound to herdr: yes, and the coupling is localized.** The exact points:
 
@@ -230,7 +232,7 @@ harness invents its own store format — and additive.
 3. **Worktree layout assumption** — `src/integrate/mod.rs:121` documents
    `<root>/<repo>/<label>` and `:402` derives the repo from the first path
    component. This is the subtlest coupling: it leaks into PR/CI binding and
-   cost attribution keys.
+   transcript binding and Git facts.
 4. **Fleet registry default path** — the legacy fleet registry fallback
    (`src/fleet/config.rs:180-188`), though `$CORRAL_FLEETS_PATH` already
    overrides it.
@@ -249,29 +251,14 @@ limitation in README and file it as a **separate issue**, not in #35 — #35 is
 the fleet registry, and mixing "second runtime adapter" into it
 would bloat a nearly-done slice.
 
-## Q9 — Fleet registry + cost attribution
+## Q9 — Fleet registry and transcript binding
 
-The premise in the brief is slightly off, and that changes the answer: **the
-cost meter does not use `fleets.json` at all.** Attribution keys on
-`(tool, worktree_path)` — `src/cost/agent_cache.rs:41-43`
-(`format!("{tool}:{worktree_path}")`), accumulated from each provider's own
-session store which records `workspace_path` (`agent_cache.rs:88-94`), and
-joined to agents in the adapter at `src/adapters/herdr.rs:678-684`. So the cost
-meter is **already runtime-agnostic**: any adapter that populates an agent's
-worktree path gets per-agent cost for free. The herdr dependency is only "who
-tells us the agent's worktree", which is inherently the adapter's job.
-
-Therefore a `FleetRegistry` trait is the right seam for the **`corrald fleet`
-CLI and registry file**, not for cost — and even there I'd hold off on the
-trait. `fleets.json` is a file format with one schema (`G35-registry.md`) and an
-env-overridable path; a trait with exactly one real implementation is
-speculative structure. The **minimal change** that makes the whole story
-runtime-agnostic without touching the herdr path: (a) change the default
-registry path from the legacy fleet registry fallback to
-`~/.config/corral/fleets.json`, keeping `$CORRAL_FLEETS_PATH` (and honoring the
-old legacy path as a documented fallback); (b) declare the
-schema corral-owned in G35-registry.md rather than "herdr convention". Introduce
-the trait only when a second registry *source* (not path) actually exists.
+The fleet registry remains a separate CLI/configuration surface. It describes
+repos, worktrees, workers, and models; it is not part of the daemon's live
+agent snapshot. Transcript binding likewise stays at the read-path boundary:
+the adapter supplies an agent's worktree and tool label, while the transcript
+module owns store-specific lookup and redaction. Neither path adds provider
+pricing or quota semantics to the canonical model.
 
 ---
 
@@ -330,7 +317,7 @@ label, a broken-by-contradiction ASC credentials story, and a setup script whose
 re-run silently ignores config changes and exits 0 on failure) — **but the gap
 is about one day of mechanical work, not a rethink.** The underlying repo is
 unusually strong for a pre-1.0 public flip: disciplined `.gitignore` with a CI
-secret scan born from a real leak, verified-command docs, honest placeholder
-labeling on the cost meter, and a core model that is already harness-agnostic
+secret scan born from a real leak, verified-command docs, bounded transcript
+reads, and a core model that is already harness-agnostic
 with runtime coupling neatly localized to one adapter. Fix the five must-fixes,
 add the README front door, and flip it public.

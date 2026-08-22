@@ -2,8 +2,8 @@
 # setup-corrald.sh — one-shot corrald daemon setup (build + launchd + first run)
 #
 # Idempotent: safe to re-run. Works for any user (uses $HOME, no hardcoded paths).
-# Does NOT modify source; only builds, creates the config dir, and installs a
-# launchd agent.
+# Does NOT modify source; only builds, creates the config dir, installs a
+# launchd agent, and stages the desktop client through the icon-aware installer.
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
@@ -176,88 +176,14 @@ else
 fi
 
 # --- Desktop client install (platform-aware) ---------------------------------
-# macOS: /Applications/Corral.app bundle (icon + ad-hoc signed)
-# Linux:  ~/.local/bin + .desktop entry + icon
-# other:  binary to ~/.local/bin
 install_desktop_client() {
   local UI_BIN="$REPO_DIR/target/release/corrald-ui"
   if [[ ! -x "$UI_BIN" ]]; then
     echo ">> corrald-ui binary missing — building..." >&2
     cargo build --release 2>>"$LOG" || { echo "   ✗ build failed" >&2; return 1; }
   fi
-  case "$(uname -s)" in
-    Darwin)
-      local APP="/Applications/Corral.app"
-      echo ">> Installing desktop client → $APP"
-      rm -rf "$APP"
-      mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-      cp "$UI_BIN" "$APP/Contents/MacOS/corrald-ui"
-      # Icon: build an .icns from the 1024 master (assets/icon/corral-icon-1024.png)
-      local ICON_SRC="$REPO_DIR/assets/icon/corral-icon-1024.png"
-      if [[ -f "$ICON_SRC" ]] && command -v iconutil >/dev/null 2>&1; then
-        local ICONSET_DIR ICONSET
-        ICONSET_DIR="$(mktemp -d)"
-        ICONSET="$ICONSET_DIR/Corral.iconset"
-        mkdir -p "$ICONSET"
-        for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x" "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x" "512:512x512" "1024:512x512@2x"; do
-          local px="${spec%%:*}"; local name="${spec##*:}"
-          sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_$name.png" >/dev/null 2>&1 || true
-        done
-        iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Corral.icns" 2>/dev/null || true
-        rm -rf "$(dirname "$ICONSET")"
-      fi
-      cat > "$APP/Contents/Info.plist" <<PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>corrald-ui</string>
-  <key>CFBundleIdentifier</key><string>com.corral.corrald-ui</string>
-  <key>CFBundleName</key><string>Corral</string>
-  <key>CFBundleDisplayName</key><string>Corral</string>
-  <key>CFBundleIconFile</key><string>Corral</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
-</dict>
-</plist>
-PLIST_EOF
-      # Ad-hoc sign so Gatekeeper/Keychain don't nag (matches the daemon's
-      # documented re-sign step; harmless, no identity needed).
-      codesign -s - --force "$APP" 2>/dev/null || true
-      echo "   ✓ installed. Launch: open $APP"
-      ;;
-    Linux)
-      echo ">> Installing desktop client → ~/.local/bin + .desktop"
-      mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
-      cp "$UI_BIN" "$HOME/.local/bin/corrald-ui"
-      if [[ -f "$REPO_DIR/assets/icon/corral-icon-256.png" ]]; then
-        cp "$REPO_DIR/assets/icon/corral-icon-256.png" "$HOME/.local/share/icons/hicolor/256x256/apps/corral.png"
-      fi
-      cat > "$HOME/.local/share/applications/corral.desktop" <<DESKTOP_EOF
-[Desktop Entry]
-Type=Application
-Name=Corral
-Comment=Corral agent-fleet board
-Exec=$HOME/.local/bin/corrald-ui
-Icon=corral
-Terminal=false
-Categories=Development;
-DESKTOP_EOF
-      chmod +x "$HOME/.local/bin/corrald-ui"
-      command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-      echo "   ✓ installed. Launch: $HOME/.local/bin/corrald-ui"
-      ;;
-    *)
-      echo ">> Installing desktop client → ~/.local/bin/corrald-ui"
-      mkdir -p "$HOME/.local/bin"
-      cp "$UI_BIN" "$HOME/.local/bin/corrald-ui"
-      chmod +x "$HOME/.local/bin/corrald-ui"
-      echo "   ✓ installed. Launch: $HOME/.local/bin/corrald-ui"
-      ;;
-  esac
+  CORRAL_INSTALL_PLATFORM="$(uname -s)" \
+    bash "$REPO_DIR/scripts/install-corral-ui.sh" --binary "$UI_BIN"
 }
 
 install_desktop_client

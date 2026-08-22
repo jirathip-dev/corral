@@ -1,6 +1,7 @@
+#if DEBUG
 import Foundation
 
-/// Seeded demo fleet (App Review 4.2 — minimal functionality): renders the
+/// Seeded Debug demo fleet: renders the
 /// full Fleet Notifier surface — blocked agents of every kind, choices,
 /// workspace/PR/CI columns — with no daemon reachable. Demo drives are
 /// answered locally and mutate the seeded fleet.
@@ -128,18 +129,20 @@ enum DemoFleet {
         case .readTail:
             let result: CodableValue = .object([
                 "agent_id": .string(agent.agentId),
-                "lines": .string("(demo) last lines of \(agent.displayName ?? agent.agentId)\n"
-                    + "…seeded tail, no daemon in demo mode"),
+                "lines": .array([
+                    .string("(demo) last lines of \(agent.displayName ?? agent.agentId)"),
+                    .string("…seeded tail, no daemon in demo mode")
+                ])
             ])
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev, result: result))
         case .approve:
             // Fake the agent un-blocking; the store owner applies the
             // transition via `simulateUnblock`.
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev + 1, result: nil))
         default:
-            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil,
+            return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev + 1, result: nil))
         }
     }
@@ -232,3 +235,4 @@ private let sha256K: [UInt32] = [
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]
+#endif

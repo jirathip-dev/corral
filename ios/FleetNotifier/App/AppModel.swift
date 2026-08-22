@@ -2,6 +2,95 @@ import Combine
 import Foundation
 import SwiftUI
 
+/// Thread-safe identity boundary shared by the main model and the APNs
+/// delegate. The delegate is not a child of `AppModel`, so reset/demo cannot
+/// cancel its task through a main-actor property alone.
+final class IdentityLifecycle: @unchecked Sendable {
+    enum Mode: Equatable, Sendable {
+        case needsSetup
+        case registering
+        case live
+#if DEBUG
+        case demo
+#endif
+    }
+
+    struct Context: Equatable, Sendable {
+        let generation: Int
+        let mode: Mode
+        let hostURL: URL?
+        let keyId: String?
+        let signerPublicKeyB64: String?
+    }
+
+    static let shared = IdentityLifecycle()
+
+    private let lock = NSLock()
+    private var context = Context(generation: 0, mode: .needsSetup,
+                                  hostURL: nil, keyId: nil,
+                                  signerPublicKeyB64: nil)
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    func current() -> Context {
+        lock.lock()
+        defer { lock.unlock() }
+        return context
+    }
+
+    func setCurrent(mode: Mode, hostURL: URL?, keyId: String?, signerPublicKeyB64: String?) {
+        lock.lock()
+        context = Context(generation: context.generation, mode: mode,
+                          hostURL: hostURL, keyId: keyId,
+                          signerPublicKeyB64: signerPublicKeyB64)
+        lock.unlock()
+    }
+
+    func isCurrent(_ expected: Context) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return context == expected
+    }
+
+    /// Advance the identity boundary and cancel every task owned by the old
+    /// identity. Task creation is synchronized with insertion into `tasks`,
+    /// so a reset cannot miss a just-created APNs upload.
+    @discardableResult
+    func invalidate(mode: Mode, hostURL: URL?, keyId: String?, signerPublicKeyB64: String?) -> Context {
+        lock.lock()
+        context = Context(generation: context.generation &+ 1, mode: mode,
+                          hostURL: hostURL, keyId: keyId,
+                          signerPublicKeyB64: signerPublicKeyB64)
+        let oldTasks = Array(tasks.values)
+        tasks.removeAll()
+        lock.unlock()
+        oldTasks.forEach { $0.cancel() }
+        return current()
+    }
+
+    /// Launch one task under the current identity. The operation must perform
+    /// its own `isCurrent` checks around every suspension; this owner supplies
+    /// cancellation on the next identity boundary.
+    @discardableResult
+    func launch(_ operation: @escaping @Sendable (Context) async -> Void) -> Task<Void, Never> {
+        lock.lock()
+        let expected = context
+        let taskId = UUID()
+        let task = Task { [weak self] in
+            await operation(expected)
+            self?.finish(taskId)
+        }
+        tasks[taskId] = task
+        lock.unlock()
+        return task
+    }
+
+    private func finish(_ taskId: UUID) {
+        lock.lock()
+        tasks.removeValue(forKey: taskId)
+        lock.unlock()
+    }
+}
+
 /// One typed refusal surfaced to the UI (D13 read-only default enforcement):
 /// `kind` is the daemon's typed error (`not_granted`, `stale_approval`,
 /// `hash_mismatch`, `choice_not_in_menu`, `step_up_required`, …).
@@ -19,19 +108,57 @@ struct DriveBanner: Equatable, Sendable {
     }
 }
 
+/// One logical drive action. The identity is stable across duplicated row
+/// surfaces (for example NEEDS YOU plus its repo section), so a double tap
+/// cannot create two signed request ids for the same operation.
+private struct DriveActionKey: Hashable, Sendable {
+    let capability: Capability
+    let target: String
+    let identity: String
+}
+
 /// App-level orchestration: identity, registration, live connection,
 /// notification hook, and the signed drive flows shared by the UI and the
 /// notification-action path.
 @MainActor
 final class AppModel: ObservableObject {
-    enum Mode: Equatable {
+    enum Mode: Equatable, Sendable {
         case needsSetup
         case live
+#if DEBUG
         case demo
+#endif
+    }
+
+    /// Captures the identity a lifecycle-sensitive async operation is
+    /// allowed to use. Generation handles explicit boundaries; the remaining
+    /// fields catch a host/key/mode replacement that happens without a
+    /// network callback returning first.
+    private struct LifecycleContext: Equatable, Sendable {
+        let generation: Int
+        let mode: Mode
+        let hostURL: URL?
+        let keyId: String?
+        let signerPublicKeyB64: String?
+    }
+
+    private struct RegistrationContext: Sendable {
+        let lifecycle: LifecycleContext
+        let sharedLifecycle: IdentityLifecycle.Context
+        let requestedHostURL: URL
+        let candidateSignerPublicKeyB64: String
+    }
+
+    private struct PersistedLiveIdentity {
+        let hostURL: URL
+        let keyId: String
+        let grants: [String]
+        let signer: DeviceSigner
+        let storage: DeviceKeyStore.Storage
     }
 
     @Published var mode: Mode = .needsSetup
-    @Published var fleet = FleetStore()
+    @Published var fleet: FleetStore
     @Published var banner: DriveBanner?
     @Published var grants: [String] = []
     @Published var keyId: String?
@@ -42,14 +169,29 @@ final class AppModel: ObservableObject {
     private var notifier: LocalNotifier?
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
-    private var driveTask: Task<Void, Never>?
-    /// In-flight notification-reply validation (cold-start snapshot fetch).
-    private var notificationTask: Task<Void, Never>?
+    /// Every live drive gets its own task handle. A mode/device boundary must
+    /// cancel all of them: retaining only the latest handle lets an earlier
+    /// Tail/Prompt/Interrupt finish against the old identity after reset.
+    private var driveTasks: [String: Task<Void, Never>] = [:]
+    @Published private var inFlightDriveKeys: Set<DriveActionKey> = []
+    private var lifecycleGeneration = 0
+    /// Notification replies, stale-agent snapshot refreshes, and grants
+    /// refreshes all suspend outside the model. Track every one so a mode or
+    /// identity boundary can cancel the complete set, not just the latest.
+    private var lifecycleTasks: [UUID: Task<Void, Never>] = [:]
+    /// Registration is also lifecycle-owned. A separate id prevents a
+    /// canceled registration's cleanup from clearing a newer registration.
+    private var registrationTaskId: UUID?
     /// Injectable for tests (URLProtocol-mocked session); `.shared` by
     /// default so production call sites are unchanged.
     private let session: URLSession
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let identityLifecycle: IdentityLifecycle
+    private let identityLoader: @Sendable () throws -> (DeviceSigner, DeviceKeyStore.Storage)
+    private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
+    private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
+    private let wipeIdentity: @Sendable () -> Void
 
     /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
     /// when the REFERENCE is reassigned — it does not forward the child's
@@ -60,56 +202,212 @@ final class AppModel: ObservableObject {
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
 
-    init(session: URLSession = .shared) {
+    var actionGrants: Set<Capability> {
+#if DEBUG
+        /// Demo mode is local and intentionally exposes the safe action set
+        /// even though no daemon grant exists. Live mode always uses the
+        /// device's signed grants.
+        if mode == .demo {
+            return [.prompt, .interrupt, .approve, .readTail]
+        }
+#endif
+        return Set(grants.compactMap(Capability.init(rawValue:)))
+    }
+
+    func isActionInFlight(agentId: String, capability: Capability?) -> Bool {
+        guard let capability else { return false }
+        return inFlightDriveKeys.contains { $0.target == agentId && $0.capability == capability }
+    }
+
+    var inFlightDriveCount: Int { inFlightDriveKeys.count }
+
+    private func lifecycleContext() -> LifecycleContext {
+        LifecycleContext(generation: lifecycleGeneration,
+                         mode: mode,
+                         hostURL: hostURL,
+                         keyId: keyId,
+                         signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
+    private func isCurrent(_ context: LifecycleContext) -> Bool {
+        lifecycleGeneration == context.generation
+            && mode == context.mode
+            && hostURL == context.hostURL
+            && keyId == context.keyId
+            && signer?.publicKeyB64 == context.signerPublicKeyB64
+    }
+
+    private func sharedMode(for mode: Mode) -> IdentityLifecycle.Mode {
+        switch mode {
+        case .needsSetup: return .needsSetup
+        case .live: return .live
+#if DEBUG
+        case .demo: return .demo
+#endif
+        }
+    }
+
+    init(session: URLSession = .shared,
+         identityLifecycle: IdentityLifecycle = .shared,
+         defaults: UserDefaults = .standard,
+         identityLoader: @escaping @Sendable () throws -> (DeviceSigner, DeviceKeyStore.Storage) = {
+             try DeviceKeyStore.loadOrCreate()
+         },
+         loadMeta: @escaping @Sendable () -> DeviceKeyStore.DeviceMeta? = {
+             DeviceKeyStore.loadMeta()
+         },
+         saveMeta: @escaping @Sendable (DeviceKeyStore.DeviceMeta) -> Void = {
+             DeviceKeyStore.saveMeta($0)
+         },
+         wipeIdentity: @escaping @Sendable () -> Void = {
+             DeviceKeyStore.wipe()
+         }) {
         self.session = session
+        self.identityLifecycle = identityLifecycle
+        self.defaults = defaults
+        self.identityLoader = identityLoader
+        self.loadMeta = loadMeta
+        self.saveMeta = saveMeta
+        self.wipeIdentity = wipeIdentity
+        self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         // Restore a previous registration so relaunch skips setup.
-        if let meta = DeviceKeyStore.loadMeta(),
-           let url = URL(string: defaults.string(forKey: "fleetnotifier.host") ?? "") {
-            if let (s, storage) = try? DeviceKeyStore.loadOrCreate() {
-                signer = s
-                keyId = meta.keyId
-                grants = meta.grants
-                hostURL = url
-                keyStorageWarning = (storage == .insecureFallback)
-                mode = .live
-            }
+        if let identity = persistedLiveIdentity() {
+            applyLiveIdentity(identity)
+        } else {
+            identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                         keyId: nil, signerPublicKeyB64: nil)
         }
+    }
+
+    /// Load only a complete, internally consistent persisted identity. The
+    /// host is stored in both metadata and the convenience default; requiring
+    /// them to agree prevents a stale host from being paired with the current
+    /// key after a partial reset or interrupted registration.
+    private func persistedLiveIdentity() -> PersistedLiveIdentity? {
+        guard let meta = loadMeta(), !meta.keyId.isEmpty,
+              let configuredHost = defaults.string(forKey: "fleetnotifier.host"),
+              configuredHost == meta.host,
+              let url = URL(string: meta.host),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              url.host != nil,
+              let (signer, storage) = try? identityLoader() else {
+            return nil
+        }
+        return PersistedLiveIdentity(hostURL: url, keyId: meta.keyId,
+                                     grants: meta.grants, signer: signer,
+                                     storage: storage)
+    }
+
+    private func applyLiveIdentity(_ identity: PersistedLiveIdentity) {
+        signer = identity.signer
+        keyId = identity.keyId
+        grants = identity.grants
+        hostURL = identity.hostURL
+        keyStorageWarning = (identity.storage == .insecureFallback)
+        mode = .live
+        identityLifecycle.setCurrent(mode: .live, hostURL: identity.hostURL,
+                                     keyId: identity.keyId,
+                                     signerPublicKeyB64: identity.signer.publicKeyB64)
     }
 
     // MARK: - Registration (R1)
 
     func register(host: String, token: String) async {
+        guard registrationTaskId == nil else {
+            banner = .info("Registration is already in progress.")
+            return
+        }
         guard let url = URL(string: host.hasPrefix("http") ? host : "http://\(host)") else {
             banner = .error("bad_host", "Host must be an http(s) URL or host:port")
             return
         }
+        cancelLifecycleTasks()
+        let baseContext = lifecycleContext()
+        identityLifecycle.setCurrent(mode: .registering,
+                                     hostURL: baseContext.hostURL,
+                                     keyId: baseContext.keyId,
+                                     signerPublicKeyB64: baseContext.signerPublicKeyB64)
+        let sharedRegistrationContext = identityLifecycle.current()
         do {
-            let (signer, storage) = try DeviceKeyStore.loadOrCreate()
-            self.signer = signer
-            keyStorageWarning = (storage == .insecureFallback)
-            let client = DriveClient(host: url, session: session)
-            let response = try await client.register(token: token, signer: signer)
-            keyId = response.keyId
-            grants = response.grants
-            hostURL = url
-            DeviceKeyStore.saveMeta(DeviceKeyStore.DeviceMeta(keyId: response.keyId, host: url.absoluteString,
-                                                              grants: response.grants, expiryTs: response.expiryTs,
-                                                              registeredAt: UInt64(Date().timeIntervalSince1970)))
-            defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
-            fleet.restoreCursor()
-            mode = .live
-            // #79 defect 1: registration used to leave .live with NO
-            // stream — the only startLive() call sites were the .active
-            // scene transition (already fired) and the demo toggle.
-            // connect() is idempotent (streamTask guard), so a
-            // scene-driven connect cannot double-stream; startLive()'s
-            // notification half is guarded once-per-process (review F4).
-            startLive()
-            banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
+            let (candidateSigner, storage) = try identityLoader()
+            guard isCurrent(baseContext), identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+            let registrationContext = RegistrationContext(
+                lifecycle: baseContext, sharedLifecycle: sharedRegistrationContext,
+                requestedHostURL: url,
+                candidateSignerPublicKeyB64: candidateSigner.publicKeyB64)
+            let taskId = UUID()
+            registrationTaskId = taskId
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer {
+                    self.lifecycleTasks.removeValue(forKey: taskId)
+                    if self.registrationTaskId == taskId {
+                        self.registrationTaskId = nil
+                    }
+                }
+                guard self.isCurrent(registrationContext.lifecycle),
+                      self.identityLifecycle.isCurrent(registrationContext.sharedLifecycle),
+                      candidateSigner.publicKeyB64 == registrationContext.candidateSignerPublicKeyB64,
+                      !Task.isCancelled else { return }
+                do {
+                    let client = DriveClient(host: registrationContext.requestedHostURL,
+                                             session: self.session)
+                    let response = try await client.register(token: token, signer: candidateSigner)
+                    // A late /register response must not resurrect a reset or
+                    // demo identity, write metadata, or start the live stream.
+                    guard !Task.isCancelled,
+                          self.isCurrent(registrationContext.lifecycle),
+                          self.identityLifecycle.isCurrent(registrationContext.sharedLifecycle),
+                          candidateSigner.publicKeyB64 == registrationContext.candidateSignerPublicKeyB64 else { return }
+                    self.signer = candidateSigner
+                    self.keyStorageWarning = (storage == .insecureFallback)
+                    self.keyId = response.keyId
+                    self.grants = response.grants
+                    self.hostURL = registrationContext.requestedHostURL
+                    self.saveMeta(DeviceKeyStore.DeviceMeta(
+                        keyId: response.keyId, host: registrationContext.requestedHostURL.absoluteString,
+                        grants: response.grants, expiryTs: response.expiryTs,
+                        registeredAt: UInt64(Date().timeIntervalSince1970)))
+                    self.defaults.set(registrationContext.requestedHostURL.absoluteString, forKey: "fleetnotifier.host")
+                    self.fleet.restoreCursor()
+                    self.mode = .live
+                    self.identityLifecycle.setCurrent(
+                        mode: .live, hostURL: registrationContext.requestedHostURL,
+                        keyId: response.keyId,
+                        signerPublicKeyB64: candidateSigner.publicKeyB64)
+                    // #79 defect 1: registration used to leave .live with NO
+                    // stream — the only startLive() call sites were the
+                    // .active scene transition (already fired) and the demo
+                    // toggle. connect() is idempotent, and notification setup
+                    // is guarded once per process.
+                    self.startLive()
+                    self.banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard !Task.isCancelled,
+                          self.isCurrent(registrationContext.lifecycle),
+                          self.identityLifecycle.isCurrent(registrationContext.sharedLifecycle) else { return }
+                    self.identityLifecycle.setCurrent(
+                        mode: self.sharedMode(for: baseContext.mode),
+                        hostURL: baseContext.hostURL, keyId: baseContext.keyId,
+                        signerPublicKeyB64: baseContext.signerPublicKeyB64)
+                    self.banner = .error("register_failed", error.localizedDescription)
+                }
+            }
+            lifecycleTasks[taskId] = task
+            await task.value
         } catch {
+            guard !Task.isCancelled, isCurrent(baseContext),
+                  identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+            identityLifecycle.setCurrent(mode: sharedMode(for: baseContext.mode),
+                                         hostURL: baseContext.hostURL,
+                                         keyId: baseContext.keyId,
+                                         signerPublicKeyB64: baseContext.signerPublicKeyB64)
             banner = .error("register_failed", error.localizedDescription)
         }
     }
@@ -125,40 +423,51 @@ final class AppModel: ObservableObject {
     /// cleared by a network error.
     @MainActor
     func refreshGrants() async {
-        guard let hostURL, let signer, let keyId else {
+        let context = lifecycleContext()
+        guard context.mode == .live,
+              let hostURL = context.hostURL,
+              let signer = self.signer,
+              let keyId = context.keyId else {
             return
         }
-        let client = DriveClient(host: hostURL, session: session)
-        let currentKeyId = keyId
-        do {
-            let response = try await client.fetchGrants(keyId: currentKeyId, signer: signer)
-            // The device may have been reset / re-registered while the
-            // read was in flight — never apply another key's grants.
-            guard self.keyId == currentKeyId else { return }
-            grants = response.grants
-            if let meta = DeviceKeyStore.loadMeta() {
-                DeviceKeyStore.saveMeta(DeviceKeyStore.DeviceMeta(
-                    keyId: meta.keyId,
-                    host: meta.host,
-                    grants: response.grants,
-                    expiryTs: response.expiryTs,
-                    registeredAt: meta.registeredAt))
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard self.isCurrent(context) else { return }
+            let client = DriveClient(host: hostURL, session: self.session)
+            do {
+                let response = try await client.fetchGrants(keyId: keyId, signer: signer)
+                // The device may have been reset / re-registered while the
+                // read was in flight — never apply another key's grants.
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                self.grants = response.grants
+                if let meta = self.loadMeta() {
+                    self.saveMeta(DeviceKeyStore.DeviceMeta(
+                        keyId: meta.keyId,
+                        host: meta.host,
+                        grants: response.grants,
+                        expiryTs: response.expiryTs,
+                        registeredAt: meta.registeredAt))
+                }
+            } catch {
+                // Silent by design: stale cached grants beat a broken board.
             }
-        } catch {
-            // Silent by design: stale cached grants beat a broken board.
         }
+        lifecycleTasks[taskId] = task
+        await task.value
     }
 
     // MARK: - Live connection
 
     func startLive() {
         guard let hostURL else { return }
-        let client = CorraldClient(host: hostURL)
+        let client = CorraldClient(host: hostURL, session: session)
         fleet.onNewlyBlocked = { [weak self] agentId in
-            Task { @MainActor in self?.notifyBlocked(agentId: agentId) }
+            self?.notifyBlocked(agentId: agentId)
         }
         fleet.onNewlyDone = { [weak self] agentId in
-            Task { @MainActor in self?.notifyDone(agentId: agentId) }
+            self?.notifyDone(agentId: agentId)
         }
         // #79 review F2: a decode failure lands in the full-width,
         // dismissible, text-selectable banner — readable/copyable on
@@ -183,6 +492,11 @@ final class AppModel: ObservableObject {
             }
         }
         fleet.connect(client: client)
+        // APNs upload/retry is independent from one-time local notification
+        // setup. A token callback can arrive during demo; retry it now that
+        // the shared lifecycle is live, even when notificationsConfigured is
+        // already true.
+        AppDelegate.shared?.retryPendingDeviceTokenUpload()
         // #79 review F4: only connect() is idempotent by itself (its
         // streamTask guard). The notification/APNs setup below is NOT —
         // re-running it allocates a fresh LocalNotifier (dropping the
@@ -193,7 +507,10 @@ final class AppModel: ObservableObject {
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
         notifier = LocalNotifier()
-        Task { await notifier?.requestAuthorization() }
+        // This OS permission request captures no host, key, fleet, or mode;
+        // it cannot apply stale lifecycle state after a boundary.
+        let notifierForAuthorization = notifier
+        Task { await notifierForAuthorization?.requestAuthorization() }
         notifier?.registerCategories()
         // R-N1: the reply handler must NOT capture a host-bound client —
         // after "Reset device identity" + re-registration this closure
@@ -206,6 +523,8 @@ final class AppModel: ObservableObject {
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
         // bridge (PushBridge) stays active.
+        // APNs registration is likewise an OS side effect with no captured
+        // model identity or state mutation to re-apply after a boundary.
         Task { @MainActor in
             UIApplication.shared.registerForRemoteNotifications()
         }
@@ -242,16 +561,24 @@ final class AppModel: ObservableObject {
     /// here — the row is rendered from the live agent record. (The lock
     /// screen uses [`handleNotificationReply`], which binds to the
     /// notification's OWN prompt_hash instead.)
-    func handleCannedAction(agentId: String, action: CannedChoice.Action, driveClient: DriveClient) {
+    func handleCannedAction(agentId: String, action: CannedChoice.Action,
+                            driveClient: DriveClient,
+                            expectedPromptHash: String? = nil) {
         guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else {
             banner = .error("no_waiting_approval", "The agent is no longer waiting; the claim is stale.")
+            return
+        }
+        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
             return
         }
         guard let choice = CannedChoice.choice(for: action, kind: waiting.kind, choices: waiting.choices) else {
             banner = .error("cannot_approve_kind", "This waiting state cannot be answered with \(action.rawValue).")
             return
         }
-        driveApprove(agent: agent, choice: choice, driveClient: driveClient)
+        driveApprove(agent: agent, choice: choice, driveClient: driveClient,
+                     expectedPromptHash: waiting.promptHash)
     }
 
     /// The lock-screen reply path: bound to the notification's OWN
@@ -262,15 +589,21 @@ final class AppModel: ObservableObject {
     /// `hash_mismatch`). Simple approve/deny/continue replies never carry
     /// free text, so the lock-screen surface cannot trip the destructive
     /// step-up gate; destructive drives happen in-app where Face ID runs.
-    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action) {
+    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
+                                 driveClient injectedDriveClient: DriveClient? = nil) {
+        let context = lifecycleContext()
+        guard context.mode == .live else { return }
+        let taskId = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
             // R-N1: bind to the CURRENT host at reply time — never a
             // client captured at startLive() time (it can be stale after
             // a device reset + re-registration).
-            guard let hostURL = self.hostURL else { return }
-            let driveClient = DriveClient(host: hostURL)
-            let live = await self.resolveLiveAgent(payload: payload)
+            guard self.isCurrent(context), let hostURL = context.hostURL else { return }
+            let driveClient = injectedDriveClient ?? DriveClient(host: hostURL)
+            let live = await self.resolveLiveAgent(payload: payload, context: context)
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
             case .failure(.stale):
                 self.banner = .error("stale_approval",
@@ -288,17 +621,20 @@ final class AppModel: ObservableObject {
                 self.driveApproveClaim(payload: payload, choice: choice, driveClient: driveClient)
             }
         }
-        notificationTask = task
+        lifecycleTasks[taskId] = task
     }
 
     /// Cold-start case: the app may have been killed before the action
     /// tap, so the fleet store is empty — fetch the live snapshot once and
     /// re-validate against it.
-    private func resolveLiveAgent(payload: PushPayload) async -> Agent? {
+    private func resolveLiveAgent(payload: PushPayload,
+                                  context: LifecycleContext) async -> Agent? {
+        guard isCurrent(context) else { return nil }
         if let agent = fleet.agent(payload.agentId) { return agent }
-        guard let hostURL else { return nil }
-        let client = CorraldClient(host: hostURL)
+        guard let hostURL = context.hostURL else { return nil }
+        let client = CorraldClient(host: hostURL, session: session)
         guard let snapshot = try? await client.fetchSnapshot() else { return nil }
+        guard !Task.isCancelled, isCurrent(context) else { return nil }
         fleet.apply(.snapshot(snapshot))
         return fleet.agent(payload.agentId)
     }
@@ -319,85 +655,220 @@ final class AppModel: ObservableObject {
             banner = .error("bad_payload", "Notification carried no prompt_hash.")
             return
         }
+        guard let live = currentAgent(for: payload.agentId),
+              let waiting = live.waitingOn,
+              live.isBlocked,
+              waiting.promptHash == promptHash else {
+            banner = .error("stale_approval",
+                             "This notification is stale: the agent is no longer waiting on that prompt.")
+            return
+        }
+        guard authorize(.approve, for: live) else { return }
         let approvalId = payload.approvalId ?? Claim.approvalId(agentId: payload.agentId,
                                                                 promptHash: promptHash)
         let approvePayload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                           promptHash: promptHash,
                                                           choice: choice)
+        let key = approvalActionKey(agentId: payload.agentId, approvalId: approvalId,
+                                   promptHash: promptHash)
+        guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: payload.agentId, payload: approvePayload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     // MARK: - Drive flows (D8 claims, byte-for-byte from the snapshot)
 
     /// The approval claim is echoed EXACTLY from the snapshot's `waiting_on`
     /// (approval_id + prompt_hash); never re-derived from pane text.
-    func driveApprove(agent: Agent, choice: String, driveClient: DriveClient) {
+    func driveApprove(agent: Agent, choice: String, driveClient: DriveClient,
+                      expectedPromptHash: String? = nil) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
-        guard let waiting = agent.waitingOn else {
+        guard live.isBlocked, let waiting = live.waitingOn else {
             banner = .error("no_waiting_approval", "Agent is not waiting on an approval.")
             return
         }
+        if waiting.kind == .crash {
+            banner = .error("cannot_approve_kind", "Crash states do not accept approval replies.")
+            return
+        }
+        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
+            return
+        }
+        if let renderedWaiting = agent.waitingOn,
+           renderedWaiting.promptHash != waiting.promptHash {
+            banner = .error("stale_approval",
+                             "This approval is stale: the agent is now waiting on a different prompt.")
+            return
+        }
+        guard authorize(.approve, for: live) else { return }
         let approvalId = waiting.approvalId ?? Claim.approvalId(agentId: agent.agentId, promptHash: waiting.promptHash)
         let payload = CanonicalJSON.approvePayload(approvalId: approvalId,
                                                    promptHash: waiting.promptHash,
                                                    choice: choice)
+        let key = approvalActionKey(agentId: live.agentId, approvalId: approvalId,
+                                   promptHash: waiting.promptHash)
+        guard let requestId = beginDriveAction(key) else { return }
         drive(capability: .approve, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     /// `read_tail` is bounded (D5): 200 lines, never prefetched.
     func driveReadTail(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
+        guard authorize(.readTail, for: live) else { return }
         let payload = CanonicalJSON.readTailPayload(lines: 200)
-        drive(capability: .readTail, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+        let key = DriveActionKey(capability: .readTail, target: live.agentId, identity: "tail-200")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .readTail, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
     func drivePrompt(agent: Agent, text: String, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
             return
         }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            banner = .error("empty_prompt", "Prompt text cannot be empty.")
+            return
+        }
+        guard authorize(.prompt, for: live) else { return }
         let payload = CanonicalJSON.promptPayload(text: text)
-        drive(capability: .prompt, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer)
+        let key = DriveActionKey(capability: .prompt, target: live.agentId, identity: text)
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .prompt, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
     }
 
-    // NOTE: `driveCommand` (the interrupt/kill wrapper) was removed with the
-    // D30 board rework — row actions are Approve/Deny/Prompt/Tail only, and
-    // kill-on-phone is D29-cut. `DriveClient.drive` still supports every
-    // capability for any future, non-row surface.
+    /// Interrupt takes the contract's null payload and is grant/capability
+    /// gated at the same boundary as Tail, Prompt, and Approval.
+    func driveInterrupt(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.interrupt, for: live) else { return }
+        let payload = CanonicalJSON.interruptPayload()
+        let key = DriveActionKey(capability: .interrupt, target: live.agentId,
+                                 identity: "interrupt")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .interrupt, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
+    }
+
+    /// Resolve an action's target from the current read model. A detail view
+    /// may outlive a delta deletion; in that case no signed bytes are built.
+    private func currentAgent(for agentId: String) -> Agent? {
+        guard let agent = fleet.agent(agentId) else {
+            banner = .error("stale_agent", "This agent was deleted or migrated; refresh the fleet before acting.")
+            return nil
+        }
+        return agent
+    }
+
+    /// Both sides of the drive authorization contract must hold locally for
+    /// an actionable control. The daemon remains authoritative and can still
+    /// return a typed refusal, which the common drive path surfaces.
+    private func authorize(_ capability: Capability, for agent: Agent) -> Bool {
+        guard agent.capabilities.contains(capability.rawValue) else {
+            banner = .error("capability_unavailable",
+                            "This agent does not advertise the `\(capability.rawValue)` capability.")
+            return false
+        }
+        guard actionGrants.contains(capability) else {
+            banner = .error("not_granted",
+                            "The device has no `\(capability.rawValue)` grant — ask the host to promote capabilities.")
+            return false
+        }
+        return true
+    }
+
+    private func beginDriveAction(_ key: DriveActionKey) -> String? {
+        guard !inFlightDriveKeys.contains(key) else {
+            banner = .info("\(key.capability.displayName) for \(key.target) is already in progress.")
+            return nil
+        }
+        inFlightDriveKeys.insert(key)
+        return DriveClient.newRequestId()
+    }
+
+    /// Approval identity is the live claim, not the selected choice. Approve
+    /// and Deny must share one in-flight key so two surfaces cannot answer the
+    /// same claim concurrently with different choices.
+    private func approvalActionKey(agentId: String, approvalId: String,
+                                   promptHash: String) -> DriveActionKey {
+        DriveActionKey(capability: .approve, target: agentId,
+                        identity: "\(approvalId)|\(promptHash)")
+    }
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
-                       driveClient: DriveClient, keyId: String, signer: DeviceSigner) {
-        driveTask?.cancel()
-        driveTask = Task { [weak self] in
+                       driveClient: DriveClient, keyId: String, signer: DeviceSigner,
+                       actionKey: DriveActionKey, requestId: String) {
+        let context = lifecycleContext()
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                if self.lifecycleGeneration == context.generation {
+                    self.inFlightDriveKeys.remove(actionKey)
+                    self.driveTasks.removeValue(forKey: requestId)
+                }
+            }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
             let result = await driveClient.drive(capability: capability, target: target,
                                                  payload: payload, rev: self.fleet.lastEventId,
+                                                 requestId: requestId,
                                                  keyId: keyId, signer: signer)
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch result {
             case .dispatched(let response):
                 if response.ok {
-                    if capability == .approve {
+                    if capability == .readTail {
+                        let lines = response.result?.tailLines ?? []
+                        self.fleet.rememberTail(lines, for: target)
+                        self.banner = .info("Tail \(target): \(lines.count) lines")
+                    } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
+                    } else if capability == .prompt {
+                        self.banner = .info("Prompt sent to \(target): rev \(response.rev)")
+                    } else if capability == .interrupt {
+                        self.banner = .info("Interrupted \(target): rev \(response.rev)")
                     }
                 } else {
-                    self.banner = .error("dispatch_refused",
-                                         response.error ?? "dispatch refused (ok:false)")
+                    if response.errorKind == "stale_agent" {
+                        self.handleStaleAgent(target,
+                                              message: response.error ?? "the agent moved or disappeared")
+                    } else {
+                        self.banner = .error("dispatch_refused",
+                                             response.error ?? "dispatch refused (ok:false)")
+                    }
                 }
             case .refused(let error):
                 switch error {
                 case .server(let status, let kind, let message, _):
+                    if kind == "stale_agent" {
+                        self.handleStaleAgent(target, message: message)
+                        return
+                    }
                     // Read-only default: ungranted capabilities are refused
-                    // with the typed banner; the UI also hides the buttons.
+                    // with the typed banner; the UI also explains disabled
+                    // controls before this path is reachable.
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
                 case .network(let message):
                     self.banner = .error("network", message)
@@ -406,17 +877,93 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        driveTasks[requestId] = task
     }
 
-    // MARK: - Demo mode (App Review 4.2)
+    /// Invalidate the current identity before cancelling handles. Results from
+    /// cancellation races then fail the generation check even if URLSession
+    /// delivers one final callback on another queue.
+    private func cancelLifecycleTasks() {
+        lifecycleGeneration &+= 1
+        for task in driveTasks.values {
+            task.cancel()
+        }
+        for task in lifecycleTasks.values {
+            task.cancel()
+        }
+        driveTasks.removeAll()
+        lifecycleTasks.removeAll()
+        registrationTaskId = nil
+        inFlightDriveKeys.removeAll()
+        // Do not leave the shared delegate context live while reset/demo is
+        // still clearing the model. A callback arriving on another queue must
+        // be refused during this transition; register() immediately replaces
+        // this with its pre-registration context.
+        identityLifecycle.invalidate(mode: .registering, hostURL: nil,
+                                    keyId: nil, signerPublicKeyB64: nil)
+    }
+
+    /// Stale target handling is deliberately shared by the HTTP 409 path and
+    /// the narrow 200 dispatch-race path: remove controls immediately, then
+    /// fetch the current read model once.
+    private func handleStaleAgent(_ target: String, message: String) {
+        fleet.removeAgent(target)
+        banner = .error("stale_agent", "\(message) — refreshing the fleet.")
+        let context = lifecycleContext()
+        guard context.mode == .live, let hostURL = context.hostURL else { return }
+        let client = CorraldClient(host: hostURL, session: session)
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard self.isCurrent(context) else { return }
+            guard let snapshot = try? await client.fetchSnapshot() else { return }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            self.fleet.apply(.snapshot(snapshot))
+        }
+        lifecycleTasks[taskId] = task
+    }
+
+#if DEBUG
+    // MARK: - Demo mode (Debug only)
 
     func enterDemo() {
-        driveTask?.cancel()
-        notificationTask?.cancel()
+        cancelLifecycleTasks()
         fleet.disconnect()
         fleet.reset()
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
         mode = .demo
+        identityLifecycle.setCurrent(mode: .demo, hostURL: hostURL,
+                                    keyId: keyId,
+                                    signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
+    /// Leave demo through the same identity boundary as reset/registration.
+    /// Demo rows and their cursor are discarded before a live identity is
+    /// restored, so the next connection must receive a fresh snapshot.
+    func exitDemo() {
+        guard mode == .demo else { return }
+        cancelLifecycleTasks()
+        fleet.reset()
+
+        guard let identity = persistedLiveIdentity() else {
+            signer = nil
+            keyId = nil
+            grants = []
+            hostURL = nil
+            keyStorageWarning = false
+            notificationsConfigured = false
+            mode = .needsSetup
+            identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                         keyId: nil, signerPublicKeyB64: nil)
+            return
+        }
+
+        // This is synchronous on the main actor: local fields and the shared
+        // delegate context are updated as one transition before startLive()
+        // can create any new live work.
+        applyLiveIdentity(identity)
+        startLive()
     }
 
     /// Demo drive: answered locally; approve un-blocks the seeded agent.
@@ -440,6 +987,9 @@ final class AppModel: ObservableObject {
                                        rev: (fleet.lastEventId ?? 1) + 1)
         if case .dispatched(let response) = result {
             fleet.seedDemo(agents: fleet.agents, rev: response.rev)
+            if capability == .readTail {
+                fleet.rememberTail(response.result?.tailLines ?? [], for: agent.agentId)
+            }
             if capability == .approve, agent.isBlocked {
                 simulateUnblock(agentId: agent.agentId)
             }
@@ -457,11 +1007,15 @@ final class AppModel: ObservableObject {
         fleet.upsertDemo(agent)
     }
 
+#endif
+
     // MARK: - Identity management
 
     func resetDevice() {
+        cancelLifecycleTasks()
+        AppDelegate.shared?.clearRetainedDeviceToken()
         stopLive()
-        DeviceKeyStore.wipe()
+        wipeIdentity()
         defaults.removeObject(forKey: "fleetnotifier.host")
         fleet.reset()
         signer = nil
@@ -473,6 +1027,8 @@ final class AppModel: ObservableObject {
         // token reaches the new daemon and the reply path re-arms.
         notificationsConfigured = false
         mode = .needsSetup
+        identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                    keyId: nil, signerPublicKeyB64: nil)
     }
 }
 

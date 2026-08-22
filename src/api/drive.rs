@@ -22,9 +22,9 @@
 //!    caller ever dispatches for a given id, even under concurrent
 //!    duplicates (the loser gets `409 in_flight` and can retry for the
 //!    stored response). Replays return the first response byte-identical.
-//! 5. Dispatch via [`Adapter::drive`] (fire-and-forget). The adapter
-//!    resolves the canonical `agent_id` to its own transport target — the
-//!    daemon never sends keys by coordinates (D8), and W1 never sees pane
+//! 5. Dispatch via [`Adapter::drive`] and await the source outcome. The
+//!    adapter resolves the canonical `agent_id` to its own transport target —
+//!    the daemon never sends keys by coordinates (D8), and W1 never sees pane
 //!    ids. Exception: `read_tail` routes through
 //!    [`Adapter::read_tail`], which returns the redacted, bounded tail so
 //!    the response can carry `result.lines` (the one capability whose whole
@@ -50,13 +50,14 @@
 //! - `409 in_flight` — same request_id currently being dispatched.
 //!
 //! Everything that reaches dispatch returns `200` with the contract's
-//! [`DriveResponse`]; dispatch-level refusals (unknown agent, command not
-//! implemented, transport failure) are `ok: false` with a typed `error` in
-//! that same body. Storing and replaying the exact body keeps idempotent
-//! retries byte-identical.
+//! [`DriveResponse`]; dispatch-level refusals (unknown agent, stale agent,
+//! command not implemented, transport failure) are `ok: false` with a
+//! human-readable `error` plus stable `error_kind` in that same body.
+//! Storing and replaying the exact body keeps idempotent retries byte-identical.
 
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,6 +72,7 @@ use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
+use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
@@ -93,8 +95,12 @@ impl Adapter for NoopAdapter {
 
     fn start(self: Arc<Self>, _store: Store) {}
 
-    fn drive(&self, _agent_id: &str, _command: DriveCommand) -> Result<(), DriveError> {
-        Err(DriveError::NotImplemented("noop adapter"))
+    fn drive<'a>(
+        &'a self,
+        _agent_id: &'a str,
+        _command: DriveCommand,
+    ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+        Box::pin(async { Err(DriveError::NotImplemented("noop adapter")) })
     }
 
     fn knows_agent(&self, _agent_id: &str) -> bool {
@@ -177,6 +183,23 @@ impl ReplayTable {
                 Claim::Claimed
             }
         }
+    }
+
+    /// Return a completed response without claiming a new dispatch. This
+    /// lookup deliberately happens before live-target validation: a retry of
+    /// a request that already completed must remain byte-identical even if
+    /// the agent disappeared after the original dispatch.
+    fn completed(&self, request_id: &str) -> Option<DriveResponse> {
+        let mut inner = self.inner.lock().expect("replay table poisoned");
+        inner.evict_stale_claims();
+        let response = match inner.entries.get(request_id) {
+            Some(Entry::Done(response)) => Some(response.clone()),
+            Some(Entry::Claimed { .. }) | None => None,
+        };
+        if response.is_some() {
+            inner.touch(request_id);
+        }
+        response
     }
 
     fn complete(&self, request_id: &str, response: DriveResponse) {
@@ -366,6 +389,13 @@ pub enum DriveApiError {
         agent_id: String,
         request_id: Option<String>,
     },
+    /// The target was present when the client selected it but disappeared or
+    /// migrated before dispatch. This is a refreshable conflict, not a
+    /// generic not-found or transport error.
+    StaleAgent {
+        agent_id: String,
+        request_id: Option<String>,
+    },
     InFlight {
         request_id: String,
     },
@@ -455,6 +485,15 @@ impl IntoResponse for DriveApiError {
                 format!("unknown agent: {agent_id}"),
                 request_id,
             ),
+            Self::StaleAgent {
+                agent_id,
+                request_id,
+            } => (
+                StatusCode::CONFLICT,
+                "stale_agent",
+                format!("stale agent: {agent_id}; refresh the fleet snapshot"),
+                request_id,
+            ),
             Self::InFlight { request_id } => (
                 StatusCode::CONFLICT,
                 "in_flight",
@@ -472,6 +511,75 @@ impl IntoResponse for DriveApiError {
         )
             .into_response()
     }
+}
+
+/// Classify the result of each approval store read at the moment it returns.
+/// The initial stale check is only a fast path; a target can disappear while
+/// the async store lookup is in flight, in which case the adapter tombstone
+/// must upgrade `None` from a generic 404 to a refreshable 409.
+fn classify_approval_lookup(
+    adapter: &dyn Adapter,
+    agent_id: &str,
+    request_id: &str,
+    agent: Option<Agent>,
+) -> Result<Agent, DriveApiError> {
+    match agent {
+        Some(agent) => Ok(agent),
+        None if adapter.is_stale_agent(agent_id) => Err(DriveApiError::StaleAgent {
+            agent_id: agent_id.to_string(),
+            request_id: Some(request_id.to_string()),
+        }),
+        None => Err(DriveApiError::UnknownAgent {
+            agent_id: agent_id.to_string(),
+            request_id: Some(request_id.to_string()),
+        }),
+    }
+}
+
+async fn validated_approval_command<F, Fut>(
+    adapter: &dyn Adapter,
+    mut get_agent: F,
+    agent_id: &str,
+    request_id: &str,
+    approval_id: &str,
+    prompt_hash: &str,
+    choice: &str,
+) -> Result<DriveCommand, DriveApiError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<Agent>>,
+{
+    let agent = classify_approval_lookup(adapter, agent_id, request_id, get_agent().await)?;
+    check_approval_claim(
+        agent_id,
+        agent.waiting_on.as_ref(),
+        approval_id,
+        prompt_hash,
+        choice,
+    )
+    .map_err(|error| DriveApiError::Approval {
+        error,
+        request_id: Some(request_id.to_string()),
+    })?;
+
+    // Re-read immediately before dispatch. Crucially, this read uses the same
+    // tombstone-aware classification as the first read, so disappearance in
+    // either async store window is a refreshable stale conflict.
+    let agent = classify_approval_lookup(adapter, agent_id, request_id, get_agent().await)?;
+    let approved = check_approval_claim(
+        agent_id,
+        agent.waiting_on.as_ref(),
+        approval_id,
+        prompt_hash,
+        choice,
+    )
+    .map_err(|error| DriveApiError::Approval {
+        error,
+        request_id: Some(request_id.to_string()),
+    })?;
+    Ok(DriveCommand::Approve {
+        choice: approved.choice,
+    })
 }
 
 pub async fn drive(
@@ -565,66 +673,57 @@ pub async fn drive(
         }
     })?;
 
+    // A completed request is an immutable response, even if its target has
+    // disappeared since the original dispatch. Peek before any current
+    // store/tombstone validation so retries remain byte-identical.
+    let agent_id = authorized.envelope.target.clone();
+    if let Some(response) = state.replay.completed(&authorized.envelope.request_id) {
+        return Ok(Json(response));
+    }
+
+    // A tombstone must win before approve claim validation: the store may
+    // already have removed the blocked row, but the adapter still knows this
+    // was a real target and can give the client a refreshable 409.
+    if state.adapter.is_stale_agent(&agent_id) {
+        return Err(DriveApiError::StaleAgent {
+            agent_id: agent_id.clone(),
+            request_id: Some(authorized.envelope.request_id.clone()),
+        });
+    }
+
     // Claim check (W2, D8): the approve reply is validated against the
-    // agent's CURRENT waiting approval BEFORE the replay claim, so a stale
+    // agent's CURRENT waiting approval BEFORE a new replay claim, so a stale
     // hash / stale approval can never occupy the id's slot or dispatch.
     // Refusals here are client errors: no replay entry, no audit entry.
-    let agent_id = authorized.envelope.target.clone();
-    let command =
-        match pending {
-            PendingCommand::Command(command) => command,
-            PendingCommand::Approve {
-                approval_id,
-                prompt_hash,
-                choice,
-            } => {
-                // First check: pre-claim validation (the refusal must not occupy
-                // the replay slot).
-                let agent = state.store.get(&agent_id).await.ok_or_else(|| {
-                    DriveApiError::UnknownAgent {
-                        agent_id: agent_id.clone(),
-                        request_id: Some(authorized.envelope.request_id.clone()),
-                    }
-                })?;
-                check_approval_claim(
-                    &agent_id,
-                    agent.waiting_on.as_ref(),
-                    &approval_id,
-                    &prompt_hash,
-                    &choice,
-                )
-                .map_err(|error| DriveApiError::Approval {
-                    error,
-                    request_id: Some(authorized.envelope.request_id.clone()),
-                })?;
-                // F3 mitigation (W2 review): re-read immediately before dispatch
-                // shrinks the TOCTOU window to the RPC duration. The residual
-                // (the agent moved on between re-read and RPC completion) is
-                // inherent to the async adapter and documented in src/approve.
-                let agent = state.store.get(&agent_id).await.ok_or_else(|| {
-                    DriveApiError::UnknownAgent {
-                        agent_id: agent_id.clone(),
-                        request_id: Some(authorized.envelope.request_id.clone()),
-                    }
-                })?;
-                let approved = check_approval_claim(
-                    &agent_id,
-                    agent.waiting_on.as_ref(),
-                    &approval_id,
-                    &prompt_hash,
-                    &choice,
-                )
-                .map_err(|error| DriveApiError::Approval {
-                    error,
-                    request_id: Some(authorized.envelope.request_id.clone()),
-                })?;
-                // Dispatch the VALIDATED choice, never the raw payload — menu
-                // membership must hold.
-                DriveCommand::Approve {
-                    choice: approved.choice,
-                }
-            }
-        };
+    let command = match pending {
+        PendingCommand::Command(command) => command,
+        PendingCommand::Approve {
+            approval_id,
+            prompt_hash,
+            choice,
+        } => {
+            let store = state.store.clone();
+            validated_approval_command(
+                state.adapter.as_ref(),
+                || store.get(&agent_id),
+                &agent_id,
+                &authorized.envelope.request_id,
+                &approval_id,
+                &prompt_hash,
+                &choice,
+            )
+            .await?
+        }
+    };
+
+    // Re-check immediately before claiming replay state to cover a target
+    // that disappeared while an approve claim was being validated.
+    if state.adapter.is_stale_agent(&agent_id) {
+        return Err(DriveApiError::StaleAgent {
+            agent_id,
+            request_id: Some(authorized.envelope.request_id.clone()),
+        });
+    }
 
     match state.replay.claim(&authorized.envelope.request_id) {
         Claim::Done(response) => return Ok(Json(response)),
@@ -636,16 +735,17 @@ pub async fn drive(
         Claim::Claimed => {}
     }
 
-    let (ok, error, outcome, result) = match command {
+    let (ok, error, error_kind, outcome, result) = match command {
         // read_tail is the one capability whose whole point is a response:
         // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
-        // carry it back in `result.lines` — the drive() fire-and-forget path
-        // never sees it.
+        // carry it back in `result.lines`; other drive commands await their
+        // source RPC through the same outcome-bearing adapter future.
         DriveCommand::ReadTail { lines } => {
             let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
             match state.adapter.read_tail(&agent_id, requested).await {
                 Ok(lines) => (
                     true,
+                    None,
                     None,
                     AuditOutcome::Executed,
                     Some(serde_json::json!({ "lines": lines })),
@@ -653,8 +753,8 @@ pub async fn drive(
                 Err(e) => drive_refusal(e),
             }
         }
-        other => match state.adapter.drive(&agent_id, other) {
-            Ok(()) => (true, None, AuditOutcome::Executed, None),
+        other => match state.adapter.drive(&agent_id, other).await {
+            Ok(()) => (true, None, None, AuditOutcome::Executed, None),
             Err(e) => drive_refusal(e),
         },
     };
@@ -666,6 +766,7 @@ pub async fn drive(
         request_id: authorized.envelope.request_id.clone(),
         ok,
         error,
+        error_kind,
         rev,
         result,
     };
@@ -683,17 +784,19 @@ fn drive_refusal(
 ) -> (
     bool,
     Option<String>,
+    Option<String>,
     AuditOutcome,
     Option<serde_json::Value>,
 ) {
     let text = e.to_string();
+    let error_kind = Some(e.wire_kind().to_string());
     let outcome = match &e {
         DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),
-        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) => {
+        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) | DriveError::StaleAgent(_) => {
             AuditOutcome::Refused(text.clone())
         }
     };
-    (false, Some(text), outcome, None)
+    (false, Some(text), error_kind, outcome, None)
 }
 
 fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {
@@ -719,6 +822,33 @@ mod tests {
     use super::*;
     use crate::drive::canonical_envelope_bytes;
     use serde_json::json;
+
+    #[derive(Debug)]
+    struct TombstonedAdapter;
+
+    impl Adapter for TombstonedAdapter {
+        fn source(&self) -> &'static str {
+            "test"
+        }
+
+        fn start(self: Arc<Self>, _store: Store) {}
+
+        fn drive<'a>(
+            &'a self,
+            _agent_id: &'a str,
+            _command: DriveCommand,
+        ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
+            Box::pin(async { Err(DriveError::NotImplemented("test")) })
+        }
+
+        fn knows_agent(&self, _agent_id: &str) -> bool {
+            false
+        }
+
+        fn is_stale_agent(&self, _agent_id: &str) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn wire_envelope_round_trips_to_identical_canonical_bytes() {
@@ -760,5 +890,57 @@ mod tests {
         assert_eq!(bound_tail_lines(Some(5)), 5);
         assert_eq!(bound_tail_lines(Some(0)), 1);
         assert_eq!(bound_tail_lines(Some(100_000)), READ_TAIL_MAX_LINES);
+    }
+
+    #[tokio::test]
+    async fn approval_reads_reclassify_second_read_disappearance_as_stale() {
+        let adapter = TombstonedAdapter;
+        let live = Agent {
+            agent_id: "herdr:race".to_string(),
+            source: "herdr".to_string(),
+            tool: "opencode".to_string(),
+            state: crate::core::model::AgentState::Blocked,
+            reason: None,
+            seq: 1,
+            ts: 0,
+            capabilities: Vec::new(),
+            waiting_on: Some(crate::core::model::WaitingOn {
+                kind: crate::core::model::WaitingOnKind::AnswerQuestion,
+                prompt: "continue?".to_string(),
+                prompt_hash: "sha256:x".to_string(),
+                approval_id: "herdr:race:sha256:x".to_string(),
+                choices: Vec::new(),
+            }),
+            parent_id: None,
+            host: None,
+            workspace: Default::default(),
+            attachment: None,
+            display_name: None,
+            title: None,
+        };
+        // Script the actual two approval reads: the first sees the blocked
+        // record; disappearance before the second returns None. This is the
+        // deterministic interleaving at the async store/classification
+        // boundary, without relying on scheduler timing.
+        let reads = Arc::new(Mutex::new(vec![Some(live), None]));
+        let read_source = reads.clone();
+        let result = validated_approval_command(
+            &adapter,
+            move || {
+                let agent = read_source.lock().unwrap().remove(0);
+                async move { agent }
+            },
+            "herdr:race",
+            "req-race",
+            "herdr:race:sha256:x",
+            "sha256:x",
+            "yes",
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(DriveApiError::StaleAgent { agent_id, request_id })
+                if agent_id == "herdr:race" && request_id.as_deref() == Some("req-race")
+        ));
     }
 }

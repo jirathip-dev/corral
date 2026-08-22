@@ -20,7 +20,6 @@ fn sample_agent() -> Agent {
             approval_id: "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784:sha256:abc".to_string(),
             choices: vec!["Approve".to_string(), "Reject".to_string()],
         }),
-        cost: None,
         parent_id: None,
         host: None,
         workspace: Workspace {
@@ -96,7 +95,6 @@ fn state_and_waiting_kind_enum_strings() {
     assert_eq!(v["waiting_on"]["kind"], "approve_tool");
     let all = serde_json::to_value(agent).unwrap();
     assert_eq!(all["seq"].as_u64(), Some(7));
-    assert_eq!(all["cost"], serde_json::Value::Null);
     assert_eq!(all["parent_id"], serde_json::Value::Null);
     assert_eq!(all["host"], serde_json::Value::Null);
 }
@@ -115,7 +113,7 @@ fn snapshot_is_versioned_flat_keyed_records() {
     assert_eq!(v["schema_version"], SCHEMA_VERSION);
     // v4 (P4 G21): Workspace gained `head_sha`/`head_subject` — versioned
     // strictly.
-    assert_eq!(v["schema_version"], 4);
+    assert_eq!(v["schema_version"], 5);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
 }
@@ -250,7 +248,6 @@ fn g23_payload_without_new_fields_decodes_with_defaults() {
             "ts": 1755273000000,
             "capabilities": ["prompt"],
             "waiting_on": null,
-            "cost": null,
             "parent_id": null,
             "host": null,
             "workspace": {"repo": "herdr-board", "branch": "ws2/gh-plane",
@@ -268,8 +265,8 @@ fn g23_payload_without_new_fields_decodes_with_defaults() {
 
 #[test]
 fn backwards_compat_p1_agent_decodes_without_read_model_fields() {
-    // AC2: the SCHEMA_VERSION bump is additive — a P1-shaped agent record
-    // with the v2 fields absent must still decode, with defaults.
+    // Older P1-shaped agent records with the v2 fields absent still decode,
+    // with defaults.
     let p1_agent = r#"{
         "agent_id": "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784",
         "source": "herdr",
@@ -280,7 +277,6 @@ fn backwards_compat_p1_agent_decodes_without_read_model_fields() {
         "ts": 1755273000000,
         "capabilities": ["prompt", "interrupt", "approve", "read_tail", "kill", "attach"],
         "waiting_on": {"kind": "approve_tool", "prompt": "Approve this change?", "prompt_hash": "sha256:abc", "choices": ["Approve", "Reject"]},
-        "cost": null,
         "parent_id": null,
         "host": null,
         "workspace": {"repo": null, "branch": null, "worktree_path": "/Users/jirathip/.herdr/worktrees/project-hearthwild/feat-x", "pr_number": null},
@@ -318,7 +314,6 @@ fn backwards_compat_p1_snapshot_decodes() {
                 "ts": 1755273000000,
                 "capabilities": ["prompt"],
                 "waiting_on": null,
-                "cost": null,
                 "parent_id": null,
                 "host": null,
                 "workspace": {"repo": null, "branch": null, "worktree_path": "/wt/a", "pr_number": null},

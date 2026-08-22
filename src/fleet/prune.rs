@@ -889,7 +889,12 @@ mod tests {
             now,
         )
         .expect("apply succeeds");
-        assert_eq!(applied.removed, vec![wt.clone()], "skipped: {:?}", applied.skipped);
+        assert_eq!(
+            applied.removed,
+            vec![wt.clone()],
+            "skipped: {:?}",
+            applied.skipped
+        );
     }
 
     #[test]

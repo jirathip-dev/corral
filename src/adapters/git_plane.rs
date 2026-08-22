@@ -1277,7 +1277,8 @@ async fn run_git(wt: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// Parse `git status --porcelain=v1 -b` (kept for precise regression
-/// coverage and shared line handling with v2).
+/// coverage only; production uses the v2 parser).
+#[cfg(test)]
 fn parse_status(output: &str) -> GitStatus {
     let mut status = GitStatus::default();
     for line in output.lines() {
@@ -1311,6 +1312,7 @@ fn parse_status(output: &str) -> GitStatus {
     status
 }
 
+#[cfg(test)]
 fn parse_status_line(line: &str, status: &mut GitStatus) {
     let bytes = line.as_bytes();
     if bytes.len() < 2 {
@@ -1324,13 +1326,35 @@ fn parse_status_line(line: &str, status: &mut GitStatus) {
     }
 }
 
+/// Parse one porcelain v2 status record. Unlike v1, the XY state is at bytes
+/// 2..4 (`1 <XY> ...`), so the shared v1 parser must not be reused here.
+fn parse_status_v2_record(line: &str, status: &mut GitStatus) {
+    let bytes = line.as_bytes();
+    if line.starts_with("? ") {
+        status.dirty_worktree = true;
+        return;
+    }
+    if bytes.len() >= 4
+        && (bytes[0] == b'1' || bytes[0] == b'2' || bytes[0] == b'u')
+        && bytes[1] == b' '
+    {
+        // Porcelain v2 uses `.` in place of the v1 ` ` clean marker.
+        if bytes[2] != b'.' && bytes[2] != b' ' {
+            status.dirty_index = true;
+        }
+        if bytes[3] != b'.' && bytes[3] != b' ' {
+            status.dirty_worktree = true;
+        }
+    }
+}
+
 /// Parse `git status --porcelain=v2 --branch` into branch, HEAD oid and the
 /// canonical summary. Unborn HEAD is a probe failure, matching the old
 /// `rev-parse` + `git log` all-or-nothing semantics.
 fn parse_status_v2(output: &str) -> Result<(String, String, GitStatus), ProbeError> {
     let mut branch = String::new();
     let mut commit = None;
-    let mut status = parse_status(output);
+    let mut status = GitStatus::default();
     for line in output.lines() {
         if let Some(rest) = line.strip_prefix("# branch.oid ") {
             let oid = rest.trim();
@@ -1357,6 +1381,9 @@ fn parse_status_v2(output: &str) -> Result<(String, String, GitStatus), ProbeErr
                 }
             }
             continue;
+        }
+        if !line.starts_with('#') {
+            parse_status_v2_record(line, &mut status);
         }
     }
     let commit = commit.ok_or_else(|| ProbeError::Git("unborn HEAD has no commit".to_string()))?;
@@ -1497,6 +1524,43 @@ mod tests {
         assert!(status.dirty_worktree);
         assert_eq!(status.ahead, 1);
         assert_eq!(status.behind, 2);
+    }
+
+    #[test]
+    fn parses_status_v2_xy_at_correct_offset_and_untracked() {
+        let header = "# branch.oid abc123def\n\
+                      # branch.head feat/topic\n\
+                      # branch.ab +0 -0\n";
+        let cases = [
+            (
+                "1 .M N... 000000 000000 000000 000000 000000 path/a\n",
+                false,
+                true,
+            ),
+            (
+                "1 MM N... 000000 000000 000000 000000 000000 path/a\n",
+                true,
+                true,
+            ),
+            (
+                "1 M. N... 000000 000000 000000 000000 000000 path/a\n",
+                true,
+                false,
+            ),
+            ("? untracked\n", false, true),
+        ];
+        for (record, dirty_index, dirty_worktree) in cases {
+            let out = format!("{header}{record}");
+            let (_, _, status) = parse_status_v2(&out).expect("v2 status parses");
+            assert_eq!(
+                status.dirty_index, dirty_index,
+                "dirty_index for {record:?}"
+            );
+            assert_eq!(
+                status.dirty_worktree, dirty_worktree,
+                "dirty_worktree for {record:?}"
+            );
+        }
     }
 
     #[test]

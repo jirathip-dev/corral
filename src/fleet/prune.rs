@@ -75,6 +75,11 @@ impl Default for PruneOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PruneCandidate {
     pub path: PathBuf,
+    /// The fleet's `worktree_dir` (the directory segment under
+    /// `worktrees_root` that contains this candidate). Kept separately from
+    /// `fleet` (the fleet *name*) because the two are independent registry
+    /// fields and are not required to be equal.
+    pub worktree_dir: String,
     pub fleet: String,
     pub branch: String,
     pub head: String,
@@ -475,6 +480,7 @@ fn inspect(
     }
     Verdict::Prune(PruneCandidate {
         path: path.to_path_buf(),
+        worktree_dir: fleet.worktree_dir.clone(),
         fleet: fleet.name.clone(),
         branch,
         head,
@@ -567,7 +573,7 @@ pub fn prune(
         let Some(agents) = lister() else {
             return Err(PruneError::AgentListUnavailable);
         };
-        let fleet_root = worktrees_root.join(&candidate.fleet);
+        let fleet_root = worktrees_root.join(&candidate.worktree_dir);
         match inspect(
             registry,
             &candidate.path,
@@ -821,6 +827,69 @@ mod tests {
         assert_eq!(plan.candidates[0].path, wt);
         assert_eq!(plan.candidates[0].fleet, "corral");
         assert!(plan.kept.is_empty(), "all keep reasons: {:?}", plan.kept);
+    }
+
+    #[test]
+    fn plan_and_apply_attribute_path_by_worktree_dir_when_name_differs() {
+        // Regression: `name` and `worktree_dir` are independent registry fields.
+        // The apply path must derive the fleet root from `worktree_dir` (mirroring
+        // the plan path), not from the fleet `name`.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let wt = worktree(dir.path(), "feature"); // root/corral/feature
+        let now = now_unix();
+        let runner = ScriptedRunner::new(now);
+        let registry = Registry {
+            fleets: vec![Fleet {
+                name: "herdr".to_string(),
+                gh_repo: "jirathip-k/corral".to_string(),
+                local: "/repos/corral".to_string(),
+                worktree_dir: "corral".to_string(),
+                orch: "orch-corral".to_string(),
+                workers: vec![],
+                paused: false,
+                models: Models {
+                    orch: "fable".to_string(),
+                    impl_: "sonnet".to_string(),
+                    review: "opus".to_string(),
+                    impl_alt: None,
+                    impl_alt2: None,
+                },
+            }],
+        };
+
+        let plan = super::plan(
+            &registry,
+            dir.path(),
+            &Some(empty_agents()),
+            &runner,
+            &PruneOptions::default(),
+            now,
+        )
+        .expect("prune plan succeeds");
+        assert_eq!(plan.evaluated, 1);
+        assert_eq!(plan.candidates.len(), 1, "kept: {:?}", plan.kept);
+        assert_eq!(plan.candidates[0].path, wt);
+        assert_eq!(plan.candidates[0].fleet, "herdr");
+        assert_eq!(plan.candidates[0].worktree_dir, "corral");
+
+        let mut applied_runner = ScriptedRunner::new(now);
+        applied_runner.dirty = "?? .brief.md\n".to_string();
+        std::fs::write(wt.join(".brief.md"), "brief").expect("write brief");
+        applied_runner.common = dir.path().join("main").to_string_lossy().into_owned();
+        let applied = super::prune(
+            &registry,
+            dir.path(),
+            &PruneOptions {
+                apply: true,
+                max_prune: 10,
+                min_age_days: 1,
+            },
+            || Some(empty_agents()),
+            &applied_runner,
+            now,
+        )
+        .expect("apply succeeds");
+        assert_eq!(applied.removed, vec![wt.clone()], "skipped: {:?}", applied.skipped);
     }
 
     #[test]

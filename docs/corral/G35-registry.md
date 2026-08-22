@@ -17,7 +17,11 @@ schema (model roles, `reasoning_effort`, top-level `admit`, and future
 additions), while corral consumes only the identity fields it needs. Unknown
 keys at the registry, fleet, or `models` level are accepted and retained
 across a corral rewrite, so a fleet-ops schema addition cannot empty
-`GET /issues` or silently disappear through `fleet models`.
+`GET /issues` or silently disappear through `fleet models`. This tolerance
+does not weaken validation of fields Corral owns: an unknown key one edit
+away from `paused`, `impl_alt`, or another owned name is refused loudly
+rather than silently defaulting (`pausd`, `imp1_alt`), while genuinely
+farther foreign keys stay accepted.
 
 ## Registry schema
 
@@ -58,8 +62,9 @@ loud stderr note when it is taken) exists.
   (last-resort backend). Absent alt keys stay absent through any rewrite (an explicit `null` is
   read as absent and is not written back); a present key must be non-empty
   and whitespace-free, like the other model slots.
-- `models.reasoning_effort` (and any future fleet-operations key) is not
-  modelled by corral. It is ignored on load and preserved on write.
+- `models.reasoning_effort` and top-level `admit` are recognized as
+  fleet-operations-owned schema and preserved verbatim; corral does not model
+  their contents as typed fields.
 - All `models.*` slots (required and alt) must be whitespace-free — the
   required three feed the whitespace-delimited `fleet list` line; the alt
   slots follow the same rule for consistency.
@@ -68,9 +73,10 @@ loud stderr note when it is taken) exists.
   serialized — a resumed fleet omits the key entirely (this is the rule
   the pause/resume section refers to).
 - `local` may start with `~/` — expanded against `$HOME`.
-- Unknown fields anywhere (top level, fleet, models), including the
-  fleet-operations `admit` block, are ignored on load and retained through a
-  rewrite. Duplicate fleet names → hard error.
+- Unknown fields anywhere (top level, fleet, models) are retained through a
+  rewrite. A deterministic typo guard rejects an unknown key one edit away
+  from a Corral-owned field; all other forward keys, including future
+  fleet-operations additions, are accepted. Duplicate fleet names → hard error.
 
 ## Commands
 

@@ -87,7 +87,9 @@ impl RepoResolver for GhCli {
 
 /// `corrald fleet add`: validate + write the candidate registry. Refuses
 /// (writing nothing) if `--gh` does not resolve, the name already exists, or
-/// the candidate registry fails validation.
+/// the candidate registry fails validation. When `models` is inherited from
+/// the first fleet, its forward fleet-operations fields (`reasoning_effort`,
+/// unknown future keys) are inherited too.
 pub fn add(
     path: &Path,
     opts: &AddOptions,
@@ -117,11 +119,13 @@ pub fn add(
     let defaults = Defaults::for_name(&opts.name);
     let models = match &opts.models {
         Some(models) => models.clone(),
-        None => registry
-            .fleets
-            .first()
-            .map(|f| f.models.clone())
-            .ok_or(ConfigError::AddNeedsModels)?,
+        None => {
+            let template = registry.fleets.first().ok_or(ConfigError::AddNeedsModels)?;
+            let models = template.models.clone();
+            let template_name = template.name.clone();
+            registry.inherit_forward_fields(&template_name, &opts.name);
+            models
+        }
     };
     let fleet = Fleet {
         name: opts.name.clone(),
@@ -154,6 +158,7 @@ pub fn remove(path: &Path, name: &str) -> Result<usize, ConfigError> {
             name: name.to_string(),
         });
     }
+    registry.forget_forward_fields(name);
     registry.validate()?;
     write_atomic(path, &registry)?;
     Ok(registry.fleets.len())

@@ -220,17 +220,88 @@ fn add_inherits_alt_slots_from_the_first_fleet_when_present() {
 }
 
 #[test]
-fn typoed_alt_key_is_ignored_for_forward_compatibility() {
+fn add_inherits_and_preserves_fleet_ops_forward_fields() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(
         dir.path(),
+        r#"{
+            "fleets": [{
+                "name": "corral",
+                "gh_repo": "jirathip-k/corral",
+                "local": "~/Projects/corral",
+                "worktree_dir": "corral",
+                "orch": "o",
+                "workers": [],
+                "models": {
+                    "orch": "f",
+                    "impl": "i",
+                    "review": "r",
+                    "reasoning_effort": {"orch": "medium", "impl": "max", "review": "xhigh"},
+                    "future_model_field": {"nested": true}
+                },
+                "future_fleet_field": {"nested": true}
+            }],
+            "admit": {"enabled": true, "budget_mb": 16000}
+        }"#,
+    );
+
+    corrald::fleet::ops::add(
+        &path,
+        &add_options("inheritor", "jirathip-k/corral"),
+        &FakeResolver {
+            ok: vec!["jirathip-k/corral".to_string()],
+        },
+    )
+    .expect("add succeeds");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read back"))
+            .expect("written registry is valid JSON");
+    let source = &written["fleets"][0];
+    let added = &written["fleets"][1];
+    assert_eq!(
+        source["models"]["reasoning_effort"],
+        serde_json::json!({"orch": "medium", "impl": "max", "review": "xhigh"})
+    );
+    assert_eq!(
+        added["models"]["reasoning_effort"], source["models"]["reasoning_effort"],
+        "new fleet inherits reasoning_effort from the template"
+    );
+    assert_eq!(
+        added["future_model_field"], source["future_model_field"],
+        "new fleet inherits unknown model forward fields"
+    );
+    assert_eq!(
+        added["future_fleet_field"], source["future_fleet_field"],
+        "new fleet inherits unknown fleet forward fields"
+    );
+    assert_eq!(
+        written["admit"],
+        serde_json::json!({"enabled": true, "budget_mb": 16000}),
+        "top-level admit survives the add rewrite"
+    );
+}
+
+#[test]
+fn typoed_owned_optional_fields_are_hard_errors() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    for body in [
         r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
             "worktree_dir": "corral", "orch": "o", "workers": [],
             "models": {"orch": "f", "impl": "i", "review": "r", "imp1_alt": "x"}}]}"#,
-    );
-    let registry = load(&path).expect("unrecognised models key is ignored");
-    assert_eq!(registry.fleets[0].models.impl_, "i");
-    assert_eq!(registry.fleets[0].models.impl_alt, None);
+        r#"{"fleets": [{"name": "corral", "gh_repo": "jirathip-k/corral", "local": "~/p",
+            "worktree_dir": "corral", "orch": "o", "workers": [], "pausd": true,
+            "models": {"orch": "f", "impl": "i", "review": "r"}}]}"#,
+    ] {
+        let path = write_registry(dir.path(), body);
+        let err = load(&path).expect_err("typo in Corral-owned field must fail");
+        assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("imp1_alt") || msg.contains("pausd"),
+            "names the typo: {msg}"
+        );
+    }
 }
 
 #[test]
@@ -284,11 +355,13 @@ fn fleet_ops_fields_parse_and_survive_a_write_round_trip() {
                     "orch": "f",
                     "impl": "i",
                     "review": "r",
-                    "reasoning_effort": {"orch": "medium", "impl": "max", "review": "xhigh"}
+                    "reasoning_effort": {"orch": "medium", "impl": "max", "review": "xhigh"},
+                    "future_model_field": {"nested": true}
                 },
                 "future_fleet_field": {"nested": true}
             }],
-            "admit": {"enabled": true, "budget_mb": 16000}
+            "admit": {"enabled": true, "budget_mb": 16000},
+            "future_top_level": {"nested": true}
         }"#,
     );
 
@@ -310,8 +383,16 @@ fn fleet_ops_fields_parse_and_survive_a_write_round_trip() {
         serde_json::json!({"nested": true})
     );
     assert_eq!(
+        fleet["models"]["future_model_field"],
+        serde_json::json!({"nested": true})
+    );
+    assert_eq!(
         written["admit"],
         serde_json::json!({"enabled": true, "budget_mb": 16000})
+    );
+    assert_eq!(
+        written["future_top_level"],
+        serde_json::json!({"nested": true})
     );
     assert_eq!(
         load(&path).expect("written registry re-loads").fleets[0]
@@ -1272,6 +1353,29 @@ fn write_atomic_round_trips_exact_pretty_json_with_trailing_newline() {
     let registry2 = load(&path).expect("re-loads");
     assert_eq!(registry2.fleets.len(), 1);
     assert_eq!(registry2.fleets[0].name, "corral");
+}
+
+#[test]
+fn write_atomic_refuses_if_current_registry_is_no_longer_parseable() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = write_registry(
+        dir.path(),
+        r#"{"fleets": [{"name": "corral", "gh_repo": "x/y", "local": "~/p",
+            "worktree_dir": "corral", "orch": "o", "workers": [],
+            "models": {"orch": "f", "impl": "i", "review": "r",
+                       "reasoning_effort": {"orch": "max"}}}]}"#,
+    );
+    let registry = load(&path).expect("loads forward fields");
+    let invalid = br#"{"fleets": ["#;
+    std::fs::write(&path, invalid).expect("make current file invalid");
+
+    let err = write_atomic(&path, &registry).expect_err("must refuse to clobber");
+    assert!(matches!(err, ConfigError::Parse { .. }), "kind: {err:?}");
+    assert_eq!(
+        std::fs::read(&path).expect("read back"),
+        invalid,
+        "the original invalid file remains byte-identical"
+    );
 }
 
 /// CLI usage contract for the write commands: missing required flags and

@@ -772,24 +772,22 @@ mod tests {
     }
 
     fn registry() -> Registry {
-        Registry {
-            fleets: vec![Fleet {
-                name: "corral".to_string(),
-                gh_repo: "jirathip-k/corral".to_string(),
-                local: "/repos/corral".to_string(),
-                worktree_dir: "corral".to_string(),
-                orch: "orch-corral".to_string(),
-                workers: vec![],
-                paused: false,
-                models: Models {
-                    orch: "fable".to_string(),
-                    impl_: "sonnet".to_string(),
-                    review: "opus".to_string(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            }],
-        }
+        Registry::new(vec![Fleet {
+            name: "corral".to_string(),
+            gh_repo: "jirathip-k/corral".to_string(),
+            local: "/repos/corral".to_string(),
+            worktree_dir: "corral".to_string(),
+            orch: "orch-corral".to_string(),
+            workers: vec![],
+            paused: false,
+            models: Models {
+                orch: "fable".to_string(),
+                impl_: "sonnet".to_string(),
+                review: "opus".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }])
     }
 
     fn worktree(root: &Path, name: &str) -> PathBuf {
@@ -838,24 +836,22 @@ mod tests {
         let wt = worktree(dir.path(), "feature"); // root/corral/feature
         let now = now_unix();
         let runner = ScriptedRunner::new(now);
-        let registry = Registry {
-            fleets: vec![Fleet {
-                name: "herdr".to_string(),
-                gh_repo: "jirathip-k/corral".to_string(),
-                local: "/repos/corral".to_string(),
-                worktree_dir: "corral".to_string(),
-                orch: "orch-corral".to_string(),
-                workers: vec![],
-                paused: false,
-                models: Models {
-                    orch: "fable".to_string(),
-                    impl_: "sonnet".to_string(),
-                    review: "opus".to_string(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            }],
-        };
+        let registry = Registry::new(vec![Fleet {
+            name: "herdr".to_string(),
+            gh_repo: "jirathip-k/corral".to_string(),
+            local: "/repos/corral".to_string(),
+            worktree_dir: "corral".to_string(),
+            orch: "orch-corral".to_string(),
+            workers: vec![],
+            paused: false,
+            models: Models {
+                orch: "fable".to_string(),
+                impl_: "sonnet".to_string(),
+                review: "opus".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }]);
 
         let plan = super::plan(
             &registry,

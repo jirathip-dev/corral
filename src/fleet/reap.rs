@@ -788,9 +788,7 @@ mod tests {
 
     #[test]
     fn plan_reaps_done_and_paused_idle_but_not_canonical_orch() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let mut map = BTreeMap::new();
         map.insert(
             "orch-corral".to_string(),
@@ -845,9 +843,7 @@ mod tests {
 
     #[test]
     fn shrink_guard_refuses_before_any_kill() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", false)],
-        };
+        let registry = Registry::new(vec![fleet("corral", false)]);
         let mut map = BTreeMap::new();
         let mut panes = BTreeMap::new();
         for i in 0..8 {
@@ -880,9 +876,7 @@ mod tests {
 
     #[test]
     fn shrink_guard_counts_done_even_when_identity_is_uninspectable() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", false)],
-        };
+        let registry = Registry::new(vec![fleet("corral", false)]);
         let mut map = BTreeMap::new();
         for i in 0..8 {
             let name = format!("w{i}");
@@ -909,9 +903,7 @@ mod tests {
 
     #[test]
     fn unknown_fleet_is_an_operational_refusal() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", false)],
-        };
+        let registry = Registry::new(vec![fleet("corral", false)]);
         let err = plan(
             &registry,
             "nope",
@@ -926,9 +918,7 @@ mod tests {
 
     #[test]
     fn done_claude_session_is_not_a_reap_target() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let mut map = BTreeMap::new();
         map.insert("w1".to_string(), agent("w1", "done", "/repos/corral", "p1"));
         let mut panes = BTreeMap::new();
@@ -951,9 +941,7 @@ mod tests {
 
     #[test]
     fn dry_run_never_signals() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let mut map = BTreeMap::new();
         map.insert("w1".to_string(), agent("w1", "idle", "/repos/corral", "p1"));
         let mut panes = BTreeMap::new();
@@ -977,9 +965,7 @@ mod tests {
 
     #[test]
     fn apply_revalidates_then_terms_and_kills_verified_group() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let mut map = BTreeMap::new();
         map.insert("w1".to_string(), agent("w1", "done", "/repos/corral", "p1"));
         let mut panes = BTreeMap::new();
@@ -1013,9 +999,7 @@ mod tests {
 
     #[test]
     fn apply_skips_kill_when_verified_group_gone_after_term() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let mut map = BTreeMap::new();
         map.insert("w1".to_string(), agent("w1", "done", "/repos/corral", "p1"));
         let mut panes = BTreeMap::new();
@@ -1043,9 +1027,7 @@ mod tests {
 
     #[test]
     fn apply_skips_agent_that_changed_after_snapshot() {
-        let registry = Registry {
-            fleets: vec![fleet("corral", true)],
-        };
+        let registry = Registry::new(vec![fleet("corral", true)]);
         let original = agent("w1", "done", "/repos/corral", "p1");
         let mut changed = original.clone();
         changed.revision = Some(8);

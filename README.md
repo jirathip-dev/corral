@@ -156,10 +156,11 @@ full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
   add|remove|pause|resume|models` atomically rewrite, the `fleets.json`
   registry (`$CORRAL_FLEETS_PATH`) that describes each fleet's repo, worktree
   dir, workers and per-role models. Corral reads a tolerant subset, so
-  fleet-operations fields such as `reasoning_effort` and `admit` are ignored
-  but preserved through rewrites. `fleet switch|reap|prune` add the
-  auth-gated process/worktree ops half. Full schema, safety gates and exit
-  codes in `docs/corral/G35-registry.md`.
+  fleet-operations fields such as `reasoning_effort` and `admit` are accepted
+  and preserved through rewrites; typos in fields Corral owns still fail
+  loudly. `fleet switch|reap|prune` add the auth-gated process/worktree ops
+  half. Full schema, safety gates and exit codes in
+  `docs/corral/G35-registry.md`.
 - **APNs notifier (iOS)** — blocked/done transitions push to a registered
   device, with canned lock-screen replies bound to the prompt's
   `prompt_hash` and a biometric step-up on destructive payloads. Armed with

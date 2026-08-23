@@ -182,11 +182,21 @@ chmod +x "$REPO_DIR/scripts/update-corral.sh"
 # update-corral.sh is the primary fix (works on the next run without needing to
 # re-run setup); this only helps fresh installs and setup re-runs.
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck disable=SC1091  # sourced path is dynamic (built from $SCRIPT_DIR)
-source "$SCRIPT_DIR/lib-corral-update-path.sh"
-# shellcheck disable=SC2119  # intentional: no args -> use default brew prefixes
-corral_prepend_update_path
+# Only source the lib when present: a release bundle missing it must not abort
+# setup after the daemon plist was already written — fall back to the current
+# PATH and continue.
+lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
+# shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
+if [[ -f "$lib_path" ]]; then
+  source "$lib_path"
+  corral_prepend_update_path
+fi
 UPDATE_PATH="$PATH"
+# Escape XML metacharacters so an exotic prefix (containing &, <, >) cannot make
+# plutil -lint fail on the generated plist.
+UPDATE_PATH="${UPDATE_PATH//&/&amp;}"
+UPDATE_PATH="${UPDATE_PATH//</&lt;}"
+UPDATE_PATH="${UPDATE_PATH//>/&gt;}"
 launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
 launchctl enable "gui/$(id -u)/com.corral.corrald-update" 2>/dev/null || true
 cat > "$UPDATE_PLIST" <<UPDATE_EOF

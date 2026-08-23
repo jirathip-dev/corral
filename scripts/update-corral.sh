@@ -21,10 +21,16 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # (git's HTTPS credential helper) is not found and `git fetch` fails. Derive a
 # runtime PATH that prepends Homebrew's bin and cargo's bin when present; this
 # is the primary fix (takes effect without reinstalling the launchd plist).
-# shellcheck disable=SC1091  # sourced path is dynamic (built from $SCRIPT_DIR)
-source "$SCRIPT_DIR/lib-corral-update-path.sh"
-# shellcheck disable=SC2119  # intentional: no args -> use default brew prefixes
-corral_prepend_update_path
+# Only source the lib when it is actually present: if it is ever missing
+# (partial pull, release-bundle drift), fall back to the pre-fix behavior so a
+# launchd run logs the normal skip line instead of dying silently before the
+# log is even set up.
+lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
+# shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
+if [[ -f "$lib_path" ]]; then
+  source "$lib_path"
+  corral_prepend_update_path
+fi
 
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 LOG="$CONFIG_DIR/corral-update.log"

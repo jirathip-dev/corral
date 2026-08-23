@@ -11,15 +11,16 @@
 //! - `GET /fleet-registry` — #135: read-only projection of the local
 //!   `fleets.json` for the board's Registry tab (same loader as `/issues`;
 //!   parse/IO failures are returned as HTTP 200 `status="error"`).
-//! - `GET /transcript` — #63: grant-gated (`read_tail`) on-demand
+//! - `GET /transcript` — #63: device-grant-gated (`read_tail`) on-demand
 //!   transcript pages for one agent, newest first, redacted at the module
-//!   boundary (see [`crate::api::transcript`]). The ONLY grant-gated GET:
-//!   the signed drive envelope rides the `x-corral-drive` header.
+//!   boundary (see [`crate::api::transcript`]). The only device-grant-gated
+//!   GET: the signed drive envelope rides the `x-corral-drive` header.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
 //!   destructive payloads (see [`crate::api::drive`]).
 //! - P3 auth surface (W3, [`crate::auth::http`]): `GET /host-key`,
-//!   `POST /register`, `POST /step-up`, `POST /grants`, `GET /audit`.
+//!   `POST /register`, `POST /step-up`, `GET /grants` (#137 host-admin
+//!   device/grants projection), `POST /grants`, `GET /audit`.
 //! - `POST /device-token` — D16 push registration: the device signs a
 //!   [`DeviceTokenRequest`](crate::push::payload::DeviceTokenRequest) with
 //!   its key (same proof-of-possession shape as `/step-up`); the token is

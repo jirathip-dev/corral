@@ -118,7 +118,8 @@ grants; every drive capability must be granted by the host.
 ## 5. Grant a capability
 
 The host promotes capabilities with its `admin-token` (read it from the
-config dir; never hand it to devices):
+config dir; never hand it to devices). The desktop UI's **Settings →
+Device grants** provides the same action with the same host-admin boundary:
 
 ```sh
 ADMIN=$(cat /tmp/corral-dev/admin-token)
@@ -172,8 +173,8 @@ cargo run -p corrald-ui --release
 ```
 
 A dark-dashboard fleet board speaking corrald's HTTP/SSE surface directly,
-with signed drive controls, keychain-stored device keys (macOS), and an
-audit view. It **auto-registers on localhost**
+with signed drive controls, keychain-stored device keys (macOS), a host
+audit view, and the Settings device-grant editor. It **auto-registers on localhost**
 by reading the daemon's `registration-token` for the same user, so steps 4
 and 5 above are only needed for other clients.
 

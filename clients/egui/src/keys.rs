@@ -132,8 +132,9 @@ pub fn rotate_key(host_fingerprint: &str, seed: &[u8; 32]) -> Result<(), String>
     }
 }
 
-/// Host admin token for the audit view: keychain-only (never written to a
-/// plaintext config). Returns the store kind used.
+/// Host admin token for host-side administration (audit + grants):
+/// keychain-only (never written to a plaintext config). Returns the store
+/// kind used.
 pub fn store_admin_token(host_fingerprint: &str, token: &str) -> Result<KeyStore, String> {
     let account = format!("corral-admin:{host_fingerprint}");
     match write_keyring(&account, token.as_bytes()) {
@@ -247,9 +248,9 @@ pub fn read_daemon_registration_token() -> Result<String, String> {
         .map_err(|e| format!("read {}: {e}", path.display()))
 }
 
-/// Try to read the daemon's host admin token (audit view on localhost).
-/// Host-admin credential — same-machine, same-user file access only; never
-/// transmitted anywhere except the loopback `GET /audit` request.
+/// Try to read the daemon's host admin token (audit + grant management on
+/// localhost). Host-admin credential — same-machine, same-user file access
+/// only; sent only to loopback host-admin endpoints, never to a device.
 pub fn read_daemon_admin_token() -> Option<String> {
     let path = daemon_config_dir().join("admin-token");
     std::fs::read_to_string(&path)

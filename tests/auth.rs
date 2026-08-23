@@ -64,6 +64,10 @@ fn post_admin(uri: &str, v: serde_json::Value, admin: &str) -> Request<Body> {
     with_header(post(uri, v), "authorization", &bearer(admin))
 }
 
+fn get_admin(uri: &str, admin: &str) -> Request<Body> {
+    with_header(get(uri), "authorization", &bearer(admin))
+}
+
 // ---------------------------------------------------------------- unit: authorizer
 
 #[test]
@@ -515,6 +519,92 @@ async fn audit_and_grants_require_admin_token() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_grants_read_lists_filters_and_refuses_unknown_keys() {
+    let (auth, _dir, app) = http_app().await;
+    let admin = corrald::auth::admin_token_for_test(&auth);
+    let reg_token = auth.registry.registration_token();
+
+    let (_, pubkey1) = keypair();
+    let rec1 = auth
+        .registry
+        .register(&reg_token, pubkey1, Duration::from_secs(3600))
+        .unwrap();
+    auth.registry
+        .set_grants(&rec1.key_id, vec![Capability::ReadTail, Capability::Prompt])
+        .unwrap();
+
+    let (_, pubkey2) = keypair();
+    let rec2 = auth
+        .registry
+        .register(&reg_token, pubkey2, Duration::from_secs(3600))
+        .unwrap();
+    auth.registry
+        .set_device_token(&rec2.key_id, Some(&"a".repeat(64)))
+        .unwrap();
+    auth.registry.set_revoked(&rec2.key_id, true).unwrap();
+
+    // Unauthorized / wrong token -> 401, no device projection.
+    let res = app.clone().oneshot(get("/grants")).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let res = app
+        .clone()
+        .oneshot(get_admin("/grants", "wrong"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // The full list is sorted by key id and projects only host-admin fields.
+    let res = app
+        .clone()
+        .oneshot(get_admin("/grants", &admin))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = read_json(res).await;
+    assert_eq!(v["ok"], true);
+    let devices = v["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 2);
+    let first = &devices[0];
+    assert!(first.get("key_id").is_some());
+    assert!(first.get("grants").is_some());
+    assert!(first.get("revoked").is_some());
+    assert!(first.get("expiry_ts").is_some());
+    assert!(first.get("created_ts").is_some());
+    assert!(
+        first.get("public_key").is_none(),
+        "admin read leaks public keys"
+    );
+    assert!(
+        first.get("device_token").is_none(),
+        "admin read leaks push tokens"
+    );
+
+    // Filtering returns the selected record, including revocation state.
+    let uri = format!("/grants?key_id={}", rec2.key_id);
+    let res = app.clone().oneshot(get_admin(&uri, &admin)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = read_json(res).await;
+    assert_eq!(v["devices"].as_array().unwrap().len(), 1);
+    assert_eq!(v["devices"][0]["key_id"], rec2.key_id);
+    assert_eq!(v["devices"][0]["revoked"], true);
+    assert_eq!(v["devices"][0]["grants"].as_array().unwrap().len(), 0);
+
+    // Unknown key -> distinct 404; malformed empty filter -> 400.
+    let res = app
+        .clone()
+        .oneshot(get_admin("/grants?key_id=dev_unknown", &admin))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let res = app
+        .clone()
+        .oneshot(get_admin("/grants?key_id=", &admin))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

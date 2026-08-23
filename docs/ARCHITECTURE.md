@@ -100,6 +100,14 @@ join in the snapshot. The write side has one fleet-level capability,
 handoff) instead of the per-agent adapter dispatch. GitHub stays READ-ONLY:
 no issue create/edit/close surface exists.
 
+The host admin boundary also exposes `GET /grants` (#137): an admin-token
+gated projection of registered device key ids, current grants, revocation,
+and expiry/created timestamps for the desktop Settings grant editor. It
+never returns device public keys or APNs push tokens, and `POST /grants`
+remains the only mutation path. The admin token is sent only to these
+host-side administration endpoints (`GET /grants`, `POST /grants`,
+`GET /audit`) and is never embedded in a device-signed drive flow.
+
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see
 [Trust boundaries](#trust-boundaries).
@@ -200,9 +208,9 @@ signed envelope {key_id, signature,       POST /drive
 ## Capabilities
 
 `prompt`, `interrupt`, `approve`, `read_tail` (bounded 200 lines /
-32 KiB, on tap only), `kill`, `attach` — the closed set in
-`src/drive/mod.rs`. Anything else is refused with a typed error before
-dispatch.
+32 KiB, on tap only), `kill`, `attach`, and the fleet-level
+`start_worktree` — the closed set in `src/drive/mod.rs`. Anything else is
+refused with a typed error before dispatch.
 
 ## Security model
 
@@ -222,8 +230,9 @@ dispatch.
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
   writes; host identity is X25519, published by `GET /host-key`), and
   per-capability grants (read-only default, promoted by the host via
-  `POST /grants` with the admin token). Expiry (90 days) + revocation are
-  checked on every verify.
+  `POST /grants` with the admin token; host-administration reads use the
+  same token on `GET /grants`). Expiry (90 days) + revocation are checked
+  on every verify.
 - **Default deny, no auto-approve.** A fresh device has zero grants.
 - **Step-up** for destructive patterns (`rm -rf`, `push --force`,
   `curl | sh`, `~/.aws`, `~/.ssh`, `.env`): 5-minute single-use token
@@ -265,7 +274,8 @@ inputs, and corral never writes to another tool's state.
   step-up flow, approval claims. No GUI.
 - `clients/egui` (`corrald-ui`) — desktop fleet board (egui/wgpu), macOS +
   Linux. Device keys in the OS keychain; auto-register on localhost; drive
-  buttons rendered from `agent.capabilities` + the device grant ledger.
+  buttons rendered from `agent.capabilities` + the device grant ledger;
+  Settings hosts the admin-token audit log and grant editor.
 - `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive,
   APNs registration, and canned lock-screen replies bound to
   `prompt_hash`. See the README's Status section for what is and is not
@@ -298,7 +308,7 @@ src/fleet/           fleets.json registry: parse + validate + atomic CRUD + CLI 
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
-clients/egui/        corrald-ui desktop board (board, audit)
+clients/egui/        corrald-ui desktop board (board, audit, Settings grants)
 ios/FleetNotifier/   iOS client: SSE, drive, APNs, lock-screen replies
 tests/               integration tests per module
 ```

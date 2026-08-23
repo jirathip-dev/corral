@@ -38,8 +38,8 @@
 //! | `host-key`           | X25519 secret, base64 of 32 bytes. Generated on first run.    |
 //! | `registration-token` | 256-bit token, base64. Routing only.                          |
 //! | `admin-token`        | 256-bit token, base64. Host's own credential: authorizes the  |
-//! |                      | admin endpoints (`GET /audit`, `POST /grants`). Never handed  |
-//! |                      | to devices.                                                   |
+//! |                      | admin endpoints (`GET /grants`, `POST /grants`, `GET        |
+//! |                      | /audit`). Never handed to devices.                           |
 //! | `registry.json`      | Versioned device registry: key id, Ed25519 public key,        |
 //! |                      | created/expiry ts, grants, revoked flag.                      |
 //! | `audit.log`          | Append-only, SHA-256 hash-chained audit entries (one JSON     |

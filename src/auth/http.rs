@@ -5,6 +5,8 @@
 //!   only) + device public key → `key_id` + read-only-default grants.
 //! - `POST /step-up`  — biometric step-up token for destructive payloads
 //!   (single-use, 5 min TTL, bound to `key_id`).
+//! - `GET /grants`    — host admin (admin token): registered device keys,
+//!   current grants, and revocation state for the board's grant UI.
 //! - `POST /grants`   — host admin (admin token): grant promotion /
 //!   revocation / expiry.
 //! - `GET /audit`     — host admin: the hash-chained audit log with
@@ -18,7 +20,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use axum::routing::{get, post};
@@ -39,7 +41,7 @@ pub fn auth_routes() -> Router<Arc<AppState>> {
         .route("/host-key", get(host_key))
         .route("/register", post(register))
         .route("/step-up", post(step_up))
-        .route("/grants", post(grants))
+        .route("/grants", get(admin_grants).post(grants))
         .route("/audit", get(audit))
 }
 
@@ -55,6 +57,60 @@ async fn host_key(State(state): State<Arc<AppState>>) -> Json<serde_json::Value>
 
 fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": error })))
+}
+
+#[derive(serde::Deserialize)]
+struct AdminGrantsQuery {
+    key_id: Option<String>,
+}
+
+/// GET /grants — host admin (admin token), the board's narrow read
+/// surface for grant management. Without a query it lists registered
+/// devices (key id, grants, revocation, expiry — never the public key or
+/// APNs token); with `?key_id=<id>` it narrows to one device so unknown
+/// keys fail loudly instead of being treated as an empty grant set.
+async fn admin_grants(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AdminGrantsQuery>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !state.auth.check_admin(&headers) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin token required");
+    }
+    if query.key_id.as_deref() == Some("") {
+        return json_err(StatusCode::BAD_REQUEST, "key_id must not be empty");
+    }
+    let devices = match query.key_id.as_deref() {
+        Some(key_id) => match state.auth.registry.get(key_id) {
+            Some(rec) => vec![admin_device_view(&rec)],
+            None => return json_err(StatusCode::NOT_FOUND, &format!("unknown key: {key_id}")),
+        },
+        None => state
+            .auth
+            .registry
+            .records()
+            .iter()
+            .map(admin_device_view)
+            .collect(),
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "devices": devices,
+            "note": "host admin read for the desktop grant UI; does not expose public keys or push tokens",
+        })),
+    )
+}
+
+fn admin_device_view(rec: &super::registry::DeviceRecord) -> serde_json::Value {
+    serde_json::json!({
+        "key_id": rec.key_id,
+        "grants": rec.grants,
+        "revoked": rec.revoked,
+        "expiry_ts": rec.expiry_ts,
+        "created_ts": rec.created_ts,
+    })
 }
 
 /// POST /register {token, public_key} -> {key_id, grants, expiry_ts}.

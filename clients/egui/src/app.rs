@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::drive::{DriveEndpoint, DriveIntent, DriveOutcome};
 use crate::keys::{DeviceKey, KeyStore};
-use crate::protocol::{self, ApplyMsg};
+use crate::protocol::{self, ApplyMsg, GrantMutationMsg};
 use crate::state::{
     AuditMsg, ConnState, DriveMsg, Fleet, GrantLedger, Level, RegistrationRecord, Toast,
 };
@@ -334,6 +334,8 @@ impl CorralApp {
             ApplyMsg::Registry(result) => {
                 self.fleet.set_registry(result);
             }
+            ApplyMsg::GrantDevices(result) => self.handle_grant_devices(result),
+            ApplyMsg::GrantMutation(msg) => self.handle_grant_mutation(msg),
         }
     }
 
@@ -690,9 +692,14 @@ impl CorralApp {
         }
     }
 
-    /// The admin token for the audit view: host's own token on localhost,
-    /// or the keychain-stored one.
+    /// The admin token for host-side administration: an explicitly entered
+    /// value wins for this session, otherwise the host's own token on
+    /// localhost or the keychain-stored one.
     fn admin_token(&self) -> Option<String> {
+        let entered = self.settings.admin_token_input.trim();
+        if !entered.is_empty() {
+            return Some(entered.to_string());
+        }
         let fp = self.host_fingerprint.clone()?;
         crate::keys::load_admin_token(&fp).or_else(crate::keys::read_daemon_admin_token)
     }
@@ -712,6 +719,205 @@ impl CorralApp {
             let view = protocol::fetch_audit(&client, &host_url, &token).await;
             let _ = tx.send(AuditMsg { view });
         });
+    }
+
+    fn refresh_grant_devices(&mut self) {
+        if self.settings.grant_admin.loading || self.settings.grant_admin.saving {
+            return;
+        }
+        let Some(token) = self.admin_token() else {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "no admin token available — save/paste it above before managing grants".into(),
+            ));
+            return;
+        };
+        self.settings.grant_admin.loading = true;
+        self.settings.grant_admin.notice = None;
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            let view = protocol::fetch_admin_grants(&client, &host_url, &token, None).await;
+            let _ = tx.send(ApplyMsg::GrantDevices(view));
+        });
+    }
+
+    fn select_grant_device(&mut self, key_id: String) {
+        let device = self
+            .settings
+            .grant_admin
+            .view
+            .as_ref()
+            .and_then(|view| view.as_ref().ok())
+            .and_then(|devices| devices.iter().find(|d| d.key_id == key_id))
+            .cloned();
+        match device {
+            Some(device) => {
+                self.settings.grant_admin.draft =
+                    crate::ui::register::GrantDraft::for_device(&device);
+                self.settings.grant_admin.notice = None;
+            }
+            None => {
+                self.settings.grant_admin.draft.selected_key = key_id.clone();
+                self.settings.grant_admin.notice = Some((
+                    Level::Warn,
+                    format!("{key_id} is not in the loaded device list — refresh"),
+                ));
+            }
+        }
+    }
+
+    fn apply_grant_set(&mut self) {
+        let key_id = self.settings.grant_admin.draft.selected_key.clone();
+        if key_id.is_empty() {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "select a registered device key before applying grants".into(),
+            ));
+            return;
+        }
+        let grants = self.settings.grant_admin.draft.granted();
+        if self.settings.grant_admin.loading || self.settings.grant_admin.saving {
+            return;
+        }
+        let Some(token) = self.admin_token() else {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "no admin token available — save/paste it above before applying grants".into(),
+            ));
+            return;
+        };
+        self.settings.grant_admin.saving = true;
+        self.settings.grant_admin.notice = None;
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        let result_key = key_id.clone();
+        self.rt.spawn(async move {
+            let result =
+                protocol::set_admin_grants(&client, &host_url, &token, &result_key, &grants)
+                    .await
+                    .map(|_| ());
+            let _ = tx.send(ApplyMsg::GrantMutation(GrantMutationMsg {
+                key_id: result_key,
+                grants,
+                revoke: false,
+                result,
+            }));
+        });
+    }
+
+    fn revoke_grant_device(&mut self) {
+        let key_id = self.settings.grant_admin.draft.selected_key.clone();
+        if key_id.is_empty() {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "select a registered device key before revoking".into(),
+            ));
+            return;
+        }
+        if self.settings.grant_admin.loading || self.settings.grant_admin.saving {
+            return;
+        }
+        let Some(token) = self.admin_token() else {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "no admin token available — save/paste it above before revoking".into(),
+            ));
+            return;
+        };
+        self.settings.grant_admin.saving = true;
+        self.settings.grant_admin.notice = None;
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        let result_key = key_id.clone();
+        self.rt.spawn(async move {
+            let result = protocol::revoke_admin_device(&client, &host_url, &token, &result_key)
+                .await
+                .map(|_| ());
+            let _ = tx.send(ApplyMsg::GrantMutation(GrantMutationMsg {
+                key_id: result_key,
+                grants: Vec::new(),
+                revoke: true,
+                result,
+            }));
+        });
+    }
+
+    fn handle_grant_devices(&mut self, result: Result<protocol::AdminGrantsView, String>) {
+        match result {
+            Ok(view) if view.ok => {
+                let own = self
+                    .registration
+                    .as_ref()
+                    .map(|r| r.key_id.clone())
+                    .unwrap_or_default();
+                self.settings.grant_admin.set_view(view.devices, &own);
+            }
+            Ok(_) => {
+                self.settings
+                    .grant_admin
+                    .set_error("GET /grants returned ok=false with a device list".to_string());
+                self.settings.grant_admin.notice = Some((
+                    Level::Error,
+                    "grants view malformed: daemon returned ok=false".into(),
+                ));
+            }
+            Err(error) => {
+                self.settings.grant_admin.set_error(error.clone());
+                self.settings.grant_admin.notice = Some((Level::Error, error));
+            }
+        }
+    }
+
+    fn handle_grant_mutation(&mut self, msg: GrantMutationMsg) {
+        self.settings.grant_admin.saving = false;
+        match msg.result {
+            Ok(()) => {
+                self.sync_own_grants(&msg.key_id, &msg.grants, msg.revoke);
+                if msg.revoke {
+                    self.toast(Level::Info, format!("revoked device {}", msg.key_id));
+                } else {
+                    self.toast(
+                        Level::Info,
+                        format!(
+                            "updated grants for {}: {}",
+                            msg.key_id,
+                            if msg.grants.is_empty() {
+                                "read-only".to_string()
+                            } else {
+                                msg.grants.join(", ")
+                            }
+                        ),
+                    );
+                }
+                self.refresh_grant_devices();
+            }
+            Err(error) => {
+                self.settings.grant_admin.notice =
+                    Some((Level::Error, format!("grant update failed: {error}")));
+            }
+        }
+    }
+
+    /// Keep the board's local ledger honest when the selected managed device
+    /// is this board's own registered key.
+    fn sync_own_grants(&mut self, key_id: &str, grants: &[String], revoke: bool) {
+        if let Some(reg) = &mut self.registration
+            && reg.key_id == key_id
+        {
+            let effective = if revoke { Vec::new() } else { grants.to_vec() };
+            reg.grants = effective.clone();
+            reg.denied.clear();
+            self.ledger = GrantLedger {
+                base: effective,
+                denied: Vec::new(),
+            };
+            self.config.registration = self.registration.clone();
+            self.config.persist(&self.config_path);
+        }
     }
 
     fn update_settings_request(&mut self) {
@@ -815,6 +1021,12 @@ impl CorralApp {
                 self.settings.admin_token_input.clear();
                 self.audit = None;
             }
+            crate::ui::register::Request::LoadGrantDevices => self.refresh_grant_devices(),
+            crate::ui::register::Request::SelectGrantDevice(key_id) => {
+                self.select_grant_device(key_id);
+            }
+            crate::ui::register::Request::ApplyGrantSet => self.apply_grant_set(),
+            crate::ui::register::Request::RevokeGrantDevice => self.revoke_grant_device(),
         }
     }
 
@@ -1067,6 +1279,15 @@ impl eframe::App for CorralApp {
                     .as_ref()
                     .map(|r| r.grants.clone())
                     .unwrap_or_default();
+                let admin_token_configured = self.admin_token().is_some();
+                self.settings.admin_token_configured = admin_token_configured;
+                if self.settings.grant_admin.view.is_none()
+                    && !self.settings.grant_admin.loading
+                    && !self.settings.grant_admin.saving
+                    && admin_token_configured
+                {
+                    self.refresh_grant_devices();
+                }
                 crate::ui::register::settings_pane(
                     ui,
                     &mut self.settings,

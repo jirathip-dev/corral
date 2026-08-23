@@ -25,7 +25,7 @@ const COL_DIRTY: f32 = 46.0;
 const COL_AB: f32 = 64.0;
 const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
-const COL_DRIVE: f32 = 400.0;
+const COL_DRIVE: f32 = 440.0;
 
 /// Board columns in render order. Both the header and every agent row draw
 /// from this one width source so labels and values start at identical x
@@ -60,6 +60,9 @@ const FLAT_VIEW: &str = "corral-ui-board-flat";
 pub struct BoardActions<'a> {
     pub drive: &'a mut dyn FnMut(DriveIntent),
     pub transcript: &'a mut dyn FnMut(crate::transcript::TranscriptRequest),
+    /// #141: ask the app to expand/open (or close) the agent's Full chat
+    /// transcript from either the row control or the nested header.
+    pub full_chat: &'a mut dyn FnMut(&str),
     /// #113: ask the app to re-fetch the repo-level issue view.
     pub refresh_issues: &'a mut dyn FnMut(),
 }
@@ -327,7 +330,14 @@ fn agent_row_cells(
                 theme::ui::TEXT_MUTED,
             ),
             ci_cell(ui, ws.ci_status),
-            drive_cell(ui, agent, allowed, fleet, &mut actions.drive),
+            drive_cell(
+                ui,
+                agent,
+                allowed,
+                fleet,
+                &mut actions.drive,
+                &mut actions.full_chat,
+            ),
         ]
     })
     .inner
@@ -509,12 +519,56 @@ pub fn inferred_marker(agent: &Agent) -> Option<String> {
     .map(|inferred| inferred.marker())
 }
 
+/// Whether a canonical drive control is ready, needs a host grant, or is
+/// not implemented for this source. Missing capability takes precedence:
+/// a capability absent from the snapshot cannot be driven even if the
+/// device has a grant for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveControlState {
+    Ready,
+    MissingGrant,
+    NotImplemented,
+}
+
+/// Pure classifier shared by the row renderer and tests.
+pub fn drive_control_state(
+    agent_caps: &[String],
+    capability: &str,
+    granted: bool,
+) -> DriveControlState {
+    if !agent_caps.iter().any(|c| c == capability) {
+        DriveControlState::NotImplemented
+    } else if !granted {
+        DriveControlState::MissingGrant
+    } else {
+        DriveControlState::Ready
+    }
+}
+
+/// Distinct human-readable reason for a disabled drive control.
+pub fn drive_disabled_reason(capability: &str, state: DriveControlState) -> Option<String> {
+    match state {
+        DriveControlState::Ready => None,
+        DriveControlState::MissingGrant => {
+            Some(format!("requires the {capability} grant — ask the host"))
+        }
+        DriveControlState::NotImplemented => Some(format!("{capability}: not implemented yet")),
+    }
+}
+
+fn disabled_drive_button(ui: &mut Ui, capability: &str, state: DriveControlState) {
+    if let Some(reason) = drive_disabled_reason(capability, state) {
+        crate::ui::disabled_button_with_reason(ui, capability, &reason);
+    }
+}
+
 fn drive_cell(
     ui: &mut Ui,
     agent: &Agent,
     allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
+    full_chat: &mut dyn FnMut(&str),
 ) -> egui::Response {
     let rev = fleet.rev;
     fixed_cell(ui, COL_DRIVE, |ui| {
@@ -522,41 +576,25 @@ fn drive_cell(
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.spacing_mut().item_spacing.y = 2.0;
 
+            full_chat_control(ui, agent, allowed, full_chat);
             for cap in crate::drive::CAPABILITIES_ORDER {
-                if !agent.capabilities.iter().any(|c| c == cap) {
-                    continue;
-                }
+                let state = drive_control_state(&agent.capabilities, cap, allowed(cap));
                 match cap {
-                    "prompt" => {
-                        if allowed(cap) {
-                            prompt_widget(ui, agent, rev, drive);
-                        } else {
-                            // F4: every agent-advertised capability renders
-                            // SOMETHING — disabled with the reason, whether
-                            // the ledger denies it or simply lacks it.
-                            crate::ui::disabled_button_with_reason(
-                                ui,
-                                cap,
-                                "not granted by host (read-only default) — refresh grants in Settings",
-                            );
-                        }
-                    }
+                    "prompt" => match state {
+                        DriveControlState::Ready => prompt_widget(ui, agent, rev, drive),
+                        _ => disabled_drive_button(ui, cap, state),
+                    },
                     "approve" => {
                         if agent.waiting_on.is_none() {
                             continue;
                         }
-                        if allowed(cap) {
-                            approve_choices(ui, agent, rev, drive);
-                        } else {
-                            crate::ui::disabled_button_with_reason(
-                                ui,
-                                cap,
-                                "not granted by host (read-only default) — refresh grants in Settings",
-                            );
+                        match state {
+                            DriveControlState::Ready => approve_choices(ui, agent, rev, drive),
+                            _ => disabled_drive_button(ui, cap, state),
                         }
                     }
-                    _ => {
-                        if allowed(cap) {
+                    _ => match state {
+                        DriveControlState::Ready => {
                             if ui.small_button(cap).clicked() {
                                 let intent = match cap {
                                     "interrupt" => DriveIntent::interrupt(&agent.agent_id, rev),
@@ -566,14 +604,9 @@ fn drive_cell(
                                 };
                                 drive(intent);
                             }
-                        } else {
-                            crate::ui::disabled_button_with_reason(
-                                ui,
-                                cap,
-                                "not granted by host (read-only default) — refresh grants in Settings",
-                            );
                         }
-                    }
+                        _ => disabled_drive_button(ui, cap, state),
+                    },
                 }
             }
         });
@@ -589,6 +622,27 @@ fn drive_cell(
             );
         }
     })
+}
+
+fn full_chat_control(
+    ui: &mut Ui,
+    agent: &Agent,
+    allowed: &dyn Fn(&str) -> bool,
+    full_chat: &mut dyn FnMut(&str),
+) {
+    let state = drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
+    match state {
+        DriveControlState::Ready => {
+            if ui.small_button("Full chat").clicked() {
+                full_chat(&agent.agent_id);
+            }
+        }
+        _ => {
+            if let Some(reason) = drive_disabled_reason("read_tail", state) {
+                crate::ui::disabled_button_with_reason(ui, "Full chat", &reason);
+            }
+        }
+    }
 }
 
 fn approve_choices(
@@ -801,9 +855,11 @@ fn transcript_section(
         Some(p) if !p.session.is_empty() => format!("transcript — {}", p.session),
         _ => "transcript".to_string(),
     };
+    let open = fleet.is_transcript_open(&agent.agent_id);
     let header = egui::CollapsingHeader::new(RichText::new(title).small())
         .id_salt(("corral-ui-transcript", &agent.agent_id))
         .default_open(false)
+        .open(Some(open))
         .show(ui, |ui| {
             let Some(pane) = pane else {
                 // First open this frame: the fetch is dispatched below
@@ -1001,6 +1057,12 @@ fn transcript_section(
             });
         });
 
+    // Keep the Fleet-controlled open state in sync with the nested header;
+    // the app applies the same deferred Full chat action after this frame.
+    if header.header_response.clicked() {
+        (actions.full_chat)(&agent.agent_id);
+    }
+
     // Review F11: opening the header IS the fetch trigger — no pane yet
     // and the body is open means this is the first look. One request:
     // the pane exists (loading) from this same frame's dispatch on.
@@ -1111,21 +1173,6 @@ fn drive_state_color(state: &DriveState) -> Color32 {
         DriveState::Ok { .. } => theme::ui::GOOD,
         DriveState::Failed { .. } => theme::ui::BAD,
     }
-}
-
-/// Pure decision: which capabilities render for an agent given the grant
-/// ledger (tested in isolation, used by the row renderer).
-pub fn renderable_capabilities(
-    agent_caps: &[String],
-    allowed: &dyn Fn(&str) -> bool,
-) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for cap in crate::drive::CAPABILITIES_ORDER {
-        if agent_caps.iter().any(|c| c == cap) && allowed(cap) {
-            out.push(cap);
-        }
-    }
-    out
 }
 
 /// Outcome classifier used by the app when a drive round-trips.
@@ -1295,6 +1342,7 @@ mod tests {
             let mut actions = BoardActions {
                 drive: &mut |_| {},
                 transcript: &mut |_| {},
+                full_chat: &mut |_| {},
                 refresh_issues: &mut || {},
             };
             let row = egui::Frame::NONE
@@ -1420,10 +1468,21 @@ mod tests {
         input: egui::RawInput,
         actions: &mut BoardActions,
     ) -> (Vec<String>, egui::FullOutput) {
+        board_row_frame_with_allowed(ctx, fleet, id, input, &|_| true, actions)
+    }
+
+    fn board_row_frame_with_allowed(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        id: &str,
+        input: egui::RawInput,
+        allowed: &dyn Fn(&str) -> bool,
+        actions: &mut BoardActions,
+    ) -> (Vec<String>, egui::FullOutput) {
         let mut toggles = Vec::new();
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            board_row(ui, id, fleet, &|_| true, actions, &mut toggles);
+            board_row(ui, id, fleet, allowed, actions, &mut toggles);
         });
         (toggles, output)
     }
@@ -1435,15 +1494,26 @@ mod tests {
         pos: egui::Pos2,
         actions: &mut BoardActions,
     ) -> Vec<String> {
+        board_row_click_with_allowed(ctx, fleet, id, pos, &|_| true, actions)
+    }
+
+    fn board_row_click_with_allowed(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        id: &str,
+        pos: egui::Pos2,
+        allowed: &dyn Fn(&str) -> bool,
+        actions: &mut BoardActions,
+    ) -> Vec<String> {
         let (down_toggles, mut output) =
-            board_row_frame(ctx, fleet, id, pointer_down_input(pos), actions);
+            board_row_frame_with_allowed(ctx, fleet, id, pointer_down_input(pos), allowed, actions);
         assert!(
             down_toggles.is_empty(),
             "pointer press alone must not emit a row toggle"
         );
         clear_textures(&mut output);
         let (up_toggles, mut output) =
-            board_row_frame(ctx, fleet, id, pointer_up_input(pos), actions);
+            board_row_frame_with_allowed(ctx, fleet, id, pointer_up_input(pos), allowed, actions);
         clear_textures(&mut output);
         up_toggles
     }
@@ -1468,6 +1538,7 @@ mod tests {
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
             transcript: &mut |_| {},
+            full_chat: &mut |_| {},
             refresh_issues: &mut || {},
         };
 
@@ -1567,6 +1638,7 @@ mod tests {
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
             transcript: &mut |_| {},
+            full_chat: &mut |_| {},
             refresh_issues: &mut || {},
         };
 
@@ -1616,6 +1688,267 @@ mod tests {
     }
 
     #[test]
+    fn full_chat_button_opens_transcript_and_toggles_it_closed() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = "herdr:full-chat".into();
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        let full_chat_requests = std::cell::RefCell::new(Vec::new());
+        let transcript_requests = std::cell::RefCell::new(Vec::new());
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
+            full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
+            refresh_issues: &mut || {},
+        };
+
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            let _ = agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions);
+        });
+        let full_chat_rect = text_rect(&output, "Full chat").expect("Full chat button rendered");
+        clear_textures(&mut output);
+
+        let toggles = board_row_click_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            full_chat_rect.center(),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(
+            toggles.is_empty(),
+            "Full chat click must not request a separate row toggle"
+        );
+        assert_eq!(
+            full_chat_requests.borrow().as_slice(),
+            vec![agent.agent_id.clone()],
+            "granted Full chat must ask the app to open the pane"
+        );
+        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
+        for agent_id in requests {
+            fleet.toggle_full_chat(&agent_id);
+        }
+        assert!(fleet.is_expanded(&agent.agent_id));
+        assert!(fleet.is_transcript_open(&agent.agent_id));
+
+        let (toggles, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(toggles.is_empty());
+        assert_eq!(
+            transcript_requests.borrow().len(),
+            1,
+            "opening the controlled transcript must dispatch the newest-page fetch"
+        );
+        let full_chat_rect = text_rect(&output, "Full chat").expect("Full chat still rendered");
+        clear_textures(&mut output);
+
+        let toggles = board_row_click_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            full_chat_rect.center(),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(toggles.is_empty());
+        assert_eq!(
+            full_chat_requests.borrow().as_slice(),
+            vec![agent.agent_id.clone()],
+            "a second Full chat click must toggle the open pane closed"
+        );
+        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
+        for agent_id in requests {
+            fleet.toggle_full_chat(&agent_id);
+        }
+        assert!(
+            !fleet.is_transcript_open(&agent.agent_id),
+            "second click closes the transcript"
+        );
+        assert!(
+            fleet.is_expanded(&agent.agent_id),
+            "closing the transcript keeps the row detail open"
+        );
+    }
+
+    #[test]
+    fn nested_transcript_header_toggles_fleet_state_and_dispatches_first_read_once() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = "herdr:nested-chat".into();
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
+        let full_chat_requests = std::cell::RefCell::new(Vec::new());
+        let transcript_requests = std::cell::RefCell::new(Vec::new());
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
+            full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
+            refresh_issues: &mut || {},
+        };
+
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
+        );
+        let header_rect = text_rect(&output, "transcript").expect("nested header rendered");
+        clear_textures(&mut output);
+
+        let toggles = board_row_click_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            header_rect.center(),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(
+            toggles.is_empty(),
+            "header clicks are consumed by the widget"
+        );
+        assert_eq!(
+            full_chat_requests.borrow().as_slice(),
+            vec![agent.agent_id.clone()],
+            "opening the nested header must sync Fleet open state"
+        );
+        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
+        for agent_id in requests {
+            fleet.toggle_full_chat(&agent_id);
+        }
+        assert!(fleet.is_transcript_open(&agent.agent_id));
+        assert!(fleet.is_expanded(&agent.agent_id));
+
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
+        );
+        assert_eq!(
+            transcript_requests.borrow().len(),
+            1,
+            "the existing first-open fetch must fire exactly once"
+        );
+        let pane = fleet.transcript_pane_mut(&agent.agent_id);
+        pane.loading = true;
+        let header_rect = text_rect(&output, "transcript").expect("open header still rendered");
+        clear_textures(&mut output);
+        let toggles = board_row_click_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            header_rect.center(),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(toggles.is_empty());
+        assert_eq!(
+            full_chat_requests.borrow().as_slice(),
+            vec![agent.agent_id.clone()],
+            "closing the nested header must sync Fleet open state"
+        );
+        assert_eq!(
+            transcript_requests.borrow().len(),
+            1,
+            "closing must not reissue the newest-page fetch"
+        );
+        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
+        for agent_id in requests {
+            fleet.toggle_full_chat(&agent_id);
+        }
+        assert!(!fleet.is_transcript_open(&agent.agent_id));
+        assert!(fleet.is_expanded(&agent.agent_id));
+    }
+
+    #[test]
+    fn full_chat_is_disabled_without_read_tail_grant() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = "herdr:no-read-grant".into();
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        let mut full_chat_requests = Vec::new();
+        let mut transcript_requests = Vec::new();
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |request| transcript_requests.push(request),
+            full_chat: &mut |agent_id| full_chat_requests.push(agent_id.to_string()),
+            refresh_issues: &mut || {},
+        };
+
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            let _ = agent_row(ui, &agent, false, &|_| false, &fleet, &mut actions);
+        });
+        let full_chat_rect = text_rect(&output, "Full chat").expect("gated Full chat rendered");
+        clear_textures(&mut output);
+
+        let toggles = board_row_click_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            full_chat_rect.center(),
+            &|_| false,
+            &mut actions,
+        );
+        assert!(toggles.is_empty());
+        assert!(
+            full_chat_requests.is_empty(),
+            "missing grant must keep Full chat unclickable"
+        );
+        assert!(
+            transcript_requests.is_empty(),
+            "missing grant must never dispatch a transcript read"
+        );
+    }
+
+    #[test]
+    fn drive_control_reasons_distinguish_grant_miss_from_not_implemented() {
+        let caps = vec!["kill".to_string()];
+        assert_eq!(
+            drive_control_state(&caps, "kill", true),
+            DriveControlState::Ready
+        );
+        assert_eq!(
+            drive_control_state(&caps, "kill", false),
+            DriveControlState::MissingGrant
+        );
+        assert_eq!(
+            drive_control_state(&[], "kill", true),
+            DriveControlState::NotImplemented
+        );
+        assert_eq!(
+            drive_disabled_reason("kill", DriveControlState::Ready),
+            None
+        );
+
+        let grant =
+            drive_disabled_reason("kill", DriveControlState::MissingGrant).expect("grant reason");
+        let not_implemented = drive_disabled_reason("kill", DriveControlState::NotImplemented)
+            .expect("not implemented reason");
+        assert!(grant.contains("requires the kill grant"));
+        assert!(grant.contains("ask the host"));
+        assert!(not_implemented.contains("kill: not implemented yet"));
+        assert!(!not_implemented.contains("grant"));
+        assert_ne!(grant, not_implemented, "reasons must never be conflated");
+    }
+
+    #[test]
     fn inferred_marker_flags_branch_hints_display_only() {
         // D21: `~#N` when validated against the fetched issue set,
         // `~#N?` when not; no marker for branches that infer nothing.
@@ -1643,21 +1976,6 @@ mod tests {
         assert_eq!(inferred_marker(&agent), None);
         agent.workspace.branch = None;
         assert_eq!(inferred_marker(&agent), None);
-    }
-
-    #[test]
-    fn renderable_capabilities_intersects_agent_and_grants() {
-        let agent = agent_with_caps(&["prompt", "interrupt", "kill"]);
-        let allowed = |c: &str| c == "prompt" || c == "kill";
-        let rendered = renderable_capabilities(&agent.capabilities, &allowed);
-        assert_eq!(rendered, vec!["prompt", "kill"]);
-    }
-
-    #[test]
-    fn renderable_capabilities_obeys_canonical_order() {
-        let agent = agent_with_caps(&["attach", "prompt", "read_tail"]);
-        let rendered = renderable_capabilities(&agent.capabilities, &|_| true);
-        assert_eq!(rendered, vec!["prompt", "read_tail", "attach"]);
     }
 
     #[test]

@@ -86,9 +86,13 @@ pub fn toast_area(
 
 /// Helper for a disabled-with-reason capability button.
 pub fn disabled_button_with_reason(ui: &mut Ui, label: &str, reason: &str) {
-    ui.add_enabled_ui(false, |ui| {
-        ui.button(label).on_hover_text(reason);
-    });
+    let response = ui.add_enabled_ui(false, |ui| ui.button(label)).inner;
+    ui.interact(
+        response.rect,
+        ui.auto_id_with(("disabled-button-blocker", label)),
+        egui::Sense::click(),
+    )
+    .on_hover_text(reason);
 }
 
 #[cfg(test)]

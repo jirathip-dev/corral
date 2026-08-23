@@ -63,6 +63,7 @@ jobs:
           cp scripts/install-corral-ui.sh "$stage/scripts/install-corral-ui.sh"
           cp scripts/install-corral.sh "$stage/scripts/install-corral.sh"
           cp scripts/update-corral.sh "$stage/scripts/update-corral.sh"
+          cp scripts/lib-corral-update-path.sh "$stage/scripts/lib-corral-update-path.sh"
           cp herdr-plugin.toml "$stage/herdr-plugin.toml"
           cp README.md "$stage/README.md"
           cp -R docs/. "$stage/docs/"

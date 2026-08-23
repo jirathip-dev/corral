@@ -177,6 +177,16 @@ fi
 echo
 echo ">> Installing auto-update agent (com.corral.corrald-update)..."
 chmod +x "$REPO_DIR/scripts/update-corral.sh"
+# Belt-and-suspenders: bake a launchd-usable PATH into the update plist so the
+# agent starts with gh/cargo resolvable. The script-top derivation in
+# update-corral.sh is the primary fix (works on the next run without needing to
+# re-run setup); this only helps fresh installs and setup re-runs.
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck disable=SC1091  # sourced path is dynamic (built from $SCRIPT_DIR)
+source "$SCRIPT_DIR/lib-corral-update-path.sh"
+# shellcheck disable=SC2119  # intentional: no args -> use default brew prefixes
+corral_prepend_update_path
+UPDATE_PATH="$PATH"
 launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
 launchctl enable "gui/$(id -u)/com.corral.corrald-update" 2>/dev/null || true
 cat > "$UPDATE_PLIST" <<UPDATE_EOF
@@ -197,6 +207,11 @@ cat > "$UPDATE_PLIST" <<UPDATE_EOF
     <key>Minute</key><integer>17</integer>
   </dict>
   <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$UPDATE_PATH</string>
+  </dict>
   <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>$CONFIG_DIR/corral-update.log</string>
   <key>StandardErrorPath</key><string>$CONFIG_DIR/corral-update.log</string>

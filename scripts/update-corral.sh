@@ -16,6 +16,16 @@
 set -euo pipefail
 
 REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# launchd runs this job with a minimal PATH (no /opt/homebrew/bin), so `gh`
+# (git's HTTPS credential helper) is not found and `git fetch` fails. Derive a
+# runtime PATH that prepends Homebrew's bin and cargo's bin when present; this
+# is the primary fix (takes effect without reinstalling the launchd plist).
+# shellcheck disable=SC1091  # sourced path is dynamic (built from $SCRIPT_DIR)
+source "$SCRIPT_DIR/lib-corral-update-path.sh"
+# shellcheck disable=SC2119  # intentional: no args -> use default brew prefixes
+corral_prepend_update_path
+
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 LOG="$CONFIG_DIR/corral-update.log"
 mkdir -p "$CONFIG_DIR"

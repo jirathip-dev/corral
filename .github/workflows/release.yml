@@ -97,6 +97,8 @@ jobs:
           tar -tzf "$bundle"
 
       - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"

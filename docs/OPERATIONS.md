@@ -227,6 +227,10 @@ Capabilities, grant-gated per device (see "Grants model" below):
   canned replies answer a waiting agent in-app; the same actions work
   from the lock-screen notification, validated against the live claim
   (`prompt_hash` / `stale_approval` refusals surface as typed banners).
+- Disabled controls stay visible and distinguish the two gates: a missing
+  grant says `requires the <cap> grant — ask the host.`, while an agent
+  that does not advertise the capability says `<cap>: not available for
+  this agent.`
 - If a target disappears or moves while a drive is in flight, the daemon
   returns `stale_agent` (409 before dispatch when observed). The app removes
   the stale row, shows a refresh banner, and fetches one fresh snapshot; the

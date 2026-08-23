@@ -682,7 +682,7 @@ private struct AgentTranscriptView: View {
                 }
                 if pane.canRetry {
                     Button("Retry") {
-                        model.loadOlderTranscript(agentId: agentId)
+                        model.retryTranscript(agentId: agentId)
                     }
                 }
                 if !pane.loading {

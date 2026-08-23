@@ -222,7 +222,9 @@ What the app shows:
   (`attach`): signed write controls; Kill uses Face ID step-up.
 - **Approve / Deny / Continue** (`approve`): canned replies to a waiting
   agent, including from the lock-screen notification.
-- Rows without the matching grant render without those controls.
+- Controls stay visible when disabled. A missing grant reads
+  `requires the <cap> grant — ask the host.`; an unadvertised capability
+  reads `<cap>: not available for this agent.`
 
 Board never renders but the daemon is healthy? Every stream-layer failure
 now surfaces as a dismissible banner instead of a silent spinner (the

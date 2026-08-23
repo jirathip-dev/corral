@@ -603,10 +603,10 @@ struct TranscriptPane: Equatable, Sendable {
         error = failure
     }
 
-    /// Fresh, empty pane under a new generation. `keepAutoReloaded` preserves
+    /// Fresh, empty pane under a new generation. `keepAutoReloaded` installs
     /// the one-shot bad-cursor guard; false is an explicit user reload.
     mutating func reset(generation: UInt64, keepAutoReloaded: Bool) {
-        let auto = keepAutoReloaded ? autoReloaded : false
+        let auto = keepAutoReloaded
         self = TranscriptPane(loading: true, autoReloaded: auto,
                               generation: generation)
     }
@@ -656,6 +656,9 @@ enum TranscriptText {
         let bytes = Array(text.utf8)
         var end = TranscriptLimits.detailMaxBytes
         while end > 0 && (bytes[end - 1] & 0xC0) == 0x80 {
+            end -= 1
+        }
+        if end > 0 && (bytes[end - 1] & 0xC0) == 0xC0 {
             end -= 1
         }
         return (String(decoding: bytes[..<end], as: UTF8.self), true)

@@ -827,6 +827,12 @@ final class AppModel: ObservableObject {
                               driveClient: driveClient)
     }
 
+    func retryTranscript(agentId: String, driveClient: DriveClient? = nil) {
+        guard let pane = fleet.transcript(agentId), pane.canRetry else { return }
+        requestTranscriptPage(agentId: agentId, cursor: pane.nextCursor,
+                              driveClient: driveClient)
+    }
+
     private func requestTranscriptPage(agentId: String, cursor: String?,
                                        driveClient: DriveClient?,
                                        autoReload: Bool = false) {
@@ -920,7 +926,7 @@ final class AppModel: ObservableObject {
     private func authorize(_ capability: Capability, for agent: Agent) -> Bool {
         guard agent.capabilities.contains(capability.rawValue) else {
             banner = .error("capability_unavailable",
-                            "\(capability.rawValue): not implemented yet.")
+                            "\(capability.rawValue): not available for this agent.")
             return false
         }
         guard actionGrants.contains(capability) else {

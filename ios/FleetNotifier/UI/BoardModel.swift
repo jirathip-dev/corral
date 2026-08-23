@@ -368,7 +368,7 @@ enum BoardModel {
             return AgentActionAvailability(
                 action: action,
                 isEnabled: false,
-                disabledReason: "\(capability.rawValue): not implemented yet.")
+                disabledReason: "\(capability.rawValue): not available for this agent.")
         }
         guard grants.contains(capability) else {
             return AgentActionAvailability(

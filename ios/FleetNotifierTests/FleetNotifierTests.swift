@@ -1058,6 +1058,37 @@ private final class DeterministicDriveScript: @unchecked Sendable {
     }
 }
 
+private func requestBodyData(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody {
+        return body
+    }
+    guard let stream = request.httpBodyStream else { return nil }
+    let opened = stream.streamStatus == .notOpen
+    if opened {
+        stream.open()
+    }
+    defer {
+        if opened {
+            stream.close()
+        }
+    }
+    var data = Data()
+    let bufferSize = 8192
+    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+    defer { buffer.deallocate() }
+    while true {
+        let count = stream.read(buffer, maxLength: bufferSize)
+        if count < 0 {
+            return nil
+        }
+        if count == 0 {
+            break
+        }
+        data.append(buffer, count: count)
+    }
+    return data
+}
+
 private final class HeldBiometrics: @unchecked Sendable {
     let entered = AsyncCount()
     private let lock = NSLock()
@@ -1170,7 +1201,11 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             return
         }
         activeScript = script
-        script.log.record(request)
+        var recordedRequest = request
+        if let body = requestBodyData(request) {
+            recordedRequest.httpBody = body
+        }
+        script.log.record(recordedRequest)
         let canRespond = script.gate(for: url.path)?.wait() ?? true
         if canRespond {
             let response = HTTPURLResponse(url: url, statusCode: 200,
@@ -1232,9 +1267,25 @@ final class TappableDriveSafetyTests: XCTestCase {
     }
 
     private func envelope(of request: URLRequest) throws -> [String: Any] {
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody ?? Data())
+        let body = try XCTUnwrap(requestBodyData(request),
+                                 "drive request body missing")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: body)
             as? [String: Any])
         return try XCTUnwrap(root["envelope"] as? [String: Any])
+    }
+
+    private func waitForTranscript(
+        _ model: AppModel,
+        agentId: String,
+        _ condition: @escaping @MainActor (TranscriptPane?) -> Bool
+    ) async {
+        for _ in 0..<250 {
+            if condition(model.fleet.transcript(agentId)) {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for transcript state for \(agentId)")
     }
 
     func testNoArgInitializerBuildsDelegateForSwiftUIAdaptor() {
@@ -1401,6 +1452,9 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertTrue(first)
         let firstCompleted = await script.log.completed.waitFor(atLeast: 1)
         XCTAssertTrue(firstCompleted)
+        await waitForTranscript(model, agentId: live.agentId) {
+            $0?.entries.count == 2 && $0?.loading == false
+        }
         XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 2)
 
         model.loadOlderTranscript(agentId: live.agentId, driveClient: client)
@@ -1408,8 +1462,100 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertTrue(second)
         let secondCompleted = await script.log.completed.waitFor(atLeast: 2)
         XCTAssertTrue(secondCompleted)
+        await waitForTranscript(model, agentId: live.agentId) {
+            $0?.entries.count == 4 && $0?.loading == false
+        }
         XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 4)
         XCTAssertEqual(script.log.requests.count, 2, "each page must be requested separately")
+    }
+
+    func testDirectControlsSayUnavailableForUnadvertisedCapability() {
+        let model = AppModel()
+        let live = Agent(agentId: "herdr:no-cap", state: .blocked,
+                         capabilities: [],
+                         waitingOn: WaitingOn(kind: .menu, prompt: "go?",
+                                              promptHash: "sha256:claim",
+                                              choices: ["y", "n"]),
+                         displayName: "herdr:no-cap")
+        configure(model, agent: live,
+                  grants: ["read_tail", "prompt", "interrupt", "approve",
+                           "kill", "attach"])
+        let client = DriveClient(host: URL(string: "http://daemon")!,
+                                 session: URLSession.shared)
+        let cases: [(dispatch: () -> Void, capability: String)] = [
+            ({ model.driveReadTail(agent: live, driveClient: client) }, "read_tail"),
+            ({ model.drivePrompt(agent: live, text: "continue",
+                                 driveClient: client) }, "prompt"),
+            ({ model.driveInterrupt(agent: live, driveClient: client) }, "interrupt"),
+            ({ model.driveApprove(agent: live, choice: "y",
+                                  driveClient: client) }, "approve"),
+            ({ model.driveKill(agent: live, driveClient: client) }, "kill"),
+            ({ model.driveAttach(agent: live, driveClient: client) }, "attach"),
+        ]
+
+        for testCase in cases {
+            testCase.dispatch()
+            XCTAssertEqual(model.banner?.kind, "capability_unavailable",
+                           testCase.capability)
+            XCTAssertEqual(model.banner?.message,
+                           "\(testCase.capability): not available for this agent.",
+                           testCase.capability)
+        }
+    }
+
+    func testInitialTranscriptFailureRetriesFromNewestPage() async throws {
+        let failing = DeterministicDriveScript(
+            responses: ["/transcript": Data("not a page".utf8)])
+        let failingSession = session(for: failing)
+        defer {
+            failingSession.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let model = AppModel()
+        let live = agent("herdr:retry", capabilities: ["read_tail"])
+        configure(model, agent: live, grants: ["read_tail"])
+        model.openTranscript(
+            agentId: live.agentId,
+            driveClient: DriveClient(host: URL(string: "http://daemon")!,
+                                     session: failingSession))
+        let firstCompleted = await failing.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(firstCompleted)
+        XCTAssertEqual(failing.log.requests.count, 1)
+        await waitForTranscript(model, agentId: live.agentId) { pane in
+            guard let pane else { return false }
+            return pane.canRetry && !pane.loading && pane.error != nil
+        }
+        XCTAssertTrue(model.fleet.transcript(live.agentId)?.canRetry ?? false)
+        XCTAssertNil(model.fleet.transcript(live.agentId)?.nextCursor)
+
+        let success = DeterministicDriveScript(
+            responses: ["/transcript": transcriptPageJSON(
+                entries: [("assistant", "retried", 1)])])
+        let successSession = session(for: success)
+        defer {
+            successSession.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        model.retryTranscript(
+            agentId: live.agentId,
+            driveClient: DriveClient(host: URL(string: "http://daemon")!,
+                                     session: successSession))
+        let retried = await success.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(retried)
+        await waitForTranscript(model, agentId: live.agentId) { pane in
+            guard let pane else { return false }
+            return pane.entries.count == 1 && !pane.loading && pane.error == nil
+        }
+        XCTAssertEqual(success.log.requests.count, 1)
+        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 1)
+
+        let header = try XCTUnwrap(
+            success.log.requests.first?.value(forHTTPHeaderField: "x-corral-drive"))
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(header.utf8))
+            as? [String: Any])
+        let envelope = try XCTUnwrap(root["envelope"] as? [String: Any])
+        let payload = try XCTUnwrap(envelope["payload"] as? [String: Any])
+        XCTAssertNil(payload["cursor"], "an initial failure must retry the newest page")
     }
 
     func testCancellationDuringBiometricsSendsNoStepUpOrDrive() async {
@@ -1648,8 +1794,9 @@ final class TappableDriveSafetyTests: XCTestCase {
         let deviceRequests = script.log.requests.filter { $0.url?.path == "/device-token" }
         XCTAssertEqual(deviceRequests.count, 1,
                        "demo→live must upload the current token exactly once")
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: deviceRequests[0].httpBody ?? Data()) as? [String: Any])
+        let deviceBody = try XCTUnwrap(requestBodyData(deviceRequests[0]))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: deviceBody)
+            as? [String: Any])
         XCTAssertEqual(body["key_id"] as? String, meta.keyId)
         let request = try XCTUnwrap(body["request"] as? [String: Any])
         XCTAssertEqual(request["key_id"] as? String, meta.keyId)
@@ -2296,27 +2443,29 @@ final class RowActionTests: XCTestCase {
     }
 
     /// A missing grant and an unadvertised capability must never share one
-    /// disabled explanation for Kill, Attach, Full chat, or Tail.
-    func testDisabledReasonsDistinguishGrantFromNotImplemented() {
-        let capable = agent("herdr:grants", state: .working,
+    /// disabled explanation for any drive control.
+    func testDisabledReasonsDistinguishGrantFromUnavailable() {
+        let capable = agent("herdr:grants", state: .blocked,
                             capabilities: Capability.allCases.map(\.rawValue))
-        for action in [RowAction.kill, .attach, .fullChat, .tail] {
+        for action in [RowAction.tail, .fullChat, .prompt, .interrupt,
+                       .kill, .attach, .approveDeny] {
             let item = BoardModel.actionAvailability(agent: capable, grants: [])
                 .first { $0.action == action }
             XCTAssertEqual(item?.isEnabled, false)
             XCTAssertTrue(item?.disabledReason?.contains("grant") == true,
                           "\(action) must name the missing grant: \(String(describing: item?.disabledReason))")
-            XCTAssertFalse(item?.disabledReason?.contains("not implemented") == true)
+            XCTAssertFalse(item?.disabledReason?.contains("not available") == true)
         }
 
-        let incapable = agent("herdr:incapable", state: .working, capabilities: [])
-        for action in [RowAction.kill, .attach, .fullChat, .tail] {
+        let incapable = agent("herdr:incapable", state: .blocked, capabilities: [])
+        for action in [RowAction.tail, .fullChat, .prompt, .interrupt,
+                       .kill, .attach, .approveDeny] {
             let item = BoardModel.actionAvailability(agent: incapable,
                                                      grants: Set(Capability.allCases))
                 .first { $0.action == action }
             XCTAssertEqual(item?.isEnabled, false)
-            XCTAssertTrue(item?.disabledReason?.contains("not implemented") == true,
-                          "\(action) must say not implemented: \(String(describing: item?.disabledReason))")
+            XCTAssertTrue(item?.disabledReason?.contains("not available for this agent") == true,
+                          "\(action) must say unavailable: \(String(describing: item?.disabledReason))")
             XCTAssertFalse(item?.disabledReason?.contains("grant") == true)
         }
     }
@@ -2367,7 +2516,9 @@ final class TranscriptPaneTests: XCTestCase {
                             ts: 1_700_000_000_000 + UInt64(index))
         }
         return try JSONDecoder().decode(TranscriptPage.self,
-                                        from: transcriptPageJSON(entries: entries,
+                                        from: transcriptPageJSON(entries: entries.map {
+                                            ($0.role, $0.text, $0.ts)
+                                        },
                                                                  cursor: cursor))
     }
 

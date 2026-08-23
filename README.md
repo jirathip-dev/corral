@@ -13,7 +13,10 @@ or over your tailnet).
 At the harness layer, Corral is **harness-agnostic**: Claude Code, Codex CLI,
 OpenCode, and other agent harnesses become the same canonical record, so the
 board and signed drive plane work the same regardless of which harness an
-agent runs on.
+agent runs on. The one harness-specific surface is the read-only
+`/transcript` reader, which parses each harness's own session-store format
+(OpenCode `opencode.db`, Claude/Codex JSONL); that boundary never feeds the
+snapshot model (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#stack-terminology-model--harness--runtime--control-plane)).
 
 Corral reads every worktree / agent / PR / CI fact into a snapshot read
 model served over HTTP + SSE (loopback by default; tailnet/private

@@ -3766,7 +3766,7 @@ final class BoardFilterTests: XCTestCase {
                        issues: [GhIssueRef] = []) -> Agent {
         Agent(agentId: id, state: state, ts: 1,
               workspace: Workspace(repo: repo, branch: branch, issues: issues),
-              displayName: "session-\(id)")
+              displayName: "session-\(id)", title: title)
     }
 
     func testChipsAreAllNeedsYouThenReposSorted() {

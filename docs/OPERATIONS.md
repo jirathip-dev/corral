@@ -20,7 +20,7 @@ login and stays up (KeepAlive). It also installs the release desktop client:
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
 scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (desktop/daemon only)
-scripts/setup-corrald.sh --uninstall         # remove both launchd agents (keeps config)
+scripts/setup-corrald.sh --uninstall         # remove all three launchd agents (keeps config)
 ```
 
 `--bind <tailnet-ip>` serves DESKTOP clients on the tailnet; the iOS
@@ -78,7 +78,7 @@ inspection or recoverability claim; and an existing but uninspectable root is
 reported as indeterminate. The multi-file Linux commit is rollback-based
 rather than one single atomic operation.
 
-`--uninstall` removes both launchd agents and leaves the config directory; it
+`--uninstall` removes all three launchd agents and leaves the config directory; it
 does not remove an installed desktop app. Use
 `scripts/install-corral.sh --uninstall` to also remove the staged release
 files and the `Corral.app` desktop payload.
@@ -434,6 +434,48 @@ running daemon required (D33):
 corrald digest                          # last 24h
 corrald digest --since 1784210400000    # explicit window
 corrald digest --config-dir <path>      # non-default config dir
+```
+
+## Log rotation
+
+`corrald` is chatty by design; `~/.config/corral/corrald-launchd.log` (the
+launchd `StandardOutPath`/`StandardErrorPath` target) has been observed at
+hundreds of MB. `scripts/setup-corrald.sh` installs a third user-level launchd
+agent, `com.corral.corrald-rotate`, that runs `scripts/rotate-corral-logs.sh`
+every 30 minutes to keep the log size-capped without sudo.
+
+Behavior:
+
+- Cap: **50 MiB** (`CORRAL_LOG_MAX_BYTES`); a log under the cap is left alone.
+- History: **2 gzipped generations** — the live log rolls to `.1.gz`, the old
+  `.1.gz` to `.2.gz`, and `.2.gz` is dropped on the next rotation
+  (`CORRAL_LOG_KEEP`).
+- Race safety: launchd holds the daemon's log fd open, so rotation renames the
+  live file to `.1` and then restarts the daemon with
+  `launchctl kickstart -k gui/$(id -u)/com.corral.corrald` (KeepAlive relaunches
+  it and launchd reopens the path at offset 0). The renamed inode is only
+  gzipped after that restart, so it is never compressed while the daemon can
+  still write to it.
+- The live log file is **never deleted**; a fresh empty file is created in its
+  place, and the daemon-not-loaded case (config dir exists, job absent) is a
+  graceful no-restart that still leaves the path present.
+- `corral-update.log` (written by the run-and-exit update agent) gets the same
+  cap/rotation treatment; it is not held open persistently, so it needs no
+  restart.
+
+Inspect the daemon log and its generations:
+
+```sh
+tail -f ~/.config/corral/corrald-launchd.log
+gzip -dc ~/.config/corral/corrald-launchd.log.1.gz | less
+```
+
+`scripts/setup-corrald.sh --uninstall` removes `com.corral.corrald-rotate`
+along with the daemon and update agents. Run the rotator manually (e.g. with a
+temporary cap) to force a rotation:
+
+```sh
+CORRAL_LOG_MAX_BYTES=1024 scripts/rotate-corral-logs.sh
 ```
 
 ## Transcript read-path (#63)

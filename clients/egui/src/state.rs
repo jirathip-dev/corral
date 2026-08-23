@@ -213,14 +213,6 @@ impl Fleet {
         self.transcript_open.retain(|id| id != agent_id);
     }
 
-    pub fn toggle_transcript(&mut self, agent_id: &str) {
-        if self.is_transcript_open(agent_id) {
-            self.close_transcript(agent_id);
-        } else {
-            self.open_transcript(agent_id);
-        }
-    }
-
     /// Row-level Full chat action: open the transcript and expand the row,
     /// or close the transcript when it is already open and visible.
     pub fn toggle_full_chat(&mut self, agent_id: &str) {
@@ -339,10 +331,11 @@ impl Fleet {
     }
 }
 
-/// The single source of truth for device capability gating: an agent's
-/// capability button renders only if the agent advertises it AND the
-/// device's grant record (registration grants, minus observed
-/// `not_granted` refusals, plus observed successes) allows it.
+/// The single source of truth for device capability gating. Controls are
+/// rendered for the canonical capability set; a control is ready when the
+/// agent advertises the capability and the grant record (registration
+/// grants, minus observed `not_granted` refusals, plus observed successes)
+/// allows it. Missing capability and missing grant are reported separately.
 #[derive(Debug, Clone, Default)]
 pub struct GrantLedger {
     /// Grants known from the last registration response.

@@ -1,8 +1,9 @@
 //! Fleet board: repo sections (CollapsingHeader, default open) with agent
 //! rows beneath — state/reason/waiting_on kind badges, worktree topology
 //! columns (repo/branch/dirty/ahead-behind), PR/CI columns, and
-//! capability-driven drive controls
-//! rendered from `agent.capabilities` AND the device's grant ledger.
+//! capability-driven drive controls rendered for the canonical capability
+//! set; each control's enabled/disabled state and disabled reason derive
+//! from `agent.capabilities` plus the device's grant ledger.
 
 use std::cmp::Ordering;
 
@@ -827,9 +828,10 @@ fn detail(
 /// #64: the lazy-paged full-transcript section inside the row detail.
 /// Collapsed by default; OPENING it triggers the newest-page fetch
 /// (review F11 — the brief's "open at the newest page"); "load older"
-/// follows the cursor. Gated on the read_tail grant like every other
-/// capability surface (review F5). Rows are virtualized (`show_rows`
-/// with a pitch measured from what is actually drawn — review F3);
+/// follows the cursor. Gated on the advertised read_tail capability AND
+/// the grant ledger like every other capability surface (review F5).
+/// Rows are virtualized (`show_rows` with a pitch measured from what is
+/// actually drawn — review F3);
 /// clicking a row shows a BOUNDED slice of its text below (review F4 —
 /// a ScrollArea clips but does not virtualize a label, so an unbounded
 /// galley would hang the UI thread on a multi-MB entry).
@@ -842,12 +844,11 @@ fn transcript_section(
 ) {
     use crate::transcript::TranscriptRequest;
     ui.add_space(4.0);
-    if !allowed("read_tail") {
-        ui.label(
-            RichText::new("transcript needs the read_tail grant")
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
+    let state = drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
+    if state != DriveControlState::Ready {
+        let reason =
+            drive_disabled_reason("read_tail", state).expect("disabled transcript has a reason");
+        ui.label(RichText::new(reason).small().color(theme::ui::TEXT_MUTED));
         return;
     }
     let pane = fleet.transcripts.get(&agent.agent_id);
@@ -1873,6 +1874,39 @@ mod tests {
         }
         assert!(!fleet.is_transcript_open(&agent.agent_id));
         assert!(fleet.is_expanded(&agent.agent_id));
+    }
+
+    #[test]
+    fn transcript_header_hidden_without_advertised_read_tail() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["kill"]);
+        agent.agent_id = "herdr:no-read-capability".into();
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+            refresh_issues: &mut || {},
+        };
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
+        );
+        assert!(
+            text_rect(&output, "transcript").is_none(),
+            "a capability not advertised by the agent must not expose the nested header"
+        );
+        assert!(
+            text_rect(&output, "read_tail: not implemented yet").is_some(),
+            "the expanded row must explain why the capability is unavailable"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]

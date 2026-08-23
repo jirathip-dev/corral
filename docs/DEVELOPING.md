@@ -236,9 +236,12 @@ clients.
    plus its `Display`/`FromStr` arms. Additive only — never change an
    existing variant. Add a typed `DrivePayload` variant and its
    `DrivePayload::parse` arm if the capability carries a payload.
-2. **Grants**: nothing to do — `POST /grants` parses capability strings
-   through `Capability::FromStr`, so the new name is grantable by
-   default. Unknown strings fail loudly, so no typo can silently no-op.
+2. **Grants**: the daemon needs nothing extra — `POST /grants` parses
+   capability strings through `Capability::FromStr`, so the new name is
+   grantable by default. Unknown strings fail loudly, so no typo can
+   silently no-op. The desktop grant editor does need its closed-set
+   mirror updated in `clients/egui/src/protocol.rs`
+   (`GRANT_CAPABILITIES`).
 3. **Dispatch** (`src/adapters/mod.rs`): extend `DriveCommand` and the
    herdr adapter's `drive()` match. Resolve the canonical `agent_id` to
    the transport target; return typed `DriveError`s.

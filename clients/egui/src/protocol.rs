@@ -1,6 +1,6 @@
 //! Read-path protocol client: `GET /snapshot`, `GET /events` (SSE with
-//! `Last-Event-ID` resume), `POST /register`, and `GET /audit`. The drive
-//! write path lives in [`crate::drive`].
+//! `Last-Event-ID` resume), `POST /register`, host-admin `GET /grants`,
+//! and `GET /audit`. The drive write path lives in [`crate::drive`].
 //!
 //! The SSE reader owns the resume loop: connect → parse events → on any
 //! disconnect, back off (doubling, capped) and reconnect carrying the last
@@ -18,6 +18,19 @@ use serde::Deserialize;
 use crate::model::{Delta, FleetRegistry, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
+
+/// Canonical grant order for the board's grant editor. This is the same
+/// closed set the daemon's `Capability` parser accepts; `start_worktree`
+/// is rendered separately as a fleet-level capability.
+pub const GRANT_CAPABILITIES: [&str; 7] = [
+    "prompt",
+    "interrupt",
+    "approve",
+    "read_tail",
+    "kill",
+    "attach",
+    "start_worktree",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HostKey {
@@ -253,6 +266,140 @@ pub async fn fetch_audit(
         return Err(format!("GET /audit -> {}", response.status()));
     }
     response.json().await.map_err(|e| format!("body: {e}"))
+}
+
+/// A registered device as projected by the host-admin `GET /grants` read
+/// surface. Public keys and push tokens stay host-side and never cross
+/// this wire shape.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GrantDevice {
+    pub key_id: String,
+    pub grants: Vec<String>,
+    pub revoked: bool,
+    pub expiry_ts: u64,
+    pub created_ts: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AdminGrantsView {
+    pub ok: bool,
+    pub devices: Vec<GrantDevice>,
+}
+
+/// `GET /grants` with the host admin bearer token. Without `key_id` it
+/// returns every registered device for the Settings selector; with a
+/// `key_id` it narrows the daemon's projection to one device.
+pub async fn fetch_admin_grants(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    key_id: Option<&str>,
+) -> Result<AdminGrantsView, String> {
+    let mut url = format!("{}/grants", base_url.trim_end_matches('/'));
+    if let Some(key_id) = key_id {
+        url.push_str(&format!("?key_id={}", urlencode(key_id)));
+    }
+    let response = client
+        .get(&url)
+        .bearer_auth(admin_token)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
+    if !status.is_success() {
+        return Err(grant_error(status.as_u16(), &body, "GET /grants"));
+    }
+    serde_json::from_value(body).map_err(|e| format!("GET /grants malformed response: {e}"))
+}
+
+/// The exact `POST /grants` `set_grants` body used by
+/// `scripts/corrald-grant.sh`: replacing the full grant set; empty =
+/// read-only.
+pub fn grant_set_body(key_id: &str, grants: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "action": "set_grants",
+        "key_id": key_id,
+        "grants": grants,
+    })
+}
+
+/// The exact `POST /grants` `revoke` body used by
+/// `scripts/corrald-grant.sh`.
+pub fn grant_revoke_body(key_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "action": "revoke",
+        "key_id": key_id,
+        "revoked": true,
+    })
+}
+
+/// Replace a registered device's full grant set via the host admin token.
+pub async fn set_admin_grants(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    key_id: &str,
+    grants: &[String],
+) -> Result<String, String> {
+    post_grant_body(
+        client,
+        base_url,
+        admin_token,
+        grant_set_body(key_id, grants),
+    )
+    .await
+}
+
+/// Revoke a registered device (the `--revoke` alternate path) via the host
+/// admin token.
+pub async fn revoke_admin_device(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    key_id: &str,
+) -> Result<String, String> {
+    post_grant_body(client, base_url, admin_token, grant_revoke_body(key_id)).await
+}
+
+async fn post_grant_body(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    body: serde_json::Value,
+) -> Result<String, String> {
+    let url = format!("{}/grants", base_url.trim_end_matches('/'));
+    let response = client
+        .post(&url)
+        .bearer_auth(admin_token)
+        .json(&body)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let status = response.status();
+    let json: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
+    if !status.is_success() {
+        return Err(grant_error(status.as_u16(), &json, "POST /grants"));
+    }
+    let ok = json.get("ok").and_then(serde_json::Value::as_bool);
+    let key_id = json
+        .get("key_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    match (ok, key_id) {
+        (Some(true), Some(key_id)) => Ok(key_id),
+        _ => Err("POST /grants -> malformed success body".to_string()),
+    }
+}
+
+fn grant_error(status: u16, body: &serde_json::Value, endpoint: &str) -> String {
+    let detail = body
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("request failed");
+    format!("{endpoint} -> {status}: {detail}")
 }
 
 /// #64: one `GET /transcript` page. Auth rides the `x-corral-drive`
@@ -567,6 +714,22 @@ pub enum ApplyMsg {
     /// `Err` is a transport/endpoint failure; daemon parse failures ride an
     /// `Ok(FleetRegistry)` with `status="error"`.
     Registry(Result<FleetRegistry, String>),
+    /// #137: host-admin device/grants view arrived from `GET /grants`.
+    GrantDevices(Result<AdminGrantsView, String>),
+    /// #137: a host-admin grant set replacement or device revocation
+    /// finished. `grants` are the submitted set (empty for revoke) so the
+    /// local board ledger can reflect the change when the selected device is
+    /// this board's own key.
+    GrantMutation(GrantMutationMsg),
+}
+
+/// Completion payload for the Settings grant editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantMutationMsg {
+    pub key_id: String,
+    pub grants: Vec<String>,
+    pub revoke: bool,
+    pub result: Result<(), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -591,6 +754,86 @@ pub fn track_last_id(frame: &RawFrame, cursor: &mut Option<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grant_capabilities_are_stable_canonical_and_complete() {
+        assert_eq!(
+            GRANT_CAPABILITIES,
+            [
+                "prompt",
+                "interrupt",
+                "approve",
+                "read_tail",
+                "kill",
+                "attach",
+                "start_worktree"
+            ]
+        );
+        assert!(
+            GRANT_CAPABILITIES
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == GRANT_CAPABILITIES.len()
+        );
+    }
+
+    #[test]
+    fn grant_bodies_match_corrald_grant_script_shape() {
+        let set = grant_set_body("dev_abc", &["read_tail".into(), "prompt".into()]);
+        assert_eq!(set["action"], "set_grants");
+        assert_eq!(set["key_id"], "dev_abc");
+        assert_eq!(set["grants"], serde_json::json!(["read_tail", "prompt"]));
+
+        let revoke = grant_revoke_body("dev_abc");
+        assert_eq!(revoke["action"], "revoke");
+        assert_eq!(revoke["key_id"], "dev_abc");
+        assert_eq!(revoke["revoked"], true);
+        assert!(revoke.get("grants").is_none());
+    }
+
+    #[test]
+    fn grant_error_parsing_keeps_the_token_out_of_ui_errors() {
+        let body = serde_json::json!({
+            "error": "unknown key: dev_x",
+            "secret": "admin-token-must-not-leak",
+        });
+        let error = grant_error(404, &body, "POST /grants");
+        assert_eq!(error, "POST /grants -> 404: unknown key: dev_x");
+        assert!(!error.contains("admin-token"));
+    }
+
+    #[test]
+    fn admin_grant_views_reject_missing_required_fields() {
+        assert!(
+            serde_json::from_value::<GrantDevice>(serde_json::json!({
+                "key_id": "dev_x",
+                "grants": [],
+                "revoked": false,
+                "expiry_ts": 1,
+                "created_ts": 2,
+            }))
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<GrantDevice>(serde_json::json!({
+                "key_id": "dev_x",
+                "revoked": false,
+                "expiry_ts": 1,
+                "created_ts": 2,
+            }))
+            .is_err(),
+            "a malformed device projection must not silently become no grants"
+        );
+        assert!(
+            serde_json::from_value::<AdminGrantsView>(serde_json::json!({
+                "ok": true,
+            }))
+            .is_err(),
+            "missing devices array must fail loudly"
+        );
+    }
 
     #[test]
     fn sse_parser_parses_snapshot_delta_and_keepalive() {

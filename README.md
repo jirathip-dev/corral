@@ -34,7 +34,7 @@ board (`corrald-ui`, egui) and an iOS notifier app alongside it.
 ```
 herdr socket ─┐                  ┌─ GET /snapshot, GET /events (SSE, Last-Event-ID resume)
 git watcher ──┤ → integrator →   ├─ GET /history (event ring, ?since= &limit=)
-                                 ├─ POST /register, /step-up, /grants, GET /host-key, /audit
+                                 ├─ POST /register, /step-up, GET/POST /grants, GET /host-key, /audit
                                  ├─ POST /device-token (APNs registration, signed)
                                  └─ POST /drive (Ed25519-signed, capability-gated)
 ```

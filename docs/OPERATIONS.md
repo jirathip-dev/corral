@@ -100,6 +100,9 @@ scripts/corrald-grant.sh --key dev_<id> --revoke
 ```
 
 `CORRAL_BASE` overrides the daemon base URL (default `http://127.0.0.1:8474`).
+The desktop board exposes the same list/grant/revoke operations in
+**Settings → Device grants**; enter (or let the UI read) the same host
+`admin-token`. The CLI remains a supported alternate path.
 
 ## Remote access from iOS (Tailscale Serve)
 
@@ -273,7 +276,8 @@ before expiry.
   a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
   (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
-  `attach`. Default deny; no auto-approve.
+  `attach`, plus the fleet-level `start_worktree`. Default deny; no
+  auto-approve.
 - `GET /transcript` is NOT part of the credential-free read plane: it
   requires the `read_tail` grant (transcripts are a superset of tail
   content — same trust decision, same device registry). NOTE: this
@@ -295,6 +299,23 @@ curl -s -X POST http://127.0.0.1:8474/grants \
   -d '{"action":"set_grants","key_id":"dev_...","grants":["prompt","read_tail"]}'
 # → {"key_id":"dev_...","ok":true}
 ```
+
+- Inspect registered devices/grants for the board's selector (host admin
+  only). The projection contains `key_id`, `grants`, `revoked`,
+  `expiry_ts`, and `created_ts`; it deliberately omits public keys and APNs
+  push tokens. With no `key_id` it lists every registered device; with
+  `?key_id=<id>` it narrows to one:
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN" \
+  'http://127.0.0.1:8474/grants?key_id=dev_...'
+# → {"ok":true,"devices":[{"key_id":"dev_...","grants":["prompt","read_tail"],"revoked":false,...}]}
+```
+
+The desktop **Settings → Device grants** editor uses that read surface for
+its device selector, applies through the same `POST /grants` `set_grants`
+body, and exposes `--revoke` as an explicit button. Checking or unchecking
+capabilities replaces the full set; all unchecked is read-only.
 
 - Revoke (verified):
 
@@ -671,7 +692,7 @@ unchanged — this slice never issues a GitHub write.
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |
 | Daemon log storms: repeated `events.subscribe` `REQUEST_TIMEOUT` + re-bootstrap, fd count climbing | herdr replays pane state BEFORE answering `subscribe`; the reader never blocks on event delivery. A full bounded channel is a deterministic resynchronization signal: the reader drains the pending subscribe response, retires the stream, then a successfully subscribed global stream re-bootstraps only after the shared capped outage backoff. Accepted-then-closed global streams use that same ladder, so repeated closes cannot reset to an immediate resubscribe; the ladder resets only after a meaningful stable interval. Connect/subscribe failures use capped exponential backoff (30s maximum) and emit one WARN per outage; each pane retry task owns its live forwarder, cancels it on removal/replacement, and remains active until herdr recovers. A dropped client aborts the reader so no descriptor is leaked (#105/#117) |
 | UI can't connect | client defaults to `http://127.0.0.1:8474`; check the daemon port and that the client config (`$CORRAL_UI_CONFIG_DIR/config.json`) points at the right host |
-| UI drive buttons do nothing / `not_granted` | device has no grant for that capability — promote on the host via `POST /grants` (or the UI's audit/grants view) |
+| UI drive buttons do nothing / `not_granted` | device has no grant for that capability — promote on the host via `POST /grants` (or Settings → Device grants) |
 | `409 hash_mismatch` on approve | the client's `prompt_hash` does not match the current prompt. Hash the exact untrimmed, redacted prompt string from the snapshot's `waiting_on.prompt` byte-for-byte — never raw pane text |
 | `409 stale_approval` | approval_id refers to an earlier prompt the agent already moved past — fetch the live claim again |
 | `403 step_up_required` | destructive payload needs a fresh `POST /step-up` token (single-use, 5 min) in `X-Step-Up-Token` |

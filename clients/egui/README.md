@@ -48,10 +48,13 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   retry the SAME envelope with `X-Step-Up-Token`. The daemon is the
   authority on destructive-pattern detection; the client only mirrors the
   pattern table for a pre-send hint.
-- **Audit view** — `GET /audit` (host admin): auto-reads the host's
-  `admin-token` on localhost or uses a keychain-stored token; renders the
-  hash-chained log with the chain-validity verdict and auto-refreshes
-  while visible.
+- **Host administration** — Settings hosts `GET /audit` and the device
+  grant editor. Both use the host `admin-token` (auto-read on localhost or
+  keychain-stored), which never enters a device-signed drive flow. The
+  audit pane renders the hash-chained log with the chain-validity verdict;
+  the grant editor lists registered devices via `GET /grants`, replaces a
+  selected device's full capability set via `POST /grants`, and exposes the
+  same revoke action as `corrald-grant.sh --revoke`.
 - **Registry view** — `GET /fleet-registry` (non-auth read-only): a
   `Registry` tab fetches the same `fleets.json` source `/issues` uses and
   lists every fleet's repo, local path, orchestrator, workers, pause state,
@@ -134,7 +137,7 @@ src/
   main.rs      eframe entry (wgpu renderer) + tokio runtime
   app.rs       app state, channels, registration, drive dispatch
   model.rs     wire mirrors of src/core/model.rs + rendering helpers
-  protocol.rs  snapshot/SSE/register/audit client + SSE parser
+  protocol.rs  snapshot/SSE/register/admin-grants/audit client + SSE parser
   drive.rs     signed envelope, typing, idempotent retries, step-up
   keys.rs      keypair generation/storage (keychain + 0600 fallback)
   theme.rs     dark-dashboard palette (the only place colors live)

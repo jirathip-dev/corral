@@ -47,8 +47,9 @@ pub fn show(
         );
         ui.label(
             RichText::new(
-                "Set the admin token in Settings (Audit section); it is stored in the OS \
-                 keychain, never on disk in plaintext.",
+                "Set the admin token in Settings (Host administration); it is stored in the OS \
+                 keychain, never on disk in plaintext. The same host-side credential is used \
+                 for device grant management.",
             )
             .color(theme::ui::TEXT_MUTED),
         );

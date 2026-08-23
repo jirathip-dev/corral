@@ -16,6 +16,7 @@ src/drive/mod.rs and src/api/* on main.
 | `/host-key` | GET | none | host identity `{algorithm: "X25519", public_key}` |
 | `/register` | POST | registration token in body | `{token, public_key}` → `{key_id, grants, expiry_ts}`; read-only default |
 | `/step-up` | POST | device signature | `{key_id, signature, request}` → `{token, expires_ts}`; single-use, 5 min, freshness `\|now-ts\| < 60s` |
+| `/grants` | GET | admin Bearer token | `{ok, devices[]}` — registered device key ids, grants, revoked, expiry/created ts; no public keys or push tokens (#137) |
 | `/grants` | POST | admin Bearer token | `{action: set_grants\|revoke, key_id, grants[]}` |
 | `/audit` | GET | admin Bearer token | `{entries[], valid}` — hash-chained log, grows only on writes |
 | `/drive` | POST | device signature | signed command envelope |

@@ -216,9 +216,13 @@ Capabilities, grant-gated per device (see "Grants model" below):
   store is empty — a cursor is only a valid delta-base for state you
   actually hold (a reset device that resumes deltas-only would otherwise
   never see a snapshot).
-- **Tail 200** (`read_tail`): bounded 200-line tail via signed `/drive`
-  — not `/transcript`; the phone's read surface is bounded-tail only in
-  this phase (D16).
+- **Tail 200** (`read_tail`): bounded 200-line tail via signed `/drive`.
+- **Full chat** (`read_tail`): paged, newest-first transcript via signed
+  `GET /transcript`, using the same grant but a distinct on-demand view.
+- **Interrupt** (`interrupt`): signed `/drive` stop for a live agent.
+- **Kill** (`kill`) and **Attach** (`attach`): signed `/drive` controls.
+  Kill is destructive by capability and takes the same Face ID step-up
+  path as other destructive commands; Attach does not weaken that gate.
 - **Prompt** (`prompt`) and **Approve / Deny / Continue** (`approve`):
   canned replies answer a waiting agent in-app; the same actions work
   from the lock-screen notification, validated against the live claim
@@ -227,13 +231,20 @@ Capabilities, grant-gated per device (see "Grants model" below):
   returns `stale_agent` (409 before dispatch when observed). The app removes
   the stale row, shows a refresh banner, and fetches one fresh snapshot; the
   SSE stream then supplies the authoritative replacement row.
-- Biometric step-up (Face ID) runs in-app for destructive payloads; the
-  lock-screen path is bounded to non-destructive canned replies.
+- Biometric step-up (Face ID) runs in-app for destructive payloads and
+  Kill; the lock-screen path is bounded to non-destructive canned replies.
 
 Promote the phone's key (never hand the admin token to the device):
 
 ```sh
 scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve
+```
+
+`kill` and `attach` are deliberately not in that baseline promotion. Add
+them explicitly only after a host-side grant decision:
+
+```sh
+scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve,kill,attach
 ```
 
 Diagnosing a stuck board: since #92 every stream-layer failure sets a
@@ -426,9 +437,9 @@ corrald digest --config-dir <path>      # non-default config dir
 `GET /transcript?agent=<id>` returns one newest-first page of the
 agent's session transcript, redacted (D-083) before it leaves the
 transcript module. It is an on-demand VIEW fetch — never pushed (D5
-stays intact), and the phone client does not call it in this phase (D16:
-the phone's read surface is the bounded Tail 200 via `/drive`;
-`/transcript` is desktop/egui-only for now).
+stays intact). Both the desktop egui board and the iOS FleetNotifier
+app page through it; the iOS Full chat view is separate from the bounded
+Tail 200 view.
 
 Auth is the drive plane's `read_tail` trust decision on a GET: put the
 exact `SignedDrive` JSON you would POST to `/drive` (capability
@@ -683,8 +694,8 @@ unchanged — this slice never issues a GitHub write.
 | `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
-| Tail 200 / prompt / approve buttons missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve`. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
-| Tail 200 / prompt / approve buttons still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the controls still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
+| Tail 200 / Full chat / prompt / interrupt / Kill / Attach / approve controls missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve`; add `kill,attach` explicitly for those two controls. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| Tail 200 / Full chat / prompt / interrupt / Kill / Attach / approve controls still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the controls still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
 | `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |

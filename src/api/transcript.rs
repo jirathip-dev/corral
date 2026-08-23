@@ -62,8 +62,9 @@
 //! (D-083 inside the transcript module).
 //!
 //! This is an on-demand VIEW fetch — explicitly not in conflict with
-//! D5's bounded-push rule: nothing here is pushed, and the phone client
-//! does not call it in this phase (D16: phone stays bounded-tail only).
+//! D5's bounded-push rule: nothing here is pushed. Both the desktop egui
+//! client and the iOS FleetNotifier client page through this endpoint
+//! under the same `read_tail` grant (#64 / #142).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

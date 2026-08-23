@@ -45,6 +45,27 @@ final class CanonicalBytesTests: XCTestCase {
                        #"{"request_id":"interrupt-1","capability":"interrupt","target":"herdr:a","payload":null,"rev":4}"#)
     }
 
+    func testKillAndAttachControlsUseNullPayload() {
+        XCTAssertEqual(CanonicalJSON.encode(CanonicalJSON.killPayload()), "null")
+        XCTAssertEqual(CanonicalJSON.encode(CanonicalJSON.attachPayload()), "null")
+        let kill = CanonicalJSON.envelopeBytes(requestId: "kill-1", capability: "kill",
+                                               target: "herdr:a",
+                                               payload: CanonicalJSON.killPayload(), rev: 4)
+        XCTAssertEqual(String(data: kill, encoding: .utf8),
+                       #"{"request_id":"kill-1","capability":"kill","target":"herdr:a","payload":null,"rev":4}"#)
+    }
+
+    func testTranscriptPayloadOmitsCursorForNewestPage() {
+        let newest = CanonicalJSON.encode(CanonicalJSON.transcriptPayload(ts: 1_700_000_000,
+                                                                          cursor: nil,
+                                                                          limit: 50))
+        XCTAssertEqual(newest, #"{"limit":50,"ts":1700000000}"#)
+        let older = CanonicalJSON.encode(CanonicalJSON.transcriptPayload(ts: 1_700_000_000,
+                                                                         cursor: "b.5.aa",
+                                                                         limit: 50))
+        XCTAssertEqual(older, #"{"cursor":"b.5.aa","limit":50,"ts":1700000000}"#)
+    }
+
     func testDriveResponseTailResultDecodesIntoVisibleLines() throws {
         let data = Data(#"{"request_id":"r","ok":true,"rev":4,"result":{"lines":["one","two"]}}"#.utf8)
         let response = try JSONDecoder().decode(DriveResponse.self, from: data)
@@ -803,6 +824,77 @@ final class StepUpDriveFlowTests: XCTestCase {
         XCTAssertEqual(stepUpRequests.count, 1)
     }
 
+    func testKillForceStepUpWithNullPayload() async throws {
+        let session = scriptedSession()
+        ScriptedURLProtocol.requests = []
+        ScriptedURLProtocol.lastDriveHeaders = [:]
+        ScriptedURLProtocol.responses = [
+            URL(string: "http://daemon/step-up")!: (HTTPURLResponse(url: URL(string: "http://daemon/step-up")!,
+                                                                    statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                                                    Data(#"{"token":"tok-kill","key_id":"k","ttl_secs":300,"expires_ts":1}"#.utf8)),
+            URL(string: "http://daemon/drive")!: (HTTPURLResponse(url: URL(string: "http://daemon/drive")!,
+                                                                  statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                                                  Data(#"{"request_id":"kill","ok":true,"rev":8}"#.utf8)),
+        ]
+        let biometricsCalled = LockingCounter()
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let result = await client.drive(capability: .kill, target: "herdr:ses-1",
+                                        payload: CanonicalJSON.killPayload(), rev: nil,
+                                        keyId: "k", signer: signer(),
+                                        biometrics: Biometrics(evaluate: {
+                                            biometricsCalled.increment()
+                                            return true
+                                        }), forceStepUp: true)
+        guard case .dispatched = result else {
+            return XCTFail("kill must dispatch after forced step-up, got \(result)")
+        }
+        XCTAssertEqual(biometricsCalled.value, 1)
+        XCTAssertEqual(ScriptedURLProtocol.lastDriveHeaders["X-Step-Up-Token"], "tok-kill")
+        XCTAssertEqual(ScriptedURLProtocol.requests.filter { $0.url?.path == "/step-up" }.count, 1)
+    }
+
+    func testTranscriptHeaderIsAsciiAndCarriesSignedReadTailEnvelope() throws {
+        let header = DriveClient.transcriptAuthHeader(
+            keyId: "k", signer: signer(), target: "herdr:λ", cursor: nil,
+            limit: 50, ts: 1_700_000_000, requestId: "transcript-1")
+        XCTAssertTrue(header.utf8.allSatisfy { $0 < 0x80 })
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(header.utf8))
+            as? [String: Any])
+        let envelope = try XCTUnwrap(root["envelope"] as? [String: Any])
+        XCTAssertEqual(envelope["capability"] as? String, "read_tail")
+        XCTAssertEqual(envelope["target"] as? String, "herdr:λ")
+        XCTAssertNil(envelope["rev"])
+        let payload = try XCTUnwrap(envelope["payload"] as? [String: Any])
+        XCTAssertEqual(payload["limit"] as? Int, 50)
+        XCTAssertNil(payload["cursor"])
+        XCTAssertTrue((payload["ts"] as? UInt64 ?? 0) > 0)
+    }
+
+    func testFetchTranscriptSendsSignedHeaderAndDecodesPage() async throws {
+        let session = scriptedSession()
+        ScriptedURLProtocol.requests = []
+        let url = URL(string: "http://daemon/transcript?agent=abc")!
+        ScriptedURLProtocol.responses = [
+            url: (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                  transcriptPageJSON(agent: "abc",
+                                     entries: [("assistant", "hello", 1)],
+                                     cursor: "b.1.aa"))
+        ]
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+        let header = DriveClient.transcriptAuthHeader(keyId: "k", signer: signer(),
+                                                      target: "abc", cursor: nil,
+                                                      ts: 1_700_000_000,
+                                                      requestId: "transcript-1")
+        let result = await client.fetchTranscript(agentId: "abc", authHeader: header)
+        let page = try result.get()
+        XCTAssertEqual(page.session, "claude:s1.jsonl")
+        XCTAssertEqual(page.entries.count, 1)
+        XCTAssertEqual(page.nextCursor, "b.1.aa")
+        XCTAssertEqual(ScriptedURLProtocol.requests.first?.url?.query, "agent=abc")
+        XCTAssertEqual(ScriptedURLProtocol.requests.first?.value(forHTTPHeaderField: "x-corral-drive"),
+                       header)
+    }
+
     /// Acceptance #3 (negative): a simple approve reply dispatches without
     /// any biometrics call.
     func testSimpleApproveReplySkipsBiometrics() async throws {
@@ -1216,6 +1308,108 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertEqual(approvalPayload["approval_id"] as? String, live.waitingOn?.approvalId)
         XCTAssertEqual(approvalPayload["prompt_hash"] as? String, live.waitingOn?.promptHash)
         XCTAssertEqual(approvalPayload["choice"] as? String, "y")
+    }
+
+    func testKillAndAttachDispatchThroughAppModelWithInFlightGuard() async throws {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: [
+                "/step-up": Data(#"{"token":"tok-kill","key_id":"k","ttl_secs":300,"expires_ts":1}"#.utf8),
+                "/drive": Data(#"{"request_id":"r","ok":true,"rev":7}"#.utf8),
+            ],
+            gates: ["/drive": gate])
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let model = AppModel()
+        let live = agent("herdr:kill-attach", capabilities: ["kill", "attach"])
+        configure(model, agent: live, grants: ["kill", "attach"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.driveKill(agent: live, driveClient: client,
+                        biometrics: Biometrics(evaluate: { true }))
+        let killStarted = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(killStarted, "step-up plus drive must both be observed")
+        model.driveKill(agent: live, driveClient: client,
+                        biometrics: Biometrics(evaluate: { true }))
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/drive" }.count, 1,
+                       "a second Kill while in flight must not sign a duplicate envelope")
+        XCTAssertTrue(model.isActionInFlight(agentId: live.agentId, capability: .kill))
+
+        gate.release()
+        let killCompleted = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(killCompleted)
+
+        model.driveAttach(agent: live, driveClient: client)
+        let attachStarted = await script.log.observed.waitFor(atLeast: 3)
+        XCTAssertTrue(attachStarted)
+        let attachCompleted = await script.log.completed.waitFor(atLeast: 3)
+        XCTAssertTrue(attachCompleted)
+
+        let driveRequests = script.log.requests.filter { $0.url?.path == "/drive" }
+        XCTAssertEqual(driveRequests.count, 2)
+        let killEnvelope = try envelope(of: driveRequests[0])
+        XCTAssertEqual(killEnvelope["capability"] as? String, "kill")
+        XCTAssertTrue(killEnvelope["payload"] is NSNull)
+        let attachEnvelope = try envelope(of: driveRequests[1])
+        XCTAssertEqual(attachEnvelope["capability"] as? String, "attach")
+        XCTAssertTrue(attachEnvelope["payload"] is NSNull)
+        XCTAssertEqual(killEnvelope["target"] as? String, live.agentId)
+        XCTAssertEqual(attachEnvelope["target"] as? String, live.agentId)
+    }
+
+    func testFullChatRequiresReadTailGrantAndNeverFetchesWithoutIt() {
+        let script = DeterministicDriveScript(
+            responses: ["/transcript": transcriptPageJSON(entries: [("assistant", "hi", 1)])])
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let model = AppModel()
+        let live = agent("herdr:no-grant", capabilities: ["read_tail", "kill", "attach"])
+        configure(model, agent: live, grants: [])
+        model.openTranscript(agentId: live.agentId,
+                             driveClient: DriveClient(host: URL(string: "http://daemon")!,
+                                                      session: session))
+        XCTAssertTrue(script.log.requests.isEmpty,
+                      "full chat must never fetch without a read_tail grant")
+        XCTAssertNil(model.fleet.transcript(live.agentId))
+        XCTAssertEqual(model.banner?.kind, "not_granted")
+    }
+
+    func testFullChatFetchIsReachableAndPagesAppend() async throws {
+        let script = DeterministicDriveScript(
+            responses: ["/transcript": transcriptPageJSON(
+                entries: [("assistant", "newest", 2), ("user", "older", 1)],
+                cursor: "b.2.aa")])
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let model = AppModel()
+        let live = agent("herdr:full-chat", capabilities: ["read_tail"])
+        configure(model, agent: live, grants: ["read_tail"])
+        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
+
+        model.openTranscript(agentId: live.agentId, driveClient: client)
+        let first = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(first)
+        let firstCompleted = await script.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(firstCompleted)
+        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 2)
+
+        model.loadOlderTranscript(agentId: live.agentId, driveClient: client)
+        let second = await script.log.observed.waitFor(atLeast: 2)
+        XCTAssertTrue(second)
+        let secondCompleted = await script.log.completed.waitFor(atLeast: 2)
+        XCTAssertTrue(secondCompleted)
+        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 4)
+        XCTAssertEqual(script.log.requests.count, 2, "each page must be requested separately")
     }
 
     func testCancellationDuringBiometricsSendsNoStepUpOrDrive() async {
@@ -2065,14 +2259,14 @@ final class RowActionTests: XCTestCase {
                      waitingOn: waitingOn)
     }
 
-    /// A maximally-capable blocked row exposes the four supported detail
-    /// actions. Kill/attach remain outside this UI surface.
-    func testEnabledActionsIncludeInterruptButNeverKillOrAttach() {
+    /// A maximally-capable blocked row exposes every board drive surface,
+    /// including Null-payload Kill/Attach and the distinct full chat view.
+    func testEnabledActionsIncludeKillAttachAndFullChat() {
         let actions = BoardModel.rowActions(
             agent: agent("herdr:x", state: .blocked,
                          capabilities: Capability.allCases.map(\.rawValue)),
             grants: Set(Capability.allCases))
-        XCTAssertEqual(actions, [.tail, .prompt, .interrupt, .approveDeny])
+        XCTAssertEqual(actions, [.tail, .fullChat, .prompt, .interrupt, .kill, .attach, .approveDeny])
     }
 
     /// Both the agent capability and the device grant must hold. The detail
@@ -2081,7 +2275,7 @@ final class RowActionTests: XCTestCase {
         let capable = agent("herdr:x", state: .blocked,
                             capabilities: ["read_tail", "prompt", "interrupt", "approve"])
         XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: [.prompt, .readTail]),
-                       [.tail, .prompt])
+                       [.tail, .fullChat, .prompt])
 
         let incapable = agent("herdr:y", state: .blocked, capabilities: [])
         XCTAssertEqual(BoardModel.rowActions(agent: incapable,
@@ -2097,7 +2291,34 @@ final class RowActionTests: XCTestCase {
         })
 
         let working = agent("herdr:w", state: .working, capabilities: ["prompt", "read_tail"])
-        XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]), [.tail, .prompt])
+        XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]),
+                       [.tail, .fullChat, .prompt])
+    }
+
+    /// A missing grant and an unadvertised capability must never share one
+    /// disabled explanation for Kill, Attach, Full chat, or Tail.
+    func testDisabledReasonsDistinguishGrantFromNotImplemented() {
+        let capable = agent("herdr:grants", state: .working,
+                            capabilities: Capability.allCases.map(\.rawValue))
+        for action in [RowAction.kill, .attach, .fullChat, .tail] {
+            let item = BoardModel.actionAvailability(agent: capable, grants: [])
+                .first { $0.action == action }
+            XCTAssertEqual(item?.isEnabled, false)
+            XCTAssertTrue(item?.disabledReason?.contains("grant") == true,
+                          "\(action) must name the missing grant: \(String(describing: item?.disabledReason))")
+            XCTAssertFalse(item?.disabledReason?.contains("not implemented") == true)
+        }
+
+        let incapable = agent("herdr:incapable", state: .working, capabilities: [])
+        for action in [RowAction.kill, .attach, .fullChat, .tail] {
+            let item = BoardModel.actionAvailability(agent: incapable,
+                                                     grants: Set(Capability.allCases))
+                .first { $0.action == action }
+            XCTAssertEqual(item?.isEnabled, false)
+            XCTAssertTrue(item?.disabledReason?.contains("not implemented") == true,
+                          "\(action) must say not implemented: \(String(describing: item?.disabledReason))")
+            XCTAssertFalse(item?.disabledReason?.contains("grant") == true)
+        }
     }
 
     /// The model and the view agree about approval: a blocked agent without
@@ -2120,6 +2341,139 @@ final class RowActionTests: XCTestCase {
             .first { $0.action == .approveDeny }
         XCTAssertEqual(approval?.isEnabled, false)
         XCTAssertEqual(approval?.disabledReason, "Crash states do not accept approval replies.")
+    }
+}
+
+// MARK: - Full chat transcript pane and store (#142 / #64)
+
+private func transcriptPageJSON(agent: String = "herdr:x",
+                                entries: [(role: String, text: String, ts: UInt64?)],
+                                cursor: String? = nil,
+                                skipped: Int = 0) -> Data {
+    let entriesJSON = entries.map { entry -> String in
+        let ts = entry.ts.map { ", \"ts\": \($0)" } ?? ""
+        return #"{"role":"\#(entry.role)","text":"\#(entry.text)"\#(ts)}"#
+    }.joined(separator: ",")
+    let cursorJSON = cursor.map { #", "next_cursor":"\#($0)""# } ?? ""
+    let json = #"{"agent":"\#(agent)","store":"claude","session":"claude:s1.jsonl","bind":"session_id","stores_unavailable":[],"entries":[\#(entriesJSON)]\#(cursorJSON),"skipped":\#(skipped)}"#
+    return Data(json.utf8)
+}
+
+final class TranscriptPaneTests: XCTestCase {
+    private func page(_ count: Int, cursor: String? = "b.1.aa") throws -> TranscriptPage {
+        let entries = (0..<count).map { index -> TranscriptEntry in
+            TranscriptEntry(role: index % 2 == 0 ? "assistant" : "user",
+                            text: "entry \(index)",
+                            ts: 1_700_000_000_000 + UInt64(index))
+        }
+        return try JSONDecoder().decode(TranscriptPage.self,
+                                        from: transcriptPageJSON(entries: entries,
+                                                                 cursor: cursor))
+    }
+
+    func testPagesAppendAndWindowSlidesBounded() throws {
+        var pane = TranscriptPane()
+        for _ in 0..<(TranscriptLimits.maxEntries / 100) {
+            pane.apply(try page(100, cursor: "b.1.aa"))
+        }
+        XCTAssertEqual(pane.entries.count, TranscriptLimits.maxEntries)
+        XCTAssertEqual(pane.baseOffset, 0)
+        pane.apply(try page(100, cursor: "b.2.aa"))
+        XCTAssertEqual(pane.entries.count, TranscriptLimits.maxEntries)
+        XCTAssertEqual(pane.baseOffset, 100)
+        XCTAssertTrue(pane.canLoadOlder)
+    }
+
+    func testFailureKeepsEntriesAndOffersRetryUntilStaleCursor() throws {
+        var pane = TranscriptPane()
+        pane.apply(try page(2))
+        pane.beginFetch()
+        pane.apply(TranscriptFailure(kind: "query_timeout", message: "slow store",
+                                     candidates: []))
+        XCTAssertEqual(pane.entries.count, 2)
+        XCTAssertFalse(pane.canLoadOlder)
+        XCTAssertTrue(pane.canRetry)
+        pane.apply(TranscriptFailure(kind: "bad_cursor", message: "stale",
+                                     candidates: []))
+        XCTAssertFalse(pane.canRetry)
+    }
+
+    func testDisplaySliceIsBoundedOnUTF8Boundary() {
+        let text = String(repeating: "λ", count: TranscriptLimits.detailMaxBytes)
+        let (shown, truncated) = TranscriptText.displaySlice(text)
+        XCTAssertTrue(truncated)
+        XCTAssertLessThanOrEqual(shown.utf8.count, TranscriptLimits.detailMaxBytes)
+        XCTAssertTrue(shown.utf8.count + 2 <= TranscriptLimits.detailMaxBytes,
+                      "the cut must happen before a multi-byte scalar")
+    }
+}
+
+@MainActor
+final class TranscriptStoreTests: XCTestCase {
+    private var agent: Agent {
+        Agent(agentId: "herdr:x", state: .working, capabilities: ["read_tail"],
+              displayName: "x")
+    }
+
+    func testNewestFetchStoresPageAndPrunesOnDeletion() throws {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: [agent.agentId: agent])))
+        let fetch = store.prepareTranscriptFetch(agent: agent.agentId, cursor: nil,
+                                                 newest: true)
+        let generation = try XCTUnwrap(fetch?.generation)
+        let page = try JSONDecoder().decode(TranscriptPage.self,
+                                            from: transcriptPageJSON(entries: [("assistant", "hi", 1)]))
+        XCTAssertTrue(store.foldTranscriptPage(page, for: agent.agentId,
+                                               generation: generation))
+        XCTAssertEqual(store.transcript(agent.agentId)?.entries.count, 1)
+
+        store.removeAgent(agent.agentId)
+        XCTAssertFalse(store.foldTranscriptPage(page, for: agent.agentId,
+                                                generation: generation),
+                       "a late page must not resurrect a deleted agent")
+        XCTAssertNil(store.transcript(agent.agentId))
+    }
+
+    func testStaleCursorReloadsOnceThenSurfacesSecondFailure() throws {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: [agent.agentId: agent])))
+        let fetch = store.prepareTranscriptFetch(agent: agent.agentId, cursor: nil,
+                                                 newest: true)
+        let generation = try XCTUnwrap(fetch?.generation)
+        let stale = TranscriptFailure(kind: "bad_cursor", message: "rebound",
+                                      candidates: [])
+        XCTAssertEqual(store.foldTranscriptFailure(stale, for: agent.agentId,
+                                                   generation: generation),
+                       .needsReload)
+        let reloaded = try XCTUnwrap(store.transcript(agent.agentId))
+        XCTAssertTrue(reloaded.autoReloaded)
+        let autoFetch = store.prepareTranscriptFetch(agent: agent.agentId,
+                                                     cursor: nil, newest: true,
+                                                     autoReload: true)
+        XCTAssertEqual(autoFetch?.generation, reloaded.generation,
+                       "the automatic reload continues the already-reset pane")
+        XCTAssertTrue(try XCTUnwrap(store.transcript(agent.agentId)).autoReloaded)
+        XCTAssertEqual(store.foldTranscriptFailure(stale, for: agent.agentId,
+                                                   generation: autoFetch?.generation ?? 0),
+                       .applied)
+        XCTAssertFalse(try XCTUnwrap(store.transcript(agent.agentId)).canRetry)
+    }
+
+    func testCancelledFetchClearsLoadingSoExplicitReloadCanRestart() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: [agent.agentId: agent])))
+        let fetch = store.prepareTranscriptFetch(agent: agent.agentId,
+                                                 cursor: nil, newest: true)
+        let generation = try? XCTUnwrap(fetch?.generation)
+        store.cancelTranscriptFetch(agent: agent.agentId, generation: generation ?? 0)
+        XCTAssertFalse(try XCTUnwrap(store.transcript(agent.agentId)).loading)
+        let restarted = store.prepareTranscriptFetch(agent: agent.agentId,
+                                                     cursor: nil, newest: true)
+        XCTAssertNotNil(restarted)
+        XCTAssertNotEqual(restarted?.generation, generation)
     }
 }
 

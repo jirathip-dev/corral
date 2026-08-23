@@ -467,3 +467,197 @@ enum Claim {
         "\(agentId):\(promptHash)"
     }
 }
+
+// MARK: - Full chat transcript (D35, GET /transcript)
+
+/// Bounded client-side window, mirroring the egui board's transcript pane:
+/// at most 1000 entries and about 4 MiB of held text. The walk toward the
+/// older end keeps going; NEWEST-loaded entries slide out of a small window
+/// rather than dead-ending the reader.
+enum TranscriptLimits {
+    static let maxEntries = 1000
+    static let maxTextBytes = 4 * 1024 * 1024
+    static let pageLimit = 50
+    static let detailMaxBytes = 64 * 1024
+}
+
+/// One daemon transcript entry, already redacted by the server (D-083).
+struct TranscriptEntry: Codable, Equatable, Sendable {
+    var role: String
+    var text: String
+    /// Epoch millis when the store carried one; absent renders blank.
+    var ts: UInt64?
+}
+
+/// Exactly the 200 body of `GET /transcript?agent=<id>`.
+struct TranscriptPage: Codable, Equatable, Sendable {
+    var agent: String
+    var store: String
+    var session: String
+    var bind: String
+    var storesUnavailable: [String]
+    var entries: [TranscriptEntry]
+    var nextCursor: String?
+    var skipped: Int
+
+    enum CodingKeys: String, CodingKey {
+        case agent, store, session, bind, entries, skipped
+        case storesUnavailable = "stores_unavailable"
+        case nextCursor = "next_cursor"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try c.decode(String.self, forKey: .agent)
+        store = try c.decode(String.self, forKey: .store)
+        session = try c.decode(String.self, forKey: .session)
+        bind = try c.decode(String.self, forKey: .bind)
+        storesUnavailable = try c.decodeIfPresent([String].self, forKey: .storesUnavailable) ?? []
+        entries = try c.decodeIfPresent([TranscriptEntry].self, forKey: .entries) ?? []
+        nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+    }
+}
+
+/// One typed `{kind, message, candidates?}` failure from `/transcript`.
+struct TranscriptFailure: Equatable, Sendable, Error {
+    var kind: String
+    var message: String
+    var candidates: [String]
+
+    private struct WireBody: Decodable {
+        var kind: String?
+        var message: String?
+        var candidates: [Candidate]?
+    }
+
+    private struct Candidate: Decodable {
+        var label: String
+    }
+
+    static func from(status: Int, data: Data) -> TranscriptFailure {
+        if let body = try? JSONDecoder().decode(WireBody.self, from: data) {
+            return TranscriptFailure(
+                kind: body.kind ?? "transport",
+                message: body.message ?? "HTTP \(status)",
+                candidates: body.candidates?.map(\.label) ?? []
+            )
+        }
+        return TranscriptFailure(kind: "transport", message: "HTTP \(status)", candidates: [])
+    }
+
+    var isStaleCursor: Bool { kind == "bad_cursor" }
+    var isNotGranted: Bool { kind == "not_granted" }
+}
+
+/// Per-agent paged transcript state, pure and testable like the egui pane.
+/// Entries are newest-first; `baseOffset` counts newest-loaded entries that
+/// slid out of the bounded window.
+struct TranscriptPane: Equatable, Sendable {
+    var entries: [TranscriptEntry] = []
+    var baseOffset = 0
+    var heldBytes = 0
+    var nextCursor: String?
+    var pages = 0
+    var session = ""
+    var store = ""
+    var bind = ""
+    var storesUnavailable: [String] = []
+    var skipped = 0
+    var loading = false
+    var error: TranscriptFailure?
+    var autoReloaded = false
+    var generation: UInt64 = 0
+
+    var canLoadOlder: Bool {
+        !loading && error == nil && nextCursor != nil
+    }
+
+    var canRetry: Bool {
+        !loading && error.map { !$0.isStaleCursor } == true
+    }
+
+    mutating func apply(_ page: TranscriptPage) {
+        loading = false
+        error = nil
+        session = page.session
+        store = page.store
+        if bind.isEmpty || page.bind == "worktree" {
+            bind = page.bind
+        }
+        for store in page.storesUnavailable where !storesUnavailable.contains(store) {
+            storesUnavailable.append(store)
+        }
+        skipped += page.skipped
+        nextCursor = page.nextCursor
+        for entry in page.entries {
+            heldBytes += entry.text.utf8.count
+        }
+        entries.append(contentsOf: page.entries)
+        pages += 1
+        slideWindow()
+    }
+
+    mutating func apply(_ failure: TranscriptFailure) {
+        loading = false
+        error = failure
+    }
+
+    /// Fresh, empty pane under a new generation. `keepAutoReloaded` preserves
+    /// the one-shot bad-cursor guard; false is an explicit user reload.
+    mutating func reset(generation: UInt64, keepAutoReloaded: Bool) {
+        let auto = keepAutoReloaded ? autoReloaded : false
+        self = TranscriptPane(loading: true, autoReloaded: auto,
+                              generation: generation)
+    }
+
+    /// Mark a retry/older-page fetch in flight while preserving held state.
+    mutating func beginFetch() {
+        loading = true
+        error = nil
+    }
+
+    private mutating func slideWindow() {
+        var drop = 0
+        var bytes = heldBytes
+        while entries.count - drop > 1
+                && (entries.count - drop > TranscriptLimits.maxEntries
+                    || bytes > TranscriptLimits.maxTextBytes) {
+            bytes -= entries[drop].text.utf8.count
+            drop += 1
+        }
+        guard drop > 0 else { return }
+        entries.removeFirst(drop)
+        heldBytes = bytes
+        baseOffset += drop
+    }
+}
+
+enum TranscriptText {
+    static func errorText(_ error: TranscriptFailure) -> String {
+        switch error.kind {
+        case "not_granted":
+            return "requires the read_tail grant — ask the host."
+        case "ambiguous_session":
+            return error.message
+        case "bad_cursor":
+            return "session changed while paging — reload from the newest page."
+        default:
+            return "\(error.kind): \(error.message)"
+        }
+    }
+
+    /// Bounded display slice for one potentially large entry. The daemon
+    /// truncates pages, but the client never trusts that cap with layout.
+    static func displaySlice(_ text: String) -> (String, Bool) {
+        guard text.utf8.count > TranscriptLimits.detailMaxBytes else {
+            return (text, false)
+        }
+        let bytes = Array(text.utf8)
+        var end = TranscriptLimits.detailMaxBytes
+        while end > 0 && (bytes[end - 1] & 0xC0) == 0x80 {
+            end -= 1
+        }
+        return (String(decoding: bytes[..<end], as: UTF8.self), true)
+    }
+}

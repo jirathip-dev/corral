@@ -29,6 +29,9 @@ final class FleetStore: ObservableObject {
     /// Last successful bounded read_tail result per agent. This is deliberately
     /// client-side display state, not part of the SSE read model.
     @Published private(set) var tails: [String: [String]] = [:]
+    /// Lazy, bounded per-agent full-chat panes. Never prefetched: a pane is
+    /// created only when the detail surface asks the daemon for a page.
+    @Published private(set) var transcripts: [String: TranscriptPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
 
@@ -83,6 +86,9 @@ final class FleetStore: ObservableObject {
     private let cursorDefaults: UserDefaults
     /// Shadow of last-seen agent states for done-transition detection.
     private var previousStates: [String: AgentState] = [:]
+    /// Monotonic pane-generation source; each reset mints a fresh value so a
+    /// late response from an older page cannot fold into the current pane.
+    private var transcriptGeneration: UInt64 = 0
 
     init(defaults: UserDefaults = .standard) {
         self.cursorDefaults = defaults
@@ -110,6 +116,7 @@ final class FleetStore: ObservableObject {
         case .snapshot(let snapshot):
             agents = snapshot.agents
             tails = tails.filter { snapshot.agents[$0.key] != nil }
+            transcripts = transcripts.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
         case .delta(let delta):
@@ -120,6 +127,7 @@ final class FleetStore: ObservableObject {
             for id in delta.del {
                 next.removeValue(forKey: id)
                 tails.removeValue(forKey: id)
+                transcripts.removeValue(forKey: id)
             }
             agents = next
             lastEventId = delta.rev
@@ -203,13 +211,17 @@ final class FleetStore: ObservableObject {
         case .snapshot(let snapshot):
             agents = snapshot.agents
             tails = tails.filter { snapshot.agents[$0.key] != nil }
+            transcripts = transcripts.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
         case .delta(let delta):
             var next = agents
             for agent in delta.upd { next[agent.agentId] = agent }
             for id in delta.del { next.removeValue(forKey: id) }
-            for id in delta.del { tails.removeValue(forKey: id) }
+            for id in delta.del {
+                tails.removeValue(forKey: id)
+                transcripts.removeValue(forKey: id)
+            }
             agents = next
             lastEventId = delta.rev
             cursorBox.write(delta.rev)
@@ -224,6 +236,117 @@ final class FleetStore: ObservableObject {
 
     func tail(for id: String) -> [String]? {
         tails[id]
+    }
+
+    func transcript(_ id: String) -> TranscriptPane? {
+        transcripts[id]
+    }
+
+    struct TranscriptFetch: Equatable, Sendable {
+        let generation: UInt64
+        let cursor: String?
+    }
+
+    /// Create/load the pane and mark one fetch in flight. `newest` resets
+    /// under a fresh generation; `cursor` is only meaningful when extending
+    /// an existing walk. Returns nil when the agent is gone, a fetch is
+    /// already in flight, or no pane exists for an older-page request.
+    func prepareTranscriptFetch(agent id: String, cursor: String?,
+                                newest: Bool, autoReload: Bool = false) -> TranscriptFetch? {
+        guard agents[id] != nil else { return nil }
+        if autoReload {
+            guard let pane = transcripts[id], pane.loading,
+                  pane.autoReloaded, pane.generation > 0 else {
+                return nil
+            }
+            var next = pane
+            next.beginFetch()
+            transcripts[id] = next
+            return TranscriptFetch(generation: next.generation, cursor: nil)
+        }
+        if let pane = transcripts[id] {
+            guard !pane.loading else { return nil }
+            guard newest || pane.generation > 0 else { return nil }
+        } else {
+            guard newest else { return nil }
+        }
+        var pane = transcripts[id] ?? TranscriptPane()
+        if newest || pane.generation == 0 {
+            transcriptGeneration &+= 1
+            pane.reset(generation: transcriptGeneration, keepAutoReloaded: false)
+        } else {
+            pane.beginFetch()
+        }
+        transcripts[id] = pane
+        return TranscriptFetch(generation: pane.generation, cursor: cursor)
+    }
+
+    @discardableResult
+    func foldTranscriptPage(_ page: TranscriptPage, for id: String,
+                            generation: UInt64) -> Bool {
+        guard agents[id] != nil,
+              var pane = transcripts[id],
+              pane.generation == generation else {
+            return false
+        }
+        pane.apply(page)
+        transcripts[id] = pane
+        return true
+    }
+
+    enum TranscriptFoldOutcome: Equatable, Sendable {
+        case applied
+        case dropped
+        case needsReload
+        case notGranted
+    }
+
+    func foldTranscriptFailure(_ failure: TranscriptFailure, for id: String,
+                               generation: UInt64) -> TranscriptFoldOutcome {
+        guard agents[id] != nil,
+              var pane = transcripts[id],
+              pane.generation == generation else {
+            return .dropped
+        }
+        guard !failure.isStaleCursor || !pane.autoReloaded else {
+            pane.apply(failure)
+            transcripts[id] = pane
+            return .applied
+        }
+        if failure.isStaleCursor {
+            transcriptGeneration &+= 1
+            pane.reset(generation: transcriptGeneration, keepAutoReloaded: true)
+            transcripts[id] = pane
+            return .needsReload
+        }
+        pane.apply(failure)
+        transcripts[id] = pane
+        return failure.isNotGranted ? .notGranted : .applied
+    }
+
+    /// Surface a local "cannot fetch" failure without ever issuing network
+    /// work (for example, the device is not registered or demo has no store).
+    func noteTranscriptFailure(_ failure: TranscriptFailure, for id: String) {
+        guard agents[id] != nil else { return }
+        var pane = transcripts[id] ?? TranscriptPane()
+        if pane.generation == 0 {
+            transcriptGeneration &+= 1
+            pane.reset(generation: transcriptGeneration, keepAutoReloaded: false)
+        }
+        pane.apply(failure)
+        transcripts[id] = pane
+    }
+
+    /// A cancelled page fetch must not leave the pane permanently loading:
+    /// clear the in-flight mark so an explicit reload can reset the walk.
+    func cancelTranscriptFetch(agent id: String, generation: UInt64) {
+        guard agents[id] != nil,
+              var pane = transcripts[id],
+              pane.generation == generation else {
+            return
+        }
+        pane.loading = false
+        transcripts[id] = pane
     }
 
     /// Store only the daemon's bounded result, with a small client-side
@@ -248,6 +371,7 @@ final class FleetStore: ObservableObject {
     func removeAgent(_ id: String) {
         agents.removeValue(forKey: id)
         tails.removeValue(forKey: id)
+        transcripts.removeValue(forKey: id)
         previousStates.removeValue(forKey: id)
         streamSeen.removeValue(forKey: id)
     }
@@ -388,6 +512,7 @@ final class FleetStore: ObservableObject {
         disconnect()
         agents = [:]
         tails = [:]
+        transcripts = [:]
         lastEventId = nil
         cursorBox.write(nil)
         // A reset abandons the delta base; retaining it would let a later
@@ -402,6 +527,7 @@ final class FleetStore: ObservableObject {
     func seedDemo(agents: [String: Agent], rev: UInt64) {
         self.agents = agents
         tails = tails.filter { agents[$0.key] != nil }
+        transcripts = transcripts.filter { agents[$0.key] != nil }
         lastEventId = rev
         cursorBox.write(rev)
         connectionState = .disconnected

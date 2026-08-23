@@ -209,9 +209,10 @@ signed envelope {key_id, signature,       POST /drive
 ## Capabilities
 
 `prompt`, `interrupt`, `approve`, `read_tail` (bounded 200 lines /
-32 KiB, on tap only), `kill`, `attach`, and the fleet-level
-`start_worktree` — the closed set in `src/drive/mod.rs`. Anything else is
-refused with a typed error before dispatch.
+32 KiB on tap, plus the separate grant-gated paged `/transcript` view),
+`kill`, `attach`, and the fleet-level `start_worktree` — the closed set
+in `src/drive/mod.rs`. Anything else is refused with a typed error before
+dispatch.
 
 ## Security model
 

@@ -76,6 +76,22 @@ struct DriveClient: Sendable {
         return (http.statusCode, data)
     }
 
+    private func get(_ url: URL, headers: [String: String] = [:]) async throws -> (Int, Data) {
+        try Task.checkCancellation()
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else {
+            throw DriveError.network("non-HTTP response")
+        }
+        return (http.statusCode, data)
+    }
+
     // MARK: - Registration (R1)
 
     /// `POST /register {token, public_key}` → key_id with EMPTY grants
@@ -172,15 +188,17 @@ struct DriveClient: Sendable {
     /// the same id when retrying, or omit for a fresh one.
     ///
     /// Step-up: when the payload matches the daemon's destructive-pattern
-    /// mirror, Face ID runs BEFORE the send, then `/step-up` mints a token
-    /// and the drive carries `X-Step-Up-Token`. A server-side
+    /// mirror -- or the caller forces step-up for a capability the daemon
+    /// treats as destructive -- Face ID runs BEFORE the send, then `/step-up`
+    /// mints a token and the drive carries `X-Step-Up-Token`. A server-side
     /// `step_up_required` refusal (mirror mismatch or an expired token) is
     /// answered reactively with the same flow — same request_id, so an
     /// attempt that actually dispatched replays instead of double-sending.
     @discardableResult
     func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                rev: UInt64?, requestId: String? = nil, keyId: String, signer: DeviceSigner,
-               biometrics: Biometrics = Biometrics(), stepUp: Bool = true) async -> DriveResult {
+               biometrics: Biometrics = Biometrics(), stepUp: Bool = true,
+               forceStepUp: Bool = false) async -> DriveResult {
         guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         let rid = requestId ?? Self.newRequestId()
         let bytes = CanonicalJSON.envelopeBytes(requestId: rid, capability: capability.rawValue,
@@ -191,7 +209,7 @@ struct DriveClient: Sendable {
         let body = CanonicalJSON.signedDriveBody(keyId: keyId, signatureB64: signature, envelopeBytes: bytes)
 
         var result: DriveResult
-        if stepUp && DestructivePatterns.required(payload) {
+        if stepUp && (forceStepUp || DestructivePatterns.required(payload)) {
             let authenticated = await biometrics.authenticate()
             // Biometrics is an injected async boundary in tests and a
             // LocalAuthentication boundary in production. Cancellation must
@@ -259,6 +277,64 @@ struct DriveClient: Sendable {
             return .refused(.network(Self.cancellationMessage))
         } catch {
             return .refused(.network(error.localizedDescription))
+        }
+    }
+
+    // MARK: - Full chat transcript (#142 / #64, GET /transcript)
+
+    /// Build the signed `x-corral-drive` header for one transcript page.
+    /// Capability is always `read_tail`, target is the agent id, rev is
+    /// omitted, and both request_id and ts are fresh per page.
+    static func transcriptAuthHeader(keyId: String, signer: DeviceSigner,
+                                     target: String, cursor: String?,
+                                     limit: Int = TranscriptLimits.pageLimit,
+                                     ts: UInt64 = UInt64(Date().timeIntervalSince1970),
+                                     requestId: String? = nil) -> String {
+        let rid = requestId ?? newRequestId()
+        let payload = CanonicalJSON.transcriptPayload(ts: ts, cursor: cursor,
+                                                      limit: limit)
+        let bytes = CanonicalJSON.envelopeBytes(requestId: rid,
+                                                capability: Capability.readTail.rawValue,
+                                                target: target, payload: payload,
+                                                rev: nil)
+        let signature = (try? signer.sign(bytes).base64EncodedString()) ?? ""
+        return CanonicalJSON.signedTranscriptHeader(keyId: keyId,
+                                                    signatureB64: signature,
+                                                    envelopeBytes: bytes)
+    }
+
+    /// Fetch exactly one signed newest-first page. Non-200 bodies are parsed
+    /// as the endpoint's typed `{kind, message, candidates?}` contract.
+    func fetchTranscript(agentId: String,
+                         authHeader: String) async -> Result<TranscriptPage, TranscriptFailure> {
+        do {
+            var components = URLComponents(url: host.appendingPathComponent("transcript"),
+                                           resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "agent", value: agentId)]
+            guard let url = components?.url else {
+                return .failure(TranscriptFailure(kind: "transport",
+                                                  message: "invalid transcript URL",
+                                                  candidates: []))
+            }
+            let (status, data) = try await get(url, headers: ["x-corral-drive": authHeader])
+            if status == 200 {
+                guard let page = try? JSONDecoder().decode(TranscriptPage.self,
+                                                           from: data) else {
+                    return .failure(TranscriptFailure(kind: "transport",
+                                                      message: "unparseable transcript response",
+                                                      candidates: []))
+                }
+                return .success(page)
+            }
+            return .failure(TranscriptFailure.from(status: status, data: data))
+        } catch is CancellationError {
+            return .failure(TranscriptFailure(kind: "transport",
+                                              message: "transcript cancelled",
+                                              candidates: []))
+        } catch {
+            return .failure(TranscriptFailure(kind: "transport",
+                                              message: error.localizedDescription,
+                                              candidates: []))
         }
     }
 

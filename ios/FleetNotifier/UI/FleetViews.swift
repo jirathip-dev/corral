@@ -322,6 +322,7 @@ private struct AgentDetailContent: View {
     let agent: Agent
     @ObservedObject var model: AppModel
     @ObservedObject var drafts: PromptDrafts
+    @State private var showTranscript = false
 
     private var grants: Set<Capability> { model.actionGrants }
     private var availability: [AgentActionAvailability] {
@@ -370,9 +371,22 @@ private struct AgentDetailContent: View {
                                  title: "Tail 200") {
                         dispatchTail()
                     }
+                    actionButton(.fullChat, systemImage: "bubble.left.and.bubble.right",
+                                 title: "Full chat") {
+                        showTranscript = true
+                        model.openTranscript(agentId: agent.agentId)
+                    }
                     actionButton(.interrupt, systemImage: "stop.circle",
                                  title: "Interrupt") {
                         dispatchInterrupt()
+                    }
+                    actionButton(.kill, systemImage: "xmark.circle",
+                                 title: "Kill") {
+                        dispatchKill()
+                    }
+                    actionButton(.attach, systemImage: "paperclip",
+                                 title: "Attach") {
+                        dispatchAttach()
                     }
                     promptControl
                 }
@@ -384,12 +398,19 @@ private struct AgentDetailContent: View {
             .padding()
         }
         .accessibilityElement(children: .contain)
+        .sheet(isPresented: $showTranscript) {
+            AgentTranscriptView(agentId: agent.agentId, model: model)
+        }
     }
 
     @ViewBuilder
     private func actionButton(_ action: RowAction, systemImage: String,
                               title: String, perform: @escaping () -> Void) -> some View {
         if let item = availability.first(where: { $0.action == action }) {
+            let inFlight = action == .fullChat
+                ? model.fleet.transcript(agent.agentId)?.loading == true
+                : model.isActionInFlight(agentId: agent.agentId,
+                                         capability: action.capability)
             VStack(alignment: .leading, spacing: 4) {
                 Button {
                     perform()
@@ -398,16 +419,14 @@ private struct AgentDetailContent: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.bordered)
-                .disabled(!item.isEnabled || model.isActionInFlight(agentId: agent.agentId,
-                                                                     capability: action.capability))
+                .disabled(!item.isEnabled || inFlight)
                 .accessibilityLabel(item.isEnabled ? title : "\(title) unavailable")
                 if let reason = item.disabledReason {
                     Text(reason)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("Why \(title) is disabled: \(reason)")
-                } else if model.isActionInFlight(agentId: agent.agentId,
-                                                 capability: action.capability) {
+                } else if inFlight {
                     Text("Action in progress")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -464,6 +483,28 @@ private struct AgentDetailContent: View {
         }
 #endif
         model.driveInterrupt(agent: live, driveClient: driveClient)
+    }
+
+    private func dispatchKill() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.banner = .info("(demo) Kill is not faked; use a live registered device.")
+            return
+        }
+#endif
+        model.driveKill(agent: live, driveClient: driveClient)
+    }
+
+    private func dispatchAttach() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.banner = .info("(demo) Attach is not faked; use a live registered device.")
+            return
+        }
+#endif
+        model.driveAttach(agent: live, driveClient: driveClient)
     }
 
     private func dispatchPrompt() {
@@ -563,6 +604,142 @@ private struct TailOutputView: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+private struct AgentTranscriptView: View {
+    let agentId: String
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Group {
+            if let pane = model.fleet.transcript(agentId) {
+                transcriptContent(pane)
+            } else {
+                ProgressView("Loading full chat…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle("Full chat")
+        .onAppear {
+            model.openTranscript(agentId: agentId)
+        }
+    }
+
+    @ViewBuilder
+    private func transcriptContent(_ pane: TranscriptPane) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            metadata(pane)
+            if let error = pane.error {
+                Label(TranscriptText.errorText(error), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel(TranscriptText.errorText(error))
+                if !error.candidates.isEmpty {
+                    Text("Candidates: \(error.candidates.joined(separator: ", "))")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if pane.entries.isEmpty && pane.error == nil && !pane.loading {
+                Text("No transcript entries returned.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if pane.entries.isEmpty && pane.loading {
+                ProgressView("Loading full chat…")
+            }
+            if !pane.entries.isEmpty {
+                ScrollView([.vertical, .horizontal]) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(pane.entries.enumerated()), id: \.offset) { index, entry in
+                            let (text, truncated) = TranscriptText.displaySlice(entry.text)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entryMeta(index, entry))
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                Text(text)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                if truncated {
+                                    Text("… truncated for display")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            HStack(spacing: 12) {
+                if pane.canLoadOlder {
+                    Button("Load older") {
+                        model.loadOlderTranscript(agentId: agentId)
+                    }
+                }
+                if pane.canRetry {
+                    Button("Retry") {
+                        model.loadOlderTranscript(agentId: agentId)
+                    }
+                }
+                if !pane.loading {
+                    Button("Reload") {
+                        model.openTranscript(agentId: agentId)
+                    }
+                }
+                if pane.loading && !pane.entries.isEmpty {
+                    ProgressView()
+                }
+                Spacer()
+                if pane.nextCursor == nil && !pane.loading && pane.error == nil {
+                    Text("start of transcript")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func metadata(_ pane: TranscriptPane) -> some View {
+        if !pane.session.isEmpty || !pane.store.isEmpty || pane.baseOffset > 0
+            || pane.skipped > 0 || !pane.storesUnavailable.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if !pane.session.isEmpty {
+                    Text("session: \(pane.session)")
+                }
+                if !pane.store.isEmpty {
+                    Text("store: \(pane.store) · bind: \(pane.bind)")
+                }
+                if !pane.storesUnavailable.isEmpty {
+                    Text("stores unavailable: \(pane.storesUnavailable.joined(separator: ", "))")
+                        .foregroundStyle(.orange)
+                }
+                if pane.skipped > 0 {
+                    Text("\(pane.skipped) torn lines skipped")
+                        .foregroundStyle(.orange)
+                }
+                if pane.baseOffset > 0 {
+                    Text("\(pane.baseOffset) newest entries slid out of the window — reload to return to the top")
+                        .foregroundStyle(.secondary)
+                }
+                Text("reads are audited")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+    }
+
+    private func entryMeta(_ index: Int, _ entry: TranscriptEntry) -> String {
+        let base = model.fleet.transcript(agentId)?.baseOffset ?? 0
+        let offset = base + index + 1
+        let role = String(entry.role.prefix(16))
+        return "\(offset) \(role) \(entry.ts.map { String($0) } ?? "")"
     }
 }
 

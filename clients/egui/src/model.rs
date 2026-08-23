@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 /// Snapshot/delta schema version (corrald `SCHEMA_VERSION`).
 pub const SCHEMA_VERSION: u32 = 5;
 
+/// Maximum characters kept when an agent id is the final row-label fallback.
+/// Long enough to distinguish common UUID prefixes, short enough to keep
+/// issue/branch tokens visible beside it in the fixed-width agent column.
+const SHORT_ID_MAX_CHARS: usize = 8;
+
 /// Coarse agent lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -189,11 +194,29 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn display(&self) -> String {
+    /// Human-readable primary board row label.
+    ///
+    /// Priority: non-empty `display_name`, non-empty worktree `title`,
+    /// non-empty `workspace.branch`, then a bounded form of `agent_id`.
+    /// The stable full id is intentionally reserved for the detail view.
+    pub fn row_label(&self) -> String {
         self.display_name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| self.agent_id.clone())
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.title.as_deref().filter(|title| !title.is_empty()))
+            .or_else(|| {
+                self.workspace
+                    .branch
+                    .as_deref()
+                    .filter(|branch| !branch.is_empty())
+            })
+            .map(str::to_string)
+            .unwrap_or_else(|| shortened_agent_id(&self.agent_id))
+    }
+
+    /// Compatibility alias for callers of the previous display helper.
+    pub fn display(&self) -> String {
+        self.row_label()
     }
 
     /// The fetched authoritative issue numbers for this agent — the set
@@ -201,6 +224,23 @@ impl Agent {
     pub fn known_issue_numbers(&self) -> BTreeSet<u64> {
         self.issues.iter().map(|i| i.number).collect()
     }
+}
+
+/// Bounded human-readable agent-id fallback.
+///
+/// Strips the opaque `herdr:` transport prefix, keeps the last two
+/// colon-separated components (so `herdr:pane:wGE:p1` becomes `wGE:p1`), and
+/// truncates any remaining text to [`SHORT_ID_MAX_CHARS`] characters. It
+/// never returns the full raw id.
+fn shortened_agent_id(agent_id: &str) -> String {
+    let opaque = agent_id.strip_prefix("herdr:").unwrap_or(agent_id);
+    let parts: Vec<&str> = opaque.split(':').collect();
+    let tail = if parts.len() > 1 {
+        parts[parts.len() - 2..].join(":")
+    } else {
+        opaque.to_string()
+    };
+    tail.chars().take(SHORT_ID_MAX_CHARS).collect()
 }
 
 /// #135: read-only `GET /fleet-registry` response mirror. A daemon parse/IO
@@ -596,10 +636,9 @@ mod tests {
         assert_eq!(s.as_bytes()[5], b':');
     }
 
-    #[test]
-    fn agent_display_falls_back_to_agent_id() {
-        let mut a = Agent {
-            agent_id: "herdr:x".into(),
+    fn base_agent(agent_id: &str) -> Agent {
+        Agent {
+            agent_id: agent_id.into(),
             source: "herdr".into(),
             tool: "claude".into(),
             state: AgentState::Idle,
@@ -612,14 +651,64 @@ mod tests {
             host: None,
             workspace: Workspace::default(),
             attachment: None,
-            display_name: Some("w2/egui-desktop".into()),
+            display_name: None,
             title: None,
             issues: vec![],
-        };
-        assert_eq!(a.display(), "w2/egui-desktop");
-        a.display_name = Some(String::new());
-        assert_eq!(a.display(), "herdr:x");
-        a.display_name = None;
-        assert_eq!(a.display(), "herdr:x");
+        }
+    }
+
+    #[test]
+    fn row_label_prefers_display_name_over_title_and_branch() {
+        let mut agent = base_agent("herdr:01a029d1-0000");
+        agent.workspace.branch = Some("g128".into());
+        agent.title = Some("board agent labels".into());
+        agent.display_name = Some("Ada".into());
+        assert_eq!(agent.row_label(), "Ada");
+    }
+
+    #[test]
+    fn row_label_uses_title_when_display_name_is_missing_or_empty() {
+        let mut agent = base_agent("herdr:01a029d1-0000");
+        agent.workspace.branch = Some("review-g128".into());
+        agent.title = Some("review board labels".into());
+        agent.display_name = Some(String::new());
+        assert_eq!(agent.row_label(), "review board labels");
+
+        agent.display_name = None;
+        assert_eq!(agent.row_label(), "review board labels");
+    }
+
+    #[test]
+    fn row_label_uses_branch_when_title_is_missing() {
+        let mut agent = base_agent("herdr:01a029d1-0000");
+        agent.workspace.branch = Some("g92".into());
+        assert_eq!(agent.row_label(), "g92");
+
+        agent.title = Some(String::new());
+        assert_eq!(agent.row_label(), "g92");
+    }
+
+    #[test]
+    fn row_label_shortens_uuid_fallback_and_never_shows_full_raw_id() {
+        let id = "herdr:01a029d1-1234-5678-9abc-def012345678";
+        let agent = base_agent(id);
+        assert_eq!(agent.row_label(), "01a029d1");
+        assert!(!agent.row_label().contains(id));
+    }
+
+    #[test]
+    fn row_label_shortens_pane_fallback_to_bounded_human_form() {
+        let id = "herdr:pane:wGE:p1";
+        let agent = base_agent(id);
+        assert_eq!(agent.row_label(), "wGE:p1");
+        assert!(!agent.row_label().contains(id));
+    }
+
+    #[test]
+    fn display_alias_matches_row_label() {
+        let mut agent = base_agent("herdr:pane:wGE:p1");
+        assert_eq!(agent.display(), agent.row_label());
+        agent.title = Some("worktree title".into());
+        assert_eq!(agent.display(), agent.row_label());
     }
 }

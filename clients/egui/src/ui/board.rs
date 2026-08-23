@@ -348,7 +348,7 @@ fn agent_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
     fixed_cell(ui, COL_AGENT, |ui| {
         ui.add_sized(
             [COL_AGENT - 8.0, 18.0],
-            egui::Label::new(RichText::new(agent.display()).color(theme::ui::TEXT_STRONG))
+            egui::Label::new(RichText::new(agent.row_label()).color(theme::ui::TEXT_STRONG))
                 .truncate(),
         );
         ui.add_sized(
@@ -1554,8 +1554,12 @@ mod tests {
         });
         let row_rect = row_rect.expect("row rendered");
         assert!(
-            text_rect(&output, "herdr:e2e").is_some(),
-            "display_name=None must fall back to agent_id"
+            text_rect(&output, "e2e").is_some(),
+            "display_name=None must fall back to a bounded agent-id label"
+        );
+        assert!(
+            text_rect(&output, &agent.agent_id).is_none(),
+            "the raw agent id must not be the collapsed row label"
         );
         clear_textures(&mut output);
 
@@ -1590,6 +1594,10 @@ mod tests {
         assert!(
             text_rect(&output, "tail line").is_some(),
             "expanded detail must render the cached tail"
+        );
+        assert!(
+            text_rect(&output, &agent.agent_id).is_some(),
+            "expanded detail must still expose the stable agent id"
         );
         clear_textures(&mut output);
 

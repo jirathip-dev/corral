@@ -225,6 +225,29 @@ The canonical path may also be overridden for Corral with
 `$CORRAL_FLEETS_PATH` or `$CORRAL_CONFIG_DIR`; the checked-in template itself is
 never read as the live registry just because it exists in the source tree.
 
+## HTTP read view (#135)
+
+The daemon serves a read-only `GET /fleet-registry` projection of the same
+file consumed by `GET /issues` and workspace attribution. It is a deliberate
+non-auth loopback/private-tailnet surface, like the other read GETs: it never
+mutates the registry or GitHub and must not be exposed on a public interface.
+Success returns HTTP 200:
+
+```json
+{
+  "status": "ok",
+  "path": "/absolute/path/to/fleets.json",
+  "error": null,
+  "fleets": [{ "name": "corral", "gh_repo": "owner/repo", "local": "…", "worktree_dir": "…", "orch": "…", "workers": [], "paused": false, "models": { "orch": "…", "impl": "…", "review": "…", "impl_alt": null, "impl_alt2": null, "reasoning_effort": {} } }]
+}
+```
+
+An IO, parse, or validation failure is still HTTP 200 with `status="error"`,
+a human-readable `error`, and `fleets=[]`, so the desktop Registry tab shows
+the failure rather than silently appearing to have no fleets. The board
+fetches this view alongside `/issues` and exposes a manual refresh; the
+optional pause/resume/models drive path is explicitly out of scope for #135.
+
 ## Commands
 
 ```

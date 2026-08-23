@@ -203,6 +203,53 @@ impl Agent {
     }
 }
 
+/// #135: read-only `GET /fleet-registry` response mirror. A daemon parse/IO
+/// failure is still a successful HTTP response with `status="error"` and an
+/// empty registry, so the board renders the failure instead of an empty
+/// fleet list.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FleetRegistry {
+    pub status: String,
+    pub path: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub fleets: Vec<FleetRegistryEntry>,
+}
+
+impl FleetRegistry {
+    pub fn failed(&self) -> bool {
+        self.status == "error"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FleetRegistryEntry {
+    pub name: String,
+    pub gh_repo: String,
+    pub local: String,
+    pub worktree_dir: String,
+    pub orch: String,
+    pub workers: Vec<String>,
+    pub paused: bool,
+    pub models: FleetModels,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FleetModels {
+    pub orch: String,
+    #[serde(rename = "impl")]
+    pub impl_: String,
+    pub review: String,
+    #[serde(default)]
+    pub impl_alt: Option<String>,
+    #[serde(default)]
+    pub impl_alt2: Option<String>,
+    /// Forward-compatible fleet-operations effort map, preserved by the
+    /// daemon as opaque JSON so a new effort key never breaks decoding.
+    #[serde(default)]
+    pub reasoning_effort: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u32,
@@ -436,6 +483,100 @@ mod tests {
         assert_eq!(agent.issues[0].repo, "jirathip-k/corral");
         assert_eq!(agent.issues[0].title, "Branch-name issue inference");
         assert_eq!(agent.known_issue_numbers(), BTreeSet::from([24]));
+    }
+
+    #[test]
+    fn fleet_registry_ok_fixture_decodes_models_and_reasoning_effort() {
+        let wire = serde_json::json!({
+            "status": "ok",
+            "path": "/tmp/fleets.json",
+            "error": null,
+            "fleets": [
+                {
+                    "name": "corral",
+                    "gh_repo": "jirathip-dev/corral",
+                    "local": "~/Projects/corral",
+                    "worktree_dir": "corral",
+                    "orch": "orch-corral",
+                    "workers": ["w1", "w2"],
+                    "paused": true,
+                    "models": {
+                        "orch": "codex/deepseek-v4-flash-vision-exp",
+                        "impl": "codex/deepseek-v4-flash-vision-exp",
+                        "review": "codex/deepseek-v4-flash-vision-exp",
+                        "impl_alt": "opencode-go/deepseek-v4-flash",
+                        "impl_alt2": "codex/deepseek-v4-flash",
+                        "reasoning_effort": {
+                            "orch": "medium",
+                            "impl": "max",
+                            "review": "xhigh",
+                            "future_effort": "high"
+                        }
+                    }
+                }
+            ]
+        });
+        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
+        assert_eq!(registry.status, "ok");
+        assert_eq!(registry.path, "/tmp/fleets.json");
+        assert_eq!(registry.error, None);
+        assert!(!registry.failed());
+        assert_eq!(registry.fleets.len(), 1);
+
+        let fleet = &registry.fleets[0];
+        assert_eq!(fleet.name, "corral");
+        assert_eq!(fleet.gh_repo, "jirathip-dev/corral");
+        assert_eq!(fleet.workers, vec!["w1", "w2"]);
+        assert!(fleet.paused);
+        assert_eq!(fleet.models.impl_, "codex/deepseek-v4-flash-vision-exp");
+        assert_eq!(
+            fleet.models.impl_alt.as_deref(),
+            Some("opencode-go/deepseek-v4-flash")
+        );
+        let effort = fleet.models.reasoning_effort.as_ref().unwrap();
+        assert_eq!(effort["orch"], "medium");
+        assert_eq!(effort["future_effort"], "high");
+    }
+
+    #[test]
+    fn fleet_registry_error_fixture_decodes_with_empty_fleet_list() {
+        let wire = serde_json::json!({
+            "status": "error",
+            "path": "/tmp/broken.json",
+            "error": "parse: expected value at line 1",
+            "fleets": []
+        });
+        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
+        assert!(registry.failed());
+        assert_eq!(
+            registry.error.as_deref(),
+            Some("parse: expected value at line 1")
+        );
+        assert!(registry.fleets.is_empty());
+    }
+
+    #[test]
+    fn fleet_registry_optional_model_slots_default_to_none() {
+        let wire = serde_json::json!({
+            "status": "ok",
+            "path": "/tmp/fleets.json",
+            "error": null,
+            "fleets": [{
+                "name": "board",
+                "gh_repo": "jirathip-dev/herdr-board",
+                "local": "/opt/board",
+                "worktree_dir": "board",
+                "orch": "orch-board",
+                "workers": [],
+                "paused": false,
+                "models": {"orch": "a", "impl": "b", "review": "c"}
+            }]
+        });
+        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
+        let models = &registry.fleets[0].models;
+        assert_eq!(models.impl_alt, None);
+        assert_eq!(models.impl_alt2, None);
+        assert_eq!(models.reasoning_effort, None);
     }
 
     #[test]

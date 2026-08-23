@@ -4,6 +4,7 @@ pub mod audit;
 pub mod board;
 pub mod issues;
 pub mod register;
+pub mod registry;
 
 use eframe::egui::{Color32, CornerRadius, FontId, RichText, Stroke, Ui};
 

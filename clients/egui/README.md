@@ -52,6 +52,11 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   `admin-token` on localhost or uses a keychain-stored token; renders the
   hash-chained log with the chain-validity verdict and auto-refreshes
   while visible.
+- **Registry view** — `GET /fleet-registry` (non-auth read-only): a
+  `Registry` tab fetches the same `fleets.json` source `/issues` uses and
+  lists every fleet's repo, local path, orchestrator, workers, pause state,
+  and model map including `reasoning_effort`; parse/transport failures render
+  prominently with a manual refresh.
 
 ## Build + run
 
@@ -134,7 +139,7 @@ src/
   keys.rs      keypair generation/storage (keychain + 0600 fallback)
   theme.rs     dark-dashboard palette (the only place colors live)
   state.rs     fleet cache, grant ledger, toasts, config records
-  ui/          board (fleet), audit, register/settings
+  ui/          board (fleet), audit, registry, register/settings
 tests/
   conformance.rs  in-process conformance vs the daemon's own seams
   live.rs         #[ignore] live probe against a real corrald

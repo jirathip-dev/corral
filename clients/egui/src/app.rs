@@ -1,6 +1,6 @@
 //! The eframe application: owns the fleet state, the background read
-//! loop (SSE), the signed-drive dispatch, registration, and the three
-//! tabs (Board / Audit / Settings).
+//! loop (SSE), the signed-drive dispatch, registration, and the four
+//! tabs (Board / Audit / Registry / Settings).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -16,11 +16,12 @@ use crate::state::{
 };
 use crate::theme;
 
-/// The three top-level views.
+/// The four top-level views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Board,
     Audit,
+    Registry,
     Settings,
 }
 
@@ -307,8 +308,9 @@ impl CorralApp {
             ApplyMsg::Conn(protocol::Live::Connected) => {
                 self.conn = ConnState::Connected;
                 self.conn_detail = None;
-                // #113: fetch the repo-level issue view on each connection.
+                // #113/#135: fetch both read-only views on connection.
                 self.refresh_issues(false);
+                self.refresh_registry(false);
             }
             ApplyMsg::Conn(protocol::Live::Disconnected) => {
                 self.conn = ConnState::Connecting;
@@ -328,6 +330,9 @@ impl CorralApp {
             }
             ApplyMsg::Issues(issues) => {
                 self.fleet.set_issues(issues);
+            }
+            ApplyMsg::Registry(result) => {
+                self.fleet.set_registry(result);
             }
         }
     }
@@ -352,6 +357,24 @@ impl CorralApp {
                     tracing::warn!(error, "GET /issues unavailable");
                 }
             }
+        });
+    }
+
+    /// #135: fetch the daemon's read-only fleet registry view once per
+    /// successful connection (mirroring `/issues`) and on manual refresh.
+    /// A transport error is stored as `Err` so the tab shows the same
+    /// prominent failure path as a daemon `status="error"`.
+    fn refresh_registry(&mut self, force: bool) {
+        if !force && self.fleet.registry_loaded {
+            return;
+        }
+        self.fleet.registry_loading = true;
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            let result = protocol::fetch_fleet_registry(&client, &base_url).await;
+            let _ = tx.send(ApplyMsg::Registry(result));
         });
     }
 
@@ -1017,6 +1040,21 @@ impl eframe::App for CorralApp {
                 }
                 ctx.request_repaint_after(std::time::Duration::from_secs(2));
             }
+            Tab::Registry => {
+                if self.fleet.registry.is_none() && self.conn == ConnState::Connected {
+                    self.refresh_registry(false);
+                }
+                let mut refresh_requested = false;
+                crate::ui::registry::show(
+                    ui,
+                    &self.fleet.registry,
+                    self.fleet.registry_loading,
+                    &mut || refresh_requested = true,
+                );
+                if refresh_requested {
+                    self.refresh_registry(true);
+                }
+            }
             Tab::Settings => {
                 let store = self.device_key.as_ref().map(|k| k.store.clone());
                 let key_id = self
@@ -1068,6 +1106,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.selectable_value(&mut app.tab, Tab::Settings, "settings");
             ui.selectable_value(&mut app.tab, Tab::Audit, "audit");
+            ui.selectable_value(&mut app.tab, Tab::Registry, "registry");
             ui.selectable_value(&mut app.tab, Tab::Board, "board");
         });
     });

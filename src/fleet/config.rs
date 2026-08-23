@@ -393,6 +393,18 @@ impl Registry {
     pub(crate) fn forget_forward_fields(&mut self, name: &str) {
         self.foreign.forget_fleet(name);
     }
+
+    /// The preserved fleet-operations `models.reasoning_effort` value for
+    /// one fleet, if the loaded registry carried one. Corral does not own
+    /// this schema; the API projection surfaces it verbatim without growing
+    /// [`Models`] or changing the registry write path.
+    pub(crate) fn reasoning_effort(&self, fleet_name: &str) -> Option<&Value> {
+        self.foreign
+            .fleets
+            .iter()
+            .find(|fleet| fleet.name == fleet_name)
+            .and_then(|fleet| fleet.reasoning_effort.as_ref())
+    }
 }
 
 impl Registry {

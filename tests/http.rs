@@ -1,6 +1,8 @@
 //! HTTP read path tests: /snapshot JSON shape, /healthz, SSE resume with
 //! Last-Event-ID (fresh cursor -> deltas; stale cursor -> full snapshot).
 
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -11,6 +13,41 @@ use corrald::core::store::Store;
 use futures::stream::StreamExt;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+/// Serializes tests that mutate `CORRAL_FLEETS_PATH`: env mutation is
+/// process-wide, while the daemon resolves it synchronously from the request
+/// handler. Kept as a tokio mutex so the async tests can hold the guard
+/// across the in-flight request.
+static REGISTRY_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct EnvRestore {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvRestore {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let previous = std::env::var_os(name);
+        unsafe { std::env::set_var(name, value) };
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => unsafe { std::env::set_var(self.name, previous) },
+            None => unsafe { std::env::remove_var(self.name) },
+        }
+    }
+}
+
+fn write_registry(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("temp registry dir");
+    let path = dir.path().join("fleets.json");
+    std::fs::write(&path, body).expect("write registry fixture");
+    (dir, path)
+}
 
 fn agent(id: &str, state: AgentState) -> Agent {
     Agent {
@@ -110,6 +147,178 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     assert_eq!(v["schema_version"], 5);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
+}
+
+#[tokio::test]
+async fn fleet_registry_projects_status_path_and_all_fleet_fields() {
+    let (_dir, path) = write_registry(
+        r#"{
+            "fleets": [
+                {
+                    "name": "corral",
+                    "gh_repo": "jirathip-dev/corral",
+                    "local": "~/Projects/corral",
+                    "worktree_dir": "corral",
+                    "orch": "orch-corral",
+                    "workers": ["w1", "w2"],
+                    "paused": true,
+                    "models": {
+                        "orch": "codex/deepseek-v4-flash-vision-exp",
+                        "impl": "codex/deepseek-v4-flash-vision-exp",
+                        "review": "codex/deepseek-v4-flash-vision-exp",
+                        "impl_alt": "opencode-go/deepseek-v4-flash",
+                        "impl_alt2": "codex/deepseek-v4-flash",
+                        "reasoning_effort": {
+                            "orch": "medium",
+                            "impl": "max",
+                            "review": "xhigh",
+                            "future_effort": "high"
+                        }
+                    }
+                },
+                {
+                    "name": "board",
+                    "gh_repo": "jirathip-dev/herdr-board",
+                    "local": "/opt/board",
+                    "worktree_dir": "board",
+                    "orch": "orch-board",
+                    "workers": [],
+                    "models": {"orch": "fable", "impl": "sonnet", "review": "opus"}
+                }
+            ]
+        }"#,
+    );
+    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+    let (_store, app) = app().await;
+
+    let response = app
+        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(body["status"], "ok");
+    assert!(body["error"].is_null());
+    assert_eq!(body["path"], path.to_string_lossy().as_ref());
+    assert_eq!(body["fleets"].as_array().unwrap().len(), 2);
+
+    let corral = &body["fleets"][0];
+    assert_eq!(corral["name"], "corral");
+    assert_eq!(corral["gh_repo"], "jirathip-dev/corral");
+    assert_eq!(corral["local"], "~/Projects/corral");
+    assert_eq!(corral["worktree_dir"], "corral");
+    assert_eq!(corral["orch"], "orch-corral");
+    assert_eq!(corral["workers"], serde_json::json!(["w1", "w2"]));
+    assert_eq!(corral["paused"], true);
+    assert_eq!(
+        corral["models"]["impl"],
+        "codex/deepseek-v4-flash-vision-exp"
+    );
+    assert_eq!(
+        corral["models"]["impl_alt"],
+        "opencode-go/deepseek-v4-flash"
+    );
+    assert_eq!(corral["models"]["impl_alt2"], "codex/deepseek-v4-flash");
+    assert_eq!(corral["models"]["reasoning_effort"]["orch"], "medium");
+    assert_eq!(corral["models"]["reasoning_effort"]["impl"], "max");
+    assert_eq!(corral["models"]["reasoning_effort"]["review"], "xhigh");
+    assert_eq!(
+        corral["models"]["reasoning_effort"]["future_effort"],
+        "high"
+    );
+
+    let board = &body["fleets"][1];
+    assert_eq!(board["name"], "board");
+    assert_eq!(board["paused"], false);
+    assert!(board["workers"].as_array().unwrap().is_empty());
+    assert_eq!(board["models"]["reasoning_effort"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn fleet_registry_malformed_file_returns_http_200_error_shape() {
+    let (_dir, path) = write_registry(r#"{ "fleets": [ oops"#);
+    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+    let (_store, app) = app().await;
+
+    let response = app
+        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("still JSON");
+    assert_eq!(body["status"], "error");
+    assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+    assert!(body["fleets"].as_array().unwrap().is_empty());
+    assert_eq!(body["path"], path.to_string_lossy().as_ref());
+}
+
+#[tokio::test]
+async fn fleet_registry_and_issues_read_the_same_registry_source() {
+    let (_dir, path) = write_registry(
+        r#"{
+            "fleets": [
+                {
+                    "name": "corral",
+                    "gh_repo": "jirathip-dev/corral",
+                    "local": "~/Projects/corral",
+                    "worktree_dir": "corral",
+                    "orch": "orch-corral",
+                    "workers": [],
+                    "models": {"orch": "a", "impl": "b", "review": "c"}
+                },
+                {
+                    "name": "board",
+                    "gh_repo": "jirathip-dev/herdr-board",
+                    "local": "/opt/board",
+                    "worktree_dir": "board",
+                    "orch": "orch-board",
+                    "workers": [],
+                    "models": {"orch": "a", "impl": "b", "review": "c"}
+                }
+            ]
+        }"#,
+    );
+    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+    let (_store, app) = app().await;
+
+    let issues_response = app
+        .clone()
+        .oneshot(Request::get("/issues").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(issues_response.status(), StatusCode::OK);
+    let issues_bytes = issues_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let issues: serde_json::Value = serde_json::from_slice(&issues_bytes).unwrap();
+    assert_eq!(issues["repos"]["corral"], serde_json::json!([]));
+    assert_eq!(issues["repos"]["board"], serde_json::json!([]));
+
+    let registry_response = app
+        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(registry_response.status(), StatusCode::OK);
+    let bytes = registry_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let registry: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(registry["fleets"][0]["name"], "corral");
+    assert_eq!(registry["fleets"][0]["gh_repo"], "jirathip-dev/corral");
+    assert_eq!(registry["fleets"][1]["name"], "board");
+    assert_eq!(registry["fleets"][1]["gh_repo"], "jirathip-dev/herdr-board");
 }
 
 #[tokio::test]

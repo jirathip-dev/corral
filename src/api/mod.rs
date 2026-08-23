@@ -6,6 +6,11 @@
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
+//! - `GET /issues` — #113: read-only repo-level issue view for the board's
+//!   issue browser and worktree action (grouped by configured fleet).
+//! - `GET /fleet-registry` — #135: read-only projection of the local
+//!   `fleets.json` for the board's Registry tab (same loader as `/issues`;
+//!   parse/IO failures are returned as HTTP 200 `status="error"`).
 //! - `GET /transcript` — #63: grant-gated (`read_tail`) on-demand
 //!   transcript pages for one agent, newest first, redacted at the module
 //!   boundary (see [`crate::api::transcript`]). The ONLY grant-gated GET:
@@ -38,6 +43,7 @@
 
 pub mod drive;
 pub mod issues;
+pub mod registry;
 pub mod transcript;
 
 use std::convert::Infallible;
@@ -151,6 +157,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history))
         .route("/transcript", get(self::transcript::transcript))
         .route("/issues", get(issues::issues))
+        .route("/fleet-registry", get(registry::fleet_registry))
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))

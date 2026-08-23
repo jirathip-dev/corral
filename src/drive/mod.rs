@@ -292,8 +292,11 @@ pub trait AuditLog: fmt::Debug + Send + Sync {
 /// `rev` is the store's new monotonic rev after the write. For `read_tail`
 /// `result` carries `{"lines": [...]}` — the adapter-returned tail, redacted
 /// (D9) and bounded (D5: ≤ 200 lines / ≤ 32 KiB) before it left the machine;
-/// an empty array means the agent had no output. All other capabilities
-/// leave `result` unset.
+/// an empty array means the agent had no output. For `attach`, `result`
+/// carries the adapter's stable terminal handle (herdr: `terminal_ref` with
+/// `target`, `pane_id`, and a consumer command). Fleet-level
+/// `start_worktree` also carries its typed started/already-started result.
+/// All other capabilities leave `result` unset.
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveResponse {
     pub request_id: String,

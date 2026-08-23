@@ -693,9 +693,22 @@ fn is_agent_not_found(code: &str, message: &str) -> bool {
         || message.to_ascii_lowercase().contains("agent-not-found")
 }
 
+fn is_pane_not_found(code: &str, message: &str) -> bool {
+    let normalized_code = code.to_ascii_lowercase().replace('-', "_");
+    normalized_code == "pane_not_found"
+        || normalized_code == "source_pane_not_found"
+        || normalized_code == "target_pane_not_found"
+        || message.to_ascii_lowercase().contains("pane not found")
+        || message.to_ascii_lowercase().contains("pane-not-found")
+}
+
+fn is_missing_drive_target(code: &str, message: &str) -> bool {
+    is_agent_not_found(code, message) || is_pane_not_found(code, message)
+}
+
 fn map_drive_rpc_error(agent_id: &str, method: &str, error: RpcError) -> DriveError {
     match error {
-        RpcError::Server { code, message } if is_agent_not_found(&code, &message) => {
+        RpcError::Server { code, message } if is_missing_drive_target(&code, &message) => {
             DriveError::StaleAgent(agent_id.to_string())
         }
         other => DriveError::Transport(format!("{method} failed: {other}")),
@@ -2450,11 +2463,12 @@ impl Adapter for HerdrAdapter {
         // read_tail is the one capability whose whole point is a response;
         // the API routes it through Adapter::read_tail. Refusing it here
         // keeps a discarded-response fallback impossible.
-        if matches!(command, DriveCommand::ReadTail { .. }) {
+        if matches!(&command, DriveCommand::ReadTail { .. }) {
             return Box::pin(async { Err(DriveError::NotImplemented("read_tail")) });
         }
-        let (target, generation) = match self.drive_target_with_generation(agent_id) {
-            Ok(target) => target,
+        let is_kill = matches!(&command, DriveCommand::Kill);
+        let (target, pane_id, generation) = match self.drive_mapping_with_generation(agent_id) {
+            Ok(mapping) => mapping,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let (method, params) = match command {
@@ -2482,9 +2496,12 @@ impl Adapter for HerdrAdapter {
                 "agent.prompt",
                 json!({"target": target.clone(), "text": choice}),
             ),
-            DriveCommand::Kill => {
-                return Box::pin(async { Err(DriveError::NotImplemented("kill")) });
-            }
+            // Kill closes the mapped pane. Herdr identifies panes only by
+            // pane_id, never by the user-facing agent target, so the RPC
+            // carries the current reverse-mapped pane.
+            DriveCommand::Kill => ("pane.close", json!({"pane_id": pane_id})),
+            // Attach is response-bearing and must be routed through
+            // Adapter::attach; this command handle has no result channel.
             DriveCommand::Attach => {
                 return Box::pin(async { Err(DriveError::NotImplemented("attach")) });
             }
@@ -2494,11 +2511,21 @@ impl Adapter for HerdrAdapter {
         let failed_target = target;
         Box::pin(async move {
             match rpc_call(&socket, method, params).await {
+                Ok(_) if is_kill => {
+                    if self
+                        .retire_rpc_mapping(&agent_id, &failed_target, generation)
+                        .await
+                    {
+                        Ok(())
+                    } else {
+                        Err(DriveError::StaleAgent(agent_id))
+                    }
+                }
                 Ok(_) => Ok(()),
                 Err(error) => {
                     let mapped = map_drive_rpc_error(&agent_id, method, error);
                     if matches!(mapped, DriveError::StaleAgent(_)) {
-                        self.retire_failed_rpc(&agent_id, &failed_target, generation)
+                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
                             .await;
                     }
                     Err(mapped)
@@ -2532,7 +2559,7 @@ impl Adapter for HerdrAdapter {
                 Err(error) => {
                     let mapped = map_drive_rpc_error(&agent_id, "agent.read", error);
                     if matches!(mapped, DriveError::StaleAgent(_)) {
-                        self.retire_failed_rpc(&agent_id, &failed_target, generation)
+                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
                             .await;
                     }
                     return Err(mapped);
@@ -2544,6 +2571,25 @@ impl Adapter for HerdrAdapter {
                 .and_then(|t| t.as_str())
                 .unwrap_or_default();
             Ok(bounded_redacted_tail(text, lines))
+        })
+    }
+
+    fn attach<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Value, DriveError>> {
+        let (target, pane_id, _) = match self.drive_mapping_with_generation(agent_id) {
+            Ok(mapping) => mapping,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        Box::pin(async move {
+            Ok(json!({
+                "kind": "terminal_ref",
+                "target": target,
+                "pane_id": pane_id,
+                "command": terminal_attach_command(&target),
+                "args": ["herdr", "agent", "attach", "--takeover", target],
+            }))
         })
     }
 
@@ -2565,9 +2611,12 @@ impl Adapter for HerdrAdapter {
 /// current pane mapping is classified as stale when it was previously known,
 /// otherwise it is the typed [`DriveError::UnknownAgent`].
 impl HerdrAdapter {
-    fn drive_target_with_generation(&self, agent_id: &str) -> Result<(String, u64), DriveError> {
+    fn drive_mapping_with_generation(
+        &self,
+        agent_id: &str,
+    ) -> Result<(String, String, u64), DriveError> {
         let mut state = self.state.lock().unwrap();
-        let Some(pane) = state.agent_panes.get(agent_id) else {
+        let Some(pane) = state.agent_panes.get(agent_id).cloned() else {
             return if state.is_stale_agent(agent_id) {
                 Err(DriveError::StaleAgent(agent_id.to_string()))
             } else {
@@ -2580,7 +2629,12 @@ impl HerdrAdapter {
             .cloned()
             .unwrap_or_else(|| pane.clone());
         let generation = state.agent_generations.get(agent_id).copied().unwrap_or(0);
-        Ok((target, generation))
+        Ok((target, pane, generation))
+    }
+
+    fn drive_target_with_generation(&self, agent_id: &str) -> Result<(String, u64), DriveError> {
+        self.drive_mapping_with_generation(agent_id)
+            .map(|(target, _, generation)| (target, generation))
     }
 
     #[cfg(test)]
@@ -2589,7 +2643,12 @@ impl HerdrAdapter {
             .map(|(target, _)| target)
     }
 
-    async fn retire_failed_rpc(&self, agent_id: &str, failed_target: &str, generation: u64) {
+    async fn retire_rpc_mapping(
+        &self,
+        agent_id: &str,
+        failed_target: &str,
+        generation: u64,
+    ) -> bool {
         // Clone the store handle before any await. State retirement happens
         // before the conditional Store mutation so a same-generation status
         // or integration update cannot make cleanup miss the row.
@@ -2635,7 +2694,36 @@ impl HerdrAdapter {
         if retired && let Some(store) = store {
             self.remove_if_unmapped(&store, agent_id).await;
         }
+        if retired {
+            // A close/reconcile race can register the same stable agent on a
+            // fresh pane after the mapped target was retired but before the
+            // conditional store removal ran. That is a newer live target, not
+            // a successful kill of the agent the caller resolved.
+            !self
+                .state
+                .lock()
+                .unwrap()
+                .agent_panes
+                .contains_key(agent_id)
+        } else {
+            false
+        }
     }
+}
+
+/// Human-ready shell command for the attach handle. The target is
+/// single-quoted so a client that copies the line into a shell cannot split
+/// it into extra arguments; the structured `args` array in the same handle is
+/// the parser-safe form.
+fn terminal_attach_command(target: &str) -> String {
+    format!(
+        "herdr agent attach --takeover {}",
+        shell_single_quote(target)
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Bound + redact the fetched tail at the adapter boundary, BEFORE any byte
@@ -4041,6 +4129,285 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kill_closes_current_pane_and_retires_store_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let line = lines.next_line().await.expect("request").expect("line");
+            let request: Value = serde_json::from_str(&line).expect("json request");
+            let response = json!({"id": request["id"], "result": Value::Null}).to_string() + "\n";
+            write
+                .write_all(response.as_bytes())
+                .await
+                .expect("response");
+            request
+        });
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-kill"},
+            "agent_status": "working",
+            "name": "agent-kill",
+            "pane_id": "w-kill:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+
+        let agent_id = "herdr:ses-kill";
+        adapter
+            .drive(agent_id, DriveCommand::Kill)
+            .await
+            .expect("kill dispatched");
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("kill RPC timeout")
+            .expect("server task");
+
+        assert_eq!(request["method"], "pane.close");
+        assert_eq!(request["params"]["pane_id"], "w-kill:p1");
+        assert!(
+            request["params"].get("target").is_none(),
+            "pane.close must use the mapped pane id, not the agent target"
+        );
+        assert!(
+            store.snapshot().await.agents.is_empty(),
+            "successful kill must retire the canonical store row"
+        );
+        assert!(adapter.is_stale_agent(agent_id));
+        assert!(adapter.drive_target(agent_id).is_err());
+    }
+
+    #[tokio::test]
+    async fn kill_pane_not_found_is_stale_and_retires_store_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let line = lines.next_line().await.expect("request").expect("line");
+            let request: Value = serde_json::from_str(&line).expect("json request");
+            let response = json!({
+                "id": request["id"],
+                "error": {"code": "pane_not_found", "message": "pane not found"}
+            })
+            .to_string()
+                + "\n";
+            write
+                .write_all(response.as_bytes())
+                .await
+                .expect("response");
+            request
+        });
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-kill-stale"},
+            "agent_status": "working",
+            "name": "agent-kill-stale",
+            "pane_id": "w-kill-stale:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+
+        let agent_id = "herdr:ses-kill-stale";
+        let result = adapter.drive(agent_id, DriveCommand::Kill).await;
+        assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("stale kill RPC timeout")
+            .expect("server task");
+        assert_eq!(request["method"], "pane.close");
+        assert_eq!(request["params"]["pane_id"], "w-kill-stale:p1");
+        assert!(store.snapshot().await.agents.is_empty());
+        assert!(adapter.is_stale_agent(agent_id));
+    }
+
+    #[tokio::test]
+    async fn kill_and_attach_unknown_agents_are_typed_without_connecting() {
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
+        let kill = tokio::time::timeout(
+            Duration::from_secs(1),
+            adapter.drive("herdr:never", DriveCommand::Kill),
+        )
+        .await
+        .expect("unknown kill must return immediately");
+        assert!(matches!(
+            kill,
+            Err(DriveError::UnknownAgent(id)) if id == "herdr:never"
+        ));
+
+        let attach = tokio::time::timeout(Duration::from_secs(1), adapter.attach("herdr:never"))
+            .await
+            .expect("unknown attach must return immediately");
+        assert!(matches!(
+            attach,
+            Err(DriveError::UnknownAgent(id)) if id == "herdr:never"
+        ));
+    }
+
+    #[tokio::test]
+    async fn attach_returns_stable_terminal_ref_for_current_target() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-attach"},
+            "agent_status": "working",
+            "name": "agent-attach",
+            "pane_id": "w-attach:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+
+        let handle =
+            tokio::time::timeout(Duration::from_secs(1), adapter.attach("herdr:ses-attach"))
+                .await
+                .expect("attach must not perform an RPC")
+                .expect("attach handle");
+        assert_eq!(handle["kind"], "terminal_ref");
+        assert_eq!(handle["target"], "agent-attach");
+        assert_eq!(handle["pane_id"], "w-attach:p1");
+        assert_eq!(handle["command"], terminal_attach_command("agent-attach"));
+        assert_eq!(
+            handle["args"],
+            json!(["herdr", "agent", "attach", "--takeover", "agent-attach"])
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_dead_target_is_stale_not_unknown() {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-attach-dead"},
+            "agent_status": "working",
+            "name": "agent-attach-dead",
+            "pane_id": "w-attach-dead:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+        let agent_id = "herdr:ses-attach-dead";
+        let generation = adapter
+            .state
+            .lock()
+            .unwrap()
+            .agent_generations
+            .get(agent_id)
+            .copied()
+            .expect("generation");
+        assert!(
+            adapter
+                .retire_rpc_mapping(agent_id, "agent-attach-dead", generation)
+                .await
+        );
+
+        let result = adapter.attach(agent_id).await;
+        assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
+    }
+
+    #[tokio::test]
+    async fn late_kill_success_cannot_retire_newer_mapping() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let (request_tx, request_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (read, mut write) = stream.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let line = lines.next_line().await.expect("request").expect("line");
+            let request: Value = serde_json::from_str(&line).expect("json request");
+            request_tx.send(()).expect("request observer");
+            release_rx.await.expect("release kill response");
+            let response = json!({"id": request["id"], "result": {"ok": true}}).to_string() + "\n";
+            write
+                .write_all(response.as_bytes())
+                .await
+                .expect("response");
+            request
+        });
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        adapter.attach_store(store.clone());
+        let first: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-kill-race"},
+            "agent_status": "working",
+            "name": "same-target",
+            "pane_id": "w-kill-old:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&first, &store).await;
+
+        let agent_id = "herdr:ses-kill-race";
+        let kill = adapter.drive(agent_id, DriveCommand::Kill);
+        tokio::pin!(kill);
+        tokio::select! {
+            _ = request_rx => {},
+            result = &mut kill => panic!("kill completed before migration: {result:?}"),
+        }
+
+        let moved: PaneInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-kill-race"},
+            "agent_status": "working",
+            "display_agent": "same-target",
+            "pane_id": "w-kill-new:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter
+            .state
+            .lock()
+            .unwrap()
+            .subscribed_panes
+            .insert("w-kill-new:p1".to_string());
+        let (sink, _rx) = mpsc::channel(16);
+        adapter.handle_pane_updated(&moved, sink, &store).await;
+        release_tx.send(()).expect("release kill response");
+
+        assert!(matches!(
+            kill.await,
+            Err(DriveError::StaleAgent(id)) if id == agent_id
+        ));
+        server.await.expect("server task");
+        assert_eq!(
+            adapter.drive_target(agent_id).unwrap(),
+            "same-target",
+            "a successful kill of the old pane must not retire the migrated mapping"
+        );
+        assert!(!adapter.is_stale_agent(agent_id));
+        assert!(store.snapshot().await.agents.contains_key(agent_id));
+    }
+
+    #[tokio::test]
     async fn server_agent_not_found_retires_store_row_for_read_prompt_and_approve() {
         // This is a local JSON-RPC mock, not a live Herdr proof. It exercises
         // the production response/error path for all three controls so an
@@ -4232,7 +4599,7 @@ mod tests {
 
         let (retired_tx, retired_rx) = oneshot::channel();
         adapter.pause_before_store_remove(retired_tx, release_rx);
-        let retirement = adapter.retire_failed_rpc(agent_id, "same-target", generation);
+        let retirement = adapter.retire_rpc_mapping(agent_id, "same-target", generation);
         tokio::pin!(retirement);
         tokio::time::timeout(Duration::from_secs(2), async {
             tokio::select! {
@@ -4263,7 +4630,10 @@ mod tests {
         assert!(newer_seq > first_seq, "new generation upserted a newer row");
 
         release_tx.send(()).expect("release conditional removal");
-        retirement.await;
+        assert!(
+            !retirement.await,
+            "a newer live mapping must not be reported as a successful retire"
+        );
         assert_eq!(adapter.drive_target(agent_id).unwrap(), "same-target");
         assert!(store.snapshot().await.agents.contains_key(agent_id));
     }
@@ -4297,7 +4667,7 @@ mod tests {
 
         let (retired_tx, retired_rx) = oneshot::channel();
         adapter.pause_before_store_remove(retired_tx, release_rx);
-        let retirement = adapter.retire_failed_rpc(agent_id, "same-target", generation);
+        let retirement = adapter.retire_rpc_mapping(agent_id, "same-target", generation);
         tokio::pin!(retirement);
         tokio::time::timeout(Duration::from_secs(2), async {
             tokio::select! {
@@ -4319,7 +4689,10 @@ mod tests {
         assert!(store.get(agent_id).await.is_some());
 
         release_tx.send(()).expect("release conditional removal");
-        retirement.await;
+        assert!(
+            retirement.await,
+            "retiring the only live mapping must be reported as retired"
+        );
         assert!(store.get(agent_id).await.is_none());
         assert!(store.snapshot().await.agents.is_empty());
     }
@@ -4374,7 +4747,7 @@ mod tests {
 
         // Cleanup wins while the event still holds its cloned row.
         adapter
-            .retire_failed_rpc(agent_id, "event-target", generation)
+            .retire_rpc_mapping(agent_id, "event-target", generation)
             .await;
         assert!(store.get(agent_id).await.is_none());
 

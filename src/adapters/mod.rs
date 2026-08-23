@@ -91,7 +91,9 @@ pub trait Adapter: Debug + Send + Sync {
     /// Drive path: issue a command to `agent_id` and await the source's
     /// response. The adapter owns target resolution and maps source-level
     /// agent disappearance to [`DriveError::StaleAgent`]; callers must not
-    /// report success until this future completes.
+    /// report success until this future completes. `ReadTail` and `Attach`
+    /// are the response-bearing exceptions and are dispatched through
+    /// [`Adapter::read_tail`] and [`Adapter::attach`] instead.
     fn drive<'a>(
         &'a self,
         agent_id: &'a str,
@@ -116,6 +118,21 @@ pub trait Adapter: Debug + Send + Sync {
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
         let _ = (agent_id, lines);
         Box::pin(async move { Err(DriveError::NotImplemented("read_tail")) })
+    }
+
+    /// `attach`: resolve `agent_id` to a stable, documented handle the caller
+    /// can consume to open the source's terminal. Adapters that cannot expose
+    /// a direct stream should return a `terminal_ref`-shaped value carrying
+    /// the source target and current pane/terminal id. The API carries this
+    /// value back in `DriveResponse.result`; the drive future itself has no
+    /// result channel, so callers must route `DriveCommand::Attach` here.
+    /// Default: this adapter does not implement the command.
+    fn attach<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<serde_json::Value, DriveError>> {
+        let _ = agent_id;
+        Box::pin(async move { Err(DriveError::NotImplemented("attach")) })
     }
 
     /// True if `agent_id` is currently tracked by this adapter.

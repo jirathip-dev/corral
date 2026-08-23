@@ -37,6 +37,7 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   - prompt: `{"kind":"prompt","text":String}`
   - read_tail: `{"kind":"read_tail","lines":Option<u32>}` (clamped 1..=200)
   - approve: `{"kind":"approve","approval_id":String,"prompt_hash":String,"choice":String}`
+  - interrupt/kill/attach: no payload (`null` or `{}`)
   - start_worktree (fleet-level; `target` is the fleet/repo name, not an agent id):
     - issue-linked: `{"kind":"start_worktree","mode":"issue","repo":String,"number":u64,"issue_url":String}`
     - issue-free: `{"kind":"start_worktree","mode":"free","repo":String,"name":String}`
@@ -45,6 +46,13 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   - already-started (idempotent replay): `{"state":"already_started","branch":String,"path":String}`
   - typed `error_kind`s: `unknown_fleet`, `issue_not_found`, `issue_closed`,
     `already_started`, `invalid_name`, `git_failure`, `launch_failure`
+- `attach` result (`result` on `ok:true`): herdr returns a `terminal_ref`
+  handle:
+  `{"kind":"terminal_ref","target":String,"pane_id":String,"command":String,"args":[String]}`
+  where `target` is the current herdr agent target (agent name when known,
+  otherwise pane id), `pane_id` is the current mapped pane, `command` is a
+  single-quoted shell copy line, and `args` is the parser-safe argv. The
+  client can consume either form without a second daemon round trip.
 - Responses: success → 200 `DriveResponse {request_id, ok, error?, error_kind?, rev, result?}`;
   typed refusals ride the body (`ok:false` + human `error` and stable
   `error_kind`). Client errors:
@@ -63,11 +71,12 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   live SSE stream remains authoritative. A narrow adapter race may return the
   same typed `error_kind` in a 200 refusal body after the dispatch claim, with
   the same client recovery behavior.
-- Herdr `agent_not_found` replies are awaited for `read_tail`, `prompt`, and
-  `approve`. The adapter captures the canonical mapping generation and exact
-  wire target used by the RPC; it retires the mapping, tombstones the agent,
-  and removes the canonical store row under a Store-side predicate that
-  confirms no newer live mapping exists at removal time. Same-generation
+- Herdr `agent_not_found` and `pane_not_found` replies are awaited for
+  `read_tail`, `prompt`, `approve`, and `kill` (the latter sends
+  `pane.close`). The adapter captures the canonical mapping generation and
+  exact wire target/pane used by the RPC; it retires the mapping, tombstones
+  the agent, and removes the canonical store row under a Store-side predicate
+  that confirms no newer live mapping exists at removal time. Same-generation
   status/integration updates do not block cleanup. A late reply from an older
   pane/target generation is classified stale for that request but cannot
   retire the newer mapping or its row. Mapping generations are allocated from
@@ -75,6 +84,14 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   entries; event-derived read/modify/write upserts use the same generation
   predicate at Store commit, so an in-flight event cannot resurrect a retired
   row. Tombstones are bounded by TTL and capacity.
+- `kill` is stale-safe: an already-closed or gone pane is a typed `stale_agent`
+  refusal and no ghost row remains. A successful `pane.close` retires the
+  current mapped pane and removes the corresponding canonical record before
+  the drive response is completed.
+- `attach` never opens a raw stream or waits on a terminal; it resolves the
+  live mapping synchronously and returns the handle above. Missing targets are
+  `unknown_agent`, retired targets are `stale_agent`, and both are bounded and
+  typed.
 - Step-up: destructive payloads require `X-Step-Up-Token` header (minted via
   `/step-up`); failures are never audited.
 
@@ -118,7 +135,16 @@ R9. **Step-up** — `rm -rf ...` payload without token → 403 `step_up_required
      replay → 401 `step_up_failed`.
 R10. **Audit grows only on writes** — GETs, auth failures, step-up failures
      never grow the log; each executed/refused-at-dispatch drive does.
-R11. **Stale target recovery** — a target that disappears or migrates before
+R11. **Kill retires and is idempotent** — `kill` on a live agent sends
+     `pane.close` for the current pane, returns 200 with `ok:true`, removes
+     the canonical snapshot row, and a retry of the same request_id replays
+     the first response. A new request against the retired target is a typed
+     `stale_agent` conflict.
+R12. **Attach returns a usable handle** — `attach` on a live agent returns
+     `ok:true` with `result.kind = "terminal_ref"`, current target/pane ids,
+     and parser-safe `command`/`args`; an unknown or dead target is typed
+     `unknown_agent`/`stale_agent` without waiting.
+R13. **Stale target recovery** — a target that disappears or migrates before
      dispatch returns `stale_agent`; no pre-dispatch replay/audit is created,
      and both clients remove the row and refresh their snapshot. The checked-in
      evidence is the API regression suite plus the Herdr adapter's hermetic
@@ -139,5 +165,5 @@ R11. **Stale target recovery** — a target that disappears or migrates before
   simulator.
 - Desktop key storage: macOS Keychain where available, 0600 file fallback
   with startup warning.
-- No backend changes for P4. Any needed daemon change = additive PR through
-  the same gauntlet.
+- No backend changes for P4 beyond the approved #140 herdr kill/attach adapter
+  fill. Any further daemon change = additive PR through the same gauntlet.

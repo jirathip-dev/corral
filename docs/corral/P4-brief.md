@@ -5,7 +5,8 @@ merged). `docs/corral/DECISIONS.md` is the authoritative design record — D14
 (2026-08-15) fixes the stack: Rust egui desktop + SwiftUI
 iOS ONLY, no SwiftUI on macOS, Windows is a free bonus target. This brief
 ships the D14 v1.1 desktop surface + the iOS-first MVP ("Fleet Notifier").
-P4 has NO merges of backend behavior: corrald on main is the contract.
+P4 has no redesign of backend behavior: corrald on main is the contract,
+with #140 as the approved additive herdr kill/attach adapter fill.
 
 ## Goal
 
@@ -15,7 +16,8 @@ iOS client is the MVP "Fleet Notifier" (push-when-blocked, lock-screen
 answer, per D5/D12). Both authenticate as registered devices (D10/D13:
 device-keypair-signed writes, read-only default, claim-based approvals with
 prompt_hash, biometric step-up for destructive patterns — all already
-implemented server-side in P3).
+implemented server-side in P3; #140 closes the remaining herdr kill/attach
+adapter executions on that drive plane).
 
 ## Scope (workstreams)
 
@@ -41,7 +43,8 @@ implemented server-side in P3).
   topology (repo/branch/dirty/ahead-behind), PR/CI columns, audit log view.
 - Drive controls rendered from `capabilities`: prompt, interrupt,
   read_tail (bounded, on tap), approve (choice buttons from the claim),
-  kill/attach (typed). Step-up prompt for destructive payloads.
+  kill (`pane.close`), attach (`terminal_ref`). Step-up prompt for
+  destructive payloads.
 - Device registration UX on first run (paste registration token / auto-
   register on localhost), keypair in local storage (OS keychain where
   available; documented fallback 0600 file with a warning).
@@ -107,9 +110,10 @@ or a scratch UI run churned a new restricted-ACL item.
 ## Acceptance criteria (verdict gate)
 
 1. Desktop client: full board renders a live fleet from a real corrald;
-   prompt/interrupt/read_tail/approve round-trip against real herdr agents
-   through the signed drive plane (approval with correct prompt_hash
-   executes; stale is refused; step-up required for destructive payloads).
+   prompt/interrupt/read_tail/approve/kill/attach round-trip against real
+   herdr agents through the signed drive plane (approval with correct
+   prompt_hash executes; kill retires the row; attach returns a terminal
+   handle; stale is refused; step-up required for destructive payloads).
 2. iOS Debug client (simulator where available): fleet renders, blocked agent
    surfaces the claim with choices, canned answer executes the approve with
    the correct prompt_hash, read-only default enforced. Physical-device and
@@ -147,4 +151,4 @@ or a scratch UI run churned a new restricted-ACL item.
 W1 (shared contract + conformance suite) first — W2 and W3 build against
 it. All three can start after the W1 contract commit. Reviewers per the
 corral gauntlet (opencode-only, adversarial, separate panes). No P4 merge
-touches corrald behavior.
+touches corrald behavior apart from the approved #140 adapter fill.

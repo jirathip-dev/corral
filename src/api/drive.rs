@@ -27,8 +27,9 @@
 //!    the daemon never sends keys by coordinates (D8), and W1 never sees pane
 //!    ids. Exception: `read_tail` routes through
 //!    [`Adapter::read_tail`], which returns the redacted, bounded tail so
-//!    the response can carry `result.lines` (the one capability whose whole
-//!    point is a response).
+//!    the response can carry `result.lines`. `attach` likewise routes through
+//!    [`Adapter::attach`] so the response can carry a terminal handle without
+//!    changing the result-less drive futures used by every other command.
 //! 6. Audit: [`AuditLog::append`] exactly once per dispatched write —
 //!    success (`Executed`) or typed refusal at dispatch (`Refused` /
 //!    `Failed`). An `append` failure is logged, never allowed to fail the
@@ -857,6 +858,10 @@ pub async fn drive(
                 Err(e) => drive_refusal(e),
             }
         }
+        DriveCommand::Attach => match state.adapter.attach(&agent_id).await {
+            Ok(handle) => (true, None, None, AuditOutcome::Executed, Some(handle)),
+            Err(e) => drive_refusal(e),
+        },
         other => match state.adapter.drive(&agent_id, other).await {
             Ok(()) => (true, None, None, AuditOutcome::Executed, None),
             Err(e) => drive_refusal(e),

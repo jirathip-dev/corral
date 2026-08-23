@@ -190,6 +190,28 @@ Working, Idle, Done, and Blocked text alongside their color cues. Disabled
 controls retain a plain-language explanation naming the missing agent
 capability or device grant.
 
+## Row and detail actions (#166)
+
+The fleet board is de-crammed: state + tool render as fixed-width badges and
+the row title truncates before them. Every state chip shows a relative
+time-in-state duration (`Needs you · 42m`); the daemon snapshot has no
+state-change timestamp, so `ts` is used as a proxy and the limitation is
+documented in `TimeInState`.
+
+Blocked rows render the pending question inline (≤2 lines) and surface a
+borderless **Answer** affordance (also available as a leading swipe action)
+that opens a focused, keyboard-up prompt field in a sheet reusing the shared
+prompt drafts. The detail surface exposes ONE primary action per state —
+blocked → Answer, working → Interrupt, done → Attach/PR — with the rest in a
+"More" overflow menu. Kill lives in that overflow as a destructive control
+guarded by a confirmation dialog; a read-only device sees a plain-language
+reason for why it is disabled.
+
+A pinned filter-chip row (`All · Needs you · repo₁…repoₙ`) plus a
+`.searchable` field over repo/branch/title/issue mirror the egui search. When
+zero agents are blocked the whole "Needs you" section is hidden — no
+`Needs you (0)` header and no empty-state row.
+
 The iOS test target includes coverage for the disclosure transition and the actual
 `NavigationStack` path reconciliation when an agent is deleted, explicit
 lifecycle labels, Recent-output block rendering + 4-state machine, and grant

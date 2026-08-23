@@ -238,8 +238,8 @@ struct AgentActionAvailability: Equatable, Sendable {
 ///   in the UI (D25/D28: 2/3 of rows are idle or done at any moment; the
 ///   board surfaces active work and tucks the rest away).
 ///
-/// Within every section the ordering is the D25 rank — blocked > working >
-/// done > idle > unknown — then ts desc, then agent id for determinism.
+/// Within every section the ordering is the D25 rank — blocked > done >
+/// working > idle > unknown — then ts desc, then agent id for determinism.
 enum BoardModel {
     struct RepoSection: Equatable {
         /// `nil` = the orphan bucket (agents without `workspace.repo`).
@@ -264,15 +264,13 @@ enum BoardModel {
         let idleDone: [Agent]
     }
 
-    /// D25 state rank: blocked > working > done > idle > unknown.
+    /// D25 state rank. Delegates to the shared `StateStyle` contract
+    /// (`contracts/state-tokens.json`) so board ordering can never diverge
+    /// from the state vocabulary again: blocked(0) > done(1) > working(2) >
+    /// idle(3) > unknown(4). This is the approved attention-order, re-pointed
+    /// from the old working-before-done convention (carried finding 8b).
     static func stateRank(_ state: AgentState) -> Int {
-        switch state {
-        case .blocked: return 0
-        case .working: return 1
-        case .done: return 2
-        case .idle: return 3
-        case .unknown: return 4
-        }
+        StateStyle.style(for: state).rank
     }
 
     /// The canonical board ordering: rank, then ts desc, then agent id.
@@ -367,11 +365,64 @@ enum BoardModel {
                 disabledReason: "\(capability.rawValue): not available for this agent.")
         }
         guard grants.contains(capability) else {
+            // Kill gets a plain-language reason (issue #166 item 4): the
+            // sentence names the missing grant too, so the existing
+            // "name the grant" contract tests stay green while a read-only
+            // device says WHY in human terms instead of a bare token.
+            if action == .kill {
+                return AgentActionAvailability(
+                    action: action,
+                    isEnabled: false,
+                    disabledReason: "You don't have permission to kill agents on this host (missing the kill grant — ask the host).")
+            }
             return AgentActionAvailability(
                 action: action,
                 isEnabled: false,
                 disabledReason: "requires the \(capability.rawValue) grant — ask the host.")
         }
         return AgentActionAvailability(action: action, isEnabled: true, disabledReason: nil)
+    }
+
+    // MARK: - Answer-loop prominence (#166 item 3)
+
+    /// ONE primary action per state, chosen by contract order:
+    /// blocked → answer, working → interrupt, done → attach/PR, and
+    /// idle/unknown → none. Everything else lives in the overflow menu.
+    static func primaryAction(for agent: Agent) -> RowPrimaryAction {
+        switch agent.state {
+        case .blocked: return .answer
+        case .working: return .interrupt
+        case .done: return .attach
+        case .idle, .unknown: return .none
+        }
+    }
+
+    // MARK: - Zero-state rule (#166 item 7)
+
+    /// The cross-repo "Needs you" section is hidden entirely when no agent
+    /// is blocked — no `Needs you (0)` header, no "No blocked agents" empty
+    /// row. Returns `nil` in that case (a testable pure projection the view
+    /// uses to decide whether to render the section at all).
+    static func needsYouSection(_ agents: [Agent]) -> [Agent]? {
+        let blocked = ordered(agents.filter(\.isBlocked))
+        return blocked.isEmpty ? nil : blocked
+    }
+}
+
+/// The primary action for the answer loop, rendered as the single prominent
+/// control on the row/detail surface (issue #166 item 3).
+enum RowPrimaryAction: Equatable, Sendable {
+    case answer
+    case interrupt
+    case attach
+    case none
+
+    var label: String {
+        switch self {
+        case .answer: return "Answer"
+        case .interrupt: return "Interrupt"
+        case .attach: return "Attach"
+        case .none: return ""
+        }
     }
 }

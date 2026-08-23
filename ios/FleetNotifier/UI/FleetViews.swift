@@ -194,8 +194,15 @@ final class PromptDrafts: ObservableObject {
 /// whitespace at its trailing edge, while keeping action buttons reliable in
 /// the destination view. The destination resolves the live record again, so
 /// a stale/deleted row can never dispatch from its old snapshot.
+///
+/// #166 item 3: a blocked row additionally surfaces the pending question
+/// (≤2 lines) inline plus a borderless "Answer" affordance. `onAnswer` is
+/// wired to FleetView's focused prompt sheet, NOT to navigation — the row
+/// still opens the detail surface when the summary (not the button) is
+/// tapped.
 struct AgentRow: View {
     let agent: Agent
+    var onAnswer: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -205,20 +212,34 @@ struct AgentRow: View {
                     .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
                     .frame(width: 12, height: 12)
                     .accessibilityHidden(true)
-                Text(stateStyle.glyph)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(stateStyle.color)
-                    .accessibilityHidden(true)
-                Text(stateStyle.label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(stateStyle.color)
-                    .accessibilityLabel(stateStyle.accessibilityLabel)
+                // Fixed-width state badge (glyph + label + duration).
+                // lineLimit(1) + fixedSize kill the "Work-ing" mid-word
+                // wrap and the vertical c/l/a/u/d/e tool stack (issue #166
+                // item 1). The duration chip is item 6.
+                HStack(spacing: 3) {
+                    Text(stateStyle.glyph)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(stateStyle.color)
+                    Text(stateStyle.label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(stateStyle.color)
+                        .accessibilityLabel(stateStyle.accessibilityLabel)
+                    if let durationText {
+                        Text("· \(durationText)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     // Line-1 emphasis (R2-E): the task TITLE wins under
                     // compression, so it gets the higher layoutPriority;
-                    // the secondary identity truncates first.
+                    // the secondary identity truncates first, and the
+                    // fixed-size badges keep their width before the title.
                     .layoutPriority(1)
                 // Session identity must survive on the row even when a
                 // title is shown — two agents can share a title. Falls back
@@ -229,18 +250,23 @@ struct AgentRow: View {
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .layoutPriority(0)
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
                     Text(chip.label)
                         .font(.caption2.monospaced())
                         .foregroundStyle(chip.isFlagged ? Color.secondary : Color.accentColor)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 if let ci = agent.workspace.ciStatus {
                     CiGlyph(status: ci)
                 }
                 Text(agent.tool)
                     .font(.caption2.monospaced())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
@@ -253,26 +279,34 @@ struct AgentRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 6)
+                    if let onAnswer {
+                        Button("Answer", action: onAnswer)
+                            .buttonStyle(.borderless)
+                            .font(.caption.weight(.semibold))
+                            .accessibilityLabel("Answer \(waiting.kind.rawValue) for \(agent.title ?? agent.agentId)")
+                    }
                 }
                 .accessibilityLabel("Blocked claim: \(waiting.prompt)")
             }
-            Text("Open details for Recent output, Prompt, Interrupt, and approvals")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
         .opacity(isDimmed ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilitySummary)
         .accessibilityHint("Double tap to open agent details and actions")
     }
 
-    private var accessibilitySummary: String {
-        let title = agent.title ?? agent.displayName ?? agent.agentId
-        return "\(title), \(stateStyle.label), agent row"
+    /// #166 item 6: `agent.ts` is the record's last-changed wall clock used
+    /// as a proxy for state-entered time (see `TimeInState`). `nil` omits
+    /// the duration chip entirely (e.g. an unseeded record with ts == 0).
+    private var durationText: String? {
+        TimeInState.milliseconds(for: agent, now: Self.now())
+            .map(RelativeTime.duration(milliseconds:))
+    }
+
+    private static func now() -> UInt64 {
+        UInt64(Date().timeIntervalSince1970 * 1000)
     }
 
     /// D28: idle/done rows dim, but their explicit state text remains.
@@ -321,6 +355,8 @@ private struct AgentDetailContent: View {
     let agent: Agent
     @ObservedObject var model: AppModel
     @ObservedObject var drafts: PromptDrafts
+    @State private var showKillConfirm = false
+    @FocusState private var focusPrompt: Bool
 
     private var grants: Set<Capability> { model.actionGrants }
     private var availability: [AgentActionAvailability] {
@@ -340,9 +376,6 @@ private struct AgentDetailContent: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text("Actions are checked against the current fleet record before dispatch.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 if let waiting = agent.waitingOn, agent.isBlocked,
                    let approval = availability.first(where: { $0.action == .approveDeny }) {
@@ -365,17 +398,14 @@ private struct AgentDetailContent: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Controls")
                         .font(.headline)
-                    actionButton(.interrupt, systemImage: "stop.circle",
-                                 title: "Interrupt") {
-                        dispatchInterrupt()
-                    }
-                    actionButton(.kill, systemImage: "xmark.circle",
-                                 title: "Kill") {
-                        dispatchKill()
-                    }
-                    actionButton(.attach, systemImage: "paperclip",
-                                 title: "Attach") {
-                        dispatchAttach()
+                    primaryActionControl
+                    overflowMenu
+                    if let killItem = availability.first(where: { $0.action == .kill }),
+                       !killItem.isEnabled {
+                        Text(killItem.disabledReason ?? "Kill unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(killItem.disabledReason ?? "Kill unavailable")
                     }
                     promptControl
                 }
@@ -389,24 +419,64 @@ private struct AgentDetailContent: View {
             .padding()
         }
         .accessibilityElement(children: .contain)
+        .confirmationDialog("Kill Agent?",
+                            isPresented: $showKillConfirm,
+                            titleVisibility: .visible) {
+            Button("Kill \(agent.title ?? agent.agentId)", role: .destructive) {
+                dispatchKill()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This sends the kill capability to \(agent.tool) on \(agent.workspace.repo ?? "—"). The agent stops; any in-progress work is lost.")
+        }
+    }
+
+    /// Issue #166 item 3: ONE primary action chosen by state — blocked →
+    /// answer, working → interrupt, done → attach/PR, idle/unknown → none.
+    /// The remaining actions live in `overflowMenu`.
+    @ViewBuilder
+    private var primaryActionControl: some View {
+        switch BoardModel.primaryAction(for: agent) {
+        case .answer:
+            let promptItem = availability.first(where: { $0.action == .prompt })
+            Button {
+                focusPrompt = true
+            } label: {
+                Label("Answer", systemImage: "bubble.left.and.bubble.right.fill")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!(promptItem?.isEnabled ?? false))
+            .accessibilityLabel("Answer the pending question")
+        case .interrupt:
+            primaryButton(.interrupt, systemImage: "stop.circle.fill", title: "Interrupt") {
+                dispatchInterrupt()
+            }
+        case .attach:
+            primaryButton(.attach, systemImage: "paperclip.fill", title: "Attach") {
+                dispatchAttach()
+            }
+        case .none:
+            EmptyView()
+        }
     }
 
     @ViewBuilder
-    private func actionButton(_ action: RowAction, systemImage: String,
-                              title: String, perform: @escaping () -> Void) -> some View {
+    private func primaryButton(_ action: RowAction, systemImage: String,
+                               title: String, perform: @escaping () -> Void) -> some View {
         if let item = availability.first(where: { $0.action == action }) {
             let inFlight = model.isActionInFlight(agentId: agent.agentId,
-                                                 capability: action.capability)
+                                                  capability: action.capability)
+            Button {
+                perform()
+            } label: {
+                Label(title, systemImage: systemImage)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!item.isEnabled || inFlight)
+            .accessibilityLabel(item.isEnabled ? title : "\(title) unavailable")
             VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    perform()
-                } label: {
-                    Label(title, systemImage: systemImage)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!item.isEnabled || inFlight)
-                .accessibilityLabel(item.isEnabled ? title : "\(title) unavailable")
                 if let reason = item.disabledReason {
                     Text(reason)
                         .font(.caption)
@@ -421,6 +491,55 @@ private struct AgentDetailContent: View {
         }
     }
 
+    /// Issue #166 item 4: Kill leaves the peer button stack and lives in the
+    /// overflow menu as `.destructive`, guarded by a confirmation dialog.
+    @ViewBuilder
+    private var overflowMenu: some View {
+        let primary = BoardModel.primaryAction(for: agent)
+        Menu {
+            if primary != .answer,
+               let item = availability.first(where: { $0.action == .prompt }) {
+                Button {
+                    focusPrompt = true
+                } label: {
+                    Label("Prompt", systemImage: "text.bubble")
+                }
+                .disabled(!item.isEnabled)
+            }
+            if primary != .interrupt,
+               let item = availability.first(where: { $0.action == .interrupt }) {
+                Button {
+                    dispatchInterrupt()
+                } label: {
+                    Label("Interrupt", systemImage: "stop.circle")
+                }
+                .disabled(!item.isEnabled)
+            }
+            if primary != .attach,
+               let item = availability.first(where: { $0.action == .attach }) {
+                Button {
+                    dispatchAttach()
+                } label: {
+                    Label("Attach", systemImage: "paperclip")
+                }
+                .disabled(!item.isEnabled)
+            }
+            if let item = availability.first(where: { $0.action == .kill }) {
+                Button(role: .destructive) {
+                    showKillConfirm = true
+                } label: {
+                    Label("Kill", systemImage: "xmark.circle")
+                }
+                .disabled(!item.isEnabled)
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("More actions")
+    }
+
     @ViewBuilder
     private var promptControl: some View {
         if let item = availability.first(where: { $0.action == .prompt }) {
@@ -430,6 +549,7 @@ private struct AgentDetailContent: View {
                 HStack {
                     TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
                         .textFieldStyle(.roundedBorder)
+                        .focused($focusPrompt)
                         .disabled(!item.isEnabled)
                     Button("Send Prompt") {
                         dispatchPrompt()
@@ -529,8 +649,13 @@ private struct AgentStateSummary: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "circle.fill")
-                .foregroundStyle(stateStyle.color)
+            // Honor the StateStyle mark (finding 8a): working renders as an
+            // open ring, every other state as a filled dot — identical to
+            // the row. Never hard-code `circle.fill` for all states.
+            Circle()
+                .fill(stateStyle.isRing ? Color.clear : stateStyle.color)
+                .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
+                .frame(width: 14, height: 14)
                 .accessibilityHidden(true)
             Text(stateStyle.glyph)
                 .font(.headline)
@@ -538,6 +663,12 @@ private struct AgentStateSummary: View {
                 .accessibilityHidden(true)
             Text(stateStyle.label)
                 .font(.headline)
+            if let durationText {
+                Text("· \(durationText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
             Text(agent.tool)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
@@ -549,6 +680,16 @@ private struct AgentStateSummary: View {
 
     private var stateStyle: StateStyle {
         StateStyle.style(for: agent.state)
+    }
+
+    /// #166 item 6: record `ts` as a proxy for state-entered time.
+    private var durationText: String? {
+        TimeInState.milliseconds(for: agent, now: Self.now())
+            .map(RelativeTime.duration(milliseconds:))
+    }
+
+    private static func now() -> UInt64 {
+        UInt64(Date().timeIntervalSince1970 * 1000)
     }
 }
 
@@ -1055,6 +1196,9 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
+            .searchable(text: $searchText,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search repo / branch / issue…")
             // R2-F: drop drafts for agents that left the snapshot. This
             // body (and the Set below) re-evaluates on fleet
             // snapshot/delta changes — the exact moments a prune can
@@ -1090,11 +1234,20 @@ struct FleetView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(model: model)
             }
+            .sheet(item: $answerTarget) { target in
+                AnswerPromptSheet(agentId: target.agentId, model: model, drafts: promptDrafts)
+            }
         }
     }
 
     @State private var showSettings = false
     @State private var viewState = FleetViewState()
+    /// #166 item 5: the active filter chip and the `.searchable` query over
+    /// repo / branch / title / issue. Pure logic lives in `BoardFilter`.
+    @State private var filterChip: BoardFilterChip = .all
+    @State private var searchText = ""
+    /// #166 item 3: agent id for the focused, keyboard-up answer sheet.
+    @State private var answerTarget: AgentAnswerTarget?
     /// Per-agent prompt drafts (R2-B). Held in `@State`, DELIBERATELY not
     /// `@StateObject`: `@State` keeps the object's identity across renders
     /// but does not subscribe to `objectWillChange`, so keystrokes do not
@@ -1109,22 +1262,56 @@ struct FleetView: View {
     /// list style set on the List (inset-grouped headers do not pin).
     @ViewBuilder
     private var fleetList: some View {
-        let sections = BoardModel.sections(Array(model.fleet.agents.values))
+        let agents = Array(model.fleet.agents.values)
+        let chips = BoardFilter.chips(for: agents)
         Section {
-            if sections.needsYou.isEmpty {
-                Text("No blocked agents")
-                    .foregroundStyle(.secondary)
+            EmptyView()
+        } header: {
+            pinnedHeader(fillsInteractiveWidth: true) {
+                filterChipRow(chips: chips)
             }
-            ForEach(sections.needsYou) { agent in
+        }
+        if queryActive {
+            filteredSection(agents: agents)
+        } else {
+            standardSections(agents: agents)
+        }
+    }
+
+    /// #166 item 5: flat results while a chip is active or a search is typed.
+    @ViewBuilder
+    private func filteredSection(agents: [Agent]) -> some View {
+        let filtered = BoardModel.ordered(BoardFilter.filtered(agents, chip: filterChip, query: searchText))
+        Section {
+            ForEach(filtered) { agent in
                 agentRow(agent)
             }
         } header: {
             pinnedHeader {
-                HStack {
-                    Text("Needs you (\(sections.needsYou.count))")
-                    Spacer()
-                    if model.fleet.connectionState != .connected, model.mode == .live {
-                        connectionLabel
+                Text(filterHeaderLabel)
+            }
+        }
+    }
+
+    /// Normal D25 hierarchy. The `Needs you` section is hidden entirely when
+    /// zero agents are blocked (issue #166 item 7) — no `Needs you (0)`
+    /// header and no "No blocked agents" empty row.
+    @ViewBuilder
+    private func standardSections(agents: [Agent]) -> some View {
+        let sections = BoardModel.sections(agents)
+        if !sections.needsYou.isEmpty {
+            Section {
+                ForEach(sections.needsYou) { agent in
+                    agentRow(agent)
+                }
+            } header: {
+                pinnedHeader {
+                    HStack {
+                        Text("Needs you (\(sections.needsYou.count))")
+                        Spacer()
+                        if model.fleet.connectionState != .connected, model.mode == .live {
+                            connectionLabel
+                        }
                     }
                 }
             }
@@ -1157,6 +1344,48 @@ struct FleetView: View {
         }
     }
 
+    /// The pinned filter-chip row (`All · Needs you · repo₁…repoₙ`). Rendered
+    /// as both a Section header and (via `fillsInteractiveWidth`) the pinned
+    /// backing so it stays readable over scrolling rows.
+    @ViewBuilder
+    private func filterChipRow(chips: [BoardFilterChip]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(chips, id: \.self) { chip in
+                    Button {
+                        withAnimation { filterChip = chip }
+                    } label: {
+                        Text(chip.label)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(chip == filterChip
+                                        ? Color.accentColor
+                                        : Color.secondary.opacity(0.12),
+                                        in: Capsule())
+                            .foregroundStyle(chip == filterChip ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(chip.label)
+                    .accessibilityAddTraits(chip == filterChip ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    /// True when the flat search/filter projection should replace sections.
+    private var queryActive: Bool {
+        filterChip != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var filterHeaderLabel: String {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Results"
+        }
+        return filterChip.label
+    }
+
     @ViewBuilder
     private func pinnedHeader<Content: View>(fillsInteractiveWidth: Bool = false,
                                              @ViewBuilder content: @escaping () -> Content) -> some View {
@@ -1176,11 +1405,108 @@ struct FleetView: View {
 
     private func agentRow(_ agent: Agent) -> some View {
         NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
-            AgentRow(agent: agent)
+            AgentRow(agent: agent,
+                     onAnswer: agent.isBlocked ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) } : nil)
         }
         .accessibilityHint("Double tap to open agent details and actions")
+        .swipeActions(edge: .leading, allowsFullSwipe: agent.isBlocked) {
+            if agent.isBlocked {
+                Button {
+                    answerTarget = AgentAnswerTarget(agentId: agent.agentId)
+                } label: {
+                    Label("Answer", systemImage: "bubble.left.fill")
+                }
+                .tint(.blue)
+                .accessibilityLabel("Answer the pending question")
+            }
+        }
     }
 
+}
+
+// MARK: - Focused answer sheet (#166 item 3)
+
+/// Identifiable carrier for the answer sheet. FleetView sets this when the
+/// row's "Answer" affordance is tapped, so the #166 sheet can be presented
+/// with `sheet(item:)` (keyboard-up on the focused TextField).
+private struct AgentAnswerTarget: Identifiable {
+    let agentId: String
+    var id: String { agentId }
+}
+
+/// The focused, keyboard-up prompt field for a blocked agent. Reuses the
+/// existing `PromptDrafts` plumbing (the same per-agent draft shared by the
+/// detail surface) and dispatches through `AppModel.drivePrompt` / the demo
+/// path, exactly like the detail view.
+private struct AnswerPromptSheet: View {
+    let agentId: String
+    @ObservedObject var model: AppModel
+    @ObservedObject var drafts: PromptDrafts
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    private var driveClient: DriveClient {
+        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                if let agent = model.fleet.agent(agentId) {
+                    Text("Answer \(agent.title ?? agent.displayName ?? agent.agentId)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let waiting = agent.waitingOn {
+                        Text(waiting.prompt)
+                            .font(.body)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.08),
+                                        in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    TextField("Answer…", text: drafts.binding(for: agentId))
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused)
+                        .onSubmit(send)
+                    Button("Send Answer", action: send)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(drafts.drafts[agentId]?
+                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
+                } else {
+                    Label("Agent no longer available", systemImage: "exclamationmark.triangle")
+                        .font(.headline)
+                    Text("This agent was deleted or migrated. Refresh the fleet before sending an action.")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Answer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear { focused = true }
+        }
+    }
+
+    private func send() {
+        let text = drafts.drafts[agentId] ?? ""
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let agent = model.fleet.agent(agentId) else { return }
+        drafts.clear(agentId)
+        dismiss()
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .prompt, agent: agent, choice: text)
+            return
+        }
+#endif
+        model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
+    }
 }
 
 struct BannerView: View {

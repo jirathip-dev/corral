@@ -217,7 +217,8 @@ Capabilities, grant-gated per device (see "Grants model" below):
   actually hold (a reset device that resumes deltas-only would otherwise
   never see a snapshot).
 - **Recent output** (`read_tail`): bounded live tail served via signed
-  `/drive`, segmented client-side into blocks (user / agent / tool / system).
+  `/drive`, segmented in `corrald` into blocks (user / agent / tool / system);
+  clients render the blocks without re-segmenting.
 - **Older transcript pages** (`read_tail`): paged, newest-first history via
   signed `GET /transcript`, using the same grant. The iOS app folds both into
   the single Recent-output surface (live bottom + older history on scroll-up).

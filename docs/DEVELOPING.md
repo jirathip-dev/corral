@@ -22,8 +22,8 @@ src/main.rs              binary entrypoint: --socket/--port/--bind parsing
                          init, planes supervisor, axum serve
 src/lib.rs               library surface: adapters, api, approve, auth,
                          core, drive, integrate
-src/adapters/            herdr.rs (push, zero polling), git_plane.rs,
-                         gh_plane.rs, mod.rs (Adapter trait)
+src/adapters/            herdr.rs (event push + trusted catalog refresh),
+                         git_plane.rs, gh_plane.rs, mod.rs (Adapter trait)
 src/core/                model.rs (canonical Agent, schema v5),
                          events.rs (Plane trait + channel),
                          store.rs (revisioned store, coalescing, resume),
@@ -205,11 +205,16 @@ clients.
 
 ## Conventions
 
-- **Zero polling in the herdr adapter.** Push from `events.subscribe`,
-  converge on events, never a sleep-loop calling `herdr agent list`.
-  The gh plane is poll-by-design (one GraphQL round-trip per poll, SWR);
-  the git plane is fsevents push with one immutable watcher per commondir and a
-  10s sweep safety net. When in doubt, grep: `rg "sleep|interval" src/adapters/`.
+- **Event push with a bounded trusted-catalog refresh in the herdr adapter.**
+  `events.subscribe` remains the primary path, but the session also runs a
+  serialized `agent.list` reconciliation every `CATALOG_REFRESH_INTERVAL`
+  (2s). This bounded cross-check keeps state, membership, and session ids
+  live when the socket stays open but silently stops delivering events.
+  Refreshes are serialized with event handling, failures are logged and
+  retried on the next tick, and unchanged catalogs are no-ops that do not
+  publish a new snapshot rev. The gh plane is poll-by-design (one GraphQL
+  round-trip per poll, SWR); the git plane is fsevents push with one immutable
+  watcher per commondir and a 10s sweep safety net.
 - **Additive-only versioned schema.** New fields/variants extend the
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add

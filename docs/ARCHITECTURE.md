@@ -44,7 +44,7 @@ today, not a bug.
 ## Read side: planes → integrator → store → HTTP/SSE
 
 ```
-herdr socket ── herdr adapter (push: events.subscribe, zero polling)
+herdr socket ── herdr adapter (push: events.subscribe + bounded catalog refresh)
 git worktrees ─ GitPlane (fsevents push + 10s parallel sweep safety net)
 GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: no polling
               │  until the first SSE client ever connects)
@@ -71,12 +71,13 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
 
 Every adapter normalizes into the canonical `Agent` record
 (`src/core/model.rs`, `schema_version` 5, versioned for additive and breaking
-changes). The herdr
-adapter is push-only — it subscribes once and converges on pushed
-`pane_*` events, never a poll loop (grep-able standing rule; the gh
-plane is the sanctioned exception, poll-by-design at one round-trip
-per poll). The reader is the ONLY task that reads the herdr socket, so
-a slow event consumer can never block it. A full events channel retires
+changes). The herdr adapter is event-first: it subscribes to
+`events.subscribe` and converges on pushed `pane_*` events, while a bounded
+trusted `agent.list` reconciliation every 2s covers the silent-but-open
+stream failure mode. The gh plane remains the sanctioned poller, at one
+GraphQL round-trip per poll. The reader is the ONLY task that reads the
+herdr socket, so a slow event consumer can never block it. A full events
+channel retires
 the stream as a resynchronization condition; the reader still drains a
 pre-subscribe response. Subscription/connect failures retry in the stream
 task with exponential backoff capped at 30 seconds; only the first failure

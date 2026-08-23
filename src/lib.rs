@@ -1,8 +1,8 @@
 //! Corral host daemon library.
 //!
 //! P1: canonical agent model + herdr adapter (events.subscribe over the herdr
-//! unix socket, zero polling) + `GET /snapshot` with monotonic `rev` + SSE
-//! resume on loopback.
+//! unix socket, with a bounded trusted-catalog refresh) + `GET /snapshot`
+//! with monotonic `rev` + SSE resume on loopback.
 
 pub mod adapters;
 pub mod api;

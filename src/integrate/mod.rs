@@ -35,7 +35,7 @@
 //! that appears after its worktree's facts were cached converges IMMEDIATELY,
 //! with zero subsequent plane events. The signal is a `watch` channel, not a
 //! broadcast receiver, so `subscriber_count` stays a true SSE measure and
-//! the daemon adds no polling anywhere.
+//! the integrator adds no polling or repeated scanning of its own.
 //!
 //! ## Guards (WS3 hard gates)
 //!

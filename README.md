@@ -182,8 +182,9 @@ The workspace is **non-virtual** with
 `default-members = [".", "crates/corrald-client", "clients/egui"]`, so a
 bare `cargo clippy`/`build`/`test` at the root covers all three crates.
 
-Module map, conventions (zero polling in the herdr adapter, additive-only
-schema), and how to add a capability: [docs/DEVELOPING.md](docs/DEVELOPING.md).
+Module map, conventions (event push plus a bounded trusted-catalog refresh in
+the herdr adapter, additive-only schema), and how to add a capability:
+[docs/DEVELOPING.md](docs/DEVELOPING.md).
 
 ## Development status
 

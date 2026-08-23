@@ -5,8 +5,9 @@
 //! store — and therefore every serialized output (snapshot, SSE, drive
 //! responses) — must never hold secret-shaped text.
 //!
-//! The adapter itself does zero polling (P1 rule): the wait loop below is
-//! test-side only, waiting for the push-driven converge.
+//! The production adapter is event-first with a bounded `agent.list`
+//! watchdog; this fake covers the bootstrap + push path. The wait loop below
+//! is test-side only, waiting for the push-driven converge.
 
 use std::path::PathBuf;
 use std::sync::Arc;

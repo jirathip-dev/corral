@@ -365,7 +365,13 @@ fn agent_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
 
 fn state_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
     fixed_cell(ui, COL_STATE, |ui| {
-        badge(ui, agent.state.label(), state::of(agent.state.into()));
+        let st: crate::theme::AgentStateLike = agent.state.into();
+        // AC5: color is never the only channel — carry mark + label.
+        badge(
+            ui,
+            &format!("{} {}", st.mark_glyph(), st.label()),
+            state::of(st),
+        );
         if let Some(reason) = &agent.reason {
             let truncated: String = reason.chars().take(40).collect();
             ui.add_sized(

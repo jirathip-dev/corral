@@ -5,6 +5,12 @@
 //! Palette: charcoal canvas (`#0d1117`-family), one accent (teal), and
 //! distinct hues for the four agent states and the four waiting-on kinds
 //! (P4: ApproveTool / AnswerQuestion / Menu / Crash must render DISTINCT).
+//!
+//! Agent-state colors/labels/ranks/marks are authoritative in
+//! `contracts/state-tokens.json` (shared with the iOS notifier). This file
+//! keeps native `Color32` consts for the egui dark board surface but must
+//! never diverge from that contract: the `state_tokens_match_contract`
+//! test below reads the JSON and fails on any hex/label/rank/mark drift.
 
 use eframe::egui::{Color32, Visuals};
 
@@ -12,10 +18,12 @@ use eframe::egui::{Color32, Visuals};
 pub mod state {
     use super::Color32;
 
+    // Hexes mirror the `dark` column of contracts/state-tokens.json
+    // (egui board is a dark-theme surface).
     pub const IDLE: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
-    pub const WORKING: Color32 = Color32::from_rgb(0xd2, 0x99, 0x22);
+    pub const WORKING: Color32 = Color32::from_rgb(0x58, 0xa6, 0xff);
     pub const BLOCKED: Color32 = Color32::from_rgb(0xf8, 0x51, 0x49);
-    pub const DONE: Color32 = Color32::from_rgb(0x3f, 0xb9, 0x50);
+    pub const DONE: Color32 = Color32::from_rgb(0xd2, 0x99, 0x22);
     pub const UNKNOWN: Color32 = Color32::from_rgb(0x6e, 0x76, 0x81);
 
     pub fn of(kind: super::AgentStateLike) -> Color32 {
@@ -99,6 +107,53 @@ impl From<crate::model::AgentState> for AgentStateLike {
             crate::model::AgentState::Blocked => Self::Blocked,
             crate::model::AgentState::Done => Self::Done,
             crate::model::AgentState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl AgentStateLike {
+    /// Contract-facing user label (`contracts/state-tokens.json` "label").
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blocked => "Needs you",
+            Self::Done => "Review",
+            Self::Working => "Working",
+            Self::Idle => "Idle",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    /// Attention-ordered rank (`contracts/state-tokens.json` "rank",
+    /// 0 = highest priority). Distinct from any legacy raw-enum order.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Blocked => 0,
+            Self::Done => 1,
+            Self::Working => 2,
+            Self::Idle => 3,
+            Self::Unknown => 4,
+        }
+    }
+
+    /// Contract mark token (`contracts/state-tokens.json` "mark").
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Blocked => "alert",
+            Self::Done => "check",
+            Self::Working => "ring",
+            Self::Idle => "dot",
+            Self::Unknown => "query",
+        }
+    }
+
+    /// Display glyph for the mark (color is never the only channel).
+    pub fn mark_glyph(self) -> &'static str {
+        match self {
+            Self::Blocked => "!",
+            Self::Done => "\u{2713}",
+            Self::Working => "\u{25CB}",
+            Self::Idle => "\u{25E6}",
+            Self::Unknown => "?",
         }
     }
 }
@@ -270,5 +325,86 @@ mod tests {
             default.widgets.inactive.bg_fill
         );
         assert_ne!(ours.window_fill, default.window_fill);
+    }
+
+    /// Drift guard for the shared state token contract
+    /// (`contracts/state-tokens.json`). If the checked-in JSON or these egui
+    /// consts/accessors move, this test fails loudly rather than letting the
+    /// two client surfaces diverge again.
+    #[derive(serde::Deserialize)]
+    struct StateToken {
+        state: String,
+        rank: u8,
+        label: String,
+        dark: String,
+        light: String,
+        mark: String,
+    }
+
+    fn state_like_from_str(s: &str) -> Option<super::AgentStateLike> {
+        match s {
+            "idle" => Some(super::AgentStateLike::Idle),
+            "working" => Some(super::AgentStateLike::Working),
+            "blocked" => Some(super::AgentStateLike::Blocked),
+            "done" => Some(super::AgentStateLike::Done),
+            "unknown" => Some(super::AgentStateLike::Unknown),
+            _ => None,
+        }
+    }
+
+    fn parse_hex(s: &str) -> (u8, u8, u8) {
+        let h = s.strip_prefix('#').expect("token hex starts with #");
+        assert_eq!(h.len(), 6, "token hex is six digits");
+        (
+            u8::from_str_radix(&h[0..2], 16).unwrap(),
+            u8::from_str_radix(&h[2..4], 16).unwrap(),
+            u8::from_str_radix(&h[4..6], 16).unwrap(),
+        )
+    }
+
+    #[test]
+    fn state_tokens_match_contract() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/state-tokens.json"
+        );
+        let raw = std::fs::read_to_string(path).expect("read contracts/state-tokens.json");
+        let tokens: Vec<StateToken> =
+            serde_json::from_str(&raw).expect("parse contracts/state-tokens.json");
+
+        assert_eq!(tokens.len(), 5, "contract has exactly five states");
+
+        let mut seen = std::collections::HashSet::new();
+        for token in &tokens {
+            let like = state_like_from_str(&token.state)
+                .unwrap_or_else(|| panic!("unknown state in contract: {}", token.state));
+            let (r, g, b) = parse_hex(&token.dark);
+            let _light = parse_hex(&token.light);
+            assert_eq!(
+                state::of(like),
+                Color32::from_rgb(r, g, b),
+                "egui dark const diverged from contract for {}",
+                token.state
+            );
+            assert_eq!(
+                like.label(),
+                token.label,
+                "label drifted for {}",
+                token.state
+            );
+            assert_eq!(like.rank(), token.rank, "rank drifted for {}", token.state);
+            assert_eq!(
+                like.mark(),
+                token.mark,
+                "mark token drifted for {}",
+                token.state
+            );
+            // Distinct mark + label per state (AC5).
+            assert!(
+                seen.insert((token.label.clone(), token.mark.clone())),
+                "duplicate label/mark pair in contract for {}",
+                token.state
+            );
+        }
     }
 }

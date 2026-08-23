@@ -201,13 +201,18 @@ struct AgentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(stateColor)
-                    .frame(width: 10, height: 10)
+                    .fill(stateStyle.isRing ? Color.clear : stateStyle.color)
+                    .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
+                    .frame(width: 12, height: 12)
                     .accessibilityHidden(true)
-                Text(agent.state.displayName)
+                Text(stateStyle.glyph)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(stateStyle.color)
+                    .accessibilityHidden(true)
+                Text(stateStyle.label)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(stateColor)
-                    .accessibilityLabel(agent.state.accessibilityLabel)
+                    .foregroundStyle(stateStyle.color)
+                    .accessibilityLabel(stateStyle.accessibilityLabel)
                 Text(agent.title ?? agent.displayName ?? agent.agentId)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -267,7 +272,7 @@ struct AgentRow: View {
 
     private var accessibilitySummary: String {
         let title = agent.title ?? agent.displayName ?? agent.agentId
-        return "\(title), \(agent.state.displayName), agent row"
+        return "\(title), \(stateStyle.label), agent row"
     }
 
     /// D28: idle/done rows dim, but their explicit state text remains.
@@ -275,14 +280,8 @@ struct AgentRow: View {
         agent.state == .idle || agent.state == .done
     }
 
-    private var stateColor: Color {
-        switch agent.state {
-        case .blocked: return .red
-        case .working: return .green
-        case .idle: return .secondary
-        case .done: return .blue
-        case .unknown: return .gray
-        }
+    private var stateStyle: StateStyle {
+        StateStyle.style(for: agent.state)
     }
 }
 
@@ -555,9 +554,13 @@ private struct AgentStateSummary: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "circle.fill")
-                .foregroundStyle(color)
+                .foregroundStyle(stateStyle.color)
                 .accessibilityHidden(true)
-            Text(agent.state.displayName)
+            Text(stateStyle.glyph)
+                .font(.headline)
+                .foregroundStyle(stateStyle.color)
+                .accessibilityHidden(true)
+            Text(stateStyle.label)
                 .font(.headline)
             Text(agent.tool)
                 .font(.caption.monospaced())
@@ -565,17 +568,11 @@ private struct AgentStateSummary: View {
             Spacer()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(agent.state.accessibilityLabel), \(agent.tool) agent")
+        .accessibilityLabel("\(stateStyle.accessibilityLabel), \(agent.tool) agent")
     }
 
-    private var color: Color {
-        switch agent.state {
-        case .blocked: return .red
-        case .working: return .green
-        case .idle: return .secondary
-        case .done: return .blue
-        case .unknown: return .gray
-        }
+    private var stateStyle: StateStyle {
+        StateStyle.style(for: agent.state)
     }
 }
 

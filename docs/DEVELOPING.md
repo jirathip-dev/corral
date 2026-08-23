@@ -235,6 +235,18 @@ clients.
   no-waiting-approval etc. are typed refusals with stable HTTP mappings
   (see `docs/corral/P4-conformance.md`), never 500s.
 
+## State token contract
+
+The shared state→color/label vocabulary for both clients lives in
+`contracts/state-tokens.json` (one entry per `AgentState` carrying `state`,
+`rank`, `label`, `dark`, `light`, `mark`). The egui board keeps native
+`Color32` consts in `clients/egui/src/theme.rs` and the iOS notifier keeps a
+`StateStyle` in `ios/FleetNotifier/UI/StateStyle.swift`, but neither may
+diverge from the contract: a drift test per client reads the JSON and
+asserts the hexes/labels/ranks/marks stay in sync. Update the contract first,
+then re-point each client and its drift test together. Color is never the
+only state channel — every chip renders a mark plus a label.
+
 ## How to add a capability
 
 1. **Contract** (`src/drive/mod.rs`): add the variant to `Capability`

@@ -53,6 +53,21 @@ enum CanonicalJSON {
     /// contract. Keeping the builder named prevents the UI from accidentally
     /// inventing a prompt-shaped payload for an interrupt.
     static func interruptPayload() -> Value { .null }
+    static func killPayload() -> Value { .null }
+    static func attachPayload() -> Value { .null }
+
+    /// `/transcript` page payload: `{ts, cursor?, limit}`. Cursor is omitted
+    /// for the newest page (the daemon's serde uses skip_serializing_if).
+    static func transcriptPayload(ts: UInt64, cursor: String?,
+                                  limit: Int) -> Value {
+        var pairs: [(key: String, value: Value)] = []
+        if let cursor {
+            pairs.append((key: "cursor", value: .string(cursor)))
+        }
+        pairs.append((key: "limit", value: .uint(UInt64(limit))))
+        pairs.append((key: "ts", value: .uint(ts)))
+        return .object(pairs)
+    }
 
     /// `{"approval_id":...,"choice":...,"kind":"approve","prompt_hash":...}`
     /// — sorted byte order: approval_id < choice < kind < prompt_hash.
@@ -163,6 +178,23 @@ enum CanonicalJSON {
         return Data(json.utf8)
     }
 
+    /// The exact `SignedDrive` JSON `/transcript` carries in
+    /// `x-corral-drive`. HTTP header values must be visible ASCII, so
+    /// non-ASCII in an exotic agent id is `\uXXXX`-escaped while remaining
+    /// the same JSON value the daemon parses.
+    static func signedTranscriptHeader(keyId: String, signatureB64: String,
+                                       envelopeBytes: Data) -> String {
+        var json = "{\"key_id\":"
+        json += asciiEscaped(keyId)
+        json += ",\"signature\":"
+        json += asciiEscaped(signatureB64)
+        json += ",\"envelope\":"
+        let envelope = String(data: envelopeBytes, encoding: .utf8) ?? "{}"
+        json += asciiEscapedJSON(envelope)
+        json += "}"
+        return json
+    }
+
     /// `{token, public_key}` registration body.
     static func registerBody(token: String, publicKeyB64: String) -> Data {
         var json = "{\"token\":"
@@ -229,6 +261,47 @@ enum CanonicalJSON {
             }
         }
         out += "\""
+        return out
+    }
+
+    /// Header-safe JSON string: like `escaped`, but every non-ASCII scalar
+    /// is emitted as one or two lowercase `\uXXXX` UTF-16 escapes.
+    static func asciiEscaped(_ s: String) -> String {
+        var out = "\""
+        for scalar in s.unicodeScalars {
+            switch scalar.value {
+            case 0x22: out += "\\\""
+            case 0x5C: out += "\\\\"
+            case 0x08: out += "\\b"
+            case 0x09: out += "\\t"
+            case 0x0A: out += "\\n"
+            case 0x0C: out += "\\f"
+            case 0x0D: out += "\\r"
+            case 0x00...0x1F: out += "\\u" + String(format: "%04x", scalar.value)
+            case 0x00...0x7F: out.unicodeScalars.append(scalar)
+            default:
+                for unit in String(scalar).utf16 {
+                    out += "\\u" + String(format: "%04x", unit)
+                }
+            }
+        }
+        out += "\""
+        return out
+    }
+
+    /// Escape every non-ASCII character of an already-valid JSON document
+    /// into `\uXXXX`; ASCII syntax and escapes are passed through unchanged.
+    static func asciiEscapedJSON(_ json: String) -> String {
+        var out = ""
+        for scalar in json.unicodeScalars {
+            if scalar.isASCII {
+                out.unicodeScalars.append(scalar)
+            } else {
+                for unit in String(scalar).utf16 {
+                    out += "\\u" + String(format: "%04x", unit)
+                }
+            }
+        }
         return out
     }
 

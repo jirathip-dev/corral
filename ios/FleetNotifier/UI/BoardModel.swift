@@ -190,6 +190,9 @@ enum RowAction: Equatable, Sendable {
     case prompt
     case interrupt
     case tail
+    case kill
+    case attach
+    case fullChat
 
     var label: String {
         switch self {
@@ -197,6 +200,9 @@ enum RowAction: Equatable, Sendable {
         case .prompt: return "Prompt"
         case .interrupt: return "Interrupt"
         case .tail: return "Tail 200"
+        case .kill: return "Kill"
+        case .attach: return "Attach"
+        case .fullChat: return "Full chat"
         }
     }
 
@@ -206,6 +212,9 @@ enum RowAction: Equatable, Sendable {
         case .prompt: return .prompt
         case .interrupt: return .interrupt
         case .tail: return .readTail
+        case .kill: return .kill
+        case .attach: return .attach
+        case .fullChat: return .readTail
         }
     }
 }
@@ -325,8 +334,11 @@ enum BoardModel {
                                    grants: Set<Capability>) -> [AgentActionAvailability] {
         [
             availability(.tail, agent: agent, grants: grants),
+            availability(.fullChat, agent: agent, grants: grants),
             availability(.prompt, agent: agent, grants: grants),
             availability(.interrupt, agent: agent, grants: grants),
+            availability(.kill, agent: agent, grants: grants),
+            availability(.attach, agent: agent, grants: grants),
             availability(.approveDeny, agent: agent, grants: grants),
         ]
     }
@@ -356,13 +368,13 @@ enum BoardModel {
             return AgentActionAvailability(
                 action: action,
                 isEnabled: false,
-                disabledReason: "This agent does not advertise the `\(capability.rawValue)` capability.")
+                disabledReason: "\(capability.rawValue): not available for this agent.")
         }
         guard grants.contains(capability) else {
             return AgentActionAvailability(
                 action: action,
                 isEnabled: false,
-                disabledReason: "The device has no `\(capability.rawValue)` grant — ask the host to promote capabilities.")
+                disabledReason: "requires the \(capability.rawValue) grant — ask the host.")
         }
         return AgentActionAvailability(action: action, isEnabled: true, disabledReason: nil)
     }

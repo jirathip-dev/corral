@@ -205,16 +205,26 @@ rules:
 scripts/corrald-grant.sh --key <phone-key-id> --caps read_tail,prompt,interrupt,approve
 ```
 
+The baseline phone promotion intentionally stops at the safe read/reply
+set. Add `kill,attach` explicitly only when the host has approved those
+controls; `read_tail` also unlocks the iOS Full chat view.
+
 What the app shows:
 
 - **Live board** from the `/events` SSE stream: agent rows ordered
   blocked > working > done > idle, each with state, title/session,
   repo·branch·worktree, issue chips, CI glyph, tool.
 - **Tail 200** (`read_tail`): bounded 200-line tail via signed `/drive`.
+- **Full chat** (`read_tail`): signed, paged `/transcript` view, separate
+  from the bounded Tail 200 view.
 - **Prompt** (`prompt`): free-text prompt to an agent.
+- **Interrupt** (`interrupt`), **Kill** (`kill`), and **Attach**
+  (`attach`): signed write controls; Kill uses Face ID step-up.
 - **Approve / Deny / Continue** (`approve`): canned replies to a waiting
   agent, including from the lock-screen notification.
-- Rows without the matching grant render without those controls.
+- Controls stay visible when disabled. A missing grant reads
+  `requires the <cap> grant — ask the host.`; an unadvertised capability
+  reads `<cap>: not available for this agent.`
 
 Board never renders but the daemon is healthy? Every stream-layer failure
 now surfaces as a dismissible banner instead of a silent spinner (the

@@ -773,6 +773,143 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
+    /// `kill` uses the contract's null payload but is destructive by
+    /// capability: force the same biometrics -> `/step-up` -> token path even
+    /// though the null payload does not match `DestructivePatterns`.
+    func driveKill(agent: Agent, driveClient: DriveClient,
+                   biometrics: Biometrics = Biometrics()) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.kill, for: live) else { return }
+        let payload = CanonicalJSON.killPayload()
+        let key = DriveActionKey(capability: .kill, target: live.agentId,
+                                 identity: "kill")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .kill, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId, forceStepUp: true,
+              biometrics: biometrics)
+    }
+
+    func driveAttach(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.attach, for: live) else { return }
+        let payload = CanonicalJSON.attachPayload()
+        let key = DriveActionKey(capability: .attach, target: live.agentId,
+                                 identity: "attach")
+        guard let requestId = beginDriveAction(key) else { return }
+        drive(capability: .attach, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
+    }
+
+    // MARK: - Full chat (#142 / #64)
+
+    /// Open the newest page. The detail control is already disabled without
+    /// capability/grant; this method re-checks so a direct caller cannot
+    /// bypass the gate either.
+    func openTranscript(agentId: String, driveClient: DriveClient? = nil) {
+        requestTranscriptPage(agentId: agentId, cursor: nil,
+                              driveClient: driveClient)
+    }
+
+    func loadOlderTranscript(agentId: String, driveClient: DriveClient? = nil) {
+        guard let pane = fleet.transcript(agentId), let cursor = pane.nextCursor,
+              !pane.loading else { return }
+        requestTranscriptPage(agentId: agentId, cursor: cursor,
+                              driveClient: driveClient)
+    }
+
+    func retryTranscript(agentId: String, driveClient: DriveClient? = nil) {
+        guard let pane = fleet.transcript(agentId), pane.canRetry else { return }
+        requestTranscriptPage(agentId: agentId, cursor: pane.nextCursor,
+                              driveClient: driveClient)
+    }
+
+    private func requestTranscriptPage(agentId: String, cursor: String?,
+                                       driveClient: DriveClient?,
+                                       autoReload: Bool = false) {
+        guard let live = fleet.agent(agentId) else {
+            banner = .error("stale_agent",
+                            "This agent was deleted or migrated; refresh the fleet before reading its transcript.")
+            return
+        }
+        guard mode == .live else {
+            fleet.noteTranscriptFailure(TranscriptFailure(
+                kind: "demo",
+                message: "Full chat is live-only; demo mode does not fetch or fake transcripts.",
+                candidates: []
+            ), for: agentId)
+            return
+        }
+        guard let signer, let keyId else {
+            fleet.noteTranscriptFailure(TranscriptFailure(
+                kind: "not_registered",
+                message: "Register this device to read full chat.",
+                candidates: []
+            ), for: agentId)
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.readTail, for: live) else { return }
+        guard let fetch = fleet.prepareTranscriptFetch(agent: agentId,
+                                                       cursor: cursor,
+                                                       newest: cursor == nil,
+                                                       autoReload: autoReload) else {
+            return
+        }
+        let context = lifecycleContext()
+        let client = driveClient ?? DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!,
+                                                session: session)
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.lifecycleTasks.removeValue(forKey: taskId)
+                if Task.isCancelled {
+                    self.fleet.cancelTranscriptFetch(agent: agentId,
+                                                     generation: fetch.generation)
+                }
+            }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            let header = DriveClient.transcriptAuthHeader(keyId: keyId,
+                                                          signer: signer,
+                                                          target: agentId,
+                                                          cursor: fetch.cursor)
+            let result = await client.fetchTranscript(agentId: agentId,
+                                                      authHeader: header)
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            switch result {
+            case .success(let page):
+                guard self.fleet.foldTranscriptPage(page, for: agentId,
+                                                     generation: fetch.generation) else {
+                    return
+                }
+            case .failure(let failure):
+                switch self.fleet.foldTranscriptFailure(failure, for: agentId,
+                                                        generation: fetch.generation) {
+                case .dropped:
+                    return
+                case .needsReload:
+                    self.requestTranscriptPage(agentId: agentId, cursor: nil,
+                                               driveClient: client, autoReload: true)
+                case .applied, .notGranted:
+                    if failure.isNotGranted {
+                        self.banner = .error("not_granted", failure.message)
+                    }
+                }
+            }
+        }
+        lifecycleTasks[taskId] = task
+    }
+
     /// Resolve an action's target from the current read model. A detail view
     /// may outlive a delta deletion; in that case no signed bytes are built.
     private func currentAgent(for agentId: String) -> Agent? {
@@ -789,12 +926,12 @@ final class AppModel: ObservableObject {
     private func authorize(_ capability: Capability, for agent: Agent) -> Bool {
         guard agent.capabilities.contains(capability.rawValue) else {
             banner = .error("capability_unavailable",
-                            "This agent does not advertise the `\(capability.rawValue)` capability.")
+                            "\(capability.rawValue): not available for this agent.")
             return false
         }
         guard actionGrants.contains(capability) else {
             banner = .error("not_granted",
-                            "The device has no `\(capability.rawValue)` grant — ask the host to promote capabilities.")
+                            "requires the \(capability.rawValue) grant — ask the host.")
             return false
         }
         return true
@@ -820,7 +957,9 @@ final class AppModel: ObservableObject {
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                        driveClient: DriveClient, keyId: String, signer: DeviceSigner,
-                       actionKey: DriveActionKey, requestId: String) {
+                       actionKey: DriveActionKey, requestId: String,
+                       forceStepUp: Bool = false,
+                       biometrics: Biometrics = Biometrics()) {
         let context = lifecycleContext()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -834,7 +973,9 @@ final class AppModel: ObservableObject {
             let result = await driveClient.drive(capability: capability, target: target,
                                                  payload: payload, rev: self.fleet.lastEventId,
                                                  requestId: requestId,
-                                                 keyId: keyId, signer: signer)
+                                                 keyId: keyId, signer: signer,
+                                                 biometrics: biometrics,
+                                                 forceStepUp: forceStepUp)
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch result {
             case .dispatched(let response):
@@ -849,6 +990,10 @@ final class AppModel: ObservableObject {
                         self.banner = .info("Prompt sent to \(target): rev \(response.rev)")
                     } else if capability == .interrupt {
                         self.banner = .info("Interrupted \(target): rev \(response.rev)")
+                    } else if capability == .kill {
+                        self.banner = .info("Killed \(target): rev \(response.rev)")
+                    } else if capability == .attach {
+                        self.banner = .info("Attached \(target): rev \(response.rev)")
                     }
                 } else {
                     if response.errorKind == "stale_agent" {

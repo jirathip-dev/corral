@@ -83,9 +83,9 @@ pub trait Adapter: Debug + Send + Sync {
     fn source(&self) -> &'static str;
 
     /// Begin streaming normalized records into `store`. Must not block;
-    /// spawns background work. Zero polling: the adapter is push-driven from
-    /// this point on (one bootstrap call for initial state is allowed, never
-    /// a poll loop).
+    /// spawns background work. Event push is the primary signal; a bounded
+    /// freshness/reconciliation pass is allowed (herdr re-lists the catalog
+    /// on a fixed cadence) but adapters must never busy-poll.
     fn start(self: Arc<Self>, store: Store);
 
     /// Drive path: issue a command to `agent_id` and await the source's

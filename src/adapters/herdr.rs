@@ -1,4 +1,5 @@
-//! herdr adapter: JSON-RPC over the herdr unix socket, push-only.
+//! herdr adapter: JSON-RPC over the herdr unix socket; event-first with a
+//! bounded trusted-catalog refresh.
 //!
 //! Protocol facts (verified against the live socket):
 //! - Newline-delimited JSON-RPC; responses carry `id`, pushed events carry
@@ -12,7 +13,8 @@
 //!   pane afterwards), while request/response work (agent.list bootstrap,
 //!   drive commands) opens a fresh short-lived connection per call.
 //! - On subscribe, the server replays current pane state (pane.updated), so
-//!   the adapter converges without polling. If bounded event delivery
+//!   the adapter converges from replay without an extra listing. If bounded
+//!   event delivery
 //!   overflows, the stream is retired after its pending subscribe response;
 //!   a successfully subscribed global stream re-bootstraps the session after
 //!   the same capped outage backoff as connect/subscribe failures, while a
@@ -20,8 +22,11 @@
 //!   Connection and subscribe failures do not trigger a global re-bootstrap
 //!   until their owning retry delay has elapsed.
 //!
-//! Bootstrap is one `agent.list` call on connect (initial state — never a
-//! poll loop; AC5: no sleep-loops calling `herdr agent list`).
+//! Bootstrap is one `agent.list` call on connect, then a trusted freshness
+//! watchdog repeats it while the global stream is open. The short cadence
+//! catches a silently-stalled stream whose socket never closes; the interval
+//! is injected in tests and the session loop keeps reconciles serialized, so
+//! the watchdog cannot overlap a close-triggered reconcile or hot-loop herdr.
 //! `pane.output_matched` is the notification trigger (server-side push, not
 //! a tail scrape): while herdr reports the agent `blocked`, a matched line
 //! becomes the canonical `waiting_on` record.
@@ -62,7 +67,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::core::model::{
@@ -90,6 +95,11 @@ const FRAME_CHANNEL_CAP: usize = 1024;
 /// reachable; the reconnect backoff resets afterwards so steady-state
 /// restarts recover quickly instead of staying at 30s forever.
 const RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
+/// Fresh `agent.list` cadence while the global event stream is open. This is
+/// the watchdog that keeps the read model live when herdr's socket remains
+/// connected but stops delivering events; the interval is short enough to
+/// satisfy the catalog freshness target while remaining far below a hot loop.
+const CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// Pane event streams use a longer initial delay so a single unhealthy pane
 /// cannot compete with the global stream for the herdr socket.
 const PANE_RETRY_BASE: Duration = Duration::from_secs(2);
@@ -144,6 +154,66 @@ impl StreamRetryPolicy {
             base: RECONNECT_BASE,
             max: RECONNECT_MAX,
             reset_after: RECONNECT_RESET_AFTER,
+        }
+    }
+}
+
+/// Testable cadence for trusted `agent.list` reconciliation. Production uses
+/// [`CATALOG_REFRESH_INTERVAL`]; tests inject a short interval so the
+/// silent-stream path is verified without wall-clock sleeps.
+#[derive(Debug, Clone, Copy)]
+struct CatalogFreshnessPolicy {
+    interval: Duration,
+}
+
+impl CatalogFreshnessPolicy {
+    fn production() -> Self {
+        Self {
+            interval: CATALOG_REFRESH_INTERVAL,
+        }
+    }
+}
+
+/// Catalog watchdog failures follow the stream outage policy: the first
+/// failure is WARNed, repeated ticks stay at debug until a refresh succeeds.
+#[derive(Debug, Default)]
+struct CatalogRefreshLog {
+    failed: bool,
+}
+
+#[derive(Debug)]
+struct CatalogMigration {
+    old_agent_id: String,
+    agent_id: String,
+    pane_id: String,
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct ReconcilePlan {
+    removals: Vec<String>,
+    migrations: Vec<String>,
+    newly_subscribed: Vec<String>,
+    catalog_migrations: Vec<CatalogMigration>,
+}
+
+impl CatalogRefreshLog {
+    fn failed(&mut self, error: &RpcError) {
+        if self.failed {
+            debug!(error = %error, "herdr catalog refresh still failing");
+            return;
+        }
+        warn!(
+            error = %error,
+            "herdr catalog refresh failed; keeping stream and retrying"
+        );
+        self.failed = true;
+    }
+
+    fn recovered(&mut self) {
+        if self.failed {
+            info!("herdr catalog refresh recovered");
+            self.failed = false;
         }
     }
 }
@@ -260,6 +330,7 @@ struct PaneInfoWire {
     display_agent: Option<String>,
     state_labels: HashMap<String, String>,
     agent_session: Option<AgentSessionWire>,
+    state_change_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -277,6 +348,7 @@ struct AgentInfoWire {
     terminal_title_stripped: Option<String>,
     title: Option<String>,
     workspace_id: Option<String>,
+    state_change_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -287,6 +359,7 @@ struct StatusChangedWire {
     agent: Option<String>,
     title: Option<String>,
     state_labels: HashMap<String, String>,
+    state_change_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -658,6 +731,10 @@ struct SessionState {
     stale_panes: HashMap<String, Instant>,
     /// per-source monotonic ordering
     seqs: HashMap<String, u64>,
+    /// herdr's monotonic per-agent state-change sequence. A stale status or
+    /// pane.updated event below the last seen value must not overwrite a
+    /// fresher `agent.list` state.
+    status_seqs: HashMap<String, u64>,
     /// panes with a dedicated event stream
     subscribed_panes: HashSet<String>,
     /// Cancellation handles for dedicated pane stream tasks. A pane can be
@@ -699,7 +776,9 @@ impl SessionState {
     }
 
     fn mark_stale_agent(&mut self, agent_id: impl Into<String>) {
-        self.stale_agents.insert(agent_id.into(), Instant::now());
+        let agent_id = agent_id.into();
+        self.status_seqs.remove(&agent_id);
+        self.stale_agents.insert(agent_id, Instant::now());
         self.prune_tombstones();
     }
 
@@ -779,6 +858,43 @@ impl SessionState {
                 1
             }
         }
+    }
+
+    /// Apply a status sequence while carrying ordering continuity across a
+    /// pane id -> canonical id migration. The pane's previous canonical id
+    /// may still hold the latest observed sequence; carry that value to the
+    /// resolved id even when the incoming snapshot is stale, so a rebind can
+    /// never reset the ordering clock. Missing source sequences stay
+    /// compatible with older herdr payloads.
+    fn apply_status_seq_transition(
+        &mut self,
+        pane_id: &str,
+        agent_id: &str,
+        incoming: Option<u64>,
+    ) -> bool {
+        let previous_id = self.pane_agents.get(pane_id).cloned();
+        let previous_seq = previous_id
+            .as_deref()
+            .and_then(|previous| self.status_seqs.get(previous))
+            .copied();
+        let current_seq = self.status_seqs.get(agent_id).copied();
+        let high = match (previous_seq, current_seq) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        let accepted = incoming.is_none_or(|seq| high.is_none_or(|seen| seq >= seen));
+        let effective = match (incoming, high) {
+            (Some(seq), Some(seen)) => Some(seq.max(seen)),
+            (Some(seq), None) => Some(seq),
+            (None, Some(seen)) => Some(seen),
+            (None, None) => None,
+        };
+        if let Some(seq) = effective {
+            self.status_seqs.insert(agent_id.to_string(), seq);
+        }
+        accepted
     }
 
     /// Cancel a pane's dedicated stream and drop its per-pane membership.
@@ -898,6 +1014,8 @@ pub struct HerdrAdapter {
     store_remove_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     #[cfg(test)]
     event_store_read_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    #[cfg(test)]
+    catalog_provider: Mutex<Option<Arc<dyn Fn() -> AgentListWire + Send + Sync>>>,
 }
 
 impl std::fmt::Debug for HerdrAdapter {
@@ -932,11 +1050,18 @@ impl HerdrAdapter {
             store_remove_pause: Mutex::new(None),
             #[cfg(test)]
             event_store_read_pause: Mutex::new(None),
+            #[cfg(test)]
+            catalog_provider: Mutex::new(None),
         }
     }
 
     fn attach_store(&self, store: Store) {
         *self.store.lock().unwrap() = Some(store);
+    }
+
+    #[cfg(test)]
+    fn set_catalog_provider(&self, provider: Arc<dyn Fn() -> AgentListWire + Send + Sync>) {
+        *self.catalog_provider.lock().unwrap() = Some(provider);
     }
 
     #[cfg(test)]
@@ -988,16 +1113,22 @@ impl HerdrAdapter {
         store: &Store,
         stream_policy: StreamRetryPolicy,
     ) -> Result<(), RpcError> {
+        self.session_with_freshness(store, stream_policy, CatalogFreshnessPolicy::production())
+            .await
+    }
+
+    async fn session_with_freshness(
+        &self,
+        store: &Store,
+        stream_policy: StreamRetryPolicy,
+        freshness: CatalogFreshnessPolicy,
+    ) -> Result<(), RpcError> {
         info!(socket = %self.socket_path.display(), "connecting to herdr");
 
-        // Bootstrap: one agent.list (initial state, never a poll loop).
-        let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
-        let list: AgentListWire = serde_json::from_value(list).map_err(|e| RpcError::Server {
-            code: "decode".to_string(),
-            message: e.to_string(),
-        })?;
-        self.reconcile_against_list(&list, store).await;
-        info!(agents = list.agents.len(), "herdr bootstrap complete");
+        // Bootstrap: trusted agent.list under the same reconcile path used by
+        // the freshness watchdog.
+        let agents = self.refresh_catalog(store).await?;
+        info!(agents, "herdr bootstrap complete");
 
         // Event sink: one mpsc channel per session; every stream forwarder
         // sends into it, the session loop consumes it.
@@ -1007,13 +1138,19 @@ impl HerdrAdapter {
         // in ONE events.subscribe request (the only one this connection gets).
         let global_retry = Arc::new(Mutex::new(GlobalStreamRetry::new(stream_policy)));
         self.spawn_event_stream(StreamKey::Global, sink_tx.clone(), global_retry.clone());
+        let mut refresh_log = CatalogRefreshLog::default();
+        let mut refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + freshness.interval,
+            freshness.interval,
+        );
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match sink_rx.recv().await {
-                Some(SinkFrame::Event { event, .. }) => {
-                    self.handle_event(*event, sink_tx.clone(), store).await;
-                }
-                Some(SinkFrame::Closed { key }) => {
-                    match key {
+            tokio::select! {
+                frame = sink_rx.recv() => match frame {
+                    Some(SinkFrame::Event { event, .. }) => {
+                        self.handle_event(*event, sink_tx.clone(), store).await;
+                    }
+                    Some(SinkFrame::Closed { key }) => match key {
                         StreamKey::Global => {
                             // Server restarted or stream dropped: re-bootstrap
                             // to reconcile (dropping ghost agents whose panes
@@ -1023,13 +1160,7 @@ impl HerdrAdapter {
                             // keeping them would double every event.
                             self.state.lock().unwrap().cancel_all_pane_streams();
                             info!("main event stream closed, re-bootstrapping");
-                            let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
-                            let list: AgentListWire =
-                                serde_json::from_value(list).map_err(|e| RpcError::Server {
-                                    code: "decode".to_string(),
-                                    message: e.to_string(),
-                                })?;
-                            self.reconcile_against_list(&list, store).await;
+                            self.refresh_catalog(store).await?;
                             self.spawn_event_stream(
                                 StreamKey::Global,
                                 sink_tx.clone(),
@@ -1044,11 +1175,62 @@ impl HerdrAdapter {
                             // delay, and a stale delayed task would race the
                             // new generation.
                         }
+                    },
+                    None => return Err(RpcError::Disconnected),
+                },
+                _ = refresh.tick() => {
+                    // A global socket can remain open and subscribed while
+                    // silently withholding every event. Trusted agent.list
+                    // reconciliation is the watchdog that keeps membership,
+                    // state, and session ids fresh.
+                    if let Err(error) = self
+                        .refresh_catalog_with_sink(store, Some(&sink_tx))
+                        .await
+                    {
+                        refresh_log.failed(&error);
+                    } else {
+                        refresh_log.recovered();
                     }
                 }
-                None => return Err(RpcError::Disconnected),
             }
         }
+    }
+
+    /// One trusted `agent.list` round trip followed by reconciliation.
+    async fn refresh_catalog(&self, store: &Store) -> Result<usize, RpcError> {
+        self.refresh_catalog_with_sink(store, None).await
+    }
+
+    async fn refresh_catalog_with_sink(
+        &self,
+        store: &Store,
+        pane_stream_sink: Option<&mpsc::Sender<SinkFrame>>,
+    ) -> Result<usize, RpcError> {
+        #[cfg(test)]
+        let provider = self.catalog_provider.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(provider) = provider {
+            let list = provider();
+            let agents = list.agents.len();
+            self.reconcile_against_list_with_streams(&list, store, pane_stream_sink)
+                .await;
+            debug!(agents, "herdr catalog refreshed from test provider");
+            return Ok(agents);
+        }
+        let list = rpc_call(&self.socket_path, "agent.list", json!({})).await?;
+        let list = Self::decode_agent_list(list)?;
+        let agents = list.agents.len();
+        self.reconcile_against_list_with_streams(&list, store, pane_stream_sink)
+            .await;
+        debug!(agents, "herdr catalog refreshed");
+        Ok(agents)
+    }
+
+    fn decode_agent_list(value: Value) -> Result<AgentListWire, RpcError> {
+        serde_json::from_value(value).map_err(|e| RpcError::Server {
+            code: "decode".to_string(),
+            message: e.to_string(),
+        })
     }
 
     /// Reconcile tracked agents against a fresh `agent.list` in one state
@@ -1057,11 +1239,22 @@ impl HerdrAdapter {
     /// never briefly tombstoned or removed from the read model. Panes closed
     /// while a stream was down never emit pane.closed on the new stream, so
     /// truly absent agents are removed after the atomic mapping update.
+    #[cfg(test)]
     async fn reconcile_against_list(&self, list: &AgentListWire, store: &Store) {
-        let (mut removals, migrations): (Vec<String>, Vec<String>) = {
+        self.reconcile_against_list_with_streams(list, store, None)
+            .await
+    }
+
+    async fn reconcile_against_list_with_streams(
+        &self,
+        list: &AgentListWire,
+        store: &Store,
+        pane_stream_sink: Option<&mpsc::Sender<SinkFrame>>,
+    ) {
+        let mut plan = {
             let mut state = self.state.lock().unwrap();
             state.prune_tombstones();
-            let present: Vec<(String, String)> = list
+            let present: Vec<(String, String, Option<u64>)> = list
                 .agents
                 .iter()
                 .map(|agent| {
@@ -1072,14 +1265,17 @@ impl HerdrAdapter {
                     (
                         agent.pane_id.clone(),
                         state.resolve_agent_id(&agent.pane_id, session),
+                        agent.state_change_seq,
                     )
                 })
                 .collect();
-            let present_panes: HashSet<String> =
-                present.iter().map(|(pane_id, _)| pane_id.clone()).collect();
+            let present_panes: HashSet<String> = present
+                .iter()
+                .map(|(pane_id, _, _)| pane_id.clone())
+                .collect();
             let present_agents: HashSet<String> = present
                 .iter()
-                .map(|(_, agent_id)| agent_id.clone())
+                .map(|(_, agent_id, _)| agent_id.clone())
                 .collect();
             let stale: Vec<String> = state
                 .pane_agents
@@ -1102,11 +1298,15 @@ impl HerdrAdapter {
             }
 
             let mut migrations = Vec::new();
-            for (pane_id, agent_id) in &present {
+            let mut newly_subscribed = Vec::new();
+            let mut migration_records = Vec::new();
+            for (pane_id, agent_id, state_change_seq) in &present {
                 // A fresh list is authoritative: it may revive a pane whose
                 // old event arrived after a prior reconciliation, but only
                 // this ordered snapshot path may clear its tombstone.
                 state.clear_stale_pane(pane_id);
+                let previous_agent_id = state.pane_agents.get(pane_id).cloned();
+                state.apply_status_seq_transition(pane_id, agent_id, *state_change_seq);
                 if let Some(old) = self.register_pane(
                     &mut state,
                     pane_id,
@@ -1116,19 +1316,62 @@ impl HerdrAdapter {
                         .find(|agent| agent.pane_id == *pane_id)
                         .and_then(|agent| agent.name.as_deref()),
                 ) {
+                    if previous_agent_id
+                        .as_deref()
+                        .is_some_and(|previous| previous != agent_id)
+                    {
+                        let generation = state
+                            .agent_generations
+                            .get(agent_id)
+                            .copied()
+                            .expect("registered Herdr migration has a generation");
+                        migration_records.push(CatalogMigration {
+                            old_agent_id: old.clone(),
+                            agent_id: agent_id.clone(),
+                            pane_id: pane_id.clone(),
+                            generation,
+                        });
+                    }
                     migrations.push(old);
                 }
-                state.subscribed_panes.insert(pane_id.clone());
+                if state.subscribed_panes.insert(pane_id.clone()) {
+                    newly_subscribed.push(pane_id.clone());
+                }
             }
-            (removals, migrations)
+            ReconcilePlan {
+                removals,
+                migrations,
+                newly_subscribed,
+                catalog_migrations: migration_records,
+            }
         };
-        removals.extend(migrations);
-        for agent_id in removals {
+        if let Some(sink) = pane_stream_sink {
+            for pane_id in &plan.newly_subscribed {
+                spawn_pane_event_stream(
+                    self.socket_path.clone(),
+                    pane_id.clone(),
+                    sink.clone(),
+                    self.state.clone(),
+                );
+            }
+        }
+        for migration in &plan.catalog_migrations {
+            self.migrate_record(
+                store,
+                &migration.old_agent_id,
+                &migration.agent_id,
+                &migration.pane_id,
+                migration.generation,
+            )
+            .await;
+        }
+        plan.removals.extend(plan.migrations);
+        for agent_id in plan.removals {
             info!(agent_id, "agent removed: pane absent from fresh agent.list");
             self.remove_if_unmapped(store, &agent_id).await;
         }
         for agent in &list.agents {
-            self.apply_agent_info(agent, store).await;
+            self.apply_agent_info_if_changed(agent, store).await;
             // `reconcile_against_list` already marked the pane subscribed
             // while holding the same state lock as the mapping transition.
         }
@@ -1209,50 +1452,110 @@ impl HerdrAdapter {
         subs
     }
 
+    #[cfg(test)]
     async fn apply_agent_info(&self, agent: &AgentInfoWire, store: &Store) {
+        let _ = self.apply_agent_info_inner(agent, store, false).await;
+    }
+
+    async fn apply_agent_info_if_changed(&self, agent: &AgentInfoWire, store: &Store) -> bool {
+        self.apply_agent_info_inner(agent, store, true).await
+    }
+
+    async fn apply_agent_info_inner(
+        &self,
+        agent: &AgentInfoWire,
+        store: &Store,
+        skip_unchanged: bool,
+    ) -> bool {
         let session_value = agent
             .agent_session
             .as_ref()
             .and_then(|s| s.value.as_deref());
-        let (agent_id, generation, migrated, canonical) = {
+        let (agent_id, generation, previous_agent_id, migrated, stale_status, canonical) = {
             let mut state = self.state.lock().unwrap();
+            let previous_agent_id = state.pane_agents.get(&agent.pane_id).cloned();
             let agent_id = state.resolve_agent_id(&agent.pane_id, session_value);
-            let migrated =
-                self.register_pane(&mut state, &agent.pane_id, &agent_id, agent.name.as_deref());
-            let canonical = self.build_agent(
-                &mut state,
+            let stale_status = !state.apply_status_seq_transition(
                 &agent.pane_id,
                 &agent_id,
-                agent.agent.as_deref(),
-                AgentState::from_herdr_status(&agent.agent_status),
-                agent
-                    .terminal_title_stripped
-                    .clone()
-                    .or_else(|| agent.terminal_title.clone())
-                    .or_else(|| agent.title.clone()),
-                agent.foreground_cwd.clone().or_else(|| agent.cwd.clone()),
-                &agent.state_labels,
-                agent.name.clone(),
+                agent.state_change_seq,
             );
+            let migrated =
+                self.register_pane(&mut state, &agent.pane_id, &agent_id, agent.name.as_deref());
+            let canonical = if stale_status {
+                None
+            } else {
+                Some(
+                    self.build_agent(
+                        &mut state,
+                        &agent.pane_id,
+                        &agent_id,
+                        agent.agent.as_deref(),
+                        AgentState::from_herdr_status(&agent.agent_status),
+                        agent
+                            .terminal_title_stripped
+                            .clone()
+                            .or_else(|| agent.terminal_title.clone())
+                            .or_else(|| agent.title.clone()),
+                        agent.foreground_cwd.clone().or_else(|| agent.cwd.clone()),
+                        &agent.state_labels,
+                        agent.name.clone(),
+                    ),
+                )
+            };
             let generation = state
                 .agent_generations
                 .get(&agent_id)
                 .copied()
                 .expect("registered Herdr mapping has a generation");
-            (agent_id, generation, migrated, canonical)
+            (
+                agent_id,
+                generation,
+                previous_agent_id,
+                migrated,
+                stale_status,
+                canonical,
+            )
         };
+        if let Some(previous) = previous_agent_id
+            .as_deref()
+            .filter(|previous| *previous != agent_id)
+        {
+            self.migrate_record(store, previous, &agent_id, &agent.pane_id, generation)
+                .await;
+        }
+        if stale_status {
+            if let Some(old) = migrated {
+                self.remove_if_unmapped(store, &old).await;
+            }
+            return false;
+        }
         if let Some(old) = migrated {
             self.remove_if_unmapped(store, &old).await;
         }
+        let Some(canonical) = canonical else {
+            return false;
+        };
         let canonical = self.preserve_workspace(store, &agent_id, canonical).await;
-        self.upsert_if_current(store, canonical, &agent.pane_id, generation)
+        if skip_unchanged
+            && store
+                .get(&agent_id)
+                .await
+                .is_some_and(|existing| agent_content_matches(&existing, &canonical))
+        {
+            return false;
+        }
+        let persisted = self
+            .upsert_if_current(store, canonical, &agent.pane_id, generation)
             .await;
         info!(
             agent_id = %agent_id,
             tool = %agent.agent.as_deref().unwrap_or("unknown"),
             state = ?AgentState::from_herdr_status(&agent.agent_status),
-            "agent upserted"
+            persisted,
+            "agent upsert"
         );
+        persisted
     }
 
     /// Register pane -> agent_id; returns the previous agent_id if it changed
@@ -1383,6 +1686,38 @@ impl HerdrAdapter {
         }
     }
 
+    /// Move a store row to a new canonical id while preserving its current
+    /// state, `waiting_on`, and plane-merged workspace facts. The adapter
+    /// must satisfy the live session-id precedence rule without losing a
+    /// blocked agent's approval claim on migration.
+    async fn migrate_record(
+        &self,
+        store: &Store,
+        old_agent_id: &str,
+        agent_id: &str,
+        pane_id: &str,
+        generation: u64,
+    ) {
+        let Some(mut agent) = store.get(old_agent_id).await else {
+            return;
+        };
+        agent.agent_id = agent_id.to_string();
+        agent.attachment = Some(Attachment {
+            kind: "herdr-pane".to_string(),
+            reference: pane_id.to_string(),
+        });
+        if let Some(waiting_on) = agent.waiting_on.as_mut() {
+            waiting_on.approval_id =
+                crate::approve::approval_id_for(agent_id, &waiting_on.prompt_hash);
+        }
+        let seq = self.state.lock().unwrap().next_seq(agent_id);
+        agent.seq = seq;
+        agent.ts = now_millis();
+        info!(agent_id, previous = old_agent_id, "herdr agent id migrated");
+        self.upsert_if_current(store, agent, pane_id, generation)
+            .await;
+    }
+
     async fn upsert_if_current(
         &self,
         store: &Store,
@@ -1469,6 +1804,13 @@ impl HerdrAdapter {
         let Some(existing) = store.get(agent_id).await else {
             return agent;
         };
+        // Herdr's catalog has no `waiting_on`: an unchanged blocked agent from
+        // `agent.list` must not erase the derived approval prompt/claim set by
+        // `pane.output_matched`. A transition out of Blocked still clears it
+        // because the rebuilt row then has `waiting_on: None`.
+        if agent.state == AgentState::Blocked && existing.state == AgentState::Blocked {
+            agent.waiting_on = existing.waiting_on.clone();
+        }
         if existing
             .workspace
             .worktree_path
@@ -1595,7 +1937,8 @@ impl HerdrAdapter {
         };
         if ignore_late {
             // `pane.updated` replay can arrive after a move/removal. Do not
-            // let it clear the retired-pane tombstone through register_pane.
+            // let it clear the retired-pane tombstone or re-create the old
+            // edge through register_pane.
             return;
         }
         // Only track panes that have (or had) an agent.
@@ -1604,9 +1947,12 @@ impl HerdrAdapter {
         }
         let agent_state =
             AgentState::from_herdr_status(pane.agent_status.as_deref().unwrap_or("unknown"));
-        let (agent_id, generation, migrated, canonical) = {
+        let (agent_id, generation, previous_agent_id, migrated, stale_status, canonical) = {
             let mut state = self.state.lock().unwrap();
+            let previous_agent_id = state.pane_agents.get(&pane.pane_id).cloned();
             let agent_id = state.resolve_agent_id(&pane.pane_id, session_value);
+            let stale_status =
+                !state.apply_status_seq_transition(&pane.pane_id, &agent_id, pane.state_change_seq);
             let migrated = self.register_pane(
                 &mut state,
                 &pane.pane_id,
@@ -1632,8 +1978,28 @@ impl HerdrAdapter {
                 .get(&agent_id)
                 .copied()
                 .expect("registered Herdr mapping has a generation");
-            (agent_id, generation, migrated, canonical)
+            (
+                agent_id,
+                generation,
+                previous_agent_id,
+                migrated,
+                stale_status,
+                canonical,
+            )
         };
+        if let Some(previous) = previous_agent_id
+            .as_deref()
+            .filter(|previous| *previous != agent_id)
+        {
+            self.migrate_record(store, previous, &agent_id, &pane.pane_id, generation)
+                .await;
+        }
+        if stale_status {
+            if let Some(old) = migrated {
+                self.remove_if_unmapped(store, &old).await;
+            }
+            return;
+        }
         if let Some(old) = migrated {
             self.remove_if_unmapped(store, &old).await;
         }
@@ -1657,16 +2023,28 @@ impl HerdrAdapter {
     }
 
     async fn handle_status_changed(&self, ev: &StatusChangedWire, store: &Store) {
-        let known_id = {
+        let (known_id, stale_status) = {
             let mut state = self.state.lock().unwrap();
             if state.is_stale_pane(&ev.pane_id) && !state.pane_agents.contains_key(&ev.pane_id) {
                 return;
             }
-            state.pane_agents.get(&ev.pane_id).cloned()
+            let known_id = state.pane_agents.get(&ev.pane_id).cloned();
+            let stale_status = known_id.as_deref().is_some_and(|agent_id| {
+                !state.apply_status_seq_transition(&ev.pane_id, agent_id, ev.state_change_seq)
+            });
+            (known_id, stale_status)
+        };
+        if stale_status {
+            return;
         };
         let Some(agent_id) = known_id else {
             // Agent pane we never registered: create a record carrying the
             // event's actual status (not Unknown).
+            {
+                let mut state = self.state.lock().unwrap();
+                let agent_id = state.resolve_agent_id(&ev.pane_id, None);
+                state.apply_status_seq_transition(&ev.pane_id, &agent_id, ev.state_change_seq);
+            };
             self.register_agent_pane(
                 &ev.pane_id,
                 ev.agent.as_deref().unwrap_or("unknown"),
@@ -1770,6 +2148,17 @@ impl HerdrAdapter {
             .await;
         info!(pane = pane_id, tool, ?agent_state, "agent detected");
     }
+}
+
+/// Compare two canonical rows while ignoring the adapter-local `seq` and
+/// display-only `ts`, which are intentionally new on every rebuild. This
+/// lets periodic reconciliation stay a true read-model no-op instead of
+/// publishing a new rev for refresh traffic.
+fn agent_content_matches(existing: &Agent, fresh: &Agent) -> bool {
+    let mut existing = existing.clone();
+    existing.seq = fresh.seq;
+    existing.ts = fresh.ts;
+    existing == *fresh
 }
 
 /// Spawn a pane event stream with a persistent, capped retry loop. Returns
@@ -2361,6 +2750,28 @@ mod tests {
                 .expect("unknown kind is not a decode failure")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_agent_list_wire_decodes_and_reconciles_captured_shape() {
+        let wire = serde_json::to_string(&json!({
+            "agents": [fixture_claude(), fixture_opencode_no_session()]
+        }))
+        .unwrap();
+        let decoded = HerdrAdapter::decode_agent_list(serde_json::from_str(&wire).unwrap())
+            .expect("fresh agent.list wire shape decodes");
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        adapter.reconcile_against_list(&decoded, &store).await;
+
+        let snapshot = store.snapshot().await;
+        assert_eq!(snapshot.agents.len(), 2);
+        assert!(
+            snapshot
+                .agents
+                .contains_key("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
+        );
+        assert!(snapshot.agents.contains_key("herdr:pane:w1D:p1"));
     }
 
     #[test]
@@ -4436,6 +4847,139 @@ mod tests {
         assert_eq!(closed_connections, close_count + 2);
     }
 
+    #[tokio::test]
+    async fn session_refreshes_catalog_without_global_stream_close() {
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let initial: AgentListWire = serde_json::from_value(json!({ "agents": [
+            {
+                "agent": "opencode",
+                "agent_session": {"agent": "opencode", "kind": "id",
+                    "source": "herdr:opencode", "value": "watchdog-a"},
+                "agent_status": "idle",
+                "state_change_seq": 10,
+                "name": "agent-a",
+                "pane_id": "watchdog-a:p1",
+                "state_labels": {}
+            },
+            {
+                "agent": "claude",
+                "agent_status": "working",
+                "state_change_seq": 7,
+                "name": "agent-b",
+                "pane_id": "watchdog-b:p1",
+                "state_labels": {}
+            }
+        ] }))
+        .unwrap();
+        let refreshed: AgentListWire = serde_json::from_value(json!({ "agents": [
+            {
+                "agent": "opencode",
+                "agent_session": {"agent": "opencode", "kind": "id",
+                    "source": "herdr:opencode", "value": "watchdog-a"},
+                "agent_status": "working",
+                "state_change_seq": 11,
+                "name": "agent-a",
+                "pane_id": "watchdog-a:p1",
+                "state_labels": {}
+            },
+            {
+                "agent": "codex",
+                "agent_session": {"agent": "codex", "kind": "id",
+                    "source": "herdr:codex", "value": "watchdog-c"},
+                "agent_status": "blocked",
+                "state_change_seq": 1,
+                "name": "agent-c",
+                "pane_id": "watchdog-c:p1",
+                "state_labels": {}
+            }
+        ] }))
+        .unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let (call_tx, mut call_rx) = mpsc::channel::<u64>(8);
+        let provider_calls = calls.clone();
+        let call_sender = call_tx.clone();
+        adapter.set_catalog_provider(Arc::new(move || {
+            let version = provider_calls.fetch_add(1, Ordering::SeqCst);
+            let _ = call_sender.try_send(version);
+            if version == 0 {
+                initial.clone()
+            } else {
+                refreshed.clone()
+            }
+        }));
+
+        let store = Store::new();
+        let session_store = store.clone();
+        let session = tokio::spawn(async move {
+            adapter
+                .session_with_freshness(
+                    &session_store,
+                    StreamRetryPolicy {
+                        base: Duration::from_millis(10),
+                        max: Duration::from_millis(40),
+                        reset_after: Duration::from_millis(30),
+                    },
+                    CatalogFreshnessPolicy {
+                        interval: Duration::from_millis(20),
+                    },
+                )
+                .await
+        });
+
+        let converged = tokio::time::timeout(Duration::from_secs(3), async {
+            // Version 2 means the refreshed reconcile started after the
+            // previous refresh completed; awaiting the provider call itself
+            // makes convergence deterministic instead of racing wall-clock
+            // sleeps.
+            loop {
+                let version = call_rx.recv().await.expect("watchdog call");
+                if version >= 2 {
+                    break;
+                }
+            }
+            let snapshot = store.snapshot().await;
+            assert!(
+                snapshot
+                    .agents
+                    .get("herdr:watchdog-a")
+                    .is_some_and(|a| a.state == AgentState::Working)
+                    && snapshot
+                        .agents
+                        .get("herdr:watchdog-c")
+                        .is_some_and(|c| c.state == AgentState::Blocked)
+                    && !snapshot.agents.contains_key("herdr:pane:watchdog-b:p1"),
+                "watchdog catalog did not converge: {snapshot:?}"
+            );
+            snapshot
+        })
+        .await
+        .expect("watchdog catalog did not converge");
+        assert_eq!(converged.agents.len(), 2);
+        assert!(converged.agents.contains_key("herdr:watchdog-a"));
+        assert!(converged.agents.contains_key("herdr:watchdog-c"));
+
+        let stable_rev = converged.rev;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let version = call_rx.recv().await.expect("watchdog call");
+                if version >= 3 {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("watchdog stopped refreshing");
+        let after_noop = store.snapshot().await;
+        assert_eq!(after_noop.rev, stable_rev);
+        assert!(
+            calls.load(Ordering::SeqCst) >= 4,
+            "watchdog must keep refreshing while no stream close arrives"
+        );
+
+        session.abort();
+        let _ = session.await;
+    }
+
     // #105 fd teardown: a dropped client must close its socket promptly.
     // The reader task owns the read half; without deterministic teardown it
     // lingers (blocked on next_line) until herdr closes the idle connection,
@@ -4644,6 +5188,7 @@ mod ac2_live_tests {
             agent: info.agent.clone(),
             title: info.title.clone(),
             state_labels: info.state_labels.clone(),
+            state_change_seq: None,
         };
         adapter.handle_status_changed(&status, &store).await;
 
@@ -4759,6 +5304,7 @@ mod ac2_live_tests {
             agent: info.agent.clone(),
             title: info.title.clone(),
             state_labels: HashMap::new(),
+            state_change_seq: None,
         };
         adapter.handle_status_changed(&working, &store).await;
         let after = store
@@ -4873,6 +5419,465 @@ mod review_tests {
         assert!(
             !adapter.knows_agent("herdr:pane:wG:p1"),
             "state must forget the ghost too"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_tracks_add_remove_and_state_change_without_noop_rev() {
+        let store = Store::new();
+        let adapter = adapter();
+        let initial: AgentListWire = serde_json::from_value(json!({ "agents": [
+            {
+                "agent": "opencode",
+                "agent_session": {"agent": "opencode", "kind": "id",
+                    "source": "herdr:opencode", "value": "ses-a"},
+                "agent_status": "idle",
+                "state_change_seq": 10,
+                "name": "agent-a",
+                "pane_id": "wa:p1",
+                "state_labels": {}
+            },
+            {
+                "agent": "claude",
+                "agent_status": "working",
+                "state_change_seq": 7,
+                "name": "ghost",
+                "pane_id": "wb:p1",
+                "state_labels": {}
+            }
+        ] }))
+        .unwrap();
+        adapter.reconcile_against_list(&initial, &store).await;
+        let before_rev = store.snapshot().await.rev;
+        assert!(store.snapshot().await.agents.contains_key("herdr:ses-a"));
+        assert!(
+            store
+                .snapshot()
+                .await
+                .agents
+                .contains_key("herdr:pane:wb:p1")
+        );
+
+        let refreshed: AgentListWire = serde_json::from_value(json!({ "agents": [
+            {
+                "agent": "opencode",
+                "agent_session": {"agent": "opencode", "kind": "id",
+                    "source": "herdr:opencode", "value": "ses-a"},
+                "agent_status": "working",
+                "state_change_seq": 11,
+                "name": "agent-a",
+                "pane_id": "wa:p1",
+                "state_labels": {}
+            },
+            {
+                "agent": "codex",
+                "agent_session": {"agent": "codex", "kind": "id",
+                    "source": "herdr:codex", "value": "ses-c"},
+                "agent_status": "blocked",
+                "state_change_seq": 1,
+                "name": "agent-c",
+                "pane_id": "wc:p1",
+                "state_labels": {}
+            }
+        ] }))
+        .unwrap();
+        adapter.reconcile_against_list(&refreshed, &store).await;
+
+        let snapshot = store.snapshot().await;
+        let agent_a = snapshot
+            .agents
+            .get("herdr:ses-a")
+            .expect("agent a remains live");
+        assert_eq!(agent_a.state, S::Working);
+        let agent_c = snapshot
+            .agents
+            .get("herdr:ses-c")
+            .expect("agent c is added");
+        assert_eq!(agent_c.state, S::Blocked);
+        assert_eq!(
+            agent_c.attachment.as_ref().map(|a| a.reference.as_str()),
+            Some("wc:p1")
+        );
+        assert!(!snapshot.agents.contains_key("herdr:pane:wb:p1"));
+        assert_eq!(snapshot.agents.len(), 2);
+        assert!(snapshot.rev > before_rev);
+
+        adapter.reconcile_against_list(&refreshed, &store).await;
+        let noop = store.snapshot().await;
+        assert_eq!(
+            noop.rev, snapshot.rev,
+            "a no-op reconcile must not publish a new rev"
+        );
+        assert_eq!(noop.agents.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_status_event_cannot_clobber_fresh_catalog_state() {
+        let store = Store::new();
+        let adapter = adapter();
+        let agent: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-stale-guard"},
+            "agent_status": "working",
+            "state_change_seq": 11,
+            "name": "guard",
+            "pane_id": "wg:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+
+        let stale: StatusChangedWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_status": "idle",
+            "state_change_seq": 10,
+            "pane_id": "wg:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&stale, &store).await;
+        let row = store.get("herdr:ses-stale-guard").await.expect("row");
+        assert_eq!(
+            row.state,
+            S::Working,
+            "older event must not overwrite fresh state"
+        );
+
+        let newer: StatusChangedWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_status": "blocked",
+            "state_change_seq": 12,
+            "pane_id": "wg:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&newer, &store).await;
+        assert_eq!(
+            store.get("herdr:ses-stale-guard").await.unwrap().state,
+            S::Blocked,
+            "newer event must still update state"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_catalog_snapshot_cannot_clobber_newer_event() {
+        let store = Store::new();
+        let adapter = adapter();
+        let event: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-catalog-guard"},
+            "agent_status": "working",
+            "state_change_seq": 12,
+            "name": "guard",
+            "pane_id": "wg2:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&event, &store).await;
+
+        let stale_list: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-catalog-guard"},
+            "agent_status": "idle",
+            "state_change_seq": 11,
+            "name": "guard",
+            "pane_id": "wg2:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&stale_list, &store).await;
+        assert_eq!(
+            store.get("herdr:ses-catalog-guard").await.unwrap().state,
+            S::Working,
+            "stale catalog snapshot must not overwrite a newer event"
+        );
+
+        let fresh_list: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "opencode",
+            "agent_session": {"agent": "opencode", "kind": "id",
+                "source": "herdr:opencode", "value": "ses-catalog-guard"},
+            "agent_status": "blocked",
+            "state_change_seq": 13,
+            "name": "guard",
+            "pane_id": "wg2:p1",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&fresh_list, &store).await;
+        assert_eq!(
+            store.get("herdr:ses-catalog-guard").await.unwrap().state,
+            S::Blocked,
+            "a newer catalog snapshot must still update state"
+        );
+    }
+
+    #[tokio::test]
+    async fn periodic_catalog_refresh_preserves_blocked_waiting_on_without_rev() {
+        let store = Store::new();
+        let adapter = adapter();
+        let agent: AgentInfoWire = serde_json::from_value(json!({
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-wait"},
+            "agent_status": "blocked",
+            "state_change_seq": 11,
+            "name": "wait-one",
+            "pane_id": "ww:p1",
+            "state_labels": {"waiting_for_approval": ""}
+        }))
+        .unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+
+        let matched = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": "ww:p1",
+            "matched_line": "  Do you want to proceed?",
+            "read": {
+                "pane_id": "ww:p1",
+                "revision": 60,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "truncated": false,
+                "text": "1. Continue\n2. Abort\n"
+            }
+        }))
+        .unwrap();
+        adapter.handle_output_matched(&matched, &store).await;
+        let before = store.get("herdr:ses-wait").await.expect("blocked agent");
+        let waiting = before.waiting_on.clone().expect("approval state");
+        let rev_before = store.snapshot().await.rev;
+
+        let list: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-wait"},
+            "agent_status": "blocked",
+            "state_change_seq": 11,
+            "name": "wait-one",
+            "pane_id": "ww:p1",
+            "state_labels": {"waiting_for_approval": ""}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&list, &store).await;
+
+        let after = store.get("herdr:ses-wait").await.expect("blocked agent");
+        assert_eq!(after.state, S::Blocked);
+        assert_eq!(
+            after.waiting_on.as_ref(),
+            Some(&waiting),
+            "an unchanged catalog refresh must preserve the approval claim"
+        );
+        let snapshot = store.snapshot().await;
+        assert_eq!(
+            snapshot.rev, rev_before,
+            "preserving waiting_on must remain a true no-op reconcile"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_id_migration_preserves_waiting_on_and_approval_claim() {
+        let store = Store::new();
+        let adapter = adapter();
+        let initial: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_status": "blocked",
+            "state_change_seq": 20,
+            "name": "migrating-agent",
+            "pane_id": "ww3:p1",
+            "state_labels": {"waiting_for_approval": ""}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&initial, &store).await;
+
+        let fallback = "herdr:pane:ww3:p1";
+        let matched = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": "ww3:p1",
+            "matched_line": "Approve this change?",
+            "read": {
+                "pane_id": "ww3:p1",
+                "revision": 62,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "truncated": false,
+                "text": "[y/n]\n"
+            }
+        }))
+        .unwrap();
+        adapter.handle_output_matched(&matched, &store).await;
+        let waiting = store
+            .get(fallback)
+            .await
+            .expect("fallback waiting row")
+            .waiting_on
+            .expect("approval state");
+        let rev_before = store.snapshot().await.rev;
+
+        let migrated_id = "herdr:ses-fresh-migration";
+        let fresh: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-fresh-migration"},
+            "agent_status": "blocked",
+            "state_change_seq": 21,
+            "name": "migrating-agent",
+            "pane_id": "ww3:p1",
+            "state_labels": {"waiting_for_approval": ""}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&fresh, &store).await;
+
+        let snapshot = store.snapshot().await;
+        assert!(!snapshot.agents.contains_key(fallback));
+        let migrated = snapshot
+            .agents
+            .get(migrated_id)
+            .expect("fresh migration must create the session-id row");
+        assert_eq!(migrated.state, S::Blocked);
+        assert_eq!(
+            migrated.waiting_on.as_ref().map(|w| &w.prompt),
+            Some(&waiting.prompt)
+        );
+        assert_eq!(
+            migrated.waiting_on.as_ref().map(|w| w.approval_id.as_str()),
+            Some(crate::approve::approval_id_for(migrated_id, &waiting.prompt_hash).as_str())
+        );
+        assert!(snapshot.rev > rev_before, "migration must publish a rev");
+
+        adapter.reconcile_against_list(&fresh, &store).await;
+        let noop = store.snapshot().await;
+        assert_eq!(
+            noop.rev, snapshot.rev,
+            "a no-op list after migration must not publish another rev"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_pane_to_session_migration_preserves_state_and_sequence() {
+        let store = Store::new();
+        let adapter = adapter();
+        let initial: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_status": "blocked",
+            "state_change_seq": 20,
+            "name": "migrating-agent",
+            "pane_id": "ww2:p1",
+            "state_labels": {"waiting_for_approval": ""}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&initial, &store).await;
+        let fallback = "herdr:pane:ww2:p1";
+        assert_eq!(
+            store.get(fallback).await.expect("fallback row").state,
+            S::Blocked
+        );
+
+        let matched = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": "ww2:p1",
+            "matched_line": "Approve this change?",
+            "read": {
+                "pane_id": "ww2:p1",
+                "revision": 61,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "truncated": false,
+                "text": "[y/n]\n"
+            }
+        }))
+        .unwrap();
+        adapter.handle_output_matched(&matched, &store).await;
+        let waiting = store
+            .get(fallback)
+            .await
+            .expect("fallback waiting row")
+            .waiting_on
+            .expect("approval state");
+        let rev_before = store.snapshot().await.rev;
+
+        let migrated_id = "herdr:ses-migrated";
+        let stale: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-migrated"},
+            "agent_status": "working",
+            "state_change_seq": 10,
+            "name": "migrating-agent",
+            "pane_id": "ww2:p1",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&stale, &store).await;
+
+        let snapshot = store.snapshot().await;
+        assert!(
+            !snapshot.agents.contains_key(fallback),
+            "the stale fallback identity must be pruned"
+        );
+        let migrated = snapshot
+            .agents
+            .get(migrated_id)
+            .expect("migrated row must survive a stale snapshot");
+        assert_eq!(
+            migrated.state,
+            S::Blocked,
+            "stale migration must not overwrite fresher blocked state"
+        );
+        assert_eq!(
+            migrated.waiting_on.as_ref().map(|w| &w.prompt),
+            Some(&waiting.prompt)
+        );
+        assert_eq!(
+            migrated.waiting_on.as_ref().map(|w| w.approval_id.as_str()),
+            Some(crate::approve::approval_id_for(migrated_id, &waiting.prompt_hash).as_str())
+        );
+        assert!(
+            snapshot.rev > rev_before,
+            "migration must publish a new rev"
+        );
+
+        let fresh: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-migrated"},
+            "agent_status": "working",
+            "state_change_seq": 21,
+            "name": "migrating-agent",
+            "pane_id": "ww2:p1",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&fresh, &store).await;
+        assert_eq!(
+            store.get(migrated_id).await.unwrap().state,
+            S::Working,
+            "a newer sequence must still update the migrated row"
+        );
+
+        let rev_after_fresh = store.snapshot().await.rev;
+        let stale_after_fresh: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "claude",
+            "agent_session": {"agent": "claude", "kind": "id",
+                "source": "herdr:claude", "value": "ses-migrated"},
+            "agent_status": "idle",
+            "state_change_seq": 19,
+            "name": "migrating-agent",
+            "pane_id": "ww2:p1",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter
+            .reconcile_against_list(&stale_after_fresh, &store)
+            .await;
+        assert_eq!(
+            store.get(migrated_id).await.unwrap().state,
+            S::Working,
+            "the migrated ordering clock must reject older sequences"
+        );
+        assert_eq!(
+            store.snapshot().await.rev,
+            rev_after_fresh,
+            "rejected stale migration must not publish a rev"
         );
     }
 

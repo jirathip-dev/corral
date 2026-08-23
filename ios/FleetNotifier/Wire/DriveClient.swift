@@ -280,7 +280,7 @@ struct DriveClient: Sendable {
         }
     }
 
-    // MARK: - Full chat transcript (#142 / #64, GET /transcript)
+    // MARK: - Older transcript pages (#142 / #64, GET /transcript)
 
     /// Build the signed `x-corral-drive` header for one transcript page.
     /// Capability is always `read_tail`, target is the agent id, rev is

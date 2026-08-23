@@ -192,17 +192,15 @@ enum RowAction: Equatable, Sendable {
     case tail
     case kill
     case attach
-    case fullChat
 
     var label: String {
         switch self {
         case .approveDeny: return "Approval"
         case .prompt: return "Prompt"
         case .interrupt: return "Interrupt"
-        case .tail: return "Tail 200"
+        case .tail: return "Recent output"
         case .kill: return "Kill"
         case .attach: return "Attach"
-        case .fullChat: return "Full chat"
         }
     }
 
@@ -214,7 +212,6 @@ enum RowAction: Equatable, Sendable {
         case .tail: return .readTail
         case .kill: return .kill
         case .attach: return .attach
-        case .fullChat: return .readTail
         }
     }
 }
@@ -334,7 +331,6 @@ enum BoardModel {
                                    grants: Set<Capability>) -> [AgentActionAvailability] {
         [
             availability(.tail, agent: agent, grants: grants),
-            availability(.fullChat, agent: agent, grants: grants),
             availability(.prompt, agent: agent, grants: grants),
             availability(.interrupt, agent: agent, grants: grants),
             availability(.kill, agent: agent, grants: grants),

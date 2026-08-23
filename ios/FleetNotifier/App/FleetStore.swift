@@ -29,6 +29,10 @@ final class FleetStore: ObservableObject {
     /// Last successful bounded read_tail result per agent. This is deliberately
     /// client-side display state, not part of the SSE read model.
     @Published private(set) var tails: [String: [String]] = [:]
+    /// #167: per-agent live-tail pane (blocks + four-state machine). The
+    /// daemon now serves `{lines, blocks}` additively; the block renderer
+    /// reads this pane, the legacy text surface reads `tails`.
+    @Published private(set) var tailPanes: [String: TailPane] = [:]
     /// Lazy, bounded per-agent full-chat panes. Never prefetched: a pane is
     /// created only when the detail surface asks the daemon for a page.
     @Published private(set) var transcripts: [String: TranscriptPane] = [:]
@@ -238,6 +242,16 @@ final class FleetStore: ObservableObject {
         tails[id]
     }
 
+    /// #167: the segmented blocks for the live tail (nil = never loaded).
+    func tailBlocks(for id: String) -> [TranscriptBlock]? {
+        tailPanes[id]?.blocks
+    }
+
+    /// #167: the full live-tail pane (blocks + state).
+    func tailPane(for id: String) -> TailPane? {
+        tailPanes[id]
+    }
+
     func transcript(_ id: String) -> TranscriptPane? {
         transcripts[id]
     }
@@ -349,9 +363,15 @@ final class FleetStore: ObservableObject {
         transcripts[id] = pane
     }
 
-    /// Store only the daemon's bounded result, with a small client-side
-    /// defense in depth for malformed or future servers.
+    /// Store the daemon's bounded tail result (lines + #167 blocks) with a
+    /// small client-side defense in depth for malformed/future servers.
     func rememberTail(_ lines: [String], for id: String) {
+        rememberTail(lines, blocks: [], for: id)
+    }
+
+    /// #167 overload: also fold the segmented blocks + clear the loading/
+    /// error flags (the live tail is now "loaded", never a spinner).
+    func rememberTail(_ lines: [String], blocks: [TranscriptBlock], for id: String) {
         let maxLines = 200
         let maxBytes = 32 * 1024
         var bounded: [String] = []
@@ -363,6 +383,33 @@ final class FleetStore: ObservableObject {
             bytes += lineBytes
         }
         tails[id] = bounded
+        var pane = tailPanes[id] ?? TailPane()
+        pane.apply(blocks, lines: bounded)
+        tailPanes[id] = pane
+    }
+
+    /// Mark a live-tail fetch in flight (the four-state machine's loading).
+    func prepareTailFetch(agent id: String) {
+        guard agents[id] != nil else { return }
+        var pane = tailPanes[id] ?? TailPane()
+        pane.beginFetch()
+        tailPanes[id] = pane
+    }
+
+    /// Fold a live-tail failure (e.g. a hard timeout → error + Retry).
+    func foldTailFailure(_ failure: TranscriptFailure, for id: String) {
+        guard agents[id] != nil else { return }
+        var pane = tailPanes[id] ?? TailPane()
+        pane.apply(failure)
+        tailPanes[id] = pane
+    }
+
+    /// #167: cleared when the fetch is cancelled so the four-state machine
+    /// does not stay stuck on loading.
+    func cancelTailFetch(agent id: String) {
+        guard agents[id] != nil, var pane = tailPanes[id] else { return }
+        pane.loading = false
+        tailPanes[id] = pane
     }
 
     /// Remove a target immediately after a typed stale-agent refusal. The
@@ -371,6 +418,7 @@ final class FleetStore: ObservableObject {
     func removeAgent(_ id: String) {
         agents.removeValue(forKey: id)
         tails.removeValue(forKey: id)
+        tailPanes.removeValue(forKey: id)
         transcripts.removeValue(forKey: id)
         previousStates.removeValue(forKey: id)
         streamSeen.removeValue(forKey: id)
@@ -512,6 +560,7 @@ final class FleetStore: ObservableObject {
         disconnect()
         agents = [:]
         tails = [:]
+        tailPanes = [:]
         transcripts = [:]
         lastEventId = nil
         cursorBox.write(nil)

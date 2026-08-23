@@ -132,6 +132,19 @@ enum DemoFleet {
                 "lines": .array([
                     .string("(demo) last lines of \(agent.displayName ?? agent.agentId)"),
                     .string("…seeded tail, no daemon in demo mode")
+                ]),
+                // #167: demo serves segmented blocks too so the block
+                // renderer has a wire-shaped input.
+                "blocks": .array([
+                    .object([
+                        "kind": .string("agent"),
+                        "text": .string("(demo) last lines of \(agent.displayName ?? agent.agentId)")
+                    ]),
+                    .object([
+                        "kind": .string("system"),
+                        "text": .string("…seeded tail, no daemon in demo mode"),
+                        "truncated_before": .int(1)
+                    ])
                 ])
             ])
             return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,

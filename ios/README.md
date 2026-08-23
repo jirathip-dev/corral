@@ -144,8 +144,11 @@ tracked in this repo until #26 untracked it; if you cloned before that, run
   409/refusal. The app removes the stale row, shows a refresh banner, and
   requests one fresh snapshot; SSE remains the source of truth afterward.
 - A successful `read_tail` stores the daemon-redacted, bounded `result.lines`
-  and renders them in the agent detail surface; an empty result is shown as
-  "No output returned". The client applies the same 200-line / 32 KiB bounds.
+  plus the segmented `result.blocks`, and the agent detail surface renders a
+  single Recent-output pane: live tail (bottom, auto-loaded and auto-refreshed
+  while open) with older history paged in above via the transcript cursor. An
+  empty result is shown as "No output yet". The client applies the same
+  200-line / 32 KiB bounds and a hard timeout (error + Retry, never a spinner).
 - **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
   `LocalNotifier.ClaimPayload` — a future relay would register the device
   token and push exactly that claim dict; the action-execution path
@@ -172,11 +175,13 @@ daemon's typed error banner (`not_granted`, `expired`, `revoked`, …).
 ## Tappable controls and accessibility (#110)
 
 Every visible agent row is a full-width navigation target. Its detail surface
-re-resolves the live fleet record before dispatch and exposes Tail 200,
-Prompt, Interrupt, and blocked approval controls. Tail is sent with the
-contract's 200-line bound; approvals echo the current `approval_id` and
-`prompt_hash`, and a changed/deleted target is refused locally before signed
-bytes leave the device.
+re-resolves the live fleet record before dispatch and exposes Recent output,
+Prompt, Interrupt, and blocked approval controls. Recent output auto-loads the
+live tail (no tap) and auto-refreshes while the detail view is open, merging
+older transcript pages on scroll-up; the non-jamming `[info] Tail …` fleet
+banner is gone, and the result stays in the detail view. Approvals echo the
+current `approval_id` and `prompt_hash`, and a changed/deleted target is
+refused locally before signed bytes leave the device.
 
 The Idle / done section is collapsed by default. Its header is a full-width,
 44-point disclosure target with visible `Collapsed` / `Expanded` text and the
@@ -187,7 +192,7 @@ capability or device grant.
 
 The iOS test target includes coverage for the disclosure transition and the actual
 `NavigationStack` path reconciliation when an agent is deleted, explicit
-lifecycle labels, bounded Tail 200 and null Interrupt payloads, and grant
+lifecycle labels, Recent-output block rendering + 4-state machine, and grant
 explanations. The type-checked deterministic URLProtocol-backed action tests
 cover Prompt, Interrupt, direct approval, notification approval, duplicate
 claim replies, and cancellation of multiple live drives at the demo boundary.

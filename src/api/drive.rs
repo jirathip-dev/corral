@@ -85,6 +85,7 @@ use crate::fleet::worktree::{
     self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
     WorktreeRequest,
 };
+use crate::transcript::blocks::segment_lines;
 
 use super::AppState;
 
@@ -848,13 +849,22 @@ pub async fn drive(
         DriveCommand::ReadTail { lines } => {
             let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
             match state.adapter.read_tail(&agent_id, requested).await {
-                Ok(lines) => (
-                    true,
-                    None,
-                    None,
-                    AuditOutcome::Executed,
-                    Some(serde_json::json!({ "lines": lines })),
-                ),
+                Ok(lines) => {
+                    // #167: serve blocks ADDITIVELY alongside the existing
+                    // `lines` field. egui still renders `lines` until #168;
+                    // the block renderer (iOS) consumes `blocks`. Redaction
+                    // runs at the adapter boundary (D9) BEFORE these blocks
+                    // are segmented, so block text rides the same redaction
+                    // path as the lines.
+                    let blocks = segment_lines(&lines, None);
+                    (
+                        true,
+                        None,
+                        None,
+                        AuditOutcome::Executed,
+                        Some(serde_json::json!({ "lines": lines, "blocks": blocks })),
+                    )
+                }
                 Err(e) => drive_refusal(e),
             }
         }

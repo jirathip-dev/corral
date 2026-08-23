@@ -47,6 +47,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/Security/Biometrics.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/DestructivePatterns.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift"

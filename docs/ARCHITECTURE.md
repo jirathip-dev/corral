@@ -208,8 +208,9 @@ signed envelope {key_id, signature,       POST /drive
 
 ## Capabilities
 
-`prompt`, `interrupt`, `approve`, `read_tail` (bounded 200 lines /
-32 KiB on tap, plus the separate grant-gated paged `/transcript` view),
+`prompt`, `interrupt`, `approve`, `read_tail` (bounded live tail served as
+segmented blocks on `/drive`, plus the grant-gated paged `/transcript`
+view that the client folds into the same Recent-output surface),
 `kill`, `attach`, and the fleet-level `start_worktree` — the closed set
 in `src/drive/mod.rs`. Anything else is refused with a typed error before
 dispatch.
@@ -280,7 +281,8 @@ inputs, and corral never writes to another tool's state.
   and reason derive from `agent.capabilities` plus the grant ledger. Settings
   hosts the admin-token audit log and grant editor.
 - `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive
-  (including Kill/Attach), paged full-chat transcript, APNs registration,
+  (including Kill/Attach), the single Recent-output surface (live
+  segmented blocks merged with paged older transcript pages), APNs registration,
   and canned lock-screen replies bound to `prompt_hash`. Disabled controls
   name a missing grant or an unadvertised capability. See the README's
   Status section for what is and is not verified on hardware.

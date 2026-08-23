@@ -19,6 +19,7 @@
 		556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B21EE35CCFE7F224BFA95B8 /* Models.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
 		854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */; };
+		8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F933E32D259974E2C207BA96 /* RecentOutputModel.swift */; };
 		925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D352A1E84318BD30D5AF512 /* SSEParser.swift */; };
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
@@ -67,6 +68,7 @@
 		D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalJSON.swift; sourceTree = "<group>"; };
 		D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStyleTests.swift; sourceTree = "<group>"; };
 		F6CE363C959DE49C12B69596 /* LocalNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNotifier.swift; sourceTree = "<group>"; };
+		F933E32D259974E2C207BA96 /* RecentOutputModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentOutputModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -103,6 +105,7 @@
 			children = (
 				B8277522F2489E093BC28309 /* BoardModel.swift */,
 				8439EED775F825EE1DE8EAC3 /* FleetViews.swift */,
+				F933E32D259974E2C207BA96 /* RecentOutputModel.swift */,
 				5544FDC9B954FE32A7275A43 /* StateStyle.swift */,
 			);
 			path = UI;
@@ -312,6 +315,7 @@
 				"$(SRCROOT)/FleetNotifier/Security/Biometrics.swift",
 				"$(SRCROOT)/FleetNotifier/UI/BoardModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
+				"$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift",
 				"$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift",
 				"$(SRCROOT)/FleetNotifier/Wire/DestructivePatterns.swift",
 				"$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift",
@@ -352,6 +356,7 @@
 				E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */,
 				556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */,
 				E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */,
+				8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */,
 				925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */,
 				E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */,
 			);

@@ -1,0 +1,7 @@
+]0;corral pane[38;5;208mWorking[0m on issue #167
+────────────────────
+$ cargo test
+test result: ok. 42 passed
+
+... +7 lines (ctrl + t to view transcript)
+"Test"

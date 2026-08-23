@@ -38,7 +38,7 @@ The deterministic URLProtocol script pointer is lock-protected for every
 set/clear/read operation.
 The live SSE hop also carries its connection generation so a decoded frame
 cannot apply after disconnect/demo. Separate policy tests cover explicit
-lifecycle labels, action availability/grant explanations, Tail 200 payload
+lifecycle labels, action availability/grant explanations, Recent output payload
 construction, null Interrupt payload construction, and claim-bound approval
 availability. These tests were type-checked but could not execute because
 this host has no iOS runtime.

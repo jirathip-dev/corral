@@ -54,6 +54,8 @@ struct RecordingAdapter {
     tail: Mutex<Option<Vec<String>>>,
     /// The lines argument each read_tail call received.
     tail_requests: Mutex<Vec<u32>>,
+    /// attach handle served back on success (used when `known`).
+    attach_results: Mutex<Option<Value>>,
 }
 
 impl Default for RecordingAdapter {
@@ -69,6 +71,7 @@ impl Default for RecordingAdapter {
             started: Arc::new(tokio::sync::Notify::new()),
             tail: Mutex::new(None),
             tail_requests: Mutex::new(Vec::new()),
+            attach_results: Mutex::new(None),
         }
     }
 }
@@ -100,6 +103,11 @@ impl RecordingAdapter {
 
     fn tail(&self, lines: Vec<String>) -> &Self {
         *self.tail.lock().unwrap() = Some(lines);
+        self
+    }
+
+    fn attach_result(&self, handle: Value) -> &Self {
+        *self.attach_results.lock().unwrap() = Some(handle);
         self
     }
 
@@ -182,6 +190,43 @@ impl Adapter for RecordingAdapter {
             }
         };
         Box::pin(future)
+    }
+
+    fn attach<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Value, DriveError>> {
+        let agent_id = agent_id.to_string();
+        Box::pin(async move {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            self.commands
+                .lock()
+                .unwrap()
+                .push((agent_id.clone(), DriveCommand::Attach));
+            match *self.mode.lock().unwrap() {
+                Mode::Ok => {
+                    if self.known.lock().unwrap().contains(&agent_id) {
+                        Ok(self
+                            .attach_results
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| {
+                                json!({
+                                    "kind": "terminal_ref",
+                                    "target": agent_id,
+                                    "pane_id": "p1",
+                                    "command": format!("herdr agent attach --takeover {agent_id}"),
+                                })
+                            }))
+                    } else {
+                        Err(DriveError::UnknownAgent(agent_id))
+                    }
+                }
+                Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
+                Mode::Transport => Err(DriveError::Transport("boom".to_string())),
+            }
+        })
     }
 }
 
@@ -417,6 +462,77 @@ async fn command_only_capability_with_payload_is_refused() {
             .contains("no payload expected")
     );
     assert_eq!(h.adapter.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn attach_result_carries_handle_audits_executed_and_replays() {
+    let h = harness();
+    let handle = json!({
+        "kind": "terminal_ref",
+        "target": "agent-one",
+        "pane_id": "w1:p1",
+        "command": "herdr agent attach --takeover agent-one",
+        "args": ["herdr", "agent", "attach", "--takeover", "agent-one"],
+    });
+    h.adapter.knows("herdr:abc").attach_result(handle.clone());
+
+    let body = h.body(
+        "req-attach",
+        Capability::Attach,
+        "herdr:abc",
+        Value::Null,
+        None,
+    );
+    let (first_status, first) = post(&h.app, body.clone()).await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(first["ok"], true);
+    assert_eq!(first["result"], handle);
+    assert_eq!(
+        h.adapter.commands(),
+        vec![("herdr:abc".to_string(), DriveCommand::Attach)]
+    );
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].capability, "attach");
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+
+    let (second_status, second) = post(&h.app, body).await;
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(
+        second, first,
+        "attach replay is byte-identical and never re-dispatches"
+    );
+    assert_eq!(h.adapter.dispatch_count(), 1);
+    assert_eq!(h.audit_entries().len(), 1, "replay does not re-audit");
+}
+
+#[tokio::test]
+async fn attach_unknown_agent_is_typed_refusal_and_audited() {
+    let h = harness();
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-attach-ghost",
+            Capability::Attach,
+            "herdr:ghost",
+            Value::Null,
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"], "unknown agent: herdr:ghost");
+    assert_eq!(value["error_kind"], "unknown_agent");
+    assert!(value.get("result").is_none());
+    assert_eq!(
+        h.adapter.commands(),
+        vec![("herdr:ghost".to_string(), DriveCommand::Attach)]
+    );
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
 }
 
 #[tokio::test]
@@ -726,6 +842,7 @@ async fn stale_agent_is_typed_conflict_before_dispatch() {
             Capability::ReadTail,
             json!({ "kind": "read_tail", "lines": 10 }),
         ),
+        ("req-stale-attach", Capability::Attach, Value::Null),
     ] {
         let (status, value) = post(
             &h.app,

@@ -68,7 +68,9 @@ BIN="$REPO_DIR/target/release/corrald"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
 UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
+ROTATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-rotate.plist"
 LABEL="com.corral.corrald"
+ROTATE_LABEL="com.corral.corrald-rotate"
 LOG="$CONFIG_DIR/corrald-launchd.log"
 
 if [[ -n "$FROM_RELEASE" ]]; then
@@ -88,9 +90,11 @@ if [[ "$UNINSTALL" == "1" ]]; then
   echo ">> Uninstalling corrald launchd agents"
   launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
   launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)" "$ROTATE_PLIST" 2>/dev/null || true
   rm -f "$PLIST"
   rm -f "$UPDATE_PLIST"
-  echo ">> Removed $PLIST and $UPDATE_PLIST. Config/keys kept at $CONFIG_DIR (delete manually to wipe)."
+  rm -f "$ROTATE_PLIST"
+  echo ">> Removed $PLIST, $UPDATE_PLIST and $ROTATE_PLIST. Config/keys kept at $CONFIG_DIR (delete manually to wipe)."
   exit 0
 fi
 
@@ -235,6 +239,50 @@ if launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1 \
 else
   echo "   ✗ update agent bootstrap failed — see output above" >&2
 fi
+
+echo
+echo ">> Installing log-rotation agent ($ROTATE_LABEL)..."
+chmod +x "$REPO_DIR/scripts/rotate-corral-logs.sh"
+# Escape XML metacharacters so an exotic config dir (containing &, <, >) cannot
+# make plutil -lint fail on the generated plist, matching the update agent.
+CONFIG_DIR_ESCAPED="${CONFIG_DIR//&/&amp;}"
+CONFIG_DIR_ESCAPED="${CONFIG_DIR_ESCAPED//</&lt;}"
+CONFIG_DIR_ESCAPED="${CONFIG_DIR_ESCAPED//>/&gt;}"
+launchctl bootout "gui/$(id -u)" "$ROTATE_PLIST" 2>/dev/null || true
+launchctl enable "gui/$(id -u)/$ROTATE_LABEL" 2>/dev/null || true
+cat > "$ROTATE_PLIST" <<ROTATE_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$ROTATE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$REPO_DIR/scripts/rotate-corral-logs.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>$REPO_DIR</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CORRAL_CONFIG_DIR</key>
+    <string>$CONFIG_DIR_ESCAPED</string>
+  </dict>
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardOutPath</key><string>$CONFIG_DIR_ESCAPED/corral-rotate.log</string>
+  <key>StandardErrorPath</key><string>$CONFIG_DIR_ESCAPED/corral-rotate.log</string>
+</dict>
+</plist>
+ROTATE_EOF
+plutil -lint "$ROTATE_PLIST" >/dev/null
+if launchctl bootstrap "gui/$(id -u)" "$ROTATE_PLIST" 2>&1 \
+  || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$ROTATE_PLIST" 2>&1; }; then
+  echo "   ✓ log-rotation agent loaded (checks every 30 min; 50 MiB cap, 2 gz generations)"
+else
+  echo "   ✗ log-rotation agent bootstrap failed — see output above" >&2
+fi
 else
   echo ">> Skipping launchd agent (macOS only)"
 fi
@@ -268,3 +316,4 @@ else
 fi
 echo "   - view config:     ls -la $CONFIG_DIR"
 echo "   - logs:            tail -f $LOG"
+echo "   - log rotation:    50 MiB cap, 2 gz generations, every 30 min ($CONFIG_DIR/corral-rotate.log)"

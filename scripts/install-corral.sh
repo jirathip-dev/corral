@@ -379,6 +379,7 @@ required=(
   "$STAGE_DIR/scripts/setup-corrald.sh"
   "$STAGE_DIR/scripts/install-corral-ui.sh"
   "$STAGE_DIR/scripts/update-corral.sh"
+  "$STAGE_DIR/scripts/lib-corral-update-path.sh"
   "$STAGE_DIR/assets/icon/corral-icon-macos.png"
   "$STAGE_DIR/assets/icon/corral-icon-256.png"
 )

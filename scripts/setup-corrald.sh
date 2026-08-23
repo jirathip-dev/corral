@@ -177,6 +177,26 @@ fi
 echo
 echo ">> Installing auto-update agent (com.corral.corrald-update)..."
 chmod +x "$REPO_DIR/scripts/update-corral.sh"
+# Belt-and-suspenders: bake a launchd-usable PATH into the update plist so the
+# agent starts with gh/cargo resolvable. The script-top derivation in
+# update-corral.sh is the primary fix (works on the next run without needing to
+# re-run setup); this only helps fresh installs and setup re-runs.
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Only source the lib when present: a release bundle missing it must not abort
+# setup after the daemon plist was already written — fall back to the current
+# PATH and continue.
+lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
+# shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
+if [[ -f "$lib_path" ]]; then
+  source "$lib_path"
+  corral_prepend_update_path
+fi
+UPDATE_PATH="$PATH"
+# Escape XML metacharacters so an exotic prefix (containing &, <, >) cannot make
+# plutil -lint fail on the generated plist.
+UPDATE_PATH="${UPDATE_PATH//&/&amp;}"
+UPDATE_PATH="${UPDATE_PATH//</&lt;}"
+UPDATE_PATH="${UPDATE_PATH//>/&gt;}"
 launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
 launchctl enable "gui/$(id -u)/com.corral.corrald-update" 2>/dev/null || true
 cat > "$UPDATE_PLIST" <<UPDATE_EOF
@@ -197,6 +217,11 @@ cat > "$UPDATE_PLIST" <<UPDATE_EOF
     <key>Minute</key><integer>17</integer>
   </dict>
   <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$UPDATE_PATH</string>
+  </dict>
   <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>$CONFIG_DIR/corral-update.log</string>
   <key>StandardErrorPath</key><string>$CONFIG_DIR/corral-update.log</string>

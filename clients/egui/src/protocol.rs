@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, GhIssueRef, Snapshot};
+use crate::model::{Delta, FleetRegistry, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
@@ -142,6 +142,28 @@ pub async fn fetch_issues(
     }
     let wire: Wire = response.json().await.map_err(|e| format!("body: {e}"))?;
     Ok(wire.repos)
+}
+
+/// #135: `GET /fleet-registry` — the same local registry source the daemon
+/// uses for `/issues`, projected for the board's read-only Registry tab.
+/// Transport, non-2xx, and body decode failures are strict `Err(String)`s;
+/// a daemon-level parse/IO failure is a successful HTTP 200
+/// `FleetRegistry { status: "error", .. }` and is rendered prominently.
+pub async fn fetch_fleet_registry(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<FleetRegistry, String> {
+    let url = format!("{}/fleet-registry", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GET /fleet-registry -> {}", response.status()));
+    }
+    response.json().await.map_err(|e| format!("body: {e}"))
 }
 
 /// `POST /register` with the routing-only registration token and the
@@ -541,6 +563,10 @@ pub enum ApplyMsg {
     /// #113: repo-level issue view arrived from the read-only `GET /issues`
     /// endpoint (keyed by repo/fleet name).
     Issues(BTreeMap<String, Vec<GhIssueRef>>),
+    /// #135: read-only registry view arrived from `GET /fleet-registry`.
+    /// `Err` is a transport/endpoint failure; daemon parse failures ride an
+    /// `Ok(FleetRegistry)` with `status="error"`.
+    Registry(Result<FleetRegistry, String>),
 }
 
 #[derive(Debug, Clone)]

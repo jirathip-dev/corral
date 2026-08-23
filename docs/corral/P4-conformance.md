@@ -20,6 +20,7 @@ src/drive/mod.rs and src/api/* on main.
 | `/audit` | GET | admin Bearer token | `{entries[], valid}` — hash-chained log, grows only on writes |
 | `/drive` | POST | device signature | signed command envelope |
 | `/issues` | GET | none (read-only) | `{repos: {repo: [GhIssueRef…]}}` — repo-level issue view |
+| `/fleet-registry` | GET | none (read-only) | `{status, path, error, fleets[]}` — local fleet registry for the board's Registry tab |
 
 ## Drive wire shapes (normative)
 

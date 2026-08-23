@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::drive::{DriveFailure, DriveOutcome};
-use crate::model::{Agent, GhIssueRef};
+use crate::model::{Agent, FleetRegistry, GhIssueRef};
 
 /// Registration record persisted per host fingerprint.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -110,6 +110,13 @@ pub struct Fleet {
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
     /// Whether the repo-level issues have been fetched at least once.
     pub issues_loaded: bool,
+    /// #135: read-only registry view. `Ok` includes daemon-side
+    /// `status="error"` responses so a broken registry is visible; `Err` is
+    /// a transport/endpoint failure.
+    pub registry: Option<Result<FleetRegistry, String>>,
+    pub registry_loading: bool,
+    /// Whether a registry view has been successfully fetched at least once.
+    pub registry_loaded: bool,
 }
 
 impl Fleet {
@@ -167,6 +174,15 @@ impl Fleet {
     pub fn set_issues(&mut self, issues: BTreeMap<String, Vec<GhIssueRef>>) {
         self.issues = issues;
         self.issues_loaded = true;
+    }
+
+    /// #135: fold one registry fetch outcome into the tab's view model.
+    pub fn set_registry(&mut self, result: Result<FleetRegistry, String>) {
+        self.registry_loading = false;
+        if result.is_ok() {
+            self.registry_loaded = true;
+        }
+        self.registry = Some(result);
     }
 
     pub fn toggle_expanded(&mut self, agent_id: &str) {
@@ -459,6 +475,32 @@ mod tests {
         assert_eq!(fleet.rev, Some(21));
         assert_eq!(fleet.agents["a"].title.as_deref(), Some("newer SSE"));
         assert!(!fleet.agents.contains_key("late"));
+    }
+
+    #[test]
+    fn registry_fetch_marks_loaded_only_on_success_and_clears_loading() {
+        let mut fleet = Fleet {
+            registry_loading: true,
+            ..Default::default()
+        };
+        fleet.set_registry(Err("connect refused".into()));
+        assert!(!fleet.registry_loading);
+        assert!(
+            !fleet.registry_loaded,
+            "transport failure retries on reconnect"
+        );
+        assert!(matches!(fleet.registry, Some(Err(_))));
+
+        let registry: FleetRegistry = serde_json::from_value(serde_json::json!({
+            "status": "ok",
+            "path": "/tmp/fleets.json",
+            "error": null,
+            "fleets": []
+        }))
+        .unwrap();
+        fleet.set_registry(Ok(registry));
+        assert!(fleet.registry_loaded);
+        assert!(!fleet.registry_loading);
     }
 
     #[test]

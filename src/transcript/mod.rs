@@ -35,6 +35,7 @@
 //! complete when it is not.
 
 pub mod bind;
+pub mod blocks;
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;

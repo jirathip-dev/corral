@@ -671,6 +671,14 @@ pub fn page_body(
         crate::transcript::StoreRef::Claude { .. } => "claude",
         crate::transcript::StoreRef::Codex { .. } => "codex",
     };
+    // #167: blocks are segmented ONCE here (D7) so clients stay dumb
+    // renderers. They are ADDITIVE alongside `entries`; the existing
+    // `{role,text,ts}` shape is unchanged so egui keeps working until #168.
+    let blocks = page
+        .entries
+        .iter()
+        .flat_map(|e| crate::transcript::blocks::segment(&e.text, Some(&e.role), e.ts))
+        .collect::<Vec<_>>();
     serde_json::json!({
         "agent": agent_id,
         "store": store_kind,
@@ -689,6 +697,10 @@ pub fn page_body(
             .iter()
             .map(|e| serde_json::json!({ "role": e.role, "text": e.text, "ts": e.ts }))
             .collect::<Vec<_>>(),
+        // #167: segmented blocks mirroring `entries` order (newest-first).
+        // A client that wants chat reading order (oldest→newest) reverses
+        // when rendering.
+        "blocks": blocks,
         "next_cursor": page.next_cursor.as_ref().map(|c| c.encode_for(&outcome.store)),
         "skipped": page.skipped,
     })

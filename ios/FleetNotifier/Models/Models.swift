@@ -423,6 +423,19 @@ enum CodableValue: Codable, Equatable, Sendable {
         return lines.count == values.count ? lines : nil
     }
 
+    /// #167: the `blocks` array the daemon now serves ADDITIVELY alongside
+    /// `lines` on a read_tail result.
+    var tailBlocks: [TranscriptBlock]? {
+        guard case .object(let object) = self,
+              case .array(let values) = object["blocks"] else {
+            return nil
+        }
+        guard let data = try? JSONEncoder().encode(CodableValue.array(values)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode([TranscriptBlock].self, from: data)
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
@@ -468,7 +481,7 @@ enum Claim {
     }
 }
 
-// MARK: - Full chat transcript (D35, GET /transcript)
+// MARK: - Older transcript pages (D35, GET /transcript)
 
 /// Bounded client-side window, mirroring the egui board's transcript pane:
 /// at most 1000 entries and about 4 MiB of held text. The walk toward the
@@ -489,6 +502,43 @@ struct TranscriptEntry: Codable, Equatable, Sendable {
     var ts: UInt64?
 }
 
+/// One daemon block (D7). `kind` is the client's only vocabulary;
+/// `truncatedBefore` is the count lifted from a `... +N lines` marker that
+/// preceded this block (absent = no marker).
+struct TranscriptBlock: Codable, Equatable, Sendable {
+    var kind: TranscriptBlockKind
+    var text: String
+    /// Epoch millis at block boundary (absent = not labelled).
+    var at: UInt64?
+    var truncatedBefore: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, text, at
+        case truncatedBefore = "truncated_before"
+    }
+
+    init(kind: TranscriptBlockKind, text: String, at: UInt64? = nil,
+         truncatedBefore: UInt32? = nil) {
+        self.kind = kind
+        self.text = text
+        self.at = at
+        self.truncatedBefore = truncatedBefore
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(TranscriptBlockKind.self, forKey: .kind)
+        text = try c.decode(String.self, forKey: .text)
+        at = try c.decodeIfPresent(UInt64.self, forKey: .at)
+        truncatedBefore = try c.decodeIfPresent(UInt32.self, forKey: .truncatedBefore)
+    }
+}
+
+/// The four block kinds (D7).
+enum TranscriptBlockKind: String, Codable, Equatable, Sendable {
+    case user, agent, tool, system
+}
+
 /// Exactly the 200 body of `GET /transcript?agent=<id>`.
 struct TranscriptPage: Codable, Equatable, Sendable {
     var agent: String
@@ -499,9 +549,12 @@ struct TranscriptPage: Codable, Equatable, Sendable {
     var entries: [TranscriptEntry]
     var nextCursor: String?
     var skipped: Int
+    /// #167: blocks segmented ONCE server-side, mirroring `entries`
+    /// (newest-first). Additive alongside entries; egui keeps `entries`.
+    var blocks: [TranscriptBlock]
 
     enum CodingKeys: String, CodingKey {
-        case agent, store, session, bind, entries, skipped
+        case agent, store, session, bind, entries, skipped, blocks
         case storesUnavailable = "stores_unavailable"
         case nextCursor = "next_cursor"
     }
@@ -516,6 +569,7 @@ struct TranscriptPage: Codable, Equatable, Sendable {
         entries = try c.decodeIfPresent([TranscriptEntry].self, forKey: .entries) ?? []
         nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
         skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+        blocks = try c.decodeIfPresent([TranscriptBlock].self, forKey: .blocks) ?? []
     }
 }
 
@@ -555,6 +609,8 @@ struct TranscriptFailure: Equatable, Sendable, Error {
 /// slid out of the bounded window.
 struct TranscriptPane: Equatable, Sendable {
     var entries: [TranscriptEntry] = []
+    /// #167: segmented blocks mirroring `entries` order (newest-first).
+    var blocks: [TranscriptBlock] = []
     var baseOffset = 0
     var heldBytes = 0
     var nextCursor: String?
@@ -594,6 +650,7 @@ struct TranscriptPane: Equatable, Sendable {
             heldBytes += entry.text.utf8.count
         }
         entries.append(contentsOf: page.entries)
+        blocks.append(contentsOf: page.blocks)
         pages += 1
         slideWindow()
     }
@@ -630,6 +687,43 @@ struct TranscriptPane: Equatable, Sendable {
         entries.removeFirst(drop)
         heldBytes = bytes
         baseOffset += drop
+    }
+}
+
+/// Per-agent live tail state (#167). The daemon serves `read_tail` ADDITIVELY
+/// as `{lines, blocks}`; this pane keeps the blocks (the block renderer) and
+/// the bounded lines (the legacy text surface), plus the four-state machine
+/// (loading / empty / error / loaded) and a hard-timeout marker.
+struct TailPane: Equatable, Sendable {
+    var blocks: [TranscriptBlock] = []
+    var lines: [String] = []
+    var loading = false
+    var error: TranscriptFailure?
+    var updatedAt: Date?
+    var generation: UInt64 = 0
+
+    var isEmpty: Bool { blocks.isEmpty && lines.isEmpty }
+
+    mutating func beginFetch() {
+        loading = true
+        error = nil
+    }
+
+    mutating func apply(_ pageBlocks: [TranscriptBlock], lines: [String]) {
+        loading = false
+        error = nil
+        updatedAt = Date()
+        blocks = pageBlocks
+        self.lines = lines
+    }
+
+    mutating func apply(_ failure: TranscriptFailure) {
+        loading = false
+        error = failure
+    }
+
+    mutating func reset() {
+        self = TailPane()
     }
 }
 

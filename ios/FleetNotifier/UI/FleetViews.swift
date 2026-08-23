@@ -257,7 +257,7 @@ struct AgentRow: View {
                 }
                 .accessibilityLabel("Blocked claim: \(waiting.prompt)")
             }
-            Text("Open details for Tail 200, Prompt, Interrupt, and approvals")
+            Text("Open details for Recent output, Prompt, Interrupt, and approvals")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -321,7 +321,6 @@ private struct AgentDetailContent: View {
     let agent: Agent
     @ObservedObject var model: AppModel
     @ObservedObject var drafts: PromptDrafts
-    @State private var showTranscript = false
 
     private var grants: Set<Capability> { model.actionGrants }
     private var availability: [AgentActionAvailability] {
@@ -366,15 +365,6 @@ private struct AgentDetailContent: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Controls")
                         .font(.headline)
-                    actionButton(.tail, systemImage: "text.line.first.and.arrowtriangle.forward",
-                                 title: "Tail 200") {
-                        dispatchTail()
-                    }
-                    actionButton(.fullChat, systemImage: "bubble.left.and.bubble.right",
-                                 title: "Full chat") {
-                        showTranscript = true
-                        model.openTranscript(agentId: agent.agentId)
-                    }
                     actionButton(.interrupt, systemImage: "stop.circle",
                                  title: "Interrupt") {
                         dispatchInterrupt()
@@ -390,26 +380,23 @@ private struct AgentDetailContent: View {
                     promptControl
                 }
 
-                if let tail = model.fleet.tail(for: agent.agentId) {
-                    TailOutputView(lines: tail)
-                }
+                // #167: the single live Recent-output surface. It auto-loads
+                // and auto-refreshes while the detail view is open; older
+                // history is paged in with the transcript cursor via the
+                // full-width "Load earlier" divider.
+                RecentOutputView(agent: agent, model: model)
             }
             .padding()
         }
         .accessibilityElement(children: .contain)
-        .sheet(isPresented: $showTranscript) {
-            AgentTranscriptView(agentId: agent.agentId, model: model)
-        }
     }
 
     @ViewBuilder
     private func actionButton(_ action: RowAction, systemImage: String,
                               title: String, perform: @escaping () -> Void) -> some View {
         if let item = availability.first(where: { $0.action == action }) {
-            let inFlight = action == .fullChat
-                ? model.fleet.transcript(agent.agentId)?.loading == true
-                : model.isActionInFlight(agentId: agent.agentId,
-                                         capability: action.capability)
+            let inFlight = model.isActionInFlight(agentId: agent.agentId,
+                                                 capability: action.capability)
             VStack(alignment: .leading, spacing: 4) {
                 Button {
                     perform()
@@ -460,17 +447,6 @@ private struct AgentDetailContent: View {
                 }
             }
         }
-    }
-
-    private func dispatchTail() {
-        guard let live = model.fleet.agent(agent.agentId) else { return }
-#if DEBUG
-        if model.mode == .demo {
-            model.driveDemo(capability: .readTail, agent: live)
-            return
-        }
-#endif
-        model.driveReadTail(agent: live, driveClient: driveClient)
     }
 
     private func dispatchInterrupt() {
@@ -576,167 +552,250 @@ private struct AgentStateSummary: View {
     }
 }
 
-private struct TailOutputView: View {
-    let lines: [String]
+private struct RecentOutputView: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+
+    private var driveClient: DriveClient {
+        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+    }
+
+    private var tail: TailPane? { model.fleet.tailPane(for: agent.agentId) }
+    private var transcript: TranscriptPane? { model.fleet.transcript(agent.agentId) }
+
+    private var render: RecentOutputRender {
+        RecentOutputModel.render(tail: tail, transcript: transcript)
+    }
+
+    private var availability: AgentActionAvailability? {
+        BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
+            .first { $0.action == .tail }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Latest tail (up to 200 lines)")
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recent output")
                 .font(.headline)
-            if lines.isEmpty {
-                Text("No output returned")
-                    .font(.caption.monospaced())
+            if let availability, !availability.isEnabled {
+                Label(availability.disabledReason ?? "Recent output unavailable",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel(availability.disabledReason ?? "Recent output unavailable")
             } else {
-                ScrollView([.vertical, .horizontal]) {
-                    Text(lines.joined(separator: "\n"))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Latest bounded agent tail")
-                }
-                .frame(maxHeight: 220)
-                .padding(6)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 5))
+                content
+            }
+        }
+        .task {
+            refresh()
+            guard model.mode == .live else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled else { return }
+                refresh()
             }
         }
         .accessibilityElement(children: .contain)
     }
-}
-
-private struct AgentTranscriptView: View {
-    let agentId: String
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Group {
-            if let pane = model.fleet.transcript(agentId) {
-                transcriptContent(pane)
-            } else {
-                ProgressView("Loading full chat…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .navigationTitle("Full chat")
-        .onAppear {
-            model.openTranscript(agentId: agentId)
-        }
-    }
 
     @ViewBuilder
-    private func transcriptContent(_ pane: TranscriptPane) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            metadata(pane)
-            if let error = pane.error {
-                Label(TranscriptText.errorText(error), systemImage: "exclamationmark.triangle")
+    private var content: some View {
+        switch render.phase {
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading recent output…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .empty:
+            Text("No output yet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .error(let failure):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .accessibilityLabel(TranscriptText.errorText(error))
-                if !error.candidates.isEmpty {
-                    Text("Candidates: \(error.candidates.joined(separator: ", "))")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    .accessibilityLabel(TranscriptText.errorText(failure))
+                Button("Retry") {
+                    if tail?.error != nil {
+                        refresh()
+                    } else if transcript?.error != nil {
+                        model.retryTranscript(agentId: agent.agentId)
+                    } else {
+                        refresh()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Retry recent output")
+            }
+        case .loaded:
+            // No nested ScrollView: this section grows with the parent
+            // detail ScrollView (brief D10 — no maxHeight cage). The reader
+            // controls the parent scroll for stick-to-bottom on live updates.
+            ScrollViewReader { proxy in
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(render.rows.enumerated()), id: \.offset) { index, row in
+                        RecentOutputRowView(row: row, model: model, agent: agent,
+                                            previousBlock: previousBlock(in: render.rows, at: index))
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id("recent-output-bottom")
+                }
+                .padding(.vertical, 4)
+                .onChange(of: tail?.blocks.count ?? 0) { _, _ in
+                    withAnimation { proxy.scrollTo("recent-output-bottom", anchor: .bottom) }
                 }
             }
-            if pane.entries.isEmpty && pane.error == nil && !pane.loading {
-                Text("No transcript entries returned.")
+        }
+    }
+
+    private func previousBlock(in rows: [RecentOutputRow], at index: Int) -> TranscriptBlock? {
+        guard index > 0 else { return nil }
+        for i in stride(from: index - 1, through: 0, by: -1) {
+            if case .block(let block) = rows[i] { return block }
+        }
+        return nil
+    }
+
+    private func refresh() {
+        guard let live = model.fleet.agent(agent.agentId) else { return }
+#if DEBUG
+        if model.mode == .demo {
+            model.driveDemo(capability: .readTail, agent: live)
+            return
+        }
+#endif
+        model.driveReadTail(agent: live, driveClient: driveClient, silent: true)
+    }
+}
+
+private struct RecentOutputRowView: View {
+    let row: RecentOutputRow
+    @ObservedObject var model: AppModel
+    let agent: Agent
+    let previousBlock: TranscriptBlock?
+
+    var body: some View {
+        switch row {
+        case .block(let block):
+            RecentBlockRow(block: block,
+                           showTimestamp: RecentOutputRender.isBoundary(previous: previousBlock,
+                                                                        current: block))
+        case .loadEarlier(let count):
+            LoadEarlierDivider(count: count) {
+                model.loadEarlierOutput(agentId: agent.agentId)
+            }
+        case .error(_):
+            HStack {
+                Text("Couldn't load earlier output")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Retry") {
+                    model.retryTranscript(agentId: agent.agentId)
+                }
+                .font(.caption)
+                .accessibilityLabel("Retry loading earlier output")
+            }
+            .accessibilityElement(children: .combine)
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading earlier…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if pane.entries.isEmpty && pane.loading {
-                ProgressView("Loading full chat…")
+        }
+    }
+}
+
+private struct RecentBlockRow: View {
+    let block: TranscriptBlock
+    let showTimestamp: Bool
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if showTimestamp, let at = block.at {
+                Text(Self.timestamp(at))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityLabel("\(Self.timestamp(at))")
             }
-            if !pane.entries.isEmpty {
-                ScrollView([.vertical, .horizontal]) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(pane.entries.enumerated()), id: \.offset) { index, entry in
-                            let (text, truncated) = TranscriptText.displaySlice(entry.text)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entryMeta(index, entry))
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Text(text)
-                                    .font(.caption.monospaced())
-                                    .textSelection(.enabled)
-                                if truncated {
-                                    Text("… truncated for display")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .padding(6)
+            switch block.kind {
+            case .user:
+                Text(block.text)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .background(Color.accentColor.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 8))
+                    .textSelection(.enabled)
+                    .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+            case .agent:
+                Text(block.text)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+            case .tool, .system:
+                DisclosureGroup(isExpanded: $expanded) {
+                    Text(block.text)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Text(RecentOutputRender.toolSummary(block.text))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(block.kind == .system ? Color.secondary : Color.primary)
+                        .lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
             }
-            HStack(spacing: 12) {
-                if pane.canLoadOlder {
-                    Button("Load older") {
-                        model.loadOlderTranscript(agentId: agentId)
-                    }
-                }
-                if pane.canRetry {
-                    Button("Retry") {
-                        model.retryTranscript(agentId: agentId)
-                    }
-                }
-                if !pane.loading {
-                    Button("Reload") {
-                        model.openTranscript(agentId: agentId)
-                    }
-                }
-                if pane.loading && !pane.entries.isEmpty {
-                    ProgressView()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static func timestamp(_ ms: UInt64) -> String {
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
+    }
+}
+
+private struct LoadEarlierDivider: View {
+    let count: UInt32?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                if let count, count > 0 {
+                    Text("Load earlier (\(count) lines omitted)")
+                } else {
+                    Text("Load earlier")
                 }
                 Spacer()
-                if pane.nextCursor == nil && !pane.loading && pane.error == nil {
-                    Text("start of transcript")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: "chevron.up")
             }
+            .font(.caption.weight(.medium))
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 6))
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    @ViewBuilder
-    private func metadata(_ pane: TranscriptPane) -> some View {
-        if !pane.session.isEmpty || !pane.store.isEmpty || pane.baseOffset > 0
-            || pane.skipped > 0 || !pane.storesUnavailable.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                if !pane.session.isEmpty {
-                    Text("session: \(pane.session)")
-                }
-                if !pane.store.isEmpty {
-                    Text("store: \(pane.store) · bind: \(pane.bind)")
-                }
-                if !pane.storesUnavailable.isEmpty {
-                    Text("stores unavailable: \(pane.storesUnavailable.joined(separator: ", "))")
-                        .foregroundStyle(.orange)
-                }
-                if pane.skipped > 0 {
-                    Text("\(pane.skipped) torn lines skipped")
-                        .foregroundStyle(.orange)
-                }
-                if pane.baseOffset > 0 {
-                    Text("\(pane.baseOffset) newest entries slid out of the window — reload to return to the top")
-                        .foregroundStyle(.secondary)
-                }
-                Text("reads are audited")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption)
-        }
-    }
-
-    private func entryMeta(_ index: Int, _ entry: TranscriptEntry) -> String {
-        let base = model.fleet.transcript(agentId)?.baseOffset ?? 0
-        let offset = base + index + 1
-        let role = String(entry.role.prefix(16))
-        return "\(offset) \(role) \(entry.ts.map { String($0) } ?? "")"
+        .buttonStyle(.plain)
+        .accessibilityLabel(count.map { "Load earlier, \($0) lines omitted" } ?? "Load earlier")
     }
 }
 

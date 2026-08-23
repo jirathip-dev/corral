@@ -384,6 +384,19 @@ async fn page_shape_is_stable_and_redacted_end_to_end() {
         entries[0]["text"].as_str().unwrap().contains("now"),
         "non-secret text survives"
     );
+
+    // #167: blocks are segmented ONCE server-side and ride ADDITIVELY
+    // alongside entries (egui still reads entries until #168; the block
+    // renderer reads blocks). Order mirrors the newest-first entries.
+    let blocks = body["blocks"].as_array().expect("blocks array");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["kind"], "agent", "assistant entry -> agent block");
+    assert!(
+        blocks[0]["text"].as_str().unwrap().contains("now"),
+        "block text is the cleaned entry text"
+    );
+    assert_eq!(blocks[1]["kind"], "user", "user entry -> user block");
+    assert_eq!(blocks[1]["text"], "please deploy");
 }
 
 #[tokio::test]

@@ -2413,7 +2413,7 @@ final class RowActionTests: XCTestCase {
             agent: agent("herdr:x", state: .blocked,
                          capabilities: Capability.allCases.map(\.rawValue)),
             grants: Set(Capability.allCases))
-        XCTAssertEqual(actions, [.tail, .fullChat, .prompt, .interrupt, .kill, .attach, .approveDeny])
+        XCTAssertEqual(actions, [.tail, .prompt, .interrupt, .kill, .attach, .approveDeny])
     }
 
     /// Both the agent capability and the device grant must hold. The detail
@@ -2422,7 +2422,7 @@ final class RowActionTests: XCTestCase {
         let capable = agent("herdr:x", state: .blocked,
                             capabilities: ["read_tail", "prompt", "interrupt", "approve"])
         XCTAssertEqual(BoardModel.rowActions(agent: capable, grants: [.prompt, .readTail]),
-                       [.tail, .fullChat, .prompt])
+                       [.tail, .prompt])
 
         let incapable = agent("herdr:y", state: .blocked, capabilities: [])
         XCTAssertEqual(BoardModel.rowActions(agent: incapable,
@@ -2439,7 +2439,7 @@ final class RowActionTests: XCTestCase {
 
         let working = agent("herdr:w", state: .working, capabilities: ["prompt", "read_tail"])
         XCTAssertEqual(BoardModel.rowActions(agent: working, grants: [.prompt, .readTail]),
-                       [.tail, .fullChat, .prompt])
+                       [.tail, .prompt])
     }
 
     /// A missing grant and an unadvertised capability must never share one
@@ -2447,7 +2447,7 @@ final class RowActionTests: XCTestCase {
     func testDisabledReasonsDistinguishGrantFromUnavailable() {
         let capable = agent("herdr:grants", state: .blocked,
                             capabilities: Capability.allCases.map(\.rawValue))
-        for action in [RowAction.tail, .fullChat, .prompt, .interrupt,
+        for action in [RowAction.tail, .prompt, .interrupt,
                        .kill, .attach, .approveDeny] {
             let item = BoardModel.actionAvailability(agent: capable, grants: [])
                 .first { $0.action == action }
@@ -2458,7 +2458,7 @@ final class RowActionTests: XCTestCase {
         }
 
         let incapable = agent("herdr:incapable", state: .blocked, capabilities: [])
-        for action in [RowAction.tail, .fullChat, .prompt, .interrupt,
+        for action in [RowAction.tail, .prompt, .interrupt,
                        .kill, .attach, .approveDeny] {
             let item = BoardModel.actionAvailability(agent: incapable,
                                                      grants: Set(Capability.allCases))
@@ -2493,7 +2493,7 @@ final class RowActionTests: XCTestCase {
     }
 }
 
-// MARK: - Full chat transcript pane and store (#142 / #64)
+// MARK: - Older transcript pages pane and store (#142 / #64)
 
 private func transcriptPageJSON(agent: String = "herdr:x",
                                 entries: [(role: String, text: String, ts: UInt64?)],
@@ -3579,5 +3579,139 @@ final class GrantsRefreshTests: XCTestCase {
                        "a failed refresh must preserve the cached grants, never clear them")
         XCTAssertEqual(DeviceKeyStore.loadMeta()?.grants, ["prompt"],
                        "persisted meta is untouched by a failed refresh")
+    }
+}
+
+// MARK: - #167 Recent-output single-surface view-model
+
+final class RecentOutputModelTests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String,
+                       at: UInt64? = nil, truncated: UInt32? = nil) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text, at: at, truncatedBefore: truncated)
+    }
+
+    private func tail(_ blocks: [TranscriptBlock],
+                      loading: Bool = false,
+                      error: TranscriptFailure? = nil) -> TailPane {
+        var pane = TailPane()
+        pane.blocks = blocks
+        pane.lines = blocks.map(\.text)
+        pane.loading = loading
+        pane.error = error
+        return pane
+    }
+
+    private func transcript(blocks: [TranscriptBlock]? = nil,
+                            loading: Bool = false,
+                            error: TranscriptFailure? = nil,
+                            nextCursor: String? = nil) -> TranscriptPane {
+        var pane = TranscriptPane()
+        pane.blocks = blocks ?? []
+        pane.entries = []
+        pane.loading = loading
+        pane.error = error
+        pane.nextCursor = nextCursor
+        pane.pages = 0
+        return pane
+    }
+
+    func testTailBlocksMapToRenderModel() {
+        let render = RecentOutputModel.render(
+            tail: tail([block(.agent, "hello"), block(.system, "warn")]),
+            transcript: nil)
+        XCTAssertEqual(render.phase, .loaded)
+        XCTAssertEqual(render.rows, [
+            .block(TranscriptBlock(kind: .agent, text: "hello")),
+            .block(TranscriptBlock(kind: .system, text: "warn")),
+        ])
+        XCTAssertFalse(render.canLoadOlder)
+        XCTAssertNil(render.nextCursor)
+    }
+
+    func testLoadingStateWhenNoBlocks() {
+        let render = RecentOutputModel.render(
+            tail: tail([], loading: true),
+            transcript: nil)
+        XCTAssertEqual(render.phase, .loading)
+        XCTAssertEqual(render.rows, [.loading])
+        XCTAssertFalse(render.canRetryTail)
+    }
+
+    func testEmptyWhenNoBlocksNoLoading() {
+        let render = RecentOutputModel.render(tail: tail([]), transcript: nil)
+        XCTAssertEqual(render.phase, .empty)
+        XCTAssertEqual(render.rows, [])
+    }
+
+    func testErrorStateFoldsTailFailureWithRetry() {
+        let failure = TranscriptFailure(kind: "timeout", message: "Recent output timed out.",
+                                        candidates: [])
+        let render = RecentOutputModel.render(
+            tail: tail([], error: failure),
+            transcript: nil)
+        XCTAssertEqual(render.phase, .error(failure))
+        XCTAssertEqual(render.rows, [.error(failure)])
+        XCTAssertTrue(render.canRetryTail)
+    }
+
+    func testLoadedWithTailBlocksAndToolSummary() {
+        let render = RecentOutputModel.render(
+            tail: tail([block(.agent, "cargo test"),
+                        block(.tool, "$ cargo test\ntest result: ok. 4 passed")]),
+            transcript: nil)
+        XCTAssertEqual(render.phase, .loaded)
+        XCTAssertEqual(render.rows.count, 2)
+        guard case .block(let b) = render.rows[1] else {
+            return XCTFail("expected a block row")
+        }
+        XCTAssertEqual(RecentOutputRender.toolSummary(b.text), "ok. 4 passed")
+    }
+
+    func testTimeoutHeldBlocksStillRenderAsLoaded() {
+        let failure = TranscriptFailure(kind: "timeout", message: "Recent output timed out.",
+                                        candidates: [])
+        let pane = tail([block(.agent, "kept")], error: failure)
+        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+        XCTAssertEqual(render.phase, .loaded)
+        XCTAssertTrue(render.canRetryTail)
+        XCTAssertEqual(render.rows, [.block(TranscriptBlock(kind: .agent, text: "kept"))])
+    }
+
+    func testEmptyTranscriptPageIsNotASpinner() {
+        let render = RecentOutputModel.render(
+            tail: tail([]),
+            transcript: transcript(blocks: []))
+        XCTAssertEqual(render.phase, .empty)
+        XCTAssertFalse(render.transcriptLoading)
+    }
+
+    func testPaginationPreservesCursorAndDivider() {
+        let t = transcript(blocks: [block(.agent, "old")],
+                           nextCursor: "b.2.aa")
+        let render = RecentOutputModel.render(tail: tail([]), transcript: t)
+        XCTAssertTrue(render.canLoadOlder)
+        XCTAssertEqual(render.nextCursor, "b.2.aa")
+        XCTAssertEqual(render.rows.first, .loadEarlier(nil))
+        XCTAssertEqual(render.rows.last, .block(TranscriptBlock(kind: .agent, text: "old")))
+    }
+
+    func testTailTruncationInsertsTopDividerWhenNoTranscript() {
+        let pane = tail([block(.system, "…seeded tail", truncated: 7)])
+        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+        XCTAssertTrue(render.canLoadOlder)
+        XCTAssertEqual(render.rows.first, .loadEarlier(7))
+    }
+
+    func testTranscriptErrorWithHeldBlocksShowsErrorAndRetry() {
+        let failure = TranscriptFailure(kind: "query_timeout", message: "slow",
+                                        candidates: [])
+        let t = transcript(blocks: [block(.agent, "old")],
+                           error: failure, nextCursor: "b.2.aa")
+        let render = RecentOutputModel.render(tail: tail([]), transcript: t)
+        // Held blocks stay visible (loaded), plus the failure + Retry row.
+        XCTAssertEqual(render.phase, .loaded)
+        XCTAssertTrue(render.rows.contains(.error(failure)))
+        XCTAssertTrue(render.canRetryTranscript)
+        XCTAssertFalse(render.canLoadOlder, "an in-flight/error walk cannot page further")
     }
 }

@@ -720,17 +720,21 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    /// `read_tail` is bounded (D5): 200 lines, never prefetched.
-    func driveReadTail(agent: Agent, driveClient: DriveClient) {
+    /// `read_tail` is bounded (D5): 200 lines, never prefetched. #167:
+    /// the detail view auto-loads it (no tap) and auto-refreshes while open;
+    /// `silent` suppresses the in-flight/again banners so the auto timer does
+    /// not spam the fleet banner.
+    func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false) {
         guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
+            if !silent { banner = .error("unregistered", "Device is not registered.") }
             return
         }
-        guard authorize(.readTail, for: live) else { return }
+        guard authorize(.readTail, for: live, silent: silent) else { return }
         let payload = CanonicalJSON.readTailPayload(lines: 200)
         let key = DriveActionKey(capability: .readTail, target: live.agentId, identity: "tail-200")
-        guard let requestId = beginDriveAction(key) else { return }
+        guard let requestId = beginDriveAction(key, silent: silent) else { return }
+        fleet.prepareTailFetch(agent: live.agentId)
         drive(capability: .readTail, target: live.agentId, payload: payload,
               driveClient: driveClient, keyId: keyId, signer: signer,
               actionKey: key, requestId: requestId)
@@ -810,7 +814,7 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    // MARK: - Full chat (#142 / #64)
+    // MARK: - Older transcript pages (#142 / #64)
 
     /// Open the newest page. The detail control is already disabled without
     /// capability/grant; this method re-checks so a direct caller cannot
@@ -833,6 +837,21 @@ final class AppModel: ObservableObject {
                               driveClient: driveClient)
     }
 
+    /// #167: the tappable full-width "Load earlier" divider. If no older
+    /// transcript page has been fetched yet, open the newest page; otherwise
+    /// continue walking the existing cursor.
+    func loadEarlierOutput(agentId: String, driveClient: DriveClient? = nil) {
+        guard let pane = fleet.transcript(agentId) else {
+            openTranscript(agentId: agentId, driveClient: driveClient)
+            return
+        }
+        if pane.nextCursor != nil {
+            loadOlderTranscript(agentId: agentId, driveClient: driveClient)
+        } else {
+            openTranscript(agentId: agentId, driveClient: driveClient)
+        }
+    }
+
     private func requestTranscriptPage(agentId: String, cursor: String?,
                                        driveClient: DriveClient?,
                                        autoReload: Bool = false) {
@@ -844,7 +863,7 @@ final class AppModel: ObservableObject {
         guard mode == .live else {
             fleet.noteTranscriptFailure(TranscriptFailure(
                 kind: "demo",
-                message: "Full chat is live-only; demo mode does not fetch or fake transcripts.",
+                message: "Older output is live-only; demo mode does not fetch or fake transcripts.",
                 candidates: []
             ), for: agentId)
             return
@@ -883,8 +902,15 @@ final class AppModel: ObservableObject {
                                                           signer: signer,
                                                           target: agentId,
                                                           cursor: fetch.cursor)
-            let result = await client.fetchTranscript(agentId: agentId,
-                                                      authHeader: header)
+            // #167 hard timeout: a stalled older page folds to error+Retry,
+            // never an infinite spinner (#160).
+            let op: @Sendable () async -> Result<TranscriptPage, TranscriptFailure> = {
+                await client.fetchTranscript(agentId: agentId, authHeader: header)
+            }
+            let result = await Self.raceTimeout(seconds: Self.recentOutputTimeoutSeconds, op)
+                ?? .failure(TranscriptFailure(kind: "timeout",
+                                              message: "Couldn't load earlier output",
+                                              candidates: []))
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch result {
             case .success(let page):
@@ -923,23 +949,30 @@ final class AppModel: ObservableObject {
     /// Both sides of the drive authorization contract must hold locally for
     /// an actionable control. The daemon remains authoritative and can still
     /// return a typed refusal, which the common drive path surfaces.
-    private func authorize(_ capability: Capability, for agent: Agent) -> Bool {
+    private func authorize(_ capability: Capability, for agent: Agent,
+                           silent: Bool = false) -> Bool {
         guard agent.capabilities.contains(capability.rawValue) else {
-            banner = .error("capability_unavailable",
-                            "\(capability.rawValue): not available for this agent.")
+            if !silent {
+                banner = .error("capability_unavailable",
+                                "\(capability.rawValue): not available for this agent.")
+            }
             return false
         }
         guard actionGrants.contains(capability) else {
-            banner = .error("not_granted",
-                            "requires the \(capability.rawValue) grant — ask the host.")
+            if !silent {
+                banner = .error("not_granted",
+                                "requires the \(capability.rawValue) grant — ask the host.")
+            }
             return false
         }
         return true
     }
 
-    private func beginDriveAction(_ key: DriveActionKey) -> String? {
+    private func beginDriveAction(_ key: DriveActionKey, silent: Bool = false) -> String? {
         guard !inFlightDriveKeys.contains(key) else {
-            banner = .info("\(key.capability.displayName) for \(key.target) is already in progress.")
+            if !silent {
+                banner = .info("\(key.capability.displayName) for \(key.target) is already in progress.")
+            }
             return nil
         }
         inFlightDriveKeys.insert(key)
@@ -953,6 +986,32 @@ final class AppModel: ObservableObject {
                                    promptHash: String) -> DriveActionKey {
         DriveActionKey(capability: .approve, target: agentId,
                         identity: "\(approvalId)|\(promptHash)")
+    }
+
+    /// #167 hard timeout for the Recent-output surface (live tail + older
+    /// transcript pages). A stalled fetch must fold to error+Retry, never a
+    /// spinner (#160).
+    private static let recentOutputTimeoutSeconds = 12.0
+
+    /// Race an async operation against a hard timeout. If the operation wins
+    /// we get its value; if the timeout wins we get `nil` (the running task
+    /// is cancelled). The operation must be cancellable (URLSession is).
+    private static func raceTimeout<T: Sendable>(
+        seconds: Double,
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        await withTaskGroup(of: Optional<T>.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            for await value in group {
+                group.cancelAll()
+                return value
+            }
+            return nil
+        }
     }
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
@@ -970,20 +1029,39 @@ final class AppModel: ObservableObject {
                 }
             }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
-            let result = await driveClient.drive(capability: capability, target: target,
-                                                 payload: payload, rev: self.fleet.lastEventId,
+            let rev = self.fleet.lastEventId
+            let result: DriveResult
+            if capability == .readTail {
+                // #167 hard timeout: a stalled tail must never leave the
+                // Recent-output surface on an infinite spinner.
+                let op: @Sendable () async -> DriveResult = {
+                    await driveClient.drive(capability: capability, target: target,
+                                            payload: payload, rev: rev,
+                                            requestId: requestId,
+                                            keyId: keyId, signer: signer,
+                                            biometrics: biometrics,
+                                            forceStepUp: forceStepUp)
+                }
+                result = await Self.raceTimeout(seconds: Self.recentOutputTimeoutSeconds, op)
+                    ?? .refused(.network("Recent output timed out."))
+            } else {
+                result = await driveClient.drive(capability: capability, target: target,
+                                                 payload: payload, rev: rev,
                                                  requestId: requestId,
                                                  keyId: keyId, signer: signer,
                                                  biometrics: biometrics,
                                                  forceStepUp: forceStepUp)
+            }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch result {
             case .dispatched(let response):
                 if response.ok {
                     if capability == .readTail {
                         let lines = response.result?.tailLines ?? []
-                        self.fleet.rememberTail(lines, for: target)
-                        self.banner = .info("Tail \(target): \(lines.count) lines")
+                        let blocks = response.result?.tailBlocks ?? []
+                        // #167: fold the segmented blocks; the result stays in
+                        // the detail view (no hijacking fleet banner).
+                        self.fleet.rememberTail(lines, blocks: blocks, for: target)
                     } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
                     } else if capability == .prompt {
@@ -999,6 +1077,11 @@ final class AppModel: ObservableObject {
                     if response.errorKind == "stale_agent" {
                         self.handleStaleAgent(target,
                                               message: response.error ?? "the agent moved or disappeared")
+                    } else if capability == .readTail {
+                        self.fleet.foldTailFailure(TranscriptFailure(
+                            kind: response.errorKind ?? "dispatch_refused",
+                            message: response.error ?? "dispatch refused (ok:false)",
+                            candidates: []), for: target)
                     } else {
                         self.banner = .error("dispatch_refused",
                                              response.error ?? "dispatch refused (ok:false)")
@@ -1011,14 +1094,30 @@ final class AppModel: ObservableObject {
                         self.handleStaleAgent(target, message: message)
                         return
                     }
+                    if capability == .readTail {
+                        self.fleet.foldTailFailure(TranscriptFailure(
+                            kind: kind, message: message, candidates: []), for: target)
+                        return
+                    }
                     // Read-only default: ungranted capabilities are refused
                     // with the typed banner; the UI also explains disabled
                     // controls before this path is reachable.
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
                 case .network(let message):
-                    self.banner = .error("network", message)
+                    if capability == .readTail {
+                        self.fleet.foldTailFailure(TranscriptFailure(
+                            kind: "transport", message: message, candidates: []), for: target)
+                    } else {
+                        self.banner = .error("network", message)
+                    }
                 case .encoding:
-                    self.banner = .error("encoding", "payload encoding failed")
+                    if capability == .readTail {
+                        self.fleet.foldTailFailure(TranscriptFailure(
+                            kind: "encoding", message: "payload encoding failed",
+                            candidates: []), for: target)
+                    } else {
+                        self.banner = .error("encoding", "payload encoding failed")
+                    }
                 }
             }
         }
@@ -1133,7 +1232,9 @@ final class AppModel: ObservableObject {
         if case .dispatched(let response) = result {
             fleet.seedDemo(agents: fleet.agents, rev: response.rev)
             if capability == .readTail {
-                fleet.rememberTail(response.result?.tailLines ?? [], for: agent.agentId)
+                fleet.rememberTail(response.result?.tailLines ?? [],
+                                   blocks: response.result?.tailBlocks ?? [],
+                                   for: agent.agentId)
             }
             if capability == .approve, agent.isBlocked {
                 simulateUnblock(agentId: agent.agentId)

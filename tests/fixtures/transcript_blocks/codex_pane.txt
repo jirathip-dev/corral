@@ -1,0 +1,9 @@
+[32m$ cargo build[0m
+Compiling corrald v0.1.0
+Build progress: 10%[31m[KBuild progress: 100%[0m
+
+... +229 lines (ctrl+t to view transcript)
+[1m• Ask Codex to do anything[0m
+> pilot: make the transcript read as chat, not a terminal blob
+Right — collapsing Full chat into Recent output, live at the bottom, scroll up for older.
+Missing environment variable: OPENROUTER_API_KEY

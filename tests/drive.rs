@@ -721,6 +721,14 @@ async fn read_tail_result_carries_lines_and_audits_executed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], true);
     assert_eq!(value["result"]["lines"], json!(["line one", "line two"]));
+    // #167: blocks ride ADDITIVELY alongside lines. The two agent lines have
+    // no blank separator, so they merge into ONE agent block (raw pane text
+    // has no role hint; the block renderer is the dumb consumer).
+    assert_eq!(
+        value["result"]["blocks"],
+        json!([{ "kind": "agent", "text": "line one\nline two" }]),
+        "read_tail must serve segmented blocks alongside lines"
+    );
     let rev = h.store.snapshot().await.rev;
     assert_eq!(value["rev"].as_u64(), Some(rev));
 
@@ -771,6 +779,54 @@ async fn read_tail_with_no_output_is_ok_with_empty_lines() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+}
+
+#[tokio::test]
+async fn read_tail_blocks_are_cleaned_and_segmented_on_the_wire() {
+    let h = harness();
+    // Raw pane tail: ANSI color, a CR overdraw, a truncation marker, chrome.
+    h.adapter.knows("herdr:abc").tail(vec![
+        "\u{1b}[32m$ cargo build\u{1b}[0m".into(),
+        "Compiling corrald v0.1.0".into(),
+        "Build progress: 10%\rBuild progress: 100%".into(),
+        "".into(),
+        "... +229 lines (ctrl+t to view transcript)".into(),
+        "\u{2022} Ask Codex to do anything".into(),
+    ]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    // The existing lines contract is untouched (redacted, bounded lines, ANSI
+    // still present — pass 1 is for blocks only, so egui keeps what it had).
+    assert_eq!(
+        value["result"]["lines"][0],
+        "\u{1b}[32m$ cargo build\u{1b}[0m"
+    );
+    // The additive blocks carry the cleaned, segmented view.
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["kind"], "tool");
+    assert_eq!(
+        blocks[0]["text"],
+        "$ cargo build\nCompiling corrald v0.1.0\nBuild progress: 100%"
+    );
+    assert_eq!(blocks[1]["kind"], "system");
+    assert_eq!(blocks[1]["truncated_before"], 229);
+    assert!(
+        !blocks[1]["text"].as_str().unwrap().contains("ctrl+t"),
+        "marker text is removed from the block"
+    );
 }
 
 #[tokio::test]

@@ -424,6 +424,39 @@ fn fleet_ops_fields_parse_and_survive_a_write_round_trip() {
 }
 
 #[test]
+fn checked_in_fleet_example_parses_with_the_corral_subset_reader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleets.example.json");
+    let registry = load(&path).expect("checked-in fleets.example.json parses with corrald");
+
+    assert_eq!(registry.fleets.len(), 1);
+    let fleet = &registry.fleets[0];
+    assert_eq!(fleet.name, "example");
+    assert_eq!(fleet.gh_repo, "example/example");
+    assert_eq!(fleet.orch, "orch-example");
+    assert_eq!(fleet.models.impl_, "codex/deepseek-v4-flash-vision-exp");
+    assert_eq!(fleet.models.review, "codex/deepseek-v4-flash-vision-exp");
+    assert_eq!(
+        fleet.models.impl_alt.as_deref(),
+        Some("opencode-go/deepseek-v4-flash")
+    );
+    assert_eq!(
+        fleet.models.impl_alt2.as_deref(),
+        Some("codex/deepseek-v4-flash")
+    );
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).expect("checked-in example remains readable"),
+    )
+    .expect("checked-in example is valid JSON");
+    assert_eq!(
+        raw["fleets"][0]["models"]["reasoning_effort"],
+        serde_json::json!({"orch": "medium", "impl": "max", "review": "high"})
+    );
+    assert_eq!(raw["admit"]["enabled"], true);
+    assert_eq!(raw["admit"]["budget_mb"], 16000);
+}
+
+#[test]
 fn missing_required_field_errors_naming_the_field() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = write_registry(

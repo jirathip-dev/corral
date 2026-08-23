@@ -1167,6 +1167,7 @@ impl eframe::App for CorralApp {
                 let rt = self.rt.clone();
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
+                let mut pending_full_chat: Vec<String> = Vec::new();
                 let mut refresh_issues = false;
                 crate::ui::board::show(
                     ui,
@@ -1175,9 +1176,13 @@ impl eframe::App for CorralApp {
                     &mut crate::ui::board::BoardActions {
                         drive: &mut |intent| pending.push(intent),
                         transcript: &mut |request| pending_transcripts.push(request),
+                        full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
                         refresh_issues: &mut || refresh_issues = true,
                     },
                 );
+                for agent_id in pending_full_chat {
+                    self.fleet.toggle_full_chat(&agent_id);
+                }
                 for request in pending_transcripts {
                     self.request_transcript_page(request);
                 }

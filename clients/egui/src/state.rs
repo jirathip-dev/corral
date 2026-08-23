@@ -104,6 +104,9 @@ pub struct Fleet {
     pub transcript_clock: u64,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
+    /// Agent ids whose full transcript pane is open (controlled by the
+    /// board's dedicated Full chat control and the nested header).
+    pub transcript_open: Vec<String>,
     /// #113: repo-level issue set from the daemon's read-only `GET /issues`
     /// view, keyed by repo/fleet name. Empty until the first fetch — the
     /// issue browser renders from this (never from branch inference).
@@ -135,6 +138,8 @@ impl Fleet {
         // read_tail cache follows the same removal rule.
         let agents = &self.agents;
         self.transcripts.retain(|id, _| agents.contains_key(id));
+        self.expanded.retain(|id| agents.contains_key(id));
+        self.transcript_open.retain(|id| agents.contains_key(id));
     }
 
     pub fn apply_delta(&mut self, delta: &crate::model::Delta) {
@@ -162,6 +167,7 @@ impl Fleet {
         self.transcripts.remove(agent_id);
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);
+        self.transcript_open.retain(|id| id != agent_id);
     }
 
     pub fn is_expanded(&self, agent_id: &str) -> bool {
@@ -190,6 +196,33 @@ impl Fleet {
             self.expanded.retain(|e| e != agent_id);
         } else {
             self.expanded.push(agent_id.to_string());
+        }
+    }
+
+    pub fn is_transcript_open(&self, agent_id: &str) -> bool {
+        self.transcript_open.iter().any(|id| id == agent_id)
+    }
+
+    pub fn open_transcript(&mut self, agent_id: &str) {
+        if !self.is_transcript_open(agent_id) {
+            self.transcript_open.push(agent_id.to_string());
+        }
+    }
+
+    pub fn close_transcript(&mut self, agent_id: &str) {
+        self.transcript_open.retain(|id| id != agent_id);
+    }
+
+    /// Row-level Full chat action: open the transcript and expand the row,
+    /// or close the transcript when it is already open and visible.
+    pub fn toggle_full_chat(&mut self, agent_id: &str) {
+        if self.is_transcript_open(agent_id) && self.is_expanded(agent_id) {
+            self.close_transcript(agent_id);
+        } else {
+            self.open_transcript(agent_id);
+            if !self.is_expanded(agent_id) {
+                self.expanded.push(agent_id.to_string());
+            }
         }
     }
 
@@ -298,10 +331,11 @@ impl Fleet {
     }
 }
 
-/// The single source of truth for device capability gating: an agent's
-/// capability button renders only if the agent advertises it AND the
-/// device's grant record (registration grants, minus observed
-/// `not_granted` refusals, plus observed successes) allows it.
+/// The single source of truth for device capability gating. Controls are
+/// rendered for the canonical capability set; a control is ready when the
+/// agent advertises the capability and the grant record (registration
+/// grants, minus observed `not_granted` refusals, plus observed successes)
+/// allows it. Missing capability and missing grant are reported separately.
 #[derive(Debug, Clone, Default)]
 pub struct GrantLedger {
     /// Grants known from the last registration response.
@@ -515,6 +549,7 @@ mod tests {
         snap.agents.insert("a".into(), agent("a"));
         fleet.apply_snapshot(&snap);
         fleet.expanded.push("a".into());
+        fleet.transcript_open.push("a".into());
         fleet.tails.insert("a".into(), vec!["line".into()]);
         fleet
             .transcripts
@@ -528,6 +563,25 @@ mod tests {
         assert!(fleet.tails.is_empty());
         assert!(fleet.transcripts.is_empty(), "#64 pane cleaned up too");
         assert!(fleet.expanded.is_empty());
+        assert!(fleet.transcript_open.is_empty());
+    }
+
+    #[test]
+    fn full_chat_toggle_expands_row_and_closes_without_collapsing_it() {
+        let mut fleet = Fleet::default();
+        fleet.toggle_full_chat("a");
+        assert!(fleet.is_expanded("a"));
+        assert!(fleet.is_transcript_open("a"));
+
+        fleet.toggle_full_chat("a");
+        assert!(fleet.is_expanded("a"));
+        assert!(!fleet.is_transcript_open("a"));
+
+        fleet.toggle_expanded("a");
+        fleet.open_transcript("a");
+        fleet.toggle_full_chat("a");
+        assert!(fleet.is_expanded("a"), "a collapsed row is re-expanded");
+        assert!(fleet.is_transcript_open("a"));
     }
 
     /// #64: the transcript pane cache is bounded — a 65th agent evicts

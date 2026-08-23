@@ -342,6 +342,11 @@ fn free_path(
         return;
     }
     let mut repo = free_repo(ui).unwrap_or_else(|| repos[0].clone());
+    // Capture the value we read from temp memory (or its `repos[0]` default)
+    // before the ComboBox can change it. We write the effective selection
+    // back below when it differs, which both persists a user's pick and cleans
+    // up a stale value for a repo that no longer exists.
+    let repo_before = repo.clone();
     if !repos.contains(&repo) {
         repo = repos[0].clone();
     }
@@ -359,6 +364,12 @@ fn free_path(
                     ui.selectable_value(&mut repo, r.clone(), r);
                 }
             });
+        if repo != repo_before {
+            ui.ctx().memory_mut(|m| {
+                m.data
+                    .insert_temp(egui::Id::new("corral-ui-issues-free-repo"), repo.clone())
+            });
+        }
         ui.label(RichText::new("label").small().color(theme::ui::TEXT_MUTED));
         let response = ui.add(
             TextEdit::singleline(&mut name)
@@ -594,5 +605,105 @@ mod tests {
         // issue repo from branch inference.
         let empty = Fleet::default();
         assert!(free_repos(&empty).is_empty());
+    }
+
+    #[test]
+    fn free_repo_selection_persists_across_frames() {
+        use eframe::egui;
+
+        fn run_frame(
+            ctx: &egui::Context,
+            fleet: &Fleet,
+            input: egui::RawInput,
+        ) -> egui::FullOutput {
+            ctx.run_ui(input, |ui| {
+                free_path(ui, fleet, &|_| true, &mut |_intent| {});
+            })
+        }
+
+        fn frame_input(time: f64, pos: Option<egui::Pos2>) -> egui::RawInput {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                ..Default::default()
+            };
+            if let Some(pos) = pos {
+                input.events = vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ];
+            }
+            input
+        }
+
+        // Locate the center of a rendered text shape so the test can click the
+        // ComboBox button and its options at their on-screen positions.
+        fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+            use eframe::egui::Shape;
+            fn walk(shape: &Shape, text: &str) -> Option<egui::Pos2> {
+                match shape {
+                    Shape::Text(ts) if ts.galley.text() == text => {
+                        let size = ts.galley.size();
+                        Some(ts.pos + egui::vec2(size.x * 0.5, size.y * 0.5))
+                    }
+                    Shape::Vec(shapes) => shapes.iter().find_map(|s| walk(s, text)),
+                    _ => None,
+                }
+            }
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| walk(&clipped.shape, text))
+                .unwrap_or_else(|| panic!("no rendered text shape for {text:?}"))
+        }
+
+        let mut fleet = Fleet::default();
+        fleet.issues.insert("acme".to_string(), Vec::new());
+        fleet.issues.insert("zephyr".to_string(), Vec::new());
+
+        let ctx = egui::Context::default();
+
+        // Frame 1: the ComboBox starts on repos[0] ("acme").
+        let out1 = run_frame(&ctx, &fleet, frame_input(0.0, None));
+        let button_pos = text_center(&out1, "acme");
+        out1.drop_without_applying_deltas();
+
+        // Frame 2: open the ComboBox popup. The popup does a sizing pass on its
+        // opening frame, so let it settle before reading the option positions.
+        let out2 = run_frame(&ctx, &fleet, frame_input(1.0 / 60.0, Some(button_pos)));
+        out2.drop_without_applying_deltas();
+
+        // Frame 3: the popup is now rendered, so read the non-first option's
+        // rendered position and click it.
+        let out3 = run_frame(&ctx, &fleet, frame_input(2.0 / 60.0, None));
+        let option_pos = text_center(&out3, "zephyr");
+        out3.drop_without_applying_deltas();
+
+        let out4 = run_frame(&ctx, &fleet, frame_input(3.0 / 60.0, Some(option_pos)));
+        out4.drop_without_applying_deltas();
+
+        // Frame 5: a fresh frame must read the chosen repo back from temp
+        // memory instead of snapping back to repos[0].
+        let mut repo = String::new();
+        let out5 = ctx.run_ui(frame_input(4.0 / 60.0, None), |ui| {
+            repo = free_repo(ui).unwrap_or_else(|| "acme".to_string());
+        });
+        out5.drop_without_applying_deltas();
+        assert_eq!(
+            repo, "zephyr",
+            "non-first repo selection must persist across frames"
+        );
     }
 }

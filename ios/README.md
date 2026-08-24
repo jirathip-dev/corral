@@ -229,6 +229,13 @@ during biometrics before either `/step-up` or `/drive` is sent.
 The URLProtocol harness waits on held gates asynchronously outside
 URLSession's loader thread, so concurrent requests can all start.
 
+The connection-failure suite probes `URLProtocol.startLoading()` separately
+from the FleetStore callback whose timeout it awaits. A failed hosted run
+therefore reports whether the loader never dispatched the mock or the stream
+error/reconnect never landed in the store. The 5-second diagnostic bound is
+deliberately unchanged: its purpose is to identify which side stalled, not to
+turn runner scheduling delay into a longer wall-clock wait.
+
 Registration and APNs identity transitions are lifecycle-owned: reset and the
 Debug-only demo boundary cannot resurrect a late `/register` response, live
 SSE, metadata write, or retired `/device-token` upload, and concurrent

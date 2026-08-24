@@ -1,9 +1,8 @@
-//! Fleet board: repo sections (CollapsingHeader, default open) with agent
-//! rows beneath — state/reason/waiting_on kind badges, worktree topology
-//! columns (repo/branch/dirty/ahead-behind), PR/CI columns, and
-//! capability-driven drive controls rendered for the canonical capability
-//! set; each control's enabled/disabled state and disabled reason derive
-//! from `agent.capabilities` plus the device's grant ledger.
+//! Fleet board: a cards master/detail split (default) plus an exact
+//! nine-column conformance table. The master pane is attention-ranked by
+//! [`crate::theme::AgentStateLike::rank`], searchable, state-chipped, and
+//! optionally grouped by repo or flattened. The detail pane owns drive
+//! controls, the full waiting-on claim, and Recent output/transcript.
 
 use std::cmp::Ordering;
 
@@ -19,19 +18,18 @@ use crate::ui::badge;
 /// Column layout (fixed widths so the board reads like a dashboard).
 const COL_AGENT: f32 = 190.0;
 const COL_STATE: f32 = 90.0;
-const COL_WAITING: f32 = 320.0;
+const COL_WAITING: f32 = 220.0;
 const COL_REPO: f32 = 130.0;
 const COL_BRANCH: f32 = 160.0;
 const COL_DIRTY: f32 = 46.0;
 const COL_AB: f32 = 64.0;
 const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
-const COL_DRIVE: f32 = 440.0;
 
 /// Board columns in render order. Both the header and every agent row draw
 /// from this one width source so labels and values start at identical x
 /// positions.
-const BOARD_COLUMNS: [(&str, f32); 10] = [
+const BOARD_COLUMNS: [(&str, f32); 9] = [
     ("AGENT", COL_AGENT),
     ("STATE", COL_STATE),
     ("WAITING ON", COL_WAITING),
@@ -41,7 +39,6 @@ const BOARD_COLUMNS: [(&str, f32); 10] = [
     ("A/B", COL_AB),
     ("PR", COL_PR),
     ("CI", COL_CI),
-    ("DRIVE", COL_DRIVE),
 ];
 
 /// Keep at least this much branch text even when the inferred marker is
@@ -51,8 +48,86 @@ const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
-/// egui temp-memory key for the flat-list toggle (default: grouped).
+/// egui temp-memory key for the flat-list toggle (default: flat attention
+/// order, matching the prototype's prioritized master list).
 const FLAT_VIEW: &str = "corral-ui-board-flat";
+
+const DEFAULT_FLAT: bool = true;
+
+/// egui temp-memory key for the master/detail search query.
+const SEARCH_QUERY: &str = "corral-ui-board-search";
+
+/// egui temp-memory key for the cards/table view (default: cards).
+const VIEW_MODE: &str = "corral-ui-board-view";
+
+/// Cards or the exact nine-column conformance table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BoardView {
+    #[default]
+    Cards,
+    Table,
+}
+
+/// State chips over the master list. `Idle` keeps both `Idle` and `Unknown`
+/// so the five contract states remain reachable without an extra chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateFilter {
+    All,
+    Blocked,
+    Done,
+    Working,
+    Idle,
+}
+
+impl StateFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Blocked => crate::theme::AgentStateLike::Blocked.label(),
+            Self::Done => crate::theme::AgentStateLike::Done.label(),
+            Self::Working => crate::theme::AgentStateLike::Working.label(),
+            Self::Idle => crate::theme::AgentStateLike::Idle.label(),
+        }
+    }
+
+    fn keeps(self, state: crate::theme::AgentStateLike) -> bool {
+        match self {
+            Self::All => true,
+            Self::Blocked => state == crate::theme::AgentStateLike::Blocked,
+            Self::Done => state == crate::theme::AgentStateLike::Done,
+            Self::Working => state == crate::theme::AgentStateLike::Working,
+            Self::Idle => matches!(
+                state,
+                crate::theme::AgentStateLike::Idle | crate::theme::AgentStateLike::Unknown
+            ),
+        }
+    }
+}
+
+const STATE_FILTERS: [StateFilter; 5] = [
+    StateFilter::All,
+    StateFilter::Blocked,
+    StateFilter::Done,
+    StateFilter::Working,
+    StateFilter::Idle,
+];
+
+/// Chips that have at least one matching agent. Pure so the zero-state rule
+/// (no empty `Needs you` / other buckets) is covered without an egui frame.
+fn available_state_filters(fleet: &Fleet, query: &str) -> Vec<StateFilter> {
+    let query = query.trim();
+    let mut visible = vec![StateFilter::All];
+    for candidate in STATE_FILTERS.into_iter().skip(1) {
+        if fleet
+            .agents
+            .values()
+            .any(|agent| candidate.keeps(agent.state.into()) && agent_matches_query(agent, query))
+        {
+            visible.push(candidate);
+        }
+    }
+    visible
+}
 
 /// Callbacks the board issues to the app (drive dispatch + #64
 /// transcript page fetches). Both are the deferred-action pattern: the
@@ -64,8 +139,6 @@ pub struct BoardActions<'a> {
     /// #141: ask the app to expand/open (or close) the agent's Full chat
     /// transcript from either the row control or the nested header.
     pub full_chat: &'a mut dyn FnMut(&str),
-    /// #113: ask the app to re-fetch the repo-level issue view.
-    pub refresh_issues: &'a mut dyn FnMut(),
 }
 
 /// Render the fleet board.
@@ -75,17 +148,6 @@ pub fn show(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
-    // #113: repo-level issue browser. It is independent of the agent rows —
-    // it renders even when the fleet has no agents, so a just-connected
-    // board can still show issues before any worktree exists.
-    crate::ui::issues::show(
-        ui,
-        fleet,
-        allowed,
-        &mut *actions.drive,
-        &mut *actions.refresh_issues,
-    );
-
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
@@ -97,33 +159,307 @@ pub fn show(
         return;
     }
 
-    let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
+    let mut view = view_mode(ui);
+    let mut flat = flat_view(ui);
+    let mut query = search_query(ui);
+    let mut filter = state_filter(ui);
+    toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
+    let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
+    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    if let Some(id) = &selected {
+        // Persist the resolved default before rendering so Table rows
+        // highlight the same agent the detail pane is showing.
+        fleet.select_agent(id);
+    }
 
-    let ids: Vec<String> = fleet.agents.keys().cloned().collect();
-    ui.horizontal(|ui| {
-        let mut flat = flat_view(ui);
+    match view {
+        BoardView::Cards => show_cards(
+            ui,
+            fleet,
+            &visible,
+            flat,
+            selected.as_deref(),
+            allowed,
+            actions,
+        ),
+        BoardView::Table => show_table(ui, fleet, &visible, flat, allowed, actions),
+    }
+}
+
+/// Persistent sidebar state helpers are intentionally tiny; every query
+/// string and toggle can be pure-tested without touching these.
+fn toolbar(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    view: &mut BoardView,
+    flat: &mut bool,
+    query: &mut String,
+    filter: &mut StateFilter,
+) {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new("search")
+                .small()
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        let response = ui.add(
+            TextEdit::singleline(query)
+                .id_salt(("corral-ui-board-search-input", SEARCH_QUERY))
+                .hint_text("repo / branch / title / issue…")
+                .desired_width(240.0),
+        );
+        if response.changed() {
+            changed = true;
+        }
+        for candidate in available_state_filters(fleet, query) {
+            let selected = *filter == candidate;
+            let color = if selected {
+                theme::ui::TEXT_STRONG
+            } else {
+                match candidate {
+                    StateFilter::All => theme::ui::ACCENT,
+                    StateFilter::Blocked => state::of(crate::theme::AgentStateLike::Blocked),
+                    StateFilter::Done => state::of(crate::theme::AgentStateLike::Done),
+                    StateFilter::Working => state::of(crate::theme::AgentStateLike::Working),
+                    StateFilter::Idle => state::of(crate::theme::AgentStateLike::Idle),
+                }
+            };
+            if ui
+                .selectable_label(selected, RichText::new(candidate.label()).color(color))
+                .clicked()
+            {
+                *filter = candidate;
+                changed = true;
+            }
+        }
+        let available = available_state_filters(fleet, query);
+        if *filter != StateFilter::All && !available.contains(&*filter) {
+            *filter = StateFilter::All;
+            changed = true;
+        }
         if ui
-            .checkbox(&mut flat, "flat sort")
+            .checkbox(flat, "flat sort")
             .on_hover_text("one flat list of every agent, instead of repo groups")
             .changed()
         {
-            ui.ctx()
-                .memory_mut(|m| m.data.insert_temp::<bool>(egui::Id::new(FLAT_VIEW), flat));
+            changed = true;
+        }
+        ui.separator();
+        for candidate in [BoardView::Cards, BoardView::Table] {
+            if ui
+                .selectable_value(
+                    view,
+                    candidate,
+                    match candidate {
+                        BoardView::Cards => "Cards",
+                        BoardView::Table => "Table",
+                    },
+                )
+                .changed()
+            {
+                changed = true;
+            }
         }
     });
-    ScrollArea::both()
+    if changed {
+        ui.ctx().memory_mut(|m| {
+            m.data.insert_temp::<bool>(egui::Id::new(FLAT_VIEW), *flat);
+            m.data
+                .insert_temp::<String>(egui::Id::new(SEARCH_QUERY), query.clone());
+            m.data.insert_temp(
+                egui::Id::new(("corral-ui-board-filter", SEARCH_QUERY)),
+                *filter,
+            );
+            m.data
+                .insert_temp::<BoardView>(egui::Id::new(VIEW_MODE), *view);
+        });
+    }
+}
+
+fn flat_view(ui: &Ui) -> bool {
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<bool>(egui::Id::new(FLAT_VIEW))
+            .unwrap_or(DEFAULT_FLAT)
+    })
+}
+
+fn view_mode(ui: &Ui) -> BoardView {
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<BoardView>(egui::Id::new(VIEW_MODE))
+            .unwrap_or_default()
+    })
+}
+
+fn search_query(ui: &Ui) -> String {
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<String>(egui::Id::new(SEARCH_QUERY))
+            .unwrap_or_default()
+    })
+}
+
+fn state_filter(ui: &Ui) -> StateFilter {
+    ui.ctx().memory(|m| {
+        m.data
+            .get_temp::<StateFilter>(egui::Id::new(("corral-ui-board-filter", SEARCH_QUERY)))
+            .unwrap_or(StateFilter::All)
+    })
+}
+
+/// State-filtered agent ids in attention order (contract rank, then stable
+/// id) so the master list is independent of `BTreeMap` insertion order.
+pub fn visible_agent_ids<'a>(fleet: &'a Fleet, filter: StateFilter, query: &str) -> Vec<&'a str> {
+    let mut ids: Vec<&'a str> = fleet
+        .agents
+        .iter()
+        .filter(|(_, agent)| filter.keeps(agent.state.into()) && agent_matches_query(agent, query))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    ids.sort_by(|a, b| {
+        let rank_a = agent_rank(fleet.agents.get(*a).expect("visible id is in fleet"));
+        let rank_b = agent_rank(fleet.agents.get(*b).expect("visible id is in fleet"));
+        rank_a.cmp(&rank_b).then_with(|| a.cmp(b))
+    });
+    ids
+}
+
+fn agent_rank(agent: &Agent) -> u8 {
+    let state: crate::theme::AgentStateLike = agent.state.into();
+    state.rank()
+}
+
+/// Pure search predicate over the requested fields: repo, branch, title,
+/// and issue identity/title. Case-insensitive; a blank query matches all.
+pub fn agent_matches_query(agent: &Agent, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let mut haystack: Vec<String> = [
+        agent.workspace.repo.clone(),
+        agent.workspace.branch.clone(),
+        agent.title.clone(),
+        agent.display_name.clone(),
+        Some(agent.agent_id.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let Some(pr) = agent.workspace.pr_number {
+        haystack.push(format!("#{pr}"));
+    }
+    for issue in &agent.issues {
+        haystack.push(issue.repo.clone());
+        haystack.push(issue.title.clone());
+        haystack.push(issue.number.to_string());
+        haystack.push(format!("#{}", issue.number));
+    }
+    haystack
+        .iter()
+        .any(|part| part.to_lowercase().contains(&query))
+}
+
+/// One non-empty attention section of the flat master list.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StateSection<'a> {
+    pub state: crate::theme::AgentStateLike,
+    pub agent_ids: Vec<&'a str>,
+}
+
+/// Split already-sorted ids into non-empty state sections. State section
+/// order follows the contract rank; empty sections are never returned.
+pub fn state_sections<'a>(ids: &[&'a str], fleet: &'a Fleet) -> Vec<StateSection<'a>> {
+    let mut sections: Vec<StateSection<'a>> = Vec::new();
+    for id in ids {
+        let Some(agent) = fleet.agents.get(*id) else {
+            continue;
+        };
+        let state: crate::theme::AgentStateLike = agent.state.into();
+        match sections.iter_mut().find(|section| section.state == state) {
+            Some(section) => section.agent_ids.push(id),
+            None => sections.push(StateSection {
+                state,
+                agent_ids: vec![id],
+            }),
+        }
+    }
+    sections.sort_by_key(|section| section.state.rank());
+    sections
+}
+
+/// Resolve the detail-pane selection: keep a still-visible selection, else
+/// fall back to the first visible agent (highest attention rank). Pure so
+/// selection defaults are unit-testable without an egui context.
+pub fn resolve_selection<'a>(fleet: &'a Fleet, visible: &[&'a str]) -> Option<&'a str> {
+    fleet
+        .selected_agent
+        .as_deref()
+        .filter(|selected| visible.iter().any(|id| id == selected))
+        .or_else(|| visible.first().copied())
+}
+
+fn show_cards(
+    ui: &mut Ui,
+    fleet: &mut Fleet,
+    visible: &[&str],
+    flat: bool,
+    selected: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    let available = ui.available_size();
+    let left_width = (available.x * 0.40).max(320.0);
+    let right_width = (available.x - left_width - 8.0).max(380.0);
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui(egui::vec2(left_width, available.y), |ui| {
+            clicked = master_list(ui, fleet, visible, flat, selected);
+        });
+        ui.separator();
+        ui.allocate_ui(egui::vec2(right_width, available.y), |ui| {
+            detail_pane(ui, fleet, selected, allowed, actions);
+        });
+    });
+    if let Some(id) = clicked {
+        fleet.select_agent(&id);
+    }
+}
+
+fn master_list(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    visible: &[&str],
+    flat: bool,
+    selected: Option<&str>,
+) -> Option<String> {
+    let mut clicked = None;
+    ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.set_min_width(total_width);
-            header(ui);
-            ui.separator();
-            let mut toggles: Vec<String> = Vec::new();
-            if flat_view(ui) {
-                for id in &ids {
-                    board_row(ui, id, fleet, allowed, actions, &mut toggles);
+            if flat {
+                for section in state_sections(visible, fleet) {
+                    state_section_header(ui, section.state, section.agent_ids.len());
+                    for id in &section.agent_ids {
+                        if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                            clicked = Some(id);
+                        }
+                    }
+                    ui.add_space(4.0);
                 }
             } else {
-                for group in group_by_repo(fleet) {
+                for mut group in group_by_repo(fleet) {
+                    group.agent_ids.retain(|id| visible.contains(id));
+                    if group.agent_ids.is_empty() {
+                        continue;
+                    }
                     let title = group.repo.unwrap_or(NO_REPO_LABEL);
                     CollapsingHeader::new(
                         RichText::new(format!("{title}  ({})", group.agent_ids.len()))
@@ -134,7 +470,180 @@ pub fn show(
                     .default_open(true)
                     .show_unindented(ui, |ui| {
                         for id in &group.agent_ids {
-                            board_row(ui, id, fleet, allowed, actions, &mut toggles);
+                            if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                                clicked = Some(id);
+                            }
+                        }
+                    });
+                    ui.separator();
+                }
+            }
+        });
+    clicked
+}
+
+fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count: usize) {
+    let color = theme::state::of(state);
+    ui.horizontal(|ui| {
+        badge(
+            ui,
+            &format!("{} {}", state.mark_glyph(), state.label()),
+            color,
+        );
+        ui.label(
+            RichText::new(format!("({count})"))
+                .small()
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        );
+    });
+}
+
+fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<String> {
+    let agent = fleet.agents.get(id)?;
+    let state: crate::theme::AgentStateLike = agent.state.into();
+    let color = theme::state::of(state);
+    let bg = if selected {
+        color.gamma_multiply(0.16)
+    } else {
+        color.gamma_multiply(0.05)
+    };
+    let label = format!(
+        "{} {}  {}",
+        state.mark_glyph(),
+        agent.row_label(),
+        agent.tool
+    );
+    let meta = format!(
+        "{} · {}",
+        agent
+            .workspace
+            .repo
+            .as_deref()
+            .unwrap_or(agent.workspace.branch.as_deref().unwrap_or("—")),
+        state.label()
+    );
+    let response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("corral-ui-master-card", id))
+                .sense(egui::Sense::click()),
+            |ui| {
+                egui::Frame::NONE
+                    .fill(bg)
+                    .stroke(if selected {
+                        egui::Stroke::new(1.0, color)
+                    } else {
+                        egui::Stroke::NONE
+                    })
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(RichText::new(label).color(theme::ui::TEXT_STRONG))
+                                .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(meta)
+                                    .small()
+                                    .monospace()
+                                    .color(theme::ui::TEXT_MUTED),
+                            )
+                            .truncate(),
+                        );
+                    });
+            },
+        )
+        .response;
+    if response.clicked() {
+        Some(agent.agent_id.clone())
+    } else {
+        None
+    }
+}
+
+fn detail_pane(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    selected: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    let Some(id) = selected else {
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            ui.label(
+                RichText::new("select an agent for detail + Recent output")
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        });
+        return;
+    };
+    let Some(agent) = fleet.agents.get(id) else {
+        return;
+    };
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            detail(ui, agent, fleet, allowed, actions);
+        });
+}
+
+fn show_table(
+    ui: &mut Ui,
+    fleet: &mut Fleet,
+    visible: &[&str],
+    flat: bool,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
+    ScrollArea::both()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(total_width);
+            header(ui);
+            ui.separator();
+            let mut toggles: Vec<String> = Vec::new();
+            let mut selection = None;
+            if flat {
+                for id in visible {
+                    board_row(
+                        ui,
+                        id,
+                        fleet,
+                        allowed,
+                        actions,
+                        &mut toggles,
+                        &mut selection,
+                    );
+                }
+            } else {
+                for mut group in group_by_repo(fleet) {
+                    group.agent_ids.retain(|id| visible.contains(id));
+                    if group.agent_ids.is_empty() {
+                        continue;
+                    }
+                    let title = group.repo.unwrap_or(NO_REPO_LABEL);
+                    CollapsingHeader::new(
+                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                            .monospace()
+                            .color(theme::ui::TEXT_STRONG),
+                    )
+                    .id_salt(("corral-ui-repo-group", title))
+                    .default_open(true)
+                    .show_unindented(ui, |ui| {
+                        for id in &group.agent_ids {
+                            board_row(
+                                ui,
+                                id,
+                                fleet,
+                                allowed,
+                                actions,
+                                &mut toggles,
+                                &mut selection,
+                            );
                         }
                     });
                     ui.separator();
@@ -143,19 +652,14 @@ pub fn show(
             for id in &toggles {
                 fleet.toggle_expanded(id);
             }
+            if let Some(id) = selection {
+                fleet.select_agent(&id);
+            }
         });
 }
 
-fn flat_view(ui: &Ui) -> bool {
-    ui.ctx().memory(|m| {
-        m.data
-            .get_temp::<bool>(egui::Id::new(FLAT_VIEW))
-            .unwrap_or(false)
-    })
-}
-
 /// One board section: a repo (or the "(no repo)" orphan bucket) and the
-/// agent ids in it, in the fleet's stable ordering.
+/// attention-ranked agent ids in it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RepoGroup<'a> {
     /// `None` = the orphan bucket (agents without `workspace.repo`).
@@ -164,8 +668,8 @@ pub struct RepoGroup<'a> {
 }
 
 /// Group agent ids by `workspace.repo`: named repos sorted by name, the
-/// "(no repo)" bucket last. Within a group, ids keep the fleet's BTreeMap
-/// ordering (stable across frames; unchanged by grouping).
+/// "(no repo)" bucket last. Within a group, ids are attention-ranked by
+/// the shared contract rank, then stable id.
 pub fn group_by_repo(fleet: &Fleet) -> Vec<RepoGroup<'_>> {
     let mut groups: Vec<RepoGroup<'_>> = Vec::new();
     for (id, agent) in &fleet.agents {
@@ -184,6 +688,13 @@ pub fn group_by_repo(fleet: &Fleet) -> Vec<RepoGroup<'_>> {
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     });
+    for group in &mut groups {
+        group.agent_ids.sort_by(|a, b| {
+            let rank_a = agent_rank(&fleet.agents[*a]);
+            let rank_b = agent_rank(&fleet.agents[*b]);
+            rank_a.cmp(&rank_b).then_with(|| a.cmp(b))
+        });
+    }
     groups
 }
 
@@ -196,14 +707,16 @@ fn board_row(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
     toggles: &mut Vec<String>,
+    selection: &mut Option<String>,
 ) {
     let Some(agent) = fleet.agents.get(id) else {
         return;
     };
     let is_expanded = fleet.is_expanded(id);
-    let (clicked, _) = agent_row(ui, agent, is_expanded, allowed, fleet, actions);
+    let (clicked, _) = agent_row(ui, agent, is_expanded, allowed, fleet);
     if clicked {
         toggles.push(id.to_string());
+        *selection = Some(id.to_string());
     }
     if is_expanded {
         detail(ui, agent, fleet, allowed, actions);
@@ -215,7 +728,7 @@ fn header(ui: &mut Ui) {
     let _ = header_cells(ui);
 }
 
-fn header_cells(ui: &mut Ui) -> [egui::Response; 10] {
+fn header_cells(ui: &mut Ui) -> [egui::Response; 9] {
     ui.horizontal(|ui| BOARD_COLUMNS.map(|(label, width)| header_cell(ui, width, label)))
         .inner
 }
@@ -248,11 +761,11 @@ fn agent_row(
     ui: &mut Ui,
     agent: &Agent,
     is_expanded: bool,
-    allowed: &dyn Fn(&str) -> bool,
+    _allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
-    actions: &mut BoardActions,
 ) -> (bool, egui::Response) {
-    let bg = if is_expanded {
+    let selected = fleet.selected_agent.as_deref() == Some(agent.agent_id.as_str());
+    let bg = if is_expanded || selected {
         theme::ui::ACCENT_DIM.gamma_multiply(0.10)
     } else {
         Color32::TRANSPARENT
@@ -270,7 +783,7 @@ fn agent_row(
                     // shift row cells against the header, which has none.
                     .inner_margin(egui::Margin::symmetric(0, 4))
                     .show(ui, |ui| {
-                        agent_row_cells(ui, agent, allowed, fleet, actions);
+                        agent_row_cells(ui, agent);
                     })
                     .inner
             },
@@ -285,13 +798,7 @@ fn agent_row(
     (expanded, response)
 }
 
-fn agent_row_cells(
-    ui: &mut Ui,
-    agent: &Agent,
-    allowed: &dyn Fn(&str) -> bool,
-    fleet: &Fleet,
-    actions: &mut BoardActions,
-) -> [egui::Response; 10] {
+fn agent_row_cells(ui: &mut Ui, agent: &Agent) -> [egui::Response; 9] {
     let ws = &agent.workspace;
     let ab = if ws.ahead == 0 && ws.behind == 0 {
         "".to_string()
@@ -331,14 +838,6 @@ fn agent_row_cells(
                 theme::ui::TEXT_MUTED,
             ),
             ci_cell(ui, ws.ci_status),
-            drive_cell(
-                ui,
-                agent,
-                allowed,
-                fleet,
-                &mut actions.drive,
-                &mut actions.full_chat,
-            ),
         ]
     })
     .inner
@@ -569,66 +1068,64 @@ fn disabled_drive_button(ui: &mut Ui, capability: &str, state: DriveControlState
     }
 }
 
-fn drive_cell(
+fn drive_controls(
     ui: &mut Ui,
     agent: &Agent,
     allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
     full_chat: &mut dyn FnMut(&str),
-) -> egui::Response {
+) {
     let rev = fleet.rev;
-    fixed_cell(ui, COL_DRIVE, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.spacing_mut().item_spacing.y = 2.0;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.y = 2.0;
 
-            full_chat_control(ui, agent, allowed, full_chat);
-            for cap in crate::drive::CAPABILITIES_ORDER {
-                let state = drive_control_state(&agent.capabilities, cap, allowed(cap));
-                match cap {
-                    "prompt" => match state {
-                        DriveControlState::Ready => prompt_widget(ui, agent, rev, drive),
+        full_chat_control(ui, agent, allowed, full_chat);
+        for cap in crate::drive::CAPABILITIES_ORDER {
+            let state = drive_control_state(&agent.capabilities, cap, allowed(cap));
+            match cap {
+                "prompt" => match state {
+                    DriveControlState::Ready => prompt_widget(ui, agent, rev, drive),
+                    _ => disabled_drive_button(ui, cap, state),
+                },
+                "approve" => {
+                    if agent.waiting_on.is_none() {
+                        continue;
+                    }
+                    match state {
+                        DriveControlState::Ready => approve_choices(ui, agent, rev, drive),
                         _ => disabled_drive_button(ui, cap, state),
-                    },
-                    "approve" => {
-                        if agent.waiting_on.is_none() {
-                            continue;
-                        }
-                        match state {
-                            DriveControlState::Ready => approve_choices(ui, agent, rev, drive),
-                            _ => disabled_drive_button(ui, cap, state),
+                    }
+                }
+                _ => match state {
+                    DriveControlState::Ready => {
+                        if ui.small_button(cap).clicked() {
+                            let intent = match cap {
+                                "interrupt" => DriveIntent::interrupt(&agent.agent_id, rev),
+                                "read_tail" => DriveIntent::read_tail(&agent.agent_id, rev),
+                                "kill" => DriveIntent::kill(&agent.agent_id, rev),
+                                _ => DriveIntent::attach(&agent.agent_id, rev),
+                            };
+                            drive(intent);
                         }
                     }
-                    _ => match state {
-                        DriveControlState::Ready => {
-                            if ui.small_button(cap).clicked() {
-                                let intent = match cap {
-                                    "interrupt" => DriveIntent::interrupt(&agent.agent_id, rev),
-                                    "read_tail" => DriveIntent::read_tail(&agent.agent_id, rev),
-                                    "kill" => DriveIntent::kill(&agent.agent_id, rev),
-                                    _ => DriveIntent::attach(&agent.agent_id, rev),
-                                };
-                                drive(intent);
-                            }
-                        }
-                        _ => disabled_drive_button(ui, cap, state),
-                    },
-                }
+                    _ => disabled_drive_button(ui, cap, state),
+                },
             }
-        });
-        if let Some(w) = &agent.waiting_on
-            && w.choices.is_empty()
-            && allowed("approve")
-            && agent.capabilities.iter().any(|c| c == "approve")
-        {
-            ui.label(
-                RichText::new("waiting — no menu choices (reply via prompt)")
-                    .small()
-                    .color(theme::ui::TEXT_MUTED),
-            );
         }
-    })
+    });
+    if let Some(w) = &agent.waiting_on
+        && w.choices.is_empty()
+        && allowed("approve")
+        && agent.capabilities.iter().any(|c| c == "approve")
+    {
+        ui.label(
+            RichText::new("waiting — no menu choices (reply via prompt)")
+                .small()
+                .color(theme::ui::TEXT_MUTED),
+        );
+    }
 }
 
 fn full_chat_control(
@@ -732,6 +1229,24 @@ fn detail(
             if let Some(title) = &agent.title {
                 ui.label(RichText::new(title).color(theme::ui::TEXT_STRONG));
             }
+            ui.horizontal_wrapped(|ui| {
+                let state: crate::theme::AgentStateLike = agent.state.into();
+                badge(
+                    ui,
+                    &format!("{} {}", state.mark_glyph(), state.label()),
+                    theme::state::of(state),
+                );
+                ui.label(
+                    RichText::new(agent.row_label())
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                ui.label(
+                    RichText::new(crate::model::clock_of(agent.ts))
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+            });
             if let Some(inferred) = crate::infer::infer(
                 agent.workspace.branch.as_deref(),
                 &agent.known_issue_numbers(),
@@ -743,6 +1258,21 @@ fn detail(
                     ui.label(RichText::new(tip).small().color(theme::ui::TEXT_MUTED));
                 });
             }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("drive")
+                    .small()
+                    .monospace()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            drive_controls(
+                ui,
+                agent,
+                allowed,
+                fleet,
+                &mut *actions.drive,
+                &mut *actions.full_chat,
+            );
             if let Some(w) = &agent.waiting_on {
                 ui.add_space(4.0);
                 ui.label(
@@ -763,13 +1293,13 @@ fn detail(
                     detail_kv(ui, "approval_id", &w.approval_id);
                 });
             }
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Recent output")
+                    .strong()
+                    .color(theme::ui::TEXT_STRONG),
+            );
             if let Some(tail) = fleet.tails.get(&agent.agent_id) {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("read_tail output (daemon-redacted, latest tap)")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
                 egui::Frame::NONE
                     .fill(Color32::from_rgb(0x16, 0x1b, 0x22))
                     .inner_margin(egui::Margin::symmetric(8, 6))
@@ -807,6 +1337,12 @@ fn detail(
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("read_tail dispatched + audited; the daemon returned no result")
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+            } else {
+                ui.label(
+                    RichText::new("no recent output tapped yet — use Recent output/read_tail")
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
@@ -1229,6 +1765,249 @@ mod tests {
         agent
     }
 
+    fn agent_with_state(id: &str, state: crate::model::AgentState) -> Agent {
+        let mut agent = agent_in_repo(id, None);
+        agent.state = state;
+        agent
+    }
+
+    #[test]
+    fn board_view_defaults_to_cards() {
+        assert_eq!(BoardView::default(), BoardView::Cards);
+    }
+
+    #[test]
+    fn board_columns_are_the_nine_conformance_columns_within_limit() {
+        assert_eq!(BOARD_COLUMNS.len(), 9);
+        assert!(
+            BOARD_COLUMNS.iter().all(|(label, _)| *label != "DRIVE"),
+            "drive is no longer a table column"
+        );
+        let width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
+        assert_eq!(width, 1032.0);
+        assert!(
+            width <= 1032.0,
+            "table must avoid horizontal scroll at ~1200px"
+        );
+    }
+
+    #[test]
+    fn state_filters_only_show_non_empty_buckets() {
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(
+            "herdr:idle".into(),
+            agent_with_state("herdr:idle", crate::model::AgentState::Idle),
+        );
+        fleet.agents.insert(
+            "herdr:working".into(),
+            agent_with_state("herdr:working", crate::model::AgentState::Working),
+        );
+        assert_eq!(
+            available_state_filters(&fleet, ""),
+            vec![StateFilter::All, StateFilter::Working, StateFilter::Idle],
+            "every non-empty bucket keeps its chip and empty buckets stay hidden"
+        );
+        assert_eq!(
+            available_state_filters(&fleet, "working"),
+            vec![StateFilter::All, StateFilter::Working],
+            "chips compose with search over the agent fields"
+        );
+
+        let mut unknown_fleet = Fleet::default();
+        unknown_fleet.agents.insert(
+            "herdr:unknown".into(),
+            agent_with_state("herdr:unknown", crate::model::AgentState::Unknown),
+        );
+        assert_eq!(
+            available_state_filters(&unknown_fleet, ""),
+            vec![StateFilter::All, StateFilter::Idle],
+            "unknown is represented by the Idle bucket, never its own chip"
+        );
+    }
+
+    #[test]
+    fn state_sections_skip_every_empty_bucket() {
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(
+            "herdr:blocked".into(),
+            agent_with_state("herdr:blocked", crate::model::AgentState::Blocked),
+        );
+        fleet.agents.insert(
+            "herdr:working".into(),
+            agent_with_state("herdr:working", crate::model::AgentState::Working),
+        );
+        fleet.agents.insert(
+            "herdr:idle".into(),
+            agent_with_state("herdr:idle", crate::model::AgentState::Idle),
+        );
+        let ids = ["herdr:idle", "herdr:working"];
+        let sections = state_sections(&ids, &fleet);
+        assert_eq!(sections.len(), 2, "no empty section may be returned");
+        assert_eq!(
+            sections.iter().map(|s| s.state).collect::<Vec<_>>(),
+            vec![
+                crate::theme::AgentStateLike::Working,
+                crate::theme::AgentStateLike::Idle,
+            ],
+            "sections follow contract rank with the empty blocked bucket omitted"
+        );
+    }
+
+    #[test]
+    fn visible_agent_ids_rank_sort_and_filter() {
+        let mut fleet = Fleet::default();
+        for (id, state) in [
+            ("herdr:idle", crate::model::AgentState::Idle),
+            ("herdr:unknown", crate::model::AgentState::Unknown),
+            ("herdr:blocked", crate::model::AgentState::Blocked),
+            ("herdr:done", crate::model::AgentState::Done),
+            ("herdr:working", crate::model::AgentState::Working),
+        ] {
+            fleet.agents.insert(id.into(), agent_with_state(id, state));
+        }
+        assert_eq!(
+            visible_agent_ids(&fleet, StateFilter::All, ""),
+            vec![
+                "herdr:blocked",
+                "herdr:done",
+                "herdr:working",
+                "herdr:idle",
+                "herdr:unknown",
+            ],
+            "priority order is blocked, review, working, idle, unknown"
+        );
+        assert_eq!(
+            visible_agent_ids(&fleet, StateFilter::Blocked, ""),
+            vec!["herdr:blocked"]
+        );
+        assert_eq!(
+            visible_agent_ids(&fleet, StateFilter::Idle, ""),
+            vec!["herdr:idle", "herdr:unknown"],
+            "Idle chip includes unknown at stable-id order"
+        );
+    }
+
+    #[test]
+    fn selection_defaults_and_preserves_still_visible_choice() {
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(
+            "herdr:a".into(),
+            agent_with_state("herdr:a", crate::model::AgentState::Blocked),
+        );
+        fleet.agents.insert(
+            "herdr:b".into(),
+            agent_with_state("herdr:b", crate::model::AgentState::Working),
+        );
+        let visible = ["herdr:a", "herdr:b"];
+        assert_eq!(resolve_selection(&fleet, &visible), Some("herdr:a"));
+
+        fleet.select_agent("herdr:b");
+        assert_eq!(resolve_selection(&fleet, &visible), Some("herdr:b"));
+
+        fleet.select_agent("herdr:hidden");
+        assert_eq!(resolve_selection(&fleet, &visible), Some("herdr:a"));
+        assert!(resolve_selection(&fleet, &[]).is_none());
+    }
+
+    #[test]
+    fn table_row_click_selects_agent() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:table".into();
+        agent.display_name = Some("table agent".into());
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut toggles = Vec::new();
+        let mut selection = None;
+        let mut row_rect = None;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            row_rect = Some(agent_row(ui, &agent, false, &|_| true, &fleet).1.rect);
+        });
+        assert!(
+            text_rect(&output, "table agent").is_some(),
+            "table row rendered"
+        );
+        let pos = egui::pos2(
+            row_rect.expect("table row rendered").left() + 2.0,
+            row_rect.expect("table row rendered").top() + 2.0,
+        );
+        clear_textures(&mut output);
+        for input in [pointer_down_input(pos), pointer_up_input(pos)] {
+            let mut output = ctx.run_ui(input, |ui| {
+                row_test_style(ui);
+                board_row(
+                    ui,
+                    &agent.agent_id,
+                    &fleet,
+                    &|_| true,
+                    &mut actions,
+                    &mut toggles,
+                    &mut selection,
+                );
+            });
+            clear_textures(&mut output);
+        }
+        assert_eq!(
+            selection.as_deref(),
+            Some("herdr:table"),
+            "clicking a Table row selects it for the master/detail model"
+        );
+    }
+
+    #[test]
+    fn agent_search_covers_repo_branch_title_display_name_issue_and_pr() {
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:agent".into();
+        agent.display_name = Some("Charlie".into());
+        agent.title = Some("Fix the Widget".into());
+        agent.workspace.repo = Some("alpha/corral".into());
+        agent.workspace.branch = Some("issue-42-widget".into());
+        agent.workspace.pr_number = Some(987);
+        agent.issues = vec![crate::model::GhIssueRef {
+            repo: "plush".into(),
+            number: 777,
+            state: "open".into(),
+            title: "Deep Dive".into(),
+            labels: vec![],
+            url: String::new(),
+        }];
+        for query in [
+            "",
+            "ALPHA",
+            "ISSUE-42",
+            "WIDGET",
+            "Charlie",
+            "deep dive",
+            "777",
+            "#777",
+            "plush",
+            "#987",
+        ] {
+            assert!(agent_matches_query(&agent, query), "query {query:?}");
+        }
+        assert!(!agent_matches_query(&agent, "zzz-no-match"));
+    }
+
+    #[test]
+    fn state_filter_labels_stay_on_the_contract_tokens() {
+        let cases = [
+            (StateFilter::Blocked, crate::theme::AgentStateLike::Blocked),
+            (StateFilter::Done, crate::theme::AgentStateLike::Done),
+            (StateFilter::Working, crate::theme::AgentStateLike::Working),
+            (StateFilter::Idle, crate::theme::AgentStateLike::Idle),
+        ];
+        for (filter, state) in cases {
+            assert_eq!(filter.label(), state.label());
+        }
+        assert_eq!(StateFilter::All.label(), "All");
+    }
+
     #[test]
     fn group_by_repo_sorts_names_and_pushes_orphans_last() {
         let mut fleet = Fleet::default();
@@ -1240,10 +2019,16 @@ mod tests {
         ] {
             fleet.agents.insert(id.into(), agent_in_repo(id, repo));
         }
+        fleet.agents.get_mut("herdr:a").unwrap().state = crate::model::AgentState::Done;
+        fleet.agents.get_mut("herdr:b").unwrap().state = crate::model::AgentState::Blocked;
         let groups = group_by_repo(&fleet);
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].repo, Some("alpha"));
-        assert_eq!(groups[0].agent_ids, vec!["herdr:a", "herdr:b"]);
+        assert_eq!(
+            groups[0].agent_ids,
+            vec!["herdr:b", "herdr:a"],
+            "within a repo, contract rank beats BTreeMap order"
+        );
         assert_eq!(groups[1].repo, Some("zeta"));
         assert_eq!(groups[1].agent_ids, vec!["herdr:z"]);
         assert_eq!(groups[2].repo, None, "orphan bucket is last");
@@ -1251,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn group_by_repo_keeps_fleet_ordering_within_groups() {
+    fn group_by_repo_ranks_agents_within_groups() {
         let mut fleet = Fleet::default();
         for (id, repo) in [
             ("herdr:c", Some("one")),
@@ -1260,12 +2045,15 @@ mod tests {
         ] {
             fleet.agents.insert(id.into(), agent_in_repo(id, repo));
         }
+        fleet.agents.get_mut("herdr:a").unwrap().state = crate::model::AgentState::Blocked;
+        fleet.agents.get_mut("herdr:b").unwrap().state = crate::model::AgentState::Done;
+        fleet.agents.get_mut("herdr:c").unwrap().state = crate::model::AgentState::Idle;
         let groups = group_by_repo(&fleet);
         assert_eq!(groups.len(), 1);
         assert_eq!(
             groups[0].agent_ids,
             vec!["herdr:a", "herdr:b", "herdr:c"],
-            "group order follows the fleet's BTreeMap order, not insertion"
+            "group order follows contract rank, not BTreeMap id order"
         );
     }
 
@@ -1346,16 +2134,10 @@ mod tests {
                 .into_iter()
                 .map(|cell| cell.rect)
                 .collect::<Vec<_>>();
-            let mut actions = BoardActions {
-                drive: &mut |_| {},
-                transcript: &mut |_| {},
-                full_chat: &mut |_| {},
-                refresh_issues: &mut || {},
-            };
             let row = egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
-                    agent_row_cells(ui, &agent, &|_| false, &Fleet::default(), &mut actions)
+                    agent_row_cells(ui, &agent)
                         .into_iter()
                         .map(|cell| cell.rect)
                         .collect::<Vec<_>>()
@@ -1487,9 +2269,18 @@ mod tests {
         actions: &mut BoardActions,
     ) -> (Vec<String>, egui::FullOutput) {
         let mut toggles = Vec::new();
+        let mut selection = None;
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            board_row(ui, id, fleet, allowed, actions, &mut toggles);
+            board_row(
+                ui,
+                id,
+                fleet,
+                allowed,
+                actions,
+                &mut toggles,
+                &mut selection,
+            );
         });
         (toggles, output)
     }
@@ -1546,17 +2337,12 @@ mod tests {
             drive: &mut |intent| intents.push(intent),
             transcript: &mut |_| {},
             full_chat: &mut |_| {},
-            refresh_issues: &mut || {},
         };
 
         let mut row_rect = None;
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            row_rect = Some(
-                agent_row(ui, &agent, false, &|_| false, &fleet, &mut actions)
-                    .1
-                    .rect,
-            );
+            row_rect = Some(agent_row(ui, &agent, false, &|_| false, &fleet).1.rect);
         });
         let row_rect = row_rect.expect("row rendered");
         assert!(
@@ -1594,8 +2380,8 @@ mod tests {
             "an idle expanded frame must not emit another toggle"
         );
         assert!(
-            text_rect(&output, "read_tail output (daemon-redacted, latest tap)").is_some(),
-            "expanded detail must render the tail header"
+            text_rect(&output, "Recent output").is_some(),
+            "expanded detail must render the Recent output header"
         );
         assert!(
             text_rect(&output, "tail line").is_some(),
@@ -1643,50 +2429,37 @@ mod tests {
     }
 
     #[test]
-    fn agent_row_read_tail_click_dispatches_once_without_toggling_row() {
+    fn detail_read_tail_click_dispatches_once_without_toggling_table_row() {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&["read_tail"]);
         agent.agent_id = "herdr:read-tail".into();
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
             transcript: &mut |_| {},
             full_chat: &mut |_| {},
-            refresh_issues: &mut || {},
         };
 
-        let mut row_rect = None;
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            row_rect = Some(
-                agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions)
-                    .1
-                    .rect,
-            );
-        });
-        let row_rect = row_rect.expect("row rendered");
-        let button_rect = text_rect(&output, "read_tail").expect("read_tail button rendered");
-        assert!(
-            row_rect.contains(button_rect.center()),
-            "read_tail button must sit inside the rendered row"
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
         );
+        let button_rect = text_rect(&output, "read_tail").expect("read_tail button rendered");
         clear_textures(&mut output);
 
-        let blank_click = egui::pos2(row_rect.left() + 2.0, row_rect.top() + 2.0);
-        let toggles = board_row_click(&ctx, &fleet, &agent.agent_id, blank_click, &mut actions);
-        assert_eq!(
-            toggles,
-            vec![agent.agent_id.clone()],
-            "the row background must be clickable before checking child precedence"
-        );
-
-        let toggles = board_row_click(
+        let toggles = board_row_click_with_allowed(
             &ctx,
             &fleet,
             &agent.agent_id,
             button_rect.center(),
+            &|_| true,
             &mut actions,
         );
         assert!(
@@ -1709,19 +2482,23 @@ mod tests {
         agent.agent_id = "herdr:full-chat".into();
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
         let full_chat_requests = std::cell::RefCell::new(Vec::new());
         let transcript_requests = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
             drive: &mut |_| {},
             transcript: &mut |request| transcript_requests.borrow_mut().push(request),
             full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
-            refresh_issues: &mut || {},
         };
 
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, false, &|_| true, &fleet, &mut actions);
-        });
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| true,
+            &mut actions,
+        );
         let full_chat_rect = text_rect(&output, "Full chat").expect("Full chat button rendered");
         clear_textures(&mut output);
 
@@ -1808,7 +2585,6 @@ mod tests {
             drive: &mut |_| {},
             transcript: &mut |request| transcript_requests.borrow_mut().push(request),
             full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
-            refresh_issues: &mut || {},
         };
 
         let (_, mut output) = board_row_frame_with_allowed(
@@ -1902,7 +2678,6 @@ mod tests {
             drive: &mut |_| {},
             transcript: &mut |_| {},
             full_chat: &mut |_| {},
-            refresh_issues: &mut || {},
         };
         let (_, mut output) = board_row_frame_with_allowed(
             &ctx,
@@ -1930,19 +2705,23 @@ mod tests {
         agent.agent_id = "herdr:no-read-grant".into();
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
         let mut full_chat_requests = Vec::new();
         let mut transcript_requests = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |_| {},
             transcript: &mut |request| transcript_requests.push(request),
             full_chat: &mut |agent_id| full_chat_requests.push(agent_id.to_string()),
-            refresh_issues: &mut || {},
         };
 
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            let _ = agent_row(ui, &agent, false, &|_| false, &fleet, &mut actions);
-        });
+        let (_, mut output) = board_row_frame_with_allowed(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            row_test_input(vec![]),
+            &|_| false,
+            &mut actions,
+        );
         let full_chat_rect = text_rect(&output, "Full chat").expect("gated Full chat rendered");
         clear_textures(&mut output);
 

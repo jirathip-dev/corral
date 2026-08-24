@@ -94,7 +94,7 @@ failed connection never leaks its descriptor (#105).
 
 The gh plane also publishes the *repo-level* issue set it fetches into a
 read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's
-issue browser renders — separate from the per-agent `closingIssuesReferences`
+Issues tab renders — separate from the per-agent `closingIssuesReferences`
 join in the snapshot. The write side has one fleet-level capability,
 `start_worktree` (#113), routed by `src/api/drive.rs` to
 `src/fleet/worktree.rs` (validate → plan → idempotent create → herdr
@@ -314,7 +314,8 @@ src/fleet/           fleets.json registry: parse + validate + atomic CRUD + CLI 
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
-clients/egui/        corrald-ui desktop board (board, audit, Settings grants)
+clients/egui/        corrald-ui desktop client (Board, Issues, Audit,
+                     Registry, Settings)
 ios/FleetNotifier/   iOS client: SSE, drive, APNs, lock-screen replies
 tests/               integration tests per module
 ```

@@ -33,7 +33,7 @@ pub enum Capability {
     Kill,
     Attach,
     /// #113: start an issue-linked or issue-free worktree. Fleet-level (not
-    /// an agent drive) — the board's issue browser is the only caller.
+    /// an agent drive) — the Issues tab is the only caller.
     StartWorktree,
 }
 

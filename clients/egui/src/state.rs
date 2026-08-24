@@ -104,12 +104,15 @@ pub struct Fleet {
     pub transcript_clock: u64,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
+    /// Master/detail selection. Kept in the view model so a frame can
+    /// resolve a still-valid default without an extra egui temp key.
+    pub selected_agent: Option<String>,
     /// Agent ids whose full transcript pane is open (controlled by the
     /// board's dedicated Full chat control and the nested header).
     pub transcript_open: Vec<String>,
     /// #113: repo-level issue set from the daemon's read-only `GET /issues`
     /// view, keyed by repo/fleet name. Empty until the first fetch — the
-    /// issue browser renders from this (never from branch inference).
+    /// Issues tab renders from this (never from branch inference).
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
     /// Whether the repo-level issues have been fetched at least once.
     pub issues_loaded: bool,
@@ -140,6 +143,13 @@ impl Fleet {
         self.transcripts.retain(|id, _| agents.contains_key(id));
         self.expanded.retain(|id| agents.contains_key(id));
         self.transcript_open.retain(|id| agents.contains_key(id));
+        if self
+            .selected_agent
+            .as_deref()
+            .is_some_and(|id| !agents.contains_key(id))
+        {
+            self.selected_agent = None;
+        }
     }
 
     pub fn apply_delta(&mut self, delta: &crate::model::Delta) {
@@ -168,6 +178,9 @@ impl Fleet {
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);
         self.transcript_open.retain(|id| id != agent_id);
+        if self.selected_agent.as_deref() == Some(agent_id) {
+            self.selected_agent = None;
+        }
     }
 
     pub fn is_expanded(&self, agent_id: &str) -> bool {
@@ -197,6 +210,10 @@ impl Fleet {
         } else {
             self.expanded.push(agent_id.to_string());
         }
+    }
+
+    pub fn select_agent(&mut self, agent_id: &str) {
+        self.selected_agent = Some(agent_id.to_string());
     }
 
     pub fn is_transcript_open(&self, agent_id: &str) -> bool {

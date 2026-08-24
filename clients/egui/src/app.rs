@@ -1,6 +1,6 @@
 //! The eframe application: owns the fleet state, the background read
-//! loop (SSE), the signed-drive dispatch, registration, and the four
-//! tabs (Board / Audit / Registry / Settings).
+//! loop (SSE), the signed-drive dispatch, registration, and the five
+//! tabs (Board / Issues / Audit / Registry / Settings).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -16,10 +16,11 @@ use crate::state::{
 };
 use crate::theme;
 
-/// The four top-level views.
+/// The five top-level views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Board,
+    Issues,
     Audit,
     Registry,
     Settings,
@@ -1041,6 +1042,60 @@ impl CorralApp {
             let _ = tx.send(ApplyMsg::Fingerprint(fingerprint));
         });
     }
+
+    /// Dispatch drive intents collected by Board or Issues after their
+    /// immediate-mode render returns, so no frame holds overlapping
+    /// borrows of the fleet/toast state while a network call is spawned.
+    fn dispatch_drive_intents(&mut self, pending: Vec<DriveIntent>) {
+        let registration = self.registration.clone();
+        let signing = self.device_key.as_ref().map(|k| k.signing.clone());
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx_drive = self.tx_drive.clone();
+        let rt = self.rt.clone();
+        for intent in pending {
+            let Some(reg) = registration.clone() else {
+                self.toasts.push_back(Toast {
+                    text: "not registered — cannot drive".into(),
+                    level: Level::Error,
+                    at: std::time::Instant::now(),
+                });
+                continue;
+            };
+            let Some(signing) = signing.clone() else {
+                self.toasts.push_back(Toast {
+                    text: "no device key — check Settings".into(),
+                    level: Level::Error,
+                    at: std::time::Instant::now(),
+                });
+                continue;
+            };
+            let endpoint = DriveEndpoint {
+                client: client.clone(),
+                base_url: host_url.clone(),
+                key_id: reg.key_id.clone(),
+                signing,
+            };
+            let agent_id = intent.target.clone();
+            let capability = intent.capability.to_string();
+            let tx = tx_drive.clone();
+            self.fleet.remember_drive(
+                &intent.target,
+                crate::state::DriveState::Sending {
+                    request_id: intent.request_id.clone(),
+                    capability: capability.clone(),
+                },
+            );
+            rt.spawn(async move {
+                let outcome = crate::drive::execute_drive(&endpoint, &intent).await;
+                let _ = tx.send(DriveMsg {
+                    agent_id,
+                    capability,
+                    outcome,
+                });
+            });
+        }
+    }
 }
 
 fn configure_fonts(ctx: &egui::Context) {
@@ -1157,18 +1212,9 @@ impl eframe::App for CorralApp {
             Tab::Board => {
                 let ledger = self.ledger.clone();
                 let allowed = |cap: &str| ledger.allowed(cap);
-                // Split borrows: the drive closure needs &mut state while
-                // board::show holds &mut fleet, so capture field copies.
-                let registration = self.registration.clone();
-                let signing = self.device_key.as_ref().map(|k| k.signing.clone());
-                let client = self.client.clone();
-                let host_url = self.config.host_url.clone();
-                let tx_drive = self.tx_drive.clone();
-                let rt = self.rt.clone();
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 let mut pending_full_chat: Vec<String> = Vec::new();
-                let mut refresh_issues = false;
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,
@@ -1177,7 +1223,6 @@ impl eframe::App for CorralApp {
                         drive: &mut |intent| pending.push(intent),
                         transcript: &mut |request| pending_transcripts.push(request),
                         full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
-                        refresh_issues: &mut || refresh_issues = true,
                     },
                 );
                 for agent_id in pending_full_chat {
@@ -1186,53 +1231,24 @@ impl eframe::App for CorralApp {
                 for request in pending_transcripts {
                     self.request_transcript_page(request);
                 }
-                if refresh_issues {
+                self.dispatch_drive_intents(pending);
+            }
+            Tab::Issues => {
+                let ledger = self.ledger.clone();
+                let allowed = |cap: &str| ledger.allowed(cap);
+                let mut pending: Vec<DriveIntent> = Vec::new();
+                let mut refresh_requested = false;
+                crate::ui::issues::show(
+                    ui,
+                    &self.fleet,
+                    &allowed,
+                    &mut |intent| pending.push(intent),
+                    &mut || refresh_requested = true,
+                );
+                if refresh_requested {
                     self.refresh_issues(true);
                 }
-                // Dispatch after board::show returns (no overlapping
-                // borrows of fleet/toasts).
-                for intent in pending {
-                    let Some(reg) = registration.clone() else {
-                        self.toasts.push_back(Toast {
-                            text: "not registered — cannot drive".into(),
-                            level: Level::Error,
-                            at: std::time::Instant::now(),
-                        });
-                        continue;
-                    };
-                    let Some(signing) = signing.clone() else {
-                        self.toasts.push_back(Toast {
-                            text: "no device key — check Settings".into(),
-                            level: Level::Error,
-                            at: std::time::Instant::now(),
-                        });
-                        continue;
-                    };
-                    let endpoint = DriveEndpoint {
-                        client: client.clone(),
-                        base_url: host_url.clone(),
-                        key_id: reg.key_id.clone(),
-                        signing,
-                    };
-                    let agent_id = intent.target.clone();
-                    let capability = intent.capability.to_string();
-                    let tx = tx_drive.clone();
-                    self.fleet.remember_drive(
-                        &intent.target,
-                        crate::state::DriveState::Sending {
-                            request_id: intent.request_id.clone(),
-                            capability: capability.clone(),
-                        },
-                    );
-                    rt.spawn(async move {
-                        let outcome = crate::drive::execute_drive(&endpoint, &intent).await;
-                        let _ = tx.send(DriveMsg {
-                            agent_id,
-                            capability,
-                            outcome,
-                        });
-                    });
-                }
+                self.dispatch_drive_intents(pending);
             }
             Tab::Audit => {
                 let token_configured = self.admin_token().is_some();
@@ -1331,8 +1347,9 @@ fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.selectable_value(&mut app.tab, Tab::Settings, "settings");
-            ui.selectable_value(&mut app.tab, Tab::Audit, "audit");
             ui.selectable_value(&mut app.tab, Tab::Registry, "registry");
+            ui.selectable_value(&mut app.tab, Tab::Audit, "audit");
+            ui.selectable_value(&mut app.tab, Tab::Issues, "issues");
             ui.selectable_value(&mut app.tab, Tab::Board, "board");
         });
     });

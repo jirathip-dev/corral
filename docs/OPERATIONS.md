@@ -682,7 +682,7 @@ worktree layout is intentionally left with `repo: null` and remains in
 
 ## Issue-linked and issue-free worktrees (#113, slice 1)
 
-The desktop board's issue browser renders the daemon's read-only
+The desktop UI's Issues tab renders the daemon's read-only
 `GET /issues` view (keyed by repo/fleet name) and can start a worktree two
 explicit ways, both gated by confirmation in the UI and the `start_worktree`
 grant on the host:

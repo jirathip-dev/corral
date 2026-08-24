@@ -26,6 +26,20 @@ enum Tab {
     Settings,
 }
 
+const BOARD_TOP_NAV: [&str; 2] = ["settings", "registry"];
+const NON_BOARD_TOP_NAV: [&str; 5] = ["settings", "registry", "audit", "issues", "board"];
+
+/// Board mode owns Board / Issues / Audit navigation in the detail pane. The
+/// global chrome keeps only utility destinations there so the two surfaces
+/// cannot render duplicate navigation labels at once.
+fn top_level_nav_labels(tab: Tab) -> &'static [&'static str] {
+    if tab == Tab::Board {
+        &BOARD_TOP_NAV
+    } else {
+        &NON_BOARD_TOP_NAV
+    }
+}
+
 /// Runtime-loaded + persisted app config (host URL, registration record).
 #[derive(Debug, Clone, PartialEq)]
 struct PersistedConfig {
@@ -120,6 +134,11 @@ pub struct CorralApp {
     screenshot_path: Option<PathBuf>,
     screenshot_sent: bool,
     screenshot_deadline: Option<std::time::Instant>,
+    /// Optional native-evidence target. When set alongside the screenshot
+    /// path, the app selects this live daemon agent so the operator can use
+    /// the shipped Cards controls before capturing. Never active normally.
+    screenshot_agent_id: Option<String>,
+    screenshot_agent_selected: bool,
 }
 
 impl CorralApp {
@@ -196,6 +215,10 @@ impl CorralApp {
                         .ok()
                         .map(|_| std::time::Instant::now() + std::time::Duration::from_secs(6))
                 }),
+            screenshot_agent_id: std::env::var("CORRAL_UI_SCREENSHOT_AGENT")
+                .ok()
+                .filter(|_| std::env::var_os("CORRAL_UI_SCREENSHOT").is_some()),
+            screenshot_agent_selected: false,
         };
 
         // Resolve the host identity so the device key can be scoped to it.
@@ -466,7 +489,25 @@ impl CorralApp {
     fn on_transcript(&mut self, msg: crate::transcript::TranscriptMsg) {
         use crate::transcript::FoldOutcome;
         let agent_id = msg.agent_id.clone();
-        match self.fleet.fold_transcript(msg) {
+        let outcome = self.fleet.fold_transcript(msg);
+        let entries = self
+            .fleet
+            .transcripts
+            .get(&agent_id)
+            .map_or(0, |pane| pane.entries.len());
+        let has_error = self
+            .fleet
+            .transcripts
+            .get(&agent_id)
+            .is_some_and(|pane| pane.error.is_some());
+        tracing::info!(
+            agent_id = %agent_id,
+            ?outcome,
+            entries,
+            has_error,
+            "transcript result folded into detail cache"
+        );
+        match outcome {
             FoldOutcome::Dropped | FoldOutcome::Applied => {}
             FoldOutcome::AppliedOk => {
                 self.ledger.note_success("read_tail");
@@ -576,7 +617,36 @@ impl CorralApp {
             return;
         };
         let lines = crate::drive::parse_tail_lines(result);
+        tracing::info!(
+            agent_id = %msg.agent_id,
+            lines = lines.len(),
+            "read_tail result applied to screenshot/detail cache"
+        );
         self.fleet.remember_tail(&msg.agent_id, lines);
+    }
+
+    /// Native screenshot evidence helper. It is deliberately opt-in and
+    /// targets an id observed in the live `/snapshot`; content still has to
+    /// be fetched by clicking the shipped Cards `Load earlier` control.
+    fn prepare_screenshot_evidence(&mut self) {
+        let Some(agent_id) = self.screenshot_agent_id.clone() else {
+            return;
+        };
+        let Some(agent) = self.fleet.agents.get(&agent_id) else {
+            return;
+        };
+        if self.screenshot_agent_selected {
+            return;
+        }
+        let read_tail_advertised = agent.capabilities.iter().any(|cap| cap == "read_tail");
+        self.fleet.select_agent(&agent_id);
+        self.screenshot_agent_selected = true;
+        tracing::info!(
+            agent_id = %agent_id,
+            read_tail_advertised,
+            read_tail_granted = self.ledger.allowed("read_tail"),
+            "native screenshot evidence selected live agent; Cards fetch remains user-driven"
+        );
     }
 
     /// Register (or re-register with a fresh key, or refresh grants with
@@ -1215,6 +1285,7 @@ impl eframe::App for CorralApp {
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 let mut pending_full_chat: Vec<String> = Vec::new();
+                self.prepare_screenshot_evidence();
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,
@@ -1225,6 +1296,13 @@ impl eframe::App for CorralApp {
                         full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
                     },
                 );
+                if let Some(request) = crate::ui::board::take_right_tab_request(&ctx) {
+                    self.tab = match request {
+                        crate::ui::board::RightTab::Board => Tab::Board,
+                        crate::ui::board::RightTab::Issues => Tab::Issues,
+                        crate::ui::board::RightTab::Audit => Tab::Audit,
+                    };
+                }
                 for agent_id in pending_full_chat {
                     self.fleet.toggle_full_chat(&agent_id);
                 }
@@ -1346,11 +1424,26 @@ fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
             ui.label(RichText::new(detail).small().color(theme::ui::TEXT_MUTED));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.selectable_value(&mut app.tab, Tab::Settings, "settings");
-            ui.selectable_value(&mut app.tab, Tab::Registry, "registry");
-            ui.selectable_value(&mut app.tab, Tab::Audit, "audit");
-            ui.selectable_value(&mut app.tab, Tab::Issues, "issues");
-            ui.selectable_value(&mut app.tab, Tab::Board, "board");
+            for label in top_level_nav_labels(app.tab) {
+                match *label {
+                    "settings" => {
+                        ui.selectable_value(&mut app.tab, Tab::Settings, *label);
+                    }
+                    "registry" => {
+                        ui.selectable_value(&mut app.tab, Tab::Registry, *label);
+                    }
+                    "audit" => {
+                        ui.selectable_value(&mut app.tab, Tab::Audit, *label);
+                    }
+                    "issues" => {
+                        ui.selectable_value(&mut app.tab, Tab::Issues, *label);
+                    }
+                    "board" => {
+                        ui.selectable_value(&mut app.tab, Tab::Board, *label);
+                    }
+                    _ => unreachable!("top-level nav labels are fixed"),
+                }
+            }
         });
     });
 }
@@ -1372,7 +1465,7 @@ fn bottom_bar(ui: &mut egui::Ui, app: &CorralApp) {
         ui.label(
             RichText::new(format!("blocked {blocked}"))
                 .small()
-                .color(theme::ui::WARN),
+                .color(theme::state::BLOCKED),
         );
         ui.separator();
         let working = app
@@ -1397,4 +1490,31 @@ fn bottom_bar(ui: &mut egui::Ui, app: &CorralApp) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tab, top_level_nav_labels};
+
+    #[test]
+    fn board_surface_has_no_duplicate_global_board_issue_audit_navigation() {
+        let labels = top_level_nav_labels(Tab::Board);
+        assert_eq!(labels, &["settings", "registry"]);
+        for duplicate in ["board", "issues", "audit"] {
+            assert!(
+                !labels.contains(&duplicate),
+                "Board mode must keep {duplicate} navigation inside the detail pane"
+            );
+        }
+    }
+
+    #[test]
+    fn utility_navigation_remains_available_outside_board_surface() {
+        let labels = top_level_nav_labels(Tab::Settings);
+        assert!(labels.contains(&"registry"));
+        assert!(labels.contains(&"settings"));
+        assert!(labels.contains(&"board"));
+        assert!(labels.contains(&"issues"));
+        assert!(labels.contains(&"audit"));
+    }
 }

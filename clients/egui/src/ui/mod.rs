@@ -6,7 +6,7 @@ pub mod issues;
 pub mod register;
 pub mod registry;
 
-use eframe::egui::{Color32, CornerRadius, FontId, RichText, Stroke, Ui};
+use eframe::egui::{Color32, CornerRadius, FontId, RichText, Sense, Stroke, Ui};
 
 use crate::state::{ConnState, Level};
 
@@ -14,11 +14,10 @@ use crate::state::{ConnState, Level};
 /// kinds, CI verdicts).
 pub fn badge(ui: &mut Ui, text: &str, color: Color32) {
     let font = FontId::monospace(11.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
-    let painter = ui.painter();
-    let galley = painter.layout_no_wrap(text.to_string(), font, color);
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_string(), font, color));
     let size = galley.size() + egui::vec2(12.0, 6.0);
-    let rect = egui::Rect::from_min_size(rect.min, size);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
     let bg = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 40);
     painter.rect_filled(rect, CornerRadius::same(4), bg);
     painter.rect_stroke(
@@ -33,7 +32,7 @@ pub fn badge(ui: &mut Ui, text: &str, color: Color32) {
 /// A dot + label pill describing the SSE connection.
 pub fn connection_pill(ui: &mut Ui, state: ConnState) {
     let (color, label) = match state {
-        ConnState::Connected => (crate::theme::ui::GOOD, "live".to_string()),
+        ConnState::Connected => (crate::theme::ui::ACCENT, "live".to_string()),
         ConnState::Connecting => (crate::theme::ui::WARN, "connecting".to_string()),
         ConnState::Reconnecting { backoff_ms } => (
             crate::theme::ui::WARN,
@@ -73,7 +72,7 @@ pub fn toast_area(
                     Level::Error => crate::theme::ui::BAD,
                 };
                 egui::Frame::popup(ui.style())
-                    .fill(Color32::from_rgb(0x1c, 0x21, 0x28))
+                    .fill(crate::theme::ui::PANEL3)
                     .stroke(Stroke::new(1.0, color))
                     .corner_radius(CornerRadius::same(6))
                     .show(ui, |ui| {

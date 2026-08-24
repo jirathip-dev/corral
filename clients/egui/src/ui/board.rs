@@ -6,7 +6,10 @@
 
 use std::cmp::Ordering;
 
-use eframe::egui::{CollapsingHeader, Color32, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{
+    Align2, CollapsingHeader, Color32, CornerRadius, FontId, RichText, ScrollArea, Sense, Stroke,
+    TextEdit, Ui,
+};
 
 use crate::drive::{DriveIntent, DriveOutcome};
 use crate::model::Agent;
@@ -47,12 +50,6 @@ const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 
 /// Reserved `State · relative age` slot on a master card.
 ///
-/// Sized to hold the longest ordinary contract label (`Needs you · 100d 00h`)
-/// without elision. The age is reserved before identity/repo text, so in a
-/// narrow pane the left column is dropped first and ordinary ages are never
-/// clipped; only extreme timestamps truncate inside this bound.
-const CARD_AGE_WIDTH: f32 = 176.0;
-
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
@@ -67,11 +64,62 @@ const CARDS_FLAT_VIEW: &str = "corral-ui-cards-flat";
 const DEFAULT_FLAT: bool = false;
 const DEFAULT_CARDS_FLAT: bool = true;
 
+/// The approved desktop prototype is a true 42/58 master/detail split.
+pub const MASTER_DETAIL_RATIO: (f32, f32) = (0.42, 0.58);
+const MASTER_ROW_HEIGHT: f32 = 34.0;
+const MASTER_HEADER_HEIGHT: f32 = 28.0;
+const MIN_CARDS_WIDTH: f32 = 700.0;
+const MIN_CARDS_HEIGHT: f32 = 420.0;
+const TOOL_PILL_HEIGHT: f32 = 18.0;
+// The row's identity text follows the 12px card inset, 11px state mark, and
+// egui's 6px item gap plus the 7px label gap.
+const MASTER_IDENTITY_INSET: f32 = 36.0;
+/// Sized to hold the longest ordinary contract label (`Needs you · 100d 00h`)
+/// without elision. The age is reserved before identity/repo text, so in a
+/// narrow pane the left column is dropped first and ordinary ages are never
+/// clipped; only extreme timestamps truncate inside this bound.
+const MASTER_STATE_WIDTH: f32 = 160.0;
+
+#[cfg(test)]
+const CARD_AGE_WIDTH: f32 = MASTER_STATE_WIDTH;
+
 /// egui temp-memory key for the master/detail search query.
 const SEARCH_QUERY: &str = "corral-ui-board-search";
 
 /// egui temp-memory key for the cards/table view (default: cards).
 const VIEW_MODE: &str = "corral-ui-board-view";
+
+const RIGHT_TAB: &str = "corral-ui-right-tab";
+const RIGHT_TAB_REQUEST: &str = "corral-ui-right-tab-request";
+const KILL_CONFIRM: &str = "corral-ui-kill-confirm";
+const KILL_CONFIRM_STARTED: &str = "corral-ui-kill-confirm-started";
+const KILL_CONFIRM_TIMEOUT_SECONDS: f64 = 10.0;
+
+const LIVE_LABEL: &str = "live";
+const EARLIER_LINES_LABEL: &str = "229 earlier lines";
+const LOAD_EARLIER_LABEL: &str = "Load earlier";
+const USER_BLOCK_INSET: f32 = 24.0;
+
+/// The compact tabs that live inside the Board surface's detail-owned area.
+/// They are rendered on both Cards and Table because the application chrome
+/// hides the duplicate Board / Issues / Audit destinations while Board is
+/// active.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RightTab {
+    #[default]
+    Board,
+    Issues,
+    Audit,
+}
+
+/// Consume a right-pane navigation request after the app frame has rendered.
+pub fn take_right_tab_request(ctx: &egui::Context) -> Option<RightTab> {
+    ctx.memory_mut(|memory| {
+        memory
+            .data
+            .remove_temp::<RightTab>(egui::Id::new(RIGHT_TAB_REQUEST))
+    })
+}
 
 /// Cards or the exact nine-column conformance table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -118,28 +166,29 @@ impl StateFilter {
 }
 
 const STATE_FILTERS: [StateFilter; 5] = [
-    StateFilter::All,
     StateFilter::Blocked,
+    StateFilter::All,
     StateFilter::Done,
     StateFilter::Working,
     StateFilter::Idle,
 ];
 
-/// Chips that have at least one matching agent. Pure so the zero-state rule
-/// (no empty `Needs you` / other buckets) is covered without an egui frame.
+/// State buckets that have at least one matching agent. The production
+/// toolbar uses this result so the zero-state rule is enforced by the same
+/// path the native board renders, not by a test-only projection. `Blocked`
+/// intentionally precedes `All` to match the prototype's `Needs you / All`
+/// chip order; `All` remains unconditional.
 fn available_state_filters(fleet: &Fleet, query: &str) -> Vec<StateFilter> {
     let query = query.trim();
-    let mut visible = vec![StateFilter::All];
-    for candidate in STATE_FILTERS.into_iter().skip(1) {
-        if fleet
-            .agents
-            .values()
-            .any(|agent| candidate.keeps(agent.state.into()) && agent_matches_query(agent, query))
-        {
-            visible.push(candidate);
-        }
-    }
-    visible
+    STATE_FILTERS
+        .into_iter()
+        .filter(|candidate| {
+            *candidate == StateFilter::All
+                || fleet.agents.values().any(|agent| {
+                    candidate.keeps(agent.state.into()) && agent_matches_query(agent, query)
+                })
+        })
+        .collect()
 }
 
 /// Callbacks the board issues to the app (drive dispatch + #64
@@ -161,6 +210,7 @@ pub fn show(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    reset_right_tab(ui.ctx());
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
@@ -174,32 +224,33 @@ pub fn show(
 
     let mut view = view_mode(ui.ctx());
     let mut flat = flat_view(ui.ctx(), view);
+    if view == BoardView::Cards {
+        show_cards(ui, fleet, &mut view, &mut flat, allowed, actions);
+        return;
+    }
+
     let mut query = search_query(ui.ctx());
     let mut filter = state_filter(ui.ctx());
     toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
+    view_mode_controls(ui, &mut view, flat);
+    if view == BoardView::Cards {
+        return;
+    }
+    // Board / Issues / Audit remain detail-owned on every Board surface,
+    // including an empty Table result. The global chrome intentionally hides
+    // these destinations while the Board is active.
+    right_tabs(ui);
+    ui.separator();
     let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
         .into_iter()
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
     if visible.is_empty() {
-        show_empty_state(ui, fleet, &query, view, allowed, actions);
+        show_empty_table_state(ui, &query);
         return;
     }
-
-    match view {
-        BoardView::Cards => show_cards(
-            ui,
-            fleet,
-            &visible,
-            flat,
-            selected.as_deref(),
-            allowed,
-            actions,
-        ),
-        BoardView::Table => show_table(ui, fleet, &visible, flat, allowed, actions),
-    }
+    show_table(ui, fleet, &visible, flat, allowed, actions);
 }
 
 /// Persistent sidebar state helpers are intentionally tiny; every query
@@ -214,78 +265,149 @@ fn toolbar(
 ) {
     let mut changed = false;
     let previous_view = *view;
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            RichText::new("search")
-                .small()
-                .monospace()
-                .color(theme::ui::TEXT_MUTED),
-        );
-        let response = ui.add(
-            TextEdit::singleline(query)
-                .id_salt(("corral-ui-board-search-input", SEARCH_QUERY))
-                .hint_text("repo / branch / title / issue…")
-                .desired_width(240.0),
-        );
-        if response.changed() {
-            changed = true;
-        }
-        let available = available_state_filters(fleet, query);
-        for candidate in &available {
-            let selected = *filter == *candidate;
-            let color = if selected {
-                theme::ui::TEXT_STRONG
-            } else {
-                match *candidate {
-                    StateFilter::All => theme::ui::ACCENT,
-                    StateFilter::Blocked => state::of(crate::theme::AgentStateLike::Blocked),
-                    StateFilter::Done => state::of(crate::theme::AgentStateLike::Done),
-                    StateFilter::Working => state::of(crate::theme::AgentStateLike::Working),
-                    StateFilter::Idle => state::of(crate::theme::AgentStateLike::Idle),
-                }
-            };
-            if ui
-                .selectable_label(selected, RichText::new(candidate.label()).color(color))
-                .clicked()
-            {
-                *filter = *candidate;
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                TextEdit::singleline(query)
+                    .id_salt(("corral-ui-board-search-input", SEARCH_QUERY))
+                    .hint_text("Search repo / branch / issue…")
+                    .desired_width(ui.available_width().max(180.0) - 158.0),
+            );
+            if response.changed() {
                 changed = true;
             }
-        }
-        if *filter != StateFilter::All && !available.contains(&*filter) {
-            *filter = StateFilter::All;
-            changed = true;
-        }
-        if ui
-            .checkbox(flat, "flat sort")
-            .on_hover_text("one flat list of every agent, instead of repo groups")
-            .changed()
+            for candidate in available_state_filters(fleet, query)
+                .into_iter()
+                .filter(|candidate| matches!(candidate, StateFilter::Blocked | StateFilter::All))
+            {
+                if filter_chip(ui, candidate, *filter == candidate).clicked() {
+                    *filter = candidate;
+                    changed = true;
+                }
+            }
+        });
+
+        // Cards intentionally stay as the prototype's flat attention list.
+        // The legacy grouped/flat switch remains available for the exact
+        // table view, where repo grouping is useful and does not pollute the
+        // approved cards surface.
+        if *view == BoardView::Table
+            && ui
+                .checkbox(flat, "flat sort")
+                .on_hover_text("one flat list of every agent, instead of repo groups")
+                .changed()
         {
             changed = true;
         }
-        ui.separator();
-        for candidate in [BoardView::Cards, BoardView::Table] {
-            if ui
-                .selectable_value(
-                    view,
-                    candidate,
-                    match candidate {
-                        BoardView::Cards => "Cards",
-                        BoardView::Table => "Table",
-                    },
-                )
-                .changed()
-            {
-                changed = true;
-            }
-        }
     });
+    if *filter == StateFilter::Blocked
+        && !fleet
+            .agents
+            .values()
+            .any(|agent| agent.state == crate::model::AgentState::Blocked)
+    {
+        *filter = StateFilter::All;
+        changed = true;
+    }
     if changed {
         if *view != previous_view {
             *flat = flat_view(ui.ctx(), *view);
         }
         persist_toolbar_state(ui, *view, *flat, query, *filter);
     }
+}
+
+/// Cards owns this control row in the right pane. Table gets the same row at
+/// the top of its surface so switching into Table never removes the only
+/// route back to the prototype's Cards view.
+fn view_mode_controls(ui: &mut Ui, view: &mut BoardView, flat: bool) {
+    ui.horizontal(|ui| {
+        view_mode_buttons(ui, view, flat);
+    });
+}
+
+fn view_mode_buttons(ui: &mut Ui, view: &mut BoardView, flat: bool) {
+    if action_button(ui, "Cards", *view == BoardView::Cards, false).clicked() {
+        *view = BoardView::Cards;
+        persist_toolbar_state(
+            ui,
+            *view,
+            flat,
+            &search_query(ui.ctx()),
+            state_filter(ui.ctx()),
+        );
+    }
+    if action_button(ui, "Table", *view == BoardView::Table, false).clicked() {
+        *view = BoardView::Table;
+        persist_toolbar_state(
+            ui,
+            *view,
+            flat,
+            &search_query(ui.ctx()),
+            state_filter(ui.ctx()),
+        );
+    }
+}
+
+/// Prototype filter chip: `All` is the active working-blue chip, while
+/// `Needs you` retains its red-tinted affordance even when the zero-state has
+/// no blocked agents to list.
+fn filter_chip(ui: &mut Ui, filter: StateFilter, selected: bool) -> egui::Response {
+    let label = filter.label();
+    let color = match filter {
+        StateFilter::Blocked => state::BLOCKED,
+        StateFilter::All => state::WORKING,
+        StateFilter::Done => state::DONE,
+        StateFilter::Working => state::WORKING,
+        StateFilter::Idle => state::IDLE,
+    };
+    let font = FontId::proportional(11.0);
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(label.to_string(), font, color));
+    let size = galley.size() + egui::vec2(20.0, 10.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let fill = match filter {
+        StateFilter::All if selected => state::WORKING,
+        StateFilter::Blocked => Color32::from_rgba_unmultiplied(
+            state::BLOCKED.r(),
+            state::BLOCKED.g(),
+            state::BLOCKED.b(),
+            if selected { 56 } else { 41 },
+        ),
+        _ if selected => theme::ui::PANEL3,
+        _ => theme::ui::PANEL2,
+    };
+    let text_color = if filter == StateFilter::All && selected {
+        Color32::from_rgb(0x08, 0x13, 0x1f)
+    } else {
+        color
+    };
+    let stroke_color = if filter == StateFilter::All && selected {
+        Color32::TRANSPARENT
+    } else if filter == StateFilter::Blocked {
+        state::BLOCKED
+    } else {
+        theme::ui::LINE
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(10), fill);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(10),
+        Stroke::new(1.0, stroke_color),
+        egui::StrokeKind::Outside,
+    );
+    // `Painter::galley` keeps the color embedded in the measured galley on
+    // some native font backends. Paint the final label explicitly so the
+    // active blue chip cannot turn its dark `All` text into an invisible
+    // same-color glyph.
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(11.0),
+        text_color,
+    );
+    response
 }
 
 fn persist_toolbar_state(ui: &Ui, view: BoardView, flat: bool, query: &str, filter: StateFilter) {
@@ -453,112 +575,107 @@ pub fn resolve_selection<'a>(fleet: &'a Fleet, visible: &[&'a str]) -> Option<&'
         .or_else(|| visible.first().copied())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct CardsWidths {
-    left: f32,
-    right: f32,
-    total: f32,
-}
-
-fn cards_widths(available: f32, item_spacing: f32, separator_spacing: f32) -> CardsWidths {
-    let gutter = 2.0 * item_spacing + separator_spacing;
-    let usable = (available - gutter).max(320.0 + 380.0);
-    let left = (usable * 0.40).max(320.0);
-    let right = (usable - left).max(380.0);
-    CardsWidths {
-        left,
-        right,
-        total: left + right + gutter,
-    }
-}
-
-fn separator_spacing(ui: &Ui) -> f32 {
-    ui.style()
-        .separator_style(
-            &eframe::egui::widget_style::Classes::default(),
-            eframe::egui::widget_style::WidgetState::default(),
-        )
-        .spacing
-}
-
 fn show_cards(
     ui: &mut Ui,
     fleet: &mut Fleet,
-    visible: &[&str],
-    flat: bool,
-    selected: Option<&str>,
+    view: &mut BoardView,
+    flat: &mut bool,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
-    let available = ui.available_size();
-    let widths = cards_widths(
-        available.x,
-        ui.spacing().item_spacing.x,
-        separator_spacing(ui),
-    );
-    let mut clicked = None;
-    ScrollArea::horizontal()
-        .id_salt("corral-ui-cards-horizontal")
+    ScrollArea::both()
+        .id_salt("corral-ui-cards-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.set_min_width(widths.total);
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::vec2(widths.left, available.y), |ui| {
-                    clicked = master_list(ui, fleet, visible, flat, selected, now_millis());
-                });
-                ui.separator();
-                ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
-                    detail_pane(ui, fleet, selected, allowed, actions);
-                });
-            });
+            ui.set_min_size(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
+            show_cards_surface(ui, fleet, view, flat, allowed, actions);
         });
+}
+
+fn show_cards_surface(
+    ui: &mut Ui,
+    fleet: &mut Fleet,
+    view: &mut BoardView,
+    flat: &mut bool,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    let available = ui
+        .available_size()
+        .max(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
+    let (board_rect, _) = ui.allocate_exact_size(available, Sense::hover());
+    let left_width = board_rect.width() * MASTER_DETAIL_RATIO.0;
+    let right_width = board_rect.width() - left_width - 1.0;
+    let left_rect =
+        egui::Rect::from_min_size(board_rect.min, egui::vec2(left_width, board_rect.height()));
+    let right_rect = egui::Rect::from_min_size(
+        egui::pos2(board_rect.left() + left_width + 1.0, board_rect.top()),
+        egui::vec2(right_width.max(0.0), board_rect.height()),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(board_rect, CornerRadius::same(12), theme::ui::BG);
+    painter.rect_stroke(
+        board_rect,
+        CornerRadius::same(12),
+        Stroke::new(1.0, theme::ui::FRAME_BORDER),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_filled(left_rect, CornerRadius::ZERO, theme::ui::PANEL);
+    painter.line_segment(
+        [
+            egui::pos2(left_rect.right(), board_rect.top()),
+            egui::pos2(left_rect.right(), board_rect.bottom()),
+        ],
+        Stroke::new(1.0, theme::ui::LINE),
+    );
+
+    let mut left_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect.shrink(1.0))
+            .id(egui::Id::new("corral-ui-master-pane"))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let mut query = search_query(ui.ctx());
+    let mut filter = state_filter(ui.ctx());
+    toolbar(&mut left_ui, fleet, view, flat, &mut query, &mut filter);
+    left_ui.add_space(2.0);
+    let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
+    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    let mut clicked = None;
+    if visible.is_empty() {
+        empty_pane_message(&mut left_ui, &query);
+    } else {
+        clicked = master_list(
+            &mut left_ui,
+            fleet,
+            &visible,
+            *flat,
+            selected.as_deref(),
+            now_millis(),
+        );
+    }
+    let mut right_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(right_rect.shrink(1.0))
+            .id(egui::Id::new("corral-ui-detail-pane-root"))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    right_pane(
+        &mut right_ui,
+        fleet,
+        selected.as_deref(),
+        view,
+        *flat,
+        allowed,
+        actions,
+    );
     if let Some(id) = clicked {
         fleet.select_agent(&id);
     }
-}
-
-fn show_empty_state(
-    ui: &mut Ui,
-    fleet: &Fleet,
-    query: &str,
-    view: BoardView,
-    allowed: &dyn Fn(&str) -> bool,
-    actions: &mut BoardActions,
-) {
-    match view {
-        BoardView::Cards => show_empty_cards_state(ui, fleet, query, allowed, actions),
-        BoardView::Table => show_empty_table_state(ui, query),
-    }
-}
-
-fn show_empty_cards_state(
-    ui: &mut Ui,
-    fleet: &Fleet,
-    query: &str,
-    allowed: &dyn Fn(&str) -> bool,
-    actions: &mut BoardActions,
-) {
-    let available = ui.available_size();
-    let widths = cards_widths(
-        available.x,
-        ui.spacing().item_spacing.x,
-        separator_spacing(ui),
-    );
-    ScrollArea::horizontal()
-        .id_salt("corral-ui-empty-horizontal")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.set_min_width(widths.total);
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::vec2(widths.left, available.y), |ui| {
-                    empty_pane_message(ui, query);
-                });
-                ui.separator();
-                ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
-                    detail_pane(ui, fleet, None, allowed, actions);
-                });
-            });
-        });
 }
 
 fn show_empty_table_state(ui: &mut Ui, query: &str) {
@@ -598,17 +715,21 @@ fn master_list(
         .id_salt("corral-ui-master-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let width = ui.available_width();
+            master_column_header(ui, width);
             if flat {
                 for section in state_sections(visible, fleet) {
+                    if section.state == crate::theme::AgentStateLike::Blocked {
+                        // A blocked section is only emitted when it has rows;
+                        // this is the zero-state rule's important boundary.
+                        state_section_header(ui, section.state, section.agent_ids.len());
+                    }
                     if section.state == crate::theme::AgentStateLike::Idle {
                         let count = section.agent_ids.len();
                         CollapsingHeader::new(
-                            RichText::new(format!(
-                                "{} ({count})",
-                                crate::theme::AgentStateLike::Idle.label()
-                            ))
-                            .monospace()
-                            .color(theme::ui::TEXT_MUTED),
+                            RichText::new(format!("Idle / done ({count}) — expandable"))
+                                .small()
+                                .color(theme::ui::TEXT_MUTED),
                         )
                         .id_salt("corral-ui-idle-done")
                         .default_open(false)
@@ -621,16 +742,13 @@ fn master_list(
                                 }
                             }
                         });
-                        ui.separator();
                         continue;
                     }
-                    state_section_header(ui, section.state, section.agent_ids.len());
                     for id in &section.agent_ids {
                         if let Some(id) = master_card(ui, fleet, id, selected == Some(id), now_ms) {
                             clicked = Some(id);
                         }
                     }
-                    ui.add_space(4.0);
                 }
             } else {
                 for mut group in group_by_repo(fleet) {
@@ -655,11 +773,61 @@ fn master_list(
                             }
                         }
                     });
-                    ui.separator();
                 }
             }
         });
     clicked
+}
+
+fn master_column_header(ui: &mut Ui, width: f32) {
+    let state_width = MASTER_STATE_WIDTH;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width.max(0.0), MASTER_HEADER_HEIGHT),
+        Sense::hover(),
+    );
+    let identity_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + MASTER_IDENTITY_INSET, rect.top()),
+        egui::pos2(rect.right() - state_width, rect.bottom()),
+    );
+    let mut identity_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(identity_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    identity_ui.add(
+        egui::Label::new(
+            RichText::new("Agent")
+                .small()
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        )
+        .halign(egui::Align::LEFT),
+    );
+    let state_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - state_width, rect.top()),
+        rect.right_bottom(),
+    );
+    let mut state_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(state_rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    state_ui.add(
+        egui::Label::new(
+            RichText::new("State · time")
+                .small()
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        )
+        .halign(egui::Align::RIGHT),
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left(), rect.bottom()),
+            egui::pos2(rect.right(), rect.bottom()),
+        ],
+        Stroke::new(1.0, theme::ui::LINE),
+    );
 }
 
 fn now_millis() -> u64 {
@@ -696,6 +864,7 @@ fn master_card(
     master_card_with_response(ui, fleet, id, selected, now_ms).and_then(|(clicked, _)| clicked)
 }
 
+#[cfg(test)]
 fn master_card_left_text_width(left_width: f32) -> f32 {
     (left_width - 8.0).max(0.0)
 }
@@ -711,102 +880,396 @@ fn master_card_with_response(
     let state: crate::theme::AgentStateLike = agent.state.into();
     let color = theme::state::of(state);
     let bg = if selected {
-        color.gamma_multiply(0.16)
+        theme::ui::PANEL2
     } else {
-        color.gamma_multiply(0.05)
+        color.gamma_multiply(match state {
+            crate::theme::AgentStateLike::Blocked => 0.06,
+            crate::theme::AgentStateLike::Done => 0.05,
+            crate::theme::AgentStateLike::Working => 0.05,
+            _ => 0.0,
+        })
     };
-    let label = format!(
-        "{} {}  {}",
-        state.mark_glyph(),
-        agent.row_label(),
-        agent.tool
-    );
-    let location = agent
-        .workspace
-        .repo
-        .as_deref()
-        .unwrap_or(agent.workspace.branch.as_deref().unwrap_or("—"));
     let state_time = format!(
         "{} · {}",
         state.label(),
         crate::model::relative_age(agent.ts, now_ms)
     );
-    let response = ui
-        .scope_builder(
-            egui::UiBuilder::new()
-                .id_salt(("corral-ui-master-card", id))
-                .sense(egui::Sense::click()),
-            |ui| {
-                egui::Frame::NONE
-                    .fill(bg)
-                    .stroke(if selected {
-                        egui::Stroke::new(1.0, color)
-                    } else {
-                        egui::Stroke::NONE
-                    })
-                    .inner_margin(egui::Margin::symmetric(8, 6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let item_spacing = ui.spacing().item_spacing.x;
-                            let available_width = ui.available_width();
-                            let age_width =
-                                (available_width - item_spacing).clamp(0.0, CARD_AGE_WIDTH);
-                            let left_width = (available_width - item_spacing - age_width).max(0.0);
-                            let left_text_width = master_card_left_text_width(left_width);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(left_width, 36.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    // Keep the reserved left column width even when its labels
-                                    // are narrower after the text inset is applied.
-                                    ui.set_min_width(left_width);
-                                    ui.add_sized(
-                                        [left_text_width, 18.0],
-                                        egui::Label::new(
-                                            RichText::new(label).color(theme::ui::TEXT_STRONG),
-                                        )
-                                        .truncate(),
-                                    );
-                                    ui.add_sized(
-                                        [left_text_width, 14.0],
-                                        egui::Label::new(
-                                            RichText::new(location)
-                                                .small()
-                                                .monospace()
-                                                .color(theme::ui::TEXT_MUTED),
-                                        )
-                                        .truncate(),
-                                    );
-                                },
-                            );
-                            // `add_sized` centers its widget. Keep the full age reserve, but
-                            // place the label right-to-left so its right edge stays card-hugging.
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(age_width, 36.0),
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(state_time)
-                                                .small()
-                                                .monospace()
-                                                .color(theme::ui::TEXT_MUTED),
-                                        )
-                                        .truncate(),
-                                    );
-                                },
-                            );
-                        });
-                    });
-            },
+    let width = ui.available_width().max(0.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, MASTER_ROW_HEIGHT), Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::ZERO, bg);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if !matches!(
+        state,
+        crate::theme::AgentStateLike::Idle | crate::theme::AgentStateLike::Unknown
+    ) {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                rect.left_top(),
+                egui::pos2(rect.left() + 3.0, rect.bottom()),
+            ),
+            CornerRadius::ZERO,
+            color,
+        );
+    }
+
+    let state_width = MASTER_STATE_WIDTH;
+    let left_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, rect.top()),
+        egui::pos2(
+            (rect.right() - state_width - 8.0).max(rect.left()),
+            rect.bottom(),
+        ),
+    );
+    let right_rect = egui::Rect::from_min_max(
+        egui::pos2((rect.right() - state_width).max(rect.left()), rect.top()),
+        rect.right_bottom(),
+    );
+    let mut left_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .id(egui::Id::new(("corral-ui-master-card-left", id)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let (dot_rect, _) = left_ui.allocate_exact_size(egui::vec2(11.0, 11.0), Sense::hover());
+    match state {
+        crate::theme::AgentStateLike::Working => {
+            left_ui.painter().circle_stroke(
+                dot_rect.center(),
+                5.0,
+                Stroke::new(1.5, state::WORKING),
+            );
+        }
+        crate::theme::AgentStateLike::Idle | crate::theme::AgentStateLike::Unknown => {
+            left_ui
+                .painter()
+                .circle_filled(dot_rect.center(), 5.0, state::IDLE);
+        }
+        _ => {
+            left_ui
+                .painter()
+                .circle_filled(dot_rect.center(), 5.0, color);
+        }
+    }
+    left_ui.add_space(7.0);
+    left_ui.add(
+        egui::Label::new(
+            RichText::new(agent.row_label())
+                .size(13.0)
+                .strong()
+                .color(theme::ui::INK),
         )
-        .response;
+        .truncate(),
+    );
+    tool_pill(&mut left_ui, &agent.tool);
+
+    let mut right_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(right_rect)
+            .id(egui::Id::new(("corral-ui-master-card-right", id)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    right_ui.add(
+        egui::Label::new(
+            RichText::new(state_time)
+                .monospace()
+                .size(10.0)
+                .strong()
+                .color(color),
+        )
+        .truncate(),
+    );
     let clicked = response.clicked().then(|| agent.agent_id.clone());
     Some((clicked, response))
 }
 
-fn detail_pane(
+fn tool_pill(ui: &mut Ui, tool: &str) -> egui::Response {
+    let font = FontId::monospace(9.0);
+    let galley = ui
+        .fonts_mut(|fonts| fonts.layout_no_wrap(tool.to_string(), font.clone(), theme::ui::MUTED));
+    let size = egui::vec2(galley.size().x + 10.0, TOOL_PILL_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(3), theme::ui::PANEL3);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, theme::ui::LINE),
+        egui::StrokeKind::Outside,
+    );
+    ui.painter().galley(
+        rect.min + egui::vec2(5.0, (TOOL_PILL_HEIGHT - galley.size().y) * 0.5),
+        galley,
+        theme::ui::MUTED,
+    );
+    response
+}
+
+fn right_pane(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    selected: Option<&str>,
+    view: &mut BoardView,
+    flat: bool,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    sync_kill_confirmation(ui.ctx(), selected);
+    right_tabs(ui);
+    ui.separator();
+    let selected_agent = selected.and_then(|id| fleet.agents.get(id));
+    let interrupt_state = selected_agent
+        .map(|agent| drive_control_state(&agent.capabilities, "interrupt", allowed("interrupt")))
+        .unwrap_or(DriveControlState::NotImplemented);
+    let kill_state = selected_agent
+        .map(|agent| drive_control_state(&agent.capabilities, "kill", allowed("kill")))
+        .unwrap_or(DriveControlState::NotImplemented);
+    let kill_pending =
+        kill_state == DriveControlState::Ready && is_kill_confirmation_pending(ui.ctx(), selected);
+
+    // Cards keeps the prototype's four primary controls in one stable inline
+    // row. A pending confirmation is deliberately rendered below this row,
+    // outside the original Kill trigger rect, so a double-click cannot turn
+    // the second release into an immediate destructive action.
+    ui.horizontal(|ui| {
+        view_mode_buttons(ui, view, flat);
+        if let Some(button) =
+            gated_action_button(ui, "Interrupt", "interrupt", false, interrupt_state)
+            && button.clicked()
+            && let Some(agent) = selected_agent
+        {
+            (actions.drive)(DriveIntent::interrupt(&agent.agent_id, fleet.rev));
+        }
+
+        if kill_state != DriveControlState::Ready {
+            clear_kill_confirmation(ui.ctx());
+            gated_action_button(ui, "Kill", "kill", false, kill_state);
+        } else if kill_pending {
+            disabled_action_button(ui, "Kill", true);
+        } else if action_button(ui, "Kill", false, true).clicked() {
+            set_kill_confirmation(ui.ctx(), selected, true);
+        }
+    });
+    if kill_pending {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Confirm destructive action")
+                    .small()
+                    .color(theme::ui::WARN),
+            );
+            if action_button(ui, "Confirm kill", false, true).clicked()
+                && let Some(agent) = selected_agent
+            {
+                (actions.drive)(DriveIntent::kill(&agent.agent_id, fleet.rev));
+                clear_kill_confirmation(ui.ctx());
+            }
+            if action_button(ui, "Cancel", false, false).clicked() {
+                clear_kill_confirmation(ui.ctx());
+            }
+        });
+    }
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new("Recent output")
+            .strong()
+            .size(12.0)
+            .color(theme::ui::INK),
+    );
+    recent_output_surface(ui, fleet, selected, allowed, actions);
+}
+
+fn right_tabs(ui: &mut Ui) {
+    let active = ui
+        .ctx()
+        .memory(|memory| memory.data.get_temp::<RightTab>(egui::Id::new(RIGHT_TAB)))
+        .unwrap_or_default();
+    ui.horizontal(|ui| {
+        for tab in [RightTab::Board, RightTab::Issues, RightTab::Audit] {
+            if underlined_tab(ui, tab.label(), active == tab).clicked() {
+                ui.ctx().memory_mut(|memory| {
+                    memory
+                        .data
+                        .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), tab);
+                    if tab != RightTab::Board {
+                        memory
+                            .data
+                            .insert_temp(egui::Id::new(RIGHT_TAB_REQUEST), tab);
+                    }
+                });
+            }
+        }
+    });
+}
+
+impl RightTab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Board => "Board",
+            Self::Issues => "Issues",
+            Self::Audit => "Audit",
+        }
+    }
+}
+
+fn underlined_tab(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
+    let font = FontId::proportional(11.0);
+    let color = if active {
+        theme::ui::INK
+    } else {
+        theme::ui::MUTED
+    };
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(label.to_string(), font, color));
+    let size = galley.size() + egui::vec2(28.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    ui.painter()
+        .galley(rect.min + egui::vec2(14.0, 8.0), galley, color);
+    if active {
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left(), rect.bottom() - 1.0),
+                egui::pos2(rect.right(), rect.bottom() - 1.0),
+            ],
+            Stroke::new(2.0, theme::ui::ACCENT),
+        );
+    }
+    response
+}
+
+fn action_button(ui: &mut Ui, label: &str, active: bool, danger: bool) -> egui::Response {
+    let text = if danger {
+        theme::state::BLOCKED
+    } else if active {
+        theme::ui::INK
+    } else {
+        theme::ui::MUTED
+    };
+    let fill = theme::ui::PANEL2;
+    let stroke = if active {
+        theme::ui::ACCENT
+    } else {
+        theme::ui::LINE
+    };
+    ui.add(
+        egui::Button::new(RichText::new(label).size(11.0).strong().color(text))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
+            .corner_radius(CornerRadius::same(8))
+            .min_size(egui::vec2(0.0, 28.0)),
+    )
+}
+
+/// Keep a pending destructive trigger visually in place without leaving its
+/// original hit target active. Confirmation is rendered in a separate row.
+fn disabled_action_button(ui: &mut Ui, label: &str, danger: bool) -> egui::Response {
+    let text = if danger {
+        theme::state::BLOCKED
+    } else {
+        theme::ui::MUTED
+    };
+    ui.add_enabled(
+        false,
+        egui::Button::new(RichText::new(label).size(11.0).strong().color(text))
+            .fill(theme::ui::PANEL2)
+            .stroke(Stroke::new(1.0, theme::ui::LINE))
+            .corner_radius(CornerRadius::same(8))
+            .min_size(egui::vec2(0.0, 28.0)),
+    )
+}
+
+fn gated_action_button(
+    ui: &mut Ui,
+    label: &str,
+    capability: &str,
+    danger: bool,
+    state: DriveControlState,
+) -> Option<egui::Response> {
+    match state {
+        DriveControlState::Ready => Some(action_button(ui, label, false, danger)),
+        _ => {
+            disabled_drive_button(ui, label, capability, state);
+            None
+        }
+    }
+}
+
+fn is_kill_confirmation_pending(ctx: &egui::Context, selected: Option<&str>) -> bool {
+    let Some(selected) = selected else {
+        return false;
+    };
+    let now = ctx.input(|input| input.time);
+    ctx.memory(|memory| {
+        let owner = memory.data.get_temp::<String>(egui::Id::new(KILL_CONFIRM));
+        let started = memory
+            .data
+            .get_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+        owner.as_deref() == Some(selected)
+            && started.is_some_and(|started| now - started <= KILL_CONFIRM_TIMEOUT_SECONDS)
+    })
+}
+
+fn set_kill_confirmation(ctx: &egui::Context, selected: Option<&str>, pending: bool) {
+    if let Some(agent_id) = selected {
+        if pending {
+            let now = ctx.input(|input| input.time);
+            ctx.memory_mut(|memory| {
+                memory
+                    .data
+                    .insert_temp::<String>(egui::Id::new(KILL_CONFIRM), agent_id.to_string());
+                memory
+                    .data
+                    .insert_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED), now);
+            });
+        } else {
+            clear_kill_confirmation(ctx);
+        }
+    }
+}
+
+fn clear_kill_confirmation(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| {
+        memory.data.remove::<String>(egui::Id::new(KILL_CONFIRM));
+        memory
+            .data
+            .remove::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+    });
+}
+
+fn sync_kill_confirmation(ctx: &egui::Context, selected: Option<&str>) {
+    let now = ctx.input(|input| input.time);
+    let stale = ctx.memory(|memory| {
+        let owner = memory.data.get_temp::<String>(egui::Id::new(KILL_CONFIRM));
+        let started = memory
+            .data
+            .get_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+        owner.as_deref() != selected
+            || started.is_some_and(|started| now - started > KILL_CONFIRM_TIMEOUT_SECONDS)
+    });
+    if stale {
+        clear_kill_confirmation(ctx);
+    }
+}
+
+fn reset_right_tab(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), RightTab::Board);
+        memory
+            .data
+            .remove::<RightTab>(egui::Id::new(RIGHT_TAB_REQUEST));
+    });
+}
+
+fn recent_output_surface(
     ui: &mut Ui,
     fleet: &Fleet,
     selected: Option<&str>,
@@ -814,24 +1277,282 @@ fn detail_pane(
     actions: &mut BoardActions,
 ) {
     let Some(id) = selected else {
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            ui.label(
-                RichText::new("select an agent for detail + Recent output")
-                    .color(theme::ui::TEXT_MUTED),
-            );
-        });
+        live_indicator(ui);
         return;
     };
     let Some(agent) = fleet.agents.get(id) else {
         return;
     };
-    ScrollArea::vertical()
-        .id_salt("corral-ui-detail-pane")
-        .auto_shrink([false, false])
+    let read_tail_state = latest_read_tail_state(fleet, id);
+    egui::Frame::NONE
+        .fill(theme::ui::PANEL2)
+        .stroke(Stroke::new(1.0, theme::ui::LINE))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            detail(ui, agent, fleet, allowed, actions, true);
+            ui.horizontal(|ui| {
+                live_indicator(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("stick-to-bottom")
+                            .small()
+                            .color(theme::ui::MUTED),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+            if let Some(pane) = fleet
+                .transcripts
+                .get(id)
+                .filter(|pane| !pane.entries.is_empty())
+            {
+                // TranscriptPane stores entries newest-first and appends
+                // older pages at the end. Keep the newest six, then paint
+                // that slice oldest-to-newest so the newest message sits at
+                // the bottom of the stick-to-bottom surface.
+                for entry in pane.entries.iter().take(6).rev() {
+                    recent_transcript_entry(ui, entry);
+                }
+            } else if let Some(lines) = fleet.tails.get(id) {
+                for line in lines.iter().rev().take(6).rev() {
+                    recent_tail_entry(ui, line);
+                }
+            } else if let Some(state) = read_tail_state {
+                let feedback = match state {
+                    DriveState::Sending { .. } => "Fetching recent output…".to_string(),
+                    DriveState::Ok { .. } => {
+                        "read_tail returned no output — click Load earlier to retry".to_string()
+                    }
+                    DriveState::Failed { .. } => {
+                        format!("Recent output unavailable: {}", drive_state_text(state))
+                    }
+                };
+                ui.label(
+                    RichText::new(feedback)
+                        .small()
+                        .color(drive_state_color(state)),
+                );
+            } else {
+                ui.label(
+                    RichText::new("No recent output fetched yet — click Load earlier")
+                        .small()
+                        .color(theme::ui::INK),
+                );
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                painted_rule(ui, 28.0);
+                ui.label(
+                    RichText::new(EARLIER_LINES_LABEL)
+                        .small()
+                        .color(theme::ui::MUTED),
+                );
+                painted_dot(ui, theme::ui::MUTED, 2.0);
+                let read_tail_control =
+                    drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
+                let load = if read_tail_control == DriveControlState::Ready {
+                    Some(
+                        ui.add(
+                            egui::Button::new(
+                                RichText::new(LOAD_EARLIER_LABEL)
+                                    .small()
+                                    .strong()
+                                    .color(theme::ui::ACCENT),
+                            )
+                            .frame(false),
+                        ),
+                    )
+                } else {
+                    disabled_drive_button(ui, LOAD_EARLIER_LABEL, "read_tail", read_tail_control);
+                    None
+                };
+                painted_rule(ui, 28.0);
+                if load.is_some_and(|response| response.clicked()) {
+                    (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
+                    (actions.transcript)(crate::transcript::TranscriptRequest {
+                        agent_id: agent.agent_id.clone(),
+                        cursor: fleet
+                            .transcripts
+                            .get(id)
+                            .and_then(|pane| pane.next_cursor.clone()),
+                    });
+                }
+            });
         });
+}
+
+fn latest_read_tail_state<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
+    fleet.recent_drives.get(agent_id)?.iter().find(|state| {
+        matches!(
+            state,
+            DriveState::Sending { capability, .. }
+                | DriveState::Ok { capability, .. }
+                | DriveState::Failed { capability, .. }
+                if capability == "read_tail"
+        )
+    })
+}
+
+/// Native font bundles do not consistently contain the bullet/box-drawing
+/// glyphs used by the HTML reference. Paint those two tiny marks instead so
+/// the semantic labels remain readable in Retina screenshots.
+fn live_indicator(ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        painted_dot(ui, theme::ui::ACCENT, 3.0);
+        ui.label(
+            RichText::new(LIVE_LABEL)
+                .small()
+                .strong()
+                .color(theme::ui::ACCENT),
+        );
+    });
+}
+
+fn painted_dot(ui: &mut Ui, color: Color32, radius: f32) {
+    let diameter = radius * 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(diameter + 4.0, 12.0), Sense::hover());
+    ui.painter().circle_filled(
+        egui::pos2(rect.left() + 2.0 + radius, rect.center().y),
+        radius,
+        color,
+    );
+}
+
+fn painted_rule(ui: &mut Ui, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 12.0), Sense::hover());
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left(), rect.center().y),
+            egui::pos2(rect.right(), rect.center().y),
+        ],
+        Stroke::new(1.0, theme::ui::MUTED),
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecentBlockKind {
+    User,
+    Tool,
+    Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RecentBlockStyle {
+    fill: Color32,
+    inset: f32,
+    monospace: bool,
+}
+
+/// The daemon's bounded tail is terminal-oriented rather than role-tagged
+/// JSON. Preserve every returned line, but recover the same chat hierarchy
+/// from the terminal markers that operators actually see.
+fn classify_tail_line(line: &str) -> RecentBlockKind {
+    let trimmed = line.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    let typed_prompt = trimmed.strip_prefix('›').map(str::trim).filter(|payload| {
+        !payload.is_empty() && !payload.eq_ignore_ascii_case("ask codex to do anything")
+    });
+    let typed_role_line = ["user:", "you:", "prompt:"]
+        .into_iter()
+        .find_map(|prefix| lower.strip_prefix(prefix).map(str::trim))
+        .filter(|payload| !payload.is_empty());
+    if typed_prompt.is_some() || typed_role_line.is_some() {
+        RecentBlockKind::User
+    } else if trimmed.starts_with('•')
+        || trimmed.starts_with('●')
+        || trimmed.starts_with('⏺')
+        || lower.starts_with("tool:")
+        || lower.starts_with("command:")
+        || lower.starts_with("$ ")
+    {
+        RecentBlockKind::Tool
+    } else {
+        RecentBlockKind::Agent
+    }
+}
+
+fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
+    match kind {
+        RecentBlockKind::User => RecentBlockStyle {
+            fill: theme::ui::USER_TINT,
+            inset: USER_BLOCK_INSET,
+            monospace: false,
+        },
+        RecentBlockKind::Tool => RecentBlockStyle {
+            fill: theme::ui::PANEL3,
+            inset: 0.0,
+            monospace: true,
+        },
+        RecentBlockKind::Agent => RecentBlockStyle {
+            fill: Color32::TRANSPARENT,
+            inset: 0.0,
+            monospace: false,
+        },
+    }
+}
+
+fn recent_tail_entry(ui: &mut Ui, line: &str) {
+    recent_chat_block(ui, classify_tail_line(line), line);
+}
+
+fn recent_transcript_entry(ui: &mut Ui, entry: &crate::transcript::TranscriptEntry) {
+    let kind = match entry.role.to_ascii_lowercase().as_str() {
+        "user" => RecentBlockKind::User,
+        "assistant" | "agent" => RecentBlockKind::Agent,
+        _ => RecentBlockKind::Tool,
+    };
+    recent_chat_block(ui, kind, &entry.text);
+}
+
+fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str) {
+    let style = recent_block_style(kind);
+    let frame = egui::Frame::NONE
+        .fill(style.fill)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(10, 7));
+
+    if style.inset > 0.0 {
+        // In right-to-left layout the frame is anchored to the right edge;
+        // limiting its width leaves the prototype's 24px left inset.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let width = (ui.available_width() - style.inset).max(0.0);
+            ui.set_width(width);
+            frame.show(ui, |ui| {
+                ui.label(
+                    RichText::new("you")
+                        .small()
+                        .strong()
+                        .color(Color32::from_rgb(0x6e, 0xa8, 0xff)),
+                );
+                ui.label(RichText::new(text).size(12.0).color(theme::ui::INK));
+            });
+        });
+    } else {
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if style.monospace {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("tool")
+                            .small()
+                            .strong()
+                            .color(theme::ui::MUTED),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(text)
+                                .monospace()
+                                .small()
+                                .color(theme::ui::MUTED),
+                        )
+                        .wrap(),
+                    );
+                });
+            } else {
+                ui.label(RichText::new(text).size(12.0).color(theme::ui::INK));
+            }
+        });
+    }
+    ui.add_space(4.0);
 }
 
 fn show_table(
@@ -964,7 +1685,21 @@ fn board_row(
         *selection = Some(id.to_string());
     }
     if is_expanded {
-        detail(ui, agent, fleet, allowed, actions, false);
+        // Table rows may open Full chat, but its body is deliberately
+        // reflowed into a bounded column instead of consuming the table's
+        // full/right-pane width.
+        detail(
+            ui,
+            agent,
+            fleet,
+            allowed,
+            actions,
+            DetailOptions {
+                show_topology: false,
+                show_recent_output: true,
+                transcript_max_width: Some(520.0),
+            },
+        );
     }
     ui.separator();
 }
@@ -1307,9 +2042,9 @@ pub fn drive_disabled_reason(capability: &str, state: DriveControlState) -> Opti
     }
 }
 
-fn disabled_drive_button(ui: &mut Ui, capability: &str, state: DriveControlState) {
+fn disabled_drive_button(ui: &mut Ui, label: &str, capability: &str, state: DriveControlState) {
     if let Some(reason) = drive_disabled_reason(capability, state) {
-        crate::ui::disabled_button_with_reason(ui, capability, &reason);
+        crate::ui::disabled_button_with_reason(ui, label, &reason);
     }
 }
 
@@ -1332,7 +2067,7 @@ fn drive_controls(
             match cap {
                 "prompt" => match state {
                     DriveControlState::Ready => prompt_widget(ui, agent, rev, drive),
-                    _ => disabled_drive_button(ui, cap, state),
+                    _ => disabled_drive_button(ui, cap, cap, state),
                 },
                 "approve" => {
                     if agent.waiting_on.is_none() {
@@ -1340,7 +2075,7 @@ fn drive_controls(
                     }
                     match state {
                         DriveControlState::Ready => approve_choices(ui, agent, rev, drive),
-                        _ => disabled_drive_button(ui, cap, state),
+                        _ => disabled_drive_button(ui, cap, cap, state),
                     }
                 }
                 _ => match state {
@@ -1355,7 +2090,7 @@ fn drive_controls(
                             drive(intent);
                         }
                     }
-                    _ => disabled_drive_button(ui, cap, state),
+                    _ => disabled_drive_button(ui, cap, cap, state),
                 },
             }
         }
@@ -1449,16 +2184,23 @@ fn prompt_widget(ui: &mut Ui, agent: &Agent, rev: Option<u64>, drive: &mut dyn F
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DetailOptions {
+    show_topology: bool,
+    show_recent_output: bool,
+    transcript_max_width: Option<f32>,
+}
+
 fn detail(
     ui: &mut Ui,
     agent: &Agent,
     fleet: &Fleet,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
-    show_topology: bool,
+    options: DetailOptions,
 ) {
     egui::Frame::group(ui.style())
-        .fill(Color32::from_rgb(0x10, 0x15, 0x1c))
+        .fill(theme::ui::PANEL)
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 detail_kv(ui, "id", &agent.agent_id);
@@ -1493,7 +2235,7 @@ fn detail(
                         .color(theme::ui::TEXT_MUTED),
                 );
             });
-            if show_topology {
+            if options.show_topology {
                 ui.label(
                     RichText::new("repo / branch / dirty / a-b / pr / ci")
                         .small()
@@ -1586,64 +2328,73 @@ fn detail(
                     detail_kv(ui, "approval_id", &w.approval_id);
                 });
             }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Recent output")
-                    .strong()
-                    .color(theme::ui::TEXT_STRONG),
-            );
-            if let Some(tail) = fleet.tails.get(&agent.agent_id) {
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(0x16, 0x1b, 0x22))
-                    .inner_margin(egui::Margin::symmetric(8, 6))
-                    .show(ui, |ui| {
-                        if tail.is_empty() {
-                            ui.label(
-                                RichText::new("no recent output for this agent")
-                                    .small()
-                                    .color(theme::ui::TEXT_MUTED),
-                            );
-                        } else {
-                            ScrollArea::vertical()
-                                .id_salt("corral-ui-recent-output")
-                                .max_height(200.0)
-                                .show(ui, |ui| {
-                                    for line in tail {
-                                        ui.add(egui::Label::new(
-                                            RichText::new(line).monospace().small(),
-                                        ));
-                                    }
-                                });
-                        }
-                    });
-            } else if fleet
-                .recent_drives
-                .get(&agent.agent_id)
-                .is_some_and(|drives| {
-                    drives.iter().any(|d| {
-                        matches!(
-                            d,
-                            DriveState::Ok { capability, .. } if capability == "read_tail"
-                        )
+            if options.show_recent_output {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Recent output")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                if let Some(tail) = fleet.tails.get(&agent.agent_id) {
+                    egui::Frame::NONE
+                        .fill(theme::ui::PANEL2)
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            if tail.is_empty() {
+                                ui.label(
+                                    RichText::new("no recent output for this agent")
+                                        .small()
+                                        .color(theme::ui::TEXT_MUTED),
+                                );
+                            } else {
+                                ScrollArea::vertical()
+                                    .id_salt("corral-ui-recent-output")
+                                    .max_height(200.0)
+                                    .show(ui, |ui| {
+                                        for line in tail {
+                                            recent_tail_entry(ui, line);
+                                        }
+                                    });
+                            }
+                        });
+                } else if fleet
+                    .recent_drives
+                    .get(&agent.agent_id)
+                    .is_some_and(|drives| {
+                        drives.iter().any(|d| {
+                            matches!(
+                                d,
+                                DriveState::Ok { capability, .. } if capability == "read_tail"
+                            )
+                        })
                     })
-                })
-            {
-                // Defensive: the drive dispatched, but no tail result ever
-                // arrived (e.g. an older daemon without the result path).
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("read_tail dispatched + audited; the daemon returned no result")
+                {
+                    // Defensive: the drive dispatched, but no tail result ever
+                    // arrived (e.g. an older daemon without the result path).
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "read_tail dispatched + audited; the daemon returned no result",
+                        )
                         .small()
                         .color(theme::ui::TEXT_MUTED),
-                );
-            } else {
-                ui.label(
-                    RichText::new("no recent output tapped yet — use Recent output/read_tail")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("no recent output tapped yet — use Recent output/read_tail")
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
+                }
             }
-            transcript_section(ui, agent, fleet, allowed, actions);
+            transcript_section(
+                ui,
+                agent,
+                fleet,
+                allowed,
+                actions,
+                options.transcript_max_width,
+            );
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
@@ -1679,6 +2430,7 @@ fn transcript_section(
     fleet: &Fleet,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
+    transcript_max_width: Option<f32>,
 ) {
     use crate::transcript::TranscriptRequest;
     ui.add_space(4.0);
@@ -1694,12 +2446,18 @@ fn transcript_section(
         Some(p) if !p.session.is_empty() => format!("transcript — {}", p.session),
         _ => "transcript".to_string(),
     };
+    // Table rows keep the transcript header discoverable, but reflow the
+    // full chat into a bounded column. Cards owns the primary styled chat
+    // surface in Recent output.
     let open = fleet.is_transcript_open(&agent.agent_id);
     let header = egui::CollapsingHeader::new(RichText::new(title).small())
         .id_salt(("corral-ui-transcript", &agent.agent_id))
         .default_open(false)
         .open(Some(open))
         .show(ui, |ui| {
+            if let Some(max_width) = transcript_max_width {
+                ui.set_max_width(max_width);
+            }
             let Some(pane) = pane else {
                 // First open this frame: the fetch is dispatched below
                 // (the pane exists from the next frame on).
@@ -2105,6 +2863,21 @@ mod tests {
             "chips compose with search over the agent fields"
         );
 
+        fleet.agents.insert(
+            "herdr:blocked".into(),
+            agent_with_state("herdr:blocked", crate::model::AgentState::Blocked),
+        );
+        assert_eq!(
+            available_state_filters(&fleet, ""),
+            vec![
+                StateFilter::Blocked,
+                StateFilter::All,
+                StateFilter::Working,
+                StateFilter::Idle,
+            ],
+            "the production filter sequence puts Needs you before All"
+        );
+
         let mut unknown_fleet = Fleet::default();
         unknown_fleet.agents.insert(
             "herdr:unknown".into(),
@@ -2262,20 +3035,6 @@ mod tests {
     }
 
     #[test]
-    fn cards_pane_widths_reserve_full_gutter() {
-        let widths = cards_widths(1200.0, 6.0, 6.0);
-        assert!((widths.total - 1200.0).abs() <= 0.01);
-        assert!((widths.left - 472.8).abs() <= 0.01);
-        assert!((widths.right - 709.2).abs() <= 0.01);
-        assert_eq!(widths.total, widths.left + widths.right + (2.0 * 6.0 + 6.0));
-
-        let narrow = cards_widths(700.0, 6.0, 6.0);
-        assert_eq!(narrow.left, 320.0);
-        assert_eq!(narrow.right, 380.0);
-        assert_eq!(narrow.total, 718.0);
-    }
-
-    #[test]
     fn cards_path_click_selects_agent() {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&[]);
@@ -2342,7 +3101,7 @@ mod tests {
         fleet.agents.insert(agent.agent_id.clone(), agent);
 
         let render_age_right = |now_ms: u64, expected: &str| {
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(472.8, 800.0));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(496.44, 800.0));
             let input = egui::RawInput {
                 screen_rect: Some(screen),
                 ..Default::default()
@@ -2371,12 +3130,12 @@ mod tests {
         let short_layout_inset = short.0 - short.2;
         let long_layout_inset = long.0 - long.2;
         assert!(
-            (short_layout_inset - 8.0).abs() <= 1.0,
-            "short age layout edge must stay at the card's 8px inner margin: inset={short_layout_inset}"
+            short_layout_inset.abs() <= 1.0,
+            "short age layout edge must stay at the card's right edge: inset={short_layout_inset}"
         );
         assert!(
-            (long_layout_inset - 8.0).abs() <= 1.0,
-            "long age layout edge must stay at the card's 8px inner margin: inset={long_layout_inset}"
+            long_layout_inset.abs() <= 1.0,
+            "long age layout edge must stay at the card's right edge: inset={long_layout_inset}"
         );
     }
 
@@ -2425,7 +3184,7 @@ mod tests {
     #[test]
     fn ordinary_needs_you_ages_render_unelided_at_master_widths() {
         let now = 1_700_000_000_000_u64;
-        for width in [320.0, 472.8] {
+        for width in [320.0, 496.44] {
             for (elapsed_ms, expected) in [
                 ((23 * 60 + 59) * 60_000_u64, "Needs you · 23h 59m"),
                 ((3 * 24 + 4) * 60 * 60_000_u64, "Needs you · 3d 04h"),
@@ -2466,7 +3225,7 @@ mod tests {
 
     #[test]
     fn extreme_master_card_age_is_clipped_inside_bound() {
-        for width in [320.0, 472.8] {
+        for width in [320.0, 496.44] {
             let ctx = row_test_context();
             let mut agent = agent_with_caps(&[]);
             agent.agent_id = "herdr:extreme-age".into();
@@ -2577,8 +3336,8 @@ mod tests {
             "non-idle card renders so transcript omission is observable"
         );
         assert!(
-            text_rect(&output, "Idle (1)").is_some(),
-            "idle tail renders as one collapsed row"
+            text_rect(&output, "Idle / done (1) — expandable").is_some(),
+            "idle tail renders as one collapsed expandable section"
         );
         assert!(
             text_rect(&output, "TRANSCRIPT_ONLY_MARKER").is_none(),
@@ -2588,48 +3347,1136 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_persists_cards_table_search_filter_and_flat() {
+    fn recent_tail_classifies_terminal_semantics_into_chat_styles() {
+        assert_eq!(classify_tail_line("› fix the board"), RecentBlockKind::User);
+        assert_eq!(
+            classify_tail_line("› Ask Codex to do anything"),
+            RecentBlockKind::Agent,
+            "the empty Codex prompt is not a human message"
+        );
+        assert_eq!(
+            classify_tail_line("• Working (5m43s • esc to interrupt)"),
+            RecentBlockKind::Tool
+        );
+        assert_eq!(
+            classify_tail_line("Here is the assistant response."),
+            RecentBlockKind::Agent
+        );
+        assert_eq!(
+            classify_tail_line("The tool_call concept is explained here."),
+            RecentBlockKind::Agent,
+            "ordinary prose containing tool_call stays agent text"
+        );
+        assert_eq!(
+            classify_tail_line("This tool-use phrase is prose."),
+            RecentBlockKind::Agent,
+            "ordinary prose containing tool-use stays agent text"
+        );
+
+        let user = recent_block_style(RecentBlockKind::User);
+        assert_eq!(
+            user.fill,
+            theme::ui::USER_TINT,
+            "user blocks use the prototype tint"
+        );
+        assert_eq!(
+            user.inset, USER_BLOCK_INSET,
+            "user blocks keep the 24px left inset"
+        );
+        assert!(!user.monospace, "user text remains proportional");
+
+        let tool = recent_block_style(RecentBlockKind::Tool);
+        assert_eq!(
+            tool.fill,
+            theme::ui::PANEL3,
+            "tool blocks use the tool panel"
+        );
+        assert_eq!(tool.inset, 0.0, "tool blocks fill the transcript width");
+        assert!(
+            tool.monospace,
+            "tool text keeps terminal monospace treatment"
+        );
+
+        let agent = recent_block_style(RecentBlockKind::Agent);
+        assert_eq!(agent.fill, Color32::TRANSPARENT);
+        assert!(!agent.monospace, "agent text remains proportional");
+    }
+
+    #[test]
+    fn recent_transcript_renders_newest_window_in_stable_order_after_older_page() {
+        let ctx = row_test_context();
+        let agent_id = "herdr:transcript-window";
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = agent_id.into();
+        let mut fleet = Fleet {
+            agents: [(agent_id.to_string(), agent)].into_iter().collect(),
+            transcripts: [(
+                agent_id.to_string(),
+                crate::transcript::TranscriptPane {
+                    // The pane is newest-first: marker 0 is newest, while
+                    // marker 7 is the oldest held entry.
+                    entries: (0..8)
+                        .map(|index| crate::transcript::TranscriptEntry {
+                            role: "assistant".into(),
+                            text: format!("transcript-marker-{index}"),
+                            ts: Some(index as u64),
+                        })
+                        .collect(),
+                    next_cursor: Some("older-page".into()),
+                    generation: 1,
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let render_recent = |fleet: &Fleet| {
+            let mut actions = BoardActions {
+                drive: &mut |_| {},
+                transcript: &mut |_| {},
+                full_chat: &mut |_| {},
+            };
+            ctx.run_ui(row_test_input(vec![]), |ui| {
+                row_test_style(ui);
+                recent_output_surface(ui, fleet, Some(agent_id), &|_| true, &mut actions);
+            })
+        };
+        let rendered_order = |output: &egui::FullOutput| {
+            let mut positions: Vec<(f32, usize)> = (0..6)
+                .map(|index| {
+                    let marker = format!("transcript-marker-{index}");
+                    (
+                        text_rect(output, &marker)
+                            .unwrap_or_else(|| panic!("newest marker {marker} must render"))
+                            .top(),
+                        index,
+                    )
+                })
+                .collect();
+            positions.sort_by(|left, right| left.0.total_cmp(&right.0));
+            positions
+                .into_iter()
+                .map(|(_, index)| index)
+                .collect::<Vec<_>>()
+        };
+
+        let mut output = render_recent(&fleet);
+        assert_eq!(
+            rendered_order(&output),
+            vec![5, 4, 3, 2, 1, 0],
+            "Cards renders the newest six oldest-to-newest with newest last"
+        );
+        for index in 6..8 {
+            assert!(
+                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
+                "older held marker {index} must not displace the newest window"
+            );
+        }
+        let oldest_visible = text_rect(&output, "transcript-marker-5")
+            .expect("oldest visible newest-window marker")
+            .top();
+        let newest_visible = text_rect(&output, "transcript-marker-0")
+            .expect("newest visible marker")
+            .top();
+        assert!(
+            newest_visible > oldest_visible,
+            "newest visible transcript entry must sit lowest in the chat"
+        );
+        let initial_order = rendered_order(&output);
+        clear_textures(&mut output);
+
+        let generation = fleet
+            .transcripts
+            .get(agent_id)
+            .expect("transcript pane seeded")
+            .generation;
+        let older_page = crate::transcript::TranscriptPage {
+            agent: agent_id.into(),
+            store: "test".into(),
+            session: "test-session".into(),
+            bind: "session_id".into(),
+            stores_unavailable: vec![],
+            entries: (8..10)
+                .map(|index| crate::transcript::TranscriptEntry {
+                    role: "assistant".into(),
+                    text: format!("transcript-marker-{index}"),
+                    ts: Some(index as u64),
+                })
+                .collect(),
+            next_cursor: None,
+            skipped: 0,
+        };
+        assert_eq!(
+            fleet.fold_transcript(crate::transcript::TranscriptMsg {
+                agent_id: agent_id.into(),
+                generation,
+                outcome: Ok(older_page),
+            }),
+            crate::transcript::FoldOutcome::AppliedOk,
+            "an older page folds into the existing transcript pane"
+        );
+
+        let mut output = render_recent(&fleet);
+        assert_eq!(
+            rendered_order(&output),
+            initial_order,
+            "appending an older page leaves the displayed newest window stable"
+        );
+        for index in 6..10 {
+            assert!(
+                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
+                "older marker {index} must remain outside the Cards newest window"
+            );
+        }
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn dense_master_tool_pill_has_fixed_inner_height() {
+        let ctx = row_test_context();
+        let mut pill_rect = None;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            pill_rect = Some(tool_pill(ui, "codex").rect);
+        });
+        let pill_rect = pill_rect.expect("tool pill allocated a bounded rectangle");
+        assert_eq!(pill_rect.height(), TOOL_PILL_HEIGHT);
+        assert!(
+            pill_rect.height() < MASTER_ROW_HEIGHT,
+            "the tool pill must fit inside the dense 34px master row"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn long_tool_blocks_wrap_inside_the_recent_output_pane() {
+        let ctx = row_test_context();
+        let long_tool_line = format!("• {}", "command-output ".repeat(30));
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(220.0, 240.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                row_test_style(ui);
+                ui.set_max_width(180.0);
+                recent_chat_block(ui, RecentBlockKind::Tool, &long_tool_line);
+            },
+        );
+        let rendered = rendered_text(&output, &long_tool_line)
+            .expect("the complete bounded tool line remains in the rendered galley");
+        assert!(
+            !rendered.elided,
+            "long tool output wraps instead of eliding"
+        );
+        assert!(
+            rendered.rect.right() <= 180.0 + 0.01,
+            "wrapped tool output stays inside the pane width"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn master_headers_align_identity_and_state_time_with_dense_rows() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&[]);
+        agent.display_name = Some("dense agent".into());
+        let fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent.clone())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let width = 520.0;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            ui.set_width(width);
+            master_column_header(ui, width);
+            master_card_with_response(ui, &fleet, &agent.agent_id, false, 0);
+        });
+        let header_identity = rendered_text(&output, "Agent").expect("Agent header rendered");
+        let row_identity = rendered_text(&output, "dense agent").expect("agent identity rendered");
+        let header_state =
+            rendered_text(&output, "State · time").expect("state/time header rendered");
+        let row_state = rendered_text(&output, "Working ·").expect("state/time value rendered");
+        assert!(
+            (header_identity.rect.left() - row_identity.rect.left()).abs() <= 0.01,
+            "Agent header follows the row identity inset"
+        );
+        assert!(
+            (header_state.layout_right - row_state.layout_right).abs() <= 0.1,
+            "State · time header aligns to the row value's right edge"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn right_tabs_reach_issues_and_audit_and_reset_on_board_return() {
+        let ctx = row_test_context();
+        ctx.memory_mut(|memory| {
+            memory
+                .data
+                .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), RightTab::Board);
+        });
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        let issues_pos = text_rect(&output, "Issues")
+            .expect("detail pane keeps Issues reachable")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(issues_pos), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(issues_pos), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        assert_eq!(take_right_tab_request(&ctx), Some(RightTab::Issues));
+        clear_textures(&mut output);
+
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        let audit_pos = text_rect(&output, "Audit")
+            .expect("detail pane keeps Audit reachable")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(audit_pos), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(audit_pos), |ui| {
+            row_test_style(ui);
+            right_tabs(ui);
+        });
+        assert_eq!(take_right_tab_request(&ctx), Some(RightTab::Audit));
+        clear_textures(&mut output);
+
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        let active =
+            ctx.memory(|memory| memory.data.get_temp::<RightTab>(egui::Id::new(RIGHT_TAB)));
+        assert_eq!(active, Some(RightTab::Board));
+        assert!(take_right_tab_request(&ctx).is_none());
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn board_toolbar_has_required_chips_and_detail_owns_view_actions() {
         let ctx = row_test_context();
         let mut agent = agent_in_repo("herdr:alpha", Some("corral"));
         agent.display_name = Some("alpha agent".into());
+        agent.state = crate::model::AgentState::Blocked;
+        agent.capabilities = ["read_tail", "interrupt", "kill"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         let fleet = Fleet {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
 
-        let (view, flat, query, filter, _) = toolbar_label_click(
+        let (view, flat, query, filter, mut output) = toolbar_frame(
             &ctx,
             &fleet,
-            "Table",
             BoardView::Cards,
             true,
             "",
             StateFilter::All,
+            row_test_input(vec![]),
         );
-        assert_eq!(view, BoardView::Table);
-        assert_eq!(view_mode(&ctx), BoardView::Table);
-        assert!(!flat, "Table keeps its grouped default after the switch");
-        assert!(!flat_view(&ctx, BoardView::Table));
+        assert_eq!(view, BoardView::Cards);
+        assert!(flat, "Cards keeps its flat default");
         assert_eq!(query, "");
         assert_eq!(filter, StateFilter::All);
+        let needs_you = text_rect(&output, "Needs you").expect("Needs you chip rendered");
+        let all = text_rect(&output, "All").expect("the active All chip emits its label");
+        assert!(
+            needs_you.left() < all.left(),
+            "production chip order must be Needs you then All: needs={needs_you:?} all={all:?}"
+        );
+        assert!(
+            text_rect(&output, "Search repo / branch / issue…").is_some(),
+            "the board search hint remains in the master toolbar"
+        );
+        for forbidden in ["Working", "Idle", "Review", "flat sort", "Cards", "Table"] {
+            assert!(
+                text_rect(&output, forbidden).is_none(),
+                "master toolbar must not render the legacy {forbidden} control"
+            );
+        }
+        clear_textures(&mut output);
 
-        let (view, flat, query, filter, _) =
-            toolbar_label_click(&ctx, &fleet, "Cards", view, flat, &query, filter);
-        assert_eq!(view, BoardView::Cards);
-        assert_eq!(view_mode(&ctx), BoardView::Cards);
-        assert!(flat, "Cards keeps its flat default after the switch");
-        assert!(flat_view(&ctx, BoardView::Cards));
+        let mut view = BoardView::Cards;
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:alpha"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        for required in [
+            "Board",
+            "Issues",
+            "Audit",
+            "Cards",
+            "Table",
+            "Interrupt",
+            "Kill",
+            "Recent output",
+            LIVE_LABEL,
+            EARLIER_LINES_LABEL,
+            LOAD_EARLIER_LABEL,
+        ] {
+            assert!(
+                text_rect(&output, required).is_some(),
+                "detail pane must render {required:?}"
+            );
+        }
+        let controls = ["Cards", "Table", "Interrupt", "Kill"]
+            .map(|label| text_rect(&output, label).expect("primary control rendered"));
+        assert!(
+            controls
+                .windows(2)
+                .all(|pair| pair[0].left() < pair[1].left()),
+            "Cards controls stay in prototype order Cards / Table / Interrupt / Kill"
+        );
+        let controls_share_row = controls
+            .windows(2)
+            .all(|pair| (pair[0].top() - pair[1].top()).abs() <= 1.0);
+        if !controls_share_row {
+            clear_textures(&mut output);
+            panic!("Cards controls share one inline row rather than wrapping: {controls:?}");
+        }
+        assert!(
+            text_rect(&output, "repo / branch / dirty / a-b / pr / ci").is_none(),
+            "Cards detail must not append the legacy topology/drive card below Recent output"
+        );
+        assert!(
+            text_rect(&output, "recent drives").is_none(),
+            "Cards detail must keep Recent output as the sole selected-agent surface"
+        );
+        let table_pos = text_rect(&output, "Table")
+            .expect("detail pane owns the Table action")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(table_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:alpha"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(table_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:alpha"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert_eq!(
+            view,
+            BoardView::Table,
+            "Table is owned by the detail action row"
+        );
+        clear_textures(&mut output);
+    }
 
-        let (view, flat, query, filter, _) =
-            toolbar_label_click(&ctx, &fleet, "Working", view, flat, &query, filter);
-        assert_eq!(filter, StateFilter::Working);
-        assert_eq!(state_filter(&ctx), StateFilter::Working);
+    #[test]
+    fn production_cards_toolbar_hides_needs_you_when_blocked_bucket_is_empty() {
+        let ctx = row_test_context();
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        assert!(text_rect(&output, "All").is_some());
+        assert!(
+            text_rect(&output, "Needs you").is_none(),
+            "production Cards toolbar must hide the empty Needs you bucket"
+        );
+        assert!(text_rect(&output, "Recent output").is_some());
+        clear_textures(&mut output);
+    }
 
-        let (view, flat, query, filter, _) =
-            toolbar_label_click(&ctx, &fleet, "flat sort", view, flat, &query, filter);
-        assert!(!flat);
-        assert!(!flat_view(&ctx, BoardView::Cards));
+    #[test]
+    fn cards_surface_scrolls_at_small_viewports() {
+        let ctx = row_test_context();
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        assert!(text_rect(&output, "All").is_some());
+        assert!(text_rect(&output, "Recent output").is_some());
+        assert!(
+            text_rect(&output, LOAD_EARLIER_LABEL).is_some(),
+            "the small Cards surface keeps its fetch control reachable inside ScrollArea"
+        );
+        clear_textures(&mut output);
+    }
 
+    #[test]
+    fn show_table_has_a_real_cards_round_trip() {
+        let ctx = row_test_context();
+        ctx.memory_mut(|memory| {
+            memory
+                .data
+                .insert_temp::<BoardView>(egui::Id::new(VIEW_MODE), BoardView::Table);
+        });
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        for tab in [RightTab::Issues, RightTab::Audit] {
+            let label = tab.label();
+            let tab_pos = text_rect(&output, label)
+                .expect("Table surface keeps detail-owned navigation reachable")
+                .center();
+            clear_textures(&mut output);
+            let mut next = ctx.run_ui(pointer_down_input(tab_pos), |ui| {
+                row_test_style(ui);
+                show(ui, &mut fleet, &|_| true, &mut actions);
+            });
+            clear_textures(&mut next);
+            next = ctx.run_ui(pointer_up_input(tab_pos), |ui| {
+                row_test_style(ui);
+                show(ui, &mut fleet, &|_| true, &mut actions);
+            });
+            assert_eq!(
+                take_right_tab_request(&ctx),
+                Some(tab),
+                "Table {label} tab must dispatch its real navigation request"
+            );
+            output = next;
+        }
+        let cards_pos = text_rect(&output, "Cards")
+            .expect("Table surface exposes a Cards return control")
+            .center();
+        assert!(text_rect(&output, "AGENT").is_some());
+        clear_textures(&mut output);
+
+        let mut output = ctx.run_ui(pointer_down_input(cards_pos), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(cards_pos), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        clear_textures(&mut output);
+
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show(ui, &mut fleet, &|_| true, &mut actions);
+        });
+        assert!(
+            text_rect(&output, "Recent output").is_some(),
+            "a real Table → Cards click must restore the Cards surface"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn cards_load_earlier_dispatches_real_read_tail_and_transcript() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = "herdr:cards-fetch".into();
+        let fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            rev: Some(42),
+            selected_agent: Some("herdr:cards-fetch".into()),
+            ..Default::default()
+        };
+        let intents = std::cell::RefCell::new(Vec::new());
+        let transcript_requests = std::cell::RefCell::new(Vec::new());
+        let mut actions = BoardActions {
+            drive: &mut |intent| intents.borrow_mut().push(intent),
+            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
+            full_chat: &mut |_| {},
+        };
+        let mut view = BoardView::Cards;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        let load_pos = text_rects(&output, LOAD_EARLIER_LABEL)
+            .last()
+            .expect("the divider's Load earlier control is rendered")
+            .center();
+        clear_textures(&mut output);
+
+        let mut output = ctx.run_ui(pointer_down_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "Cards click dispatches one real drive"
+        );
+        assert_eq!(
+            intents.borrow()[0].capability,
+            crate::drive::Capability::ReadTail
+        );
+        assert_eq!(intents.borrow()[0].target, "herdr:cards-fetch");
+        assert_eq!(intents.borrow()[0].rev, Some(42));
+        assert_eq!(transcript_requests.borrow().len(), 1);
+        assert_eq!(
+            transcript_requests.borrow()[0].agent_id,
+            "herdr:cards-fetch"
+        );
+        assert_eq!(transcript_requests.borrow()[0].cursor, None);
+
+        // Once the first transcript page returns an opaque cursor, the same
+        // real Cards control asks for the next older page instead of
+        // restarting at the newest page.
+        let mut paged_fleet = fleet;
+        paged_fleet.transcripts.insert(
+            "herdr:cards-fetch".into(),
+            crate::transcript::TranscriptPane {
+                next_cursor: Some("older-page-cursor".into()),
+                ..Default::default()
+            },
+        );
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        let load_pos = text_rects(&output, LOAD_EARLIER_LABEL)
+            .last()
+            .expect("the paged divider keeps Load earlier actionable")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert_eq!(
+            intents.borrow().len(),
+            2,
+            "older-page click keeps the real read_tail drive"
+        );
+        assert_eq!(transcript_requests.borrow().len(), 2);
+        assert_eq!(
+            transcript_requests.borrow()[1].cursor.as_deref(),
+            Some("older-page-cursor"),
+            "older-page click follows the daemon cursor"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn right_pane_gates_interrupt_kill_and_requires_kill_confirmation() {
+        let render = |ctx: &egui::Context,
+                      fleet: &Fleet,
+                      view: &mut BoardView,
+                      allowed: &dyn Fn(&str) -> bool,
+                      actions: &mut BoardActions,
+                      input: egui::RawInput|
+         -> egui::FullOutput {
+            ctx.run_ui(input, |ui| {
+                row_test_style(ui);
+                right_pane(
+                    ui,
+                    fleet,
+                    fleet.selected_agent.as_deref(),
+                    view,
+                    true,
+                    allowed,
+                    actions,
+                );
+            })
+        };
+
+        let ctx = row_test_context();
+        let mut ready_agent = agent_with_caps(&["interrupt", "kill"]);
+        ready_agent.agent_id = "herdr:ready-actions".into();
+        let ready_fleet = Fleet {
+            agents: [(ready_agent.agent_id.clone(), ready_agent)]
+                .into_iter()
+                .collect(),
+            selected_agent: Some("herdr:ready-actions".into()),
+            ..Default::default()
+        };
+        let intents = std::cell::RefCell::new(Vec::new());
+        let mut actions = BoardActions {
+            drive: &mut |intent| intents.borrow_mut().push(intent),
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let mut view = BoardView::Cards;
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let interrupt_pos = text_rect(&output, "Interrupt").unwrap().center();
+        let kill_pos = text_rect(&output, "Kill").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(interrupt_pos),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(interrupt_pos),
+        );
+        assert_eq!(
+            intents.borrow()[0].capability,
+            crate::drive::Capability::Interrupt
+        );
+        clear_textures(&mut output);
+
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_pos),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_pos),
+        );
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "Kill never dispatches on its first click"
+        );
+        clear_textures(&mut output);
+        // Replay the original Kill coordinate as a double-click. The
+        // pending trigger stays disabled in place and confirmation lives in a
+        // separate row, so this second release cannot dispatch Kill.
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_pos),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_pos),
+        );
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "replaying the original Kill coordinate cannot bypass confirmation"
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let cancel_pos = text_rect(&output, "Cancel").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(cancel_pos),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(cancel_pos),
+        );
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "Cancel leaves the destructive action unissued"
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let kill_again = text_rect(&output, "Kill").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let confirm_again = text_rect(&output, "Confirm kill").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(confirm_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(confirm_again),
+        );
+        assert_eq!(intents.borrow().len(), 2);
+        assert_eq!(
+            intents.borrow()[1].capability,
+            crate::drive::Capability::Kill
+        );
+        clear_textures(&mut output);
+
+        // A pending confirmation is owned by the selected agent, not by a
+        // stale per-agent flag. Changing selection clears it before the new
+        // agent can render a destructive confirmation.
+        let mut second_agent = agent_with_caps(&["interrupt", "kill"]);
+        second_agent.agent_id = "herdr:second-actions".into();
+        let changed_selection_fleet = Fleet {
+            agents: [
+                (
+                    "herdr:ready-actions".into(),
+                    ready_fleet.agents["herdr:ready-actions"].clone(),
+                ),
+                (second_agent.agent_id.clone(), second_agent),
+            ]
+            .into_iter()
+            .collect(),
+            selected_agent: Some("herdr:second-actions".into()),
+            ..Default::default()
+        };
+        // Create a fresh pending confirmation for the original selected
+        // agent, then render the changed selection through the real pane.
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let kill_again = text_rect(&output, "Kill").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &changed_selection_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        assert!(
+            text_rect(&output, "Confirm kill").is_none(),
+            "changing the selected agent clears the prior kill confirmation"
+        );
+        clear_textures(&mut output);
+
+        for (id, caps, allowed) in [
+            ("herdr:unadvertised", Vec::new(), true),
+            (
+                "herdr:ungranted",
+                vec!["interrupt".to_string(), "kill".to_string()],
+                false,
+            ),
+        ] {
+            let mut agent = agent_with_caps(&[]);
+            agent.agent_id = id.into();
+            agent.capabilities = caps;
+            let fleet = Fleet {
+                agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+                selected_agent: Some(id.into()),
+                ..Default::default()
+            };
+            let mut blocked_intents = Vec::new();
+            let mut blocked_actions = BoardActions {
+                drive: &mut |intent| blocked_intents.push(intent),
+                transcript: &mut |_| {},
+                full_chat: &mut |_| {},
+            };
+            let mut view = BoardView::Cards;
+            let mut output = render(
+                &ctx,
+                &fleet,
+                &mut view,
+                &|_| allowed,
+                &mut blocked_actions,
+                row_test_input(vec![]),
+            );
+            let interrupt = text_rect(&output, "Interrupt").unwrap().center();
+            clear_textures(&mut output);
+            let mut output = render(
+                &ctx,
+                &fleet,
+                &mut view,
+                &|_| allowed,
+                &mut blocked_actions,
+                pointer_down_input(interrupt),
+            );
+            clear_textures(&mut output);
+            let mut output = render(
+                &ctx,
+                &fleet,
+                &mut view,
+                &|_| allowed,
+                &mut blocked_actions,
+                pointer_up_input(interrupt),
+            );
+            assert!(
+                blocked_intents.is_empty(),
+                "{id} must not dispatch an unavailable or ungranted action"
+            );
+            clear_textures(&mut output);
+        }
+    }
+
+    #[test]
+    fn toolbar_search_accepts_real_click_and_text_events() {
+        let ctx = row_test_context();
+        let agent = agent_in_repo("herdr:search", Some("corral"));
+        let fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let (_, _, _, _, mut output) = toolbar_frame(
+            &ctx,
+            &fleet,
+            BoardView::Table,
+            false,
+            "",
+            StateFilter::All,
+            row_test_input(vec![]),
+        );
+        let search_pos = text_rect(&output, "Search repo / branch / issue…")
+            .expect("search field rendered")
+            .center();
+        clear_textures(&mut output);
+
+        let (view, flat, query, filter, mut output) = toolbar_frame(
+            &ctx,
+            &fleet,
+            BoardView::Table,
+            false,
+            "",
+            StateFilter::All,
+            pointer_down_input(search_pos),
+        );
+        clear_textures(&mut output);
         let (view, flat, query, filter, mut output) = toolbar_frame(
             &ctx,
             &fleet,
@@ -2637,17 +4484,10 @@ mod tests {
             flat,
             &query,
             filter,
-            row_test_input(vec![]),
+            pointer_up_input(search_pos),
         );
-        let pos = text_rect(&output, "repo / branch / title / issue…")
-            .expect("search field rendered")
-            .center();
         clear_textures(&mut output);
-        for input in [pointer_down_input(pos), pointer_up_input(pos)] {
-            let mut output = toolbar_frame(&ctx, &fleet, view, flat, &query, filter, input).4;
-            clear_textures(&mut output);
-        }
-        let (view, _flat, query, filter, mut output) = toolbar_frame(
+        let (view, flat, query, filter, mut output) = toolbar_frame(
             &ctx,
             &fleet,
             view,
@@ -2656,54 +4496,27 @@ mod tests {
             filter,
             row_test_input(vec![egui::Event::Text("alpha".into())]),
         );
-        clear_textures(&mut output);
-        assert_eq!(query, "alpha");
+        assert_eq!(
+            query, "alpha",
+            "the clicked TextEdit accepts the text event"
+        );
         assert_eq!(search_query(&ctx), "alpha");
-        assert_eq!(view, BoardView::Cards);
-        assert_eq!(filter, StateFilter::Working);
+        assert_eq!(view, BoardView::Table);
+        assert_eq!(filter, StateFilter::All);
+        assert!(
+            !flat,
+            "Table remains grouped until its own flat sort control is used"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]
-    fn empty_state_shows_message_once_and_keeps_table_header() {
+    fn table_empty_state_shows_message_once_and_keeps_header() {
         let ctx = row_test_context();
-        let fleet = Fleet::default();
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
         let message = no_match_message("missing");
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show_empty_state(
-                ui,
-                &fleet,
-                "missing",
-                BoardView::Cards,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        assert!(
-            text_rects(&output, &message).len() == 1,
-            "Cards no-match state reports the query once"
-        );
-        assert!(
-            text_rect(&output, "select an agent for detail + Recent output").is_some(),
-            "Cards no-match state keeps the detail pane placeholder"
-        );
-        clear_textures(&mut output);
-
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            show_empty_state(
-                ui,
-                &fleet,
-                "missing",
-                BoardView::Table,
-                &|_| true,
-                &mut actions,
-            );
+            show_empty_table_state(ui, "missing");
         });
         assert!(
             text_rects(&output, &message).len() == 1,
@@ -3089,49 +4902,6 @@ mod tests {
             toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
         });
         (view, flat, query, filter, output)
-    }
-
-    fn toolbar_label_click(
-        ctx: &egui::Context,
-        fleet: &Fleet,
-        needle: &str,
-        view: BoardView,
-        flat: bool,
-        query: &str,
-        filter: StateFilter,
-    ) -> (BoardView, bool, String, StateFilter, egui::FullOutput) {
-        let (view, flat, query, filter, mut output) = toolbar_frame(
-            ctx,
-            fleet,
-            view,
-            flat,
-            query,
-            filter,
-            row_test_input(vec![]),
-        );
-        let pos = text_rect(&output, needle)
-            .expect("toolbar label rendered")
-            .center();
-        clear_textures(&mut output);
-        let (view, flat, query, filter, mut output) = toolbar_frame(
-            ctx,
-            fleet,
-            view,
-            flat,
-            &query,
-            filter,
-            pointer_down_input(pos),
-        );
-        clear_textures(&mut output);
-        toolbar_frame(
-            ctx,
-            fleet,
-            view,
-            flat,
-            &query,
-            filter,
-            pointer_up_input(pos),
-        )
     }
 
     fn board_row_frame(
@@ -3652,10 +5422,20 @@ mod tests {
             drive_disabled_reason("kill", DriveControlState::MissingGrant).expect("grant reason");
         let not_implemented = drive_disabled_reason("kill", DriveControlState::NotImplemented)
             .expect("not implemented reason");
-        assert!(grant.contains("requires the kill grant"));
-        assert!(grant.contains("ask the host"));
-        assert!(not_implemented.contains("kill: not implemented yet"));
-        assert!(!not_implemented.contains("grant"));
+        assert_eq!(grant, "requires the kill grant — ask the host");
+        assert_eq!(not_implemented, "kill: not implemented yet");
+        assert_eq!(
+            drive_disabled_reason("read_tail", DriveControlState::MissingGrant),
+            Some("requires the read_tail grant — ask the host".to_string())
+        );
+        assert_eq!(
+            drive_disabled_reason("read_tail", DriveControlState::NotImplemented),
+            Some("read_tail: not implemented yet".to_string())
+        );
+        assert!(
+            !grant.contains(LOAD_EARLIER_LABEL) && !not_implemented.contains(LOAD_EARLIER_LABEL),
+            "disabled guidance names capabilities, never display labels"
+        );
         assert_ne!(grant, not_implemented, "reasons must never be conflated");
     }
 

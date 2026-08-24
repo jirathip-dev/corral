@@ -44,12 +44,24 @@
 //! still detected when fsevents missed them. The PRIMARY mechanism remains
 //! fsevents; the sweep is a documented catch-up only.
 //!
-//! All git subprocesses share a four-command admission budget, including
-//! fsevents-triggered probes and registry scans. Registry scans are serialized
-//! because topology reconciliation also performs synchronous filesystem
-//! canonicalization. A slow probe therefore queues behind bounded work rather
-//! than multiplying host load and starving unrelated async services; its
-//! timeout and over-budget diagnostic remain unchanged.
+//! All GitPlane git subprocesses share a four-command admission budget,
+//! including fsevents-triggered probes and registry scans. Registry scans are
+//! serialized because topology reconciliation also performs synchronous
+//! filesystem canonicalization. A slow probe therefore queues behind bounded
+//! work rather than multiplying host load and starving unrelated async
+//! services. Once admitted, its child still has the five-second timeout and
+//! its over-budget diagnostic remains unchanged; permit wait is additional
+//! latency, not part of that child timeout.
+//!
+//! When an FSEvents path under `commondir/worktrees/` is unknown, the watcher
+//! loop awaits the throttled topology rescan before debouncing the newly
+//! discovered worktree. A concurrent 10s/60s safety rescan can therefore
+//! delay topology freshness behind one serialized scan, but the callback
+//! fan-in queue retains subsequent frames and the 400ms retry closes the race
+//! where `git worktree add` registers after the first rescan. This coupling is
+//! deliberate: the new path gets a probe from the same reconciliation instead
+//! of waiting for the next safety sweep; the serialization test pins that the
+//! two topology passes never overlap.
 //!
 //! ## Contract notes
 //!
@@ -158,6 +170,12 @@ static TEST_GIT_DELAY_MILLIS: AtomicU64 = AtomicU64::new(0);
 static TEST_GIT_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static TEST_GIT_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_RESCAN_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_RESCAN_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 struct TestGitLoadGuard;
@@ -186,6 +204,36 @@ impl TestGitLoadGuard {
 impl Drop for TestGitLoadGuard {
     fn drop(&mut self) {
         TEST_GIT_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+struct TestRescanLoadGuard;
+
+#[cfg(test)]
+impl TestRescanLoadGuard {
+    fn acquire() -> Self {
+        let current = TEST_RESCAN_IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut observed = TEST_RESCAN_MAX_IN_FLIGHT.load(Ordering::SeqCst);
+        while current > observed {
+            match TEST_RESCAN_MAX_IN_FLIGHT.compare_exchange(
+                observed,
+                current,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(next) => observed = next,
+            }
+        }
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestRescanLoadGuard {
+    fn drop(&mut self) {
+        TEST_RESCAN_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -226,8 +274,14 @@ struct PlaneState {
     /// commondir -> main checkout path (commondir root files like `HEAD`/
     /// `index` belong to the main checkout).
     main_checkouts: HashMap<PathBuf, PathBuf>,
-    /// Worktrees currently inside their debounce window.
+    /// Worktrees with a debounce or probe task active. This remains set until
+    /// the probe completes so permit waiters cannot spawn redundant tasks.
     pending: HashSet<PathBuf>,
+    /// Worktrees that received another filesystem event while their active
+    /// task was sleeping, waiting for a git permit, or probing. One follow-up
+    /// probe consumes the flag; sustained events never create an unbounded
+    /// queue of probe tasks.
+    rerun: HashSet<PathBuf>,
     /// Worktree paths a rescan skip has already been warned about (once per
     /// continuous skip period, so a legitimate out-of-scope worktree cannot
     /// spam the log every sweep).
@@ -267,7 +321,7 @@ pub struct GitPlane {
     /// watched too.
     worktrees_root: PathBuf,
     state: Mutex<PlaneState>,
-    /// Shared admission control for every git subprocess in this plane.
+    /// Shared admission control for every GitPlane git subprocess.
     /// Debounced event probes and sweep probes must not bypass one another.
     git_command_budget: Arc<Semaphore>,
     /// Registry scans perform synchronous filesystem canonicalization between
@@ -693,7 +747,16 @@ impl GitPlane {
     fn debounce(self: &Arc<Self>, wt: PathBuf, sink: PlaneSink) {
         let spawn = {
             let mut state = self.state.lock().unwrap();
-            state.pending.insert(wt.clone())
+            if state.pending.insert(wt.clone()) {
+                true
+            } else {
+                // The existing task owns the one permitted follow-up. Keep
+                // `pending` set through semaphore wait and probe completion;
+                // otherwise every event in a slow queue would spawn another
+                // task before the first probe even starts.
+                state.rerun.insert(wt.clone());
+                false
+            }
         };
         if !spawn {
             return;
@@ -701,31 +764,52 @@ impl GitPlane {
         let plane = self.clone();
         let git_command_budget = plane.git_command_budget.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(DEBOUNCE).await;
-            {
-                let mut state = plane.state.lock().unwrap();
-                state.pending.remove(&wt);
+            loop {
+                tokio::time::sleep(DEBOUNCE).await;
+                // Budget clock starts after the debounce (the 300ms window is
+                // outside the 200ms per-event budget) but covers the probe —
+                // the dominant cost — through the emits. Keep `pending` set
+                // while this task waits for the shared git budget.
+                let started = Instant::now();
+                let (cached_commit, cached_subject) = {
+                    let state = plane.state.lock().unwrap();
+                    state
+                        .worktrees
+                        .get(&wt)
+                        .map(|st| (st.commit.clone(), st.subject.clone()))
+                        .unwrap_or_default()
+                };
+                let probe = probe_worktree(
+                    &wt,
+                    cached_commit.as_deref(),
+                    cached_subject.as_deref(),
+                    git_command_budget.clone(),
+                )
+                .await;
+                plane.apply_probe(&wt, started, probe, &sink).await;
+
+                let rerun = {
+                    let mut state = plane.state.lock().unwrap();
+                    if state.rerun.remove(&wt) {
+                        true
+                    } else {
+                        state.pending.remove(&wt);
+                        false
+                    }
+                };
+                if !rerun || plane.stopped.load(Ordering::Relaxed) {
+                    if plane.stopped.load(Ordering::Relaxed) {
+                        let mut state = plane.state.lock().unwrap();
+                        state.pending.remove(&wt);
+                        state.rerun.remove(&wt);
+                    }
+                    break;
+                }
+                // Events that arrived during the probe are represented by
+                // one follow-up debounce. A single task remains responsible
+                // for the worktree, so sustained fsevents cannot accumulate
+                // queued probe tasks.
             }
-            // Budget clock starts after the debounce (the 300ms window is
-            // outside the 200ms per-event budget) but covers the probe —
-            // the dominant cost — through the emits.
-            let started = Instant::now();
-            let (cached_commit, cached_subject) = {
-                let state = plane.state.lock().unwrap();
-                state
-                    .worktrees
-                    .get(&wt)
-                    .map(|st| (st.commit.clone(), st.subject.clone()))
-                    .unwrap_or_default()
-            };
-            let probe = probe_worktree(
-                &wt,
-                cached_commit.as_deref(),
-                cached_subject.as_deref(),
-                git_command_budget,
-            )
-            .await;
-            plane.apply_probe(&wt, started, probe, &sink).await;
         });
     }
 
@@ -945,14 +1029,15 @@ impl GitPlane {
     /// the added worktree paths.
     async fn rescan(&self, sink: &PlaneSink) -> Vec<PathBuf> {
         // `scan_all_worktrees` interleaves async git calls with synchronous
-        // filesystem enumeration/canonicalization. Keep one such scan in
-        // flight per plane: the command semaphore below limits subprocesses,
-        // while this lock prevents overlapping filesystem passes from still
-        // occupying every Tokio worker during a topology burst.
-        let scan = {
-            let _guard = self.rescan_lock.lock().await;
-            self.scan_all_worktrees().await
-        };
+        // filesystem enumeration/canonicalization. Keep one complete
+        // topology reconciliation in flight per plane: the command semaphore
+        // below limits subprocesses, while this lock prevents overlapping
+        // filesystem passes, state diffs, and topology event emission during
+        // a burst.
+        let _guard = self.rescan_lock.lock().await;
+        #[cfg(test)]
+        let _rescan_load = TestRescanLoadGuard::acquire();
+        let scan = self.scan_all_worktrees().await;
         let mut tracked: HashMap<PathBuf, WorktreeEntry> = HashMap::new();
         let mut skipped: HashSet<PathBuf> = HashSet::new();
         for entry in scan.entries {
@@ -1311,6 +1396,8 @@ async fn probe_worktree(
     cached_subject: Option<&str>,
     git_command_budget: Arc<Semaphore>,
 ) -> Result<Probe, ProbeError> {
+    #[cfg(test)]
+    TEST_PROBE_RUNS.fetch_add(1, Ordering::SeqCst);
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
@@ -1847,11 +1934,8 @@ mod tests {
         );
         // A REAL path containing a backslash sequence must never be
         // rewritten: raw existence wins.
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-esc-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("esc");
         let raw = root.join("wt\\ttab"); // literal backslash + "ttab"
         fs::create_dir_all(&raw).unwrap();
         let real = fs::canonicalize(&raw).unwrap();
@@ -1866,7 +1950,6 @@ mod tests {
             resolve_possibly_escaped(Path::new("/nonexistent/raw")),
             PathBuf::from("/nonexistent/raw")
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1874,11 +1957,8 @@ mod tests {
         // WS3 F5: a symlinked HOME must not split the canonicalized roots
         // from the raw porcelain/cwd spellings of the same worktrees — every
         // spelling of a watched worktree must match `watches()`.
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-watches-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("watches");
         let real = root.join("real");
         let repo = real.join("repo");
         let wts = real.join("wts");
@@ -1910,7 +1990,6 @@ mod tests {
         let outside = root.join("outside");
         fs::create_dir_all(&outside).unwrap();
         assert!(!plane.watches(&outside), "out-of-scope path does not match");
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// #43 regression. Both directions of the MISSING-path case, which was
@@ -1926,11 +2005,8 @@ mod tests {
     /// does depend on: a delete event names a path that is already gone.
     #[test]
     fn watches_resolves_paths_that_do_not_exist_yet() {
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-missing-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("missing");
         let real = root.join("real");
         let repo = real.join("repo");
         let wts = real.join("wts");
@@ -2000,17 +2076,12 @@ mod tests {
             PathBuf::from(""),
             "an empty path falls back to the raw spelling"
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn resolves_gitdir_for_dir_and_file_forms() {
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-resolve-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("resolve");
         // Main-checkout form: `.git` is a directory.
         let main = root.join("main");
         fs::create_dir_all(main.join(".git")).unwrap();
@@ -2041,7 +2112,6 @@ mod tests {
             resolve_gitdir(&rel).expect("relative form resolves"),
             fs::canonicalize(&rel_gitdir).unwrap()
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// Construct a `GitPlane` over made-up, nonexistent roots and let the
@@ -2227,13 +2297,12 @@ mod tests {
         );
     }
 
-    /// A throwaway repo with one committed file, returning (root, HEAD sha).
-    fn scratch_repo(tag: &str) -> (PathBuf, String) {
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-probe-{}-{}-{tag}",
-            std::process::id(),
-            now_millis()
-        ));
+    /// A throwaway repo with one committed file. The owning `TempDir` stays
+    /// live with the test, so setup failures and assertion panics still clean
+    /// up the checkout and any linked worktrees.
+    fn scratch_repo(tag: &str) -> (tempfile::TempDir, PathBuf, String) {
+        let temp = tempfile::tempdir().expect("scratch temp dir");
+        let root = temp.path().join(format!("repo-{tag}"));
         fs::create_dir_all(&root).unwrap();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -2255,7 +2324,7 @@ mod tests {
         assert!(git(&["commit", "-m", "initial"]).status.success());
         let sha = git(&["rev-parse", "HEAD"]).stdout;
         let sha = String::from_utf8_lossy(&sha).trim().to_string();
-        (root, sha)
+        (temp, root, sha)
     }
 
     struct TestGitDelayReset(u64);
@@ -2265,6 +2334,9 @@ mod tests {
             let previous = TEST_GIT_DELAY_MILLIS.swap(delay_ms, Ordering::SeqCst);
             TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
             TEST_GIT_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
+            TEST_PROBE_RUNS.store(0, Ordering::SeqCst);
+            TEST_RESCAN_IN_FLIGHT.store(0, Ordering::SeqCst);
+            TEST_RESCAN_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
             Self(previous)
         }
     }
@@ -2273,6 +2345,7 @@ mod tests {
         fn drop(&mut self) {
             TEST_GIT_DELAY_MILLIS.store(self.0, Ordering::SeqCst);
             TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
+            TEST_RESCAN_IN_FLIGHT.store(0, Ordering::SeqCst);
         }
     }
 
@@ -2296,6 +2369,86 @@ mod tests {
         }
     }
 
+    /// The watcher uses `maybe_rescan` for an unknown topology event while
+    /// the safety-net task calls `rescan` directly. Both paths must reconcile
+    /// one topology snapshot at a time; otherwise their synchronous
+    /// canonicalization passes overlap even though git commands are bounded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watcher_and_sweep_rescans_are_serialized() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp, repo, _) = scratch_repo("rescan-serialization");
+        let wts = repo
+            .parent()
+            .expect("scratch repo has a parent")
+            .join("wts");
+        fs::create_dir_all(&wts).unwrap();
+        let plane = Arc::new(GitPlane::new(repo, wts));
+        let (sink, _rx) = crate::core::plane_channel();
+        let _slow_git = TestGitDelayReset::new(80);
+
+        let (_watcher_added, _sweep_added) =
+            tokio::join!(plane.maybe_rescan(&sink), plane.rescan(&sink),);
+
+        assert_eq!(
+            TEST_RESCAN_MAX_IN_FLIGHT.load(Ordering::SeqCst),
+            1,
+            "watcher and sweep topology reconciliation must not overlap"
+        );
+    }
+
+    /// Events that arrive while a probe is queued behind the shared command
+    /// budget must set one follow-up bit, not create one waiting task each.
+    /// Holding every permit makes the queueing window deterministic and turns
+    /// the pre-fix behavior into a causal RED result: the old implementation
+    /// starts more than two probes after this burst, while the coalesced path
+    /// performs the initial probe plus one follow-up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_probe_events_coalesce_to_one_follow_up() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp, repo, _) = scratch_repo("queued-probes");
+        let wts = repo
+            .parent()
+            .expect("scratch repo has a parent")
+            .join("wts");
+        fs::create_dir_all(&wts).unwrap();
+        let plane = Arc::new(GitPlane::new(repo.clone(), wts));
+        let (sink, _rx) = crate::core::plane_channel();
+        plane.rescan(&sink).await;
+
+        let _slow_git = TestGitDelayReset::new(20);
+        let held_permits = plane
+            .git_command_budget
+            .clone()
+            .acquire_many_owned(MAX_CONCURRENT_GIT_COMMANDS as u32)
+            .await
+            .expect("test command permits remain open");
+        let worktree = fs::canonicalize(&repo).unwrap();
+        plane.debounce(worktree.clone(), sink.clone());
+        tokio::time::sleep(DEBOUNCE + Duration::from_millis(50)).await;
+
+        let burst_deadline = Instant::now() + Duration::from_millis(650);
+        while Instant::now() < burst_deadline {
+            plane.debounce(worktree.clone(), sink.clone());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(held_permits);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while TEST_PROBE_RUNS.load(Ordering::SeqCst) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "queued probe did not complete its coalesced follow-up"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            TEST_PROBE_RUNS.load(Ordering::SeqCst),
+            2,
+            "a sustained queued event burst creates at most one follow-up probe"
+        );
+    }
+
     /// #200 regression: a burst of debounced probes must share the sweep's
     /// command budget. The old event path spawned one git command per
     /// worktree, so this deterministic slow-git load observed more than four
@@ -2305,19 +2458,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn high_volume_git_work_is_bounded_and_preserves_sse_revisions() {
         let _guard = PROBE_LOCK.lock().await;
-        let (repo, _) = scratch_repo("starvation");
-        let wts = repo.with_file_name(format!(
-            "{}-wts",
-            repo.file_name().unwrap().to_string_lossy()
-        ));
-        fs::create_dir_all(&wts).unwrap();
-        let plane = Arc::new(GitPlane::new(repo.clone(), wts.clone()));
-        let (sink, _rx) = crate::core::plane_channel();
-        plane.rescan(&sink).await;
+        let (_temp, repo, _) = scratch_repo("starvation");
+        let wts = repo
+            .parent()
+            .expect("scratch repo has a parent")
+            .join("wts");
+        let repo_wts = wts.join(repo.file_name().expect("scratch repo has a name"));
+        fs::create_dir_all(&repo_wts).unwrap();
 
-        let mut worktrees = vec![repo.clone()];
+        let mut worktrees = vec![fs::canonicalize(&repo).unwrap()];
         for i in 0..8 {
-            let worktree = wts.join(format!("wt-{i}"));
+            let worktree = repo_wts.join(format!("wt-{i}"));
             let branch = format!("load-{i}");
             let output = std::process::Command::new("git")
                 .arg("-C")
@@ -2331,8 +2482,29 @@ mod tests {
                 "git worktree add failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            worktrees.push(worktree);
+            worktrees.push(fs::canonicalize(worktree).unwrap());
         }
+        let plane = Arc::new(GitPlane::new(repo.clone(), wts.clone()));
+        let store = crate::core::store::Store::new();
+        let mut agent_ids = Vec::new();
+        for (seq, worktree) in worktrees.iter().enumerate() {
+            let agent_id = format!("herdr:git-load-{seq}");
+            let mut agent = load_test_agent(seq as u64 + 1);
+            agent.agent_id = agent_id.clone();
+            agent.workspace.worktree_path = Some(worktree.to_string_lossy().into_owned());
+            store.apply(crate::core::model::Change::upsert(agent)).await;
+            agent_ids.push(agent_id);
+        }
+        assert!(store.flush().await.is_some(), "seed agents flush");
+        let baseline_rev = store.snapshot().await.rev;
+
+        let (sink, rx) = crate::core::plane_channel();
+        let integrator =
+            crate::integrate::Integrator::new(store.clone(), repo.clone(), wts.clone());
+        let integrator_task = tokio::spawn(integrator.run(rx));
+        let coalescer_store = store.clone();
+        let coalescer_task = tokio::spawn(async move { coalescer_store.run_coalescer().await });
+        let mut sse = store.subscribe();
         plane.rescan(&sink).await;
 
         let _slow_git = TestGitDelayReset::new(80);
@@ -2340,26 +2512,49 @@ mod tests {
             plane.debounce(worktree.clone(), sink.clone());
         }
 
-        let store = crate::core::store::Store::new();
-        let mut sse = store.subscribe();
-        let writer_store = store.clone();
-        let writer = tokio::spawn(async move {
-            for seq in 1..=12 {
-                writer_store
-                    .apply(crate::core::model::Change::upsert(load_test_agent(seq)))
-                    .await;
-                assert!(writer_store.flush().await.is_some());
-            }
-        });
-
-        for expected_rev in 1..=12 {
+        let mut previous_rev = baseline_rev;
+        let mut delta_count = 0;
+        let mut saw_git_update = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
             let delta = tokio::time::timeout(Duration::from_secs(2), sse.recv())
                 .await
                 .expect("SSE delta remains live during git load")
                 .expect("SSE broadcast remains open");
-            assert_eq!(delta.rev, expected_rev, "SSE revisions stay monotonic");
+            assert_eq!(
+                delta.rev,
+                previous_rev + 1,
+                "SSE revisions stay contiguous through the real plane path"
+            );
+            previous_rev = delta.rev;
+            delta_count += 1;
+            saw_git_update |= delta.upd.iter().any(|agent| {
+                agent.workspace.worktree_path.is_some() && agent.workspace.head_sha.is_some()
+            });
+
+            let complete = {
+                let mut complete = true;
+                for agent_id in &agent_ids {
+                    complete &= store
+                        .get(agent_id)
+                        .await
+                        .is_some_and(|agent| agent.workspace.head_sha.is_some());
+                }
+                complete
+            };
+            if complete {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "slow git probes did not converge within the test window"
+            );
         }
-        writer.await.expect("synthetic Herdr writer completes");
+        assert!(delta_count > 0, "git-plane events produced an SSE delta");
+        assert!(
+            saw_git_update,
+            "an SSE delta carried a GitPlane-derived workspace update"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -2387,8 +2582,12 @@ mod tests {
             "git command fan-out exceeded the shared budget: max_in_flight={}",
             TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst)
         );
-        let _ = fs::remove_dir_all(&wts);
-        let _ = fs::remove_dir_all(&repo);
+        drop(sse);
+        drop(sink);
+        integrator_task.abort();
+        coalescer_task.abort();
+        let _ = integrator_task.await;
+        let _ = coalescer_task.await;
     }
 
     #[tokio::test]
@@ -2399,7 +2598,7 @@ mod tests {
         // oid and branch; the subject is read by a single `git log` only when
         // HEAD is uncached, so a fresh probe is two git invocations, never
         // four.
-        let (root, _) = scratch_repo("head-fields");
+        let (_temp, root, _) = scratch_repo("head-fields");
         // Multi-line message: the subject is the FIRST line only.
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -2447,13 +2646,12 @@ mod tests {
             "subject is the commit's first line"
         );
         assert_eq!(probe.branch, "main");
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
     async fn probe_reuses_cached_subject_without_log_on_unchanged_head() {
         let _guard = PROBE_LOCK.lock().await;
-        let (root, _) = scratch_repo("head-cache");
+        let (_temp, root, _) = scratch_repo("head-cache");
         let budget = Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS));
         let first = probe_worktree(&root, None, None, budget.clone())
             .await
@@ -2470,7 +2668,6 @@ mod tests {
         let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
         assert_eq!(delta, 1, "unchanged HEAD needs only one status call");
         assert_eq!(second, first);
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -2480,11 +2677,8 @@ mod tests {
         // Unborn/empty checkout: HEAD has no commit, so the head probe fails
         // like `rev-parse HEAD` did — the plane emits no head facts and the
         // snapshot's head_sha/head_subject stay null (acceptance 1).
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-unborn-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("unborn");
         fs::create_dir_all(&root).unwrap();
         let init = std::process::Command::new("git")
             .arg("-C")
@@ -2504,7 +2698,6 @@ mod tests {
             .is_err(),
             "unborn HEAD must fail the probe"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// #46/#50: a delete event for a known, now-removed worktree must map
@@ -2518,11 +2711,8 @@ mod tests {
         // calls `run_git`, which increments the same shared `GIT_CALLS`
         // static the probe tests measure a before/after delta over.
         let _guard = PROBE_LOCK.lock().await;
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-delete-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("delete");
         let repo = root.join("repo");
         let wts = root.join("wts");
         fs::create_dir_all(&repo).unwrap();
@@ -2601,8 +2791,6 @@ mod tests {
             wait_for_removed(&mut rx, &wt, Duration::from_secs(2)).await,
             "WorktreeRemoved for {wt:?} within 2s of the delete event"
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// The highest-value regression test for #46: the whole #43 family of
@@ -2620,11 +2808,8 @@ mod tests {
         // F2: serialize against the probe-delta tests — see the guard note
         // on `handle_fs_event_emits_worktree_removed_for_deleted_worktree`.
         let _guard = PROBE_LOCK.lock().await;
-        let root = std::env::temp_dir().join(format!(
-            "corral-gitplane-delete-symlink-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("delete-symlink");
         let real = root.join("real");
         let repo = real.join("repo");
         let wts = real.join("wts");
@@ -2724,7 +2909,5 @@ mod tests {
             wait_for_removed(&mut rx, &wt, Duration::from_secs(2)).await,
             "WorktreeRemoved for {wt:?} within 2s of the raw-spelling delete event"
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 }

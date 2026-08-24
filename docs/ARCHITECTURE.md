@@ -151,8 +151,10 @@ path tails. A primary checkout must match a known root exactly. A linked
 worktree uses the established `<worktrees_root>/<worktree_dir>/<label>`
 layout. The first path component is mapped through the registry alias before
 the directory-name fallback, and the `<label>` is only a path component—never
-branch identity. Branches come from git HEAD facts; display names, pane
-labels, and terminal titles never participate. A supervised git-plane restart
+branch identity. The GitHub facts plane folds PR and CI facts on the same
+canonical `gh_repo` basename, so a stale checkout folder cannot split a fleet
+into a second event group. Branches come from git HEAD facts; display names,
+pane labels, and terminal titles never participate. A supervised git-plane restart
 clears the previous generation's branch cache and the branch field on
 already-stored recognized agents, then repopulates present paths from fresh
 probes. Repo identity and the other workspace/GitHub fields survive that

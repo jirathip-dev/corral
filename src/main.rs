@@ -1628,9 +1628,13 @@ fn add_fleet_specs(
         };
         let slug = format!("{owner}/{name}");
         // Same GitHub repo: fold the fleet's issue-view key onto the existing
-        // spec (the PR attribution key already matches the fleet basename for
-        // a tracked repo that IS a fleet).
+        // spec AND force the PR attribution key to the registry `gh_repo`
+        // basename. A tracked repo's compile-time folder-derived name may be
+        // stale (e.g. synergy-costing vs synergy-apps); workspace attribution
+        // resolves the canonical registry identity, so the gh fold key must
+        // follow it or PR/CI facts silently stop joining.
         if let Some(existing) = specs.iter_mut().find(|s| s.slug() == slug) {
+            existing.key = name.to_string();
             if existing.issues_key.is_none() {
                 existing.issues_key = Some(fleet.name.clone());
             }
@@ -1945,6 +1949,56 @@ mod tests {
             plush.issues_key.as_deref(),
             Some("plush"),
             "issue view keyed by the fleet name, not the basename"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_fleet_spec_uses_canonical_gh_repo_basename() {
+        // #182 review F1: when a compile-time tracked repo is ALSO a
+        // configured fleet whose gh_repo differs from the historical folder
+        // name, the PR/CI attribution key must follow the registry's
+        // canonical basename or the integrator silently stops binding PRs.
+        let registry = Registry::new(vec![Fleet {
+            name: "synergy".to_string(),
+            gh_repo: "synergy-services-cooling-tower/synergy-apps".to_string(),
+            local: "~/Projects/synergy-costing".to_string(),
+            worktree_dir: "synergy-costing".to_string(),
+            orch: "orch-synergy".to_string(),
+            workers: Vec::new(),
+            paused: false,
+            models: Models {
+                orch: "o".to_string(),
+                impl_: "i".to_string(),
+                review: "r".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }]);
+        let mut specs = corrald::adapters::gh_plane::tracked_specs();
+        super::add_fleet_specs(&mut specs, &registry.fleets);
+
+        let baseline = corrald::adapters::gh_plane::tracked_specs()
+            .into_iter()
+            .find(|s| s.name == "synergy-apps")
+            .expect("tracked synergy spec present");
+        assert_eq!(
+            baseline.key, "synergy-apps",
+            "tracked PR key is the canonical repo basename"
+        );
+
+        let synergy = specs
+            .iter()
+            .find(|s| s.owner == "synergy-services-cooling-tower" && s.name == "synergy-apps")
+            .expect("synergy fleet spec present");
+        assert_eq!(
+            synergy.key, "synergy-apps",
+            "fleet gh_repo basename is authoritative for PR attribution"
+        );
+        assert_eq!(
+            synergy.issues_key.as_deref(),
+            Some("synergy"),
+            "issues still grouped by the fleet name"
         );
     }
 }

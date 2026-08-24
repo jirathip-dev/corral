@@ -669,7 +669,9 @@ linked worktree joins the canonical repo group even when the on-disk
 directory still uses an older repo name. The linked-worktree root is
 `CORRAL_WORKTREES_ROOT` (default `~/.herdr/worktrees`) and keeps the
 established `<worktree_dir>/<label>` layout; the directory component is an
-addressable location, not repo identity.
+addressable location, not repo identity. The GitHub facts plane uses the same
+canonical `gh_repo` basename as its PR/CI fold key, so fleet specs never split
+or unbind attribution when a checkout folder name is stale.
 
 The git plane supplies branch facts for each recognized root/worktree. On a
 supervised plane restart, the old branch cache and stored branch fields for

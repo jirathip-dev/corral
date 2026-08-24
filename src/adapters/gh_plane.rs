@@ -108,17 +108,18 @@ const CLOSING_ISSUES_LIMIT: usize = 10;
 /// Rollup context items (check runs + commit statuses) per PR per poll.
 const CONTEXTS_LIMIT: usize = 50;
 
-/// One tracked repo: canonical name (the `GhRepoState.repo`) plus the actual
-/// GitHub owner/repo pair. Owners verified against the live API: three repos
-/// live under orgs, not `jirathip-k`.
+/// One tracked repo: canonical attribution name (the `GhRepoState.repo` and
+/// `workspace.repo` key) plus the actual GitHub owner/repo pair. Owners
+/// verified against the live API: three repos live under orgs, not
+/// `jirathip-k`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackedRepo {
-    /// Canonical name used in the contract events.
+    /// Canonical name used in the contract events; must match the registry
+    /// `gh_repo` basename for every configured fleet.
     pub name: &'static str,
     /// GitHub owner (user or org).
     pub owner: &'static str,
-    /// GitHub repository name (differs from `name` only for synergy-costing,
-    /// which is the `synergy-apps` repo under synergy-services-cooling-tower).
+    /// GitHub repository name.
     pub repo: &'static str,
 }
 
@@ -135,7 +136,7 @@ pub const TRACKED_REPOS: &[TrackedRepo] = &[
         repo: "project-hearthwild",
     },
     TrackedRepo {
-        name: "synergy-costing",
+        name: "synergy-apps",
         owner: "synergy-services-cooling-tower",
         repo: "synergy-apps",
     },

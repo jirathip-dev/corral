@@ -199,6 +199,10 @@ claim replies, and cancellation of multiple live drives at the demo boundary.
 Held-boundary tests also cover concurrent cold-start notification snapshot
 replies and stale-agent refreshes crossing a demo boundary, plus cancellation
 during biometrics before either `/step-up` or `/drive` is sent.
+
+The URLProtocol harness waits on held gates asynchronously outside
+URLSession's loader thread, so concurrent requests can all start.
+
 Registration and APNs identity transitions are lifecycle-owned: reset and the
 Debug-only demo boundary cannot resurrect a late `/register` response, live
 SSE, metadata write, or retired `/device-token` upload, and concurrent

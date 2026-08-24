@@ -19,3 +19,17 @@ description = "Fastlane App Store Connect API credentials"
 regex = '''(?i)ASC_(?:KEY_ID|ISSUER_ID|KEY_PATH)[^\S\r\n]*=[^\S\r\n]*(\S+)'''
 secretGroup = 1
 tags = ["fastlane", "app-store-connect"]
+
+# These GitHub Actions GITHUB_ENV writes declare environment-variable names
+# only; their values are shell variable references supplied by repo secrets
+# (e.g. `$key_path`, `$ASC_KEY_ID`), never literal credential material. The
+# allowlist is scoped to this file and to these exact assignments so a real
+# secret on any of these lines remains reportable.
+[[rules.allowlists]]
+description = "GITHUB_ENV writes declare ASC variable names, not secret values"
+condition = "AND"
+paths = ['''^\.github/workflows/ios-testflight\.yml$''']
+regexTarget = "line"
+regexes = [
+  '''echo "ASC_(?:KEY_PATH=\$key_path|KEY_ID=\$ASC_KEY_ID|ISSUER_ID=\$ASC_ISSUER_ID)"''',
+]

@@ -1305,7 +1305,11 @@ fn recent_output_surface(
                 .get(id)
                 .filter(|pane| !pane.entries.is_empty())
             {
-                for entry in pane.entries.iter().rev().take(6).rev() {
+                // TranscriptPane stores entries newest-first and appends
+                // older pages at the end. Keep the newest six, then paint
+                // that slice oldest-to-newest so the newest message sits at
+                // the bottom of the stick-to-bottom surface.
+                for entry in pane.entries.iter().take(6).rev() {
                     recent_transcript_entry(ui, entry);
                 }
             } else if let Some(lines) = fleet.tails.get(id) {
@@ -3396,6 +3400,137 @@ mod tests {
         let agent = recent_block_style(RecentBlockKind::Agent);
         assert_eq!(agent.fill, Color32::TRANSPARENT);
         assert!(!agent.monospace, "agent text remains proportional");
+    }
+
+    #[test]
+    fn recent_transcript_renders_newest_window_in_stable_order_after_older_page() {
+        let ctx = row_test_context();
+        let agent_id = "herdr:transcript-window";
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.agent_id = agent_id.into();
+        let mut fleet = Fleet {
+            agents: [(agent_id.to_string(), agent)].into_iter().collect(),
+            transcripts: [(
+                agent_id.to_string(),
+                crate::transcript::TranscriptPane {
+                    // The pane is newest-first: marker 0 is newest, while
+                    // marker 7 is the oldest held entry.
+                    entries: (0..8)
+                        .map(|index| crate::transcript::TranscriptEntry {
+                            role: "assistant".into(),
+                            text: format!("transcript-marker-{index}"),
+                            ts: Some(index as u64),
+                        })
+                        .collect(),
+                    next_cursor: Some("older-page".into()),
+                    generation: 1,
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let render_recent = |fleet: &Fleet| {
+            let mut actions = BoardActions {
+                drive: &mut |_| {},
+                transcript: &mut |_| {},
+                full_chat: &mut |_| {},
+            };
+            ctx.run_ui(row_test_input(vec![]), |ui| {
+                row_test_style(ui);
+                recent_output_surface(ui, fleet, Some(agent_id), &|_| true, &mut actions);
+            })
+        };
+        let rendered_order = |output: &egui::FullOutput| {
+            let mut positions: Vec<(f32, usize)> = (0..6)
+                .map(|index| {
+                    let marker = format!("transcript-marker-{index}");
+                    (
+                        text_rect(output, &marker)
+                            .unwrap_or_else(|| panic!("newest marker {marker} must render"))
+                            .top(),
+                        index,
+                    )
+                })
+                .collect();
+            positions.sort_by(|left, right| left.0.total_cmp(&right.0));
+            positions
+                .into_iter()
+                .map(|(_, index)| index)
+                .collect::<Vec<_>>()
+        };
+
+        let mut output = render_recent(&fleet);
+        assert_eq!(
+            rendered_order(&output),
+            vec![5, 4, 3, 2, 1, 0],
+            "Cards renders the newest six oldest-to-newest with newest last"
+        );
+        for index in 6..8 {
+            assert!(
+                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
+                "older held marker {index} must not displace the newest window"
+            );
+        }
+        let oldest_visible = text_rect(&output, "transcript-marker-5")
+            .expect("oldest visible newest-window marker")
+            .top();
+        let newest_visible = text_rect(&output, "transcript-marker-0")
+            .expect("newest visible marker")
+            .top();
+        assert!(
+            newest_visible > oldest_visible,
+            "newest visible transcript entry must sit lowest in the chat"
+        );
+        let initial_order = rendered_order(&output);
+        clear_textures(&mut output);
+
+        let generation = fleet
+            .transcripts
+            .get(agent_id)
+            .expect("transcript pane seeded")
+            .generation;
+        let older_page = crate::transcript::TranscriptPage {
+            agent: agent_id.into(),
+            store: "test".into(),
+            session: "test-session".into(),
+            bind: "session_id".into(),
+            stores_unavailable: vec![],
+            entries: (8..10)
+                .map(|index| crate::transcript::TranscriptEntry {
+                    role: "assistant".into(),
+                    text: format!("transcript-marker-{index}"),
+                    ts: Some(index as u64),
+                })
+                .collect(),
+            next_cursor: None,
+            skipped: 0,
+        };
+        assert_eq!(
+            fleet.fold_transcript(crate::transcript::TranscriptMsg {
+                agent_id: agent_id.into(),
+                generation,
+                outcome: Ok(older_page),
+            }),
+            crate::transcript::FoldOutcome::AppliedOk,
+            "an older page folds into the existing transcript pane"
+        );
+
+        let mut output = render_recent(&fleet);
+        assert_eq!(
+            rendered_order(&output),
+            initial_order,
+            "appending an older page leaves the displayed newest window stable"
+        );
+        for index in 6..10 {
+            assert!(
+                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
+                "older marker {index} must remain outside the Cards newest window"
+            );
+        }
+        clear_textures(&mut output);
     }
 
     #[test]

@@ -124,6 +124,12 @@ prompt marker would use the right-inset user tint.
   empty Codex prompt marker—are proportional agent blocks. The final capture
   visibly proves the real tool and agent treatments without inventing a user
   message.
+- Transcript panes remain newest-first in storage: Cards renders the newest
+  six entries oldest-to-newest with the newest at the bottom, and appending an
+  older page does not displace that visible newest window. The live transcript
+  response used for the PNG had zero role entries, so this ordering contract
+  is covered by rendered test data only and is not claimed as screenshot
+  evidence.
 - Destructive controls are enabled only for advertised, granted capabilities;
   Kill requires explicit confirmation and Cancel is covered by real pointer
   interaction tests. The keychain warning remains a normal one-shot toast and
@@ -146,6 +152,7 @@ Notable contracts include:
 - `toolbar_search_accepts_real_click_and_text_events`
 - `board_toolbar_has_required_chips_and_detail_owns_view_actions`
 - `recent_tail_classifies_terminal_semantics_into_chat_styles`
+- `recent_transcript_renders_newest_window_in_stable_order_after_older_page`
 - `cards_load_earlier_dispatches_real_read_tail_and_transcript`
 - `right_pane_gates_interrupt_kill_and_requires_kill_confirmation`
 - `show_table_has_a_real_cards_round_trip`

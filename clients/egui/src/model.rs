@@ -317,6 +317,19 @@ pub fn clock_of(epoch_millis: u64) -> String {
     }
 }
 
+/// Epoch millis -> prototype-style relative age: `<1m`, `42m`, `3h 02m`.
+pub fn relative_age(epoch_millis: u64, now_millis: u64) -> String {
+    let elapsed = now_millis.saturating_sub(epoch_millis);
+    let minutes = elapsed / 60_000;
+    if minutes == 0 {
+        return "<1m".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    format!("{}h {:02}m", minutes / 60, minutes % 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +647,17 @@ mod tests {
         assert_eq!(s.len(), 8);
         assert_eq!(s.as_bytes()[2], b':');
         assert_eq!(s.as_bytes()[5], b':');
+    }
+
+    #[test]
+    fn relative_age_renders_prototype_durations() {
+        let now = 1_700_000_000_000;
+        assert_eq!(relative_age(now, now), "<1m");
+        assert_eq!(relative_age(now, now + 59_000), "<1m");
+        assert_eq!(relative_age(now, now + 42 * 60_000), "42m");
+        assert_eq!(relative_age(now, now + 70 * 60_000), "1h 10m");
+        assert_eq!(relative_age(now, now + 182 * 60_000), "3h 02m");
+        assert_eq!(relative_age(now + 60_000, now), "<1m");
     }
 
     fn base_agent(agent_id: &str) -> Agent {

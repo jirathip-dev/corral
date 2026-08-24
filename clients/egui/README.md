@@ -16,11 +16,11 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
 - **Master/detail board** — a ~40/60 split. The left pane searches repo /
   branch / title / issue and filters with contract-state chips (All · Needs
   you · Review · Working · Idle); Cards default to a flat attention-ranked
-  list with `State · time` per card and one collapsed `Idle / done (N)`
+  list with `State · relative age` per card and one collapsed `Idle (N)`
   tail, while the Table keeps its grouped-by-repo default. Empty state
-  buckets never render, and a no-match query says so in both panes. The
-  right pane owns the selected agent's detail, drive controls, full waiting
-  claim, Recent output, and transcript.
+  buckets never render, and a no-match query reports once in the active
+  view. The right pane owns the selected agent's detail, drive controls,
+  full waiting claim, Recent output, and transcript.
 - **Cards | Table** — cards are the default view. The exact nine-column
   conformance table (drop DRIVE, narrow WAITING ON) remains reachable from
   the toolbar; full drive controls stay in the selected detail pane.
@@ -28,7 +28,7 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   `#0d1117`, teal accent, distinct hues for the four agent states and the
   four waiting-on kind badges: approve-tool / question / menu / crash).
 - **Topology + PR/CI factors** — repo / branch / dirty / ahead-behind / PR /
-  CI render in the detail pane and in the exact Table columns.
+  CI render in the Cards detail pane and in the exact Table columns.
 - **Signed drive** — device Ed25519 keypair generated on first run,
   stored in the OS keychain (macOS Keychain / Linux kernel keyring via
   `keyring`); 0600 file fallback with a startup warning banner.

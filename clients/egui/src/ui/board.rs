@@ -176,7 +176,7 @@ pub fn show(
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
     let selected = resolve_selection(fleet, &visible).map(str::to_owned);
     if visible.is_empty() {
-        show_empty_state(ui, &query);
+        show_empty_state(ui, fleet, &query, view, allowed, actions);
         return;
     }
 
@@ -509,7 +509,27 @@ fn show_cards(
     }
 }
 
-fn show_empty_state(ui: &mut Ui, query: &str) {
+fn show_empty_state(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    query: &str,
+    view: BoardView,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    match view {
+        BoardView::Cards => show_empty_cards_state(ui, fleet, query, allowed, actions),
+        BoardView::Table => show_empty_table_state(ui, query),
+    }
+}
+
+fn show_empty_cards_state(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    query: &str,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
     let available = ui.available_size();
     let widths = cards_widths(
         available.x,
@@ -527,9 +547,22 @@ fn show_empty_state(ui: &mut Ui, query: &str) {
                 });
                 ui.separator();
                 ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
-                    empty_pane_message(ui, query);
+                    detail_pane(ui, fleet, None, allowed, actions);
                 });
             });
+        });
+}
+
+fn show_empty_table_state(ui: &mut Ui, query: &str) {
+    let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
+    ScrollArea::both()
+        .id_salt("corral-ui-table")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(total_width);
+            header(ui);
+            ui.separator();
+            ui.label(RichText::new(no_match_message(query)).color(theme::ui::TEXT_MUTED));
         });
 }
 
@@ -561,9 +594,12 @@ fn master_list(
                     if section.state == crate::theme::AgentStateLike::Idle {
                         let count = section.agent_ids.len();
                         CollapsingHeader::new(
-                            RichText::new(format!("Idle / done ({count})"))
-                                .monospace()
-                                .color(theme::ui::TEXT_MUTED),
+                            RichText::new(format!(
+                                "{} ({count})",
+                                crate::theme::AgentStateLike::Idle.label()
+                            ))
+                            .monospace()
+                            .color(theme::ui::TEXT_MUTED),
                         )
                         .id_salt("corral-ui-idle-done")
                         .default_open(false)
@@ -613,6 +649,13 @@ fn master_list(
     clicked
 }
 
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count: usize) {
     let color = theme::state::of(state);
     ui.horizontal(|ui| {
@@ -631,7 +674,8 @@ fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count:
 }
 
 fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<String> {
-    master_card_with_response(ui, fleet, id, selected).and_then(|(clicked, _)| clicked)
+    master_card_with_response(ui, fleet, id, selected, now_millis())
+        .and_then(|(clicked, _)| clicked)
 }
 
 fn master_card_with_response(
@@ -639,12 +683,10 @@ fn master_card_with_response(
     fleet: &Fleet,
     id: &str,
     selected: bool,
+    now_ms: u64,
 ) -> Option<(Option<String>, egui::Response)> {
     let agent = fleet.agents.get(id)?;
-    let mut state: crate::theme::AgentStateLike = agent.state.into();
-    if state == crate::theme::AgentStateLike::Unknown {
-        state = crate::theme::AgentStateLike::Idle;
-    }
+    let state: crate::theme::AgentStateLike = agent.state.into();
     let color = theme::state::of(state);
     let bg = if selected {
         color.gamma_multiply(0.16)
@@ -662,7 +704,11 @@ fn master_card_with_response(
         .repo
         .as_deref()
         .unwrap_or(agent.workspace.branch.as_deref().unwrap_or("—"));
-    let state_time = format!("{} · {}", state.label(), crate::model::clock_of(agent.ts));
+    let state_time = format!(
+        "{} · {}",
+        state.label(),
+        crate::model::relative_age(agent.ts, now_ms)
+    );
     let response = ui
         .scope_builder(
             egui::UiBuilder::new()
@@ -748,7 +794,7 @@ fn detail_pane(
         .id_salt("corral-ui-detail-pane")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            detail(ui, agent, fleet, allowed, actions);
+            detail(ui, agent, fleet, allowed, actions, true);
         });
 }
 
@@ -882,7 +928,7 @@ fn board_row(
         *selection = Some(id.to_string());
     }
     if is_expanded {
-        detail(ui, agent, fleet, allowed, actions);
+        detail(ui, agent, fleet, allowed, actions, false);
     }
     ui.separator();
 }
@@ -1373,6 +1419,7 @@ fn detail(
     fleet: &Fleet,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
+    show_topology: bool,
 ) {
     egui::Frame::group(ui.style())
         .fill(Color32::from_rgb(0x10, 0x15, 0x1c))
@@ -1405,50 +1452,58 @@ fn detail(
                         .color(theme::ui::TEXT_STRONG),
                 );
                 ui.label(
-                    RichText::new(crate::model::clock_of(agent.ts))
+                    RichText::new(crate::model::relative_age(agent.ts, now_millis()))
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
             });
-            ui.horizontal_wrapped(|ui| {
-                let ws = &agent.workspace;
-                topology_cell(
-                    ui,
-                    COL_REPO,
-                    ws.repo.clone().unwrap_or_else(|| "—".into()),
-                    theme::ui::TEXT_MUTED,
+            if show_topology {
+                ui.label(
+                    RichText::new("repo / branch / dirty / a-b / pr / ci")
+                        .small()
+                        .monospace()
+                        .color(theme::ui::TEXT_MUTED),
                 );
-                branch_cell(ui, agent);
-                topology_cell(
-                    ui,
-                    COL_DIRTY,
-                    if ws.dirty { "●".into() } else { "".into() },
-                    theme::ui::DIRTY,
-                );
-                topology_cell(
-                    ui,
-                    COL_AB,
-                    if ws.ahead == 0 && ws.behind == 0 {
-                        "".into()
-                    } else {
-                        format!("+{}/−{}", ws.ahead, ws.behind)
-                    },
-                    if ws.ahead > 0 {
-                        theme::ui::WARN
-                    } else {
-                        theme::ui::TEXT_MUTED
-                    },
-                );
-                topology_cell(
-                    ui,
-                    COL_PR,
-                    ws.pr_number
-                        .map(|n| format!("#{n}"))
-                        .unwrap_or_else(|| "—".into()),
-                    theme::ui::TEXT_MUTED,
-                );
-                ci_cell(ui, ws.ci_status);
-            });
+                ui.horizontal_wrapped(|ui| {
+                    let ws = &agent.workspace;
+                    topology_cell(
+                        ui,
+                        COL_REPO,
+                        ws.repo.clone().unwrap_or_else(|| "—".into()),
+                        theme::ui::TEXT_MUTED,
+                    );
+                    branch_cell(ui, agent);
+                    topology_cell(
+                        ui,
+                        COL_DIRTY,
+                        if ws.dirty { "●".into() } else { "".into() },
+                        theme::ui::DIRTY,
+                    );
+                    topology_cell(
+                        ui,
+                        COL_AB,
+                        if ws.ahead == 0 && ws.behind == 0 {
+                            "".into()
+                        } else {
+                            format!("+{}/−{}", ws.ahead, ws.behind)
+                        },
+                        if ws.ahead > 0 {
+                            theme::ui::WARN
+                        } else {
+                            theme::ui::TEXT_MUTED
+                        },
+                    );
+                    topology_cell(
+                        ui,
+                        COL_PR,
+                        ws.pr_number
+                            .map(|n| format!("#{n}"))
+                            .unwrap_or_else(|| "—".into()),
+                        theme::ui::TEXT_MUTED,
+                    );
+                    ci_cell(ui, ws.ci_status);
+                });
+            }
             if let Some(inferred) = crate::infer::infer(
                 agent.workspace.branch.as_deref(),
                 &agent.known_issue_numbers(),
@@ -2191,17 +2246,23 @@ mod tests {
         agent.agent_id = "herdr:cards".into();
         agent.display_name = Some("card agent".into());
         agent.ts = 1_700_000_000_000;
-        let expected_time = crate::model::clock_of(agent.ts);
+        let now = agent.ts + 42 * 60_000;
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
 
-        let (clicked, rect, mut output) =
-            master_card_frame(&ctx, &fleet, &agent.agent_id, false, row_test_input(vec![]));
+        let (clicked, rect, mut output) = master_card_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            false,
+            now,
+            row_test_input(vec![]),
+        );
         assert_eq!(clicked, None);
         let pos = rect.expect("master card rendered").center();
         assert!(
-            text_rect(&output, &format!("Working · {expected_time}")).is_some(),
-            "master card meta shows State · clock time"
+            text_rect(&output, "Working · 42m").is_some(),
+            "master card meta shows State · relative age"
         );
         clear_textures(&mut output);
 
@@ -2210,12 +2271,19 @@ mod tests {
             &fleet,
             &agent.agent_id,
             false,
+            now,
             pointer_down_input(pos),
         );
         assert_eq!(clicked, None);
         clear_textures(&mut output);
-        let (clicked, _, mut output) =
-            master_card_frame(&ctx, &fleet, &agent.agent_id, false, pointer_up_input(pos));
+        let (clicked, _, mut output) = master_card_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            false,
+            now,
+            pointer_up_input(pos),
+        );
         let clicked = clicked.expect("master card click returns the agent id");
         fleet.select_agent(&clicked);
         clear_textures(&mut output);
@@ -2227,15 +2295,52 @@ mod tests {
     }
 
     #[test]
-    fn master_list_omits_transcript_and_collapses_idle_tail() {
+    fn unknown_card_preserves_contract_state() {
         let ctx = row_test_context();
-        let mut agent = agent_in_repo("herdr:idle", Some("corral"));
-        agent.state = crate::model::AgentState::Idle;
-        agent.display_name = Some("idle card".into());
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:unknown-card".into();
+        agent.state = crate::model::AgentState::Unknown;
+        agent.display_name = Some("unknown card".into());
+        agent.ts = 1_700_000_000_000;
+        let now = agent.ts + 42 * 60_000;
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+
+        let (_, _, mut output) = master_card_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            false,
+            now,
+            row_test_input(vec![]),
+        );
+        assert!(
+            text_rect(&output, "Unknown").is_some(),
+            "Unknown card keeps the contract state label"
+        );
+        assert!(
+            text_rect(&output, "Idle").is_none(),
+            "Unknown card is not relabelled as Idle"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn master_list_omits_transcript_and_collapses_idle_tail() {
+        let ctx = row_test_context();
+        let mut working = agent_in_repo("herdr:working", Some("corral"));
+        working.state = crate::model::AgentState::Working;
+        working.display_name = Some("working card".into());
+        let mut idle = agent_in_repo("herdr:idle", Some("corral"));
+        idle.state = crate::model::AgentState::Idle;
+        idle.display_name = Some("idle card".into());
+        let mut fleet = Fleet::default();
+        fleet
+            .agents
+            .insert(working.agent_id.clone(), working.clone());
+        fleet.agents.insert(idle.agent_id.clone(), idle.clone());
         fleet.transcripts.insert(
-            agent.agent_id.clone(),
+            working.agent_id.clone(),
             crate::transcript::TranscriptPane {
                 entries: vec![crate::transcript::TranscriptEntry {
                     role: "assistant".into(),
@@ -2245,12 +2350,16 @@ mod tests {
                 ..Default::default()
             },
         );
-        let visible = ["herdr:idle"];
+        let visible = ["herdr:working", "herdr:idle"];
 
         let (_, mut output) =
             master_list_frame(&ctx, &fleet, &visible, true, None, row_test_input(vec![]));
         assert!(
-            text_rect(&output, "Idle / done (1)").is_some(),
+            text_rect(&output, "working card").is_some(),
+            "non-idle card renders so transcript omission is observable"
+        );
+        assert!(
+            text_rect(&output, "Idle (1)").is_some(),
             "idle tail renders as one collapsed row"
         );
         assert!(
@@ -2337,16 +2446,54 @@ mod tests {
     }
 
     #[test]
-    fn empty_state_shows_message_in_both_panes() {
+    fn empty_state_shows_message_once_and_keeps_table_header() {
         let ctx = row_test_context();
+        let fleet = Fleet::default();
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            transcript: &mut |_| {},
+            full_chat: &mut |_| {},
+        };
+        let message = no_match_message("missing");
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show_empty_state(ui, "missing");
+            show_empty_state(
+                ui,
+                &fleet,
+                "missing",
+                BoardView::Cards,
+                &|_| true,
+                &mut actions,
+            );
         });
-        let message = no_match_message("missing");
         assert!(
-            text_rects(&output, &message).len() >= 2,
-            "master and detail panes both report the no-match query"
+            text_rects(&output, &message).len() == 1,
+            "Cards no-match state reports the query once"
+        );
+        assert!(
+            text_rect(&output, "select an agent for detail + Recent output").is_some(),
+            "Cards no-match state keeps the detail pane placeholder"
+        );
+        clear_textures(&mut output);
+
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show_empty_state(
+                ui,
+                &fleet,
+                "missing",
+                BoardView::Table,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert!(
+            text_rects(&output, &message).len() == 1,
+            "Table no-match state reports the query once"
+        );
+        assert!(
+            text_rect(&output, "AGENT").is_some(),
+            "Table no-match state keeps the column header"
         );
         clear_textures(&mut output);
     }
@@ -2662,6 +2809,7 @@ mod tests {
         fleet: &Fleet,
         id: &str,
         selected: bool,
+        now_ms: u64,
         input: egui::RawInput,
     ) -> (Option<String>, Option<egui::Rect>, egui::FullOutput) {
         let mut clicked = None;
@@ -2670,7 +2818,7 @@ mod tests {
             row_test_style(ui);
             ui.set_max_width(row_test_screen().width());
             if let Some((card_clicked, response)) =
-                master_card_with_response(ui, fleet, id, selected)
+                master_card_with_response(ui, fleet, id, selected, now_ms)
             {
                 clicked = card_clicked;
                 rect = Some(response.rect);

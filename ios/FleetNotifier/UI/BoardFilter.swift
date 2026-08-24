@@ -55,7 +55,7 @@ enum BoardFilter {
     /// The text searched for one agent: repo, branch, title, displayName,
     /// agentId, and the authoritative + inferred issue markers (so `158`
     /// matches an `⑂ #158` chip and a `~#158?` flag alike). Title and
-    /// identity are all always included — a user reading the row's
+    /// identity are always included — a user reading the row's
     /// `displayName`/`agentId` must be able to find that agent too.
     static func searchableText(_ agent: Agent) -> String {
         var parts: [String] = []

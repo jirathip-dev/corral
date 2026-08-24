@@ -121,30 +121,12 @@ final class FleetStore: ObservableObject {
     }
 
     func apply(_ event: FleetEvent) {
-        guard accepts(event) else { return }
-        switch event {
-        case .snapshot(let snapshot):
-            agents = snapshot.agents
-            tails = tails.filter { snapshot.agents[$0.key] != nil }
-            transcripts = transcripts.filter { snapshot.agents[$0.key] != nil }
-            lastEventId = snapshot.rev
-            cursorBox.write(snapshot.rev)
-        case .delta(let delta):
-            var next = agents
-            for agent in delta.upd {
-                next[agent.agentId] = agent
-            }
-            for id in delta.del {
-                next.removeValue(forKey: id)
-                tails.removeValue(forKey: id)
-                transcripts.removeValue(forKey: id)
-            }
-            agents = next
-            lastEventId = delta.rev
-            cursorBox.write(delta.rev)
-        }
-        connectionState = .connected
-        trackDone(event)
+        // #166 review F2: every apply path must track `stateEnteredAt`. The
+        // snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
+        // path (`apply(_:previous:)`) both converge here, so the client-side
+        // state clock is seeded on first sight and re-stamped on state
+        // change regardless of which entry point delivered the event.
+        apply(withoutDiff: event)
     }
 
     /// Diff-aware done detection: fire once per transition INTO done

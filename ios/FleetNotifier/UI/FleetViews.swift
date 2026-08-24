@@ -208,7 +208,11 @@ struct AgentRow: View {
     /// reset the duration. `nil` falls back to `agent.ts` (pre-tracking
     /// callers / pure tests).
     var stateEnteredAt: UInt64? = nil
+    /// #166 review N2/N4: the parent's ticking clock. `nil` falls back to the
+    /// row's own `Date()` for callers without a tick (e.g. the detail view).
+    var now: UInt64? = nil
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -241,7 +245,6 @@ struct AgentRow: View {
         .padding(.vertical, 4)
         .opacity(isDimmed ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .rowAccessibility(summary: accessibilitySummary, answerAction: onAnswer)
     }
 
     // MARK: - Row subviews
@@ -278,7 +281,7 @@ struct AgentRow: View {
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
-        .frame(minWidth: 84, alignment: .leading)
+        .frame(minWidth: badgeMinWidth, alignment: .leading)
     }
 
     @ViewBuilder
@@ -352,18 +355,8 @@ struct AgentRow: View {
     /// state-entered time; falls back to `agent.ts` for pre-tracking
     /// callers. `nil` omits the duration chip entirely.
     private var durationText: String? {
-        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: Self.now())
+        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: now ?? Self.now())
             .map(RelativeTime.duration(milliseconds:))
-    }
-
-    /// One VoiceOver element summary for the row (review F6). The duplicate
-    /// "Double tap to open…" hint lives on the NavigationLink wrapper, not
-    /// here.
-    private var accessibilitySummary: String {
-        var parts: [String] = [agent.title ?? agent.displayName ?? agent.agentId, stateStyle.label]
-        if let repo = agent.workspace.repo { parts.append(repo) }
-        if let branch = agent.workspace.branch { parts.append(branch) }
-        return parts.joined(separator: ", ")
     }
 
     private static func now() -> UInt64 {
@@ -386,11 +379,25 @@ struct AgentRow: View {
 
 // MARK: - Row accessibility (review F6)
 
+/// One VoiceOver summary for an agent row (review F6): title/session identity,
+/// state label, repo, branch. Used as the NavigationLink container's label so
+/// the whole row is a single, named, navigable element.
+private func rowSummary(_ agent: Agent) -> String {
+    var parts: [String] = [
+        agent.title ?? agent.displayName ?? agent.agentId,
+        StateStyle.style(for: agent.state).label,
+    ]
+    if let repo = agent.workspace.repo { parts.append(repo) }
+    if let branch = agent.workspace.branch { parts.append(branch) }
+    return parts.joined(separator: ", ")
+}
+
 /// A row is one VoiceOver element with a summary label and, for blocked
 /// rows, a custom "Answer" action. Children stay individually reachable
 /// (`.contain`), so the Answer button and the claimed-prompt text are not
 /// swallowed, while the container no longer fragments every glyph/label into
-/// its own element.
+/// its own element. Applied to the NavigationLink container so the row keeps
+/// one named, navigable element with the Answer as a custom action.
 private extension View {
     @ViewBuilder
     func rowAccessibility(summary: String, answerAction: (() -> Void)?) -> some View {
@@ -1277,7 +1284,12 @@ struct FleetView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        NavigationStack(path: $viewState.navigationPath) {
+        // Compute the filter-chip list and agent projection once per body
+        // evaluation; consumed by the top bar, the `.onChange` chip
+        // reconciliation, and the sectioned list (review N7).
+        let chips = BoardFilter.chips(for: Array(model.fleet.agents.values))
+        let agents = Array(model.fleet.agents.values)
+        return NavigationStack(path: $viewState.navigationPath) {
             List {
                 if let banner = model.banner {
                     BannerView(banner: banner) {
@@ -1289,10 +1301,10 @@ struct FleetView: View {
                     RegistrationView(model: model)
 #if DEBUG
                 case .demo:
-                    fleetList
+                    fleetList(agents: agents)
 #endif
                 case .live:
-                    fleetList
+                    fleetList(agents: agents)
                 }
             }
             // D25's "sticky NEEDS YOU": only the plain list style pins
@@ -1306,7 +1318,7 @@ struct FleetView: View {
             // section, filters, or search.
             .safeAreaInset(edge: .top, spacing: 0) {
                 if model.mode != .needsSetup {
-                    fleetTopBar
+                    fleetTopBar(chips: chips)
                 }
             }
             // R2-F: drop drafts for agents that left the snapshot. This
@@ -1321,9 +1333,20 @@ struct FleetView: View {
             // list — if the selected repo chip is no longer present, fall
             // back to `.all` instead of showing an empty board under a
             // selected-but-vanished chip.
-            .onChange(of: BoardFilter.chips(for: Array(model.fleet.agents.values))) { _, chips in
+            .onChange(of: chips) { _, chips in
                 if !chips.contains(filterChip) {
                     filterChip = .all
+                }
+            }
+            // #166 review N2/N4: drive a `now` clock so durations tick. The
+            // interval is 1s while any row is under 60s (the seconds bucket
+            // is useful up to a minute) and settles to 30s afterwards. The
+            // timer lives outside the List so Sections/pinned headers and
+            // `.swipeActions` stay direct List children.
+            .task(id: tickInterval) {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
+                    now = Date()
                 }
             }
             .navigationDestination(for: AgentRoute.self) { route in
@@ -1373,6 +1396,20 @@ struct FleetView: View {
     /// re-run this body. The rows observe the object (`@ObservedObject`)
     /// and re-render themselves.
     @State private var promptDrafts = PromptDrafts()
+    /// #166 review N2/N4: the ticking clock used by `TimeInState`, driven by
+    /// the `.task(id: tickInterval)` loop so rows refresh without deltas.
+    @State private var now = Date()
+
+    /// 1s while any row is under a minute (seconds bucket), else 30s.
+    private var tickInterval: Double {
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let anySubMinute = model.fleet.agents.values.contains { agent in
+            let entered = model.fleet.stateEnteredAt[agent.agentId] ?? agent.ts
+            guard entered > 0 else { return false }
+            return nowMs >= entered && nowMs - entered < 60_000
+        }
+        return anySubMinute ? 1 : 30
+    }
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
@@ -1380,18 +1417,16 @@ struct FleetView: View {
     /// IDLE/DONE. Section headers pin while scrolling via the `.plain`
     /// list style set on the List (inset-grouped headers do not pin).
     /// The filter-chip row is no longer a header here — it lives in the
-    /// persistent `.safeAreaInset` (`fleetTopBar`). The list is wrapped in a
-    /// `TimelineView` so durations tick every 30s even when a row emits no
-    /// deltas (#166 review F2a).
+    /// persistent `.safeAreaInset` (`fleetTopBar`). The list is a plain
+    /// `Group` of Sections so pinned headers and `.swipeActions` stay direct
+    /// List children; durations are refreshed by the `now` tick (#166 review
+    /// N2).
     @ViewBuilder
-    private var fleetList: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { _ in
-            let agents = Array(model.fleet.agents.values)
-            if queryActive {
-                filteredSection(agents: agents)
-            } else {
-                standardSections(agents: agents)
-            }
+    private func fleetList(agents: [Agent]) -> some View {
+        if queryActive {
+            filteredSection(agents: agents)
+        } else {
+            standardSections(agents: agents)
         }
     }
 
@@ -1511,12 +1546,12 @@ struct FleetView: View {
     /// filters, or search), then the always-visible filter-chip row. Demo
     /// mode skips the connection line (there is no stream) but keeps chips.
     @ViewBuilder
-    private var fleetTopBar: some View {
+    private func fleetTopBar(chips: [BoardFilterChip]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.mode == .live {
                 connectionStatusLine
             }
-            filterChipRow(chips: BoardFilter.chips(for: Array(model.fleet.agents.values)))
+            filterChipRow(chips: chips)
         }
         .background(.bar, ignoresSafeAreaEdges: [])
     }
@@ -1557,22 +1592,27 @@ struct FleetView: View {
         }
     }
 
-    /// #166 review F4/F7: the row content sits over a background
-    /// NavigationLink so the whole row navigates while the in-row Answer
-    /// button (a `.borderless` Button) takes its own tap target. No whole-row
+    /// #166 review F4/F7/N3: the row is a real `NavigationLink` (chevron,
+    /// press highlight, VoiceOver-navigable). The in-row Answer button is a
+    /// `.borderless` Button inside the link's label — the documented List-row
+    /// pattern where it handles its own tap target. No whole-row
     /// `.contentShape` swallows the button. Answer is offered only when the
-    /// `.prompt` availability gate allows it on this device.
+    /// `.prompt` availability gate allows it on this device, and the row's
+    /// VoiceOver summary + custom "Answer" action are applied to the link
+    /// container.
     private func agentRow(_ agent: Agent) -> some View {
         let answerAvailable = agent.isBlocked && promptAvailable(agent)
-        return AgentRow(agent: agent,
-                        onAnswer: answerAvailable ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) } : nil,
-                        stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
-            .background(
-                NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
-                    EmptyView()
-                }
-                .opacity(0)
-            )
+        let answerAction: (() -> Void)? = answerAvailable
+            ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) }
+            : nil
+        let nowMs = UInt64(now.timeIntervalSince1970 * 1000)
+        return NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
+            AgentRow(agent: agent,
+                     onAnswer: answerAction,
+                     stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId],
+                     now: nowMs)
+        }
+            .rowAccessibility(summary: rowSummary(agent), answerAction: answerAction)
             .accessibilityHint("Double tap to open agent details and actions")
             .swipeActions(edge: .leading, allowsFullSwipe: answerAvailable) {
                 if answerAvailable {
@@ -1732,8 +1772,13 @@ private struct AnswerPromptSheet: View {
         if accepted {
             drafts.clear(agentId)
             dismiss()
+        } else if let banner = model.banner, !banner.isError {
+            // `beginDriveAction` dedup path: the identical prompt is already
+            // in flight, so this is not a refusal (review N5).
+            refusalMessage = "Already sending this answer. Your draft was kept."
         } else {
-            refusalMessage = "The prompt was not dispatched. Your draft has been kept."
+            let reason = model.banner?.message ?? "The prompt was not dispatched."
+            refusalMessage = "Not dispatched — \(reason). Your draft was kept."
         }
     }
 }

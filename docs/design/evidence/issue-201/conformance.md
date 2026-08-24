@@ -33,15 +33,15 @@ Evidence came from the legitimate native path:
 
    ```sh
    CORRAL_UI_SCREENSHOT="$PWD/docs/design/evidence/issue-201/live-after.png" \
-   CORRAL_UI_SCREENSHOT_DELAY_MS=180000 \
+   CORRAL_UI_SCREENSHOT_DELAY_MS=60000 \
    CORRAL_UI_SCREENSHOT_AGENT=herdr:01a03388-6a3e-7732-94a4-91bde62aea4d \
    RUST_LOG=info ./target/release/corrald-ui
    ```
 
    The target env var only selects the live agent. It does not fetch content.
    After the native window rendered, a macOS Quartz mouse event clicked the
-   visible Cards divider control (the title-bar-adjusted native window
-   coordinate was in the `{x: 787, y: 270..330}` band). This is the normal
+   visible Cards divider control at native screen coordinate `{x: 762, y: 268}`
+   (the window was at `{x: 75, y: 41}` with a title bar). This is the normal
    Cards interaction path; the click produced the signed `read_tail` and
    transcript requests.
 
@@ -49,7 +49,7 @@ The native PNG is 2640×1720 (Retina scale). The exact final evidence is
 [`live-after.png`](live-after.png), at
 `/Users/jirathip/.herdr/worktrees/corral/g201-egui-visual-conformance/docs/design/evidence/issue-201/live-after.png`,
 SHA-256
-`da5f1b9761ac6cf97cc79b71c670e7fa8e092fa60506252c2b7e198f3e814919`.
+`8e97e3668cd903466c38170b7c0f407179bbe83ef4c2f8a1a9fbca8fc23c00aa`.
 The pre-change native comparison is [`live-before.png`](live-before.png).
 
 ## Live daemon proof
@@ -60,7 +60,7 @@ populated throughout the work.
 Final read-only checks:
 
 - `GET http://127.0.0.1:8474/healthz` → `ok`
-- `GET /snapshot` → schema 5, rev 15474, 31 agents: blocked 1, done 6,
+- `GET /snapshot` → schema 5, rev 15942, 32 agents: blocked 0, done 8,
   idle 17, working 7
 - Selected real target:
   `herdr:01a03388-6a3e-7732-94a4-91bde62aea4d`, working, `orch-corral`,
@@ -70,7 +70,7 @@ The capture log records the real path:
 
 ```text
 native screenshot evidence selected live agent; Cards fetch remains user-driven
-read_tail result applied ... lines=48
+read_tail result applied ... lines=51
 transcript result folded ... outcome=AppliedOk entries=0 has_error=false
 requesting viewport screenshot
 screenshot saved — exiting
@@ -79,7 +79,7 @@ screenshot saved — exiting
 The captured session record is `/tmp/corral-ui-live-after.log`.
 
 The transcript page was successfully authorized but contained zero role
-entries for this live session. The screenshot therefore uses the 48 lines
+entries for this live session. The screenshot therefore uses the 51 lines
 returned by the real `read_tail`; no demo or fabricated content was added.
 The returned tail visibly contains a styled tool/status line, the
 `› Ask Codex to do anything` empty-prompt marker, and the real model/path
@@ -91,11 +91,19 @@ prompt marker would use the right-inset user tint.
 
 - Preserved the current-main 42/58 master/detail layout and flat Cards default.
 - Board mode removes duplicate global `board / issues / audit` navigation;
-  the detail pane owns Board/Issues/Audit with the teal underline. Registry
-  and Settings remain global utilities.
-- The active All chip emits a visible dark `All` label; Needs you is the only
-  red-tinted chip and All is the only working-blue chip. Flexsort and the
-  dynamic Working/Idle/Review chip set are gone.
+  the detail-owned Board/Issues/Audit strip is reachable in both Cards and
+  Table with the teal underline. Registry and Settings remain global
+  utilities.
+- The production chip sequence is `Needs you` then `All` when a real blocked
+  bucket exists; the active All chip emits a visible dark `All` label. Needs
+  you is the only red-tinted chip and All is the only working-blue chip.
+  Flexsort and the dynamic Working/Idle/Review chip set are gone. This live
+  daemon snapshot had zero blocked agents, so the zero-state rule correctly
+  hid Needs you in the captured frame.
+- Cards/Table/Interrupt/Kill share one inline Cards control row. A pending
+  Kill confirmation is rendered below the disabled trigger, expires, and is
+  cleared when selection changes; the original Kill pointer coordinate cannot
+  confirm by double-click.
 - Master rows are dense, state-tinted, and keep the collapsed `Idle / done`
   tail.
 - Cards ends at the styled Recent output surface; the legacy topology/drive
@@ -104,8 +112,12 @@ prompt marker would use the right-inset user tint.
 - Recent output paints the supported teal live dot and readable
   `229 earlier lines · Load earlier` divider without unsupported glyph boxes.
   That literal is prototype-prescribed display copy, not a count derived from
-  the live 48-line tail; the visible `Load earlier` control is the real fetch
+  the live 51-line tail; the visible `Load earlier` control is the real fetch
   route and provides disabled/error feedback when unavailable.
+- Load earlier sends the real `read_tail` drive plus the transcript's opaque
+  older-page cursor after the first page; it uses `None` only for the initial
+  page. Disabled guidance names capability tokens (`read_tail`, `interrupt`,
+  `kill`), never display labels such as `Load earlier`.
 - Real tail semantics feed the same block renderer as transcript entries:
   typed `›`/prompt payloads are right-inset user-tint blocks, bullet/status and
   command markers are monospace tool blocks, and ordinary lines—including the

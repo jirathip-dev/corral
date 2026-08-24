@@ -92,15 +92,18 @@ const VIEW_MODE: &str = "corral-ui-board-view";
 const RIGHT_TAB: &str = "corral-ui-right-tab";
 const RIGHT_TAB_REQUEST: &str = "corral-ui-right-tab-request";
 const KILL_CONFIRM: &str = "corral-ui-kill-confirm";
+const KILL_CONFIRM_STARTED: &str = "corral-ui-kill-confirm-started";
+const KILL_CONFIRM_TIMEOUT_SECONDS: f64 = 10.0;
 
 const LIVE_LABEL: &str = "live";
 const EARLIER_LINES_LABEL: &str = "229 earlier lines";
 const LOAD_EARLIER_LABEL: &str = "Load earlier";
 const USER_BLOCK_INSET: f32 = 24.0;
 
-/// The compact tabs that live inside the right-hand master/detail pane.
-/// Top-level Issues and Audit remain available in the application chrome;
-/// these tabs make the approved board surface self-describing and clickable.
+/// The compact tabs that live inside the Board surface's detail-owned area.
+/// They are rendered on both Cards and Table because the application chrome
+/// hides the duplicate Board / Issues / Audit destinations while Board is
+/// active.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RightTab {
     #[default]
@@ -163,8 +166,8 @@ impl StateFilter {
 }
 
 const STATE_FILTERS: [StateFilter; 5] = [
-    StateFilter::All,
     StateFilter::Blocked,
+    StateFilter::All,
     StateFilter::Done,
     StateFilter::Working,
     StateFilter::Idle,
@@ -172,20 +175,20 @@ const STATE_FILTERS: [StateFilter; 5] = [
 
 /// State buckets that have at least one matching agent. The production
 /// toolbar uses this result so the zero-state rule is enforced by the same
-/// path the native board renders, not by a test-only projection.
+/// path the native board renders, not by a test-only projection. `Blocked`
+/// intentionally precedes `All` to match the prototype's `Needs you / All`
+/// chip order; `All` remains unconditional.
 fn available_state_filters(fleet: &Fleet, query: &str) -> Vec<StateFilter> {
     let query = query.trim();
-    let mut visible = vec![StateFilter::All];
-    for candidate in STATE_FILTERS.into_iter().skip(1) {
-        if fleet
-            .agents
-            .values()
-            .any(|agent| candidate.keeps(agent.state.into()) && agent_matches_query(agent, query))
-        {
-            visible.push(candidate);
-        }
-    }
-    visible
+    STATE_FILTERS
+        .into_iter()
+        .filter(|candidate| {
+            *candidate == StateFilter::All
+                || fleet.agents.values().any(|agent| {
+                    candidate.keeps(agent.state.into()) && agent_matches_query(agent, query)
+                })
+        })
+        .collect()
 }
 
 /// Callbacks the board issues to the app (drive dispatch + #64
@@ -233,6 +236,11 @@ pub fn show(
     if view == BoardView::Cards {
         return;
     }
+    // Board / Issues / Audit remain detail-owned on every Board surface,
+    // including an empty Table result. The global chrome intentionally hides
+    // these destinations while the Board is active.
+    right_tabs(ui);
+    ui.separator();
     let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
         .into_iter()
         .map(str::to_owned)
@@ -314,27 +322,31 @@ fn toolbar(
 /// route back to the prototype's Cards view.
 fn view_mode_controls(ui: &mut Ui, view: &mut BoardView, flat: bool) {
     ui.horizontal(|ui| {
-        if action_button(ui, "Cards", *view == BoardView::Cards, false).clicked() {
-            *view = BoardView::Cards;
-            persist_toolbar_state(
-                ui,
-                *view,
-                flat,
-                &search_query(ui.ctx()),
-                state_filter(ui.ctx()),
-            );
-        }
-        if action_button(ui, "Table", *view == BoardView::Table, false).clicked() {
-            *view = BoardView::Table;
-            persist_toolbar_state(
-                ui,
-                *view,
-                flat,
-                &search_query(ui.ctx()),
-                state_filter(ui.ctx()),
-            );
-        }
+        view_mode_buttons(ui, view, flat);
     });
+}
+
+fn view_mode_buttons(ui: &mut Ui, view: &mut BoardView, flat: bool) {
+    if action_button(ui, "Cards", *view == BoardView::Cards, false).clicked() {
+        *view = BoardView::Cards;
+        persist_toolbar_state(
+            ui,
+            *view,
+            flat,
+            &search_query(ui.ctx()),
+            state_filter(ui.ctx()),
+        );
+    }
+    if action_button(ui, "Table", *view == BoardView::Table, false).clicked() {
+        *view = BoardView::Table;
+        persist_toolbar_state(
+            ui,
+            *view,
+            flat,
+            &search_query(ui.ctx()),
+            state_filter(ui.ctx()),
+        );
+    }
 }
 
 /// Prototype filter chip: `All` is the active working-blue chip, while
@@ -1010,9 +1022,9 @@ fn right_pane(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    sync_kill_confirmation(ui.ctx(), selected);
     right_tabs(ui);
     ui.separator();
-    view_mode_controls(ui, view, flat);
     let selected_agent = selected.and_then(|id| fleet.agents.get(id));
     let interrupt_state = selected_agent
         .map(|agent| drive_control_state(&agent.capabilities, "interrupt", allowed("interrupt")))
@@ -1020,8 +1032,17 @@ fn right_pane(
     let kill_state = selected_agent
         .map(|agent| drive_control_state(&agent.capabilities, "kill", allowed("kill")))
         .unwrap_or(DriveControlState::NotImplemented);
+    let kill_pending =
+        kill_state == DriveControlState::Ready && is_kill_confirmation_pending(ui.ctx(), selected);
+
+    // Cards keeps the prototype's four primary controls in one stable inline
+    // row. A pending confirmation is deliberately rendered below this row,
+    // outside the original Kill trigger rect, so a double-click cannot turn
+    // the second release into an immediate destructive action.
     ui.horizontal(|ui| {
-        if let Some(button) = gated_action_button(ui, "Interrupt", false, interrupt_state)
+        view_mode_buttons(ui, view, flat);
+        if let Some(button) =
+            gated_action_button(ui, "Interrupt", "interrupt", false, interrupt_state)
             && button.clicked()
             && let Some(agent) = selected_agent
         {
@@ -1029,22 +1050,33 @@ fn right_pane(
         }
 
         if kill_state != DriveControlState::Ready {
-            clear_kill_confirmation(ui.ctx(), selected);
-            gated_action_button(ui, "Kill", false, kill_state);
-        } else if is_kill_confirmation_pending(ui.ctx(), selected) {
-            if action_button(ui, "Confirm kill", false, true).clicked()
-                && let Some(agent) = selected_agent
-            {
-                (actions.drive)(DriveIntent::kill(&agent.agent_id, fleet.rev));
-                clear_kill_confirmation(ui.ctx(), selected);
-            }
-            if action_button(ui, "Cancel", false, false).clicked() {
-                clear_kill_confirmation(ui.ctx(), selected);
-            }
+            clear_kill_confirmation(ui.ctx());
+            gated_action_button(ui, "Kill", "kill", false, kill_state);
+        } else if kill_pending {
+            disabled_action_button(ui, "Kill", true);
         } else if action_button(ui, "Kill", false, true).clicked() {
             set_kill_confirmation(ui.ctx(), selected, true);
         }
     });
+    if kill_pending {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Confirm destructive action")
+                    .small()
+                    .color(theme::ui::WARN),
+            );
+            if action_button(ui, "Confirm kill", false, true).clicked()
+                && let Some(agent) = selected_agent
+            {
+                (actions.drive)(DriveIntent::kill(&agent.agent_id, fleet.rev));
+                clear_kill_confirmation(ui.ctx());
+            }
+            if action_button(ui, "Cancel", false, false).clicked() {
+                clear_kill_confirmation(ui.ctx());
+            }
+        });
+    }
     ui.add_space(2.0);
     ui.label(
         RichText::new("Recent output")
@@ -1135,51 +1167,94 @@ fn action_button(ui: &mut Ui, label: &str, active: bool, danger: bool) -> egui::
     )
 }
 
+/// Keep a pending destructive trigger visually in place without leaving its
+/// original hit target active. Confirmation is rendered in a separate row.
+fn disabled_action_button(ui: &mut Ui, label: &str, danger: bool) -> egui::Response {
+    let text = if danger {
+        theme::state::BLOCKED
+    } else {
+        theme::ui::MUTED
+    };
+    ui.add_enabled(
+        false,
+        egui::Button::new(RichText::new(label).size(11.0).strong().color(text))
+            .fill(theme::ui::PANEL2)
+            .stroke(Stroke::new(1.0, theme::ui::LINE))
+            .corner_radius(CornerRadius::same(8))
+            .min_size(egui::vec2(0.0, 28.0)),
+    )
+}
+
 fn gated_action_button(
     ui: &mut Ui,
     label: &str,
+    capability: &str,
     danger: bool,
     state: DriveControlState,
 ) -> Option<egui::Response> {
     match state {
         DriveControlState::Ready => Some(action_button(ui, label, false, danger)),
         _ => {
-            disabled_drive_button(ui, label, state);
+            disabled_drive_button(ui, label, capability, state);
             None
         }
     }
 }
 
-fn kill_confirmation_id(agent_id: &str) -> egui::Id {
-    egui::Id::new((KILL_CONFIRM, agent_id))
-}
-
 fn is_kill_confirmation_pending(ctx: &egui::Context, selected: Option<&str>) -> bool {
-    selected.is_some_and(|agent_id| {
-        ctx.memory(|memory| {
-            memory
-                .data
-                .get_temp::<bool>(kill_confirmation_id(agent_id))
-                .unwrap_or(false)
-        })
+    let Some(selected) = selected else {
+        return false;
+    };
+    let now = ctx.input(|input| input.time);
+    ctx.memory(|memory| {
+        let owner = memory.data.get_temp::<String>(egui::Id::new(KILL_CONFIRM));
+        let started = memory
+            .data
+            .get_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+        owner.as_deref() == Some(selected)
+            && started.is_some_and(|started| now - started <= KILL_CONFIRM_TIMEOUT_SECONDS)
     })
 }
 
 fn set_kill_confirmation(ctx: &egui::Context, selected: Option<&str>, pending: bool) {
     if let Some(agent_id) = selected {
-        ctx.memory_mut(|memory| {
-            memory
-                .data
-                .insert_temp(kill_confirmation_id(agent_id), pending);
-        });
+        if pending {
+            let now = ctx.input(|input| input.time);
+            ctx.memory_mut(|memory| {
+                memory
+                    .data
+                    .insert_temp::<String>(egui::Id::new(KILL_CONFIRM), agent_id.to_string());
+                memory
+                    .data
+                    .insert_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED), now);
+            });
+        } else {
+            clear_kill_confirmation(ctx);
+        }
     }
 }
 
-fn clear_kill_confirmation(ctx: &egui::Context, selected: Option<&str>) {
-    if let Some(agent_id) = selected {
-        ctx.memory_mut(|memory| {
-            memory.data.remove::<bool>(kill_confirmation_id(agent_id));
-        });
+fn clear_kill_confirmation(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| {
+        memory.data.remove::<String>(egui::Id::new(KILL_CONFIRM));
+        memory
+            .data
+            .remove::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+    });
+}
+
+fn sync_kill_confirmation(ctx: &egui::Context, selected: Option<&str>) {
+    let now = ctx.input(|input| input.time);
+    let stale = ctx.memory(|memory| {
+        let owner = memory.data.get_temp::<String>(egui::Id::new(KILL_CONFIRM));
+        let started = memory
+            .data
+            .get_temp::<f64>(egui::Id::new(KILL_CONFIRM_STARTED));
+        owner.as_deref() != selected
+            || started.is_some_and(|started| now - started > KILL_CONFIRM_TIMEOUT_SECONDS)
+    });
+    if stale {
+        clear_kill_confirmation(ctx);
     }
 }
 
@@ -1283,7 +1358,7 @@ fn recent_output_surface(
                         ),
                     )
                 } else {
-                    disabled_drive_button(ui, LOAD_EARLIER_LABEL, read_tail_control);
+                    disabled_drive_button(ui, LOAD_EARLIER_LABEL, "read_tail", read_tail_control);
                     None
                 };
                 painted_rule(ui, 28.0);
@@ -1291,7 +1366,10 @@ fn recent_output_surface(
                     (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
                     (actions.transcript)(crate::transcript::TranscriptRequest {
                         agent_id: agent.agent_id.clone(),
-                        cursor: None,
+                        cursor: fleet
+                            .transcripts
+                            .get(id)
+                            .and_then(|pane| pane.next_cursor.clone()),
                     });
                 }
             });
@@ -1960,9 +2038,9 @@ pub fn drive_disabled_reason(capability: &str, state: DriveControlState) -> Opti
     }
 }
 
-fn disabled_drive_button(ui: &mut Ui, capability: &str, state: DriveControlState) {
+fn disabled_drive_button(ui: &mut Ui, label: &str, capability: &str, state: DriveControlState) {
     if let Some(reason) = drive_disabled_reason(capability, state) {
-        crate::ui::disabled_button_with_reason(ui, capability, &reason);
+        crate::ui::disabled_button_with_reason(ui, label, &reason);
     }
 }
 
@@ -1985,7 +2063,7 @@ fn drive_controls(
             match cap {
                 "prompt" => match state {
                     DriveControlState::Ready => prompt_widget(ui, agent, rev, drive),
-                    _ => disabled_drive_button(ui, cap, state),
+                    _ => disabled_drive_button(ui, cap, cap, state),
                 },
                 "approve" => {
                     if agent.waiting_on.is_none() {
@@ -1993,7 +2071,7 @@ fn drive_controls(
                     }
                     match state {
                         DriveControlState::Ready => approve_choices(ui, agent, rev, drive),
-                        _ => disabled_drive_button(ui, cap, state),
+                        _ => disabled_drive_button(ui, cap, cap, state),
                     }
                 }
                 _ => match state {
@@ -2008,7 +2086,7 @@ fn drive_controls(
                             drive(intent);
                         }
                     }
-                    _ => disabled_drive_button(ui, cap, state),
+                    _ => disabled_drive_button(ui, cap, cap, state),
                 },
             }
         }
@@ -2781,6 +2859,21 @@ mod tests {
             "chips compose with search over the agent fields"
         );
 
+        fleet.agents.insert(
+            "herdr:blocked".into(),
+            agent_with_state("herdr:blocked", crate::model::AgentState::Blocked),
+        );
+        assert_eq!(
+            available_state_filters(&fleet, ""),
+            vec![
+                StateFilter::Blocked,
+                StateFilter::All,
+                StateFilter::Working,
+                StateFilter::Idle,
+            ],
+            "the production filter sequence puts Needs you before All"
+        );
+
         let mut unknown_fleet = Fleet::default();
         unknown_fleet.agents.insert(
             "herdr:unknown".into(),
@@ -3484,10 +3577,11 @@ mod tests {
         assert!(flat, "Cards keeps its flat default");
         assert_eq!(query, "");
         assert_eq!(filter, StateFilter::All);
-        assert!(text_rect(&output, "Needs you").is_some());
+        let needs_you = text_rect(&output, "Needs you").expect("Needs you chip rendered");
+        let all = text_rect(&output, "All").expect("the active All chip emits its label");
         assert!(
-            text_rect(&output, "All").is_some(),
-            "the active All chip must emit its visible dark label"
+            needs_you.left() < all.left(),
+            "production chip order must be Needs you then All: needs={needs_you:?} all={all:?}"
         );
         assert!(
             text_rect(&output, "Search repo / branch / issue…").is_some(),
@@ -3536,6 +3630,21 @@ mod tests {
                 text_rect(&output, required).is_some(),
                 "detail pane must render {required:?}"
             );
+        }
+        let controls = ["Cards", "Table", "Interrupt", "Kill"]
+            .map(|label| text_rect(&output, label).expect("primary control rendered"));
+        assert!(
+            controls
+                .windows(2)
+                .all(|pair| pair[0].left() < pair[1].left()),
+            "Cards controls stay in prototype order Cards / Table / Interrupt / Kill"
+        );
+        let controls_share_row = controls
+            .windows(2)
+            .all(|pair| (pair[0].top() - pair[1].top()).abs() <= 1.0);
+        if !controls_share_row {
+            clear_textures(&mut output);
+            panic!("Cards controls share one inline row rather than wrapping: {controls:?}");
         }
         assert!(
             text_rect(&output, "repo / branch / dirty / a-b / pr / ci").is_none(),
@@ -3663,6 +3772,28 @@ mod tests {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
         });
+        for tab in [RightTab::Issues, RightTab::Audit] {
+            let label = tab.label();
+            let tab_pos = text_rect(&output, label)
+                .expect("Table surface keeps detail-owned navigation reachable")
+                .center();
+            clear_textures(&mut output);
+            let mut next = ctx.run_ui(pointer_down_input(tab_pos), |ui| {
+                row_test_style(ui);
+                show(ui, &mut fleet, &|_| true, &mut actions);
+            });
+            clear_textures(&mut next);
+            next = ctx.run_ui(pointer_up_input(tab_pos), |ui| {
+                row_test_style(ui);
+                show(ui, &mut fleet, &|_| true, &mut actions);
+            });
+            assert_eq!(
+                take_right_tab_request(&ctx),
+                Some(tab),
+                "Table {label} tab must dispatch its real navigation request"
+            );
+            output = next;
+        }
         let cards_pos = text_rect(&output, "Cards")
             .expect("Table surface exposes a Cards return control")
             .center();
@@ -3702,11 +3833,11 @@ mod tests {
             selected_agent: Some("herdr:cards-fetch".into()),
             ..Default::default()
         };
-        let mut intents = Vec::new();
-        let mut transcript_requests = Vec::new();
+        let intents = std::cell::RefCell::new(Vec::new());
+        let transcript_requests = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
-            drive: &mut |intent| intents.push(intent),
-            transcript: &mut |request| transcript_requests.push(request),
+            drive: &mut |intent| intents.borrow_mut().push(intent),
+            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
             full_chat: &mut |_| {},
         };
         let mut view = BoardView::Cards;
@@ -3755,13 +3886,89 @@ mod tests {
         });
         clear_textures(&mut output);
 
-        assert_eq!(intents.len(), 1, "Cards click dispatches one real drive");
-        assert_eq!(intents[0].capability, crate::drive::Capability::ReadTail);
-        assert_eq!(intents[0].target, "herdr:cards-fetch");
-        assert_eq!(intents[0].rev, Some(42));
-        assert_eq!(transcript_requests.len(), 1);
-        assert_eq!(transcript_requests[0].agent_id, "herdr:cards-fetch");
-        assert_eq!(transcript_requests[0].cursor, None);
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "Cards click dispatches one real drive"
+        );
+        assert_eq!(
+            intents.borrow()[0].capability,
+            crate::drive::Capability::ReadTail
+        );
+        assert_eq!(intents.borrow()[0].target, "herdr:cards-fetch");
+        assert_eq!(intents.borrow()[0].rev, Some(42));
+        assert_eq!(transcript_requests.borrow().len(), 1);
+        assert_eq!(
+            transcript_requests.borrow()[0].agent_id,
+            "herdr:cards-fetch"
+        );
+        assert_eq!(transcript_requests.borrow()[0].cursor, None);
+
+        // Once the first transcript page returns an opaque cursor, the same
+        // real Cards control asks for the next older page instead of
+        // restarting at the newest page.
+        let mut paged_fleet = fleet;
+        paged_fleet.transcripts.insert(
+            "herdr:cards-fetch".into(),
+            crate::transcript::TranscriptPane {
+                next_cursor: Some("older-page-cursor".into()),
+                ..Default::default()
+            },
+        );
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        let load_pos = text_rects(&output, LOAD_EARLIER_LABEL)
+            .last()
+            .expect("the paged divider keeps Load earlier actionable")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(load_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &paged_fleet,
+                Some("herdr:cards-fetch"),
+                &mut view,
+                true,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert_eq!(
+            intents.borrow().len(),
+            2,
+            "older-page click keeps the real read_tail drive"
+        );
+        assert_eq!(transcript_requests.borrow().len(), 2);
+        assert_eq!(
+            transcript_requests.borrow()[1].cursor.as_deref(),
+            Some("older-page-cursor"),
+            "older-page click follows the daemon cursor"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]
@@ -3861,6 +4068,32 @@ mod tests {
             "Kill never dispatches on its first click"
         );
         clear_textures(&mut output);
+        // Replay the original Kill coordinate as a double-click. The
+        // pending trigger stays disabled in place and confirmation lives in a
+        // separate row, so this second release cannot dispatch Kill.
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_pos),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_pos),
+        );
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "replaying the original Kill coordinate cannot bypass confirmation"
+        );
+        clear_textures(&mut output);
         let mut output = render(
             &ctx,
             &ready_fleet,
@@ -3953,6 +4186,68 @@ mod tests {
         assert_eq!(
             intents.borrow()[1].capability,
             crate::drive::Capability::Kill
+        );
+        clear_textures(&mut output);
+
+        // A pending confirmation is owned by the selected agent, not by a
+        // stale per-agent flag. Changing selection clears it before the new
+        // agent can render a destructive confirmation.
+        let mut second_agent = agent_with_caps(&["interrupt", "kill"]);
+        second_agent.agent_id = "herdr:second-actions".into();
+        let changed_selection_fleet = Fleet {
+            agents: [
+                (
+                    "herdr:ready-actions".into(),
+                    ready_fleet.agents["herdr:ready-actions"].clone(),
+                ),
+                (second_agent.agent_id.clone(), second_agent),
+            ]
+            .into_iter()
+            .collect(),
+            selected_agent: Some("herdr:second-actions".into()),
+            ..Default::default()
+        };
+        // Create a fresh pending confirmation for the original selected
+        // agent, then render the changed selection through the real pane.
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        let kill_again = text_rect(&output, "Kill").unwrap().center();
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_down_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &ready_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            pointer_up_input(kill_again),
+        );
+        clear_textures(&mut output);
+        let mut output = render(
+            &ctx,
+            &changed_selection_fleet,
+            &mut view,
+            &|_| true,
+            &mut actions,
+            row_test_input(vec![]),
+        );
+        assert!(
+            text_rect(&output, "Confirm kill").is_none(),
+            "changing the selected agent clears the prior kill confirmation"
         );
         clear_textures(&mut output);
 
@@ -4992,10 +5287,20 @@ mod tests {
             drive_disabled_reason("kill", DriveControlState::MissingGrant).expect("grant reason");
         let not_implemented = drive_disabled_reason("kill", DriveControlState::NotImplemented)
             .expect("not implemented reason");
-        assert!(grant.contains("requires the kill grant"));
-        assert!(grant.contains("ask the host"));
-        assert!(not_implemented.contains("kill: not implemented yet"));
-        assert!(!not_implemented.contains("grant"));
+        assert_eq!(grant, "requires the kill grant — ask the host");
+        assert_eq!(not_implemented, "kill: not implemented yet");
+        assert_eq!(
+            drive_disabled_reason("read_tail", DriveControlState::MissingGrant),
+            Some("requires the read_tail grant — ask the host".to_string())
+        );
+        assert_eq!(
+            drive_disabled_reason("read_tail", DriveControlState::NotImplemented),
+            Some("read_tail: not implemented yet".to_string())
+        );
+        assert!(
+            !grant.contains(LOAD_EARLIER_LABEL) && !not_implemented.contains(LOAD_EARLIER_LABEL),
+            "disabled guidance names capabilities, never display labels"
+        );
         assert_ne!(grant, not_implemented, "reasons must never be conflated");
     }
 

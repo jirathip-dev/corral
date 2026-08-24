@@ -1044,30 +1044,45 @@ private final class DriveRequestGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var released = false
     private var cancelled = false
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
 
-    func wait() -> Bool {
-        condition.lock()
-        while !released && !cancelled {
-            condition.wait()
+    func wait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if cancelled {
+                condition.unlock()
+                continuation.resume(returning: false)
+            } else if released {
+                condition.unlock()
+                continuation.resume(returning: true)
+            } else {
+                waiters.append(continuation)
+                condition.unlock()
+            }
         }
-        let canRespond = !cancelled
-        condition.unlock()
-        return canRespond
     }
 
     func release() {
         condition.lock()
         released = true
-        condition.broadcast()
         condition.unlock()
+        resumeWaiters(returning: true)
     }
 
     func cancel() {
         condition.lock()
         cancelled = true
         released = true
-        condition.broadcast()
         condition.unlock()
+        resumeWaiters(returning: false)
+    }
+
+    private func resumeWaiters(returning result: Bool) {
+        condition.lock()
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        condition.unlock()
+        waiters.forEach { $0.resume(returning: result) }
     }
 }
 
@@ -1213,6 +1228,8 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     private static let scriptLock = NSLock()
     private static var scriptStorage: DeterministicDriveScript?
     private var activeScript: DeterministicDriveScript?
+    private let deliveryQueue = DispatchQueue(
+        label: "FleetNotifierTests.DeterministicDriveURLProtocol.\(UUID().uuidString)")
     private var stopWasRecorded = false
 
     static func setScript(_ script: DeterministicDriveScript) {
@@ -1247,27 +1264,43 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             recordedRequest.httpBody = body
         }
         script.log.record(recordedRequest)
-        let canRespond = script.gate(for: url.path)?.wait() ?? true
-        if canRespond {
-            let response = HTTPURLResponse(url: url, statusCode: 200,
-                                           httpVersion: "HTTP/1.1", headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: script.response(for: url.path))
-            client?.urlProtocolDidFinishLoading(self)
-        } else {
-            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        let gate = script.gate(for: url.path)
+        Task { [self] in
+            let canRespond: Bool
+            if let gate {
+                canRespond = await gate.wait()
+            } else {
+                canRespond = true
+            }
+            deliveryQueue.async {
+                if canRespond, !self.stopWasRecorded {
+                    let response = HTTPURLResponse(url: url, statusCode: 200,
+                                                   httpVersion: "HTTP/1.1",
+                                                   headerFields: nil)!
+                    self.client?.urlProtocol(self, didReceive: response,
+                                             cacheStoragePolicy: .notAllowed)
+                    self.client?.urlProtocol(self, didLoad: script.response(for: url.path))
+                    self.client?.urlProtocolDidFinishLoading(self)
+                } else {
+                    self.client?.urlProtocol(self,
+                                             didFailWithError: URLError(.cancelled))
+                }
+                script.log.completed.increment()
+            }
         }
-        script.log.completed.increment()
     }
 
     override func stopLoading() {
-        guard !stopWasRecorded else { return }
-        stopWasRecorded = true
-        guard let script = activeScript,
-              let path = request.url?.path,
-              let gate = script.gate(for: path) else { return }
-        script.log.cancelled.increment()
-        gate.cancel()
+        let script = activeScript
+        let path = request.url?.path
+        deliveryQueue.async {
+            guard !self.stopWasRecorded else { return }
+            self.stopWasRecorded = true
+            guard let script, let path,
+                  let gate = script.gate(for: path) else { return }
+            script.log.cancelled.increment()
+            gate.cancel()
+        }
     }
 }
 
@@ -1835,7 +1868,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         let deviceRequests = script.log.requests.filter { $0.url?.path == "/device-token" }
         XCTAssertEqual(deviceRequests.count, 1,
                        "demo→live must upload the current token exactly once")
-        let deviceBody = try XCTUnwrap(requestBodyData(deviceRequests[0]))
+        let deviceBody = try XCTUnwrap(requestBodyData(try XCTUnwrap(deviceRequests.first)))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: deviceBody)
             as? [String: Any])
         XCTAssertEqual(body["key_id"] as? String, meta.keyId)

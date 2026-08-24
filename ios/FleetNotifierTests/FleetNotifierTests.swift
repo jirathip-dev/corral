@@ -3362,7 +3362,11 @@ final class ConnectionFailureTests: XCTestCase {
     /// URLSession seam. This is deliberately not lengthened: #179 observed a
     /// hosted runner miss that chain entirely, so the deadline exists to name
     /// which stage stalled, not to hide slow scheduling behind a longer wait.
-    private func awaitConnectionDelivery(
+    // XCTest's async fulfillment inherits its caller's executor, so a
+    // MainActor test would keep this wait on MainActor and starve the
+    // FleetStore hop. These async tests are nonisolated for exactly that
+    // reason; store reads/mutations hop back explicitly.
+    nonisolated private func awaitConnectionDelivery(
         probe: ConnectionDeliveryProbe,
         neverStarted: String,
         neverLanded: String
@@ -3379,23 +3383,27 @@ final class ConnectionFailureTests: XCTestCase {
         return true
     }
 
-    func testConnectionFailureSurfacesErrorNotConnecting() async {
+    nonisolated func testConnectionFailureSurfacesErrorNotConnecting() async {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FailingStreamURLProtocol.self]
         let session = URLSession(configuration: config)
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
-        let store = FleetStore()
+        let store = await MainActor.run { FleetStore() }
 
         let delivery = ConnectionDeliveryProbe(
             startedDescription: "FailingStreamURLProtocol.startLoading ran",
             landedDescription: "stream connection error reached FleetStore")
         FailingStreamURLProtocol.setStartHandler { delivery.markStarted() }
-        store.onConnectionError = { _ in delivery.markLanded() }
-        store.connect(client: client)
+        await MainActor.run {
+            store.onConnectionError = { _ in delivery.markLanded() }
+            store.connect(client: client)
+        }
         defer {
             FailingStreamURLProtocol.clearStartHandler()
-            store.disconnect()
             session.invalidateAndCancel()
+        }
+        addTeardownBlock {
+            await MainActor.run { store.disconnect() }
         }
 
         guard await awaitConnectionDelivery(
@@ -3404,8 +3412,9 @@ final class ConnectionFailureTests: XCTestCase {
             neverLanded: "FailingStreamURLProtocol.startLoading() ran, but the stream failure never reached FleetStore within the 5s delivery bound"
         ) else { return }
 
-        guard case .error(let message) = store.connectionState else {
-            return XCTFail("connection failure must set .error, not \(store.connectionState)")
+        let state = await MainActor.run { store.connectionState }
+        guard case .error(let message) = state else {
+            return XCTFail("connection failure must set .error, not \(state)")
         }
         XCTAssertTrue(message.hasPrefix("stream disconnected — "), message)
         // F5: the underlying reason must be non-empty too — the prefix
@@ -3418,23 +3427,27 @@ final class ConnectionFailureTests: XCTestCase {
     /// `localizedDescription` of `DriveError` used to discard the message
     /// entirely, leaving a banner with zero diagnostic content. Drives the
     /// real path with a mock that serves HTTP 500.
-    func testNon200ResponseNamesStatusInError() async {
+    nonisolated func testNon200ResponseNamesStatusInError() async {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [Non200StreamURLProtocol.self]
         let session = URLSession(configuration: config)
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
-        let store = FleetStore()
+        let store = await MainActor.run { FleetStore() }
 
         let delivery = ConnectionDeliveryProbe(
             startedDescription: "Non200StreamURLProtocol.startLoading ran",
             landedDescription: "HTTP connection error reached FleetStore")
         Non200StreamURLProtocol.setStartHandler { delivery.markStarted() }
-        store.onConnectionError = { _ in delivery.markLanded() }
-        store.connect(client: client)
+        await MainActor.run {
+            store.onConnectionError = { _ in delivery.markLanded() }
+            store.connect(client: client)
+        }
         defer {
             Non200StreamURLProtocol.clearStartHandler()
-            store.disconnect()
             session.invalidateAndCancel()
+        }
+        addTeardownBlock {
+            await MainActor.run { store.disconnect() }
         }
 
         guard await awaitConnectionDelivery(
@@ -3443,8 +3456,9 @@ final class ConnectionFailureTests: XCTestCase {
             neverLanded: "Non200StreamURLProtocol.startLoading() ran, but the HTTP failure never reached FleetStore within the 5s delivery bound"
         ) else { return }
 
-        guard case .error(let message) = store.connectionState else {
-            return XCTFail("non-200 must surface .error, not \(store.connectionState)")
+        let state = await MainActor.run { store.connectionState }
+        guard case .error(let message) = state else {
+            return XCTFail("non-200 must surface .error, not \(state)")
         }
         XCTAssertTrue(message.contains("HTTP 500"), message)
         XCTAssertTrue(message.contains("/events"), message)
@@ -3458,24 +3472,28 @@ final class ConnectionFailureTests: XCTestCase {
     /// 200 + clean EOF with ZERO body bytes on the retry (idle fleet → 0
     /// frames). Goes RED if `onConnected?()` is deleted from
     /// `CorraldClient.stream()`.
-    func testReconnectOverRealURLSessionClearsErrorState() async {
+    nonisolated func testReconnectOverRealURLSessionClearsErrorState() async {
         ReconnectStreamURLProtocol.resetRequestCount()
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ReconnectStreamURLProtocol.self]
         let session = URLSession(configuration: config)
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
-        let store = FleetStore()
+        let store = await MainActor.run { FleetStore() }
 
         let delivery = ConnectionDeliveryProbe(
             startedDescription: "ReconnectStreamURLProtocol.startLoading ran",
             landedDescription: "stream reconnected through FleetStore")
         ReconnectStreamURLProtocol.setStartHandler { delivery.markStarted() }
-        store.onConnected = { delivery.markLanded() }
-        store.connect(client: client)
+        await MainActor.run {
+            store.onConnected = { delivery.markLanded() }
+            store.connect(client: client)
+        }
         defer {
             ReconnectStreamURLProtocol.clearStartHandler()
-            store.disconnect()
             session.invalidateAndCancel()
+        }
+        addTeardownBlock {
+            await MainActor.run { store.disconnect() }
         }
 
         // Request #1 must enter the loader; after the 1s backoff the retry's
@@ -3487,9 +3505,11 @@ final class ConnectionFailureTests: XCTestCase {
             neverLanded: "ReconnectStreamURLProtocol.startLoading() ran, but the retry's 200 never reached FleetStore within the 5s delivery bound"
         ) else { return }
 
-        XCTAssertEqual(store.connectionState, .connected,
+        let state = await MainActor.run { store.connectionState }
+        let agentsAreEmpty = await MainActor.run { store.agents.isEmpty }
+        XCTAssertEqual(state, .connected,
                        "the 200 on retry must clear the stale error via the real wiring")
-        XCTAssertTrue(store.agents.isEmpty, "an idle fleet serves 0 frames → 0 agents")
+        XCTAssertTrue(agentsAreEmpty, "an idle fleet serves 0 frames → 0 agents")
         XCTAssertGreaterThanOrEqual(ReconnectStreamURLProtocol.requestCount, 2,
                                     "the probe must exercise the failure → retry ladder")
     }

@@ -460,9 +460,15 @@ final class FleetStore: ObservableObject {
         cursorBox.write(lastEventId)
         streamSeen = [:]
         let generation = connectionGeneration
-        streamTask = Task { [weak self] in
-            await client.stream(lastEventId: { [weak self] in
-                self?.cursorBox.read()
+        // #179: an unstructured `Task {}` created inside this @MainActor
+        // method inherits MainActor isolation, so the URLSession transport,
+        // retry loop, and callback delivery all competed for the main actor.
+        // Launch detached so the real stream runs off MainActor; state
+        // mutation remains the explicit `Task { @MainActor ... }` hops below.
+        let cursorBox = self.cursorBox
+        streamTask = Task.detached { [weak self, cursorBox] in
+            await client.stream(lastEventId: {
+                cursorBox.read()
             }, onEvent: { [weak self] frame in
                 // The stream callback can race disconnect/demo after the
                 // frame has been decoded. Pass the connection identity into

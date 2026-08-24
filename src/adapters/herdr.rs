@@ -860,6 +860,22 @@ impl SessionState {
             .unwrap_or_else(|| format!("herdr:pane:{pane_id}"))
     }
 
+    /// Resolve the canonical identity for a trusted `agent.list` entry.
+    ///
+    /// Unlike event/fallback resolution, a listed pane without a session id
+    /// must not reuse a previous explicit session id. Doing so would keep a
+    /// superseded id in `present_agents`, making the catalog eviction pass
+    /// believe that the dead session is still live and refresh it forever.
+    /// A session id wins when present; otherwise the pane-derived fallback is
+    /// authoritative for this refresh.
+    fn resolve_catalog_agent_id(pane_id: &str, session_value: Option<&str>) -> String {
+        if let Some(v) = session_value.filter(|v| !v.is_empty()) {
+            format!("herdr:{v}")
+        } else {
+            format!("herdr:pane:{pane_id}")
+        }
+    }
+
     fn next_seq(&mut self, agent_id: &str) -> u64 {
         let seq = self.seqs.get_mut(agent_id);
         match seq {
@@ -1278,7 +1294,7 @@ impl HerdrAdapter {
                         .and_then(|session| session.value.as_deref());
                     (
                         agent.pane_id.clone(),
-                        state.resolve_agent_id(&agent.pane_id, session),
+                        SessionState::resolve_catalog_agent_id(&agent.pane_id, session),
                         agent.state_change_seq,
                     )
                 })
@@ -1385,13 +1401,14 @@ impl HerdrAdapter {
             info!(agent_id, "agent removed: pane absent from fresh agent.list");
             self.remove_if_unmapped(store, &agent_id).await;
         }
-        // A daemon restart/global re-arm leaves the adapter's in-memory pane
-        // mappings fresh while persisted rows survive. Compare every stored
-        // herdr row against the live catalog itself, not just the current
-        // pane diff, so a superseded session is evicted in the same refresh
-        // that inserts its replacement. `remove_if_unmapped` is the
-        // fail-closed guard: a row with a live adapter mapping is never
-        // pruned by an incomplete or racing catalog view.
+        // A superseded session can otherwise stay reachable through
+        // `pane_agents` when the trusted list reports the old pane without its
+        // session while the replacement appears on another pane. Compare every
+        // stored herdr row against that fresh catalog after pane migration, so
+        // the old id is evicted and tombstoned in the same refresh that inserts
+        // its replacement. `remove_if_unmapped` remains the fail-closed guard:
+        // a row with a live adapter mapping is never pruned by an incomplete or
+        // racing catalog view.
         let catalog_evictions = store
             .matching(|agent| {
                 agent.source == "herdr" && !plan.live_agent_ids.contains(&agent.agent_id)
@@ -1779,12 +1796,15 @@ impl HerdrAdapter {
         let agent_id = agent_id.to_string();
         store
             .remove_if(&agent_id, || {
-                !self
-                    .state
-                    .lock()
-                    .unwrap()
-                    .agent_panes
-                    .contains_key(&agent_id)
+                let mut state = self.state.lock().unwrap();
+                if state.agent_panes.contains_key(&agent_id) {
+                    return false;
+                }
+                // Match retire/register removal: an evicted target must keep
+                // the refreshable stale-agent tombstone, not fall through to a
+                // generic 404 unknown_agent on a later approve/drive.
+                state.mark_stale_agent(agent_id.clone());
+                true
             })
             .await
     }
@@ -5819,16 +5839,19 @@ mod review_tests {
     }
 
     #[tokio::test]
-    async fn restart_reconcile_evicts_superseded_session_and_attributes_replacement() {
-        // #178: a re-arm supersedes the old session and starts a fresh adapter
-        // with an empty pane map while the old store rows survive. The live
-        // catalog sweep must evict the dead id and keep only the replacement,
-        // attributed to the same explicit repo/branch facts.
+    async fn catalog_reconcile_evicts_superseded_session_from_sessionless_pane() {
+        // #178 reachable single-adapter shape: a re-arm leaves the old pane in
+        // agent.list without its explicit session while the replacement runs on
+        // another pane. Reusing the previous session id for that session-less
+        // pane would keep the dead id in `live_agent_ids` and refresh it
+        // forever; the catalog resolve must migrate to the pane fallback so the
+        // same refresh can evict and tombstone the old id.
         let temp = tempfile::tempdir().expect("tempdir");
         let primary = temp.path().join("corral");
         let worktrees = temp.path().join("worktrees");
-        let worktree = worktrees.join("corral/g178-stale-session-eviction");
-        for path in [&primary, &worktrees, &worktree] {
+        let old_worktree = worktrees.join("corral/g178-superseded");
+        let rearmed_worktree = worktrees.join("corral/g178-rearmed");
+        for path in [&primary, &worktrees, &old_worktree, &rearmed_worktree] {
             std::fs::create_dir_all(path).unwrap();
         }
         let attribution = WorkspaceAttribution::from_roots(
@@ -5838,13 +5861,12 @@ mod review_tests {
             }],
             worktrees.clone(),
         );
-        attribution.record_branch(&worktree, "g178/stale-session-eviction");
+        attribution.record_branch(&old_worktree, "g178/superseded");
+        attribution.record_branch(&rearmed_worktree, "g178/rearmed");
 
         let store = Store::new();
-        let old_adapter = HerdrAdapter::new_with_attribution(
-            PathBuf::from("/nonexistent.sock"),
-            attribution.clone(),
-        );
+        let adapter =
+            HerdrAdapter::new_with_attribution(PathBuf::from("/nonexistent.sock"), attribution);
         let old: AgentListWire = serde_json::from_value(json!({ "agents": [{
             "agent": "codex",
             "agent_session": {"agent": "codex", "kind": "id",
@@ -5852,45 +5874,57 @@ mod review_tests {
             "agent_status": "working",
             "state_change_seq": 10,
             "name": "impl-g178-old",
-            "pane_id": "w-g178:p1",
-            "foreground_cwd": worktree,
+            "pane_id": "w-g178-old:p1",
+            "foreground_cwd": old_worktree.clone(),
             "state_labels": {}
         }] }))
         .unwrap();
-        old_adapter.reconcile_against_list(&old, &store).await;
+        adapter.reconcile_against_list(&old, &store).await;
+        let old_id = "herdr:ses-superseded";
         assert!(
-            store
-                .snapshot()
-                .await
-                .agents
-                .contains_key("herdr:ses-superseded")
+            store.snapshot().await.agents.contains_key(old_id),
+            "seed refresh must store the superseded session"
         );
 
-        // Fresh adapter (new session on the same pane), as after a daemon
-        // restart or global re-arm. The new adapter has no memory of the old
-        // pane edge, so only the catalog sweep can retire the old row.
-        let replacement_adapter =
-            HerdrAdapter::new_with_attribution(PathBuf::from("/nonexistent.sock"), attribution);
-        let replacement: AgentListWire = serde_json::from_value(json!({ "agents": [{
-            "agent": "codex",
-            "agent_session": {"agent": "codex", "kind": "id",
-                "source": "herdr:codex", "value": "ses-rearmed"},
-            "agent_status": "blocked",
-            "state_change_seq": 21,
-            "name": "impl-g178",
-            "pane_id": "w-g178:p1",
-            "foreground_cwd": worktree,
-            "state_labels": {"waiting_for_input": ""}
-        }] }))
+        let refreshed: AgentListWire = serde_json::from_value(json!({ "agents": [
+            {
+                "agent": "codex",
+                "agent_status": "idle",
+                "state_change_seq": 11,
+                "name": "impl-g178-old-unclaimed",
+                "pane_id": "w-g178-old:p1",
+                "foreground_cwd": old_worktree,
+                "state_labels": {}
+            },
+            {
+                "agent": "codex",
+                "agent_session": {"agent": "codex", "kind": "id",
+                    "source": "herdr:codex", "value": "ses-rearmed"},
+                "agent_status": "blocked",
+                "state_change_seq": 21,
+                "name": "impl-g178",
+                "pane_id": "w-g178-rearmed:p1",
+                "foreground_cwd": rearmed_worktree,
+                "state_labels": {"waiting_for_input": ""}
+            }
+        ] }))
         .unwrap();
-        replacement_adapter
-            .reconcile_against_list(&replacement, &store)
-            .await;
+        adapter.reconcile_against_list(&refreshed, &store).await;
 
         let snapshot = store.snapshot().await;
         assert!(
-            !snapshot.agents.contains_key("herdr:ses-superseded"),
+            !snapshot.agents.contains_key(old_id),
             "a superseded session must be evicted in one refresh"
+        );
+        let fallback = "herdr:pane:w-g178-old:p1";
+        let old_catalog_row = snapshot
+            .agents
+            .get(fallback)
+            .expect("the still-listed session-less pane keeps its fallback row");
+        assert_eq!(old_catalog_row.workspace.repo.as_deref(), Some("corral"));
+        assert_eq!(
+            old_catalog_row.workspace.branch.as_deref(),
+            Some("g178/superseded")
         );
         let rearmed = snapshot
             .agents
@@ -5898,27 +5932,40 @@ mod review_tests {
             .expect("live replacement must be inserted");
         assert_eq!(rearmed.state, S::Blocked);
         assert_eq!(rearmed.workspace.repo.as_deref(), Some("corral"));
-        assert_eq!(
-            rearmed.workspace.branch.as_deref(),
-            Some("g178/stale-session-eviction")
-        );
+        assert_eq!(rearmed.workspace.branch.as_deref(), Some("g178/rearmed"));
         assert_eq!(
             rearmed.attachment.as_ref().map(|a| a.reference.as_str()),
-            Some("w-g178:p1")
+            Some("w-g178-rearmed:p1")
         );
         assert_eq!(
             snapshot.agents.len(),
-            1,
-            "the replacement must not leave an orphan (no repo) row"
+            2,
+            "the session-less pane and replacement must not leave an orphan row"
+        );
+        assert!(
+            adapter.is_stale_agent(old_id),
+            "eviction must leave the refreshable stale tombstone"
+        );
+        assert!(
+            !adapter
+                .remove_if_unmapped(&store, "herdr:ses-rearmed")
+                .await,
+            "a still-mapped live replacement must never be evicted"
+        );
+        assert!(
+            matches!(adapter.drive_target(old_id), Err(DriveError::StaleAgent(id)) if id == old_id),
+            "a late drive on the evicted id must be a refreshable 409, not 404"
         );
     }
 
     #[tokio::test]
-    async fn restart_catalog_eviction_keeps_live_agent_with_similar_paths() {
-        // Fail-closed: a fresh adapter has no pane diff for the old rows, so
-        // only the live-catalog sweep can evict the dead sibling. The live
-        // lane shares the same repo prefix, proving eviction never uses a
-        // path/repo heuristic and never prunes the still-live agent.
+    async fn catalog_sweep_tombstones_unmapped_row_without_pruning_live_agent() {
+        // Defense-in-depth for the sweep itself: an orphan store row with no
+        // live adapter mapping is a unit seam (corrald has no row persistence,
+        // so a fresh adapter is not a production trigger). The production
+        // single-adapter trigger is covered above; this pins that the sweep
+        // tombstones rather than turning a late drive into a generic 404, and
+        // that it never prunes a still-mapped agent sharing the same repo.
         let temp = tempfile::tempdir().expect("tempdir");
         let primary = temp.path().join("corral");
         let worktrees = temp.path().join("worktrees");
@@ -5938,7 +5985,7 @@ mod review_tests {
         attribution.record_branch(&dead_worktree, "g178/old");
 
         let store = Store::new();
-        let old_adapter = HerdrAdapter::new_with_attribution(
+        let seed_adapter = HerdrAdapter::new_with_attribution(
             PathBuf::from("/nonexistent.sock"),
             attribution.clone(),
         );
@@ -5967,7 +6014,7 @@ mod review_tests {
             }
         ] }))
         .unwrap();
-        old_adapter.reconcile_against_list(&initial, &store).await;
+        seed_adapter.reconcile_against_list(&initial, &store).await;
 
         let refreshed: AgentListWire = serde_json::from_value(json!({ "agents": [{
             "agent": "codex",
@@ -5981,9 +6028,9 @@ mod review_tests {
             "state_labels": {}
         }] }))
         .unwrap();
-        let fresh_adapter =
+        let sweeping_adapter =
             HerdrAdapter::new_with_attribution(PathBuf::from("/nonexistent.sock"), attribution);
-        fresh_adapter
+        sweeping_adapter
             .reconcile_against_list(&refreshed, &store)
             .await;
 
@@ -5995,8 +6042,20 @@ mod review_tests {
         assert_eq!(live.state, S::Working);
         assert_eq!(live.workspace.repo.as_deref(), Some("corral"));
         assert_eq!(live.workspace.branch.as_deref(), Some("g178/live"));
+        assert!(!snapshot.agents.contains_key("herdr:ses-dead-sibling"));
         assert!(
-            !fresh_adapter
+            sweeping_adapter.is_stale_agent("herdr:ses-dead-sibling"),
+            "the catalog sweep must leave the refreshable stale tombstone"
+        );
+        assert!(
+            matches!(
+                sweeping_adapter.drive_target("herdr:ses-dead-sibling"),
+                Err(DriveError::StaleAgent(id)) if id == "herdr:ses-dead-sibling"
+            ),
+            "a late drive on an evicted id must be a refreshable 409, not 404"
+        );
+        assert!(
+            !sweeping_adapter
                 .remove_if_unmapped(&store, "herdr:ses-still-live")
                 .await,
             "a live mapped agent must never be evicted by the sweep"
@@ -6008,7 +6067,6 @@ mod review_tests {
                 .agents
                 .contains_key("herdr:ses-still-live")
         );
-        assert!(!snapshot.agents.contains_key("herdr:ses-dead-sibling"));
         assert_eq!(snapshot.agents.len(), 1);
     }
 

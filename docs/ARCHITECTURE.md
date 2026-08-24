@@ -211,6 +211,9 @@ signed envelope {key_id, signature,       POST /drive
   possible; a typed refusal if the adapter loses the race). Desktop and iOS
   clients remove the stale row immediately and refresh their snapshot; the
   live SSE stream remains the authority for the replacement row.
+- Trusted catalog reconciliation is the second eviction rule: a stored herdr
+  session absent from the fresh `agent.list` is evicted and tombstoned even
+  when its old pane is still listed without a session id.
 
 ## Capabilities
 

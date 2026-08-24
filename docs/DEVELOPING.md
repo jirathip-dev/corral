@@ -212,9 +212,12 @@ clients.
   live when the socket stays open but silently stops delivering events.
   Refreshes are serialized with event handling, failures are logged and
   retried on the next tick, and unchanged catalogs are no-ops that do not
-  publish a new snapshot rev. The gh plane is poll-by-design (one GraphQL
-  round-trip per poll, SWR); the git plane is fsevents push with one immutable
-  watcher per commondir and a 10s sweep safety net.
+  publish a new snapshot rev. The reconciliation also evicts stored herdr
+  sessions that are absent from that fresh catalog, leaving the same
+  refreshable stale tombstone as pane retirement. The gh plane is
+  poll-by-design (one GraphQL round-trip per poll, SWR); the git plane is
+  fsevents push with one immutable watcher per commondir and a 10s sweep
+  safety net.
 - **Additive-only versioned schema.** New fields/variants extend the
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add

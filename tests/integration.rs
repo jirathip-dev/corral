@@ -14,7 +14,7 @@ use corrald::core::events::{
 };
 use corrald::core::model::{Agent, AgentState, Change, CiStatus, Workspace};
 use corrald::core::store::Store;
-use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution, WorktreeAlias};
 use corrald::integrate::Integrator;
 
 const REPO_ROOT: &str = "/Users/jirathip/Projects/herdr-board";
@@ -577,6 +577,76 @@ async fn shared_attribution_merges_primary_alias_and_keeps_unknown_orphaned() {
     let unknown = store.get("unknown").await.expect("unknown agent");
     assert_eq!(unknown.workspace.repo, None);
     assert_eq!(unknown.workspace.branch, None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_worktree_alias_keeps_primary_and_linked_in_one_repo_group() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let primary = temp.path().join("stale-checkout");
+    let worktrees = temp.path().join("worktrees");
+    let linked = worktrees.join("stale-checkout/g182-fix");
+    let other = worktrees.join("another-repo/g182-fix");
+    std::fs::create_dir_all(&primary).unwrap();
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+
+    let attribution = WorkspaceAttribution::from_roots_with_aliases(
+        [RepoRoot {
+            path: primary.clone(),
+            repo: "canonical-repo".to_string(),
+        }],
+        [WorktreeAlias {
+            worktree_dir: "stale-checkout".to_string(),
+            repo: "canonical-repo".to_string(),
+        }],
+        worktrees,
+    );
+    let store = Store::new();
+    let integrator = Integrator::new_with_attribution(store.clone(), attribution);
+    let (sink, rx) = plane_channel();
+    tokio::spawn(async move { integrator.run(rx).await });
+
+    let primary_string = primary.to_string_lossy().into_owned();
+    let linked_string = linked.to_string_lossy().into_owned();
+    let other_string = other.to_string_lossy().into_owned();
+    store
+        .apply(Change::upsert(agent("primary", Some(&primary_string))))
+        .await;
+    store
+        .apply(Change::upsert(agent("linked", Some(&linked_string))))
+        .await;
+    store
+        .apply(Change::upsert(agent("other", Some(&other_string))))
+        .await;
+    sink.send(head(&primary_string, "main", "abc123"))
+        .await
+        .unwrap();
+    sink.send(head(&linked_string, "g182/fix", "def456"))
+        .await
+        .unwrap();
+    sink.send(head(&other_string, "not-fleet", "789abc"))
+        .await
+        .unwrap();
+
+    let primary = wait_for(&store, "primary", |agent| {
+        agent.workspace.repo.as_deref() == Some("canonical-repo")
+            && agent.workspace.branch.as_deref() == Some("main")
+    })
+    .await;
+    let linked = wait_for(&store, "linked", |agent| {
+        agent.workspace.repo.as_deref() == Some("canonical-repo")
+            && agent.workspace.branch.as_deref() == Some("g182/fix")
+    })
+    .await;
+    assert_eq!(primary.workspace.repo.as_deref(), Some("canonical-repo"));
+    assert_eq!(linked.workspace.repo.as_deref(), Some("canonical-repo"));
+    let other = store.get("other").await.expect("other agent");
+    assert_eq!(
+        other.workspace.repo.as_deref(),
+        Some("another-repo"),
+        "unregistered linked worktree keeps the path-derived fallback"
+    );
 }
 
 #[cfg(unix)]

@@ -113,6 +113,9 @@ or non-array value fails both parsers.
   entry.
 - `worktree_dir` — required string naming the fleet's worktree root component
   under the worktrees root; Corral validates it as a single path component.
+  It is an addressable on-disk location, not repo identity: workspace
+  attribution maps it to the fleet's `gh_repo` basename before directory-name
+  fallback.
 - `orch` — required string naming the registered orchestrator agent.
 - `workers` — required array of strings; may be empty. Each entry is
   non-empty.
@@ -218,8 +221,8 @@ After setup, all of these consume the same file:
   lockstep with it.
 - The `corrald` daemon's `GET /issues` loads the same default path, inserts a
   key for every fleet name, and workspace attribution uses each fleet's
-  `gh_repo`/`local` identity. The daemon has no `--registry` flag, so a CLI-only
-  override cannot silently change what it attributes.
+  `gh_repo`/`local`/`worktree_dir` identity. The daemon has no `--registry`
+  flag, so a CLI-only override cannot silently change what it attributes.
 
 The canonical path may also be overridden for Corral with
 `$CORRAL_FLEETS_PATH` or `$CORRAL_CONFIG_DIR`; the checked-in template itself is

@@ -1,9 +1,11 @@
 //! Canonical repo/worktree attribution shared by the read-side planes.
 //!
 //! Repo names come from explicit Corral roots (or the fleet registry's
-//! `gh_repo` slug). Linked worktrees retain Herdr's canonical layout,
-//! `<worktrees_root>/<repo>/<label>`. Branches are facts recorded by the git
-//! plane, never inferred from a pane label, display name, or path suffix.
+//! `gh_repo` slug). Linked worktrees retain Herdr's addressable layout,
+//! `<worktrees_root>/<worktree_dir>/<label>`; the registry maps
+//! `worktree_dir` to the canonical `gh_repo` basename before any path-derived
+//! fallback. Branches are facts recorded by the git plane, never inferred
+//! from a pane label, display name, or path suffix.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -15,6 +17,14 @@ use crate::core::util::canonicalize_existing_prefix;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRoot {
     pub path: PathBuf,
+    pub repo: String,
+}
+
+/// A registry mapping from a Herdr worktree root component to the canonical
+/// repo basename. `worktree_dir` is an on-disk location, not repo identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeAlias {
+    pub worktree_dir: String,
     pub repo: String,
 }
 
@@ -34,6 +44,7 @@ pub struct WorkspaceFacts {
 #[derive(Debug, Clone)]
 pub struct WorkspaceAttribution {
     roots: Arc<RwLock<BTreeMap<PathBuf, String>>>,
+    worktree_aliases: Arc<RwLock<BTreeMap<String, String>>>,
     worktrees_root: PathBuf,
     branches: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 }
@@ -48,13 +59,29 @@ impl WorkspaceAttribution {
     where
         I: IntoIterator<Item = RepoRoot>,
     {
+        Self::from_roots_with_aliases(roots, std::iter::empty(), worktrees_root)
+    }
+
+    /// Build an attribution map from explicit repo roots plus registry
+    /// worktree aliases. Alias resolution happens before a linked worktree's
+    /// path component falls back to its directory name, so a stale Herdr
+    /// folder never splits one repo into two groups.
+    pub fn from_roots_with_aliases<I, A>(roots: I, aliases: A, worktrees_root: PathBuf) -> Self
+    where
+        I: IntoIterator<Item = RepoRoot>,
+        A: IntoIterator<Item = WorktreeAlias>,
+    {
         let attribution = Self {
             roots: Arc::new(RwLock::new(BTreeMap::new())),
+            worktree_aliases: Arc::new(RwLock::new(BTreeMap::new())),
             worktrees_root: canonicalize_existing_prefix(&worktrees_root),
             branches: Arc::new(RwLock::new(HashMap::new())),
         };
         for root in roots {
             attribution.add_root(root);
+        }
+        for alias in aliases {
+            attribution.add_worktree_alias(alias);
         }
         attribution
     }
@@ -90,6 +117,20 @@ impl WorkspaceAttribution {
         }
     }
 
+    fn add_worktree_alias(&self, alias: WorktreeAlias) -> bool {
+        if alias.worktree_dir.is_empty() || alias.repo.is_empty() {
+            return false;
+        }
+        let mut aliases = self.worktree_aliases.write().unwrap();
+        match aliases.get(&alias.worktree_dir) {
+            Some(_) => false,
+            None => {
+                aliases.insert(alias.worktree_dir, alias.repo);
+                true
+            }
+        }
+    }
+
     /// The canonical primary roots, in path order, for the git plane.
     pub fn repo_roots(&self) -> Vec<PathBuf> {
         self.roots.read().unwrap().keys().cloned().collect()
@@ -109,8 +150,16 @@ impl WorkspaceAttribution {
         }
         let relative = key.strip_prefix(&self.worktrees_root).ok()?;
         let first = relative.components().next()?;
-        let repo = first.as_os_str().to_string_lossy();
-        (!repo.is_empty()).then(|| repo.into_owned())
+        let worktree_dir = first.as_os_str().to_string_lossy();
+        if let Some(repo) = self
+            .worktree_aliases
+            .read()
+            .unwrap()
+            .get(worktree_dir.as_ref())
+        {
+            return Some(repo.clone());
+        }
+        (!worktree_dir.is_empty()).then(|| worktree_dir.into_owned())
     }
 
     /// Return the currently known facts for a path, or `None` for an
@@ -208,6 +257,61 @@ mod tests {
         assert!(attribution.facts_for(&unknown).is_none());
         attribution.record_branch(&unknown, "do-not-infer");
         assert!(attribution.facts_for(&unknown).is_none());
+    }
+
+    #[test]
+    fn registry_alias_attributes_stale_worktree_dir_to_canonical_repo() {
+        // #182: the on-disk worktree component is a location, not identity.
+        // A stale `worktree_dir` must resolve through the registry's
+        // `gh_repo` basename, never create a second repo group.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("stale-checkout");
+        let worktrees = temp.path().join("worktrees");
+        let linked = worktrees.join("stale-checkout/g182-fix");
+        let unregistered = worktrees.join("another-repo/g182-fix");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&linked).unwrap();
+        fs::create_dir_all(&unregistered).unwrap();
+
+        let attribution = WorkspaceAttribution::from_roots_with_aliases(
+            [RepoRoot {
+                path: primary.clone(),
+                repo: "canonical-repo".to_string(),
+            }],
+            [WorktreeAlias {
+                worktree_dir: "stale-checkout".to_string(),
+                repo: "canonical-repo".to_string(),
+            }],
+            worktrees,
+        );
+
+        assert_eq!(
+            attribution
+                .facts_for(&primary)
+                .expect("primary facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
+        assert_eq!(
+            attribution
+                .facts_for(&linked)
+                .expect("linked facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo"),
+            "stale directory maps to the registry's canonical repo"
+        );
+        assert_eq!(
+            attribution.repo_for(&linked),
+            Some("canonical-repo".to_string()),
+            "no phantom stale-name group"
+        );
+        assert_eq!(
+            attribution.repo_for(&unregistered).as_deref(),
+            Some("another-repo"),
+            "unregistered worktree dirs keep the path-derived fallback"
+        );
     }
 
     #[test]

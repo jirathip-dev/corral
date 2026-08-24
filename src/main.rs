@@ -25,7 +25,7 @@ use corrald::api::drive::ReplayTable;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
-use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution, WorktreeAlias};
 use corrald::fleet;
 use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
@@ -1551,22 +1551,34 @@ fn workspace_attribution(repo_root: &Path, worktrees_root: &Path) -> WorkspaceAt
     } else {
         None
     };
-    WorkspaceAttribution::from_roots(
-        workspace_roots(repo_root, registry.as_ref()),
+    let (roots, worktree_aliases) = workspace_roots(repo_root, registry.as_ref());
+    WorkspaceAttribution::from_roots_with_aliases(
+        roots,
+        worktree_aliases,
         worktrees_root.to_path_buf(),
     )
 }
 
-/// Return roots in attribution precedence order. Fleet registry identities
-/// are canonical for a local checkout; the configured root's basename is only
-/// a fallback when no registry entry claims the same canonical path.
-fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>) -> Vec<RepoRoot> {
+/// Return roots and worktree aliases in attribution precedence order. Fleet
+/// registry identities are canonical for a local checkout; the configured
+/// root's basename is only a fallback when no registry entry claims the same
+/// canonical path. Registry `worktree_dir -> gh_repo` aliases map Herdr
+/// worktree path components to canonical repo names before directory fallback.
+fn workspace_roots(
+    repo_root: &Path,
+    registry: Option<&fleet::config::Registry>,
+) -> (Vec<RepoRoot>, Vec<WorktreeAlias>) {
     let mut roots = Vec::new();
+    let mut worktree_aliases = Vec::new();
     if let Some(registry) = registry {
         for fleet in &registry.fleets {
             let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
                 continue;
             };
+            worktree_aliases.push(WorktreeAlias {
+                worktree_dir: fleet.worktree_dir.clone(),
+                repo: repo.to_string(),
+            });
             roots.push(RepoRoot {
                 path: fleet.local_path(),
                 repo: repo.to_string(),
@@ -1579,7 +1591,7 @@ fn workspace_roots(repo_root: &Path, registry: Option<&fleet::config::Registry>)
             repo: name.to_string_lossy().into_owned(),
         });
     }
-    roots
+    (roots, worktree_aliases)
 }
 
 /// Build the gh-plane repo-spec set: the compile-time tracked repos (PR read
@@ -1616,9 +1628,13 @@ fn add_fleet_specs(
         };
         let slug = format!("{owner}/{name}");
         // Same GitHub repo: fold the fleet's issue-view key onto the existing
-        // spec (the PR attribution key already matches the fleet basename for
-        // a tracked repo that IS a fleet).
+        // spec AND force the PR attribution key to the registry `gh_repo`
+        // basename. A tracked repo's compile-time folder-derived name may be
+        // stale (e.g. synergy-costing vs synergy-apps); workspace attribution
+        // resolves the canonical registry identity, so the gh fold key must
+        // follow it or PR/CI facts silently stop joining.
         if let Some(existing) = specs.iter_mut().find(|s| s.slug() == slug) {
+            existing.key = name.to_string();
             if existing.issues_key.is_none() {
                 existing.issues_key = Some(fleet.name.clone());
             }
@@ -1789,8 +1805,9 @@ mod tests {
             },
         }]);
 
+        let (roots, worktree_aliases) = workspace_roots(&primary, Some(&registry));
         let attribution =
-            WorkspaceAttribution::from_roots(workspace_roots(&primary, Some(&registry)), worktrees);
+            WorkspaceAttribution::from_roots_with_aliases(roots, worktree_aliases, worktrees);
         assert_eq!(
             attribution
                 .facts_for(&primary)
@@ -1806,6 +1823,62 @@ mod tests {
                 .repo
                 .as_deref(),
             Some("canonical-repo")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_registry_aliases_stale_worktree_dir_to_canonical_repo() {
+        // #182: `worktree_dir` is a location, not repo identity. The primary
+        // checkout and linked worktree both use stale folder names, while the
+        // registry's `gh_repo` is canonical.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("stale-checkout");
+        let worktrees = temp.path().join("worktrees");
+        let linked = worktrees.join("stale-checkout/g182-fix");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        let registry = Registry::new(vec![Fleet {
+            name: "stale-fleet".to_string(),
+            gh_repo: "owner/canonical-repo".to_string(),
+            local: primary.to_string_lossy().into_owned(),
+            worktree_dir: "stale-checkout".to_string(),
+            orch: "orch".to_string(),
+            workers: Vec::new(),
+            paused: false,
+            models: Models {
+                orch: "orch-model".to_string(),
+                impl_: "impl-model".to_string(),
+                review: "review-model".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }]);
+
+        let (roots, worktree_aliases) = workspace_roots(&primary, Some(&registry));
+        let attribution =
+            WorkspaceAttribution::from_roots_with_aliases(roots, worktree_aliases, worktrees);
+        assert_eq!(
+            attribution
+                .facts_for(&primary)
+                .expect("primary facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo")
+        );
+        assert_eq!(
+            attribution
+                .facts_for(&linked)
+                .expect("linked facts")
+                .repo
+                .as_deref(),
+            Some("canonical-repo"),
+            "linked worktree joins the canonical repo group"
+        );
+        assert_eq!(
+            attribution.repo_for(&linked),
+            Some("canonical-repo".to_string()),
+            "no phantom stale-name group"
         );
     }
 
@@ -1876,6 +1949,56 @@ mod tests {
             plush.issues_key.as_deref(),
             Some("plush"),
             "issue view keyed by the fleet name, not the basename"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_fleet_spec_uses_canonical_gh_repo_basename() {
+        // #182 review F1: when a compile-time tracked repo is ALSO a
+        // configured fleet whose gh_repo differs from the historical folder
+        // name, the PR/CI attribution key must follow the registry's
+        // canonical basename or the integrator silently stops binding PRs.
+        let registry = Registry::new(vec![Fleet {
+            name: "synergy".to_string(),
+            gh_repo: "synergy-services-cooling-tower/synergy-apps".to_string(),
+            local: "~/Projects/synergy-costing".to_string(),
+            worktree_dir: "synergy-costing".to_string(),
+            orch: "orch-synergy".to_string(),
+            workers: Vec::new(),
+            paused: false,
+            models: Models {
+                orch: "o".to_string(),
+                impl_: "i".to_string(),
+                review: "r".to_string(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }]);
+        let mut specs = corrald::adapters::gh_plane::tracked_specs();
+        super::add_fleet_specs(&mut specs, &registry.fleets);
+
+        let baseline = corrald::adapters::gh_plane::tracked_specs()
+            .into_iter()
+            .find(|s| s.name == "synergy-apps")
+            .expect("tracked synergy spec present");
+        assert_eq!(
+            baseline.key, "synergy-apps",
+            "tracked PR key is the canonical repo basename"
+        );
+
+        let synergy = specs
+            .iter()
+            .find(|s| s.owner == "synergy-services-cooling-tower" && s.name == "synergy-apps")
+            .expect("synergy fleet spec present");
+        assert_eq!(
+            synergy.key, "synergy-apps",
+            "fleet gh_repo basename is authoritative for PR attribution"
+        );
+        assert_eq!(
+            synergy.issues_key.as_deref(),
+            Some("synergy"),
+            "issues still grouped by the fleet name"
         );
     }
 }

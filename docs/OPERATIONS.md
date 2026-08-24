@@ -664,8 +664,12 @@ entries in the fleet registry add more known primary roots from their
 `local` paths, with repository identity taken from the corresponding
 `gh_repo` slug. Registry identity wins when a fleet `local` canonicalizes to
 `CORRAL_REPO_ROOT`; the configured directory basename is only the fallback.
-The linked-worktree root is `CORRAL_WORKTREES_ROOT` (default
-`~/.herdr/worktrees`) and keeps the established `<repo>/<label>` layout.
+Each fleet's `worktree_dir` is also mapped to its `gh_repo` basename, so a
+linked worktree joins the canonical repo group even when the on-disk
+directory still uses an older repo name. The linked-worktree root is
+`CORRAL_WORKTREES_ROOT` (default `~/.herdr/worktrees`) and keeps the
+established `<worktree_dir>/<label>` layout; the directory component is an
+addressable location, not repo identity.
 
 The git plane supplies branch facts for each recognized root/worktree. On a
 supervised plane restart, the old branch cache and stored branch fields for

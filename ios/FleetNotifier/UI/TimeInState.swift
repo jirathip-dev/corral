@@ -35,18 +35,24 @@ enum RelativeTime {
 
 /// Time-in-state derivation. The daemon snapshot carries `agent.ts`
 /// ("wall-clock when this record was last changed", epoch millis) but NOT a
-/// dedicated state-change timestamp, so `ts` is used here as a proxy for
-/// state-entered time.
+/// dedicated state-change timestamp. The store therefore tracks
+/// `stateEnteredAt` client-side: seeded from `ts` at first sight and updated
+/// ONLY when `state` actually changes (never on title/reason churn). This
+/// accessor reads that client-side value, falling back to `agent.ts` for
+/// callers without a store (e.g. pure tests or a pre-tracking snapshot).
 ///
-/// LIMITATION (issue #166 deliberately does NOT change the daemon): a
-/// reason/tool update that re-writes the record mid-state advances `ts` and
-/// under-reports the true time in state. Deriving from observed transitions
-/// is a possible follow-up; the board does not do that here.
+/// LIMITATION (issue #166 deliberately does NOT change the daemon): the
+/// client-side seed uses the first-seen record's `ts`, which may be later
+/// than the true state-entry time for an agent already mid-state at app
+/// launch. The store marks this in `ios/README.md`.
 enum TimeInState {
     /// Milliseconds the agent has been in its current state, or `nil` when
-    /// the record carries no usable `ts` (the UI then omits the duration).
-    static func milliseconds(for agent: Agent, now: UInt64) -> UInt64? {
-        guard agent.ts > 0 else { return nil }
-        return now >= agent.ts ? now - agent.ts : 0
+    /// neither `stateEnteredAt` nor `agent.ts` carries a usable timestamp
+    /// (the UI then omits the duration).
+    static func milliseconds(for agent: Agent, stateEnteredAt: UInt64? = nil,
+                             now: UInt64) -> UInt64? {
+        let entered = stateEnteredAt ?? agent.ts
+        guard entered > 0 else { return nil }
+        return now >= entered ? now - entered : 0
     }
 }

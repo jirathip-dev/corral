@@ -407,6 +407,44 @@ enum BoardModel {
         let blocked = ordered(agents.filter(\.isBlocked))
         return blocked.isEmpty ? nil : blocked
     }
+
+    // MARK: - Persistent connection indicator (#166 item review F1)
+
+    /// The persistent board connection indicator, modeled as a pure function
+    /// of the fleet's connection state. It lives in the top `.safeAreaInset`
+    /// and is therefore independent of the Needs-you section, the pinned
+    /// chip row, and the active filter/search projection — a stale or
+    /// connecting board is never silently presented as live.
+    static func connectionStatus(for state: FleetStore.ConnectionState) -> FleetConnectionStatus {
+        switch state {
+        case .connected: return .connected
+        case .connecting: return .connecting
+        case .disconnected: return .offline
+        case .error(let message): return .error(message)
+        }
+    }
+}
+
+/// The four visual states of the persistent connection indicator (review
+/// F1). Pure + testable; the view renders the label/spinner from this.
+enum FleetConnectionStatus: Equatable, Sendable {
+    case connected
+    case connecting
+    case offline
+    case error(String)
+
+    /// The on-screen text. `nil` when connected (no indicator rendered).
+    var label: String? {
+        switch self {
+        case .connected: return nil
+        case .connecting: return "connecting"
+        case .offline: return "offline"
+        case .error(let message): return "⚠ \(message)"
+        }
+    }
+
+    /// True when the view should show the small spinner (not text).
+    var isSpinner: Bool { self == .connecting }
 }
 
 /// The primary action for the answer loop, rendered as the single prominent

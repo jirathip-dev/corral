@@ -194,9 +194,13 @@ capability or device grant.
 
 The fleet board is de-crammed: state + tool render as fixed-width badges and
 the row title truncates before them. Every state chip shows a relative
-time-in-state duration (`Needs you · 42m`); the daemon snapshot has no
-state-change timestamp, so `ts` is used as a proxy and the limitation is
-documented in `TimeInState`.
+time-in-state duration (`Needs you · 42m`). The daemon snapshot has no
+state-change timestamp, so the store derives `stateEnteredAt` client-side:
+seeded from the first-seen record's `ts` and re-stamped only when `state`
+actually changes (never on title/reason churn), falling back to `agent.ts`
+for callers without a store. Remaining limitation (documented in
+`TimeInState`): an agent already mid-state at launch is seeded from a later
+`ts`, so its initial duration may be shorter than the true in-state time.
 
 Blocked rows render the pending question inline (≤2 lines) and surface a
 borderless **Answer** affordance (also available as a leading swipe action)

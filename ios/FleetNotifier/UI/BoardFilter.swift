@@ -52,16 +52,18 @@ enum BoardFilter {
         return searchableText(agent).lowercased().contains(q)
     }
 
-    /// The text searched for one agent: repo, branch, title/displayName,
-    /// and the authoritative + inferred issue markers (so `158` matches an
-    /// `⑂ #158` chip and a `~#158?` flag alike).
+    /// The text searched for one agent: repo, branch, title, displayName,
+    /// agentId, and the authoritative + inferred issue markers (so `158`
+    /// matches an `⑂ #158` chip and a `~#158?` flag alike). Title and
+    /// identity are all always included — a user reading the row's
+    /// `displayName`/`agentId` must be able to find that agent too.
     static func searchableText(_ agent: Agent) -> String {
         var parts: [String] = []
         if let repo = agent.workspace.repo { parts.append(repo) }
         if let branch = agent.workspace.branch { parts.append(branch) }
         if let title = agent.title { parts.append(title) }
-        else if let name = agent.displayName { parts.append(name) }
-        else { parts.append(agent.agentId) }
+        if let name = agent.displayName { parts.append(name) }
+        parts.append(agent.agentId)
         for issue in agent.workspace.issues { parts.append("\(issue.number)") }
         for chip in IssueChip.chips(for: agent) { parts.append(chip.label) }
         return parts.joined(separator: " ")

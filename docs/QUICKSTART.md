@@ -212,7 +212,7 @@ controls; `read_tail` also unlocks the iOS Recent-output surface.
 What the app shows:
 
 - **Live board** from the `/events` SSE stream: agent rows ordered
-  blocked > working > done > idle, each with state, title/session,
+  blocked > done > working > idle, each with state, title/session,
   repo·branch·worktree, issue chips, CI glyph, tool.
 - **Recent output** (`read_tail`): bounded live tail (segmented blocks) via
   signed `/drive`, folded into the same surface as the signed, paged

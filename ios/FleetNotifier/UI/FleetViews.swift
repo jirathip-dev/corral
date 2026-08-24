@@ -203,110 +203,175 @@ final class PromptDrafts: ObservableObject {
 struct AgentRow: View {
     let agent: Agent
     var onAnswer: (() -> Void)?
+    /// #166 review F2: client-side state-entered wall clock, passed down
+    /// from `FleetStore.stateEnteredAt` so a reason/title churn does not
+    /// reset the duration. `nil` falls back to `agent.ts` (pre-tracking
+    /// callers / pure tests).
+    var stateEnteredAt: UInt64? = nil
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(stateStyle.isRing ? Color.clear : stateStyle.color)
-                    .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
-                    .frame(width: 12, height: 12)
-                    .accessibilityHidden(true)
-                // Fixed-width state badge (glyph + label + duration).
-                // lineLimit(1) + fixedSize kill the "Work-ing" mid-word
-                // wrap and the vertical c/l/a/u/d/e tool stack (issue #166
-                // item 1). The duration chip is item 6.
-                HStack(spacing: 3) {
-                    Text(stateStyle.glyph)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(stateStyle.color)
-                    Text(stateStyle.label)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(stateStyle.color)
-                        .accessibilityLabel(stateStyle.accessibilityLabel)
-                    if let durationText {
-                        Text("· \(durationText)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
+            if isAccessibilitySize {
+                // Dynamic Type: stack the trailing chips (issue/CI/tool)
+                // under the title instead of clipping them at the edge.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        statusDot
+                        stateBadge
+                        titleText
                     }
+                    trailingChips
                 }
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                Text(agent.title ?? agent.displayName ?? agent.agentId)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    // Line-1 emphasis (R2-E): the task TITLE wins under
-                    // compression, so it gets the higher layoutPriority;
-                    // the secondary identity truncates first, and the
-                    // fixed-size badges keep their width before the title.
-                    .layoutPriority(1)
-                // Session identity must survive on the row even when a
-                // title is shown — two agents can share a title. Falls back
-                // to the agent id when the session has no display name
-                // (R2-D).
-                if agent.title != nil {
-                    Text(agent.displayName ?? agent.agentId)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .layoutPriority(0)
+            } else {
+                HStack(spacing: 6) {
+                    statusDot
+                    stateBadge
+                    titleText
+                    if agent.title != nil { identityText }
+                    Spacer(minLength: 0)
+                    trailingChips
                 }
-                Spacer(minLength: 0)
-                ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
-                    Text(chip.label)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(chip.isFlagged ? Color.secondary : Color.accentColor)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                if let ci = agent.workspace.ciStatus {
-                    CiGlyph(status: ci)
-                }
-                Text(agent.tool)
-                    .font(.caption2.monospaced())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
             }
             WorkspaceLine(agent: agent)
             if let waiting = agent.waitingOn, agent.isBlocked {
-                HStack(alignment: .top, spacing: 6) {
-                    KindBadge(kind: waiting.kind)
-                    Text(waiting.prompt)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    Spacer(minLength: 6)
-                    if let onAnswer {
-                        Button("Answer", action: onAnswer)
-                            .buttonStyle(.borderless)
-                            .font(.caption.weight(.semibold))
-                            .accessibilityLabel("Answer \(waiting.kind.rawValue) for \(agent.title ?? agent.agentId)")
-                    }
-                }
-                .accessibilityLabel("Blocked claim: \(waiting.prompt)")
+                waitingLine(waiting)
             }
         }
         .padding(.vertical, 4)
         .opacity(isDimmed ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .accessibilityHint("Double tap to open agent details and actions")
+        .rowAccessibility(summary: accessibilitySummary, answerAction: onAnswer)
     }
 
-    /// #166 item 6: `agent.ts` is the record's last-changed wall clock used
-    /// as a proxy for state-entered time (see `TimeInState`). `nil` omits
-    /// the duration chip entirely (e.g. an unseeded record with ts == 0).
+    // MARK: - Row subviews
+
+    @ViewBuilder
+    private var statusDot: some View {
+        Circle()
+            .fill(stateStyle.isRing ? Color.clear : stateStyle.color)
+            .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
+            .frame(width: 12, height: 12)
+            .accessibilityHidden(true)
+    }
+
+    /// Fixed-width state badge (glyph + label + duration). A real
+    /// `minWidth` keeps the badges in one column even as durations roll
+    /// over; `.lineLimit(1)` preserves the #166 item-1 no-mid-word-wrap rule.
+    @ViewBuilder
+    private var stateBadge: some View {
+        HStack(spacing: 3) {
+            Text(stateStyle.glyph)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(stateStyle.color)
+                .accessibilityHidden(true)
+            Text(stateStyle.label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(stateStyle.color)
+                .accessibilityLabel(stateStyle.accessibilityLabel)
+            if let durationText {
+                Text("· \(durationText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(minWidth: 84, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var titleText: some View {
+        Text(agent.title ?? agent.displayName ?? agent.agentId)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            // Line-1 emphasis (R2-E): the task TITLE wins under
+            // compression, so it gets the higher layoutPriority; the
+            // secondary identity truncates first, and the fixed-size
+            // badges keep their width before the title.
+            .layoutPriority(1)
+    }
+
+    /// Session identity must survive on the row even when a title is shown —
+    /// two agents can share a title. Falls back to the agent id when the
+    /// session has no display name (R2-D).
+    @ViewBuilder
+    private var identityText: some View {
+        Text(agent.displayName ?? agent.agentId)
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .layoutPriority(0)
+    }
+
+    @ViewBuilder
+    private var trailingChips: some View {
+        HStack(spacing: 6) {
+            ForEach(IssueChip.chips(for: agent), id: \.label) { chip in
+                Text(chip.label)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(chip.isFlagged ? Color.secondary : Color.accentColor)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            if let ci = agent.workspace.ciStatus {
+                CiGlyph(status: ci)
+            }
+            Text(agent.tool)
+                .font(.caption2.monospaced())
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
+    @ViewBuilder
+    private func waitingLine(_ waiting: WaitingOn) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            KindBadge(kind: waiting.kind)
+                .accessibilityHidden(true)
+            Text(waiting.prompt)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .accessibilityLabel("Blocked claim: \(waiting.prompt)")
+            Spacer(minLength: 6)
+            if let onAnswer {
+                Button("Answer", action: onAnswer)
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+                    .accessibilityLabel("Answer \(waiting.kind.rawValue) for \(agent.title ?? agent.agentId)")
+            }
+        }
+    }
+
+    /// #166 item 6: `stateEnteredAt` (client-side tracked) is the
+    /// state-entered time; falls back to `agent.ts` for pre-tracking
+    /// callers. `nil` omits the duration chip entirely.
     private var durationText: String? {
-        TimeInState.milliseconds(for: agent, now: Self.now())
+        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: Self.now())
             .map(RelativeTime.duration(milliseconds:))
+    }
+
+    /// One VoiceOver element summary for the row (review F6). The duplicate
+    /// "Double tap to open…" hint lives on the NavigationLink wrapper, not
+    /// here.
+    private var accessibilitySummary: String {
+        var parts: [String] = [agent.title ?? agent.displayName ?? agent.agentId, stateStyle.label]
+        if let repo = agent.workspace.repo { parts.append(repo) }
+        if let branch = agent.workspace.branch { parts.append(branch) }
+        return parts.joined(separator: ", ")
     }
 
     private static func now() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private var isAccessibilitySize: Bool {
+        dynamicTypeSize >= .accessibility1
     }
 
     /// D28: idle/done rows dim, but their explicit state text remains.
@@ -316,6 +381,35 @@ struct AgentRow: View {
 
     private var stateStyle: StateStyle {
         StateStyle.style(for: agent.state)
+    }
+}
+
+// MARK: - Row accessibility (review F6)
+
+/// A row is one VoiceOver element with a summary label and, for blocked
+/// rows, a custom "Answer" action. Children stay individually reachable
+/// (`.contain`), so the Answer button and the claimed-prompt text are not
+/// swallowed, while the container no longer fragments every glyph/label into
+/// its own element.
+private extension View {
+    @ViewBuilder
+    func rowAccessibility(summary: String, answerAction: (() -> Void)?) -> some View {
+        self
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(summary)
+            .modifier(AnswerAccessibilityAction(action: answerAction))
+    }
+}
+
+private struct AnswerAccessibilityAction: ViewModifier {
+    let action: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content.accessibilityAction(named: "Answer") { action() }
+        } else {
+            content
+        }
     }
 }
 
@@ -363,13 +457,14 @@ private struct AgentDetailContent: View {
         BoardModel.actionAvailability(agent: agent, grants: grants)
     }
     private var driveClient: DriveClient {
-        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+        model.makeDriveClient()
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                AgentStateSummary(agent: agent)
+                AgentStateSummary(agent: agent,
+                                  stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
                 if let reason = agent.reason, !reason.isEmpty {
                     Text(reason)
                         .font(.subheadline)
@@ -436,24 +531,25 @@ private struct AgentDetailContent: View {
     /// The remaining actions live in `overflowMenu`.
     @ViewBuilder
     private var primaryActionControl: some View {
-        switch BoardModel.primaryAction(for: agent) {
+        let primary = BoardModel.primaryAction(for: agent)
+        switch primary {
         case .answer:
             let promptItem = availability.first(where: { $0.action == .prompt })
             Button {
                 focusPrompt = true
             } label: {
-                Label("Answer", systemImage: "bubble.left.and.bubble.right.fill")
+                Label(primary.label, systemImage: "bubble.left.and.bubble.right.fill")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.borderedProminent)
             .disabled(!(promptItem?.isEnabled ?? false))
             .accessibilityLabel("Answer the pending question")
         case .interrupt:
-            primaryButton(.interrupt, systemImage: "stop.circle.fill", title: "Interrupt") {
+            primaryButton(.interrupt, systemImage: "stop.circle.fill", title: primary.label) {
                 dispatchInterrupt()
             }
         case .attach:
-            primaryButton(.attach, systemImage: "paperclip.fill", title: "Attach") {
+            primaryButton(.attach, systemImage: "paperclip.fill", title: primary.label) {
                 dispatchAttach()
             }
         case .none:
@@ -606,14 +702,17 @@ private struct AgentDetailContent: View {
         guard let live = model.fleet.agent(agent.agentId) else { return }
         let text = drafts.drafts[agent.agentId] ?? ""
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        drafts.clear(agent.agentId)
 #if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .prompt, agent: live, choice: text)
+            drafts.clear(agent.agentId)
             return
         }
 #endif
-        model.drivePrompt(agent: live, text: text, driveClient: driveClient)
+        let accepted = model.drivePrompt(agent: live, text: text, driveClient: driveClient)
+        if accepted {
+            drafts.clear(agent.agentId)
+        }
     }
 
     private func dispatchApproval(_ choice: String, expectedPromptHash: String) {
@@ -646,6 +745,9 @@ private struct AgentDetailContent: View {
 
 private struct AgentStateSummary: View {
     let agent: Agent
+    /// #166 review F2: client-side state-entered time (see `.stateEnteredAt`
+    /// on `FleetStore`). `nil` falls back to `agent.ts`.
+    var stateEnteredAt: UInt64? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -682,9 +784,10 @@ private struct AgentStateSummary: View {
         StateStyle.style(for: agent.state)
     }
 
-    /// #166 item 6: record `ts` as a proxy for state-entered time.
+    /// #166 item 6: state-entered time (client-side tracked), falling back
+    /// to record `ts` for pre-tracking callers.
     private var durationText: String? {
-        TimeInState.milliseconds(for: agent, now: Self.now())
+        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: Self.now())
             .map(RelativeTime.duration(milliseconds:))
     }
 
@@ -698,7 +801,7 @@ private struct RecentOutputView: View {
     @ObservedObject var model: AppModel
 
     private var driveClient: DriveClient {
-        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+        model.makeDriveClient()
     }
 
     private var tail: TailPane? { model.fleet.tailPane(for: agent.agentId) }
@@ -1196,9 +1299,16 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
-            .searchable(text: $searchText,
-                        placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "Search repo / branch / issue…")
+            .modifier(FleetSearchable(mode: model.mode, text: $searchText))
+            // #166 review F1/F3: the connection indicator and the pinned
+            // filter-chip row live in a persistent top inset, so they stay
+            // on screen while scrolling and never depend on the Needs-you
+            // section, filters, or search.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.mode != .needsSetup {
+                    fleetTopBar
+                }
+            }
             // R2-F: drop drafts for agents that left the snapshot. This
             // body (and the Set below) re-evaluates on fleet
             // snapshot/delta changes — the exact moments a prune can
@@ -1206,6 +1316,15 @@ struct FleetView: View {
             .onChange(of: Set(model.fleet.agents.keys)) { _, agentIds in
                 promptDrafts.prune(to: agentIds)
                 viewState.reconcile(availableAgentIds: agentIds)
+            }
+            // #166 review F9: reconcile the active chip against the derived
+            // list — if the selected repo chip is no longer present, fall
+            // back to `.all` instead of showing an empty board under a
+            // selected-but-vanished chip.
+            .onChange(of: BoardFilter.chips(for: Array(model.fleet.agents.values))) { _, chips in
+                if !chips.contains(filterChip) {
+                    filterChip = .all
+                }
             }
             .navigationDestination(for: AgentRoute.self) { route in
                 AgentDetailView(agentId: route.agentId, model: model, drafts: promptDrafts)
@@ -1260,21 +1379,19 @@ struct FleetView: View {
     /// section) → repo sections with counts → orphan bucket → collapsed
     /// IDLE/DONE. Section headers pin while scrolling via the `.plain`
     /// list style set on the List (inset-grouped headers do not pin).
+    /// The filter-chip row is no longer a header here — it lives in the
+    /// persistent `.safeAreaInset` (`fleetTopBar`). The list is wrapped in a
+    /// `TimelineView` so durations tick every 30s even when a row emits no
+    /// deltas (#166 review F2a).
     @ViewBuilder
     private var fleetList: some View {
-        let agents = Array(model.fleet.agents.values)
-        let chips = BoardFilter.chips(for: agents)
-        Section {
-            EmptyView()
-        } header: {
-            pinnedHeader(fillsInteractiveWidth: true) {
-                filterChipRow(chips: chips)
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
+            let agents = Array(model.fleet.agents.values)
+            if queryActive {
+                filteredSection(agents: agents)
+            } else {
+                standardSections(agents: agents)
             }
-        }
-        if queryActive {
-            filteredSection(agents: agents)
-        } else {
-            standardSections(agents: agents)
         }
     }
 
@@ -1299,20 +1416,17 @@ struct FleetView: View {
     @ViewBuilder
     private func standardSections(agents: [Agent]) -> some View {
         let sections = BoardModel.sections(agents)
-        if !sections.needsYou.isEmpty {
+        // The view consumes the model projection so the zero-state rule is a
+        // model fact (review F5): `needsYouSection` is nil exactly when no
+        // agent is blocked, hiding the header and the (removed) empty row.
+        if BoardModel.needsYouSection(agents) != nil {
             Section {
                 ForEach(sections.needsYou) { agent in
                     agentRow(agent)
                 }
             } header: {
                 pinnedHeader {
-                    HStack {
-                        Text("Needs you (\(sections.needsYou.count))")
-                        Spacer()
-                        if model.fleet.connectionState != .connected, model.mode == .live {
-                            connectionLabel
-                        }
-                    }
+                    Text("Needs you (\(sections.needsYou.count))")
                 }
             }
         }
@@ -1344,9 +1458,9 @@ struct FleetView: View {
         }
     }
 
-    /// The pinned filter-chip row (`All · Needs you · repo₁…repoₙ`). Rendered
-    /// as both a Section header and (via `fillsInteractiveWidth`) the pinned
-    /// backing so it stays readable over scrolling rows.
+    /// The filter-chip row (`All · Needs you · repo₁…repoₙ`). Rendered inside
+    /// the persistent top inset (`fleetTopBar`), so it truly stays on screen
+    /// while scrolling rather than being a section header that scrolls away.
     @ViewBuilder
     private func filterChipRow(chips: [BoardFilterChip]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -1392,36 +1506,114 @@ struct FleetView: View {
         PinnedHeader(fillsInteractiveWidth: fillsInteractiveWidth, content: content)
     }
 
+    /// #166 review F1/F3: the persistent top inset. In live mode it always
+    /// shows the connection status (even with zero blocked agents, active
+    /// filters, or search), then the always-visible filter-chip row. Demo
+    /// mode skips the connection line (there is no stream) but keeps chips.
     @ViewBuilder
-    private var connectionLabel: some View {
-        switch model.fleet.connectionState {
-        case .connected: EmptyView()
-        case .connecting: ProgressView().controlSize(.mini)
-        case .disconnected: Text("offline").font(.caption2).foregroundStyle(.secondary)
-        case .error(let message):
-            Text("⚠ \(message)").font(.caption2).foregroundStyle(.orange).lineLimit(1)
-        }
-    }
-
-    private func agentRow(_ agent: Agent) -> some View {
-        NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
-            AgentRow(agent: agent,
-                     onAnswer: agent.isBlocked ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) } : nil)
-        }
-        .accessibilityHint("Double tap to open agent details and actions")
-        .swipeActions(edge: .leading, allowsFullSwipe: agent.isBlocked) {
-            if agent.isBlocked {
-                Button {
-                    answerTarget = AgentAnswerTarget(agentId: agent.agentId)
-                } label: {
-                    Label("Answer", systemImage: "bubble.left.fill")
-                }
-                .tint(.blue)
-                .accessibilityLabel("Answer the pending question")
+    private var fleetTopBar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.mode == .live {
+                connectionStatusLine
             }
+            filterChipRow(chips: BoardFilter.chips(for: Array(model.fleet.agents.values)))
+        }
+        .background(.bar, ignoresSafeAreaEdges: [])
+    }
+
+    /// Connection indicator line, modeled by `BoardModel.connectionStatus` so
+    /// the label/spinner is a testable pure projection, independent of
+    /// section emptiness, filters, and search.
+    @ViewBuilder
+    private var connectionStatusLine: some View {
+        let status = BoardModel.connectionStatus(for: model.fleet.connectionState)
+        switch status {
+        case .connected:
+            EmptyView()
+        case .connecting:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("connecting")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
+        case .offline:
+            Text("offline")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+        case .error(let message):
+            Text("⚠ \(message)")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
         }
     }
 
+    /// #166 review F4/F7: the row content sits over a background
+    /// NavigationLink so the whole row navigates while the in-row Answer
+    /// button (a `.borderless` Button) takes its own tap target. No whole-row
+    /// `.contentShape` swallows the button. Answer is offered only when the
+    /// `.prompt` availability gate allows it on this device.
+    private func agentRow(_ agent: Agent) -> some View {
+        let answerAvailable = agent.isBlocked && promptAvailable(agent)
+        return AgentRow(agent: agent,
+                        onAnswer: answerAvailable ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) } : nil,
+                        stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
+            .background(
+                NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
+                    EmptyView()
+                }
+                .opacity(0)
+            )
+            .accessibilityHint("Double tap to open agent details and actions")
+            .swipeActions(edge: .leading, allowsFullSwipe: answerAvailable) {
+                if answerAvailable {
+                    Button {
+                        answerTarget = AgentAnswerTarget(agentId: agent.agentId)
+                    } label: {
+                        Label("Answer", systemImage: "bubble.left.fill")
+                    }
+                    .tint(.blue)
+                    .accessibilityLabel("Answer the pending question")
+                }
+            }
+    }
+
+    /// #166 review F7: the row Answer affordance (button + leading swipe) is
+    /// offered only when the device grant + agent capability allow `.prompt`.
+    private func promptAvailable(_ agent: Agent) -> Bool {
+        BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
+            .first { $0.action == .prompt }?.isEnabled ?? false
+    }
+
+}
+
+// MARK: - Conditional searchable (review F11)
+
+/// `.searchable` is attached only for live/demo fleets, never on the
+/// registration screen (an unregistered device sees no search bar).
+private struct FleetSearchable: ViewModifier {
+    let mode: AppModel.Mode
+    @Binding var text: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if mode == .needsSetup {
+            content
+        } else {
+            content.searchable(text: $text,
+                               placement: .navigationBarDrawer(displayMode: .always),
+                               prompt: "Search repo / branch / issue…")
+        }
+    }
 }
 
 // MARK: - Focused answer sheet (#166 item 3)
@@ -1444,9 +1636,20 @@ private struct AnswerPromptSheet: View {
     @ObservedObject var drafts: PromptDrafts
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
+    @State private var refusalMessage: String?
 
     private var driveClient: DriveClient {
-        DriveClient(host: model.hostURL ?? URL(string: "http://127.0.0.1:8474")!)
+        model.makeDriveClient()
+    }
+
+    /// #166 review F7: the same availability gate the row uses. When the
+    /// device has no `.prompt` grant (or the agent lacks the capability) the
+    /// field/send are disabled and the reason is shown; if a refusal still
+    /// happens, the typed draft is preserved.
+    private var promptItem: AgentActionAvailability? {
+        guard let agent = model.fleet.agent(agentId) else { return nil }
+        return BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
+            .first { $0.action == .prompt }
     }
 
     var body: some View {
@@ -1467,11 +1670,24 @@ private struct AnswerPromptSheet: View {
                     TextField("Answer…", text: drafts.binding(for: agentId))
                         .textFieldStyle(.roundedBorder)
                         .focused($focused)
+                        .disabled(promptItem?.isEnabled != true)
                         .onSubmit(send)
                     Button("Send Answer", action: send)
                         .buttonStyle(.borderedProminent)
-                        .disabled(drafts.drafts[agentId]?
-                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
+                        .disabled(promptItem?.isEnabled != true
+                                  || drafts.drafts[agentId]?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false)
+                    if let promptItem, !promptItem.isEnabled {
+                        Text(promptItem.disabledReason ?? "Prompt is not available.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Why answering is not available: \(promptItem.disabledReason ?? "Prompt is not available.")")
+                    }
+                    if let refusalMessage {
+                        Text(refusalMessage)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 } else {
                     Label("Agent no longer available", systemImage: "exclamationmark.triangle")
                         .font(.headline)
@@ -1497,15 +1713,28 @@ private struct AnswerPromptSheet: View {
         let text = drafts.drafts[agentId] ?? ""
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let agent = model.fleet.agent(agentId) else { return }
-        drafts.clear(agentId)
-        dismiss()
+        guard promptItem?.isEnabled == true else {
+            refusalMessage = promptItem?.disabledReason
+                ?? "This prompt is not available for this agent."
+            return
+        }
 #if DEBUG
         if model.mode == .demo {
             model.driveDemo(capability: .prompt, agent: agent, choice: text)
+            drafts.clear(agentId)
+            dismiss()
             return
         }
 #endif
-        model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
+        // Dispatch FIRST; clear + dismiss only when the drive was accepted.
+        // A refused dispatch keeps the typed draft on the sheet (review F7).
+        let accepted = model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
+        if accepted {
+            drafts.clear(agentId)
+            dismiss()
+        } else {
+            refusalMessage = "The prompt was not dispatched. Your draft has been kept."
+        }
     }
 }
 

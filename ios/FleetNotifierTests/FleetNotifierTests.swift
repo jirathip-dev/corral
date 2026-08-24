@@ -470,6 +470,47 @@ final class DeltaApplyTests: XCTestCase {
         store.apply(.delta(Delta(rev: 2, upd: [], del: ["a"])))
         XCTAssertNil(store.tail(for: "a"))
     }
+
+    // MARK: - #166 review F2: state-entered tracking
+
+    func testStateEnteredAtSeedsFromTsAtFirstSight() {
+        let store = FleetStore()
+        let a = Agent(agentId: "a", state: .working, ts: 1000)
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": a])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 1000)
+    }
+
+    func testStateEnteredAtDoesNotAdvanceOnReasonOrTitleChurn() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        // Same state, only reason/title churn (daemon re-writes ts because a
+        // herdr pane update re-stamps the record; the store must not reset).
+        var churned = Agent(agentId: "a", state: .working, ts: 5000)
+        churned.reason = "running tests"
+        churned.title = "same task"
+        store.apply(.delta(Delta(rev: 2, upd: [churned], del: [])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 1000,
+                       "reason/title churn must NOT reset the duration")
+    }
+
+    func testStateEnteredAtAdvancesOnStateChange() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        store.apply(.delta(Delta(rev: 2, upd: [Agent(agentId: "a", state: .blocked, ts: 3000)], del: [])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 3000,
+                       "a real state change re-stamps the clock")
+    }
+
+    func testStateEnteredAtPrunesDeletedAgents() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        store.apply(.delta(Delta(rev: 2, upd: [], del: ["a"])))
+        XCTAssertNil(store.stateEnteredAt["a"])
+    }
 }
 
 // MARK: - Demo seed integrity
@@ -2391,6 +2432,20 @@ final class BoardModelTests: XCTestCase {
         ])
         XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["herdr:a", "herdr:b"])
     }
+
+    /// #166 review F1: the persistent connection indicator is a model fact
+    /// independent of section emptiness, filters, and search. Every
+    /// non-connected state yields a visible label (and a spinner marker);
+    /// `.connected` yields none.
+    func testConnectionStatusReportsLabelIndependentlyOfSections() {
+        XCTAssertNil(BoardModel.connectionStatus(for: .connected).label)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .connecting).label, "connecting")
+        XCTAssertTrue(BoardModel.connectionStatus(for: .connecting).isSpinner)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .disconnected).label, "offline")
+        XCTAssertFalse(BoardModel.connectionStatus(for: .disconnected).isSpinner)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .error("boom")).label, "⚠ boom")
+        XCTAssertFalse(BoardModel.connectionStatus(for: .error("boom")).isSpinner)
+    }
 }
 
 // MARK: - Tappable controls, grant explanations, and navigation (#110)
@@ -3817,6 +3872,19 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertTrue(text.contains("Row cram"))
         XCTAssertTrue(text.contains("166"))
     }
+
+    /// #166 review F10: the row displays the title AND the session identity
+    /// (`displayName` fallback to `agentId`), so searching by the visible
+    /// secondary identity must find the agent even when a title is present.
+    func testSearchableTextAlwaysIncludesIdentityAlongsideTitle() {
+        let a = agent("a", repo: "corral", branch: "g166", title: "Row cram")
+        let text = BoardFilter.searchableText(a)
+        let tokens = text.split(separator: " ").map(String.init)
+        XCTAssertTrue(tokens.contains("session-a"), "displayName must be searchable even with a title")
+        XCTAssertTrue(tokens.contains("a"), "agentId must be searchable even with a title")
+        XCTAssertTrue(BoardFilter.matches("session-a", a))
+        XCTAssertTrue(BoardFilter.matches("a", a))
+    }
 }
 
 // MARK: - Time in state (#166 item 6)
@@ -3848,5 +3916,68 @@ final class TimeInStateTests: XCTestCase {
     func testMillisecondsIsElapsedSinceRecordTs() {
         let agent = Agent(agentId: "a", state: .working, ts: 1_000_000)
         XCTAssertEqual(TimeInState.milliseconds(for: agent, now: 1_042_000), 42_000)
+    }
+
+    /// #166 review F2: the store's client-side `stateEnteredAt` wins over the
+    /// record's churn-prone `ts` when present.
+    func testMillisecondsPrefersStateEnteredAt() {
+        let agent = Agent(agentId: "a", state: .working, ts: 100)
+        XCTAssertEqual(TimeInState.milliseconds(for: agent, stateEnteredAt: 500, now: 1500), 1000)
+    }
+}
+
+// MARK: - Answer availability gate (#166 review F7)
+
+@MainActor
+final class AnswerAvailabilityGateTests: XCTestCase {
+
+    private func blockedWithPromptCapability(_ id: String) -> Agent {
+        Agent(agentId: id, state: .blocked,
+              capabilities: ["prompt", "read_tail"],
+              waitingOn: WaitingOn(kind: .answerQuestion, prompt: "go?",
+                                   promptHash: "sha256:gate",
+                                   approvalId: Claim.approvalId(agentId: id, promptHash: "sha256:gate"),
+                                   choices: []),
+              displayName: id)
+    }
+
+    /// The row/sheet gate refuses dispatch when the device lacks the prompt
+    /// grant, so `drivePrompt` returns `false` and the sheet can keep the
+    /// typed draft instead of clearing/dismissing it.
+    func testDrivePromptReturnsFalseWhenGrantMissing() {
+        let model = AppModel()
+        let live = blockedWithPromptCapability("herdr:gated")
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = [] // no prompt grant
+        model.hostURL = URL(string: "http://daemon")!
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [live.agentId: live])))
+
+        let accepted = model.drivePrompt(agent: live, text: "keep this",
+                                         driveClient: model.makeDriveClient())
+        XCTAssertFalse(accepted, "a refused prompt must return false so the draft survives")
+        XCTAssertEqual(model.banner?.kind, "not_granted")
+    }
+
+    /// The same gate exposed to the row/sheet marks the prompt action disabled
+    /// with a human-readable reason on a read-only device.
+    func testPromptAvailabilityIsDisabledWithoutGrant() {
+        let live = blockedWithPromptCapability("herdr:gated")
+        let item = BoardModel.actionAvailability(agent: live, grants: [])
+            .first { $0.action == .prompt }
+        XCTAssertNotNil(item)
+        XCTAssertEqual(item?.isEnabled, false)
+        XCTAssertNotNil(item?.disabledReason)
+    }
+
+    /// With the grant present, the gate is enabled and dispatch is attempted.
+    func testPromptAvailabilityIsEnabledWithGrant() {
+        let live = blockedWithPromptCapability("herdr:gated")
+        let item = BoardModel.actionAvailability(agent: live, grants: [.prompt])
+            .first { $0.action == .prompt }
+        XCTAssertEqual(item?.isEnabled, true)
+        XCTAssertNil(item?.disabledReason)
     }
 }

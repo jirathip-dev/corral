@@ -749,29 +749,45 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    /// #166 review F7: returns `true` only when the prompt drive was actually
-    /// started (all local gates passed). A refused dispatch sets the banner
-    /// and returns `false`, so the caller can preserve a typed draft instead
-    /// of clearing/dismissing it on a refusal.
+    /// Outcome of `drivePrompt`. The typed result lets the sheet keep a typed
+    /// draft on a real refusal and distinguish it from an in-flight dedup
+    /// (same prompt already sending) without sniffing the global banner's
+    /// `isError` (re-review P5).
+    enum DriveOutcome: Equatable, Sendable {
+        case accepted
+        case alreadyInFlight
+        case refused(String?)
+    }
+
+    /// #166 review F7: returns `.accepted` only when the prompt drive was
+    /// actually started (all local gates passed). A refused dispatch sets the
+    /// banner and returns `.refused(reason)`, so the caller can preserve a
+    /// typed draft instead of clearing/dismissing it on a refusal.
     @discardableResult
-    func drivePrompt(agent: Agent, text: String, driveClient: DriveClient) -> Bool {
-        guard let live = currentAgent(for: agent.agentId) else { return false }
+    func drivePrompt(agent: Agent, text: String, driveClient: DriveClient) -> DriveOutcome {
+        guard let live = currentAgent(for: agent.agentId) else {
+            return .refused(banner?.message ?? "The prompt was not dispatched.")
+        }
         guard let signer, let keyId else {
             banner = .error("unregistered", "Device is not registered.")
-            return false
+            return .refused("Device is not registered.")
         }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             banner = .error("empty_prompt", "Prompt text cannot be empty.")
-            return false
+            return .refused("Prompt text cannot be empty.")
         }
-        guard authorize(.prompt, for: live) else { return false }
+        guard authorize(.prompt, for: live) else {
+            return .refused(banner?.message)
+        }
         let payload = CanonicalJSON.promptPayload(text: text)
         let key = DriveActionKey(capability: .prompt, target: live.agentId, identity: text)
-        guard let requestId = beginDriveAction(key) else { return false }
+        guard let requestId = beginDriveAction(key) else {
+            return .alreadyInFlight
+        }
         drive(capability: .prompt, target: live.agentId, payload: payload,
               driveClient: driveClient, keyId: keyId, signer: signer,
               actionKey: key, requestId: requestId)
-        return true
+        return .accepted
     }
 
     /// Interrupt takes the contract's null payload and is grant/capability

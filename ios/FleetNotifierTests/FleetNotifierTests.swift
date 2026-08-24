@@ -3988,9 +3988,12 @@ final class AnswerAvailabilityGateTests: XCTestCase {
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
                                              agents: [live.agentId: live])))
 
-        let accepted = model.drivePrompt(agent: live, text: "keep this",
-                                         driveClient: model.makeDriveClient())
-        XCTAssertFalse(accepted, "a refused prompt must return false so the draft survives")
+        let outcome = model.drivePrompt(agent: live, text: "keep this",
+                                        driveClient: model.makeDriveClient())
+        guard case .refused(let reason) = outcome else {
+            return XCTFail("a refused prompt must return .refused so the draft survives (got \(outcome))")
+        }
+        XCTAssertEqual(reason, "requires the prompt grant — ask the host.")
         XCTAssertEqual(model.banner?.kind, "not_granted")
     }
 

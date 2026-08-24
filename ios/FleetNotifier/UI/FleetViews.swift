@@ -200,6 +200,51 @@ final class PromptDrafts: ObservableObject {
 /// wired to FleetView's focused prompt sheet, NOT to navigation — the row
 /// still opens the detail surface when the summary (not the button) is
 /// tapped.
+//
+/// Self-ticking "· 4s" duration chip (re-review P1/P4/P6). It owns its own
+/// clock so a 1 Hz tick re-renders only this small view, not the whole board
+/// (the `FleetView`-level timer that used to drive `AgentRow` is removed).
+/// The interval follows the same 1s-while-sub-minute / 30s rule.
+private struct TimeInStateLabel: View {
+    let agent: Agent
+    var stateEnteredAt: UInt64? = nil
+    @State private var now: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
+
+    var body: some View {
+        if let durationText {
+            Text("· \(durationText)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+                .task(id: tickInterval) {
+                    while !Task.isCancelled {
+                        now = UInt64(Date().timeIntervalSince1970 * 1000)
+                        do {
+                            try await Task.sleep(nanoseconds: tickInterval)
+                        } catch {
+                            break
+                        }
+                    }
+                }
+        }
+    }
+
+    private var durationText: String? {
+        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: now)
+            .map(RelativeTime.duration(milliseconds:))
+    }
+
+    /// Nanoseconds; 1s while the agent is under a minute in state, else 30s.
+    private var tickInterval: UInt64 {
+        let entered = stateEnteredAt ?? agent.ts
+        guard entered > 0 else {
+            return 1_000_000_000
+        }
+        let age = now >= entered ? now - entered : 0
+        return (age < 60_000 ? 1 : 30) * 1_000_000_000
+    }
+}
+
 struct AgentRow: View {
     let agent: Agent
     var onAnswer: (() -> Void)?
@@ -208,9 +253,6 @@ struct AgentRow: View {
     /// reset the duration. `nil` falls back to `agent.ts` (pre-tracking
     /// callers / pure tests).
     var stateEnteredAt: UInt64? = nil
-    /// #166 review N2/N4: the parent's ticking clock. `nil` falls back to the
-    /// row's own `Date()` for callers without a tick (e.g. the detail view).
-    var now: UInt64? = nil
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
 
@@ -272,16 +314,17 @@ struct AgentRow: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(stateStyle.color)
                 .accessibilityLabel(stateStyle.accessibilityLabel)
-            if let durationText {
-                Text("· \(durationText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            }
+            TimeInStateLabel(agent: agent, stateEnteredAt: stateEnteredAt)
         }
         .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
         .frame(minWidth: badgeMinWidth, alignment: .leading)
+        // Round-4: the fixed-size content must be honoured even when the
+        // row is tight. `.fixedSize` applied AFTER `.frame` makes the whole
+        // badge report its natural width (max of content and minWidth) and
+        // refuse to compress, so its duration is never painted over. The
+        // priority keeps it above the title so the title truncates after.
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(2)
     }
 
     @ViewBuilder
@@ -290,9 +333,9 @@ struct AgentRow: View {
             .font(.subheadline.weight(.semibold))
             .lineLimit(1)
             // Line-1 emphasis (R2-E): the task TITLE wins under
-            // compression, so it gets the higher layoutPriority; the
-            // secondary identity truncates first, and the fixed-size
-            // badges keep their width before the title.
+            // compression, so it gets a higher layoutPriority than the
+            // identity, but below the state badge (round-4) so the
+            // fixed-size duration is never clipped/overlapped.
             .layoutPriority(1)
     }
 
@@ -351,18 +394,6 @@ struct AgentRow: View {
         }
     }
 
-    /// #166 item 6: `stateEnteredAt` (client-side tracked) is the
-    /// state-entered time; falls back to `agent.ts` for pre-tracking
-    /// callers. `nil` omits the duration chip entirely.
-    private var durationText: String? {
-        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: now ?? Self.now())
-            .map(RelativeTime.duration(milliseconds:))
-    }
-
-    private static func now() -> UInt64 {
-        UInt64(Date().timeIntervalSince1970 * 1000)
-    }
-
     private var isAccessibilitySize: Bool {
         dynamicTypeSize >= .accessibility1
     }
@@ -402,7 +433,11 @@ private extension View {
     @ViewBuilder
     func rowAccessibility(summary: String, answerAction: (() -> Void)?) -> some View {
         self
-            .accessibilityElement(children: .contain)
+            // re-review P3: `.combine` keeps the row as ONE activatable
+            // VoiceOver element (double-tap opens detail; "Answer" is the
+            // custom action below) instead of a `.contain` container that can
+            // fragment the link into non-activatable children.
+            .accessibilityElement(children: .combine)
             .accessibilityLabel(summary)
             .modifier(AnswerAccessibilityAction(action: answerAction))
     }
@@ -716,8 +751,9 @@ private struct AgentDetailContent: View {
             return
         }
 #endif
-        let accepted = model.drivePrompt(agent: live, text: text, driveClient: driveClient)
-        if accepted {
+        // Dispatch FIRST; clear only when the drive was accepted. A refused
+        // dispatch keeps the typed draft on the detail surface (review F7).
+        if model.drivePrompt(agent: live, text: text, driveClient: driveClient) == .accepted {
             drafts.clear(agent.agentId)
         }
     }
@@ -772,12 +808,7 @@ private struct AgentStateSummary: View {
                 .accessibilityHidden(true)
             Text(stateStyle.label)
                 .font(.headline)
-            if let durationText {
-                Text("· \(durationText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            }
+            TimeInStateLabel(agent: agent, stateEnteredAt: stateEnteredAt)
             Text(agent.tool)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
@@ -791,16 +822,6 @@ private struct AgentStateSummary: View {
         StateStyle.style(for: agent.state)
     }
 
-    /// #166 item 6: state-entered time (client-side tracked), falling back
-    /// to record `ts` for pre-tracking callers.
-    private var durationText: String? {
-        TimeInState.milliseconds(for: agent, stateEnteredAt: stateEnteredAt, now: Self.now())
-            .map(RelativeTime.duration(milliseconds:))
-    }
-
-    private static func now() -> UInt64 {
-        UInt64(Date().timeIntervalSince1970 * 1000)
-    }
 }
 
 private struct RecentOutputView: View {
@@ -1287,8 +1308,8 @@ struct FleetView: View {
         // Compute the filter-chip list and agent projection once per body
         // evaluation; consumed by the top bar, the `.onChange` chip
         // reconciliation, and the sectioned list (review N7).
-        let chips = BoardFilter.chips(for: Array(model.fleet.agents.values))
         let agents = Array(model.fleet.agents.values)
+        let chips = BoardFilter.chips(for: agents)
         return NavigationStack(path: $viewState.navigationPath) {
             List {
                 if let banner = model.banner {
@@ -1338,17 +1359,6 @@ struct FleetView: View {
                     filterChip = .all
                 }
             }
-            // #166 review N2/N4: drive a `now` clock so durations tick. The
-            // interval is 1s while any row is under 60s (the seconds bucket
-            // is useful up to a minute) and settles to 30s afterwards. The
-            // timer lives outside the List so Sections/pinned headers and
-            // `.swipeActions` stay direct List children.
-            .task(id: tickInterval) {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
-                    now = Date()
-                }
-            }
             .navigationDestination(for: AgentRoute.self) { route in
                 AgentDetailView(agentId: route.agentId, model: model, drafts: promptDrafts)
             }
@@ -1396,20 +1406,6 @@ struct FleetView: View {
     /// re-run this body. The rows observe the object (`@ObservedObject`)
     /// and re-render themselves.
     @State private var promptDrafts = PromptDrafts()
-    /// #166 review N2/N4: the ticking clock used by `TimeInState`, driven by
-    /// the `.task(id: tickInterval)` loop so rows refresh without deltas.
-    @State private var now = Date()
-
-    /// 1s while any row is under a minute (seconds bucket), else 30s.
-    private var tickInterval: Double {
-        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
-        let anySubMinute = model.fleet.agents.values.contains { agent in
-            let entered = model.fleet.stateEnteredAt[agent.agentId] ?? agent.ts
-            guard entered > 0 else { return false }
-            return nowMs >= entered && nowMs - entered < 60_000
-        }
-        return anySubMinute ? 1 : 30
-    }
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo
@@ -1419,8 +1415,8 @@ struct FleetView: View {
     /// The filter-chip row is no longer a header here — it lives in the
     /// persistent `.safeAreaInset` (`fleetTopBar`). The list is a plain
     /// `Group` of Sections so pinned headers and `.swipeActions` stay direct
-    /// List children; durations are refreshed by the `now` tick (#166 review
-    /// N2).
+    /// List children; durations tick themselves via `TimeInStateLabel` so the
+    /// board is not re-rendered at 1 Hz (re-review P4).
     @ViewBuilder
     private func fleetList(agents: [Agent]) -> some View {
         if queryActive {
@@ -1605,12 +1601,10 @@ struct FleetView: View {
         let answerAction: (() -> Void)? = answerAvailable
             ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) }
             : nil
-        let nowMs = UInt64(now.timeIntervalSince1970 * 1000)
         return NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
             AgentRow(agent: agent,
                      onAnswer: answerAction,
-                     stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId],
-                     now: nowMs)
+                     stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
         }
             .rowAccessibility(summary: rowSummary(agent), answerAction: answerAction)
             .accessibilityHint("Double tap to open agent details and actions")
@@ -1768,17 +1762,14 @@ private struct AnswerPromptSheet: View {
 #endif
         // Dispatch FIRST; clear + dismiss only when the drive was accepted.
         // A refused dispatch keeps the typed draft on the sheet (review F7).
-        let accepted = model.drivePrompt(agent: agent, text: text, driveClient: driveClient)
-        if accepted {
+        switch model.drivePrompt(agent: agent, text: text, driveClient: driveClient) {
+        case .accepted:
             drafts.clear(agentId)
             dismiss()
-        } else if let banner = model.banner, !banner.isError {
-            // `beginDriveAction` dedup path: the identical prompt is already
-            // in flight, so this is not a refusal (review N5).
+        case .alreadyInFlight:
             refusalMessage = "Already sending this answer. Your draft was kept."
-        } else {
-            let reason = model.banner?.message ?? "The prompt was not dispatched."
-            refusalMessage = "Not dispatched — \(reason). Your draft was kept."
+        case .refused(let reason):
+            refusalMessage = "Not dispatched — \(reason ?? "The prompt was not dispatched."). Your draft was kept."
         }
     }
 }

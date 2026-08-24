@@ -38,6 +38,12 @@ final class FleetStore: ObservableObject {
     @Published private(set) var transcripts: [String: TranscriptPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
+    /// #166 review F2: client-side state-entered wall clock (epoch millis).
+    /// Seeded from `agent.ts` at first sight; updated ONLY when `state`
+    /// actually changes on a delta/snapshot, never on title/reason churn, so
+    /// a mid-state label/title update does not reset the duration. The seed
+    /// may be later than the true state-entry time (see `ios/README.md`).
+    @Published private(set) var stateEnteredAt: [String: UInt64] = [:]
 
     enum ConnectionState: Equatable, Sendable {
         case disconnected
@@ -115,30 +121,12 @@ final class FleetStore: ObservableObject {
     }
 
     func apply(_ event: FleetEvent) {
-        guard accepts(event) else { return }
-        switch event {
-        case .snapshot(let snapshot):
-            agents = snapshot.agents
-            tails = tails.filter { snapshot.agents[$0.key] != nil }
-            transcripts = transcripts.filter { snapshot.agents[$0.key] != nil }
-            lastEventId = snapshot.rev
-            cursorBox.write(snapshot.rev)
-        case .delta(let delta):
-            var next = agents
-            for agent in delta.upd {
-                next[agent.agentId] = agent
-            }
-            for id in delta.del {
-                next.removeValue(forKey: id)
-                tails.removeValue(forKey: id)
-                transcripts.removeValue(forKey: id)
-            }
-            agents = next
-            lastEventId = delta.rev
-            cursorBox.write(delta.rev)
-        }
-        connectionState = .connected
-        trackDone(event)
+        // #166 review F2: every apply path must track `stateEnteredAt`. The
+        // snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
+        // path (`apply(_:previous:)`) both converge here, so the client-side
+        // state clock is seeded on first sight and re-stamped on state
+        // change regardless of which entry point delivered the event.
+        apply(withoutDiff: event)
     }
 
     /// Diff-aware done detection: fire once per transition INTO done
@@ -213,11 +201,13 @@ final class FleetStore: ObservableObject {
         guard accepts(event) else { return }
         switch event {
         case .snapshot(let snapshot):
+            let old = agents
             agents = snapshot.agents
             tails = tails.filter { snapshot.agents[$0.key] != nil }
             transcripts = transcripts.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
+            updateStateEnteredAt(old: old, new: snapshot.agents)
         case .delta(let delta):
             var next = agents
             for agent in delta.upd { next[agent.agentId] = agent }
@@ -226,12 +216,35 @@ final class FleetStore: ObservableObject {
                 tails.removeValue(forKey: id)
                 transcripts.removeValue(forKey: id)
             }
+            let old = agents
             agents = next
             lastEventId = delta.rev
             cursorBox.write(delta.rev)
+            updateStateEnteredAt(old: old, new: next)
         }
         connectionState = .connected
         trackDone(event)
+    }
+
+    /// Seed/advance `stateEnteredAt` from a state transition only. An agent
+    /// first seen stores its current `ts` as the (possibly late) seed; a
+    /// state change re-stamps `ts`; an unchanged state keeps the stored value
+    /// so a reason/title re-write cannot reset the clock. Deleted ids are
+    /// pruned.
+    private func updateStateEnteredAt(old: [String: Agent], new: [String: Agent]) {
+        var next = stateEnteredAt
+        for (id, agent) in new {
+            guard let previous = old[id] else {
+                next[id] = agent.ts
+                continue
+            }
+            if previous.state != agent.state {
+                next[id] = agent.ts
+            }
+        }
+        let ids = Set(new.keys)
+        next = next.filter { ids.contains($0.key) }
+        stateEnteredAt = next
     }
 
     func agent(_ id: String) -> Agent? {
@@ -422,11 +435,12 @@ final class FleetStore: ObservableObject {
         transcripts.removeValue(forKey: id)
         previousStates.removeValue(forKey: id)
         streamSeen.removeValue(forKey: id)
+        stateEnteredAt.removeValue(forKey: id)
     }
 
     // NOTE: the pre-D25 `blockedAgents`/`sortedAgents` accessors were
     // removed with the board rework — ordering now lives ONLY in
-    // `BoardModel.ordered` (blocked > working > done > idle > unknown),
+    // `BoardModel.ordered` (blocked > done > working > idle > unknown),
     // so no second, contradictory rank can be reached for.
 
     // MARK: - Streaming
@@ -568,17 +582,20 @@ final class FleetStore: ObservableObject {
         // live connection resume from demo or otherwise unrelated state.
         cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
+        stateEnteredAt = [:]
         connectionState = .disconnected
     }
 
 #if DEBUG
     /// Debug-only demo mode: seed the store directly (no daemon).
     func seedDemo(agents: [String: Agent], rev: UInt64) {
+        let old = self.agents
         self.agents = agents
         tails = tails.filter { agents[$0.key] != nil }
         transcripts = transcripts.filter { agents[$0.key] != nil }
         lastEventId = rev
         cursorBox.write(rev)
+        updateStateEnteredAt(old: old, new: agents)
         connectionState = .disconnected
     }
 
@@ -586,7 +603,9 @@ final class FleetStore: ObservableObject {
     func upsertDemo(_ agent: Agent) {
         var next = agents
         next[agent.agentId] = agent
+        let old = agents
         agents = next
+        updateStateEnteredAt(old: old, new: next)
     }
 #endif
 

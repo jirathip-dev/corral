@@ -470,6 +470,47 @@ final class DeltaApplyTests: XCTestCase {
         store.apply(.delta(Delta(rev: 2, upd: [], del: ["a"])))
         XCTAssertNil(store.tail(for: "a"))
     }
+
+    // MARK: - #166 review F2: state-entered tracking
+
+    func testStateEnteredAtSeedsFromTsAtFirstSight() {
+        let store = FleetStore()
+        let a = Agent(agentId: "a", state: .working, ts: 1000)
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": a])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 1000)
+    }
+
+    func testStateEnteredAtDoesNotAdvanceOnReasonOrTitleChurn() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        // Same state, only reason/title churn (daemon re-writes ts because a
+        // herdr pane update re-stamps the record; the store must not reset).
+        var churned = Agent(agentId: "a", state: .working, ts: 5000)
+        churned.reason = "running tests"
+        churned.title = "same task"
+        store.apply(.delta(Delta(rev: 2, upd: [churned], del: [])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 1000,
+                       "reason/title churn must NOT reset the duration")
+    }
+
+    func testStateEnteredAtAdvancesOnStateChange() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        store.apply(.delta(Delta(rev: 2, upd: [Agent(agentId: "a", state: .blocked, ts: 3000)], del: [])))
+        XCTAssertEqual(store.stateEnteredAt["a"], 3000,
+                       "a real state change re-stamps the clock")
+    }
+
+    func testStateEnteredAtPrunesDeletedAgents() {
+        let store = FleetStore()
+        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                       agents: ["a": Agent(agentId: "a", state: .working, ts: 1000)])))
+        store.apply(.delta(Delta(rev: 2, upd: [], del: ["a"])))
+        XCTAssertNil(store.stateEnteredAt["a"])
+    }
 }
 
 // MARK: - Demo seed integrity
@@ -2413,8 +2454,8 @@ final class BoardModelTests: XCTestCase {
             agent("herdr:b", state: .blocked, repo: "r", ts: 99),
         ])
         XCTAssertEqual(ordered.map(\.agentId),
-                       ["herdr:b", "herdr:w", "herdr:d", "herdr:i", "herdr:u"],
-                       "blocked > working > done > idle > unknown")
+                       ["herdr:b", "herdr:d", "herdr:w", "herdr:i", "herdr:u"],
+                       "blocked > done > working > idle > unknown (contract rank; carried finding 8b)")
     }
 
     func testOrderingIsDeterministicOnFullTies() {
@@ -2423,6 +2464,20 @@ final class BoardModelTests: XCTestCase {
             agent("herdr:a", state: .working, repo: "corral", ts: 5),
         ])
         XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["herdr:a", "herdr:b"])
+    }
+
+    /// #166 review F1: the persistent connection indicator is a model fact
+    /// independent of section emptiness, filters, and search. Every
+    /// non-connected state yields a visible label (and a spinner marker);
+    /// `.connected` yields none.
+    func testConnectionStatusReportsLabelIndependentlyOfSections() {
+        XCTAssertNil(BoardModel.connectionStatus(for: .connected).label)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .connecting).label, "connecting")
+        XCTAssertTrue(BoardModel.connectionStatus(for: .connecting).isSpinner)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .disconnected).label, "offline")
+        XCTAssertFalse(BoardModel.connectionStatus(for: .disconnected).isSpinner)
+        XCTAssertEqual(BoardModel.connectionStatus(for: .error("boom")).label, "⚠ boom")
+        XCTAssertFalse(BoardModel.connectionStatus(for: .error("boom")).isSpinner)
     }
 }
 
@@ -3746,5 +3801,219 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertTrue(render.rows.contains(.error(failure)))
         XCTAssertTrue(render.canRetryTranscript)
         XCTAssertFalse(render.canLoadOlder, "an in-flight/error walk cannot page further")
+    }
+}
+
+// MARK: - Answer-loop prominence + zero-state (#166 items 3, 7)
+
+final class AnswerLoopStateTests: XCTestCase {
+
+    private func agent(_ id: String, state: AgentState) -> Agent {
+        Agent(agentId: id, state: state, ts: 10)
+    }
+
+    func testPrimaryActionFollowsState() {
+        XCTAssertEqual(BoardModel.primaryAction(for: agent("b", state: .blocked)), .answer)
+        XCTAssertEqual(BoardModel.primaryAction(for: agent("w", state: .working)), .interrupt)
+        XCTAssertEqual(BoardModel.primaryAction(for: agent("d", state: .done)), .attach)
+        XCTAssertEqual(BoardModel.primaryAction(for: agent("i", state: .idle)), .none)
+        XCTAssertEqual(BoardModel.primaryAction(for: agent("u", state: .unknown)), .none)
+    }
+
+    func testPrimaryActionLabel() {
+        XCTAssertEqual(RowPrimaryAction.answer.label, "Answer")
+        XCTAssertEqual(RowPrimaryAction.interrupt.label, "Interrupt")
+        XCTAssertEqual(RowPrimaryAction.attach.label, "Attach")
+        XCTAssertEqual(RowPrimaryAction.none.label, "")
+    }
+
+    func testNeedsYouSectionIsNilWhenNoBlockedAgents() {
+        XCTAssertNil(BoardModel.needsYouSection([
+            agent("w", state: .working), agent("d", state: .done),
+        ]))
+        let sections = BoardModel.sections([agent("w", state: .working)])
+        XCTAssertTrue(sections.needsYou.isEmpty, "zero-state: the section is empty")
+    }
+
+    func testNeedsYouSectionReturnsOrderedBlockedAgents() {
+        let blocked = BoardModel.needsYouSection([
+            agent("w", state: .working),
+            Agent(agentId: "herdr:b", state: .blocked, ts: 20),
+            Agent(agentId: "herdr:a", state: .blocked, ts: 10),
+        ])
+        XCTAssertEqual(blocked?.map(\.agentId), ["herdr:b", "herdr:a"])
+    }
+}
+
+// MARK: - Filter / search model (#166 item 5)
+
+final class BoardFilterTests: XCTestCase {
+
+    private func agent(_ id: String, repo: String? = nil, branch: String? = nil,
+                       state: AgentState = .working, title: String? = nil,
+                       issues: [GhIssueRef] = []) -> Agent {
+        Agent(agentId: id, state: state, ts: 1,
+              workspace: Workspace(repo: repo, branch: branch, issues: issues),
+              displayName: "session-\(id)", title: title)
+    }
+
+    func testChipsAreAllNeedsYouThenReposSorted() {
+        let chips = BoardFilter.chips(for: [
+            agent("a", repo: "zebra"),
+            agent("b", repo: "alpha"),
+            agent("c", repo: nil),
+        ])
+        XCTAssertEqual(chips, [.all, .needsYou, .repo("alpha"), .repo("zebra")])
+    }
+
+    func testKeepsForEachChip() {
+        let blocked = agent("b", repo: "corral", state: .blocked)
+        let working = agent("w", repo: "plush", state: .working)
+        XCTAssertTrue(BoardFilter.keeps(.all, blocked))
+        XCTAssertTrue(BoardFilter.keeps(.needsYou, blocked))
+        XCTAssertFalse(BoardFilter.keeps(.needsYou, working))
+        XCTAssertTrue(BoardFilter.keeps(.repo("corral"), blocked))
+        XCTAssertFalse(BoardFilter.keeps(.repo("corral"), working))
+    }
+
+    func testEmptyQueryKeepsAllAndIsCaseInsensitive() {
+        let a = agent("a", repo: "Corral", branch: "issue-164-ux", title: "Wire state map", issues: [GhIssueRef(repo: "corral", number: 164, state: "open", title: "ux")])
+        XCTAssertTrue(BoardFilter.matches("", a))
+        XCTAssertTrue(BoardFilter.matches("corral", a))
+        XCTAssertTrue(BoardFilter.matches("ISSUE-164-UX", a))
+        XCTAssertTrue(BoardFilter.matches("wire", a))
+        XCTAssertTrue(BoardFilter.matches("164", a))
+        XCTAssertFalse(BoardFilter.matches("nomatch", a))
+    }
+
+    func testFilteredCombinesChipAndQuery() {
+        let agents = [
+            agent("b", repo: "corral", state: .blocked, title: "Answer loop"),
+            agent("w", repo: "corral", state: .working, title: "Board"),
+            agent("x", repo: "plush", state: .blocked, title: "Answer loop"),
+        ]
+        XCTAssertEqual(BoardFilter.filtered(agents, chip: .needsYou, query: "").map(\.agentId), ["b", "x"])
+        XCTAssertEqual(BoardFilter.filtered(agents, chip: .repo("corral"), query: "answer").map(\.agentId), ["b"])
+        XCTAssertEqual(BoardFilter.filtered(agents, chip: .all, query: "plush").map(\.agentId), ["x"])
+    }
+
+    func testSearchableTextCoversRepoBranchTitleAndIssue() {
+        let a = agent("a", repo: "corral", branch: "g166", title: "Row cram", issues: [GhIssueRef(repo: "corral", number: 166, state: "open", title: "ios")])
+        let text = BoardFilter.searchableText(a)
+        XCTAssertTrue(text.contains("corral"))
+        XCTAssertTrue(text.contains("g166"))
+        XCTAssertTrue(text.contains("Row cram"))
+        XCTAssertTrue(text.contains("166"))
+    }
+
+    /// #166 review F10: the row displays the title AND the session identity
+    /// (`displayName` fallback to `agentId`), so searching by the visible
+    /// secondary identity must find the agent even when a title is present.
+    func testSearchableTextAlwaysIncludesIdentityAlongsideTitle() {
+        let a = agent("a", repo: "corral", branch: "g166", title: "Row cram")
+        let text = BoardFilter.searchableText(a)
+        let tokens = text.split(separator: " ").map(String.init)
+        XCTAssertTrue(tokens.contains("session-a"), "displayName must be searchable even with a title")
+        XCTAssertTrue(tokens.contains("a"), "agentId must be searchable even with a title")
+        XCTAssertTrue(BoardFilter.matches("session-a", a))
+        XCTAssertTrue(BoardFilter.matches("a", a))
+    }
+}
+
+// MARK: - Time in state (#166 item 6)
+
+final class TimeInStateTests: XCTestCase {
+
+    func testRelativeTimeFormatsLikeThePrototype() {
+        XCTAssertEqual(RelativeTime.duration(milliseconds: 30_000), "30s")
+        XCTAssertEqual(RelativeTime.duration(milliseconds: 42 * 60_000), "42m")
+        XCTAssertEqual(RelativeTime.duration(milliseconds: (3 * 60 + 2) * 60_000), "3h 02m")
+        XCTAssertEqual(RelativeTime.duration(milliseconds: (1 * 3600 + 10 * 60) * 1000), "1h 10m")
+        XCTAssertEqual(RelativeTime.duration(milliseconds: (26 * 3600) * 1000), "1d 2h")
+    }
+
+    func testRoundPastMinutesKeepsTwoDigitColumn() {
+        XCTAssertEqual(RelativeTime.duration(milliseconds: (2 * 3600 + 5 * 60) * 1000), "2h 05m")
+    }
+
+    func testMillisecondsNilWhenTsUnset() {
+        let agent = Agent(agentId: "a", state: .working, ts: 0)
+        XCTAssertNil(TimeInState.milliseconds(for: agent, now: 10_000))
+    }
+
+    func testMillisecondsClampsWhenClockBehindTs() {
+        let agent = Agent(agentId: "a", state: .working, ts: 20_000)
+        XCTAssertEqual(TimeInState.milliseconds(for: agent, now: 10_000), 0)
+    }
+
+    func testMillisecondsIsElapsedSinceRecordTs() {
+        let agent = Agent(agentId: "a", state: .working, ts: 1_000_000)
+        XCTAssertEqual(TimeInState.milliseconds(for: agent, now: 1_042_000), 42_000)
+    }
+
+    /// #166 review F2: the store's client-side `stateEnteredAt` wins over the
+    /// record's churn-prone `ts` when present.
+    func testMillisecondsPrefersStateEnteredAt() {
+        let agent = Agent(agentId: "a", state: .working, ts: 100)
+        XCTAssertEqual(TimeInState.milliseconds(for: agent, stateEnteredAt: 500, now: 1500), 1000)
+    }
+}
+
+// MARK: - Answer availability gate (#166 review F7)
+
+@MainActor
+final class AnswerAvailabilityGateTests: XCTestCase {
+
+    private func blockedWithPromptCapability(_ id: String) -> Agent {
+        Agent(agentId: id, state: .blocked,
+              capabilities: ["prompt", "read_tail"],
+              waitingOn: WaitingOn(kind: .answerQuestion, prompt: "go?",
+                                   promptHash: "sha256:gate",
+                                   approvalId: Claim.approvalId(agentId: id, promptHash: "sha256:gate"),
+                                   choices: []),
+              displayName: id)
+    }
+
+    /// The row/sheet gate refuses dispatch when the device lacks the prompt
+    /// grant, so `drivePrompt` returns `false` and the sheet can keep the
+    /// typed draft instead of clearing/dismissing it.
+    func testDrivePromptReturnsFalseWhenGrantMissing() {
+        let model = AppModel()
+        let live = blockedWithPromptCapability("herdr:gated")
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = [] // no prompt grant
+        model.hostURL = URL(string: "http://daemon")!
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [live.agentId: live])))
+
+        let outcome = model.drivePrompt(agent: live, text: "keep this",
+                                        driveClient: model.makeDriveClient())
+        guard case .refused(let reason) = outcome else {
+            return XCTFail("a refused prompt must return .refused so the draft survives (got \(outcome))")
+        }
+        XCTAssertEqual(reason, "requires the prompt grant — ask the host.")
+        XCTAssertEqual(model.banner?.kind, "not_granted")
+    }
+
+    /// The same gate exposed to the row/sheet marks the prompt action disabled
+    /// with a human-readable reason on a read-only device.
+    func testPromptAvailabilityIsDisabledWithoutGrant() {
+        let live = blockedWithPromptCapability("herdr:gated")
+        let item = BoardModel.actionAvailability(agent: live, grants: [])
+            .first { $0.action == .prompt }
+        XCTAssertNotNil(item)
+        XCTAssertEqual(item?.isEnabled, false)
+        XCTAssertNotNil(item?.disabledReason)
+    }
+
+    /// With the grant present, the gate is enabled and dispatch is attempted.
+    func testPromptAvailabilityIsEnabledWithGrant() {
+        let live = blockedWithPromptCapability("herdr:gated")
+        let item = BoardModel.actionAvailability(agent: live, grants: [.prompt])
+            .first { $0.action == .prompt }
+        XCTAssertEqual(item?.isEnabled, true)
+        XCTAssertNil(item?.disabledReason)
     }
 }

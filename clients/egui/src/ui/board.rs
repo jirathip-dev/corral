@@ -696,6 +696,10 @@ fn master_card(
     master_card_with_response(ui, fleet, id, selected, now_ms).and_then(|(clicked, _)| clicked)
 }
 
+fn master_card_left_text_width(left_width: f32) -> f32 {
+    (left_width - 8.0).max(0.0)
+}
+
 fn master_card_with_response(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -749,11 +753,14 @@ fn master_card_with_response(
                             let age_width =
                                 (available_width - item_spacing).clamp(0.0, CARD_AGE_WIDTH);
                             let left_width = (available_width - item_spacing - age_width).max(0.0);
-                            let left_text_width = (left_width - 8.0).max(0.0);
+                            let left_text_width = master_card_left_text_width(left_width);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(left_width, 36.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
+                                    // Keep the reserved left column width even when its labels
+                                    // are narrower after the text inset is applied.
+                                    ui.set_min_width(left_width);
                                     ui.add_sized(
                                         [left_text_width, 18.0],
                                         egui::Label::new(
@@ -2346,16 +2353,30 @@ mod tests {
             let rendered = rendered_text(&output, expected)
                 .unwrap_or_else(|| panic!("{expected} did not render"));
             clear_textures(&mut output);
-            (card_right, rendered.rect.right())
+            (card_right, rendered.rect.right(), rendered.layout_right)
         };
 
         let short = render_age_right(now + 42 * 60_000, "Working · 42m");
         let long = render_age_right(now + 100 * 24 * 60 * 60_000, "Working · 100d 00h");
-        let short_inset = short.0 - short.1;
-        let long_inset = long.0 - long.1;
+        let short_visual_inset = short.0 - short.1;
+        let long_visual_inset = long.0 - long.1;
+        // `visual_bounding_rect` is tight glyph ink: egui snaps each galley to
+        // physical pixels, and final-glyph side bearings can therefore differ
+        // by one pixel even when both labels share the same logical edge.
         assert!(
-            (short_inset - long_inset).abs() <= 1.0,
-            "short and long ages must share the card-right inset within one rasterized pixel: short={short_inset}, long={long_inset}"
+            (short_visual_inset - long_visual_inset).abs() <= 1.0,
+            "short and long age ink edges must share the card-right inset within one rasterized pixel: short={short_visual_inset}, long={long_visual_inset}"
+        );
+
+        let short_layout_inset = short.0 - short.2;
+        let long_layout_inset = long.0 - long.2;
+        assert!(
+            (short_layout_inset - 8.0).abs() <= 1.0,
+            "short age layout edge must stay at the card's 8px inner margin: inset={short_layout_inset}"
+        );
+        assert!(
+            (long_layout_inset - 8.0).abs() <= 1.0,
+            "long age layout edge must stay at the card's 8px inner margin: inset={long_layout_inset}"
         );
     }
 
@@ -2383,10 +2404,20 @@ mod tests {
             now + 42 * 60_000,
             input,
         );
-        assert!(card_rect.is_some(), "narrow master card still renders");
+        assert_eq!(
+            master_card_left_text_width(2.0),
+            0.0,
+            "the 200px card leaves a 2px left reserve, so its 8px text inset must clamp to zero"
+        );
+        let card_rect = card_rect.expect("narrow master card still renders");
+        let rendered = rendered_text(&output, "Working · 42m")
+            .expect("narrow master card keeps its age label");
         assert!(
-            rendered_text(&output, "Working · 42m").is_some(),
-            "narrow master card keeps its age label"
+            rendered.rect.width() >= 0.0
+                && rendered.rect.left() >= card_rect.left()
+                && rendered.rect.right() <= card_rect.right(),
+            "narrow age geometry must stay non-negative and inside the card: age={:?}, card={card_rect:?}",
+            rendered.rect
         );
         clear_textures(&mut output);
     }
@@ -2954,6 +2985,7 @@ mod tests {
     struct RenderedText {
         elided: bool,
         rect: egui::Rect,
+        layout_right: f32,
     }
 
     fn rendered_texts(output: &egui::FullOutput, needle: &str) -> Vec<RenderedText> {
@@ -2968,6 +3000,7 @@ mod tests {
                     texts.push(RenderedText {
                         elided: text.galley.elided,
                         rect: text.visual_bounding_rect(),
+                        layout_right: text.pos.x + text.galley.rect.right(),
                     });
                 }
                 _ => {}

@@ -48,11 +48,16 @@ const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
-/// egui temp-memory key for the flat-list toggle (default: flat attention
-/// order, matching the prototype's prioritized master list).
+/// egui temp-memory key for the Table flat-list toggle. The Table stays
+/// grouped by repo unless the operator explicitly asks for a flat list.
 const FLAT_VIEW: &str = "corral-ui-board-flat";
 
-const DEFAULT_FLAT: bool = true;
+/// egui temp-memory key for the Cards flat-list toggle. Cards default to
+/// the prototype's prioritized flat list independently of the Table.
+const CARDS_FLAT_VIEW: &str = "corral-ui-cards-flat";
+
+const DEFAULT_FLAT: bool = false;
+const DEFAULT_CARDS_FLAT: bool = true;
 
 /// egui temp-memory key for the master/detail search query.
 const SEARCH_QUERY: &str = "corral-ui-board-search";
@@ -159,10 +164,10 @@ pub fn show(
         return;
     }
 
-    let mut view = view_mode(ui);
-    let mut flat = flat_view(ui);
-    let mut query = search_query(ui);
-    let mut filter = state_filter(ui);
+    let mut view = view_mode(ui.ctx());
+    let mut flat = flat_view(ui.ctx(), view);
+    let mut query = search_query(ui.ctx());
+    let mut filter = state_filter(ui.ctx());
     toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
     let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
         .into_iter()
@@ -170,10 +175,9 @@ pub fn show(
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
     let selected = resolve_selection(fleet, &visible).map(str::to_owned);
-    if let Some(id) = &selected {
-        // Persist the resolved default before rendering so Table rows
-        // highlight the same agent the detail pane is showing.
-        fleet.select_agent(id);
+    if visible.is_empty() {
+        show_empty_state(ui, &query);
+        return;
     }
 
     match view {
@@ -201,6 +205,7 @@ fn toolbar(
     filter: &mut StateFilter,
 ) {
     let mut changed = false;
+    let previous_view = *view;
     ui.horizontal_wrapped(|ui| {
         ui.label(
             RichText::new("search")
@@ -217,12 +222,13 @@ fn toolbar(
         if response.changed() {
             changed = true;
         }
-        for candidate in available_state_filters(fleet, query) {
-            let selected = *filter == candidate;
+        let available = available_state_filters(fleet, query);
+        for candidate in &available {
+            let selected = *filter == *candidate;
             let color = if selected {
                 theme::ui::TEXT_STRONG
             } else {
-                match candidate {
+                match *candidate {
                     StateFilter::All => theme::ui::ACCENT,
                     StateFilter::Blocked => state::of(crate::theme::AgentStateLike::Blocked),
                     StateFilter::Done => state::of(crate::theme::AgentStateLike::Done),
@@ -234,11 +240,10 @@ fn toolbar(
                 .selectable_label(selected, RichText::new(candidate.label()).color(color))
                 .clicked()
             {
-                *filter = candidate;
+                *filter = *candidate;
                 changed = true;
             }
         }
-        let available = available_state_filters(fleet, query);
         if *filter != StateFilter::All && !available.contains(&*filter) {
             *filter = StateFilter::All;
             changed = true;
@@ -268,46 +273,65 @@ fn toolbar(
         }
     });
     if changed {
-        ui.ctx().memory_mut(|m| {
-            m.data.insert_temp::<bool>(egui::Id::new(FLAT_VIEW), *flat);
-            m.data
-                .insert_temp::<String>(egui::Id::new(SEARCH_QUERY), query.clone());
-            m.data.insert_temp(
-                egui::Id::new(("corral-ui-board-filter", SEARCH_QUERY)),
-                *filter,
-            );
-            m.data
-                .insert_temp::<BoardView>(egui::Id::new(VIEW_MODE), *view);
-        });
+        if *view != previous_view {
+            *flat = flat_view(ui.ctx(), *view);
+        }
+        persist_toolbar_state(ui, *view, *flat, query, *filter);
     }
 }
 
-fn flat_view(ui: &Ui) -> bool {
-    ui.ctx().memory(|m| {
+fn persist_toolbar_state(ui: &Ui, view: BoardView, flat: bool, query: &str, filter: StateFilter) {
+    ui.ctx().memory_mut(|m| {
         m.data
-            .get_temp::<bool>(egui::Id::new(FLAT_VIEW))
-            .unwrap_or(DEFAULT_FLAT)
+            .insert_temp::<bool>(egui::Id::new(flat_key(view)), flat);
+        m.data
+            .insert_temp::<String>(egui::Id::new(SEARCH_QUERY), query.to_string());
+        m.data.insert_temp(
+            egui::Id::new(("corral-ui-board-filter", SEARCH_QUERY)),
+            filter,
+        );
+        m.data
+            .insert_temp::<BoardView>(egui::Id::new(VIEW_MODE), view);
+    });
+}
+
+fn flat_key(view: BoardView) -> &'static str {
+    match view {
+        BoardView::Cards => CARDS_FLAT_VIEW,
+        BoardView::Table => FLAT_VIEW,
+    }
+}
+
+fn flat_view(ctx: &egui::Context, view: BoardView) -> bool {
+    let (key, default) = match view {
+        BoardView::Cards => (CARDS_FLAT_VIEW, DEFAULT_CARDS_FLAT),
+        BoardView::Table => (FLAT_VIEW, DEFAULT_FLAT),
+    };
+    ctx.memory(|m| {
+        m.data
+            .get_temp::<bool>(egui::Id::new(key))
+            .unwrap_or(default)
     })
 }
 
-fn view_mode(ui: &Ui) -> BoardView {
-    ui.ctx().memory(|m| {
+fn view_mode(ctx: &egui::Context) -> BoardView {
+    ctx.memory(|m| {
         m.data
             .get_temp::<BoardView>(egui::Id::new(VIEW_MODE))
             .unwrap_or_default()
     })
 }
 
-fn search_query(ui: &Ui) -> String {
-    ui.ctx().memory(|m| {
+fn search_query(ctx: &egui::Context) -> String {
+    ctx.memory(|m| {
         m.data
             .get_temp::<String>(egui::Id::new(SEARCH_QUERY))
             .unwrap_or_default()
     })
 }
 
-fn state_filter(ui: &Ui) -> StateFilter {
-    ui.ctx().memory(|m| {
+fn state_filter(ctx: &egui::Context) -> StateFilter {
+    ctx.memory(|m| {
         m.data
             .get_temp::<StateFilter>(egui::Id::new(("corral-ui-board-filter", SEARCH_QUERY)))
             .unwrap_or(StateFilter::All)
@@ -343,28 +367,40 @@ pub fn agent_matches_query(agent: &Agent, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
-    let mut haystack: Vec<String> = [
-        agent.workspace.repo.clone(),
-        agent.workspace.branch.clone(),
-        agent.title.clone(),
-        agent.display_name.clone(),
-        Some(agent.agent_id.clone()),
+    if [
+        agent.workspace.repo.as_deref(),
+        agent.workspace.branch.as_deref(),
+        agent.title.as_deref(),
+        agent.display_name.as_deref(),
+        Some(agent.agent_id.as_str()),
     ]
     .into_iter()
     .flatten()
-    .collect();
-    if let Some(pr) = agent.workspace.pr_number {
-        haystack.push(format!("#{pr}"));
+    .any(|part| part.to_lowercase().contains(&query))
+    {
+        return true;
+    }
+    if agent
+        .workspace
+        .pr_number
+        .is_some_and(|number| number_matches_query(&query, &number.to_string()))
+    {
+        return true;
     }
     for issue in &agent.issues {
-        haystack.push(issue.repo.clone());
-        haystack.push(issue.title.clone());
-        haystack.push(issue.number.to_string());
-        haystack.push(format!("#{}", issue.number));
+        if issue.repo.to_lowercase().contains(&query)
+            || issue.title.to_lowercase().contains(&query)
+            || number_matches_query(&query, &issue.number.to_string())
+        {
+            return true;
+        }
     }
-    haystack
-        .iter()
-        .any(|part| part.to_lowercase().contains(&query))
+    false
+}
+
+fn number_matches_query(query: &str, number: &str) -> bool {
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    number.contains(digits)
 }
 
 /// One non-empty attention section of the flat master list.
@@ -382,7 +418,10 @@ pub fn state_sections<'a>(ids: &[&'a str], fleet: &'a Fleet) -> Vec<StateSection
         let Some(agent) = fleet.agents.get(*id) else {
             continue;
         };
-        let state: crate::theme::AgentStateLike = agent.state.into();
+        let mut state: crate::theme::AgentStateLike = agent.state.into();
+        if state == crate::theme::AgentStateLike::Unknown {
+            state = crate::theme::AgentStateLike::Idle;
+        }
         match sections.iter_mut().find(|section| section.state == state) {
             Some(section) => section.agent_ids.push(id),
             None => sections.push(StateSection {
@@ -406,6 +445,34 @@ pub fn resolve_selection<'a>(fleet: &'a Fleet, visible: &[&'a str]) -> Option<&'
         .or_else(|| visible.first().copied())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CardsWidths {
+    left: f32,
+    right: f32,
+    total: f32,
+}
+
+fn cards_widths(available: f32, item_spacing: f32, separator_spacing: f32) -> CardsWidths {
+    let gutter = 2.0 * item_spacing + separator_spacing;
+    let usable = (available - gutter).max(320.0 + 380.0);
+    let left = (usable * 0.40).max(320.0);
+    let right = (usable - left).max(380.0);
+    CardsWidths {
+        left,
+        right,
+        total: left + right + gutter,
+    }
+}
+
+fn separator_spacing(ui: &Ui) -> f32 {
+    ui.style()
+        .separator_style(
+            &eframe::egui::widget_style::Classes::default(),
+            eframe::egui::widget_style::WidgetState::default(),
+        )
+        .spacing
+}
+
 fn show_cards(
     ui: &mut Ui,
     fleet: &mut Fleet,
@@ -416,21 +483,65 @@ fn show_cards(
     actions: &mut BoardActions,
 ) {
     let available = ui.available_size();
-    let left_width = (available.x * 0.40).max(320.0);
-    let right_width = (available.x - left_width - 8.0).max(380.0);
+    let widths = cards_widths(
+        available.x,
+        ui.spacing().item_spacing.x,
+        separator_spacing(ui),
+    );
     let mut clicked = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui(egui::vec2(left_width, available.y), |ui| {
-            clicked = master_list(ui, fleet, visible, flat, selected);
+    ScrollArea::horizontal()
+        .id_salt("corral-ui-cards-horizontal")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(widths.total);
+            ui.horizontal(|ui| {
+                ui.allocate_ui(egui::vec2(widths.left, available.y), |ui| {
+                    clicked = master_list(ui, fleet, visible, flat, selected);
+                });
+                ui.separator();
+                ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
+                    detail_pane(ui, fleet, selected, allowed, actions);
+                });
+            });
         });
-        ui.separator();
-        ui.allocate_ui(egui::vec2(right_width, available.y), |ui| {
-            detail_pane(ui, fleet, selected, allowed, actions);
-        });
-    });
     if let Some(id) = clicked {
         fleet.select_agent(&id);
     }
+}
+
+fn show_empty_state(ui: &mut Ui, query: &str) {
+    let available = ui.available_size();
+    let widths = cards_widths(
+        available.x,
+        ui.spacing().item_spacing.x,
+        separator_spacing(ui),
+    );
+    ScrollArea::horizontal()
+        .id_salt("corral-ui-empty-horizontal")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(widths.total);
+            ui.horizontal(|ui| {
+                ui.allocate_ui(egui::vec2(widths.left, available.y), |ui| {
+                    empty_pane_message(ui, query);
+                });
+                ui.separator();
+                ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
+                    empty_pane_message(ui, query);
+                });
+            });
+        });
+}
+
+fn no_match_message(query: &str) -> String {
+    format!("No agents match “{}”", query.trim())
+}
+
+fn empty_pane_message(ui: &mut Ui, query: &str) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(24.0);
+        ui.label(RichText::new(no_match_message(query)).color(theme::ui::TEXT_MUTED));
+    });
 }
 
 fn master_list(
@@ -442,10 +553,30 @@ fn master_list(
 ) -> Option<String> {
     let mut clicked = None;
     ScrollArea::vertical()
+        .id_salt("corral-ui-master-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if flat {
                 for section in state_sections(visible, fleet) {
+                    if section.state == crate::theme::AgentStateLike::Idle {
+                        let count = section.agent_ids.len();
+                        CollapsingHeader::new(
+                            RichText::new(format!("Idle / done ({count})"))
+                                .monospace()
+                                .color(theme::ui::TEXT_MUTED),
+                        )
+                        .id_salt("corral-ui-idle-done")
+                        .default_open(false)
+                        .show_unindented(ui, |ui| {
+                            for id in &section.agent_ids {
+                                if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                                    clicked = Some(id);
+                                }
+                            }
+                        });
+                        ui.separator();
+                        continue;
+                    }
                     state_section_header(ui, section.state, section.agent_ids.len());
                     for id in &section.agent_ids {
                         if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
@@ -500,8 +631,20 @@ fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count:
 }
 
 fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<String> {
+    master_card_with_response(ui, fleet, id, selected).and_then(|(clicked, _)| clicked)
+}
+
+fn master_card_with_response(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    id: &str,
+    selected: bool,
+) -> Option<(Option<String>, egui::Response)> {
     let agent = fleet.agents.get(id)?;
-    let state: crate::theme::AgentStateLike = agent.state.into();
+    let mut state: crate::theme::AgentStateLike = agent.state.into();
+    if state == crate::theme::AgentStateLike::Unknown {
+        state = crate::theme::AgentStateLike::Idle;
+    }
     let color = theme::state::of(state);
     let bg = if selected {
         color.gamma_multiply(0.16)
@@ -514,15 +657,12 @@ fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<S
         agent.row_label(),
         agent.tool
     );
-    let meta = format!(
-        "{} · {}",
-        agent
-            .workspace
-            .repo
-            .as_deref()
-            .unwrap_or(agent.workspace.branch.as_deref().unwrap_or("—")),
-        state.label()
-    );
+    let location = agent
+        .workspace
+        .repo
+        .as_deref()
+        .unwrap_or(agent.workspace.branch.as_deref().unwrap_or("—"));
+    let state_time = format!("{} · {}", state.label(), crate::model::clock_of(agent.ts));
     let response = ui
         .scope_builder(
             egui::UiBuilder::new()
@@ -539,28 +679,49 @@ fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<S
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
-                        ui.add(
-                            egui::Label::new(RichText::new(label).color(theme::ui::TEXT_STRONG))
-                                .truncate(),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(meta)
-                                    .small()
-                                    .monospace()
-                                    .color(theme::ui::TEXT_MUTED),
-                            )
-                            .truncate(),
-                        );
+                        ui.horizontal(|ui| {
+                            let left_width = (ui.available_width() * 0.66).max(160.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(left_width, 36.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.add_sized(
+                                        [left_width - 8.0, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(label).color(theme::ui::TEXT_STRONG),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.add_sized(
+                                        [left_width - 8.0, 14.0],
+                                        egui::Label::new(
+                                            RichText::new(location)
+                                                .small()
+                                                .monospace()
+                                                .color(theme::ui::TEXT_MUTED),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(state_time)
+                                            .small()
+                                            .monospace()
+                                            .color(theme::ui::TEXT_MUTED),
+                                    );
+                                },
+                            );
+                        });
                     });
             },
         )
         .response;
-    if response.clicked() {
-        Some(agent.agent_id.clone())
-    } else {
-        None
-    }
+    let clicked = response.clicked().then(|| agent.agent_id.clone());
+    Some((clicked, response))
 }
 
 fn detail_pane(
@@ -584,6 +745,7 @@ fn detail_pane(
         return;
     };
     ScrollArea::vertical()
+        .id_salt("corral-ui-detail-pane")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             detail(ui, agent, fleet, allowed, actions);
@@ -600,6 +762,7 @@ fn show_table(
 ) {
     let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
     ScrollArea::both()
+        .id_salt("corral-ui-table")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(total_width);
@@ -1247,6 +1410,45 @@ fn detail(
                         .color(theme::ui::TEXT_MUTED),
                 );
             });
+            ui.horizontal_wrapped(|ui| {
+                let ws = &agent.workspace;
+                topology_cell(
+                    ui,
+                    COL_REPO,
+                    ws.repo.clone().unwrap_or_else(|| "—".into()),
+                    theme::ui::TEXT_MUTED,
+                );
+                branch_cell(ui, agent);
+                topology_cell(
+                    ui,
+                    COL_DIRTY,
+                    if ws.dirty { "●".into() } else { "".into() },
+                    theme::ui::DIRTY,
+                );
+                topology_cell(
+                    ui,
+                    COL_AB,
+                    if ws.ahead == 0 && ws.behind == 0 {
+                        "".into()
+                    } else {
+                        format!("+{}/−{}", ws.ahead, ws.behind)
+                    },
+                    if ws.ahead > 0 {
+                        theme::ui::WARN
+                    } else {
+                        theme::ui::TEXT_MUTED
+                    },
+                );
+                topology_cell(
+                    ui,
+                    COL_PR,
+                    ws.pr_number
+                        .map(|n| format!("#{n}"))
+                        .unwrap_or_else(|| "—".into()),
+                    theme::ui::TEXT_MUTED,
+                );
+                ci_cell(ui, ws.ci_status);
+            });
             if let Some(inferred) = crate::infer::infer(
                 agent.workspace.branch.as_deref(),
                 &agent.known_issue_numbers(),
@@ -1311,13 +1513,16 @@ fn detail(
                                     .color(theme::ui::TEXT_MUTED),
                             );
                         } else {
-                            ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                                for line in tail {
-                                    ui.add(egui::Label::new(
-                                        RichText::new(line).monospace().small(),
-                                    ));
-                                }
-                            });
+                            ScrollArea::vertical()
+                                .id_salt("corral-ui-recent-output")
+                                .max_height(200.0)
+                                .show(ui, |ui| {
+                                    for line in tail {
+                                        ui.add(egui::Label::new(
+                                            RichText::new(line).monospace().small(),
+                                        ));
+                                    }
+                                });
                         }
                     });
             } else if fleet
@@ -1785,10 +1990,6 @@ mod tests {
         );
         let width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
         assert_eq!(width, 1032.0);
-        assert!(
-            width <= 1032.0,
-            "table must avoid horizontal scroll at ~1200px"
-        );
     }
 
     #[test]
@@ -1840,7 +2041,11 @@ mod tests {
             "herdr:idle".into(),
             agent_with_state("herdr:idle", crate::model::AgentState::Idle),
         );
-        let ids = ["herdr:idle", "herdr:working"];
+        fleet.agents.insert(
+            "herdr:unknown".into(),
+            agent_with_state("herdr:unknown", crate::model::AgentState::Unknown),
+        );
+        let ids = ["herdr:working", "herdr:unknown", "herdr:idle"];
         let sections = state_sections(&ids, &fleet);
         assert_eq!(sections.len(), 2, "no empty section may be returned");
         assert_eq!(
@@ -1850,6 +2055,11 @@ mod tests {
                 crate::theme::AgentStateLike::Idle,
             ],
             "sections follow contract rank with the empty blocked bucket omitted"
+        );
+        assert_eq!(
+            sections[1].agent_ids,
+            vec!["herdr:unknown", "herdr:idle"],
+            "Unknown folds into the Idle section"
         );
     }
 
@@ -1958,6 +2168,187 @@ mod tests {
             Some("herdr:table"),
             "clicking a Table row selects it for the master/detail model"
         );
+    }
+
+    #[test]
+    fn cards_pane_widths_reserve_full_gutter() {
+        let widths = cards_widths(1200.0, 6.0, 6.0);
+        assert!((widths.total - 1200.0).abs() <= 0.01);
+        assert!((widths.left - 472.8).abs() <= 0.01);
+        assert!((widths.right - 709.2).abs() <= 0.01);
+        assert_eq!(widths.total, widths.left + widths.right + (2.0 * 6.0 + 6.0));
+
+        let narrow = cards_widths(700.0, 6.0, 6.0);
+        assert_eq!(narrow.left, 320.0);
+        assert_eq!(narrow.right, 380.0);
+        assert_eq!(narrow.total, 718.0);
+    }
+
+    #[test]
+    fn cards_path_click_selects_agent() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:cards".into();
+        agent.display_name = Some("card agent".into());
+        agent.ts = 1_700_000_000_000;
+        let expected_time = crate::model::clock_of(agent.ts);
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+
+        let (clicked, rect, mut output) =
+            master_card_frame(&ctx, &fleet, &agent.agent_id, false, row_test_input(vec![]));
+        assert_eq!(clicked, None);
+        let pos = rect.expect("master card rendered").center();
+        assert!(
+            text_rect(&output, &format!("Working · {expected_time}")).is_some(),
+            "master card meta shows State · clock time"
+        );
+        clear_textures(&mut output);
+
+        let (clicked, _, mut output) = master_card_frame(
+            &ctx,
+            &fleet,
+            &agent.agent_id,
+            false,
+            pointer_down_input(pos),
+        );
+        assert_eq!(clicked, None);
+        clear_textures(&mut output);
+        let (clicked, _, mut output) =
+            master_card_frame(&ctx, &fleet, &agent.agent_id, false, pointer_up_input(pos));
+        let clicked = clicked.expect("master card click returns the agent id");
+        fleet.select_agent(&clicked);
+        clear_textures(&mut output);
+        assert_eq!(
+            fleet.selected_agent.as_deref(),
+            Some("herdr:cards"),
+            "clicking a Cards master card selects it"
+        );
+    }
+
+    #[test]
+    fn master_list_omits_transcript_and_collapses_idle_tail() {
+        let ctx = row_test_context();
+        let mut agent = agent_in_repo("herdr:idle", Some("corral"));
+        agent.state = crate::model::AgentState::Idle;
+        agent.display_name = Some("idle card".into());
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.transcripts.insert(
+            agent.agent_id.clone(),
+            crate::transcript::TranscriptPane {
+                entries: vec![crate::transcript::TranscriptEntry {
+                    role: "assistant".into(),
+                    text: "TRANSCRIPT_ONLY_MARKER".into(),
+                    ts: Some(0),
+                }],
+                ..Default::default()
+            },
+        );
+        let visible = ["herdr:idle"];
+
+        let (_, mut output) =
+            master_list_frame(&ctx, &fleet, &visible, true, None, row_test_input(vec![]));
+        assert!(
+            text_rect(&output, "Idle / done (1)").is_some(),
+            "idle tail renders as one collapsed row"
+        );
+        assert!(
+            text_rect(&output, "TRANSCRIPT_ONLY_MARKER").is_none(),
+            "the transcript wall never renders inside the master list"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn toolbar_persists_cards_table_search_filter_and_flat() {
+        let ctx = row_test_context();
+        let mut agent = agent_in_repo("herdr:alpha", Some("corral"));
+        agent.display_name = Some("alpha agent".into());
+        let fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let (view, flat, query, filter, _) = toolbar_label_click(
+            &ctx,
+            &fleet,
+            "Table",
+            BoardView::Cards,
+            true,
+            "",
+            StateFilter::All,
+        );
+        assert_eq!(view, BoardView::Table);
+        assert_eq!(view_mode(&ctx), BoardView::Table);
+        assert!(!flat, "Table keeps its grouped default after the switch");
+        assert!(!flat_view(&ctx, BoardView::Table));
+        assert_eq!(query, "");
+        assert_eq!(filter, StateFilter::All);
+
+        let (view, flat, query, filter, _) =
+            toolbar_label_click(&ctx, &fleet, "Cards", view, flat, &query, filter);
+        assert_eq!(view, BoardView::Cards);
+        assert_eq!(view_mode(&ctx), BoardView::Cards);
+        assert!(flat, "Cards keeps its flat default after the switch");
+        assert!(flat_view(&ctx, BoardView::Cards));
+
+        let (view, flat, query, filter, _) =
+            toolbar_label_click(&ctx, &fleet, "Working", view, flat, &query, filter);
+        assert_eq!(filter, StateFilter::Working);
+        assert_eq!(state_filter(&ctx), StateFilter::Working);
+
+        let (view, flat, query, filter, _) =
+            toolbar_label_click(&ctx, &fleet, "flat sort", view, flat, &query, filter);
+        assert!(!flat);
+        assert!(!flat_view(&ctx, BoardView::Cards));
+
+        let (view, flat, query, filter, mut output) = toolbar_frame(
+            &ctx,
+            &fleet,
+            view,
+            flat,
+            &query,
+            filter,
+            row_test_input(vec![]),
+        );
+        let pos = text_rect(&output, "repo / branch / title / issue…")
+            .expect("search field rendered")
+            .center();
+        clear_textures(&mut output);
+        for input in [pointer_down_input(pos), pointer_up_input(pos)] {
+            let mut output = toolbar_frame(&ctx, &fleet, view, flat, &query, filter, input).4;
+            clear_textures(&mut output);
+        }
+        let (view, _flat, query, filter, mut output) = toolbar_frame(
+            &ctx,
+            &fleet,
+            view,
+            flat,
+            &query,
+            filter,
+            row_test_input(vec![egui::Event::Text("alpha".into())]),
+        );
+        clear_textures(&mut output);
+        assert_eq!(query, "alpha");
+        assert_eq!(search_query(&ctx), "alpha");
+        assert_eq!(view, BoardView::Cards);
+        assert_eq!(filter, StateFilter::Working);
+    }
+
+    #[test]
+    fn empty_state_shows_message_in_both_panes() {
+        let ctx = row_test_context();
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            show_empty_state(ui, "missing");
+        });
+        let message = no_match_message("missing");
+        assert!(
+            text_rects(&output, &message).len() >= 2,
+            "master and detail panes both report the no-match query"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]
@@ -2248,6 +2639,107 @@ mod tests {
 
     fn text_rect(output: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
         text_rects(output, needle).into_iter().next()
+    }
+
+    fn master_list_frame(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        visible: &[&str],
+        flat: bool,
+        selected: Option<&str>,
+        input: egui::RawInput,
+    ) -> (Option<String>, egui::FullOutput) {
+        let mut clicked = None;
+        let output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            clicked = master_list(ui, fleet, visible, flat, selected);
+        });
+        (clicked, output)
+    }
+
+    fn master_card_frame(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        id: &str,
+        selected: bool,
+        input: egui::RawInput,
+    ) -> (Option<String>, Option<egui::Rect>, egui::FullOutput) {
+        let mut clicked = None;
+        let mut rect = None;
+        let output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            ui.set_max_width(row_test_screen().width());
+            if let Some((card_clicked, response)) =
+                master_card_with_response(ui, fleet, id, selected)
+            {
+                clicked = card_clicked;
+                rect = Some(response.rect);
+            }
+        });
+        (clicked, rect, output)
+    }
+
+    fn toolbar_frame(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        view: BoardView,
+        flat: bool,
+        query: &str,
+        filter: StateFilter,
+        input: egui::RawInput,
+    ) -> (BoardView, bool, String, StateFilter, egui::FullOutput) {
+        let mut view = view;
+        let mut flat = flat;
+        let mut query = query.to_string();
+        let mut filter = filter;
+        let output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
+        });
+        (view, flat, query, filter, output)
+    }
+
+    fn toolbar_label_click(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        needle: &str,
+        view: BoardView,
+        flat: bool,
+        query: &str,
+        filter: StateFilter,
+    ) -> (BoardView, bool, String, StateFilter, egui::FullOutput) {
+        let (view, flat, query, filter, mut output) = toolbar_frame(
+            ctx,
+            fleet,
+            view,
+            flat,
+            query,
+            filter,
+            row_test_input(vec![]),
+        );
+        let pos = text_rect(&output, needle)
+            .expect("toolbar label rendered")
+            .center();
+        clear_textures(&mut output);
+        let (view, flat, query, filter, mut output) = toolbar_frame(
+            ctx,
+            fleet,
+            view,
+            flat,
+            &query,
+            filter,
+            pointer_down_input(pos),
+        );
+        clear_textures(&mut output);
+        toolbar_frame(
+            ctx,
+            fleet,
+            view,
+            flat,
+            &query,
+            filter,
+            pointer_up_input(pos),
+        )
     }
 
     fn board_row_frame(

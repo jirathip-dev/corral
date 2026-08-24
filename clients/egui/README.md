@@ -15,10 +15,12 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   so a genuinely dead socket still forces a reconnect.
 - **Master/detail board** — a ~40/60 split. The left pane searches repo /
   branch / title / issue and filters with contract-state chips (All · Needs
-  you · Review · Working · Idle); agents are attention-ranked and can be
-  grouped by repo or flattened. Empty state buckets never render. The right
-  pane owns the selected agent's detail, drive controls, full waiting claim,
-  Recent output, and transcript.
+  you · Review · Working · Idle); Cards default to a flat attention-ranked
+  list with `State · time` per card and one collapsed `Idle / done (N)`
+  tail, while the Table keeps its grouped-by-repo default. Empty state
+  buckets never render, and a no-match query says so in both panes. The
+  right pane owns the selected agent's detail, drive controls, full waiting
+  claim, Recent output, and transcript.
 - **Cards | Table** — cards are the default view. The exact nine-column
   conformance table (drop DRIVE, narrow WAITING ON) remains reachable from
   the toolbar; full drive controls stay in the selected detail pane.

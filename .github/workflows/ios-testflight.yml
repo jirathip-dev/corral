@@ -1,0 +1,115 @@
+name: iOS TestFlight
+
+on:
+  # Human-only lane from `main`. Never run on pull_request: GitHub would not
+  # expose ASC credentials to fork PRs, and a TestFlight upload is the same
+  # human-gated release step as the staging -> main / release train.
+  workflow_dispatch:
+
+concurrency:
+  group: corral-ios-testflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    name: Upload to TestFlight
+    runs-on: macos-latest
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 90
+    env:
+      ASC_TEAM_ID: 9244PWFYD7
+      CI: "true"
+      FASTLANE_SKIP_UPDATE_CHECK: "true"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Fastlane
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install fastlane
+          fastlane --version
+
+      - name: Prepare ASC key and distribution certificate
+        env:
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_DISTRIBUTION_CERT_P12: ${{ secrets.ASC_DISTRIBUTION_CERT_P12 }}
+          ASC_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.ASC_DISTRIBUTION_CERT_PASSWORD }}
+          ASC_PROVISIONING_PROFILE: ${{ secrets.ASC_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+
+          : "${ASC_KEY_ID:?ASC_KEY_ID repository secret is required}"
+          : "${ASC_ISSUER_ID:?ASC_ISSUER_ID repository secret is required}"
+          : "${ASC_API_KEY:?ASC_API_KEY repository secret is required}"
+
+          # The existing lane resolves ASC_KEY_PATH by basename into fastlane/,
+          # so place the .p8 there. It is gitignored and never written to
+          # GITHUB_ENV or echoed.
+          umask 077
+          key_path="$GITHUB_WORKSPACE/fastlane/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_API_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          {
+            echo "ASC_KEY_PATH=$key_path"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+          if [ -n "$ASC_DISTRIBUTION_CERT_P12" ]; then
+            cert_path="$RUNNER_TEMP/asc-distribution.p12"
+            printf '%s' "$ASC_DISTRIBUTION_CERT_P12" | base64 --decode > "$cert_path"
+            chmod 600 "$cert_path"
+
+            # Ephemeral keychain with a known password so codesign does not
+            # prompt on the headless runner. Make it the search-list head so
+            # the existing get_certificates lane can reuse the installed
+            # identity instead of creating one.
+            keychain_password="$(openssl rand -hex 24)"
+            keychain_path="$RUNNER_TEMP/asc-signing.keychain-db"
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            cert_password="${ASC_DISTRIBUTION_CERT_PASSWORD:-}"
+            security import "$cert_path" \
+              -k "$keychain_path" -f pkcs12 -P "$cert_password" \
+              -T /usr/bin/codesign
+            security set-key-partition-list \
+              -S apple-tool:,apple:,codesign: -s \
+              -k "$keychain_password" "$keychain_path"
+            default_keychain="$(security default-keychain -d user | tr -d '"')"
+            security list-keychains -d user -s "$keychain_path" "$default_keychain"
+            echo "CERT_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ASC_DISTRIBUTION_CERT_P12 not set; expecting an Apple Distribution identity already installed on this runner"
+          fi
+
+          if [ -n "$ASC_PROVISIONING_PROFILE" ]; then
+            profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+            mkdir -p "$profiles_dir"
+            profile_path="$profiles_dir/Corral.mobileprovision"
+            printf '%s' "$ASC_PROVISIONING_PROFILE" | base64 --decode > "$profile_path"
+            chmod 600 "$profile_path"
+          fi
+
+          # Fail before the lane unless the exact team identity is installed,
+          # so get_certificates can never mint a new Distribution certificate
+          # on CI.
+          identities="$(security find-identity -v -p codesigning 2>&1 || true)"
+          if ! printf '%s\n' "$identities" | grep -q 'Apple Distribution:.*(9244PWFYD7)'; then
+            echo "::error::No valid Apple Distribution identity for team 9244PWFYD7 found on the runner. Set ASC_DISTRIBUTION_CERT_P12 and ASC_DISTRIBUTION_CERT_PASSWORD secrets, or use a runner image with the identity installed."
+            exit 1
+          fi
+
+      - name: Run fastlane testflight
+        run: fastlane testflight
+
+      - name: Confirm checked-in Xcode project was restored
+        if: always()
+        run: git diff --exit-code -- ios/FleetNotifier.xcodeproj/project.pbxproj

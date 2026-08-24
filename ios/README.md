@@ -114,6 +114,33 @@ key itself is never copied in (`*.p8` is gitignored). `fastlane/.env` was
 tracked in this repo until #26 untracked it; if you cloned before that, run
 `git rm --cached fastlane/.env` locally.
 
+### Manual TestFlight CI lane
+
+`.github/workflows/ios-testflight.yml` adds a committed CI surface for the
+same lane. It is `workflow_dispatch` only and has **no** `pull_request`
+trigger; the job also refuses to run unless the dispatch ref is `main`.
+
+Repository secrets:
+
+- `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY` — required. The workflow writes
+  the API key to the gitignored `fastlane/` path with mode `0600` and never
+  writes `.p8` contents to `GITHUB_ENV` or the logs.
+- `ASC_DISTRIBUTION_CERT_P12` — optional on a runner that already has the
+  Distribution cert installed; otherwise base64-encode the `.p12` here.
+- `ASC_DISTRIBUTION_CERT_PASSWORD` — required when that `.p12` is protected.
+- `ASC_PROVISIONING_PROFILE` — optional; base64-encode the App Store
+  `.mobileprovision` here if you want to install it before the lane fetches
+  the current one through the ASC API key.
+
+The workflow imports the optional `.p12` into a temporary signing keychain,
+then fails before `fastlane testflight` if no valid `Apple Distribution`
+identity for team `9244PWFYD7` is visible. This prevents Fastlane's
+`get_certificates` step from silently minting a new certificate on a hosted
+runner. The lane still fetches and installs the App Store provisioning profile
+through the ASC API key.
+After upload, the generated `project.pbxproj` restore is verified; no signing
+material is added to the repository.
+
 ## Key storage
 
 - Device keypair: Ed25519 via CryptoKit (`Curve25519.Signing`). The Secure

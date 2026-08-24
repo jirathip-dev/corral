@@ -1003,30 +1003,45 @@ private final class DriveRequestGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var released = false
     private var cancelled = false
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
 
-    func wait() -> Bool {
-        condition.lock()
-        while !released && !cancelled {
-            condition.wait()
+    func wait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if cancelled {
+                condition.unlock()
+                continuation.resume(returning: false)
+            } else if released {
+                condition.unlock()
+                continuation.resume(returning: true)
+            } else {
+                waiters.append(continuation)
+                condition.unlock()
+            }
         }
-        let canRespond = !cancelled
-        condition.unlock()
-        return canRespond
     }
 
     func release() {
         condition.lock()
         released = true
-        condition.broadcast()
         condition.unlock()
+        resumeWaiters(returning: true)
     }
 
     func cancel() {
         condition.lock()
         cancelled = true
         released = true
-        condition.broadcast()
         condition.unlock()
+        resumeWaiters(returning: false)
+    }
+
+    private func resumeWaiters(returning result: Bool) {
+        condition.lock()
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        condition.unlock()
+        waiters.forEach { $0.resume(returning: result) }
     }
 }
 
@@ -1172,9 +1187,9 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     private static let scriptLock = NSLock()
     private static var scriptStorage: DeterministicDriveScript?
     private var activeScript: DeterministicDriveScript?
-    private let loadStateLock = NSLock()
+    private let deliveryQueue = DispatchQueue(
+        label: "FleetNotifierTests.DeterministicDriveURLProtocol.\(UUID().uuidString)")
     private var stopWasRecorded = false
-    private var loadWorkItem: DispatchWorkItem?
 
     static func setScript(_ script: DeterministicDriveScript) {
         scriptLock.lock()
@@ -1209,50 +1224,42 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
         }
         script.log.record(recordedRequest)
         let gate = script.gate(for: url.path)
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let canRespond = gate?.wait() ?? true
-            if self.isStopped() {
-                script.log.completed.increment()
-                return
-            }
-            if canRespond {
-                let response = HTTPURLResponse(url: url, statusCode: 200,
-                                               httpVersion: "HTTP/1.1", headerFields: nil)!
-                client?.urlProtocol(self, didReceive: response,
-                                    cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: script.response(for: url.path))
-                client?.urlProtocolDidFinishLoading(self)
+        Task { [self] in
+            let canRespond: Bool
+            if let gate {
+                canRespond = await gate.wait()
             } else {
-                client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+                canRespond = true
             }
-            script.log.completed.increment()
+            deliveryQueue.async {
+                if canRespond, !self.stopWasRecorded {
+                    let response = HTTPURLResponse(url: url, statusCode: 200,
+                                                   httpVersion: "HTTP/1.1",
+                                                   headerFields: nil)!
+                    self.client?.urlProtocol(self, didReceive: response,
+                                             cacheStoragePolicy: .notAllowed)
+                    self.client?.urlProtocol(self, didLoad: script.response(for: url.path))
+                    self.client?.urlProtocolDidFinishLoading(self)
+                } else {
+                    self.client?.urlProtocol(self,
+                                             didFailWithError: URLError(.cancelled))
+                }
+                script.log.completed.increment()
+            }
         }
-        loadStateLock.lock()
-        loadWorkItem = workItem
-        loadStateLock.unlock()
-        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
 
     override func stopLoading() {
-        loadStateLock.lock()
-        guard !stopWasRecorded else { return }
-        stopWasRecorded = true
-        let workItem = loadWorkItem
-        loadWorkItem = nil
-        loadStateLock.unlock()
-        workItem?.cancel()
-        guard let script = activeScript,
-              let path = request.url?.path,
-              let gate = script.gate(for: path) else { return }
-        script.log.cancelled.increment()
-        gate.cancel()
-    }
-
-    private func isStopped() -> Bool {
-        loadStateLock.lock()
-        defer { loadStateLock.unlock() }
-        return stopWasRecorded
+        let script = activeScript
+        let path = request.url?.path
+        deliveryQueue.async {
+            guard !self.stopWasRecorded else { return }
+            self.stopWasRecorded = true
+            guard let script, let path,
+                  let gate = script.gate(for: path) else { return }
+            script.log.cancelled.increment()
+            gate.cancel()
+        }
     }
 }
 

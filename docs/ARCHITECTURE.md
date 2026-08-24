@@ -45,7 +45,8 @@ today, not a bug.
 
 ```
 herdr socket ── herdr adapter (push: events.subscribe + bounded catalog refresh)
-git worktrees ─ GitPlane (fsevents push + 10s parallel sweep safety net)
+git worktrees ─ GitPlane (fsevents push + 10s topology / 60s status safety net;
+              │  shared four-command git budget)
 GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: no polling
               │  until the first SSE client ever connects)
               ▼
@@ -91,6 +92,16 @@ closes or the pane is removed or recreated. Pane removal or replacement
 cancels that generation before a new one can attach; subscribe failures never
 trigger a global re-bootstrap. Dropping the client aborts the reader so a
 failed connection never leaks its descriptor (#105).
+
+GitPlane scheduling is bounded independently of the Herdr stream: every git
+subprocess, whether started by an fsevents debounce, a status sweep, or a
+registry rescan, must acquire one of four shared command permits. Registry
+rescans are serialized because their topology reconciliation also performs
+synchronous filesystem canonicalization. A queued git probe keeps its normal
+five-second child timeout and still reports an over-budget warning; the budget
+is backpressure, not a failure suppression or a revision reset. This keeps
+git-plane load from consuming the executor needed by the Herdr reader and
+leaves Store/SSE revisions owned solely by the existing coalescer.
 
 The gh plane also publishes the *repo-level* issue set it fetches into a
 read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's

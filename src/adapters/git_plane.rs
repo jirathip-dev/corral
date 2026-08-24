@@ -36,12 +36,20 @@
 //!
 //! ## Safety net (never the primary signal)
 //!
-//! A 60s `git status` sweep across all watched worktrees — one concurrent
-//! `git` subprocess per worktree — re-verifies head + status and emits only
-//! when something changed. The sweep also rescans the worktree registry
+//! A 60s `git status` sweep across all watched worktrees — up to four
+//! concurrent `git` subprocesses through the shared command budget —
+//! re-verifies head + status and emits only when something changed. The sweep
+//! also rescans the worktree registry
 //! (`git worktree list --porcelain`), so WorktreeAdded/WorktreeRemoved are
 //! still detected when fsevents missed them. The PRIMARY mechanism remains
 //! fsevents; the sweep is a documented catch-up only.
+//!
+//! All git subprocesses share a four-command admission budget, including
+//! fsevents-triggered probes and registry scans. Registry scans are serialized
+//! because topology reconciliation also performs synchronous filesystem
+//! canonicalization. A slow probe therefore queues behind bounded work rather
+//! than multiplying host load and starving unrelated async services; its
+//! timeout and over-budget diagnostic remain unchanged.
 //!
 //! ## Contract notes
 //!
@@ -61,6 +69,8 @@ use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,7 +78,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::core::events::{GitEvent, GitStatus, Plane, PlaneEvent, PlaneSink};
@@ -92,8 +102,18 @@ const STARTUP_RESCAN_DELAY: Duration = Duration::from_millis(500);
 const EVENT_BUDGET: Duration = Duration::from_millis(200);
 /// Upper bound on a single `git` subprocess.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Concurrent `git` subprocesses during the sweep (one per worktree, bounded).
-const MAX_CONCURRENT_PROBES: usize = 4;
+/// Maximum number of git subprocesses the plane may have in flight across
+/// *all* paths (fsevents probes, safety-net probes, and registry scans).
+///
+/// The sweep already used this as its stream width, but debounced fsevents
+/// probes were previously unbounded. Sharing one permit pool makes the event
+/// path obey the same backpressure contract as the sweep and prevents a burst
+/// of worktree changes from consuming the host's scheduler and I/O capacity.
+const MAX_CONCURRENT_GIT_COMMANDS: usize = 4;
+/// Concurrent probe tasks during the sweep. The shared command budget below
+/// is the final cap; keeping the stream width equal avoids building a large
+/// queue of sweep futures behind it.
+const MAX_CONCURRENT_PROBES: usize = MAX_CONCURRENT_GIT_COMMANDS;
 /// Throttle on fsevents-triggered registry rescans (which may discover a new
 /// commondir and create one fresh watcher).
 const RESCAN_THROTTLE_MILLIS: u64 = 1000;
@@ -128,6 +148,46 @@ static GIT_CALLS: AtomicU64 = AtomicU64::new(0);
 /// nothing outside the module can increment the counter unguarded).
 #[cfg(test)]
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Test-only load injection for the scheduler regression. The delay is held
+/// after command admission, so the test measures actual subprocess slots,
+/// not merely how many probe tasks were spawned.
+#[cfg(test)]
+static TEST_GIT_DELAY_MILLIS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_GIT_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_GIT_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+struct TestGitLoadGuard;
+
+#[cfg(test)]
+impl TestGitLoadGuard {
+    fn acquire() -> Self {
+        let current = TEST_GIT_IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut observed = TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst);
+        while current > observed {
+            match TEST_GIT_MAX_IN_FLIGHT.compare_exchange(
+                observed,
+                current,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(next) => observed = next,
+            }
+        }
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGitLoadGuard {
+    fn drop(&mut self) {
+        TEST_GIT_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -207,6 +267,13 @@ pub struct GitPlane {
     /// watched too.
     worktrees_root: PathBuf,
     state: Mutex<PlaneState>,
+    /// Shared admission control for every git subprocess in this plane.
+    /// Debounced event probes and sweep probes must not bypass one another.
+    git_command_budget: Arc<Semaphore>,
+    /// Registry scans perform synchronous filesystem canonicalization between
+    /// async git calls. Serialize them so startup/topology/event rescans do
+    /// not multiply that blocking work on the Tokio workers.
+    rescan_lock: AsyncMutex<()>,
     /// Millis of the last fsevents-triggered rescan (throttle).
     last_rescan: AtomicU64,
     /// One-shot retry of a registry rescan is scheduled (dedup).
@@ -241,6 +308,8 @@ impl GitPlane {
             repo_roots: canonical_roots,
             worktrees_root,
             state: Mutex::new(PlaneState::default()),
+            git_command_budget: Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+            rescan_lock: AsyncMutex::new(()),
             last_rescan: AtomicU64::new(0),
             retry_scheduled: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
@@ -630,6 +699,7 @@ impl GitPlane {
             return;
         }
         let plane = self.clone();
+        let git_command_budget = plane.git_command_budget.clone();
         tokio::spawn(async move {
             tokio::time::sleep(DEBOUNCE).await;
             {
@@ -648,8 +718,13 @@ impl GitPlane {
                     .map(|st| (st.commit.clone(), st.subject.clone()))
                     .unwrap_or_default()
             };
-            let probe =
-                probe_worktree(&wt, cached_commit.as_deref(), cached_subject.as_deref()).await;
+            let probe = probe_worktree(
+                &wt,
+                cached_commit.as_deref(),
+                cached_subject.as_deref(),
+                git_command_budget,
+            )
+            .await;
             plane.apply_probe(&wt, started, probe, &sink).await;
         });
     }
@@ -727,18 +802,24 @@ impl GitPlane {
                             .collect()
                     };
                     let sweep_started = Instant::now();
+                    let git_command_budget = self.git_command_budget.clone();
                     let mut probes = futures::stream::iter(worktrees)
-                        .map(|(wt, cached_commit, cached_subject)| async move {
-                            // Budget clock starts at probe start (the sweep
-                            // has no debounce) and measures through the emits.
-                            let started = Instant::now();
-                            let probe = probe_worktree(
-                                &wt,
-                                cached_commit.as_deref(),
-                                cached_subject.as_deref(),
-                            )
-                            .await;
-                            (wt, started, probe)
+                        .map(|(wt, cached_commit, cached_subject)| {
+                            let git_command_budget = git_command_budget.clone();
+                            async move {
+                                // Budget clock starts at probe start (the
+                                // sweep has no debounce) and measures through
+                                // the emits.
+                                let started = Instant::now();
+                                let probe = probe_worktree(
+                                    &wt,
+                                    cached_commit.as_deref(),
+                                    cached_subject.as_deref(),
+                                    git_command_budget,
+                                )
+                                .await;
+                                (wt, started, probe)
+                            }
                         })
                         .buffer_unordered(MAX_CONCURRENT_PROBES);
                     while let Some((wt, started, probe)) = probes.next().await {
@@ -863,7 +944,15 @@ impl GitPlane {
     /// gitdirs, the branch map and the per-repo commondir topology. Returns
     /// the added worktree paths.
     async fn rescan(&self, sink: &PlaneSink) -> Vec<PathBuf> {
-        let scan = self.scan_all_worktrees().await;
+        // `scan_all_worktrees` interleaves async git calls with synchronous
+        // filesystem enumeration/canonicalization. Keep one such scan in
+        // flight per plane: the command semaphore below limits subprocesses,
+        // while this lock prevents overlapping filesystem passes from still
+        // occupying every Tokio worker during a topology burst.
+        let scan = {
+            let _guard = self.rescan_lock.lock().await;
+            self.scan_all_worktrees().await
+        };
         let mut tracked: HashMap<PathBuf, WorktreeEntry> = HashMap::new();
         let mut skipped: HashSet<PathBuf> = HashSet::new();
         for entry in scan.entries {
@@ -998,9 +1087,13 @@ impl GitPlane {
         let mut result = ScanResult::default();
         let mut seen: HashSet<PathBuf> = HashSet::new();
         for source in sources {
-            let mut out = run_git(&source, &["worktree", "list", "--porcelain"])
-                .await
-                .ok();
+            let mut out = run_git(
+                self.git_command_budget.clone(),
+                &source,
+                &["worktree", "list", "--porcelain"],
+            )
+            .await
+            .ok();
             if out.is_none() {
                 // herdr containers are not repos; probe their worktree
                 // children until one answers.
@@ -1008,9 +1101,13 @@ impl GitPlane {
                     for entry in entries.flatten() {
                         let child = entry.path();
                         if child.is_dir() {
-                            out = run_git(&child, &["worktree", "list", "--porcelain"])
-                                .await
-                                .ok();
+                            out = run_git(
+                                self.git_command_budget.clone(),
+                                &child,
+                                &["worktree", "list", "--porcelain"],
+                            )
+                            .await
+                            .ok();
                             if out.is_some() {
                                 break;
                             }
@@ -1212,13 +1309,18 @@ async fn probe_worktree(
     wt: &Path,
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
+    git_command_budget: Arc<Semaphore>,
 ) -> Result<Probe, ProbeError> {
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
-    let status = run_git(wt, &["status", "--porcelain=v2", "--branch"])
-        .await
-        .map_err(ProbeError::Git)?;
+    let status = run_git(
+        git_command_budget.clone(),
+        wt,
+        &["status", "--porcelain=v2", "--branch"],
+    )
+    .await
+    .map_err(ProbeError::Git)?;
     let (branch, mut commit, status) = parse_status_v2(&status)?;
     let subject = if cached_commit == Some(commit.as_str()) {
         cached_subject.map(str::to_string)
@@ -1226,7 +1328,7 @@ async fn probe_worktree(
         // P4 G21: ONE invocation resolves both the head commit AND its
         // first-line subject when HEAD moved. The status probe already
         // carries `oid`, so no `rev-parse` is needed on the hot path.
-        let head = run_git(wt, &["log", "-1", "--format=%H%n%s"])
+        let head = run_git(git_command_budget, wt, &["log", "-1", "--format=%H%n%s"])
             .await
             .map_err(ProbeError::Git)?;
         let mut lines = head.lines();
@@ -1245,9 +1347,28 @@ async fn probe_worktree(
     })
 }
 
-async fn run_git(wt: &Path, args: &[&str]) -> Result<String, String> {
+async fn run_git(
+    git_command_budget: Arc<Semaphore>,
+    wt: &Path,
+    args: &[&str],
+) -> Result<String, String> {
     #[cfg(test)]
     GIT_CALLS.fetch_add(1, Ordering::Relaxed);
+    // The permit covers the complete child lifetime, including output
+    // collection and the timeout. A slow git process therefore occupies one
+    // bounded slot and cannot fan out into one process per changed worktree.
+    let _permit = git_command_budget
+        .acquire_owned()
+        .await
+        .map_err(|_| "git command budget closed".to_string())?;
+    #[cfg(test)]
+    let _test_load = TestGitLoadGuard::acquire();
+    #[cfg(test)]
+    if let Some(delay) = (TEST_GIT_DELAY_MILLIS.load(Ordering::Relaxed) > 0)
+        .then(|| Duration::from_millis(TEST_GIT_DELAY_MILLIS.load(Ordering::Relaxed)))
+    {
+        tokio::time::sleep(delay).await;
+    }
     let output = tokio::time::timeout(
         GIT_TIMEOUT,
         Command::new("git")
@@ -2137,6 +2258,139 @@ mod tests {
         (root, sha)
     }
 
+    struct TestGitDelayReset(u64);
+
+    impl TestGitDelayReset {
+        fn new(delay_ms: u64) -> Self {
+            let previous = TEST_GIT_DELAY_MILLIS.swap(delay_ms, Ordering::SeqCst);
+            TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
+            TEST_GIT_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
+            Self(previous)
+        }
+    }
+
+    impl Drop for TestGitDelayReset {
+        fn drop(&mut self) {
+            TEST_GIT_DELAY_MILLIS.store(self.0, Ordering::SeqCst);
+            TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
+        }
+    }
+
+    fn load_test_agent(seq: u64) -> crate::core::model::Agent {
+        crate::core::model::Agent {
+            agent_id: "herdr:git-load".to_string(),
+            source: "herdr".to_string(),
+            tool: "codex".to_string(),
+            state: crate::core::model::AgentState::Working,
+            reason: None,
+            seq,
+            ts: seq,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: Default::default(),
+            attachment: None,
+            display_name: None,
+            title: None,
+        }
+    }
+
+    /// #200 regression: a burst of debounced probes must share the sweep's
+    /// command budget. The old event path spawned one git command per
+    /// worktree, so this deterministic slow-git load observed more than four
+    /// children in flight and could starve the daemon's other async services.
+    /// The store subscriber below is the same broadcast path used by SSE; its
+    /// revisions must remain contiguous while the git burst is draining.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn high_volume_git_work_is_bounded_and_preserves_sse_revisions() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (repo, _) = scratch_repo("starvation");
+        let wts = repo.with_file_name(format!(
+            "{}-wts",
+            repo.file_name().unwrap().to_string_lossy()
+        ));
+        fs::create_dir_all(&wts).unwrap();
+        let plane = Arc::new(GitPlane::new(repo.clone(), wts.clone()));
+        let (sink, _rx) = crate::core::plane_channel();
+        plane.rescan(&sink).await;
+
+        let mut worktrees = vec![repo.clone()];
+        for i in 0..8 {
+            let worktree = wts.join(format!("wt-{i}"));
+            let branch = format!("load-{i}");
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["worktree", "add", "-b", branch.as_str()])
+                .arg(&worktree)
+                .output()
+                .expect("git worktree add runs");
+            assert!(
+                output.status.success(),
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            worktrees.push(worktree);
+        }
+        plane.rescan(&sink).await;
+
+        let _slow_git = TestGitDelayReset::new(80);
+        for worktree in &worktrees {
+            plane.debounce(worktree.clone(), sink.clone());
+        }
+
+        let store = crate::core::store::Store::new();
+        let mut sse = store.subscribe();
+        let writer_store = store.clone();
+        let writer = tokio::spawn(async move {
+            for seq in 1..=12 {
+                writer_store
+                    .apply(crate::core::model::Change::upsert(load_test_agent(seq)))
+                    .await;
+                assert!(writer_store.flush().await.is_some());
+            }
+        });
+
+        for expected_rev in 1..=12 {
+            let delta = tokio::time::timeout(Duration::from_secs(2), sse.recv())
+                .await
+                .expect("SSE delta remains live during git load")
+                .expect("SSE broadcast remains open");
+            assert_eq!(delta.rev, expected_rev, "SSE revisions stay monotonic");
+        }
+        writer.await.expect("synthetic Herdr writer completes");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let complete = {
+                let state = plane.state.lock().unwrap();
+                worktrees.iter().all(|worktree| {
+                    state
+                        .worktrees
+                        .get(worktree)
+                        .is_some_and(|state| state.commit.is_some() && state.status.is_some())
+                })
+            };
+            if complete {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "slow git probes did not converge within the test window"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst) <= MAX_CONCURRENT_GIT_COMMANDS,
+            "git command fan-out exceeded the shared budget: max_in_flight={}",
+            TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst)
+        );
+        let _ = fs::remove_dir_all(&wts);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
     #[tokio::test]
     async fn probe_returns_sha_and_first_line_subject_in_two_git_calls() {
         // F2: serialize against the other probe test — GIT_CALLS is shared.
@@ -2170,9 +2424,14 @@ mod tests {
             .to_string();
 
         let before = GIT_CALLS.load(Ordering::Relaxed);
-        let probe = probe_worktree(&root, None, None)
-            .await
-            .expect("probe succeeds");
+        let probe = probe_worktree(
+            &root,
+            None,
+            None,
+            Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+        )
+        .await
+        .expect("probe succeeds");
         let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
         assert_eq!(
             delta, 2,
@@ -2195,13 +2454,19 @@ mod tests {
     async fn probe_reuses_cached_subject_without_log_on_unchanged_head() {
         let _guard = PROBE_LOCK.lock().await;
         let (root, _) = scratch_repo("head-cache");
-        let first = probe_worktree(&root, None, None)
+        let budget = Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS));
+        let first = probe_worktree(&root, None, None, budget.clone())
             .await
             .expect("first probe");
         let before = GIT_CALLS.load(Ordering::Relaxed);
-        let second = probe_worktree(&root, Some(first.commit.as_str()), first.subject.as_deref())
-            .await
-            .expect("cached probe");
+        let second = probe_worktree(
+            &root,
+            Some(first.commit.as_str()),
+            first.subject.as_deref(),
+            budget,
+        )
+        .await
+        .expect("cached probe");
         let delta = GIT_CALLS.load(Ordering::Relaxed) - before;
         assert_eq!(delta, 1, "unchanged HEAD needs only one status call");
         assert_eq!(second, first);
@@ -2229,7 +2494,14 @@ mod tests {
             .expect("git subprocess runs");
         assert!(init.status.success());
         assert!(
-            probe_worktree(&root, None, None).await.is_err(),
+            probe_worktree(
+                &root,
+                None,
+                None,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+            )
+            .await
+            .is_err(),
             "unborn HEAD must fail the probe"
         );
         let _ = fs::remove_dir_all(&root);

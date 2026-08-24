@@ -114,6 +114,14 @@ key itself is never copied in (`*.p8` is gitignored). `fastlane/.env` was
 tracked in this repo until #26 untracked it; if you cloned before that, run
 `git rm --cached fastlane/.env` locally.
 
+From the repository root, invoke the local lane through the pinned root
+bundle:
+
+```sh
+BUNDLE_FROZEN=true bundle install
+bundle exec fastlane testflight
+```
+
 ### Manual TestFlight CI lane
 
 `.github/workflows/ios-testflight.yml` adds a committed CI surface for the
@@ -129,7 +137,7 @@ trigger. The dispatch exposes one required `mode` input that defaults to
 - `upload` — deliberate human upload. It is rejected (not silently skipped)
   unless dispatched from `main`, and only then reads the ASC secrets, installs
   the certificate/profile in runner-private paths, verifies the certificate
-  against ASC, and runs `fastlane testflight`.
+  against ASC, and runs `bundle exec fastlane testflight`.
 
 Repository secrets:
 
@@ -146,7 +154,7 @@ Repository secrets:
   the current one through the ASC API key.
 
 The workflow imports the optional `.p12` into a temporary signing keychain,
-then fails before `fastlane testflight` if no valid `Apple Distribution`
+then fails before `bundle exec fastlane testflight` if no valid `Apple Distribution`
 identity for the `ASC_TEAM_ID` team is visible. This makes the run fail before
 Fastlane's `get_certificates` step could mint a new certificate on a hosted
 runner; it also confirms the matching installed identity is registered in ASC

@@ -3260,17 +3260,20 @@ final class ConnectionFailureTests: XCTestCase {
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
         let store = FleetStore()
 
+        let errorSurfaced = expectation(description: "stream connection error reached FleetStore")
+        store.onConnectionError = { _ in errorSurfaced.fulfill() }
         store.connect(client: client)
         defer {
             store.disconnect()
             session.invalidateAndCancel()
         }
 
-        // The mock fails immediately; poll for the surfaced .error state.
-        let deadline = Date().addingTimeInterval(5)
-        while store.connectionState == .connecting, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 25_000_000)
-        }
+        // Suspend on the real callback instead of polling connectionState:
+        // noteConnectionError() sets .error before firing this hook, and a
+        // wall-clock main-actor poll can starve the callback's Task hop on a
+        // loaded runner. The 5s timeout keeps a missing callback a failing
+        // regression instead of an indefinite test.
+        await fulfillment(of: [errorSurfaced], timeout: 5)
 
         guard case .error(let message) = store.connectionState else {
             return XCTFail("connection failure must set .error, not \(store.connectionState)")
@@ -3293,16 +3296,15 @@ final class ConnectionFailureTests: XCTestCase {
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
         let store = FleetStore()
 
+        let errorSurfaced = expectation(description: "HTTP connection error reached FleetStore")
+        store.onConnectionError = { _ in errorSurfaced.fulfill() }
         store.connect(client: client)
         defer {
             store.disconnect()
             session.invalidateAndCancel()
         }
 
-        let deadline = Date().addingTimeInterval(5)
-        while store.connectionState == .connecting, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 25_000_000)
-        }
+        await fulfillment(of: [errorSurfaced], timeout: 5)
 
         guard case .error(let message) = store.connectionState else {
             return XCTFail("non-200 must surface .error, not \(store.connectionState)")
@@ -3327,6 +3329,8 @@ final class ConnectionFailureTests: XCTestCase {
         let client = CorraldClient(host: URL(string: "https://sse.test")!, session: session)
         let store = FleetStore()
 
+        let reconnected = expectation(description: "stream reconnected through FleetStore")
+        store.onConnected = { reconnected.fulfill() }
         store.connect(client: client)
         defer {
             store.disconnect()
@@ -3335,11 +3339,9 @@ final class ConnectionFailureTests: XCTestCase {
 
         // Request #1 fails → the store surfaces `.error`; the 1s backoff
         // retry then lands a 200 that MUST clear the stale error through
-        // the wiring. Poll (deadline 5s, ~25ms sleeps) until it does.
-        let deadline = Date().addingTimeInterval(5)
-        while store.connectionState != .connected, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 25_000_000)
-        }
+        // the wiring. Await the real onConnected hook instead of polling
+        // connectionState: noteConnected() sets .connected before firing it.
+        await fulfillment(of: [reconnected], timeout: 5)
 
         XCTAssertEqual(store.connectionState, .connected,
                        "the 200 on retry must clear the stale error via the real wiring")

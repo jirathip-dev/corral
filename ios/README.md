@@ -114,6 +114,48 @@ key itself is never copied in (`*.p8` is gitignored). `fastlane/.env` was
 tracked in this repo until #26 untracked it; if you cloned before that, run
 `git rm --cached fastlane/.env` locally.
 
+### Manual TestFlight CI lane
+
+`.github/workflows/ios-testflight.yml` adds a committed CI surface for the
+same lane. It is `workflow_dispatch` only and has **no** `pull_request`
+trigger. The dispatch exposes one required `mode` input that defaults to
+`validate`:
+
+- `validate` — secret-free preflight. It installs the pinned Fastlane gem from
+  the root `Gemfile` with Bundler, proves `spaceship` loads, parses the
+  `Fastfile`, checks that the Xcode project bundle is clean, and confirms no
+  credential-shaped file is tracked. It never contacts ASC, so a dispatch can
+  be green before any repository secret exists.
+- `upload` — deliberate human upload. It is rejected (not silently skipped)
+  unless dispatched from `main`, and only then reads the ASC secrets, installs
+  the certificate/profile in runner-private paths, verifies the certificate
+  against ASC, and runs `fastlane testflight`.
+
+Repository secrets:
+
+- `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY` — required. The workflow writes
+  `ASC_API_KEY` verbatim; it must be the **raw `.p8` PEM** (including
+  `BEGIN/END PRIVATE KEY`), not base64. The key is written to the gitignored
+  `fastlane/` path with mode `0600` and never written to `GITHUB_ENV` or the
+  logs.
+- `ASC_DISTRIBUTION_CERT_P12` — optional on a runner that already has the
+  Distribution cert installed; otherwise base64-encode the `.p12` here.
+- `ASC_DISTRIBUTION_CERT_PASSWORD` — required when that `.p12` is protected.
+- `ASC_PROVISIONING_PROFILE` — optional; base64-encode the App Store
+  `.mobileprovision` here if you want to install it before the lane fetches
+  the current one through the ASC API key.
+
+The workflow imports the optional `.p12` into a temporary signing keychain,
+then fails before `fastlane testflight` if no valid `Apple Distribution`
+identity for the `ASC_TEAM_ID` team is visible. This makes the run fail before
+Fastlane's `get_certificates` step could mint a new certificate on a hosted
+runner; it also confirms the matching installed identity is registered in ASC
+before the lane runs. The temporary keychain is passed explicitly to
+`get_certificates`. The lane still fetches and installs the App Store
+provisioning profile through the ASC API key. After upload, the entire
+`ios/FleetNotifier.xcodeproj` bundle is checked for restoration; no signing
+material is added to the repository.
+
 ## Key storage
 
 - Device keypair: Ed25519 via CryptoKit (`Curve25519.Signing`). The Secure

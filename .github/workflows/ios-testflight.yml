@@ -1,0 +1,240 @@
+name: iOS TestFlight
+
+on:
+  # Human-only lane. Fork PRs never receive ASC credentials, and a TestFlight
+  # upload is the same human-gated release step as the staging -> main /
+  # release train. The default dispatch mode is a secret-free preflight so a
+  # workflow_dispatch run can prove the configuration even before secrets
+  # are configured.
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          validate runs a secret-free preflight; upload is the deliberate,
+          main-only TestFlight upload
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - upload
+
+concurrency:
+  group: corral-ios-testflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    name: Validate or upload TestFlight build
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      ASC_TEAM_ID: 9244PWFYD7
+      CI: "true"
+      FASTLANE_SKIP_UPDATE_CHECK: "true"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Reject unsupported dispatch mode
+        if: inputs.mode != 'validate' && inputs.mode != 'upload'
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          echo "::error::Unsupported workflow_dispatch mode '${MODE}'; choose validate or upload."
+          exit 1
+
+      - name: Require main for upload
+        if: inputs.mode == 'upload' && github.ref != 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          echo "::error::upload mode must be dispatched from main, not '$GITHUB_REF_NAME'."
+          exit 1
+
+      - name: Install declared Fastlane dependencies
+        run: |
+          set -euo pipefail
+          export BUNDLE_PATH="$RUNNER_TEMP/vendor/bundle"
+          echo "BUNDLE_PATH=$BUNDLE_PATH" >> "$GITHUB_ENV"
+          bundle install --jobs 4 --retry 3
+          bundle exec fastlane --version
+          bundle exec ruby -e 'require "spaceship"; puts "spaceship dependency available"'
+
+      - name: Validate Fastlane configuration and repo state
+        if: inputs.mode == 'validate'
+        run: |
+          set -euo pipefail
+          workflow=".github/workflows/ios-testflight.yml"
+
+          ruby -ryaml -e 'YAML.load_file(ARGV.fetch(0))' "$workflow"
+          if grep -Eq '^[[:space:]]*pull_request[[:space:]]*:' "$workflow"; then
+            echo "::error::ios-testflight.yml must not have a pull_request trigger."
+            exit 1
+          fi
+          grep -Eq '^[[:space:]]*workflow_dispatch[[:space:]]*:' "$workflow"
+          grep -Eq '^[[:space:]]*default:[[:space:]]*validate[[:space:]]*$' "$workflow"
+
+          ruby -c fastlane/Fastfile >/dev/null
+          grep -q '^gem "fastlane"' Gemfile
+          test -f ios/FleetNotifier.xcodeproj/project.pbxproj
+          test -f ios/FleetNotifier.xcodeproj/project.xcworkspace/contents.xcworkspacedata
+
+          if ! git diff --quiet -- ios/FleetNotifier.xcodeproj; then
+            echo "::error::Xcode project bundle has tracked changes after validation."
+            git diff --stat -- ios/FleetNotifier.xcodeproj
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- ios/FleetNotifier.xcodeproj)" ]; then
+            echo "::error::Xcode project bundle has untracked or uncommitted changes."
+            git status --short -- ios/FleetNotifier.xcodeproj
+            exit 1
+          fi
+
+          if git ls-files | grep -Eq '\.(p8|p12|mobileprovision|cer)$|^fastlane/\.env$'; then
+            echo "::error::Credentials or signing material are tracked in the git index."
+            exit 1
+          fi
+
+          bundle exec fastlane lanes >/dev/null
+          echo "::notice::validate mode passed: triggers, Fastfile, declared Fastlane dependency, and the Xcode project bundle are valid."
+
+      - name: Prepare ASC key and distribution certificate
+        if: inputs.mode == 'upload' && github.ref == 'refs/heads/main'
+        env:
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_DISTRIBUTION_CERT_P12: ${{ secrets.ASC_DISTRIBUTION_CERT_P12 }}
+          ASC_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.ASC_DISTRIBUTION_CERT_PASSWORD }}
+          ASC_PROVISIONING_PROFILE: ${{ secrets.ASC_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+
+          : "${ASC_KEY_ID:?ASC_KEY_ID repository secret is required}"
+          : "${ASC_ISSUER_ID:?ASC_ISSUER_ID repository secret is required}"
+          : "${ASC_API_KEY:?ASC_API_KEY repository secret is required}"
+
+          # The lane resolves ASC_KEY_PATH by basename into fastlane/, so place
+          # the raw PEM there. It is gitignored and never written to
+          # GITHUB_ENV or echoed.
+          umask 077
+          key_path="$GITHUB_WORKSPACE/fastlane/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_API_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          {
+            echo "ASC_KEY_PATH=$key_path"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+          if [ -n "$ASC_DISTRIBUTION_CERT_P12" ]; then
+            cert_path="$RUNNER_TEMP/asc-distribution.p12"
+            printf '%s' "$ASC_DISTRIBUTION_CERT_P12" | base64 --decode > "$cert_path"
+            chmod 600 "$cert_path"
+
+            # Ephemeral keychain with a known password so codesign does not
+            # prompt on the headless runner. Make it the search-list head so
+            # get_certificates reuses the installed identity instead of
+            # creating one.
+            keychain_password="$(openssl rand -hex 24)"
+            keychain_path="$RUNNER_TEMP/asc-signing.keychain-db"
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            cert_password="${ASC_DISTRIBUTION_CERT_PASSWORD:-}"
+            security import "$cert_path" \
+              -k "$keychain_path" -f pkcs12 -P "$cert_password" \
+              -T /usr/bin/codesign
+            security set-key-partition-list \
+              -S apple-tool:,apple:,codesign: -s \
+              -k "$keychain_password" "$keychain_path"
+            default_keychain="$(security default-keychain -d user | tr -d '"' | sed 's/^[[:space:]]*//')"
+            security list-keychains -d user -s "$keychain_path" "$default_keychain"
+            echo "CERT_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ASC_DISTRIBUTION_CERT_P12 not set; expecting an Apple Distribution identity already installed on this runner"
+          fi
+
+          if [ -n "$ASC_PROVISIONING_PROFILE" ]; then
+            profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+            mkdir -p "$profiles_dir"
+            profile_path="$profiles_dir/Corral.mobileprovision"
+            printf '%s' "$ASC_PROVISIONING_PROFILE" | base64 --decode > "$profile_path"
+            chmod 600 "$profile_path"
+          fi
+
+          # Fail before the lane unless the exact team identity is installed,
+          # so get_certificates cannot mint a new Distribution certificate on
+          # CI. The team comes from ASC_TEAM_ID, not a duplicated literal.
+          identities="$(security find-identity -v -p codesigning 2>&1 || true)"
+          if ! printf '%s\n' "$identities" | grep -q "Apple Distribution:.*(${ASC_TEAM_ID})"; then
+            echo "::error::No valid Apple Distribution identity for team ${ASC_TEAM_ID} found on the runner. Set ASC_DISTRIBUTION_CERT_P12 and ASC_DISTRIBUTION_CERT_PASSWORD secrets, or use a runner image with the identity installed."
+            exit 1
+          fi
+
+      - name: Verify Distribution certificate is registered in ASC
+        if: inputs.mode == 'upload' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/verify-asc-cert.rb" <<'RUBY'
+          require "spaceship"
+          require "digest"
+          require "base64"
+          require "time"
+
+          team_id = ENV.fetch("ASC_TEAM_ID")
+          key_path = ENV.fetch("ASC_KEY_PATH")
+          token = Spaceship::ConnectAPI::Token.create(
+            key_id: ENV.fetch("ASC_KEY_ID"),
+            issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+            key: File.binread(key_path)
+          )
+          Spaceship::ConnectAPI.token = token
+
+          certificates = Spaceship::ConnectAPI::Certificate.all
+          asc_shas = certificates.select do |cert|
+            cert.valid? && ["DISTRIBUTION", "IOS_DISTRIBUTION"].include?(cert.certificate_type)
+          end.map do |cert|
+            Digest::SHA1.hexdigest(Base64.decode64(cert.certificate_content.to_s)).upcase
+          end
+
+          local_shas = `security find-identity -v -p codesigning 2>&1`
+            .lines
+            .select do |line|
+              line.include?("Apple Distribution:") &&
+                line.include?("(#{Regexp.escape(team_id)})")
+            end
+            .flat_map { |line| line.scan(/\b([0-9A-Fa-f]{40})\b/).flatten }
+            .map(&:upcase)
+          unless (local_shas & asc_shas).any?
+            STDERR.puts "::error::Installed Apple Distribution identity for team #{team_id} is not registered on ASC. Export the account's existing certificate as ASC_DISTRIBUTION_CERT_P12."
+            exit 1
+          end
+          RUBY
+          bundle exec ruby "$RUNNER_TEMP/verify-asc-cert.rb"
+
+      - name: Run fastlane testflight
+        if: inputs.mode == 'upload' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          bundle exec fastlane testflight
+
+      - name: Confirm checked-in Xcode project was restored
+        if: always()
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- ios/FleetNotifier.xcodeproj; then
+            echo "::error::Xcode project bundle was not restored."
+            git diff --stat -- ios/FleetNotifier.xcodeproj
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- ios/FleetNotifier.xcodeproj)" ]; then
+            echo "::error::Xcode project bundle contains untracked or uncommitted changes."
+            git status --short -- ios/FleetNotifier.xcodeproj
+            exit 1
+          fi
+          echo "Xcode project bundle restored after the run."

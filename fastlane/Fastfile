@@ -105,7 +105,11 @@ lane :testflight do
   # Local cert reuse: get_certificates finds the already-installed
   # 'Apple Distribution: <NAME> (9244PWFYD7)' and uses it —
   # never mints a new one on this laptop.
-  get_certificates(api_key: key, output_path: "fastlane/certs")
+  get_certificates(
+    api_key: key,
+    output_path: "fastlane/certs",
+    keychain_path: ENV["CERT_KEYCHAIN_PATH"]
+  )
 
   # App Store provisioning profile for the single app target, forced so it
   # carries the current distribution cert. sigh also INSTALLS it locally,

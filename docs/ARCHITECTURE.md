@@ -214,6 +214,9 @@ signed envelope {key_id, signature,       POST /drive
 - Trusted catalog reconciliation is the second eviction rule: a stored herdr
   session absent from the fresh `agent.list` is evicted and tombstoned even
   when its old pane is still listed without a session id.
+  A single session-less view is debounced to protect a live lane: the previous
+  explicit id survives one omitted `agent_session`, and only two consecutive
+  session-less catalog refreshes corroborate the demotion.
 
 ## Capabilities
 

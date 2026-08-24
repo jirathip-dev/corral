@@ -214,7 +214,9 @@ clients.
   retried on the next tick, and unchanged catalogs are no-ops that do not
   publish a new snapshot rev. The reconciliation also evicts stored herdr
   sessions that are absent from that fresh catalog, leaving the same
-  refreshable stale tombstone as pane retirement. The gh plane is
+  refreshable stale tombstone as pane retirement. A session-less catalog view
+  is debounced: one omitted `agent_session` keeps a live pane's explicit id,
+  and demotion requires two consecutive corroborating refreshes. The gh plane is
   poll-by-design (one GraphQL round-trip per poll, SWR); the git plane is
   fsevents push with one immutable watcher per commondir and a 10s sweep
   safety net.

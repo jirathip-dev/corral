@@ -100,6 +100,11 @@ const RECONNECT_RESET_AFTER: Duration = Duration::from_secs(2);
 /// connected but stops delivering events; the interval is short enough to
 /// satisfy the catalog freshness target while remaining far below a hot loop.
 const CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// A listed pane must be seen without `agent_session` this many consecutive
+/// trusted catalog refreshes before an explicit session id is demoted to the
+/// pane-derived fallback. One refresh can omit the optional field transiently;
+/// demoting immediately would re-identify, tombstone, and 409 a live agent.
+const SESSIONLESS_DEMOTION_REFRESHES: usize = 2;
 /// Pane event streams use a longer initial delay so a single unhealthy pane
 /// cannot compete with the global stream for the herdr socket.
 const PANE_RETRY_BASE: Duration = Duration::from_secs(2);
@@ -749,6 +754,10 @@ struct SessionState {
     /// pane.updated event below the last seen value must not overwrite a
     /// fresher `agent.list` state.
     status_seqs: HashMap<String, u64>,
+    /// Consecutive successful catalog refreshes that listed each pane without
+    /// an explicit session. Cleared by an explicit session, a demotion, or a
+    /// pane disappearing from the trusted list.
+    catalog_sessionless_refreshes: HashMap<String, usize>,
     /// panes with a dedicated event stream
     subscribed_panes: HashSet<String>,
     /// Cancellation handles for dedicated pane stream tasks. A pane can be
@@ -862,17 +871,36 @@ impl SessionState {
 
     /// Resolve the canonical identity for a trusted `agent.list` entry.
     ///
-    /// Unlike event/fallback resolution, a listed pane without a session id
-    /// must not reuse a previous explicit session id. Doing so would keep a
-    /// superseded id in `present_agents`, making the catalog eviction pass
-    /// believe that the dead session is still live and refresh it forever.
-    /// A session id wins when present; otherwise the pane-derived fallback is
-    /// authoritative for this refresh.
-    fn resolve_catalog_agent_id(pane_id: &str, session_value: Option<&str>) -> String {
+    /// An explicit session wins immediately and clears the debounce. A listed
+    /// pane without a session keeps its previous explicit id on the first such
+    /// refresh so one omitted optional field cannot re-identify or tombstone a
+    /// live agent. Only after [`SESSIONLESS_DEMOTION_REFRESHES`] consecutive
+    /// session-less catalog views is the pane-derived fallback authoritative,
+    /// which still evicts a superseded id within a couple refresh cycles.
+    fn resolve_catalog_agent_id(&mut self, pane_id: &str, session_value: Option<&str>) -> String {
         if let Some(v) = session_value.filter(|v| !v.is_empty()) {
-            format!("herdr:{v}")
+            self.catalog_sessionless_refreshes.remove(pane_id);
+            return format!("herdr:{v}");
+        }
+        let fallback = format!("herdr:pane:{pane_id}");
+        let Some(previous) = self.pane_agents.get(pane_id).cloned() else {
+            self.catalog_sessionless_refreshes.remove(pane_id);
+            return fallback;
+        };
+        if previous == fallback {
+            self.catalog_sessionless_refreshes.remove(pane_id);
+            return fallback;
+        }
+        let count = self
+            .catalog_sessionless_refreshes
+            .entry(pane_id.to_string())
+            .or_default();
+        *count += 1;
+        if *count >= SESSIONLESS_DEMOTION_REFRESHES {
+            self.catalog_sessionless_refreshes.remove(pane_id);
+            fallback
         } else {
-            format!("herdr:pane:{pane_id}")
+            previous
         }
     }
 
@@ -1294,7 +1322,7 @@ impl HerdrAdapter {
                         .and_then(|session| session.value.as_deref());
                     (
                         agent.pane_id.clone(),
-                        SessionState::resolve_catalog_agent_id(&agent.pane_id, session),
+                        state.resolve_catalog_agent_id(&agent.pane_id, session),
                         agent.state_change_seq,
                     )
                 })
@@ -1303,6 +1331,9 @@ impl HerdrAdapter {
                 .iter()
                 .map(|(pane_id, _, _)| pane_id.clone())
                 .collect();
+            state
+                .catalog_sessionless_refreshes
+                .retain(|pane_id, _| present_panes.contains(pane_id));
             let present_agents: HashSet<String> = present
                 .iter()
                 .map(|(_, agent_id, _)| agent_id.clone())
@@ -1403,12 +1434,12 @@ impl HerdrAdapter {
         }
         // A superseded session can otherwise stay reachable through
         // `pane_agents` when the trusted list reports the old pane without its
-        // session while the replacement appears on another pane. Compare every
-        // stored herdr row against that fresh catalog after pane migration, so
-        // the old id is evicted and tombstoned in the same refresh that inserts
-        // its replacement. `remove_if_unmapped` remains the fail-closed guard:
-        // a row with a live adapter mapping is never pruned by an incomplete or
-        // racing catalog view.
+        // session while the replacement appears on another pane. The catalog
+        // resolver debounces that optional omission, then this compare against
+        // the fresh catalog evicts and tombstones the old id after the
+        // corroborating refresh. `remove_if_unmapped` remains the fail-closed
+        // guard: a row with a live adapter mapping is never pruned by an
+        // incomplete or racing catalog view.
         let catalog_evictions = store
             .matching(|agent| {
                 agent.source == "herdr" && !plan.live_agent_ids.contains(&agent.agent_id)
@@ -5842,10 +5873,10 @@ mod review_tests {
     async fn catalog_reconcile_evicts_superseded_session_from_sessionless_pane() {
         // #178 reachable single-adapter shape: a re-arm leaves the old pane in
         // agent.list without its explicit session while the replacement runs on
-        // another pane. Reusing the previous session id for that session-less
-        // pane would keep the dead id in `live_agent_ids` and refresh it
-        // forever; the catalog resolve must migrate to the pane fallback so the
-        // same refresh can evict and tombstone the old id.
+        // another pane. One session-less view is debounced so a transient
+        // omission cannot hit a live pane; the second consecutive view
+        // corroborates the old id is gone and migrates to the pane fallback,
+        // letting the same refresh evict and tombstone it.
         let temp = tempfile::tempdir().expect("tempdir");
         let primary = temp.path().join("corral");
         let worktrees = temp.path().join("worktrees");
@@ -5909,14 +5940,34 @@ mod review_tests {
             }
         ] }))
         .unwrap();
+        let fallback = "herdr:pane:w-g178-old:p1";
         adapter.reconcile_against_list(&refreshed, &store).await;
 
+        let debounced = store.snapshot().await;
+        assert!(
+            debounced.agents.contains_key(old_id),
+            "one session-less refresh must not demote an explicit session"
+        );
+        assert!(
+            !debounced.agents.contains_key(fallback),
+            "debounce must not create a duplicate fallback row"
+        );
+        assert!(
+            !adapter.is_stale_agent(old_id),
+            "debounce must not tombstone the still-live id"
+        );
+        assert!(
+            adapter.drive_target(old_id).is_ok(),
+            "debounce must keep the drive plane dispatchable"
+        );
+        assert_eq!(debounced.agents.len(), 2);
+
+        adapter.reconcile_against_list(&refreshed, &store).await;
         let snapshot = store.snapshot().await;
         assert!(
             !snapshot.agents.contains_key(old_id),
-            "a superseded session must be evicted in one refresh"
+            "a superseded session must be evicted after corroborating refetches"
         );
-        let fallback = "herdr:pane:w-g178-old:p1";
         let old_catalog_row = snapshot
             .agents
             .get(fallback)
@@ -5955,6 +6006,77 @@ mod review_tests {
         assert!(
             matches!(adapter.drive_target(old_id), Err(DriveError::StaleAgent(id)) if id == old_id),
             "a late drive on the evicted id must be a refreshable 409, not 404"
+        );
+        // The migration itself tombstones the old id here; the sweep's own
+        // orphan-row tombstone is pinned by the next test.
+    }
+
+    #[tokio::test]
+    async fn catalog_sessionless_refresh_keeps_live_session_identity() {
+        // NR1: a listed live pane may omit agent_session on one refresh. The
+        // debounce must keep its explicit id, mapping, drive target and store
+        // rev stable instead of demoting to `herdr:pane:<pane>` and returning
+        // 409 for a working agent.
+        let store = Store::new();
+        let adapter = adapter();
+        let initial: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "codex",
+            "agent_session": {"agent": "codex", "kind": "id",
+                "source": "herdr:codex", "value": "ses-live"},
+            "agent_status": "working",
+            "state_change_seq": 40,
+            "name": "impl-g178-live",
+            "pane_id": "w-live:p1",
+            "foreground_cwd": "/tmp/corral-g178-live",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&initial, &store).await;
+
+        let before = store.snapshot().await;
+        assert!(before.agents.contains_key("herdr:ses-live"));
+        assert!(!before.agents.contains_key("herdr:pane:w-live:p1"));
+        let rev_before = before.rev;
+
+        let sessionless: AgentListWire = serde_json::from_value(json!({ "agents": [{
+            "agent": "codex",
+            "agent_status": "working",
+            "state_change_seq": 40,
+            "name": "impl-g178-live",
+            "pane_id": "w-live:p1",
+            "foreground_cwd": "/tmp/corral-g178-live",
+            "state_labels": {}
+        }] }))
+        .unwrap();
+        adapter.reconcile_against_list(&sessionless, &store).await;
+
+        let mid = store.snapshot().await;
+        assert!(
+            mid.agents.contains_key("herdr:ses-live"),
+            "one omitted session field must not demote a live agent"
+        );
+        assert!(
+            !mid.agents.contains_key("herdr:pane:w-live:p1"),
+            "a live agent must not be duplicated under the pane fallback"
+        );
+        assert!(
+            !adapter.is_stale_agent("herdr:ses-live"),
+            "a live agent must not be tombstoned by an omitted field"
+        );
+        assert!(
+            matches!(
+                adapter.drive_target("herdr:ses-live"),
+                Ok(target) if target == "impl-g178-live"
+            ),
+            "the live drive plane must stay dispatchable"
+        );
+        assert!(
+            !adapter.remove_if_unmapped(&store, "herdr:ses-live").await,
+            "the still-live mapping must never be evicted"
+        );
+        assert_eq!(
+            mid.rev, rev_before,
+            "a session-less no-op refresh must not republish the live row"
         );
     }
 

@@ -45,6 +45,10 @@ const BOARD_COLUMNS: [(&str, f32); 9] = [
 /// unusually long; the marker segment is bounded to the remaining width.
 const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 
+/// Widest `State · relative age` label on a master card. The text truncates
+/// inside this box, so an extreme day count cannot push past the card edge.
+const CARD_AGE_MAX_WIDTH: f32 = 140.0;
+
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
@@ -753,11 +757,17 @@ fn master_card_with_response(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.label(
-                                        RichText::new(state_time)
-                                            .small()
-                                            .monospace()
-                                            .color(theme::ui::TEXT_MUTED),
+                                    let age_width =
+                                        (ui.available_width() - 6.0).min(CARD_AGE_MAX_WIDTH);
+                                    ui.add_sized(
+                                        [age_width, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(state_time)
+                                                .small()
+                                                .monospace()
+                                                .color(theme::ui::TEXT_MUTED),
+                                        )
+                                        .truncate(),
                                     );
                                 },
                             );
@@ -2292,6 +2302,48 @@ mod tests {
             Some("herdr:cards"),
             "clicking a Cards master card selects it"
         );
+    }
+
+    #[test]
+    fn master_card_age_label_stays_inside_narrow_card() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:long-age".into();
+        agent.display_name = Some("long age card".into());
+        agent.ts = 1;
+        let now = u64::MAX;
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+
+        let narrow = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260.0, 800.0));
+        let input = egui::RawInput {
+            screen_rect: Some(narrow),
+            ..Default::default()
+        };
+        let mut card_rect = None;
+        let mut output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            ui.set_max_width(narrow.width());
+            if let Some((_, response)) =
+                master_card_with_response(ui, &fleet, &agent.agent_id, false, now)
+            {
+                card_rect = Some(response.rect);
+            }
+        });
+        let card_rect = card_rect.expect("master card rendered");
+        let age = format!("Working · {}", crate::model::relative_age(agent.ts, now));
+        let age_rect = text_rect(&output, &age).expect("master card age label rendered");
+        assert!(
+            age_rect.width() <= CARD_AGE_MAX_WIDTH + 0.01,
+            "age label width {} exceeds its {} bound",
+            age_rect.width(),
+            CARD_AGE_MAX_WIDTH
+        );
+        assert!(
+            age_rect.left() >= card_rect.left() && age_rect.right() <= card_rect.right(),
+            "age label {age_rect:?} overflows card {card_rect:?}"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]

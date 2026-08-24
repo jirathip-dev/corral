@@ -13,11 +13,22 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   request timeout (a total deadline severed the stream every 60s); each
   chunk read has a 45s deadline — 3x the daemon's 15s keepalive cadence —
   so a genuinely dead socket still forces a reconnect.
+- **Master/detail board** — a ~40/60 split. The left pane searches repo /
+  branch / title / issue and filters with contract-state chips (All · Needs
+  you · Review · Working · Idle); Cards default to a flat attention-ranked
+  list with `State · relative age` per card and one collapsed `Idle (N)`
+  tail, while the Table keeps its grouped-by-repo default. Empty state
+  buckets never render, and a no-match query reports once in the active
+  view. The right pane owns the selected agent's detail, drive controls,
+  full waiting claim, Recent output, and transcript.
+- **Cards | Table** — cards are the default view. The exact nine-column
+  conformance table (drop DRIVE, narrow WAITING ON) remains reachable from
+  the toolbar; full drive controls stay in the selected detail pane.
 - **Dark-dashboard theme pass** — custom `egui::Visuals` (charcoal canvas
   `#0d1117`, teal accent, distinct hues for the four agent states and the
   four waiting-on kind badges: approve-tool / question / menu / crash).
-- **Topology + PR/CI columns** — repo / branch / dirty / ahead-behind /
-  PR / CI per agent, worktree detail on row expand.
+- **Topology + PR/CI factors** — repo / branch / dirty / ahead-behind / PR /
+  CI render in the Cards detail pane and in the exact Table columns.
 - **Signed drive** — device Ed25519 keypair generated on first run,
   stored in the OS keychain (macOS Keychain / Linux kernel keyring via
   `keyring`); 0600 file fallback with a startup warning banner.
@@ -60,6 +71,9 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   lists every fleet's repo, local path, orchestrator, workers, pause state,
   and model map including `reasoning_effort`; parse/transport failures render
   prominently with a manual refresh.
+- **Issues tab** — the repo-level `GET /issues` browser moved out of Board
+  into its own top-level tab, keeping the issue-linked and issue-free
+  worktree actions alongside the board's other tabs.
 
 ## Build + run
 
@@ -142,7 +156,8 @@ src/
   keys.rs      keypair generation/storage (keychain + 0600 fallback)
   theme.rs     dark-dashboard palette (the only place colors live)
   state.rs     fleet cache, grant ledger, toasts, config records
-  ui/          board (fleet), audit, registry, register/settings
+  ui/          board (master/detail + cards/table), issues, audit,
+               registry, register/settings
 tests/
   conformance.rs  in-process conformance vs the daemon's own seams
   live.rs         #[ignore] live probe against a real corrald

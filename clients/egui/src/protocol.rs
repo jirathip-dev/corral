@@ -134,7 +134,7 @@ pub async fn fetch_snapshot(client: &reqwest::Client, base_url: &str) -> Result<
 /// same set the worktree action validates a selected issue against. The
 /// response is `{ "repos": { repo: [GhIssueRef...] } }`; older daemons
 /// without the endpoint return an error, which the UI surfaces politely
-/// (the board still renders from agent-joined issues).
+/// (the Board still renders per-agent issues from the snapshot).
 pub async fn fetch_issues(
     client: &reqwest::Client,
     base_url: &str,

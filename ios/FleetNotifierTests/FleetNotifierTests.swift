@@ -3206,16 +3206,15 @@ private final class ConnectionDeliveryProbe: @unchecked Sendable {
         landed.assertForOverFulfill = false
     }
 
-    var didStart: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return startRecorded
+    struct Status: Sendable {
+        let didStart: Bool
+        let didLand: Bool
     }
 
-    var didLand: Bool {
+    var status: Status {
         lock.lock()
         defer { lock.unlock() }
-        return landRecorded
+        return Status(didStart: startRecorded, didLand: landRecorded)
     }
 
     func markStarted() {
@@ -3362,22 +3361,24 @@ final class ConnectionFailureTests: XCTestCase {
     /// URLSession seam. This is deliberately not lengthened: #179 observed a
     /// hosted runner miss that chain entirely, so the deadline exists to name
     /// which stage stalled, not to hide slow scheduling behind a longer wait.
-    // XCTest's async fulfillment inherits its caller's executor, so a
-    // MainActor test would keep this wait on MainActor and starve the
-    // FleetStore hop. These async tests are nonisolated for exactly that
-    // reason; store reads/mutations hop back explicitly.
+    // Keep the waiter nonisolated so XCTest can suspend it independently of
+    // the store's actor. The tests still await the real URLProtocol start and
+    // FleetStore callback before reading the MainActor state.
     nonisolated private func awaitConnectionDelivery(
         probe: ConnectionDeliveryProbe,
-        neverStarted: String,
-        neverLanded: String
+        neverStarted: @Sendable () -> String,
+        neverLanded: @Sendable () -> String,
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async -> Bool {
         await fulfillment(of: [probe.started, probe.landed], timeout: 5)
-        guard probe.didStart else {
-            XCTFail(neverStarted)
+        let status = probe.status
+        guard status.didStart else {
+            XCTFail(neverStarted(), file: file, line: line)
             return false
         }
-        guard probe.didLand else {
-            XCTFail(neverLanded)
+        guard status.didLand else {
+            XCTFail(neverLanded(), file: file, line: line)
             return false
         }
         return true
@@ -3398,18 +3399,21 @@ final class ConnectionFailureTests: XCTestCase {
             store.onConnectionError = { _ in delivery.markLanded() }
             store.connect(client: client)
         }
-        defer {
+        addTeardownBlock {
+            let streamTask = await MainActor.run { store.disconnect() }
             FailingStreamURLProtocol.clearStartHandler()
             session.invalidateAndCancel()
-        }
-        addTeardownBlock {
-            await MainActor.run { store.disconnect() }
+            if let streamTask { await streamTask.value }
         }
 
         guard await awaitConnectionDelivery(
             probe: delivery,
-            neverStarted: "URLSession never invoked FailingStreamURLProtocol.startLoading() within the 5s delivery bound",
-            neverLanded: "FailingStreamURLProtocol.startLoading() ran, but the stream failure never reached FleetStore within the 5s delivery bound"
+            neverStarted: {
+                "URLSession never invoked FailingStreamURLProtocol.startLoading() within the 5s delivery bound"
+            },
+            neverLanded: {
+                "FailingStreamURLProtocol.startLoading() ran, but the stream failure never reached FleetStore within the 5s delivery bound"
+            }
         ) else { return }
 
         let state = await MainActor.run { store.connectionState }
@@ -3442,18 +3446,21 @@ final class ConnectionFailureTests: XCTestCase {
             store.onConnectionError = { _ in delivery.markLanded() }
             store.connect(client: client)
         }
-        defer {
+        addTeardownBlock {
+            let streamTask = await MainActor.run { store.disconnect() }
             Non200StreamURLProtocol.clearStartHandler()
             session.invalidateAndCancel()
-        }
-        addTeardownBlock {
-            await MainActor.run { store.disconnect() }
+            if let streamTask { await streamTask.value }
         }
 
         guard await awaitConnectionDelivery(
             probe: delivery,
-            neverStarted: "URLSession never invoked Non200StreamURLProtocol.startLoading() within the 5s delivery bound",
-            neverLanded: "Non200StreamURLProtocol.startLoading() ran, but the HTTP failure never reached FleetStore within the 5s delivery bound"
+            neverStarted: {
+                "URLSession never invoked Non200StreamURLProtocol.startLoading() within the 5s delivery bound"
+            },
+            neverLanded: {
+                "Non200StreamURLProtocol.startLoading() ran, but the HTTP failure never reached FleetStore within the 5s delivery bound"
+            }
         ) else { return }
 
         let state = await MainActor.run { store.connectionState }
@@ -3488,12 +3495,11 @@ final class ConnectionFailureTests: XCTestCase {
             store.onConnected = { delivery.markLanded() }
             store.connect(client: client)
         }
-        defer {
+        addTeardownBlock {
+            let streamTask = await MainActor.run { store.disconnect() }
             ReconnectStreamURLProtocol.clearStartHandler()
             session.invalidateAndCancel()
-        }
-        addTeardownBlock {
-            await MainActor.run { store.disconnect() }
+            if let streamTask { await streamTask.value }
         }
 
         // Request #1 must enter the loader; after the 1s backoff the retry's
@@ -3501,12 +3507,21 @@ final class ConnectionFailureTests: XCTestCase {
         // probes below name whichever side exceeded the unchanged 5s bound.
         guard await awaitConnectionDelivery(
             probe: delivery,
-            neverStarted: "URLSession never invoked ReconnectStreamURLProtocol.startLoading() within the 5s delivery bound",
-            neverLanded: "ReconnectStreamURLProtocol.startLoading() ran, but the retry's 200 never reached FleetStore within the 5s delivery bound"
+            neverStarted: {
+                "URLSession never invoked ReconnectStreamURLProtocol.startLoading() within the 5s delivery bound"
+            },
+            neverLanded: {
+                let requestCount = ReconnectStreamURLProtocol.requestCount
+                if requestCount < 2 {
+                    return "ReconnectStreamURLProtocol.startLoading() ran, but the retry was not dispatched before the 5s delivery bound (requestCount=\(requestCount))"
+                }
+                return "ReconnectStreamURLProtocol.startLoading() ran \(requestCount) times, but the retry's 200 never reached FleetStore within the 5s delivery bound"
+            }
         ) else { return }
 
-        let state = await MainActor.run { store.connectionState }
-        let agentsAreEmpty = await MainActor.run { store.agents.isEmpty }
+        let (state, agentsAreEmpty) = await MainActor.run {
+            (store.connectionState, store.agents.isEmpty)
+        }
         XCTAssertEqual(state, .connected,
                        "the 200 on retry must clear the stale error via the real wiring")
         XCTAssertTrue(agentsAreEmpty, "an idle fleet serves 0 frames → 0 agents")

@@ -460,13 +460,12 @@ final class FleetStore: ObservableObject {
         cursorBox.write(lastEventId)
         streamSeen = [:]
         let generation = connectionGeneration
-        // #179: an unstructured `Task {}` created inside this @MainActor
-        // method inherits MainActor isolation, so the URLSession transport,
-        // retry loop, and callback delivery all competed for the main actor.
-        // Launch detached so the real stream runs off MainActor; state
-        // mutation remains the explicit `Task { @MainActor ... }` hops below.
+        // CorraldClient.stream() is a nonisolated async operation on a
+        // Sendable value, so its URLSession transport, retry loop, and
+        // callbacks are not MainActor-isolated. The store state transitions
+        // below still return to MainActor explicitly.
         let cursorBox = self.cursorBox
-        streamTask = Task.detached { [weak self, cursorBox] in
+        streamTask = Task { [weak self, cursorBox] in
             await client.stream(lastEventId: {
                 cursorBox.read()
             }, onEvent: { [weak self] frame in
@@ -569,11 +568,16 @@ final class FleetStore: ObservableObject {
     }
 
     /// Backgrounded = no connection (D5). Last-Event-ID is persisted by the
-    /// owner, so `connect` resumes without a full snapshot when fresh.
-    func disconnect() {
-        streamTask?.cancel()
+    /// owner, so `connect` resumes without a full snapshot when fresh. The
+    /// cancelled task is returned so teardown callers can await termination
+    /// before invalidating the session that owns its transport.
+    @discardableResult
+    func disconnect() -> Task<Void, Never>? {
+        let task = streamTask
+        task?.cancel()
         streamTask = nil
         connectionState = .disconnected
+        return task
     }
 
     func reset() {

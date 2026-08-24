@@ -236,11 +236,12 @@ error/reconnect never landed in the store. The 5-second diagnostic bound is
 deliberately unchanged: its purpose is to identify which side stalled, not to
 turn runner scheduling delay into a longer wall-clock wait.
 
-`FleetStore.connect` launches the SSE stream detached from MainActor; only
-state mutation and the callbacks hop back to MainActor. The three async
-connection tests are also nonisolated (XCTest fulfillment inherits the caller
-executor), so the real URLSession/URLProtocol delivery does not have to
-compete with the test occupying MainActor and the 5s bound stays meaningful.
+`CorraldClient.stream` is a nonisolated async operation, while FleetStore's
+connection state remains `@MainActor` UI state. The three async connection tests
+are nonisolated and await the real URLProtocol and FleetStore callbacks rather
+than polling; the final state transition is still required to land on MainActor
+within the unchanged 5-second contract. A MainActor backlog beyond that bound
+is a real missed UI-state deadline, not a reason to lengthen the test.
 
 Registration and APNs identity transitions are lifecycle-owned: reset and the
 Debug-only demo boundary cannot resurrect a late `/register` response, live

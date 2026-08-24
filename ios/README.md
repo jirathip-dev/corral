@@ -279,6 +279,20 @@ during biometrics before either `/step-up` or `/drive` is sent.
 The URLProtocol harness waits on held gates asynchronously outside
 URLSession's loader thread, so concurrent requests can all start.
 
+The connection-failure suite probes `URLProtocol.startLoading()` separately
+from the FleetStore callback whose timeout it awaits. A failed hosted run
+therefore reports whether the loader never dispatched the mock or the stream
+error/reconnect never landed in the store. The 5-second diagnostic bound is
+deliberately unchanged: its purpose is to identify which side stalled, not to
+turn runner scheduling delay into a longer wall-clock wait.
+
+`CorraldClient.stream` is a nonisolated async operation, while FleetStore's
+connection state remains `@MainActor` UI state. The three async connection tests
+are nonisolated and await the real URLProtocol and FleetStore callbacks rather
+than polling; the final state transition is still required to land on MainActor
+within the unchanged 5-second contract. A MainActor backlog beyond that bound
+is a real missed UI-state deadline, not a reason to lengthen the test.
+
 Registration and APNs identity transitions are lifecycle-owned: reset and the
 Debug-only demo boundary cannot resurrect a late `/register` response, live
 SSE, metadata write, or retired `/device-token` upload, and concurrent

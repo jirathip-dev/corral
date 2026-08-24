@@ -1,9 +1,9 @@
 name: iOS TestFlight
 
 on:
-  # Human-only lane from `main`. Never run on pull_request: GitHub would not
-  # expose ASC credentials to fork PRs, and a TestFlight upload is the same
-  # human-gated release step as the staging -> main / release train.
+  # Human-only lane from `main`. Fork PRs never receive ASC credentials, and
+  # a TestFlight upload is the same human-gated release step as the staging
+  # -> main / release train.
   workflow_dispatch:
 
 concurrency:
@@ -106,6 +106,39 @@ jobs:
             echo "::error::No valid Apple Distribution identity for team 9244PWFYD7 found on the runner. Set ASC_DISTRIBUTION_CERT_P12 and ASC_DISTRIBUTION_CERT_PASSWORD secrets, or use a runner image with the identity installed."
             exit 1
           fi
+
+      - name: Verify Distribution certificate is registered in ASC
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/verify-asc-cert.rb" <<'RUBY'
+          require "spaceship"
+          require "digest"
+          require "base64"
+          require "time"
+
+          key_path = ENV.fetch("ASC_KEY_PATH")
+          token = Spaceship::ConnectAPI::Token.create(
+            key_id: ENV.fetch("ASC_KEY_ID"),
+            issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+            key: File.binread(key_path)
+          )
+          Spaceship::ConnectAPI.token = token
+
+          certificates = Spaceship::ConnectAPI::Certificate.all
+          asc_shas = certificates.select do |cert|
+            cert.valid? && ["DISTRIBUTION", "IOS_DISTRIBUTION"].include?(cert.certificate_type)
+          end.map do |cert|
+            Digest::SHA1.hexdigest(Base64.decode64(cert.certificate_content.to_s)).upcase
+          end
+
+          local_shas = `security find-identity -v -p codesigning 2>&1`
+            .scan(/\b([0-9A-Fa-f]{40})\b/).flatten.map(&:upcase)
+          unless (local_shas & asc_shas).any?
+            STDERR.puts "::error::Installed Apple Distribution identity for team 9244PWFYD7 is not registered on ASC. Export the account's existing certificate as ASC_DISTRIBUTION_CERT_P12."
+            exit 1
+          end
+          RUBY
+          ruby "$RUNNER_TEMP/verify-asc-cert.rb"
 
       - name: Run fastlane testflight
         run: fastlane testflight

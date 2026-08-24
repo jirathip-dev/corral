@@ -136,8 +136,9 @@ The workflow imports the optional `.p12` into a temporary signing keychain,
 then fails before `fastlane testflight` if no valid `Apple Distribution`
 identity for team `9244PWFYD7` is visible. This prevents Fastlane's
 `get_certificates` step from silently minting a new certificate on a hosted
-runner. The lane still fetches and installs the App Store provisioning profile
-through the ASC API key.
+runner; it also confirms the installed identity is registered in ASC before
+the lane runs. The lane still fetches and installs the App Store provisioning
+profile through the ASC API key.
 After upload, the generated `project.pbxproj` restore is verified; no signing
 material is added to the repository.
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Small, hermetic test for scripts/lib-corral-update-path.sh. Verifies the
 # launchd PATH derivation: a brew bin is prepended under a minimal PATH, the
-# rustup cargo bin is prepended, an existing brew on PATH is resolved without
-# duplication, and it is a no-op when neither exists.
+# rustup cargo bin and ~/.local/bin are prepended, an existing brew on PATH is
+# resolved without duplication, and it is a no-op when neither exists.
 #
 # Run with one command:
 #   bash scripts/test-update-corral-path.sh
@@ -47,14 +47,23 @@ corral_prepend_update_path "$WORK/ignored-candidate"
 [[ "$PATH" == "$BREW_BIN2:/usr/bin:/bin" ]] \
   || fail "existing brew dir duplicated or changed; PATH='$PATH'"
 
-# 4. No brew, no cargo -> no-op, PATH unchanged, exits 0.
+# 4. A user-local bin is prepended under a minimal PATH.
+LOCAL_BIN="$WORK/home4/.local/bin"
+mkdir -p "$LOCAL_BIN"
 export PATH="/usr/bin:/bin"
-export HOME="$WORK/no-home"
+export HOME="$WORK/home4"
+corral_prepend_update_path "$WORK/absent-brew"
+[[ "$PATH" == "$LOCAL_BIN":/usr/bin:/bin ]] \
+  || fail "user-local bin not prepended; PATH='$PATH'"
+
+# 5. No brew, no cargo, no user-local bin -> no-op, PATH unchanged, exits 0.
+export PATH="/usr/bin:/bin"
+export HOME="$WORK/no-home5"
 corral_prepend_update_path "$WORK/absent-brew"
 [[ "$PATH" == "/usr/bin:/bin" ]] \
   || fail "PATH changed without brew/cargo; PATH='$PATH'"
 
-# 5. Missing lib: update-corral.sh must not die under set -e before the log is
+# 6. Missing lib: update-corral.sh must not die under set -e before the log is
 #    set up. Run a copy from a dir with no lib; it should reach its guard and
 #    log a skip (no silent-failure mode). The first guard is "not a source
 #    checkout" because the temp dir is not a git repo.

@@ -86,6 +86,9 @@ if [[ -n "$FROM_RELEASE" ]]; then
   fi
 fi
 
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
+
 if [[ "$UNINSTALL" == "1" ]]; then
   echo ">> Uninstalling corrald launchd agents"
   launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
@@ -108,6 +111,22 @@ fi
 mkdir -p "$CONFIG_DIR"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
+# Derive one launchd-safe PATH for both the daemon and auto-update agents. The
+# helper is optional in release bundles for backwards compatibility; a bundle
+# missing it keeps the inherited PATH rather than making setup fail after a
+# daemon plist has already been written.
+if [[ -f "$lib_path" ]]; then
+  # shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
+  source "$lib_path"
+  corral_prepend_update_path
+fi
+LAUNCHD_PATH="${PATH:-}"
+# Escape XML metacharacters so an exotic prefix (containing &, <, >) cannot
+# make plutil -lint fail on either generated launchd plist.
+LAUNCHD_PATH="${LAUNCHD_PATH//&/&amp;}"
+LAUNCHD_PATH="${LAUNCHD_PATH//</&lt;}"
+LAUNCHD_PATH="${LAUNCHD_PATH//>/&gt;}"
+
 echo ">> Installing launchd agent: $PLIST"
 # bootout any previously-loaded job FIRST — launchd does NOT re-read a
 # rewritten plist on kickstart, so a re-run with changed --bind would
@@ -134,6 +153,11 @@ cat > "$PLIST" <<PLIST_EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$LAUNCHD_PATH</string>
+  </dict>
   <key>SoftResourceLimits</key>
   <dict>
     <key>NumberOfFiles</key><integer>10240</integer>
@@ -181,26 +205,9 @@ fi
 echo
 echo ">> Installing auto-update agent (com.corral.corrald-update)..."
 chmod +x "$REPO_DIR/scripts/update-corral.sh"
-# Belt-and-suspenders: bake a launchd-usable PATH into the update plist so the
-# agent starts with gh/cargo resolvable. The script-top derivation in
-# update-corral.sh is the primary fix (works on the next run without needing to
-# re-run setup); this only helps fresh installs and setup re-runs.
-SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-# Only source the lib when present: a release bundle missing it must not abort
-# setup after the daemon plist was already written — fall back to the current
-# PATH and continue.
-lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
-# shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
-if [[ -f "$lib_path" ]]; then
-  source "$lib_path"
-  corral_prepend_update_path
-fi
-UPDATE_PATH="$PATH"
-# Escape XML metacharacters so an exotic prefix (containing &, <, >) cannot make
-# plutil -lint fail on the generated plist.
-UPDATE_PATH="${UPDATE_PATH//&/&amp;}"
-UPDATE_PATH="${UPDATE_PATH//</&lt;}"
-UPDATE_PATH="${UPDATE_PATH//>/&gt;}"
+# LAUNCHD_PATH is shared with the daemon plist above so the two agents cannot
+# drift apart as PATH requirements change.
+UPDATE_PATH="$LAUNCHD_PATH"
 launchctl bootout "gui/$(id -u)" "$UPDATE_PLIST" 2>/dev/null || true
 launchctl enable "gui/$(id -u)/com.corral.corrald-update" 2>/dev/null || true
 cat > "$UPDATE_PLIST" <<UPDATE_EOF

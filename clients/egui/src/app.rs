@@ -135,10 +135,10 @@ pub struct CorralApp {
     screenshot_sent: bool,
     screenshot_deadline: Option<std::time::Instant>,
     /// Optional native-evidence target. When set alongside the screenshot
-    /// path, the app selects this live daemon agent and exercises the real
-    /// read_tail + transcript paths before capturing. Never active normally.
+    /// path, the app selects this live daemon agent so the operator can use
+    /// the shipped Cards controls before capturing. Never active normally.
     screenshot_agent_id: Option<String>,
-    screenshot_content_requested: bool,
+    screenshot_agent_selected: bool,
 }
 
 impl CorralApp {
@@ -218,7 +218,7 @@ impl CorralApp {
             screenshot_agent_id: std::env::var("CORRAL_UI_SCREENSHOT_AGENT")
                 .ok()
                 .filter(|_| std::env::var_os("CORRAL_UI_SCREENSHOT").is_some()),
-            screenshot_content_requested: false,
+            screenshot_agent_selected: false,
         };
 
         // Resolve the host identity so the device key can be scoped to it.
@@ -303,7 +303,7 @@ impl CorralApp {
                 };
             }
         }
-        if self.device_key_store_warning && self.screenshot_path.is_none() {
+        if self.device_key_store_warning {
             self.toast(
                 Level::Warn,
                 "OS keychain unavailable — device key stored in a 0600 file (see Settings)",
@@ -626,45 +626,26 @@ impl CorralApp {
     }
 
     /// Native screenshot evidence helper. It is deliberately opt-in and
-    /// targets an id observed in the live `/snapshot`; the data shown in the
-    /// resulting PNG therefore comes through the same signed read paths as a
-    /// real operator interaction.
-    fn prepare_screenshot_evidence(
-        &mut self,
-        pending_drive: &mut Vec<DriveIntent>,
-        pending_transcripts: &mut Vec<crate::transcript::TranscriptRequest>,
-    ) {
+    /// targets an id observed in the live `/snapshot`; content still has to
+    /// be fetched by clicking the shipped Cards `Load earlier` control.
+    fn prepare_screenshot_evidence(&mut self) {
         let Some(agent_id) = self.screenshot_agent_id.clone() else {
             return;
         };
         let Some(agent) = self.fleet.agents.get(&agent_id) else {
             return;
         };
-        let read_tail_ready = agent.capabilities.iter().any(|cap| cap == "read_tail")
-            && self.ledger.allowed("read_tail");
-        if self.screenshot_content_requested
-            || self.registration.is_none()
-            || self.device_key.is_none()
-        {
+        if self.screenshot_agent_selected {
             return;
         }
-        if !read_tail_ready {
-            tracing::warn!(
-                agent_id = %agent_id,
-                "screenshot evidence target has no usable read_tail grant"
-            );
-            return;
-        }
+        let read_tail_advertised = agent.capabilities.iter().any(|cap| cap == "read_tail");
         self.fleet.select_agent(&agent_id);
-        pending_drive.push(DriveIntent::read_tail(&agent_id, self.fleet.rev));
-        pending_transcripts.push(crate::transcript::TranscriptRequest {
-            agent_id: agent_id.clone(),
-            cursor: None,
-        });
-        self.screenshot_content_requested = true;
+        self.screenshot_agent_selected = true;
         tracing::info!(
             agent_id = %agent_id,
-            "native screenshot evidence selected live agent and requested read_tail + transcript"
+            read_tail_advertised,
+            read_tail_granted = self.ledger.allowed("read_tail"),
+            "native screenshot evidence selected live agent; Cards fetch remains user-driven"
         );
     }
 
@@ -1304,7 +1285,7 @@ impl eframe::App for CorralApp {
                 let mut pending: Vec<DriveIntent> = Vec::new();
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 let mut pending_full_chat: Vec<String> = Vec::new();
-                self.prepare_screenshot_evidence(&mut pending, &mut pending_transcripts);
+                self.prepare_screenshot_evidence();
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,

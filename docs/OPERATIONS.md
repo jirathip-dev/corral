@@ -686,6 +686,29 @@ An agent whose `worktree_path` matches none of the configured roots or Herdr
 worktree layout is intentionally left with `repo: null` and remains in
 `(no repo)`; do not repair that bucket by guessing from a pane label.
 
+Git-plane load is bounded at the subprocess boundary. FSEvents-triggered
+probes, the 60-second status sweep, and topology rescans share four git
+command permits; registry rescans are serialized because they also perform
+filesystem canonicalization. A probe admitted to the permit pool is subject
+to the normal five-second git child timeout; time spent queued before
+admission is additional latency and can make total event time exceed five
+seconds. A completed probe that exceeds the 200ms event budget still emits
+the existing `git plane event over budget` warning. The permit pool protects
+Herdr scheduling; it does not discard git facts, convert a timeout into
+success, or restart the Store/SSE revision sequence. During a load
+investigation, correlate the warning's `took_ms` with `event stream
+closed`/`re-bootstrapping`; a warning alone is diagnostic, not a stream
+failure.
+
+When FSEvents reports an unknown path under `commondir/worktrees/`, the
+watcher awaits the throttled topology rescan so the new worktree can be
+debounced immediately. A concurrent 10s/60s safety rescan holds the same
+serialization guard, so topology freshness can wait behind one in-flight
+scan; the callback queue retains later frames and the one-shot 400ms retry
+covers a `git worktree add` that registers just after the first scan. This is
+the intentional freshness tradeoff: topology is reconciled before probing,
+while scans never overlap and the event stream is not reset.
+
 ## Issue-linked and issue-free worktrees (#113, slice 1)
 
 The desktop UI's Issues tab renders the daemon's read-only
@@ -763,4 +786,5 @@ unchanged — this slice never issues a GitHub write.
 | `409 stale_approval` | approval_id refers to an earlier prompt the agent already moved past — fetch the live claim again |
 | `403 step_up_required` | destructive payload needs a fresh `POST /step-up` token (single-use, 5 min) in `X-Step-Up-Token` |
 | macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
+| repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |
 | `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots) |

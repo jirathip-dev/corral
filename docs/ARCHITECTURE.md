@@ -45,7 +45,8 @@ today, not a bug.
 
 ```
 herdr socket ── herdr adapter (push: events.subscribe + bounded catalog refresh)
-git worktrees ─ GitPlane (fsevents push + 10s parallel sweep safety net)
+git worktrees ─ GitPlane (fsevents push + 10s topology / 60s status safety net;
+              │  shared four-command git budget)
 GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: no polling
               │  until the first SSE client ever connects)
               ▼
@@ -91,6 +92,27 @@ closes or the pane is removed or recreated. Pane removal or replacement
 cancels that generation before a new one can attach; subscribe failures never
 trigger a global re-bootstrap. Dropping the client aborts the reader so a
 failed connection never leaks its descriptor (#105).
+
+GitPlane scheduling is bounded independently of the Herdr stream: every
+GitPlane git subprocess, whether started by an fsevents debounce, a status
+sweep, or a registry rescan, must acquire one of four shared command permits.
+Registry rescans are serialized because their topology reconciliation also
+performs synchronous filesystem canonicalization. A probe admitted to the
+budget keeps its normal five-second child timeout and still reports an
+over-budget warning; time spent waiting for a permit is additional total
+latency, not part of that child timeout. The budget is backpressure, not a
+failure suppression or a revision reset. This keeps git-plane load from
+consuming the executor needed by the Herdr reader and leaves Store/SSE
+revisions owned solely by the existing coalescer.
+
+An unknown `commondir/worktrees/` FSEvents path makes the watcher await its
+throttled topology rescan so the newly discovered worktree can be debounced
+immediately. The same serialized rescan guard is shared with the 10s topology
+and 60s status safety paths: a safety rescan already in flight can delay
+topology freshness, but event frames remain queued and the one-shot 400ms
+retry covers registration that races the first scan. This is a bounded
+freshness tradeoff in exchange for reconciling topology before probing it;
+the watcher/safety overlap is covered by a deterministic regression test.
 
 The gh plane also publishes the *repo-level* issue set it fetches into a
 read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's

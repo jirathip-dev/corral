@@ -1172,7 +1172,9 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     private static let scriptLock = NSLock()
     private static var scriptStorage: DeterministicDriveScript?
     private var activeScript: DeterministicDriveScript?
+    private let loadStateLock = NSLock()
     private var stopWasRecorded = false
+    private var loadWorkItem: DispatchWorkItem?
 
     static func setScript(_ script: DeterministicDriveScript) {
         scriptLock.lock()
@@ -1206,27 +1208,51 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             recordedRequest.httpBody = body
         }
         script.log.record(recordedRequest)
-        let canRespond = script.gate(for: url.path)?.wait() ?? true
-        if canRespond {
-            let response = HTTPURLResponse(url: url, statusCode: 200,
-                                           httpVersion: "HTTP/1.1", headerFields: nil)!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: script.response(for: url.path))
-            client?.urlProtocolDidFinishLoading(self)
-        } else {
-            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        let gate = script.gate(for: url.path)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let canRespond = gate?.wait() ?? true
+            if self.isStopped() {
+                script.log.completed.increment()
+                return
+            }
+            if canRespond {
+                let response = HTTPURLResponse(url: url, statusCode: 200,
+                                               httpVersion: "HTTP/1.1", headerFields: nil)!
+                client?.urlProtocol(self, didReceive: response,
+                                    cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: script.response(for: url.path))
+                client?.urlProtocolDidFinishLoading(self)
+            } else {
+                client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            }
+            script.log.completed.increment()
         }
-        script.log.completed.increment()
+        loadStateLock.lock()
+        loadWorkItem = workItem
+        loadStateLock.unlock()
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
 
     override func stopLoading() {
+        loadStateLock.lock()
         guard !stopWasRecorded else { return }
         stopWasRecorded = true
+        let workItem = loadWorkItem
+        loadWorkItem = nil
+        loadStateLock.unlock()
+        workItem?.cancel()
         guard let script = activeScript,
               let path = request.url?.path,
               let gate = script.gate(for: path) else { return }
         script.log.cancelled.increment()
         gate.cancel()
+    }
+
+    private func isStopped() -> Bool {
+        loadStateLock.lock()
+        defer { loadStateLock.unlock() }
+        return stopWasRecorded
     }
 }
 
@@ -1794,7 +1820,7 @@ final class TappableDriveSafetyTests: XCTestCase {
         let deviceRequests = script.log.requests.filter { $0.url?.path == "/device-token" }
         XCTAssertEqual(deviceRequests.count, 1,
                        "demo→live must upload the current token exactly once")
-        let deviceBody = try XCTUnwrap(requestBodyData(deviceRequests[0]))
+        let deviceBody = try XCTUnwrap(requestBodyData(try XCTUnwrap(deviceRequests.first)))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: deviceBody)
             as? [String: Any])
         XCTAssertEqual(body["key_id"] as? String, meta.keyId)

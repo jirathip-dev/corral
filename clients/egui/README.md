@@ -109,6 +109,18 @@ exits. Never active by default. (eframe's own wgpu screenshot event is
 flaky without an explicit `device.poll`; this path polls with a bounded
 wait and captures the presented surface.)
 
+For native live-agent evidence, add `CORRAL_UI_SCREENSHOT_AGENT` with an agent
+id observed in the daemon's `/snapshot` response. The app selects that real
+agent and requests its signed `read_tail` plus transcript page before capture;
+it does not create demo data:
+
+```sh
+CORRAL_UI_SCREENSHOT=/tmp/board-live.png \
+CORRAL_UI_SCREENSHOT_DELAY_MS=20000 \
+CORRAL_UI_SCREENSHOT_AGENT=herdr:<agent-id> \
+./target/release/corrald-ui
+```
+
 ## Conformance + tests
 
 ```sh

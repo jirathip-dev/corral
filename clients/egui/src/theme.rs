@@ -79,13 +79,26 @@ pub mod ci {
 pub mod ui {
     use super::Color32;
 
+    /// Exact surface tokens from `docs/design/corral-ux-prototype-spec.md`.
+    /// Keep these in one place so the board cannot drift by inventing a
+    /// near-miss gray for one pane or transcript block.
+    pub const BG: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
+    pub const PANEL: Color32 = Color32::from_rgb(0x10, 0x15, 0x1c);
+    pub const PANEL2: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
+    pub const PANEL3: Color32 = Color32::from_rgb(0x1c, 0x21, 0x28);
+    pub const LINE: Color32 = Color32::from_rgb(0x30, 0x36, 0x3d);
+    pub const INK: Color32 = Color32::from_rgb(0xe6, 0xed, 0xf3);
+    pub const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
     pub const ACCENT: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
+    pub const USER_TINT: Color32 = Color32::from_rgb(0x12, 0x26, 0x3f);
+    /// The approved prototype uses this slightly darker outer frame border.
+    pub const FRAME_BORDER: Color32 = Color32::from_rgb(0x2a, 0x2f, 0x37);
     pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x14, 0x8f, 0x84);
     pub const GOOD: Color32 = Color32::from_rgb(0x3f, 0xb9, 0x50);
     pub const BAD: Color32 = Color32::from_rgb(0xf8, 0x51, 0x49);
     pub const WARN: Color32 = Color32::from_rgb(0xe3, 0xb3, 0x41);
-    pub const TEXT_STRONG: Color32 = Color32::from_rgb(0xe6, 0xed, 0xf3);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
+    pub const TEXT_STRONG: Color32 = INK;
+    pub const TEXT_MUTED: Color32 = MUTED;
     pub const DIRTY: Color32 = Color32::from_rgb(0xff, 0xa6, 0x57);
 }
 
@@ -201,11 +214,12 @@ pub fn dark_dashboard() -> Visuals {
     use eframe::egui::{CornerRadius, Stroke, style::Widgets};
 
     let mut v = Visuals::dark();
-    v.panel_fill = Color32::from_rgb(0x0d, 0x11, 0x17);
-    v.window_fill = Color32::from_rgb(0x10, 0x15, 0x1c);
-    v.extreme_bg_color = Color32::from_rgb(0x16, 0x1b, 0x22);
-    v.faint_bg_color = Color32::from_rgb(0x1c, 0x21, 0x28);
-    v.code_bg_color = Color32::from_rgb(0x16, 0x1b, 0x22);
+    v.panel_fill = ui::BG;
+    v.window_fill = ui::PANEL;
+    v.extreme_bg_color = ui::PANEL2;
+    v.faint_bg_color = ui::PANEL3;
+    v.code_bg_color = ui::PANEL2;
+    v.window_stroke = Stroke::new(1.0, ui::LINE);
     v.selection.bg_fill = Color32::from_rgb(0x1f, 0x3a, 0x3d);
     v.selection.stroke = Stroke::new(1.0, ui::ACCENT_DIM);
     v.hyperlink_color = ui::ACCENT;
@@ -215,42 +229,42 @@ pub fn dark_dashboard() -> Visuals {
 
     v.widgets = Widgets {
         noninteractive: egui::style::WidgetVisuals {
-            bg_fill: Color32::from_rgb(0x16, 0x1b, 0x22),
-            weak_bg_fill: Color32::from_rgb(0x21, 0x26, 0x2d),
-            bg_stroke: Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3d)),
-            fg_stroke: Stroke::new(1.0, ui::TEXT_STRONG),
+            bg_fill: ui::PANEL2,
+            weak_bg_fill: ui::PANEL3,
+            bg_stroke: Stroke::new(1.0, ui::LINE),
+            fg_stroke: Stroke::new(1.0, ui::INK),
             corner_radius: CornerRadius::same(4),
             expansion: 0.0,
         },
         inactive: egui::style::WidgetVisuals {
-            bg_fill: Color32::from_rgb(0x21, 0x26, 0x2d),
-            weak_bg_fill: Color32::from_rgb(0x1c, 0x21, 0x28),
-            bg_stroke: Stroke::new(1.0, Color32::from_rgb(0x30, 0x36, 0x3d)),
-            fg_stroke: Stroke::new(1.0, ui::TEXT_STRONG),
+            bg_fill: ui::PANEL2,
+            weak_bg_fill: ui::PANEL3,
+            bg_stroke: Stroke::new(1.0, ui::LINE),
+            fg_stroke: Stroke::new(1.0, ui::INK),
             corner_radius: CornerRadius::same(4),
             expansion: 0.0,
         },
         hovered: egui::style::WidgetVisuals {
-            bg_fill: Color32::from_rgb(0x2b, 0x32, 0x3b),
-            weak_bg_fill: Color32::from_rgb(0x2b, 0x32, 0x3b),
-            bg_stroke: Stroke::new(1.0, Color32::from_rgb(0x4a, 0x53, 0x5f)),
-            fg_stroke: Stroke::new(1.0, ui::TEXT_STRONG),
+            bg_fill: ui::PANEL3,
+            weak_bg_fill: ui::PANEL3,
+            bg_stroke: Stroke::new(1.0, ui::LINE),
+            fg_stroke: Stroke::new(1.0, ui::INK),
             corner_radius: CornerRadius::same(4),
             expansion: 1.0,
         },
         active: egui::style::WidgetVisuals {
-            bg_fill: Color32::from_rgb(0x1a, 0x3f, 0x3d),
-            weak_bg_fill: Color32::from_rgb(0x14, 0x8f, 0x84),
+            bg_fill: ui::PANEL3,
+            weak_bg_fill: ui::ACCENT_DIM,
             bg_stroke: Stroke::new(1.0, ui::ACCENT_DIM),
-            fg_stroke: Stroke::new(1.0, ui::TEXT_STRONG),
+            fg_stroke: Stroke::new(1.0, ui::INK),
             corner_radius: CornerRadius::same(4),
             expansion: 0.0,
         },
         open: egui::style::WidgetVisuals {
-            bg_fill: Color32::from_rgb(0x1a, 0x3f, 0x3d),
-            weak_bg_fill: Color32::from_rgb(0x14, 0x8f, 0x84),
+            bg_fill: ui::PANEL3,
+            weak_bg_fill: ui::ACCENT_DIM,
             bg_stroke: Stroke::new(1.0, ui::ACCENT_DIM),
-            fg_stroke: Stroke::new(1.0, ui::TEXT_STRONG),
+            fg_stroke: Stroke::new(1.0, ui::INK),
             corner_radius: CornerRadius::same(4),
             expansion: 0.0,
         },

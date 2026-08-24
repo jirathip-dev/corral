@@ -317,8 +317,12 @@ pub fn clock_of(epoch_millis: u64) -> String {
     }
 }
 
-/// Epoch millis -> prototype-style relative age: `<1m`, `42m`, `3h 02m`.
+/// Epoch millis -> prototype-style relative age: `<1m`, `42m`, `3h 02m`,
+/// `3d 04h`. A zero timestamp is unknown and renders as `—`.
 pub fn relative_age(epoch_millis: u64, now_millis: u64) -> String {
+    if epoch_millis == 0 {
+        return "—".to_string();
+    }
     let elapsed = now_millis.saturating_sub(epoch_millis);
     let minutes = elapsed / 60_000;
     if minutes == 0 {
@@ -327,7 +331,11 @@ pub fn relative_age(epoch_millis: u64, now_millis: u64) -> String {
     if minutes < 60 {
         return format!("{minutes}m");
     }
-    format!("{}h {:02}m", minutes / 60, minutes % 60)
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h {:02}m", minutes % 60);
+    }
+    format!("{}d {:02}h", hours / 24, hours % 24)
 }
 
 #[cfg(test)]
@@ -657,7 +665,14 @@ mod tests {
         assert_eq!(relative_age(now, now + 42 * 60_000), "42m");
         assert_eq!(relative_age(now, now + 70 * 60_000), "1h 10m");
         assert_eq!(relative_age(now, now + 182 * 60_000), "3h 02m");
+        assert_eq!(relative_age(now, now + (23 * 60 + 59) * 60_000), "23h 59m");
+        assert_eq!(relative_age(now, now + 24 * 60 * 60_000), "1d 00h");
+        assert_eq!(relative_age(now, now + 76 * 60 * 60_000), "3d 04h");
+        assert_eq!(relative_age(now, now + 100 * 24 * 60 * 60_000), "100d 00h");
+        assert_eq!(relative_age(0, now), "—");
+        assert_eq!(relative_age(0, 0), "—");
         assert_eq!(relative_age(now + 60_000, now), "<1m");
+        assert_eq!(relative_age(u64::MAX, now), "<1m");
     }
 
     fn base_agent(agent_id: &str) -> Agent {

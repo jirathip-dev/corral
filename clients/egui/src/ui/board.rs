@@ -45,6 +45,14 @@ const BOARD_COLUMNS: [(&str, f32); 9] = [
 /// unusually long; the marker segment is bounded to the remaining width.
 const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 
+/// Reserved `State · relative age` slot on a master card.
+///
+/// Sized to hold the longest ordinary contract label (`Needs you · 100d 00h`)
+/// without elision. The age is reserved before identity/repo text, so in a
+/// narrow pane the left column is dropped first and ordinary ages are never
+/// clipped; only extreme timestamps truncate inside this bound.
+const CARD_AGE_WIDTH: f32 = 176.0;
+
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
@@ -496,7 +504,7 @@ fn show_cards(
             ui.set_min_width(widths.total);
             ui.horizontal(|ui| {
                 ui.allocate_ui(egui::vec2(widths.left, available.y), |ui| {
-                    clicked = master_list(ui, fleet, visible, flat, selected);
+                    clicked = master_list(ui, fleet, visible, flat, selected, now_millis());
                 });
                 ui.separator();
                 ui.allocate_ui(egui::vec2(widths.right, available.y), |ui| {
@@ -583,6 +591,7 @@ fn master_list(
     visible: &[&str],
     flat: bool,
     selected: Option<&str>,
+    now_ms: u64,
 ) -> Option<String> {
     let mut clicked = None;
     ScrollArea::vertical()
@@ -605,7 +614,9 @@ fn master_list(
                         .default_open(false)
                         .show_unindented(ui, |ui| {
                             for id in &section.agent_ids {
-                                if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                                if let Some(id) =
+                                    master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                {
                                     clicked = Some(id);
                                 }
                             }
@@ -615,7 +626,7 @@ fn master_list(
                     }
                     state_section_header(ui, section.state, section.agent_ids.len());
                     for id in &section.agent_ids {
-                        if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                        if let Some(id) = master_card(ui, fleet, id, selected == Some(id), now_ms) {
                             clicked = Some(id);
                         }
                     }
@@ -637,7 +648,9 @@ fn master_list(
                     .default_open(true)
                     .show_unindented(ui, |ui| {
                         for id in &group.agent_ids {
-                            if let Some(id) = master_card(ui, fleet, id, selected == Some(id)) {
+                            if let Some(id) =
+                                master_card(ui, fleet, id, selected == Some(id), now_ms)
+                            {
                                 clicked = Some(id);
                             }
                         }
@@ -673,9 +686,14 @@ fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count:
     });
 }
 
-fn master_card(ui: &mut Ui, fleet: &Fleet, id: &str, selected: bool) -> Option<String> {
-    master_card_with_response(ui, fleet, id, selected, now_millis())
-        .and_then(|(clicked, _)| clicked)
+fn master_card(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    id: &str,
+    selected: bool,
+    now_ms: u64,
+) -> Option<String> {
+    master_card_with_response(ui, fleet, id, selected, now_ms).and_then(|(clicked, _)| clicked)
 }
 
 fn master_card_with_response(
@@ -726,7 +744,11 @@ fn master_card_with_response(
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            let left_width = (ui.available_width() * 0.66).max(160.0);
+                            let item_spacing = ui.spacing().item_spacing.x;
+                            let available_width = ui.available_width();
+                            let age_width =
+                                (available_width - item_spacing).clamp(0.0, CARD_AGE_WIDTH);
+                            let left_width = (available_width - item_spacing - age_width).max(0.0);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(left_width, 36.0),
                                 egui::Layout::top_down(egui::Align::Min),
@@ -753,11 +775,15 @@ fn master_card_with_response(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.label(
-                                        RichText::new(state_time)
-                                            .small()
-                                            .monospace()
-                                            .color(theme::ui::TEXT_MUTED),
+                                    ui.add_sized(
+                                        [age_width, 18.0],
+                                        egui::Label::new(
+                                            RichText::new(state_time)
+                                                .small()
+                                                .monospace()
+                                                .color(theme::ui::TEXT_MUTED),
+                                        )
+                                        .truncate(),
                                     );
                                 },
                             );
@@ -2295,6 +2321,89 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_needs_you_ages_render_unelided_at_master_widths() {
+        let now = 1_700_000_000_000_u64;
+        for width in [320.0, 472.8] {
+            for (elapsed_ms, expected) in [
+                ((23 * 60 + 59) * 60_000_u64, "Needs you · 23h 59m"),
+                ((3 * 24 + 4) * 60 * 60_000_u64, "Needs you · 3d 04h"),
+                (100 * 24 * 60 * 60_000_u64, "Needs you · 100d 00h"),
+            ] {
+                let ctx = row_test_context();
+                let mut agent = agent_with_caps(&[]);
+                agent.agent_id = "herdr:needs-you".into();
+                agent.display_name = Some("needs you card".into());
+                agent.state = crate::model::AgentState::Blocked;
+                agent.ts = now;
+                let mut fleet = Fleet::default();
+                fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.0));
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let (_, mut output) = master_list_frame(
+                    &ctx,
+                    &fleet,
+                    &[agent.agent_id.as_str()],
+                    true,
+                    None,
+                    now + elapsed_ms,
+                    input,
+                );
+                let rendered = rendered_text(&output, expected)
+                    .unwrap_or_else(|| panic!("{expected} did not render at {width}px"));
+                assert!(
+                    !rendered.elided,
+                    "{expected} elided at the {width}px master-column width"
+                );
+                clear_textures(&mut output);
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_master_card_age_is_clipped_inside_bound() {
+        for width in [320.0, 472.8] {
+            let ctx = row_test_context();
+            let mut agent = agent_with_caps(&[]);
+            agent.agent_id = "herdr:extreme-age".into();
+            agent.display_name = Some("extreme age card".into());
+            agent.ts = 1;
+            let now = u64::MAX;
+            let mut fleet = Fleet::default();
+            fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.0));
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let (_, card_rect, mut output) =
+                master_card_frame(&ctx, &fleet, &agent.agent_id, false, now, input);
+            let card_rect = card_rect.expect("master card rendered");
+            let age = format!("Working · {}", crate::model::relative_age(agent.ts, now));
+            let rendered =
+                rendered_text(&output, &age).expect("extreme master card age label rendered");
+            assert!(
+                rendered.elided,
+                "extreme age must elide inside its reserved slot at {width}px"
+            );
+            assert!(
+                rendered.rect.width() <= CARD_AGE_WIDTH + 0.01,
+                "extreme age width {} exceeds its {} bound",
+                rendered.rect.width(),
+                CARD_AGE_WIDTH
+            );
+            assert!(
+                rendered.rect.left() >= card_rect.left()
+                    && rendered.rect.right() <= card_rect.right(),
+                "extreme age {rendered:?} overflows card {card_rect:?}"
+            );
+            clear_textures(&mut output);
+        }
+    }
+
+    #[test]
     fn unknown_card_preserves_contract_state() {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&[]);
@@ -2352,8 +2461,15 @@ mod tests {
         );
         let visible = ["herdr:working", "herdr:idle"];
 
-        let (_, mut output) =
-            master_list_frame(&ctx, &fleet, &visible, true, None, row_test_input(vec![]));
+        let (_, mut output) = master_list_frame(
+            &ctx,
+            &fleet,
+            &visible,
+            true,
+            None,
+            now_millis(),
+            row_test_input(vec![]),
+        );
         assert!(
             text_rect(&output, "working card").is_some(),
             "non-idle card renders so transcript omission is observable"
@@ -2763,29 +2879,49 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    fn text_rects(output: &egui::FullOutput, needle: &str) -> Vec<egui::Rect> {
-        fn walk(shape: &egui::epaint::Shape, needle: &str, rects: &mut Vec<egui::Rect>) {
+    #[derive(Debug, Clone, Copy)]
+    struct RenderedText {
+        elided: bool,
+        rect: egui::Rect,
+    }
+
+    fn rendered_texts(output: &egui::FullOutput, needle: &str) -> Vec<RenderedText> {
+        fn walk(shape: &egui::epaint::Shape, needle: &str, texts: &mut Vec<RenderedText>) {
             match shape {
                 egui::epaint::Shape::Vec(shapes) => {
                     for shape in shapes {
-                        walk(shape, needle, rects);
+                        walk(shape, needle, texts);
                     }
                 }
                 egui::epaint::Shape::Text(text) if text.galley.job.text.contains(needle) => {
-                    rects.push(text.visual_bounding_rect());
+                    texts.push(RenderedText {
+                        elided: text.galley.elided,
+                        rect: text.visual_bounding_rect(),
+                    });
                 }
                 _ => {}
             }
         }
-        let mut rects = Vec::new();
+        let mut texts = Vec::new();
         for clipped in &output.shapes {
-            walk(&clipped.shape, needle, &mut rects);
+            walk(&clipped.shape, needle, &mut texts);
         }
-        rects
+        texts
+    }
+
+    fn rendered_text(output: &egui::FullOutput, needle: &str) -> Option<RenderedText> {
+        rendered_texts(output, needle).into_iter().next()
     }
 
     fn text_rect(output: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
-        text_rects(output, needle).into_iter().next()
+        rendered_text(output, needle).map(|rendered| rendered.rect)
+    }
+
+    fn text_rects(output: &egui::FullOutput, needle: &str) -> Vec<egui::Rect> {
+        rendered_texts(output, needle)
+            .into_iter()
+            .map(|rendered| rendered.rect)
+            .collect()
     }
 
     fn master_list_frame(
@@ -2794,12 +2930,15 @@ mod tests {
         visible: &[&str],
         flat: bool,
         selected: Option<&str>,
+        now_ms: u64,
         input: egui::RawInput,
     ) -> (Option<String>, egui::FullOutput) {
+        let width = input.screen_rect.unwrap_or_else(row_test_screen).width();
         let mut clicked = None;
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            clicked = master_list(ui, fleet, visible, flat, selected);
+            ui.set_max_width(width);
+            clicked = master_list(ui, fleet, visible, flat, selected, now_ms);
         });
         (clicked, output)
     }
@@ -2812,11 +2951,12 @@ mod tests {
         now_ms: u64,
         input: egui::RawInput,
     ) -> (Option<String>, Option<egui::Rect>, egui::FullOutput) {
+        let width = input.screen_rect.unwrap_or_else(row_test_screen).width();
         let mut clicked = None;
         let mut rect = None;
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            ui.set_max_width(row_test_screen().width());
+            ui.set_max_width(width);
             if let Some((card_clicked, response)) =
                 master_card_with_response(ui, fleet, id, selected, now_ms)
             {

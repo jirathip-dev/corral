@@ -59,6 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           export BUNDLE_PATH="$RUNNER_TEMP/vendor/bundle"
+          export BUNDLE_FROZEN=true
           echo "BUNDLE_PATH=$BUNDLE_PATH" >> "$GITHUB_ENV"
           bundle install --jobs 4 --retry 3
           bundle exec fastlane --version
@@ -71,8 +72,8 @@ jobs:
           workflow=".github/workflows/ios-testflight.yml"
 
           ruby -ryaml -e 'YAML.load_file(ARGV.fetch(0))' "$workflow"
-          if grep -Eq '^[[:space:]]*pull_request[[:space:]]*:' "$workflow"; then
-            echo "::error::ios-testflight.yml must not have a pull_request trigger."
+          if grep -Eq '^[[:space:]]*pull_request(_target)?[[:space:]]*:' "$workflow"; then
+            echo "::error::ios-testflight.yml must not have pull_request or pull_request_target triggers."
             exit 1
           fi
           grep -Eq '^[[:space:]]*workflow_dispatch[[:space:]]*:' "$workflow"
@@ -80,6 +81,11 @@ jobs:
 
           ruby -c fastlane/Fastfile >/dev/null
           grep -q '^gem "fastlane"' Gemfile
+          grep -Eq '^    fastlane \(2\.237\.0\)$' Gemfile.lock
+          grep -Eq '^  arm64-darwin-24$' Gemfile.lock
+          grep -Eq '^  x86_64-darwin-24$' Gemfile.lock
+          grep -Eq '^  arm64-darwin-25$' Gemfile.lock
+          grep -Eq '^  ruby$' Gemfile.lock
           test -f ios/FleetNotifier.xcodeproj/project.pbxproj
           test -f ios/FleetNotifier.xcodeproj/project.xcworkspace/contents.xcworkspacedata
 
@@ -88,14 +94,23 @@ jobs:
             git diff --stat -- ios/FleetNotifier.xcodeproj
             exit 1
           fi
-          if [ -n "$(git status --porcelain -- ios/FleetNotifier.xcodeproj)" ]; then
-            echo "::error::Xcode project bundle has untracked or uncommitted changes."
-            git status --short -- ios/FleetNotifier.xcodeproj
+          # xcodebuild may create untracked xcuserdata; only tracked state is
+          # part of the checked-in project bundle that validation must protect.
+          if [ -n "$(git status --porcelain --untracked-files=no -- ios/FleetNotifier.xcodeproj)" ]; then
+            echo "::error::Xcode project bundle has tracked or staged changes."
+            git status --short --untracked-files=no -- ios/FleetNotifier.xcodeproj
             exit 1
           fi
 
-          if git ls-files | grep -Eq '\.(p8|p12|mobileprovision|cer)$|^fastlane/\.env$'; then
+          # awk consumes the complete index listing, so pipefail cannot turn
+          # an early grep exit into a false negative; disabling C-quoting also
+          # keeps extension checks correct for non-ASCII paths.
+          tracked_credentials="$(git -c core.quotePath=false ls-files | awk '
+            /\.(p8|p12|mobileprovision|cer)$/ || /^fastlane\/\.env$/ { print }
+          ')"
+          if [ -n "$tracked_credentials" ]; then
             echo "::error::Credentials or signing material are tracked in the git index."
+            printf '%s\n' "$tracked_credentials"
             exit 1
           fi
 
@@ -232,9 +247,11 @@ jobs:
             git diff --stat -- ios/FleetNotifier.xcodeproj
             exit 1
           fi
-          if [ -n "$(git status --porcelain -- ios/FleetNotifier.xcodeproj)" ]; then
-            echo "::error::Xcode project bundle contains untracked or uncommitted changes."
-            git status --short -- ios/FleetNotifier.xcodeproj
+          # Generated xcuserdata is untracked by design; preserve the tracked
+          # restore assertion without treating that runner output as a leak.
+          if [ -n "$(git status --porcelain --untracked-files=no -- ios/FleetNotifier.xcodeproj)" ]; then
+            echo "::error::Xcode project bundle contains tracked or staged changes."
+            git status --short --untracked-files=no -- ios/FleetNotifier.xcodeproj
             exit 1
           fi
           echo "Xcode project bundle restored after the run."

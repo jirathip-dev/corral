@@ -31,5 +31,5 @@ condition = "AND"
 paths = ['''^\.github/workflows/ios-testflight\.yml$''']
 regexTarget = "line"
 regexes = [
-  '''echo "ASC_(?:KEY_PATH=\$key_path|KEY_ID=\$ASC_KEY_ID|ISSUER_ID=\$ASC_ISSUER_ID)"''',
+  '''^\s*echo "ASC_(?:KEY_PATH=\$key_path|KEY_ID=\$ASC_KEY_ID|ISSUER_ID=\$ASC_ISSUER_ID)"\s*$''',
 ]

@@ -5,16 +5,16 @@
 # (/usr/bin:/bin:/usr/sbin:/sbin), which omits Homebrew's bin. `gh` (git's
 # HTTPS credential helper) lives in Homebrew's bin, so `git fetch origin main`
 # fails with `gh: command not found` and the daemon silently drifts behind a
-# manual rebuild. This derives a runtime PATH that prepends Homebrew's bin (and
-# the rustup cargo bin) when present, so the update script can fetch and rebuild
-# under launchd. It is a no-op when neither is installed and must not fail under
+# manual rebuild. This derives a runtime PATH that prepends Homebrew's bin,
+# ~/.local/bin, and the rustup cargo bin when present, so launchd jobs can find
+# `gh` and cargo. It is a no-op when none are installed and must not fail under
 # `set -u`.
 #
 # Source-only: defines corral_prepend_update_path(). It is not runnable directly.
 set -euo pipefail
 
 # corral_prepend_update_path [candidate-bin ...]
-#   Prepends Homebrew's bin and ~/.cargo/bin to PATH when present.
+#   Prepends Homebrew's bin, ~/.local/bin, and ~/.cargo/bin to PATH when present.
 #   Candidate bin dirs may be passed explicitly (used by tests); by default the
 #   well-known Homebrew prefixes are tried. PATH is untouched when none exist.
 corral_prepend_update_path() {
@@ -22,6 +22,8 @@ corral_prepend_update_path() {
   local brew_path=""
   local candidate=""
   local cargo_bin=""
+  local local_bin=""
+  local extra=""
   local -a candidates=()
 
   if [[ "$#" -gt 0 ]]; then
@@ -55,7 +57,13 @@ corral_prepend_update_path() {
     cargo_bin="${HOME}/.cargo/bin"
   fi
 
-  for extra in "$brew_bin" "$cargo_bin"; do
+  # User-local installs (including a user-installed `gh`) live under ~/.local/bin.
+  # launchd does not inherit the interactive shell's user-local PATH entries.
+  if [[ -n "${HOME:-}" && -d "${HOME}/.local/bin" ]]; then
+    local_bin="${HOME}/.local/bin"
+  fi
+
+  for extra in "$brew_bin" "$cargo_bin" "$local_bin"; do
     if [[ -n "$extra" ]]; then
       case ":${PATH:-}:" in
         *":$extra:"*) ;;  # already present — leave as-is

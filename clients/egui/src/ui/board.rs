@@ -749,19 +749,20 @@ fn master_card_with_response(
                             let age_width =
                                 (available_width - item_spacing).clamp(0.0, CARD_AGE_WIDTH);
                             let left_width = (available_width - item_spacing - age_width).max(0.0);
+                            let left_text_width = (left_width - 8.0).max(0.0);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(left_width, 36.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.add_sized(
-                                        [left_width - 8.0, 18.0],
+                                        [left_text_width, 18.0],
                                         egui::Label::new(
                                             RichText::new(label).color(theme::ui::TEXT_STRONG),
                                         )
                                         .truncate(),
                                     );
                                     ui.add_sized(
-                                        [left_width - 8.0, 14.0],
+                                        [left_text_width, 14.0],
                                         egui::Label::new(
                                             RichText::new(location)
                                                 .small()
@@ -772,11 +773,13 @@ fn master_card_with_response(
                                     );
                                 },
                             );
-                            ui.with_layout(
+                            // `add_sized` centers its widget. Keep the full age reserve, but
+                            // place the label right-to-left so its right edge stays card-hugging.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(age_width, 36.0),
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.add_sized(
-                                        [age_width, 18.0],
+                                    ui.add(
                                         egui::Label::new(
                                             RichText::new(state_time)
                                                 .small()
@@ -2318,6 +2321,74 @@ mod tests {
             Some("herdr:cards"),
             "clicking a Cards master card selects it"
         );
+    }
+
+    #[test]
+    fn master_card_age_right_edge_is_stable_across_lengths() {
+        let ctx = row_test_context();
+        let now = 1_700_000_000_000_u64;
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:age-edge".into();
+        agent.display_name = Some("age edge card".into());
+        agent.ts = now;
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent);
+
+        let render_age_right = |now_ms: u64, expected: &str| {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(472.8, 800.0));
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let (_, card_rect, mut output) =
+                master_card_frame(&ctx, &fleet, "herdr:age-edge", false, now_ms, input);
+            let card_right = card_rect.expect("master card rendered").right();
+            let rendered = rendered_text(&output, expected)
+                .unwrap_or_else(|| panic!("{expected} did not render"));
+            clear_textures(&mut output);
+            (card_right, rendered.rect.right())
+        };
+
+        let short = render_age_right(now + 42 * 60_000, "Working · 42m");
+        let long = render_age_right(now + 100 * 24 * 60 * 60_000, "Working · 100d 00h");
+        let short_inset = short.0 - short.1;
+        let long_inset = long.0 - long.1;
+        assert!(
+            (short_inset - long_inset).abs() <= 1.0,
+            "short and long ages must share the card-right inset within one rasterized pixel: short={short_inset}, long={long_inset}"
+        );
+    }
+
+    #[test]
+    fn master_card_clamps_left_label_sizes_at_narrow_width() {
+        let ctx = row_test_context();
+        let now = 1_700_000_000_000_u64;
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:narrow-card".into();
+        agent.display_name = Some("narrow card".into());
+        agent.ts = now;
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 800.0));
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+
+        let (_, card_rect, mut output) = master_card_frame(
+            &ctx,
+            &fleet,
+            "herdr:narrow-card",
+            false,
+            now + 42 * 60_000,
+            input,
+        );
+        assert!(card_rect.is_some(), "narrow master card still renders");
+        assert!(
+            rendered_text(&output, "Working · 42m").is_some(),
+            "narrow master card keeps its age label"
+        );
+        clear_textures(&mut output);
     }
 
     #[test]

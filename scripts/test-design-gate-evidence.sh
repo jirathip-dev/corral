@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Hermetic tests for scripts/design-gate-evidence.sh. They cover the supplied
 # PNG seam, complete-PNG rejection, visible provenance labels, explicit force
-# overwrites, normalized conformance stability, Chrome/egui writer completion,
-# argument validation, and the egui wake-command failure path.
+# overwrites, normalized conformance stability, complete-but-lingering writers,
+# TERM-ignoring child escalation, Chrome trust-boundary flags, argument
+# validation, and the egui wake-command failure path.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -59,6 +60,9 @@ PY
 cat > "$WORK/bin/chrome" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${CORRAL_TEST_CHROME_PID_FILE:-}" ]]; then
+  printf '%s\n' "$$" >"$CORRAL_TEST_CHROME_PID_FILE"
+fi
 if [[ "${CORRAL_TEST_CHROME_FAIL:-0}" == "1" ]]; then
   exit 23
 fi
@@ -73,7 +77,12 @@ done
 [[ -n "$output" && -n "$url" ]]
 html_path="${url#file://}"
 case "$output" in
-  *prototype.png) cp -- "$CORRAL_TEST_PROTOTYPE_PNG" "$output" ;;
+  *prototype.png)
+    cp -- "$CORRAL_TEST_PROTOTYPE_PNG" "$output"
+    if [[ -n "${CORRAL_TEST_PROTOTYPE_HTML:-}" ]]; then
+      cp -- "$html_path" "$CORRAL_TEST_PROTOTYPE_HTML"
+    fi
+    ;;
   *comparison.png)
     grep -q "issue #${CORRAL_TEST_EXPECTED_ISSUE}" "$html_path"
     grep -q "$CORRAL_TEST_EXPECTED_CAPTURE_KIND" "$html_path"
@@ -81,8 +90,20 @@ case "$output" in
     ;;
   *) cp -- "$CORRAL_TEST_LIVE_PNG" "$output" ;;
 esac
-sleep 1
+if [[ -n "${CORRAL_TEST_CHROME_ARGS_FILE:-}" ]]; then
+  printf '%s\n' "$*" >"$CORRAL_TEST_CHROME_ARGS_FILE"
+fi
 touch "$CORRAL_TEST_CHROME_FINISHED"
+if [[ "${CORRAL_TEST_CHROME_LINGER:-0}" == "1" ]]; then
+  exec "$PYTHON_BIN" - <<'PY'
+import signal
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+while True:
+    time.sleep(1)
+PY
+fi
 STUB
 chmod +x "$WORK/bin/chrome"
 
@@ -102,19 +123,63 @@ chmod +x "$WORK/bin/curl"
 cat > "$WORK/bin/egui" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${CORRAL_TEST_EGUI_PID_FILE:-}" ]]; then
+  printf '%s\n' "$$" >"$CORRAL_TEST_EGUI_PID_FILE"
+fi
 printf '%s\n' 'native screenshot evidence selected live agent; fixture writer'
-cp -- "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT"
-sleep 1
-touch "$CORRAL_TEST_EGUI_FINISHED"
+mode="${CORRAL_TEST_EGUI_MODE:-normal}"
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" ]]; then
+  exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
+from pathlib import Path
+import os
+import signal
+import sys
+import time
+
+source = Path(sys.argv[1]).read_bytes()
+destination = Path(sys.argv[2])
+mode = sys.argv[3]
+split = max(1, len(source) // 2)
+destination.write_bytes(source[:split])
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if mode == "partial-then-linger":
+    time.sleep(0.5)
+    with destination.open("ab") as stream:
+        stream.write(source[split:])
+    Path(os.environ["CORRAL_TEST_EGUI_FINISHED"]).touch()
+    while True:
+        time.sleep(1)
+else:
+    time.sleep(10)
+PY
+else
+  cp -- "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT"
+  touch "$CORRAL_TEST_EGUI_FINISHED"
+fi
+if [[ "$mode" == "term-ignore" ]]; then
+  exec "$PYTHON_BIN" - <<'PY'
+import signal
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+while True:
+    time.sleep(1)
+PY
+fi
 STUB
 chmod +x "$WORK/bin/egui"
 
 export CHROME_BIN="$WORK/bin/chrome"
+export PYTHON_BIN
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_LIVE_PNG="$WORK/live.png"
 export CORRAL_TEST_COMPOSITE_PNG="$WORK/composite.png"
 export CORRAL_TEST_CHROME_FINISHED="$WORK/chrome-finished"
 export CORRAL_TEST_EGUI_FINISHED="$WORK/egui-finished"
+export CORRAL_TEST_CHROME_ARGS_FILE="$WORK/chrome-args"
+export CORRAL_TEST_CHROME_PID_FILE="$WORK/chrome.pid"
+export CORRAL_TEST_EGUI_PID_FILE="$WORK/egui.pid"
+export CORRAL_TEST_PROTOTYPE_HTML="$WORK/prototype-view.html"
 export CORRAL_TEST_EXPECTED_ISSUE=211
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
 
@@ -143,6 +208,17 @@ run_capture() {
     "$@"
 }
 
+assert_stopped() {
+  local label="$1"
+  local pid_file="$2"
+  [[ -s "$pid_file" ]] || fail "$label did not publish its pid"
+  local pid
+  pid="$(<"$pid_file")"
+  if ps -p "$pid" >/dev/null 2>&1; then
+    fail "$label child pid $pid survived bounded cleanup"
+  fi
+}
+
 help_output="$(bash "$SCRIPT" --help)"
 [[ "$help_output" == *"Usage:"* ]] || fail "help output has no usage synopsis"
 [[ "$help_output" != *"#!/usr/bin/env bash"* ]] || fail "help output leaked shell source"
@@ -161,10 +237,24 @@ fi
 grep -q -- "--ios-command" "$WORK/missing-ios-command.log" \
   || fail "missing iOS live command error was not actionable"
 
-rm -f "$CORRAL_TEST_CHROME_FINISHED"
+rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE" "$CORRAL_TEST_CHROME_ARGS_FILE"
+export CORRAL_TEST_CHROME_LINGER=1
 run_capture
+unset CORRAL_TEST_CHROME_LINGER
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "Chrome writer was not allowed to exit cleanly"
+assert_stopped "lingering Chrome" "$CORRAL_TEST_CHROME_PID_FILE"
+grep -q -- "--remote-debugging-address=127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome DevTools endpoint was not explicitly loopback-bound"
+grep -q -- "--remote-allow-origins=http://127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome DevTools origin was not narrowed to loopback"
+if grep -q ':has(' "$CORRAL_TEST_PROTOTYPE_HTML"; then
+  fail "generated prototype view still has a load-bearing :has() selector"
+fi
+grep -q 'design-gate-surface-script' "$CORRAL_TEST_PROTOTYPE_HTML" \
+  || fail "generated prototype view has no surface-selection script"
+grep -q 'design-gate-target' "$CORRAL_TEST_PROTOTYPE_HTML" \
+  || fail "generated prototype view has no explicit target marker"
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
   [[ -s "$WORK/output/issue-211/$artifact" ]] || fail "missing artifact after first run: $artifact"
 done
@@ -175,6 +265,10 @@ grep -q 'explicit supplied PNG fixture' "$WORK/output/issue-211/conformance.md" 
   || fail "fixture provenance is not explicit"
 grep -q '2400x960' "$WORK/output/issue-211/conformance.md" \
   || fail "composite dimensions are not recorded"
+grep -q 'complete, CRC-checked PNG' "$WORK/output/issue-211/conformance.md" \
+  || fail "complete-PNG success contract is not recorded"
+grep -q 'loopback-only' "$WORK/output/issue-211/conformance.md" \
+  || fail "Chrome trust boundary is not recorded"
 
 before_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
 before_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
@@ -227,7 +321,9 @@ grep -q '900x900' "$WORK/ios-output/issue-205/conformance.md" \
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_EXPECTED_ISSUE=213
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
-rm -f "$CORRAL_TEST_EGUI_FINISHED"
+rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=partial-then-linger
+egui_partial_start_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
 PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
   --issue 213 \
   --surface egui \
@@ -240,10 +336,61 @@ PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
   --timeout-seconds 5 \
   --output-root "$WORK/egui-output" \
   --chrome-timeout-seconds 5
+egui_partial_end_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
+egui_partial_elapsed_ms="$(( (egui_partial_end_ns - egui_partial_start_ns) / 1000000 ))"
+(( egui_partial_elapsed_ms >= 400 )) \
+  || fail "egui accepted the partial PNG before the writer completed (${egui_partial_elapsed_ms}ms)"
 [[ -f "$CORRAL_TEST_EGUI_FINISHED" ]] \
   || fail "egui writer was not allowed to exit cleanly"
+assert_stopped "partial then lingering egui" "$CORRAL_TEST_EGUI_PID_FILE"
 grep -q 'native egui viewport screenshot' "$WORK/egui-output/issue-213/conformance.md" \
   || fail "egui capture provenance is missing"
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=215
+rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=term-ignore
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 215 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/term-ignore-output" \
+  --chrome-timeout-seconds 5
+[[ -f "$CORRAL_TEST_EGUI_FINISHED" ]] \
+  || fail "TERM-ignoring egui writer did not publish its complete PNG"
+assert_stopped "TERM-ignoring egui" "$CORRAL_TEST_EGUI_PID_FILE"
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=216
+rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=partial-stuck
+if PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 216 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 1 \
+  --output-root "$WORK/partial-stuck-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/partial-stuck.log" 2>&1; then
+  fail "stuck partial PNG unexpectedly succeeded"
+fi
+grep -q 'complete PNG' "$WORK/partial-stuck.log" \
+  || fail "stuck partial PNG failure did not name the complete-PNG contract"
+assert_stopped "stuck partial egui" "$CORRAL_TEST_EGUI_PID_FILE"
+[[ ! -e "$WORK/partial-stuck-output/issue-216/comparison.png" ]] \
+  || fail "stuck partial PNG was published as evidence"
+unset CORRAL_TEST_EGUI_MODE
 
 export CORRAL_TEST_EXPECTED_ISSUE=214
 if PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
@@ -271,10 +418,12 @@ shopt -s nullglob
 staging_entries=(
   "$WORK/output/issue-211"/.design-gate.stage.*
   "$WORK/egui-output/issue-213"/.design-gate.stage.*
+  "$WORK/term-ignore-output/issue-215"/.design-gate.stage.*
+  "$WORK/partial-stuck-output/issue-216"/.design-gate.stage.*
   "$WORK/wake-output/issue-214"/.design-gate.stage.*
 )
 if [[ "${#staging_entries[@]}" -ne 0 ]]; then
   fail "temporary staging directory survived a failed run"
 fi
 
-echo "OK: design-gate evidence validation, provenance, reruns, capture seams, and failure paths"
+echo "OK: design-gate evidence validation, complete-PNG contract, bounded cleanup, trust boundary, capture seams, and failure paths"

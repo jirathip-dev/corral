@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: ["**"]
+  schedule:
+    - cron: "17 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -67,6 +69,22 @@ jobs:
       # hold the line.
       - name: cargo fmt --check
         run: cargo fmt --check
+
+      # Install checksum-verified release binaries after selecting the pinned
+      # Rust toolchain. `fallback: none` prevents an unexpected source build;
+      # the pinned action release carries the tool versions and is maintained
+      # by the GitHub Actions Dependabot group below.
+      - name: Install cargo-deny and cargo-audit
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-deny,cargo-audit
+          fallback: none
+
+      - name: cargo deny --locked --workspace check
+        run: cargo deny --locked --workspace check
+
+      - name: cargo audit --deny warnings
+        run: cargo audit --deny warnings
 
       # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
       # the wayland/x11/GL system packages below. Keeping all three workspace

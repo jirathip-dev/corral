@@ -6,6 +6,13 @@ fastlane/certs/
 fastlane/README.md
 build/
 
+# Generated output is outside the anti-slop source scope. Keep both the
+# project's generated iOS build tree and the vendored SwiftPM build products
+# out of the worktree.
+ios/build/
+ios/tools/anti-slop-swift/.build/
+ios/tools/anti-slop-swift/.swiftpm/
+
 # Credential material — never tracked. The #36 leak was a tracked
 # fastlane/.env whose own first line claimed it was gitignored; the CI
 # secret scan (.github/workflows/secret-scan.yml) now enforces this against

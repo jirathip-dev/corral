@@ -32,6 +32,49 @@ jobs:
       - name: Fail on Xcode project spec drift
         run: git diff --exit-code -- ios/
 
+      # Advisory-first: the vendored package and Package.resolved keep the
+      # SwiftSyntax tool reproducible, while the two source paths deliberately
+      # exclude generated ios/build/. A non-zero lint run is annotated and
+      # allowed through so this adoption does not become an iOS build gate.
+      - name: anti-slop Swift lint (advisory)
+        continue-on-error: true
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/anti-slop.txt"
+          set +e
+          swift run --package-path tools/anti-slop-swift anti-slop \
+            FleetNotifier FleetNotifierTests 2>&1 | tee "$output"
+          lint_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$lint_status" -eq 0 ]; then
+            echo "::notice::anti-slop clean for FleetNotifier and FleetNotifierTests"
+            exit 0
+          fi
+
+          # Convert the linter's stable file:line:column diagnostics into
+          # review-visible warnings. Build/resolution failures still produce
+          # the generic advisory below and remain non-blocking by design.
+          while IFS=: read -r file line column kind message; do
+            [ "$kind" = " error" ] || continue
+            case "$file" in
+              FleetNotifier/*|FleetNotifierTests/*) ;;
+              *) continue ;;
+            esac
+            message="${message# }"
+            rule="${message#\[}"
+            rule="${rule%%\]*}"
+            detail="${message#*\] }"
+            detail="${detail//'%'/'%25'}"
+            detail="${detail//$'\r'/'%0D'}"
+            detail="${detail//$'\n'/'%0A'}"
+            echo "::warning file=ios/$file,line=$line,col=$column,title=anti-slop/$rule::$detail"
+          done < <(grep -E '^(FleetNotifier|FleetNotifierTests)/' "$output" | grep -E ':[0-9]+:[0-9]+: error: \[[^]]+\] ' || true)
+
+          echo "::warning::anti-slop exited $lint_status; findings are advisory until the baseline is retired"
+          exit "$lint_status"
+
       # Resolve a concrete simulator by UDID instead of hardcoding a device
       # name. The first run of this job failed with exit 70: it asked for
       # `name=iPhone 16` while the macos-latest image (Xcode 26.6) had moved

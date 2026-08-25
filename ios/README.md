@@ -32,6 +32,7 @@ ios/
   check-release-demo.py           source and Release-binary demo boundary gate
   embed-release-source-digest.py  Release build-phase source-digest generator
   release_source_manifest.py      shared source manifest/digest implementation
+  tools/anti-slop-swift/          pinned, vendored SwiftSyntax advisory linter
 ```
 
 ## Build
@@ -88,6 +89,59 @@ scripts as explicit Release `inputFiles`; the generated project preserves
 those declarations and quotes its `SRCROOT`/`DERIVED_FILE_DIR` paths. This
 keeps the user-script sandbox inputs explicit and supports build paths with
 spaces.
+
+## Swift lint (advisory)
+
+`tools/anti-slop-swift` is a checked-in snapshot of
+[sawfwair/anti-slop-swift](https://github.com/sawfwair/anti-slop-swift)
+`v0.1.7` at commit `0c63917fd59c30230c47561e3442ddd4e7cc6d6a`. The package's
+MIT license and tests are included, and its `Package.resolved` pins
+SwiftSyntax `600.0.1` at revision
+`0687f71944021d616d34d922343dcef086855920`. This avoids a global install or a
+floating tool dependency; `swift run` builds the committed package with the
+available Swift 6+ toolchain (verified here with Swift 6.3.3/Xcode 26.6).
+
+Run the same source-scoped command used by CI from the repository root:
+
+```sh
+swift run --package-path ios/tools/anti-slop-swift anti-slop \
+  ios/FleetNotifier ios/FleetNotifierTests
+```
+
+The committed root `.anti-slop.json` initially disables
+`no-any-dictionary-value` and `no-any-parameters`. The command intentionally
+passes only `FleetNotifier` and `FleetNotifierTests`; generated `ios/build/`
+is therefore excluded and is never linted. The CI step emits GitHub warning
+annotations for findings and uses `continue-on-error` while this baseline is
+being retired.
+
+Measured on 2026-08-25 with Swift 6.3.3:
+
+| Run | Violations | Files traversed | Rule types | Outcome |
+|---|---:|---:|---:|---|
+| Before the config | 104 | 24 | 5 | Baseline; exit 1 |
+| With the committed config | 77 | 24 | 4 | Advisory; exit 1 |
+
+The pre-fix baseline is dominated by `FleetNotifierTests.swift` (89 of 104
+findings). The 27 disabled dictionary findings are five Keychain query/update
+dictionaries in `DeviceKeyStore.swift`, five APNs `userInfo` boundary
+dictionaries in `PushPayload.swift`, and 17 matching test fixtures/parsing
+helpers in `FleetNotifierTests.swift`. They are intentionally left for a
+typed Foundation-boundary follow-up; `no-any-parameters` had no baseline hits
+but remains disabled initially as requested.
+
+The enabled advisory findings are triaged as follows:
+
+| Rule | Remaining hits | Disposition |
+|---|---:|---|
+| `no-force-unwrap` | 71 | Three production fallback/URL sites and 68 deterministic test fixtures/helpers. Replace dynamic cases with guarded/XCTUnwrap paths and document or remove only the verified static fixture invariants before making the gate blocking. |
+| `no-shape-in-symbol-names` | 3 | Test method names use “shape” to describe daemon wire fixtures. Rename them in a focused cleanup; no runtime behavior is implicated. |
+| `no-swallowed-errors` | 2 | `AppModel` deliberately keeps cached grants after refresh failure; `LocalNotifier` deliberately keeps the in-app claim path after notification authorization denial. Add explicit logging or user-facing recovery before enabling this rule as a blocking gate. |
+| `no-force-try` | 1 | Test-only `DeviceMeta` JSON seeding uses a known `Codable` value. Make the helper throwing/XCTUnwrap-based in a focused test cleanup. |
+
+No application source, assertion, or test behavior was changed for this
+advisory adoption. The remaining findings are visible in CI and documented
+above rather than hidden by broad rule changes.
 
 ## Signing / distribution status
 

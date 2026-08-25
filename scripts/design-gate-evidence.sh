@@ -738,6 +738,7 @@ class SurfaceParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.target_class = target_class
         self.stack = []
+        self.template_depth = 0
         self.found = False
 
     @staticmethod
@@ -762,10 +763,19 @@ class SurfaceParser(HTMLParser):
         return False
 
     def handle_starttag(self, tag, attrs):
-        node = {"tag": tag.lower(), "classes": self._classes(attrs)}
+        tag = tag.lower()
+        node = {"tag": tag, "classes": self._classes(attrs)}
         self.stack.append(node)
-        if self.target_class in node["classes"] and self._has_valid_frame_ancestor():
+        # The template element itself remains in the DOM; only its content is
+        # inert and unreachable by the frame's querySelector.
+        if (
+            self.template_depth == 0
+            and self.target_class in node["classes"]
+            and self._has_valid_frame_ancestor()
+        ):
             self.found = True
+        if tag == "template":
+            self.template_depth += 1
         if node["tag"] in self._void_tags:
             self.stack.pop()
 
@@ -778,6 +788,9 @@ class SurfaceParser(HTMLParser):
         tag = tag.lower()
         for index in range(len(self.stack) - 1, -1, -1):
             if self.stack[index]["tag"] == tag:
+                self.template_depth -= sum(
+                    node["tag"] == "template" for node in self.stack[index:]
+                )
                 del self.stack[index:]
                 return
 
@@ -816,11 +829,6 @@ body { padding: 8px !important; }
     """
     width, height = 1160, 631
 elif surface == "ios":
-    if ".phone" not in source:
-        raise SystemExit(
-            f"iOS prototype must contain a .phone surface: {source_path}; "
-            "pass the approved iOS HTML with --prototype"
-        )
     style = """
 html, body { width: 900px !important; height: 900px !important; overflow: hidden !important; }
     body { padding: 8px !important; }

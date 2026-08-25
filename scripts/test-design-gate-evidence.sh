@@ -189,10 +189,13 @@ if [[ "${CORRAL_TEST_PNG_RACE:-0}" == "1" \
   && "${2:-}" == *"live-after.png" \
   && ! -e "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]]; then
   touch "$CORRAL_TEST_PNG_RACE_INTERCEPTED"
-  # Run the real validator against the partial file first. Then let the
-  # writer finish and exit, but report the first validation as failed so the
-  # production waiter's exit-during-validation recheck is exercised.
-  "$CORRAL_TEST_REAL_PYTHON" "$@" >/dev/null 2>&1 || true
+  # Run the real validator against the partial file first. Its rejection is
+  # part of this seam; then let the writer finish and exit while reporting the
+  # first validation as failed so the production recheck is exercised.
+  if "$CORRAL_TEST_REAL_PYTHON" "$@" >/dev/null 2>&1; then
+    echo "race validator unexpectedly accepted the partial PNG" >&2
+    exit 1
+  fi
   touch "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"
   deadline=$((SECONDS + 5))
   while [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" \
@@ -215,6 +218,20 @@ cat > "$WORK/malformed-prototype.html" <<'HTML'
     <div class="wrapper">
       <section class="frame"><div class="desk"></div></section>
     </div>
+  </main>
+</body>
+</html>
+HTML
+
+cat > "$WORK/template-prototype.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Template design gate fixture</title><style>.desk {}</style></head>
+<body>
+  <main class="rack">
+    <section class="frame">
+      <template><div class="desk"></div></template>
+    </section>
   </main>
 </body>
 </html>
@@ -323,22 +340,33 @@ for candidate in \
   fi
 done
 if [[ -n "$REAL_CHROME_BIN" ]]; then
-  if CHROME_BIN="$REAL_CHROME_BIN" bash "$SCRIPT" \
-    --issue 217 \
-    --surface egui \
-    --prototype "$WORK/malformed-prototype.html" \
-    --live-png "$WORK/live.png" \
-    --output-root "$WORK/malformed-output" \
-    --chrome-timeout-seconds 5 \
-    >"$WORK/malformed.log" 2>&1; then
-    fail "malformed prototype unexpectedly published evidence"
-  fi
-  grep -q 'body > .rack > .frame' "$WORK/malformed.log" \
-    || fail "malformed prototype failure did not identify the required structure"
-  for artifact in prototype.png live-after.png comparison.png conformance.md; do
-    [[ ! -e "$WORK/malformed-output/issue-217/$artifact" ]] \
-      || fail "malformed prototype published $artifact"
-  done
+  assert_rejected_prototype() {
+    local name="$1"
+    local issue="$2"
+    local prototype="$3"
+    local output_root="$WORK/$name-output"
+    local log_path="$WORK/$name.log"
+
+    if CHROME_BIN="$REAL_CHROME_BIN" bash "$SCRIPT" \
+      --issue "$issue" \
+      --surface egui \
+      --prototype "$prototype" \
+      --live-png "$WORK/live.png" \
+      --output-root "$output_root" \
+      --chrome-timeout-seconds 5 \
+      >"$log_path" 2>&1; then
+      fail "$name prototype unexpectedly published evidence"
+    fi
+    grep -q 'body > .rack > .frame' "$log_path" \
+      || fail "$name prototype failure did not identify the required structure"
+    for artifact in prototype.png live-after.png comparison.png conformance.md; do
+      [[ ! -e "$output_root/issue-$issue/$artifact" ]] \
+        || fail "$name prototype published $artifact"
+    done
+  }
+
+  assert_rejected_prototype malformed 217 "$WORK/malformed-prototype.html"
+  assert_rejected_prototype template 218 "$WORK/template-prototype.html"
 else
   echo "SKIP: real Chrome unavailable for structural prototype regression" >&2
 fi

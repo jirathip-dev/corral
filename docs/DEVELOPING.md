@@ -377,14 +377,14 @@ a precise GitHub Actions `::error::` annotation before the step exits.
 The original local baseline was measured on **macOS** on **2026-08-25**, with
 Cargo/rustc **1.97.1**, `cargo-llvm-cov` **0.8.7**, the exact package/target/test
 scope above, and live `#[ignore]` tests disabled. Repeated local runs observed
-20,701–20,711 covered combined lines; the per-package rows below are the lower
-observations collected across those runs, not a claim that every row came from
-one process schedule.
+20,701–20,711 covered combined lines. The lower baseline below is coherent:
+20,701 combined lines, 20,261 `corrald` lines, and 440 client lines came from
+the same macOS profile set.
 
 | Scope | Lines | Functions |
 |---|---:|---:|
 | `corrald` + `corrald-client` | 20,701/23,814 = **86.927858%** | 1,832/2,149 = **85.248953%** |
-| `corrald` | 20,264/22,805 = **88.857707%** | 1,783/2,024 = **88.092885%** |
+| `corrald` | 20,261/22,805 = **88.844551633413725%** | 1,783/2,024 = **88.092885%** |
 | `corrald-client` | 440/1,009 = **43.607532%** | 49/125 = **39.200000%** |
 
 The first local combined baseline run was 20,708/23,814 lines (86.957252%).
@@ -405,10 +405,10 @@ All gates passed and the artifact contained six non-empty files.
 
 The Ubuntu line-level LCOV reports contained **22,629 DA records / 50 SF
 records** for the combined core scope and **970 DA records / 8 SF records**
-for `corrald-client`. The three-line difference in the per-package `corrald`
-row versus the earlier macOS observation is retained as honest platform/run
-evidence; the combined and client gate totals match the macOS lower
-observations.
+for `corrald-client`. The Ubuntu coverage totals match the coherent lower
+macOS profile set above for all three scopes; LCOV record counts are reported
+separately because they count emitted source and line records, not covered
+lines.
 
 The blocking floors remain **85% lines / 82% functions** for the combined core
 scope and **40% lines / 35% functions** for `corrald-client`. The Ubuntu

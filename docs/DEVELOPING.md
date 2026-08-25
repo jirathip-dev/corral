@@ -159,8 +159,8 @@ icon.
 
 ```sh
 cargo fmt --check
-cargo deny check
-cargo audit
+cargo deny --workspace check
+cargo audit --deny warnings
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test --workspace
@@ -183,18 +183,18 @@ knowing before you push:
   Linux is real. If a test touches canonicalized paths, assume the two
   platforms disagree until CI says otherwise.
 
-Verified results on main:
+Historical verified results on main:
 
 | Gate | Result |
 |---|---|
 | `cargo build --release` | `Finished \`release\` profile [optimized]` (2m44s cold) |
 | `cargo clippy --all-targets -- -D warnings` | clean, no warnings |
 | `cargo test` | all green — 95 lib + 24 + 15 + 8 + 2 + 7 + 11 + 11 + 3 tests |
-| `cargo test -p corrald-client` | 12 unit + 4 wire-format pins green; live suite `#[ignore]`d |
+| `cargo test -p corrald-client` | 12 unit + 4 wire-format pins green; live suite `#[ignore]`d at that baseline |
 
 The R1–R10 conformance scenarios (register, read path + SSE resume,
 signed drive executes, tamper refused, read-only denied, replay
-idempotent, stale-hash refused, matching approve, step-up, audit growth)
+idempotent, stale-hash refused, matching approve, step-up, and audit growth)
 run against a **real spawned corrald** with a fake herdr unix server —
 fully self-contained, needs no live fleet:
 
@@ -202,39 +202,64 @@ fully self-contained, needs no live fleet:
 cargo test -p corrald-client -- --ignored
 ```
 
-Verified: 12/12 pass. This is the W1 acceptance bar shared by both P4
+R11 (GitHub PR binding) additionally requires read-only GitHub access and a
+suitable open PR on a tracked repository. Verified locally on 2026-08-25:
+13/13 ignored conformance tests pass. This is the W1 acceptance bar shared by both P4
 clients.
 
 ## Supply-chain gates and baseline
 
-[`deny.toml`](../deny.toml) is the workspace supply-chain policy. It checks
-all workspace features and target-specific dependency branches, allows the
-permissive MIT-compatible licenses used by the current graph, rejects unknown
-registries and git sources, and blocks legacy `failure`, `rust-crypto`, and
-`yaml-rust` crates. The advisory ignore list is intentionally empty. A new
-RustSec vulnerability, unapproved license, unapproved source, or banned crate
-therefore fails the gate; duplicate dependency versions are warn-level until
-an upstream release makes them removable.
+[`deny.toml`](../deny.toml) is the workspace supply-chain policy. The blocking
+command is `cargo deny --workspace check`: `--workspace` makes all three
+members (`corrald`, `corrald-client`, and `corrald-ui`) graph roots. Its
+`all-features` graph setting evaluates feature branches for every target, and
+`licenses.include-dev = true` includes workspace dev-dependencies in the
+license check. Private workspace crates are checked too. The checked-in
+`Cargo.lock` contains 554 package records; `cargo audit` scans that lockfile
+directly, while cargo-deny evaluates the complete workspace graph rooted at
+the three members.
 
-CI installs `cargo-deny` 0.20.2 and `cargo-audit` 0.22.2 after selecting the
-Rust version from the pinned `rust-toolchain.toml`. Dependabot is enabled in
-`.github/dependabot.yml` for both Cargo dependencies and GitHub Actions, with
-weekly update checks.
+The license policy allows the project's MIT/Apache-compatible dependency
+licenses plus the reviewed permissive BSL-1.0 and Zlib licenses. MPL-2.0 is
+accepted only for the transitive `option-ext` utility, because its copyleft is
+file-level and does not change this project's MIT/Apache terms. The bundled
+`epaint_default_fonts` asset crate is the only exception for OFL-1.1 and
+Ubuntu-font-1.0. CC0-1.0 is allowed as a public-domain dedication, not as an
+OSI-approved software license. Unknown registries and git sources fail, the
+legacy `failure`, `rust-crypto`, and `yaml-rust` crates are banned, and
+registry/git wildcard requirements fail. The two current wildcard path
+dependencies are private workspace dev-dependencies and are explicitly
+allowed by `allow-wildcard-paths`.
+
+CI selects the Rust version from the pinned `rust-toolchain.toml`, then uses
+the pinned `taiki-e/install-action` release to download checksum-verified
+`cargo-deny` 0.20.2 and `cargo-audit` 0.22.2 binaries with source-build
+fallback disabled. Dependabot groups Rust and GitHub Actions updates and
+prefixes their commits in `.github/dependabot.yml`. The Rust workflow keeps
+its push and pull-request triggers and also runs every Monday at 03:17 UTC so
+new advisories are checked even when the dependency graph is unchanged.
+
+`cargo-deny` explicitly denies all unmaintained and unsound advisory scopes,
+denies yanked crates, and has no advisory ignore list. CI runs
+`cargo audit --deny warnings`; cargo-audit reads `Cargo.lock` directly and
+does not take Cargo's `--locked` flag. cargo-deny 0.20.2 accepts `--locked` as
+a global option, but the documented blocking invocation above is the
+workspace graph check itself and does not mutate the lockfile.
 
 Measured local baseline on 2026-08-25, using Cargo/rustc 1.97.1,
 `cargo-deny` 0.20.2, and `cargo-audit` 0.22.2:
 
 | Run | Result |
 |---|---|
-| Initial `cargo deny check` before `deny.toml` | Exit 5: cargo-deny fell back to its default policy and rejected the graph's licenses. |
+| Initial root `cargo deny check` before `deny.toml` | Exit 5: cargo-deny fell back to its default policy and rejected the graph's licenses; this was not a full-workspace check. |
 | Initial `cargo audit` before remediation | Exit 1: one `RUSTSEC-2026-0258` finding for `h2` 0.4.15, used by `hyper`/`reqwest`; RustSec requires `h2` >=0.4.16. |
 | Remediation | `cargo update -p h2 --precise 0.4.16`; the checked-in lockfile now contains `h2` 0.4.16. |
-| Final `cargo deny check` | Exit 0: advisories, bans, licenses, and sources all passed; only existing duplicate-version warnings remain. |
-| Final `cargo audit` | Exit 0: no known vulnerabilities in the 554-dependency lockfile scan. |
+| Final `cargo deny --workspace check` | Exit 0: all workspace roots and their full feature/target graph passed advisories, bans, licenses, and sources; 40 existing duplicate-version warnings remain. |
+| Final `cargo audit --deny warnings` | Exit 0: no known vulnerabilities, yanked crates, or other advisory warnings in the 554-package lockfile scan. |
 
 The initial audit database contained 1,226 RustSec advisories. Neither CI
-gate has an advisory ignore, so future findings cannot be silently carried
-forward as part of this baseline.
+gate has an advisory ignore, and yanked/unsound findings are deny-level, so
+future findings cannot be silently carried forward as part of this baseline.
 
 ## Conventions
 

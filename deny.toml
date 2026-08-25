@@ -1,9 +1,9 @@
 # Supply-chain policy for every crate in the workspace.
 #
-# The empty target list means cargo-deny considers target-specific dependency
-# branches too. Keep this file strict enough to make a newly introduced
-# source, license, advisory, or banned dependency fail loudly while allowing
-# the permissive licenses already used by the Rust ecosystem.
+# `cargo deny --workspace check` uses every workspace member as a graph root.
+# Keep this file strict enough to make a newly introduced source, license,
+# advisory, or banned dependency fail loudly while allowing the reviewed
+# licenses already used by the Rust ecosystem.
 
 [graph]
 all-features = true
@@ -12,22 +12,46 @@ all-features = true
 # Do not add an advisory exception without a versioned, issue-linked reason.
 # An empty list makes every known RustSec vulnerability a blocking finding.
 ignore = []
+# Apply these checks to every graph node, including transitive dependencies.
+# In particular, unsound and yanked crates must never be silently tolerated.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
 
 [licenses]
-# Corral is dual-licensed MIT OR Apache-2.0. These additional licenses are
-# permissive, OSI-approved dependency licenses compatible with distribution
-# alongside this project; copyleft licenses are intentionally not included.
+# Corral's own crates are dual-licensed MIT OR Apache-2.0. Every dependency,
+# including workspace dev-dependencies, must use a license listed here or in a
+# crate-specific exception below. CC0-1.0 is a public-domain dedication, not
+# an OSI-approved software license; it is allowed on that narrower basis.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
+    # Permissive license used by the transitive clipboard support graph.
+    "BSL-1.0",
     "BSD-3-Clause",
     "CC0-1.0",
     "ISC",
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    # Permissive license used by transitive hash/table dependencies.
+    "Zlib",
 ]
 confidence-threshold = 0.8
+# License checks include dev-dependencies so the every-crate policy covers
+# test and tool code as well as production dependencies.
+include-dev = true
+unused-license-exception = "deny"
+exceptions = [
+    # option-ext is a small transitive directory utility. Its MPL-2.0
+    # file-level copyleft is accepted only for this reviewed crate, rather
+    # than globally.
+    { name = "option-ext", allow = ["MPL-2.0"] },
+    # epaint_default_fonts embeds font assets under OFL-1.1 and
+    # Ubuntu-font-1.0. Those font-specific terms are accepted only for the
+    # bundled asset crate.
+    { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+]
 
 [licenses.private]
 ignore = false
@@ -36,8 +60,12 @@ ignore = false
 # Duplicate versions are useful maintenance warnings, but not every
 # transitive duplicate can be removed without an upstream release.
 multiple-versions = "warn"
-# A new wildcard requirement makes future lockfile changes unreviewable.
+# A new registry/git wildcard requirement makes future lockfile changes
+# unreviewable. The two current wildcard path edges are private workspace
+# dev-dependencies: they intentionally point at the checked-in root package,
+# cannot be published, and do not select an unreviewed external source.
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

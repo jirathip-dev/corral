@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: ["**"]
+  schedule:
+    - cron: "17 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -68,25 +70,21 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
-      # Keep the supply-chain tools pinned and install them only after the
-      # repository's Rust toolchain has been selected above. `deny.toml`
-      # enables all workspace features and target-specific dependency branches
-      # for the root `cargo deny check`; cargo-audit scans the same checked-in
-      # workspace lockfile.
+      # Install checksum-verified release binaries after selecting the pinned
+      # Rust toolchain. `fallback: none` prevents an unexpected source build;
+      # the pinned action release carries the tool versions and is maintained
+      # by the GitHub Actions Dependabot group below.
       - name: Install cargo-deny and cargo-audit
-        env:
-          CARGO_DENY_VERSION: 0.20.2
-          CARGO_AUDIT_VERSION: 0.22.2
-        run: |
-          set -euo pipefail
-          cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
-          cargo install --locked --version "$CARGO_AUDIT_VERSION" cargo-audit
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-deny,cargo-audit
+          fallback: none
 
-      - name: cargo deny check
-        run: cargo deny check
+      - name: cargo deny --workspace check
+        run: cargo deny --workspace check
 
-      - name: cargo audit
-        run: cargo audit
+      - name: cargo audit --deny warnings
+        run: cargo audit --deny warnings
 
       # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
       # the wayland/x11/GL system packages below. Keeping all three workspace

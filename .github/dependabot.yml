@@ -6,9 +6,22 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps(rust)"
+      prefix-development: "deps-dev(rust)"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci(deps)"

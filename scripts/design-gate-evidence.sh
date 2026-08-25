@@ -19,7 +19,9 @@
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
 # through headless Chrome at 1160×631. A custom HTML target can be supplied with
 # --prototype; egui targets must contain .desk and iOS targets must contain
-# .phone. The source is wrapped without changing the checked-in prototype.
+# .phone. The iOS surface is rendered at 900×900 so the complete phone frame
+# remains visible. The source is wrapped without changing the checked-in
+# prototype.
 #
 # egui capture is deliberately live-only by default. The script requires a
 # healthy --host-url (default http://127.0.0.1:8474), builds
@@ -48,9 +50,10 @@
 # frame. Its provenance says that the PNG was supplied rather than captured by
 # this run; it never silently becomes live evidence. --dry-run validates the
 # interface and prints the planned capture without writing an evidence bundle.
-# Re-runs are safe: all work is staged in a private temporary directory below
-# the target issue directory, existing evidence is untouched on failure, and
-# the validated files are replaced at the end using atomic file renames.
+# Existing evidence is never overwritten unless --force is explicit. Re-runs
+# with --force are safe: all work is staged in a private temporary directory
+# below the target issue directory, existing evidence is untouched on failure,
+# and the validated files are replaced at the end using atomic file renames.
 #
 # Dependencies: Bash 3+, Python 3, headless-capable Chrome/Chromium, and (for
 # native captures) curl/cargo or hermes-sim-task as described above. Set
@@ -75,6 +78,7 @@ EGUI_DELAY_MS="8000"
 EGUI_WAKE_COMMAND="${CORRAL_EGUI_WAKE_COMMAND:-}"
 CAPTURE_TIMEOUT_SECONDS="90"
 CHROME_TIMEOUT_SECONDS="30"
+FORCE=0
 BUILD_EGUI=1
 BUILD_IOS=1
 IOS_APP=""
@@ -88,8 +92,12 @@ OUTPUT_ROOT="$REPO_DIR/docs/design/evidence"
 DRY_RUN=0
 
 usage() {
-  sed -n '1,82p' "$SCRIPT_DIR/$SCRIPT_NAME"
   cat <<'USAGE'
+Usage:
+  scripts/design-gate-evidence.sh --issue 206 --surface egui \
+    --live-agent herdr:AGENT_ID
+  scripts/design-gate-evidence.sh --issue 205 --surface ios \
+    --ios-mode demo
 
 Options:
   --issue N                  Target issue number (required).
@@ -111,6 +119,7 @@ Options:
   --ios-delay-seconds N       Wait before simulator screenshot (default: 4).
   --provenance-note TEXT      Extra operator/environment note in provenance.
   --output-root PATH          Evidence root override (test seam).
+  --force                     Permit replacement of an existing issue bundle.
   --no-build                  Refuse automatic egui/iOS builds.
   --dry-run                   Validate and print the planned operation only.
   -h, --help                  Show this help.
@@ -234,6 +243,10 @@ while [[ $# -gt 0 ]]; do
       require_value "$1" "${2:-}"
       OUTPUT_ROOT="$2"
       shift 2
+      ;;
+    --force)
+      FORCE=1
+      shift
       ;;
     --no-build)
       BUILD_EGUI=0
@@ -387,16 +400,67 @@ png_dimensions() {
 from pathlib import Path
 import struct
 import sys
+import zlib
 
 path = Path(sys.argv[1])
 data = path.read_bytes()
 if data[:8] != b"\x89PNG\r\n\x1a\n":
     raise SystemExit(f"{path} is not a PNG")
-if len(data) < 24:
-    raise SystemExit(f"{path} is truncated")
-width, height = struct.unpack(">II", data[16:24])
-if width == 0 or height == 0:
-    raise SystemExit(f"{path} has an empty dimension")
+offset = 8
+width = height = None
+idat = []
+seen_ihdr = False
+seen_iend = False
+while offset < len(data):
+    if len(data) - offset < 12:
+        raise SystemExit(f"{path} has a truncated PNG chunk")
+    length = struct.unpack(">I", data[offset:offset + 4])[0]
+    chunk_type = data[offset + 4:offset + 8]
+    payload_start = offset + 8
+    payload_end = payload_start + length
+    crc_end = payload_end + 4
+    if crc_end > len(data):
+        raise SystemExit(f"{path} has a truncated PNG chunk payload")
+    payload = data[payload_start:payload_end]
+    expected_crc = struct.unpack(">I", data[payload_end:crc_end])[0]
+    actual_crc = zlib.crc32(chunk_type + payload) & 0xFFFFFFFF
+    if actual_crc != expected_crc:
+        raise SystemExit(f"{path} has an invalid {chunk_type.decode('ascii', 'replace')} CRC")
+    if not seen_ihdr and chunk_type != b"IHDR":
+        raise SystemExit(f"{path} does not start with IHDR")
+    if chunk_type == b"IHDR":
+        if seen_ihdr or length != 13:
+            raise SystemExit(f"{path} has an invalid IHDR")
+        width, height = struct.unpack(">II", payload[:8])
+        if width == 0 or height == 0:
+            raise SystemExit(f"{path} has an empty dimension")
+        seen_ihdr = True
+    elif chunk_type == b"IDAT":
+        idat.append(payload)
+    elif chunk_type == b"IEND":
+        if length != 0:
+            raise SystemExit(f"{path} has a non-empty IEND")
+        seen_iend = True
+        offset = crc_end
+        break
+    offset = crc_end
+
+if not seen_ihdr or width is None or height is None:
+    raise SystemExit(f"{path} has no IHDR")
+if not seen_iend:
+    raise SystemExit(f"{path} is missing IEND")
+if offset != len(data):
+    raise SystemExit(f"{path} has data after IEND")
+if not idat:
+    raise SystemExit(f"{path} has no IDAT data")
+decoder = zlib.decompressobj()
+try:
+    decoder.decompress(b"".join(idat))
+    decoder.flush()
+except zlib.error as error:
+    raise SystemExit(f"{path} has incomplete IDAT data: {error}")
+if not decoder.eof or decoder.unused_data:
+    raise SystemExit(f"{path} has incomplete or trailing compressed IDAT data")
 print(f"{width}x{height}")
 PY
 }
@@ -419,6 +483,84 @@ with Path(sys.argv[1]).open("rb") as stream:
     for block in iter(lambda: stream.read(1024 * 1024), b""):
         digest.update(block)
 print(digest.hexdigest())
+PY
+}
+
+normalize_capture_log() {
+  "$PYTHON_BIN" - "$1" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+raw = path.read_text(encoding="utf-8", errors="replace")
+lines = [line.rstrip(" \t") for line in raw.splitlines()]
+normalized = "\n".join(lines)
+if raw.endswith(("\n", "\r")):
+    normalized += "\n"
+path.write_text(normalized, encoding="utf-8")
+PY
+}
+
+gracefully_close_chrome() {
+  local profile="$1"
+  [[ -s "$profile/DevToolsActivePort" ]] || return 1
+  "$PYTHON_BIN" - "$profile" <<'PY'
+import base64
+import json
+from pathlib import Path
+import secrets
+import socket
+import sys
+import time
+from urllib.request import urlopen
+from urllib.parse import urlsplit
+
+profile = Path(sys.argv[1])
+active_port = profile / "DevToolsActivePort"
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and not active_port.is_file():
+    time.sleep(0.05)
+if not active_port.is_file():
+    raise SystemExit("Chrome did not publish DevToolsActivePort")
+lines = active_port.read_text(encoding="utf-8").splitlines()
+if len(lines) < 2:
+    raise SystemExit("Chrome DevToolsActivePort is incomplete")
+port = int(lines[0])
+browser_path = lines[1]
+with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as response:
+    version = json.load(response)
+parts = urlsplit(version["webSocketDebuggerUrl"])
+key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+request = (
+    f"GET {parts.path} HTTP/1.1\r\n"
+    f"Host: 127.0.0.1:{port}\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    f"Sec-WebSocket-Key: {key}\r\n"
+    "Sec-WebSocket-Version: 13\r\n"
+    "Origin: http://localhost\r\n\r\n"
+).encode("ascii")
+payload = json.dumps({"id": 1, "method": "Browser.close"}).encode("utf-8")
+mask = secrets.token_bytes(4)
+masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+length = len(masked)
+if length < 126:
+    header = bytes((0x81, 0x80 | length))
+elif length < 65536:
+    header = bytes((0x81, 0xFE)) + length.to_bytes(2, "big")
+else:
+    raise SystemExit("Chrome close command is unexpectedly large")
+with socket.create_connection((parts.hostname, parts.port), timeout=2) as connection:
+    connection.sendall(request)
+    response = b""
+    while b"\r\n\r\n" not in response:
+        chunk = connection.recv(4096)
+        if not chunk:
+            raise SystemExit("Chrome closed the DevTools handshake")
+        response += chunk
+    if b" 101 " not in response.split(b"\r\n", 1)[0]:
+        raise SystemExit("Chrome rejected the DevTools handshake")
+    connection.sendall(header + mask + masked)
 PY
 }
 
@@ -464,14 +606,14 @@ elif surface == "ios":
             "pass the approved iOS HTML with --prototype"
         )
     style = """
-html, body { width: 900px !important; height: 820px !important; overflow: hidden !important; }
+html, body { width: 900px !important; height: 900px !important; overflow: hidden !important; }
 body { padding: 8px !important; }
 body > h1, body > .sub { display: none !important; }
 body > .rack { display: flex !important; flex-wrap: nowrap !important; width: 840px !important; gap: 28px !important; }
 body > .rack > .frame:has(.desk) { display: none !important; }
 body > .rack > .frame { flex: 0 0 auto !important; }
 """
-    width, height = 900, 820
+    width, height = 900, 900
 else:
     raise SystemExit(f"unsupported surface: {surface}")
 
@@ -499,7 +641,9 @@ run_chrome_screenshot() {
   local url
   local chrome_pid
   local deadline
+  local exit_status
   local dimensions
+  local close_requested=0
 
   mkdir -p "$profile"
   url="$(file_url "$html_path")"
@@ -517,6 +661,8 @@ run_chrome_screenshot() {
     --force-device-scale-factor=1 \
     --run-all-compositor-stages-before-draw \
     --allow-file-access-from-files \
+    --remote-debugging-port=0 \
+    --remote-allow-origins=http://localhost \
     --window-size="$width,$height" \
     --user-data-dir="$profile" \
     --no-first-run \
@@ -525,23 +671,38 @@ run_chrome_screenshot() {
     --screenshot="$output_path" \
     "$url" >"$chrome_log" 2>&1 &
   chrome_pid=$!
+  CAPTURE_PID="$chrome_pid"
   deadline=$((SECONDS + 10#$CHROME_TIMEOUT_SECONDS))
-  while [[ ! -s "$output_path" && $SECONDS -lt $deadline ]]; do
-    if ! kill -0 "$chrome_pid" 2>/dev/null; then
-      break
+  while kill -0 "$chrome_pid" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do
+    if [[ -s "$output_path" && "$close_requested" -eq 0 ]]; then
+      if gracefully_close_chrome "$profile"; then
+        log "requested graceful Chrome shutdown after $label completed"
+      else
+        warn "could not request graceful Chrome shutdown for $label; waiting for process exit"
+      fi
+      close_requested=1
     fi
     sleep 1
   done
-  if [[ ! -s "$output_path" ]]; then
-    kill "$chrome_pid" 2>/dev/null || true
-    wait "$chrome_pid" 2>/dev/null || true
-    tail -40 "$chrome_log" >&2 || true
-    die "headless Chrome did not produce $label within ${CHROME_TIMEOUT_SECONDS}s"
-  fi
   if kill -0 "$chrome_pid" 2>/dev/null; then
     kill "$chrome_pid" 2>/dev/null || true
+    set +e
+    wait "$chrome_pid"
+    exit_status=$?
+    set -e
+    CAPTURE_PID=""
+    tail -40 "$chrome_log" >&2 || true
+    die "headless Chrome did not finish $label within ${CHROME_TIMEOUT_SECONDS}s"
   fi
-  wait "$chrome_pid" 2>/dev/null || true
+  set +e
+  wait "$chrome_pid"
+  exit_status=$?
+  set -e
+  CAPTURE_PID=""
+  if [[ "$exit_status" -ne 0 ]]; then
+    tail -40 "$chrome_log" >&2 || true
+    die "headless Chrome exited with status $exit_status while rendering $label"
+  fi
   assert_png "$output_path"
   dimensions="$(png_dimensions "$output_path")"
   [[ "$dimensions" == "${width}x${height}" ]] \
@@ -550,7 +711,8 @@ run_chrome_screenshot() {
 
 make_composite_html() {
   local output="$1"
-  "$PYTHON_BIN" - "$STAGE/prototype.png" "$STAGE/live-after.png" "$output" "$ISSUE" "$SURFACE" <<'PY'
+  local capture_kind="$2"
+  "$PYTHON_BIN" - "$STAGE/prototype.png" "$STAGE/live-after.png" "$output" "$ISSUE" "$SURFACE" "$capture_kind" <<'PY'
 from html import escape
 from pathlib import Path
 import sys
@@ -560,6 +722,7 @@ live = Path(sys.argv[2]).resolve().as_uri()
 output = Path(sys.argv[3])
 issue = escape(sys.argv[4])
 surface = escape(sys.argv[5])
+capture_kind = escape(sys.argv[6])
 
 output.write_text(
     f"""<!doctype html>
@@ -588,7 +751,7 @@ output.write_text(
     <div class="sub">prototype ↔ live · surface: {surface} · deterministic capture bundle</div>
     <section class="panels">
       <article class="panel"><div class="label">Prototype · approved HTML render</div><div class="viewport"><img src="{prototype}" alt="Prototype render"></div></article>
-      <article class="panel"><div class="label">Live board · captured surface</div><div class="viewport"><img src="{live}" alt="Live board screenshot"></div></article>
+      <article class="panel"><div class="label">Live board · {capture_kind}</div><div class="viewport"><img src="{live}" alt="Live board screenshot"></div></article>
     </section>
   </main>
 </body>
@@ -709,20 +872,18 @@ PY
     fi
   fi
   deadline=$((SECONDS + 10#$CAPTURE_TIMEOUT_SECONDS))
-  while [[ ! -s "$STAGE/live-after.png" && $SECONDS -lt $deadline ]]; do
-    if ! kill -0 "$ui_pid" 2>/dev/null; then
-      break
-    fi
+  while kill -0 "$ui_pid" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do
     sleep 1
   done
-  if [[ ! -s "$STAGE/live-after.png" ]]; then
-    kill "$ui_pid" 2>/dev/null || true
-    wait "$ui_pid" 2>/dev/null || true
-    tail -80 "$STAGE/capture.log" >&2 || true
-    die "egui did not produce a screenshot within ${CAPTURE_TIMEOUT_SECONDS}s"
-  fi
   if kill -0 "$ui_pid" 2>/dev/null; then
     kill "$ui_pid" 2>/dev/null || true
+    set +e
+    wait "$ui_pid"
+    exit_status=$?
+    set -e
+    CAPTURE_PID=""
+    tail -80 "$STAGE/capture.log" >&2 || true
+    die "egui did not finish its screenshot within ${CAPTURE_TIMEOUT_SECONDS}s"
   fi
   set +e
   wait "$ui_pid"
@@ -730,7 +891,8 @@ PY
   set -e
   CAPTURE_PID=""
   if [[ "$exit_status" -ne 0 ]]; then
-    warn "egui exited with status $exit_status after writing the screenshot; see capture.log"
+    tail -80 "$STAGE/capture.log" >&2 || true
+    die "egui exited with status $exit_status before completing the live capture"
   fi
   if [[ -n "$LIVE_AGENT" ]] \
     && ! grep -q "native screenshot evidence selected live agent" "$STAGE/capture.log"; then
@@ -805,10 +967,11 @@ capture_ios() {
   command_text+="sleep $(shell_quote "$IOS_DELAY_SECONDS")"$'\n'
   command_text+="xcrun simctl io \"\$SIMULATOR_UDID\" screenshot $output_q"$'\n'
 
-  CAPTURE_KIND="iOS simulator screenshot via hermes-sim-task"
   if [[ "$IOS_MODE" == "demo" ]]; then
+    CAPTURE_KIND="iOS simulator screenshot via hermes-sim-task (Debug demo fixture)"
     LIVE_DESCRIPTION="explicit Debug -demoMode simulator fixture; not live-daemon evidence"
   else
+    CAPTURE_KIND="iOS simulator screenshot via hermes-sim-task (caller-prepared live app)"
     LIVE_DESCRIPTION="caller-prepared iOS live app in a private Herdr-owned simulator"
   fi
   CAPTURE_COMMAND="hermes-sim-task --shell <install/build, prepare, launch, and screenshot command>"
@@ -844,6 +1007,9 @@ print_dry_run() {
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
     log "egui wake: explicit caller command supplied"
   fi
+  if [[ -e "$output_dir" && "$FORCE" -eq 0 ]]; then
+    log "overwrite: blocked unless --force is supplied"
+  fi
 }
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -851,8 +1017,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-mkdir -p "$OUTPUT_ROOT"
 OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
+if [[ -e "$OUTPUT_DIR" ]]; then
+  [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
+  [[ "$FORCE" -eq 1 ]] \
+    || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
+fi
+mkdir -p "$OUTPUT_ROOT"
 mkdir -p "$OUTPUT_DIR"
 STAGE="$(mktemp -d "$OUTPUT_DIR/.design-gate.stage.XXXXXX")"
 CAPTURE_PID=""
@@ -890,9 +1061,10 @@ elif [[ "$SURFACE" == "egui" ]]; then
 else
   capture_ios
 fi
+normalize_capture_log "$STAGE/capture.log"
 
 COMPOSITE_HTML="$STAGE/comparison.html"
-make_composite_html "$COMPOSITE_HTML"
+make_composite_html "$COMPOSITE_HTML" "$CAPTURE_KIND"
 run_chrome_screenshot "$COMPOSITE_HTML" "$STAGE/comparison.png" 2400 960 comparison
 
 PROTOTYPE_SOURCE_SHA="$(sha256_file "$PROTOTYPE")"
@@ -926,8 +1098,10 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
     printf -- '- Host health URL: `%s` (checked before capture)\n' "$HOST_URL"
+  elif [[ "$SURFACE" == "ios" ]]; then
+    printf -- '- Host health URL: not applicable (iOS simulator capture)\n'
   else
-    printf -- '- Host health URL: not checked for this supplied capture\n'
+    printf -- '- Host health URL: not checked for this explicit supplied PNG fixture\n'
   fi
   if [[ -n "$LIVE_AGENT" ]]; then
     printf -- '- Selected live agent: `%s` (validated against `/snapshot`)\n' "$LIVE_AGENT"

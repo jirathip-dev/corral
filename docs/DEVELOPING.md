@@ -244,17 +244,24 @@ Debug fixture; live mode requires `--ios-command` to prepare and launch the
 real app inside the temporary simulator. The approved #205 transcript HTML is
 an optional checkout-specific override; when it is available, pass it with
 `--prototype`. Otherwise the script warns and uses the current
-token-compatible prototype:
+token-compatible prototype. The iOS prototype render uses a 900×900 viewport
+so the phone frame is not clipped:
 
 ```sh
 scripts/design-gate-evidence.sh --issue 205 --surface ios \
+  --force \
   --ios-mode demo
 ```
 
 `--live-png` is an explicit, provenance-labeled fixture seam for tests or a
-previously captured frame. Use `--dry-run` to inspect the resolved operation;
-`bash scripts/test-design-gate-evidence.sh` verifies the seam, dimensions,
-rerun behavior, and preservation of an existing bundle after a failed run.
+previously captured frame. Existing issue bundles require `--force` before they
+can be replaced. The composite labels supplied PNG and Debug-demo modes
+directly. Use `--dry-run` to inspect the resolved operation;
+`bash scripts/test-design-gate-evidence.sh` verifies complete-PNG validation,
+provenance labels, dimensions, force-gated reruns, writer completion, egui
+capture/wake seams, argument failures, and preservation of an existing bundle
+after a failed run. This remains a local/platform-dependent developer check;
+it is not wired into CI.
 
 ## Rust coverage gate and baseline
 

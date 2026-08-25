@@ -80,8 +80,8 @@ jobs:
           tool: cargo-deny,cargo-audit
           fallback: none
 
-      - name: cargo deny --workspace check
-        run: cargo deny --workspace check
+      - name: cargo deny --locked --workspace check
+        run: cargo deny --locked --workspace check
 
       - name: cargo audit --deny warnings
         run: cargo audit --deny warnings

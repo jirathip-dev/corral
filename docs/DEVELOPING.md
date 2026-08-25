@@ -159,7 +159,7 @@ icon.
 
 ```sh
 cargo fmt --check
-cargo deny --workspace check
+cargo deny --locked --workspace check
 cargo audit --deny warnings
 cargo clippy --all-targets -- -D warnings
 cargo build --release
@@ -210,12 +210,11 @@ clients.
 ## Supply-chain gates and baseline
 
 [`deny.toml`](../deny.toml) is the workspace supply-chain policy. The blocking
-command is `cargo deny --workspace check`: `--workspace` makes all three
+command is `cargo deny --locked --workspace check`: `--workspace` makes all three
 members (`corrald`, `corrald-client`, and `corrald-ui`) graph roots. Its
 `all-features` graph setting evaluates feature branches for every target, and
 `licenses.include-dev = true` includes workspace dev-dependencies in the
-license check. Private workspace crates are checked too. The checked-in
-`Cargo.lock` contains 554 package records; `cargo audit` scans that lockfile
+license check. The checked-in `Cargo.lock` contains 554 package records; `cargo audit` scans that lockfile
 directly, while cargo-deny evaluates the complete workspace graph rooted at
 the three members.
 
@@ -228,8 +227,9 @@ Ubuntu-font-1.0. CC0-1.0 is allowed as a public-domain dedication, not as an
 OSI-approved software license. Unknown registries and git sources fail, the
 legacy `failure`, `rust-crypto`, and `yaml-rust` crates are banned, and
 registry/git wildcard requirements fail. The two current wildcard path
-dependencies are private workspace dev-dependencies and are explicitly
-allowed by `allow-wildcard-paths`.
+dependencies are workspace dev-dependencies. `allow-wildcard-paths` applies
+cargo-deny's dev-dependency exemption to these non-registry path edges even
+though the workspace crates are currently publishable.
 
 CI selects the Rust version from the pinned `rust-toolchain.toml`, then uses
 the pinned `taiki-e/install-action` release to download checksum-verified
@@ -243,8 +243,8 @@ new advisories are checked even when the dependency graph is unchanged.
 denies yanked crates, and has no advisory ignore list. CI runs
 `cargo audit --deny warnings`; cargo-audit reads `Cargo.lock` directly and
 does not take Cargo's `--locked` flag. cargo-deny 0.20.2 accepts `--locked` as
-a global option, but the documented blocking invocation above is the
-workspace graph check itself and does not mutate the lockfile.
+a global option, and the documented blocking invocation rejects any
+Cargo.toml/Cargo.lock drift.
 
 Measured local baseline on 2026-08-25, using Cargo/rustc 1.97.1,
 `cargo-deny` 0.20.2, and `cargo-audit` 0.22.2:
@@ -254,7 +254,7 @@ Measured local baseline on 2026-08-25, using Cargo/rustc 1.97.1,
 | Initial root `cargo deny check` before `deny.toml` | Exit 5: cargo-deny fell back to its default policy and rejected the graph's licenses; this was not a full-workspace check. |
 | Initial `cargo audit` before remediation | Exit 1: one `RUSTSEC-2026-0258` finding for `h2` 0.4.15, used by `hyper`/`reqwest`; RustSec requires `h2` >=0.4.16. |
 | Remediation | `cargo update -p h2 --precise 0.4.16`; the checked-in lockfile now contains `h2` 0.4.16. |
-| Final `cargo deny --workspace check` | Exit 0: all workspace roots and their full feature/target graph passed advisories, bans, licenses, and sources; 40 existing duplicate-version warnings remain. |
+| Final `cargo deny --locked --workspace check` | Exit 0: all workspace roots and their full feature/target graph passed advisories, bans, licenses, and sources; 40 existing duplicate-version warnings remain. |
 | Final `cargo audit --deny warnings` | Exit 0: no known vulnerabilities, yanked crates, or other advisory warnings in the 554-package lockfile scan. |
 
 The initial audit database contained 1,226 RustSec advisories. Neither CI

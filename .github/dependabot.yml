@@ -11,8 +11,8 @@ updates:
         patterns:
           - "*"
     commit-message:
-      prefix: "deps(rust)"
-      prefix-development: "deps-dev(rust)"
+      prefix: "cargo"
+      prefix-development: "cargo"
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -24,4 +24,4 @@ updates:
         patterns:
           - "*"
     commit-message:
-      prefix: "ci(deps)"
+      prefix: "ci"

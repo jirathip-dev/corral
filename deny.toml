@@ -1,6 +1,7 @@
 # Supply-chain policy for every crate in the workspace.
 #
-# `cargo deny --workspace check` uses every workspace member as a graph root.
+# `cargo deny --locked --workspace check` uses every workspace member as a
+# graph root and refuses lockfile drift.
 # Keep this file strict enough to make a newly introduced source, license,
 # advisory, or banned dependency fail loudly while allowing the reviewed
 # licenses already used by the Rust ecosystem.
@@ -61,9 +62,10 @@ ignore = false
 # transitive duplicate can be removed without an upstream release.
 multiple-versions = "warn"
 # A new registry/git wildcard requirement makes future lockfile changes
-# unreviewable. The two current wildcard path edges are private workspace
-# dev-dependencies: they intentionally point at the checked-in root package,
-# cannot be published, and do not select an unreviewed external source.
+# unreviewable. The two current wildcard path edges are workspace
+# dev-dependencies. With allow-wildcard-paths enabled, cargo-deny's
+# dev-dependency exemption permits these non-registry path edges even though
+# the workspace crates are currently publishable.
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"

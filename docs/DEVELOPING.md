@@ -159,6 +159,8 @@ icon.
 
 ```sh
 cargo fmt --check
+cargo deny check
+cargo audit
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test --workspace
@@ -202,6 +204,37 @@ cargo test -p corrald-client -- --ignored
 
 Verified: 12/12 pass. This is the W1 acceptance bar shared by both P4
 clients.
+
+## Supply-chain gates and baseline
+
+[`deny.toml`](../deny.toml) is the workspace supply-chain policy. It checks
+all workspace features and target-specific dependency branches, allows the
+permissive MIT-compatible licenses used by the current graph, rejects unknown
+registries and git sources, and blocks legacy `failure`, `rust-crypto`, and
+`yaml-rust` crates. The advisory ignore list is intentionally empty. A new
+RustSec vulnerability, unapproved license, unapproved source, or banned crate
+therefore fails the gate; duplicate dependency versions are warn-level until
+an upstream release makes them removable.
+
+CI installs `cargo-deny` 0.20.2 and `cargo-audit` 0.22.2 after selecting the
+Rust version from the pinned `rust-toolchain.toml`. Dependabot is enabled in
+`.github/dependabot.yml` for both Cargo dependencies and GitHub Actions, with
+weekly update checks.
+
+Measured local baseline on 2026-08-25, using Cargo/rustc 1.97.1,
+`cargo-deny` 0.20.2, and `cargo-audit` 0.22.2:
+
+| Run | Result |
+|---|---|
+| Initial `cargo deny check` before `deny.toml` | Exit 5: cargo-deny fell back to its default policy and rejected the graph's licenses. |
+| Initial `cargo audit` before remediation | Exit 1: one `RUSTSEC-2026-0258` finding for `h2` 0.4.15, used by `hyper`/`reqwest`; RustSec requires `h2` >=0.4.16. |
+| Remediation | `cargo update -p h2 --precise 0.4.16`; the checked-in lockfile now contains `h2` 0.4.16. |
+| Final `cargo deny check` | Exit 0: advisories, bans, licenses, and sources all passed; only existing duplicate-version warnings remain. |
+| Final `cargo audit` | Exit 0: no known vulnerabilities in the 554-dependency lockfile scan. |
+
+The initial audit database contained 1,226 RustSec advisories. Neither CI
+gate has an advisory ignore, so future findings cannot be silently carried
+forward as part of this baseline.
 
 ## Conventions
 

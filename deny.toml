@@ -1,0 +1,60 @@
+# Supply-chain policy for every crate in the workspace.
+#
+# The empty target list means cargo-deny considers target-specific dependency
+# branches too. Keep this file strict enough to make a newly introduced
+# source, license, advisory, or banned dependency fail loudly while allowing
+# the permissive licenses already used by the Rust ecosystem.
+
+[graph]
+all-features = true
+
+[advisories]
+# Do not add an advisory exception without a versioned, issue-linked reason.
+# An empty list makes every known RustSec vulnerability a blocking finding.
+ignore = []
+
+[licenses]
+# Corral is dual-licensed MIT OR Apache-2.0. These additional licenses are
+# permissive, OSI-approved dependency licenses compatible with distribution
+# alongside this project; copyleft licenses are intentionally not included.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+[bans]
+# Duplicate versions are useful maintenance warnings, but not every
+# transitive duplicate can be removed without an upstream release.
+multiple-versions = "warn"
+# A new wildcard requirement makes future lockfile changes unreviewable.
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Legacy or unsafe alternatives are not acceptable additions to this public
+# workspace. Current dependencies use maintained replacements; a future
+# introduction of any of these names must fail the gate.
+deny = [
+    { name = "failure", reason = "Use a maintained typed error crate instead of unmaintained failure" },
+    { name = "rust-crypto", reason = "Use maintained RustCrypto primitives instead of legacy rust-crypto" },
+    { name = "yaml-rust", reason = "Use a maintained YAML parser instead of yaml-rust" },
+]
+
+[sources]
+# Dependencies must resolve from crates.io or an explicitly reviewed git
+# source. No private, unknown, or implicit registry is accepted.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

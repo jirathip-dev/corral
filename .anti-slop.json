@@ -1,0 +1,6 @@
+{
+  "disabled": [
+    "no-any-dictionary-value",
+    "no-any-parameters"
+  ]
+}

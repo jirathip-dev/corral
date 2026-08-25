@@ -33,3 +33,21 @@ regexTarget = "line"
 regexes = [
   '''^\s*echo "ASC_(?:KEY_PATH=\$key_path|KEY_ID=\$ASC_KEY_ID|ISSUER_ID=\$ASC_ISSUER_ID)"\s*$''',
 ]
+
+# The upstream v0.1.7 README intentionally demonstrates this rule with a
+# fake API-key-shaped value. Keep the snapshot byte-exact, but scope the
+# exception to that one path and exact source line. A changed value remains
+# visible to the default generic-api-key rule; secret-scan regression coverage
+# below exercises that boundary.
+# Target the extended default `generic-api-key` rule rather than the custom
+# Fastlane rule above; a targeted allowlist is evaluated with the finding and
+# does not make the source walker skip this path before checking the line.
+[[allowlists]]
+description = "Upstream anti-slop README fake API-key example"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^ios/tools/anti-slop-swift/README\.md$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*let apiKey = "sk-live-abc123"\s*$''',
+]

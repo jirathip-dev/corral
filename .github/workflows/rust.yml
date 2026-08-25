@@ -58,7 +58,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ steps.pinned.outputs.channel }}
-          components: rustfmt, clippy
+          # cargo-llvm-cov v0.8.7 uses llvm-tools-preview from this exact
+          # pinned toolchain; keeping it here avoids a floating LLVM install.
+          components: rustfmt, clippy, llvm-tools-preview
 
       # Formatting is checked FIRST, before the apt install and the cache
       # restore, because `cargo fmt` needs only the toolchain — no system
@@ -71,13 +73,15 @@ jobs:
         run: cargo fmt --check
 
       # Install checksum-verified release binaries after selecting the pinned
-      # Rust toolchain. `fallback: none` prevents an unexpected source build;
-      # the pinned action release carries the tool versions and is maintained
-      # by the GitHub Actions Dependabot group below.
-      - name: Install cargo-deny and cargo-audit
+      # Rust toolchain. `fallback: none` prevents an unexpected source build.
+      # The action itself is SHA-pinned and can be maintained by Dependabot;
+      # the explicit cargo-llvm-cov@0.8.7 tool pin is not Dependabot-managed
+      # and must be updated manually with a deliberate baseline/toolchain
+      # check.
+      - name: Install Rust CLI gates
         uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: cargo-deny,cargo-audit
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov@0.8.7
           fallback: none
 
       - name: cargo deny --locked --workspace check
@@ -120,3 +124,153 @@ jobs:
 
       - name: test
         run: cargo test
+
+      # Keep coverage in this job so it reuses the pinned toolchain, Linux
+      # dependencies, cache, and supply-chain gates above. The instrumented
+      # build is necessarily separate from the ordinary test build, but the
+      # report steps below reuse its profiles and do not compile or rerun tests.
+      # The scope is the pure-Rust daemon and client; egui/wgpu platform code
+      # remains outside this deterministic core gate (see docs/DEVELOPING.md).
+      - name: cargo llvm-cov core coverage gate
+        id: coverage
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo llvm-cov clean --locked --workspace
+          cargo llvm-cov \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --all-targets \
+            --no-fail-fast \
+            --quiet \
+            --fail-under-lines 85 \
+            --fail-under-functions 82
+
+      # The core gate evaluates thresholds after producing profiles. Generate
+      # reports only when that step actually ran, including a threshold
+      # failure, and never after cancellation. A pre-profile failure leaves
+      # this step failed and therefore cannot publish an artifact.
+      - name: Generate Rust coverage reports
+        id: coverage_reports
+        if: ${{ always() && !cancelled() && (steps.coverage.outcome == 'success' || steps.coverage.outcome == 'failure') }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          stage="$(mktemp -d target/.rust-core-coverage.XXXXXX)"
+          cleanup() {
+            if [ -n "${stage:-}" ] && [ -d "$stage" ]; then
+              rm -rf -- "$stage"
+            fi
+          }
+          trap cleanup EXIT
+
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            > "$stage/rust-core-summary.txt"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --json \
+            --summary-only \
+            --output-path "$stage/rust-core-summary.json"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --lcov \
+            --output-path "$stage/rust-core.lcov"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            > "$stage/rust-client-summary.txt"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --json \
+            --summary-only \
+            --output-path "$stage/rust-client-summary.json"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --lcov \
+            --output-path "$stage/rust-client.lcov"
+
+          for report in \
+            rust-core-summary.txt \
+            rust-core-summary.json \
+            rust-core.lcov \
+            rust-client-summary.txt \
+            rust-client-summary.json \
+            rust-client.lcov
+          do
+            if [ ! -s "$stage/$report" ]; then
+              echo "::error::coverage report missing or empty: $report"
+              exit 1
+            fi
+          done
+
+          # No-profile llvm-cov reports can still be non-empty JSON with an
+          # empty file list and zero totals. Require real files and positive
+          # coverage in both scopes, plus line records in both LCOV reports,
+          # before allowing the staged directory to become uploadable.
+          for summary in rust-core-summary.json rust-client-summary.json
+          do
+            if ! grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"; then
+              echo "::error::coverage summary has no source-file records: $summary"
+              exit 1
+            fi
+            if ! grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"; then
+              echo "::error::coverage summary has no positive covered lines: $summary"
+              exit 1
+            fi
+          done
+          for report in rust-core.lcov rust-client.lcov
+          do
+            if ! grep -q '^SF:' "$stage/$report"; then
+              echo "::error::coverage LCOV has no source-file records: $report"
+              exit 1
+            fi
+            if ! grep -q '^DA:' "$stage/$report"; then
+              echo "::error::coverage LCOV has no line records: $report"
+              exit 1
+            fi
+          done
+
+          rm -rf -- target/coverage
+          mv "$stage" target/coverage
+          stage=
+
+      # This is deliberately report-only: it reuses the profiles from the
+      # combined gate above and does not rerun corrald-client tests. A client
+      # threshold failure must still allow the diagnostic artifact to upload.
+      - name: cargo llvm-cov corrald-client coverage gate
+        id: client_coverage
+        if: ${{ always() && !cancelled() && steps.coverage_reports.outcome == 'success' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --fail-under-lines 40 \
+            --fail-under-functions 35
+
+      # Key off report success rather than threshold success: valid profiles
+      # from either threshold failure remain useful diagnostics. Missing or
+      # empty reports fail the report step, and cancellation suppresses upload.
+      - name: Upload Rust coverage artifact
+        if: ${{ always() && !cancelled() && steps.coverage_reports.outcome == 'success' && (steps.client_coverage.outcome == 'success' || steps.client_coverage.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-core-coverage
+          path: target/coverage
+          if-no-files-found: error
+          retention-days: 14

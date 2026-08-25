@@ -164,6 +164,22 @@ cargo audit --deny warnings
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test --workspace
+# The client report gate reuses profiles from the preceding combined run.
+cargo llvm-cov clean --locked --workspace
+cargo llvm-cov \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --all-targets \
+  --no-fail-fast \
+  --quiet \
+  --fail-under-lines 85 \
+  --fail-under-functions 82
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --fail-under-lines 40 \
+  --fail-under-functions 35
 cargo test -p corrald-client                       # client unit + wire pins
 cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
@@ -206,6 +222,209 @@ R11 (GitHub PR binding) additionally requires read-only GitHub access and a
 suitable open PR on a tracked repository. Verified locally on 2026-08-25:
 13/13 ignored conformance tests pass. This is the W1 acceptance bar shared by both P4
 clients.
+
+## Rust coverage gate and baseline
+
+The blocking Rust coverage gate runs in the existing `rust` job after the
+ordinary workspace tests. It uses `cargo-llvm-cov` **0.8.7** with
+`llvm-tools-preview` from the pinned Rust **1.97.1** toolchain. Keeping the
+gate in the existing job reuses its toolchain, Linux dependencies, and cache;
+the instrumented build is required for LLVM coverage, while the client floor
+and report generation reuse the resulting profiles without compiling or
+rerunning tests. The explicit `cargo-llvm-cov@0.8.7` CI pin is not
+Dependabot-managed; update it manually only with a deliberate toolchain and
+fresh-baseline check.
+
+The measured scope is the pure-Rust `corrald` daemon package and
+`corrald-client` package, with `--all-targets` and the normal non-ignored test
+set. `clients/egui` (`corrald-ui`) is excluded deliberately: egui/wgpu and its
+X11/Wayland/OpenGL dependencies are GUI/platform code, and including it would
+make this core gate depend on platform-specific rendering paths rather than
+measure the daemon/client contract. The egui crate remains covered by the
+ordinary workspace clippy, build, and test gates.
+
+Install the same local coverage tool and component, then reproduce the
+blocking CI command from the repository root:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.8.7
+cargo llvm-cov clean --locked --workspace
+cargo llvm-cov \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --all-targets \
+  --no-fail-fast \
+  --quiet \
+  --fail-under-lines 85 \
+  --fail-under-functions 82
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --fail-under-lines 40 \
+  --fail-under-functions 35
+```
+
+The client command is report-only: it reuses the profiles from the combined
+run and does not rerun client tests. To generate the same local files that CI
+uploads after those gates (the files stay under ignored `target/` and must not
+be committed):
+
+```sh
+set -euo pipefail
+mkdir -p target
+stage="$(mktemp -d target/.rust-core-coverage.XXXXXX)"
+cleanup() {
+  if [ -n "${stage:-}" ] && [ -d "$stage" ]; then
+    rm -rf -- "$stage"
+  fi
+}
+trap cleanup EXIT
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  > "$stage/rust-core-summary.txt"
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --json \
+  --summary-only \
+  --output-path "$stage/rust-core-summary.json"
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --lcov \
+  --output-path "$stage/rust-core.lcov"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  > "$stage/rust-client-summary.txt"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --json \
+  --summary-only \
+  --output-path "$stage/rust-client-summary.json"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --lcov \
+  --output-path "$stage/rust-client.lcov"
+for report in \
+  rust-core-summary.txt \
+  rust-core-summary.json \
+  rust-core.lcov \
+  rust-client-summary.txt \
+  rust-client-summary.json \
+  rust-client.lcov
+do
+  if [ ! -s "$stage/$report" ]; then
+    echo "::error::coverage report missing or empty: $report"
+    exit 1
+  fi
+done
+for summary in rust-core-summary.json rust-client-summary.json
+do
+  if ! grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"; then
+    echo "::error::coverage summary has no source-file records: $summary"
+    exit 1
+  fi
+  if ! grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"; then
+    echo "::error::coverage summary has no positive covered lines: $summary"
+    exit 1
+  fi
+done
+for report in rust-core.lcov rust-client.lcov
+do
+  if ! grep -q '^SF:' "$stage/$report"; then
+    echo "::error::coverage LCOV has no source-file records: $report"
+    exit 1
+  fi
+  if ! grep -q '^DA:' "$stage/$report"; then
+    echo "::error::coverage LCOV has no line records: $report"
+    exit 1
+  fi
+done
+rm -rf -- target/coverage
+mv "$stage" target/coverage
+stage=
+```
+
+The uploaded artifact is named **`rust-core-coverage`** and contains the
+human-readable `rust-core-summary.txt`, machine-readable
+`rust-core-summary.json` (summary-only LLVM export), line-level
+`rust-core.lcov`, human-readable `rust-client-summary.txt`, machine-readable
+`rust-client-summary.json` (summary-only LLVM export), and line-level
+`rust-client.lcov`. CI stages every report in a temporary directory and
+checks that every expected file is non-empty, that both JSON reports contain
+real source files with positive covered lines, and that both LCOV reports
+contain line records before publishing `target/coverage`. The report step runs
+only when the coverage step actually ran and was not cancelled; upload runs
+only after that validated report step succeeds. Therefore a threshold failure
+with valid profiles still uploads diagnostics, while a pre-profile failure or
+cancellation publishes nothing. `cargo-llvm-cov` 0.8.7 does not expose a
+report path-remapping option, so LCOV `SF:` paths retain the runner checkout
+prefix; the LCOV files are diagnostic line-level reports rather than
+path-independent comparison data. Each staged-report validation failure emits
+a precise GitHub Actions `::error::` annotation before the step exits.
+
+### macOS observations
+
+The original local baseline was measured on **macOS** on **2026-08-25**, with
+Cargo/rustc **1.97.1**, `cargo-llvm-cov` **0.8.7**, the exact package/target/test
+scope above, and live `#[ignore]` tests disabled. Repeated local runs observed
+20,701–20,711 covered combined lines. The lower baseline below is coherent:
+20,701 combined lines, 20,261 `corrald` lines, and 440 client lines came from
+the same macOS profile set.
+
+| Scope | Lines | Functions |
+|---|---:|---:|
+| `corrald` + `corrald-client` | 20,701/23,814 = **86.927858%** | 1,832/2,149 = **85.248953%** |
+| `corrald` | 20,261/22,805 = **88.844551633413725%** | 1,783/2,024 = **88.092885%** |
+| `corrald-client` | 440/1,009 = **43.607532%** | 49/125 = **39.200000%** |
+
+The first local combined baseline run was 20,708/23,814 lines (86.957252%).
+
+### Hosted Ubuntu evidence
+
+The authoritative hosted measurement is from PR **#223**, on the
+`ubuntu-latest` runner: workflow run **32878400410**, job **97901802378**, and
+artifact **9575131839** ([run](https://github.com/jirathip-dev/corral/actions/runs/32878400410),
+[artifact](https://github.com/jirathip-dev/corral/actions/runs/32878400410/artifacts/9575131839)).
+All gates passed and the artifact contained six non-empty files.
+
+| Scope | Lines | Functions |
+|---|---:|---:|
+| `corrald` + `corrald-client` | 20,701/23,814 = **86.9278575627782%** | 1,832/2,149 = **85.248953001396%** |
+| `corrald` | 20,261/22,805 = **88.844551633413725%** | 1,783/2,024 = **88.092885375494071%** |
+| `corrald-client` | 440/1,009 = **43.60753221010902%** | 49/125 = **39.2%** |
+
+The Ubuntu line-level LCOV reports contained **22,629 DA records / 50 SF
+records** for the combined core scope and **970 DA records / 8 SF records**
+for `corrald-client`. The Ubuntu coverage totals match the coherent lower
+macOS profile set above for all three scopes; LCOV record counts are reported
+separately because they count emitted source and line records, not covered
+lines.
+
+The blocking floors remain **85% lines / 82% functions** for the combined core
+scope and **40% lines / 35% functions** for `corrald-client`. The Ubuntu
+baseline leaves 1.9278575627782 percentage points of combined line headroom
+and 3.248953001396 percentage points of combined function headroom. The client
+baseline leaves 3.60753221010902 percentage points of line headroom and 4.2
+percentage points of function headroom. These unchanged, round floors are
+supported by both observed platforms while retaining deterministic room for
+normal additions; they do not imply identical per-file coverage across
+platforms.
+
+The empty-client collapse remains explicitly fail-closed. An isolated run that
+executed only `corrald` tests produced `files: []` and zero client totals. The
+staged-report validation rejects that empty client scope with an error before
+CI reaches the report-only client threshold step; the direct client report
+gate also exits 1 at 40/35. Deleting all client tests therefore cannot pass.
 
 ## Supply-chain gates and baseline
 

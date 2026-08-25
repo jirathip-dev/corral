@@ -23,4 +23,4 @@
 # -- -D warnings`, and land the result as its own PR.
 [toolchain]
 channel = "1.97.1"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

@@ -207,6 +207,92 @@ suitable open PR on a tracked repository. Verified locally on 2026-08-25:
 13/13 ignored conformance tests pass. This is the W1 acceptance bar shared by both P4
 clients.
 
+## Rust coverage gate and baseline
+
+The blocking Rust coverage gate runs in the existing `rust` job after the
+ordinary workspace tests. It uses `cargo-llvm-cov` **0.8.7** with
+`llvm-tools-preview` from the pinned Rust **1.97.1** toolchain. Keeping the
+gate in the existing job reuses its toolchain, Linux dependencies, and cache;
+the instrumented build is required for LLVM coverage, while report generation
+reuses the resulting profiles without compiling or rerunning tests.
+
+The measured scope is the pure-Rust `corrald` daemon package and
+`corrald-client` package, with `--all-targets` and the normal non-ignored test
+set. `clients/egui` (`corrald-ui`) is excluded deliberately: egui/wgpu and its
+X11/Wayland/OpenGL dependencies are GUI/platform code, and including it would
+make this core gate depend on platform-specific rendering paths rather than
+measure the daemon/client contract. The egui crate remains covered by the
+ordinary workspace clippy, build, and test gates.
+
+Install the same local coverage tool and component, then reproduce the
+blocking CI command from the repository root:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.8.7
+cargo llvm-cov \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --all-targets \
+  --no-fail-fast \
+  --quiet \
+  --fail-under-lines 85 \
+  --fail-under-functions 82
+```
+
+To generate the same local files that CI uploads after that run (the files
+stay under ignored `target/` and must not be committed):
+
+```sh
+mkdir -p target/coverage
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  > target/coverage/rust-core-summary.txt
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --json \
+  --summary-only \
+  --output-path target/coverage/rust-core-summary.json
+cargo llvm-cov report \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --lcov \
+  --summary-only \
+  --output-path target/coverage/rust-core.lcov
+```
+
+The uploaded artifact is named **`rust-core-coverage`** and contains the
+human-readable `rust-core-summary.txt`, machine-readable
+`rust-core-summary.json` (summary-only LLVM export), and `rust-core.lcov`
+(summary-only LCOV export). Report generation and upload use `always()` so a
+threshold failure still uploads the reports when the instrumented test run
+completed far enough to produce profiles.
+
+Measured on **2026-08-25**, with Cargo/rustc **1.97.1**, `cargo-llvm-cov`
+**0.8.7**, the command's exact package/target/test scope above, and live
+`#[ignore]` tests left disabled. The table records the lower result observed
+across repeated runs so the floors are not based on a lucky test-process
+schedule; the first baseline run was 20,708/23,814 lines (86.957252%).
+
+| Scope | Lines | Functions |
+|---|---:|---:|
+| `corrald` + `corrald-client` | 20,704/23,814 = **86.940455%** | 1,832/2,149 = **85.248953%** |
+| `corrald` | 20,264/22,805 = **88.857707%** | 1,783/2,024 = **88.092885%** |
+| `corrald-client` | 440/1,009 = **43.607532%** | 49/125 = **39.200000%** |
+
+The blocking floors are **85% lines** and **82% functions** for the combined
+core scope. They are evidence-based and intentionally below the measured
+baseline to leave deterministic headroom for Linux/platform differences and
+normal additions, while still rejecting a material regression. Repeated local
+runs observed 20,704–20,710 covered lines; the lower result above is the one
+used for the floor decision.
+
 ## Supply-chain gates and baseline
 
 [`deny.toml`](../deny.toml) is the workspace supply-chain policy. The blocking

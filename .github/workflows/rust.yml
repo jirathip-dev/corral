@@ -58,7 +58,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ steps.pinned.outputs.channel }}
-          components: rustfmt, clippy
+          # cargo-llvm-cov v0.8.7 uses llvm-tools-preview from this exact
+          # pinned toolchain; keeping it here avoids a floating LLVM install.
+          components: rustfmt, clippy, llvm-tools-preview
 
       # Formatting is checked FIRST, before the apt install and the cache
       # restore, because `cargo fmt` needs only the toolchain — no system
@@ -74,10 +76,10 @@ jobs:
       # Rust toolchain. `fallback: none` prevents an unexpected source build;
       # the pinned action release carries the tool versions and is maintained
       # by the GitHub Actions Dependabot group below.
-      - name: Install cargo-deny and cargo-audit
+      - name: Install Rust CLI gates
         uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: cargo-deny,cargo-audit
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov@0.8.7
           fallback: none
 
       - name: cargo deny --locked --workspace check
@@ -120,3 +122,66 @@ jobs:
 
       - name: test
         run: cargo test
+
+      # Keep coverage in this job so it reuses the pinned toolchain, Linux
+      # dependencies, cache, and supply-chain gates above. The instrumented
+      # build is necessarily separate from the ordinary test build, but the
+      # report steps below reuse its profiles and do not compile or rerun tests.
+      # The scope is the pure-Rust daemon and client; egui/wgpu platform code
+      # remains outside this deterministic core gate (see docs/DEVELOPING.md).
+      - name: cargo llvm-cov core coverage gate
+        id: coverage
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo llvm-cov \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --all-targets \
+            --no-fail-fast \
+            --quiet \
+            --fail-under-lines 85 \
+            --fail-under-functions 82
+
+      # cargo llvm-cov evaluates thresholds after producing the profiles, so
+      # always attempt to materialize the reports: a red threshold gate should
+      # still leave a useful artifact for diagnosis. If an earlier test or
+      # compilation failure prevented profiles from existing, this step may
+      # fail too and the upload below only warns about missing files.
+      - name: Generate Rust coverage reports
+        if: always()
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p target/coverage
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            > target/coverage/rust-core-summary.txt
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --json \
+            --summary-only \
+            --output-path target/coverage/rust-core-summary.json
+          cargo llvm-cov report \
+            --locked \
+            --package corrald \
+            --package corrald-client \
+            --lcov \
+            --summary-only \
+            --output-path target/coverage/rust-core.lcov
+
+      - name: Upload Rust coverage artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-core-coverage
+          path: target/coverage
+          if-no-files-found: warn
+          retention-days: 14

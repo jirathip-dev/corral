@@ -73,9 +73,11 @@ jobs:
         run: cargo fmt --check
 
       # Install checksum-verified release binaries after selecting the pinned
-      # Rust toolchain. `fallback: none` prevents an unexpected source build;
-      # the pinned action release carries the tool versions and is maintained
-      # by the GitHub Actions Dependabot group below.
+      # Rust toolchain. `fallback: none` prevents an unexpected source build.
+      # The action itself is SHA-pinned and can be maintained by Dependabot;
+      # the explicit cargo-llvm-cov@0.8.7 tool pin is not Dependabot-managed
+      # and must be updated manually with a deliberate baseline/toolchain
+      # check.
       - name: Install Rust CLI gates
         uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
@@ -135,6 +137,7 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
+          cargo llvm-cov clean --locked --workspace
           cargo llvm-cov \
             --locked \
             --package corrald \
@@ -145,43 +148,111 @@ jobs:
             --fail-under-lines 85 \
             --fail-under-functions 82
 
-      # cargo llvm-cov evaluates thresholds after producing the profiles, so
-      # always attempt to materialize the reports: a red threshold gate should
-      # still leave a useful artifact for diagnosis. If an earlier test or
-      # compilation failure prevented profiles from existing, this step may
-      # fail too and the upload below only warns about missing files.
+      # The core gate evaluates thresholds after producing profiles. Generate
+      # reports only when that step actually ran, including a threshold
+      # failure, and never after cancellation. A pre-profile failure leaves
+      # this step failed and therefore cannot publish an artifact.
       - name: Generate Rust coverage reports
-        if: always()
+        id: coverage_reports
+        if: ${{ always() && !cancelled() && (steps.coverage.outcome == 'success' || steps.coverage.outcome == 'failure') }}
         env:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
-          mkdir -p target/coverage
+          mkdir -p target
+          stage="$(mktemp -d target/.rust-core-coverage.XXXXXX)"
+          cleanup() {
+            if [ -n "${stage:-}" ] && [ -d "$stage" ]; then
+              rm -rf -- "$stage"
+            fi
+          }
+          trap cleanup EXIT
+
           cargo llvm-cov report \
             --locked \
             --package corrald \
             --package corrald-client \
-            > target/coverage/rust-core-summary.txt
+            > "$stage/rust-core-summary.txt"
           cargo llvm-cov report \
             --locked \
             --package corrald \
             --package corrald-client \
             --json \
             --summary-only \
-            --output-path target/coverage/rust-core-summary.json
+            --output-path "$stage/rust-core-summary.json"
           cargo llvm-cov report \
             --locked \
             --package corrald \
             --package corrald-client \
             --lcov \
+            --output-path "$stage/rust-core.lcov"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            > "$stage/rust-client-summary.txt"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --json \
             --summary-only \
-            --output-path target/coverage/rust-core.lcov
+            --output-path "$stage/rust-client-summary.json"
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --lcov \
+            --output-path "$stage/rust-client.lcov"
 
+          for report in \
+            rust-core-summary.txt \
+            rust-core-summary.json \
+            rust-core.lcov \
+            rust-client-summary.txt \
+            rust-client-summary.json \
+            rust-client.lcov
+          do
+            test -s "$stage/$report"
+          done
+
+          # No-profile llvm-cov reports can still be non-empty JSON with an
+          # empty file list and zero totals. Require real files and positive
+          # coverage in both scopes, plus line records in both LCOV reports,
+          # before allowing the staged directory to become uploadable.
+          for summary in rust-core-summary.json rust-client-summary.json
+          do
+            grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"
+            grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"
+          done
+          grep -q '^SF:' "$stage/rust-core.lcov"
+          grep -q '^SF:' "$stage/rust-client.lcov"
+
+          rm -rf -- target/coverage
+          mv "$stage" target/coverage
+          stage=
+
+      # This is deliberately report-only: it reuses the profiles from the
+      # combined gate above and does not rerun corrald-client tests. A client
+      # threshold failure must still allow the diagnostic artifact to upload.
+      - name: cargo llvm-cov corrald-client coverage gate
+        id: client_coverage
+        if: ${{ always() && !cancelled() && steps.coverage_reports.outcome == 'success' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report \
+            --locked \
+            --package corrald-client \
+            --fail-under-lines 40 \
+            --fail-under-functions 35
+
+      # Key off report success rather than threshold success: valid profiles
+      # from either threshold failure remain useful diagnostics. Missing or
+      # empty reports fail the report step, and cancellation suppresses upload.
       - name: Upload Rust coverage artifact
-        if: always()
+        if: ${{ always() && !cancelled() && steps.coverage_reports.outcome == 'success' && (steps.client_coverage.outcome == 'success' || steps.client_coverage.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rust-core-coverage
           path: target/coverage
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14

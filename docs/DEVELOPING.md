@@ -164,6 +164,22 @@ cargo audit --deny warnings
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 cargo test --workspace
+# The client report gate reuses profiles from the preceding combined run.
+cargo llvm-cov clean --locked --workspace
+cargo llvm-cov \
+  --locked \
+  --package corrald \
+  --package corrald-client \
+  --all-targets \
+  --no-fail-fast \
+  --quiet \
+  --fail-under-lines 85 \
+  --fail-under-functions 82
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --fail-under-lines 40 \
+  --fail-under-functions 35
 cargo test -p corrald-client                       # client unit + wire pins
 cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
@@ -213,8 +229,11 @@ The blocking Rust coverage gate runs in the existing `rust` job after the
 ordinary workspace tests. It uses `cargo-llvm-cov` **0.8.7** with
 `llvm-tools-preview` from the pinned Rust **1.97.1** toolchain. Keeping the
 gate in the existing job reuses its toolchain, Linux dependencies, and cache;
-the instrumented build is required for LLVM coverage, while report generation
-reuses the resulting profiles without compiling or rerunning tests.
+the instrumented build is required for LLVM coverage, while the client floor
+and report generation reuse the resulting profiles without compiling or
+rerunning tests. The explicit `cargo-llvm-cov@0.8.7` CI pin is not
+Dependabot-managed; update it manually only with a deliberate toolchain and
+fresh-baseline check.
 
 The measured scope is the pure-Rust `corrald` daemon package and
 `corrald-client` package, with `--all-targets` and the normal non-ignored test
@@ -230,6 +249,7 @@ blocking CI command from the repository root:
 ```sh
 rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --locked --version 0.8.7
+cargo llvm-cov clean --locked --workspace
 cargo llvm-cov \
   --locked \
   --package corrald \
@@ -239,59 +259,123 @@ cargo llvm-cov \
   --quiet \
   --fail-under-lines 85 \
   --fail-under-functions 82
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --fail-under-lines 40 \
+  --fail-under-functions 35
 ```
 
-To generate the same local files that CI uploads after that run (the files
-stay under ignored `target/` and must not be committed):
+The client command is report-only: it reuses the profiles from the combined
+run and does not rerun client tests. To generate the same local files that CI
+uploads after those gates (the files stay under ignored `target/` and must not
+be committed):
 
 ```sh
-mkdir -p target/coverage
+mkdir -p target
+stage="$(mktemp -d target/.rust-core-coverage.XXXXXX)"
 cargo llvm-cov report \
   --locked \
   --package corrald \
   --package corrald-client \
-  > target/coverage/rust-core-summary.txt
+  > "$stage/rust-core-summary.txt"
 cargo llvm-cov report \
   --locked \
   --package corrald \
   --package corrald-client \
   --json \
   --summary-only \
-  --output-path target/coverage/rust-core-summary.json
+  --output-path "$stage/rust-core-summary.json"
 cargo llvm-cov report \
   --locked \
   --package corrald \
   --package corrald-client \
   --lcov \
+  --output-path "$stage/rust-core.lcov"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  > "$stage/rust-client-summary.txt"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --json \
   --summary-only \
-  --output-path target/coverage/rust-core.lcov
+  --output-path "$stage/rust-client-summary.json"
+cargo llvm-cov report \
+  --locked \
+  --package corrald-client \
+  --lcov \
+  --output-path "$stage/rust-client.lcov"
+for report in \
+  rust-core-summary.txt \
+  rust-core-summary.json \
+  rust-core.lcov \
+  rust-client-summary.txt \
+  rust-client-summary.json \
+  rust-client.lcov
+do
+  test -s "$stage/$report"
+done
+for summary in rust-core-summary.json rust-client-summary.json
+do
+  grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"
+  grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"
+done
+grep -q '^SF:' "$stage/rust-core.lcov"
+grep -q '^SF:' "$stage/rust-client.lcov"
+rm -rf -- target/coverage
+mv "$stage" target/coverage
 ```
 
 The uploaded artifact is named **`rust-core-coverage`** and contains the
 human-readable `rust-core-summary.txt`, machine-readable
-`rust-core-summary.json` (summary-only LLVM export), and `rust-core.lcov`
-(summary-only LCOV export). Report generation and upload use `always()` so a
-threshold failure still uploads the reports when the instrumented test run
-completed far enough to produce profiles.
+`rust-core-summary.json` (summary-only LLVM export), line-level
+`rust-core.lcov`, human-readable `rust-client-summary.txt`, machine-readable
+`rust-client-summary.json` (summary-only LLVM export), and line-level
+`rust-client.lcov`. CI stages every report in a temporary directory and
+checks that every expected file is non-empty, that both JSON reports contain
+real source files with positive covered lines, and that both LCOV reports
+contain line records before publishing `target/coverage`. The report step runs
+only when the coverage step actually ran and was not cancelled; upload runs
+only after that validated report step succeeds. Therefore a threshold failure
+with valid profiles still uploads diagnostics, while a pre-profile failure or
+cancellation publishes nothing. `cargo-llvm-cov` 0.8.7 does not expose a
+report path-remapping option, so LCOV `SF:` paths retain the runner checkout
+prefix; the LCOV files are diagnostic line-level reports rather than
+path-independent comparison data.
 
-Measured on **2026-08-25**, with Cargo/rustc **1.97.1**, `cargo-llvm-cov`
-**0.8.7**, the command's exact package/target/test scope above, and live
-`#[ignore]` tests left disabled. The table records the lower result observed
-across repeated runs so the floors are not based on a lucky test-process
-schedule; the first baseline run was 20,708/23,814 lines (86.957252%).
+Measured on **macOS** on **2026-08-25**, with Cargo/rustc **1.97.1**,
+`cargo-llvm-cov` **0.8.7**, the command's exact package/target/test scope
+above, and live `#[ignore]` tests left disabled. The table records the lower
+result observed across repeated macOS runs so the floors are not based on a
+lucky test-process schedule; the first baseline run was 20,708/23,814 lines
+(86.957252%).
 
 | Scope | Lines | Functions |
 |---|---:|---:|
-| `corrald` + `corrald-client` | 20,704/23,814 = **86.940455%** | 1,832/2,149 = **85.248953%** |
+| `corrald` + `corrald-client` | 20,701/23,814 = **86.927858%** | 1,832/2,149 = **85.248953%** |
 | `corrald` | 20,264/22,805 = **88.857707%** | 1,783/2,024 = **88.092885%** |
 | `corrald-client` | 440/1,009 = **43.607532%** | 49/125 = **39.200000%** |
 
-The blocking floors are **85% lines** and **82% functions** for the combined
-core scope. They are evidence-based and intentionally below the measured
+The blocking floors for the combined core scope are **85% lines** and **82%
+functions**. They are evidence-based and intentionally below the measured
 baseline to leave deterministic headroom for Linux/platform differences and
 normal additions, while still rejecting a material regression. Repeated local
-runs observed 20,704–20,710 covered lines; the lower result above is the one
+runs observed 20,701–20,710 covered lines; the lower result above is the one
 used for the floor decision.
+
+All measurements above are macOS-only; neither floor is presented as Ubuntu
+portable yet. Revisit both floors after hosted Ubuntu evidence is available.
+
+The separate blocking `corrald-client` floors are **40% lines** and **35%
+functions**. Against the measured client baseline, that leaves **3.607532
+percentage points** of line headroom and **4.2 percentage points** of function
+headroom. These client floors are deliberately provisional pending the first
+hosted Ubuntu measurement; they are not a claim that macOS and Ubuntu produce
+identical coverage. They remain positive so deleting all client tests cannot
+pass: an isolated no-client-test run produced a client report with 0 executed
+lines/functions and the report gate exited 1 at these floors.
 
 ## Supply-chain gates and baseline
 

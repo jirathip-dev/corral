@@ -223,6 +223,46 @@ suitable open PR on a tracked repository. Verified locally on 2026-08-25:
 13/13 ignored conformance tests pass. This is the W1 acceptance bar shared by both P4
 clients.
 
+## Design-gate evidence
+
+`scripts/design-gate-evidence.sh` renders an approved HTML prototype, captures
+the selected surface, and writes a stamped prototype/live comparison under
+`docs/design/evidence/issue-<N>/`. The egui path requires a healthy corrald and
+uses the app's existing `CORRAL_UI_SCREENSHOT` capture hook; it never invents
+board data. If a host window server needs an input event to wake eframe,
+`--egui-wake-command` supplies that explicit caller-owned wake step and a
+failure aborts the capture. Supply an agent id from `/snapshot` when the detail
+selection must be deterministic:
+
+```sh
+scripts/design-gate-evidence.sh --issue 206 --surface egui \
+  --live-agent herdr:AGENT_ID
+```
+
+The iOS path uses only `hermes-sim-task`. `--ios-mode demo` is an explicit
+Debug fixture; live mode requires `--ios-command` to prepare and launch the
+real app inside the temporary simulator. The approved #205 transcript HTML is
+an optional checkout-specific override; when it is available, pass it with
+`--prototype`. Otherwise the script warns and uses the current
+token-compatible prototype. The iOS prototype render uses a 900×900 viewport
+so the phone frame is not clipped:
+
+```sh
+scripts/design-gate-evidence.sh --issue 205 --surface ios \
+  --force \
+  --ios-mode demo
+```
+
+`--live-png` is an explicit, provenance-labeled fixture seam for tests or a
+previously captured frame. Existing issue bundles require `--force` before they
+can be replaced. The composite labels supplied PNG and Debug-demo modes
+directly. Use `--dry-run` to inspect the resolved operation;
+`bash scripts/test-design-gate-evidence.sh` verifies complete-PNG validation,
+provenance labels, dimensions, force-gated reruns, writer completion, egui
+capture/wake seams, argument failures, and preservation of an existing bundle
+after a failed run. This remains a local/platform-dependent developer check;
+it is not wired into CI.
+
 ## Rust coverage gate and baseline
 
 The blocking Rust coverage gate runs in the existing `rust` job after the

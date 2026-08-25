@@ -105,7 +105,10 @@ CORRAL_UI_SCREENSHOT_DELAY_MS=8000 \
 ```
 
 Requests a wgpu viewport screenshot after the delay, writes the PNG, and
-exits. Never active by default. (eframe's own wgpu screenshot event is
+exits when the native seam completes. Never active by default. The design-gate
+evidence harness accepts the file only after complete PNG/CRC validation, so a
+writer that lingers is cleaned up with bounded TERM→KILL against its owned
+direct child. (eframe's own wgpu screenshot event is
 flaky without an explicit `device.poll`; this path polls with a bounded
 wait and captures the presented surface.)
 
@@ -119,6 +122,14 @@ CORRAL_UI_SCREENSHOT=/tmp/board-live.png \
 CORRAL_UI_SCREENSHOT_DELAY_MS=20000 \
 CORRAL_UI_SCREENSHOT_AGENT=herdr:<agent-id> \
 ./target/release/corrald-ui
+```
+
+For the full local lifecycle—real corrald, `/snapshot` target selection,
+registered native UI, safe exact-pid window wake, and cleanup—run from the
+repository root on macOS:
+
+```sh
+bash scripts/test-design-gate-egui-integration.sh
 ```
 
 ## Conformance + tests

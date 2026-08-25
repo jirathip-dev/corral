@@ -18,10 +18,10 @@
 # The default egui prototype is the approved HTML design source at
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
 # through headless Chrome at 1160×631. A custom HTML target can be supplied with
-# --prototype; egui targets must contain .desk and iOS targets must contain
-# .phone. The iOS surface is rendered at 900×900 so the complete phone frame
-# remains visible. The source is wrapped without changing the checked-in
-# prototype.
+# --prototype; the requested .desk or .phone must be contained by a direct
+# body > .rack > .frame chain. The iOS surface is rendered at 900×900 so the
+# complete phone frame remains visible. The source is wrapped without changing
+# the checked-in prototype.
 #
 # egui capture is deliberately live-only by default. The script requires a
 # healthy --host-url (default http://127.0.0.1:8474), builds
@@ -34,7 +34,11 @@
 # CORRAL_EGUI_WAKE_COMMAND) runs an explicit caller-owned command while the
 # process is alive; the command receives CORRAL_UI_SCREENSHOT_PID and
 # CORRAL_UI_SCREENSHOT_PATH and failure is fatal rather than silently claiming
-# a stale frame.
+# a stale frame. A capture succeeds only after the output is a fully validated
+# PNG; process exit is not part of that success contract. Once a complete PNG
+# exists, the script terminates only its direct child with TERM, waits a short
+# grace period, escalates to KILL, and validates the final file again. This
+# accepts a complete PNG from a lingering writer without accepting partial data.
 #
 # iOS capture is simulator-only and always runs through hermes-sim-task, which
 # owns and cleans up its private simulator. The script never calls
@@ -45,6 +49,11 @@
 # $SIMULATOR_UDID. This prevents a fresh registration screen or fabricated demo
 # state from being mislabeled as a live board. The app is built through the
 # same Herdr-routed xcodebuild path when --ios-app is omitted.
+#
+# Chrome's temporary DevTools endpoint is an ephemeral port bound explicitly
+# to 127.0.0.1, with a private profile and a loopback-only allowed origin. It
+# is used only for the scoped Browser.close request; the local process and the
+# approved checkout HTML are the trust boundary. No remote page is loaded.
 #
 # --live-png is an explicit fixture seam for tests or a previously captured
 # frame. Its provenance says that the PNG was supplied rather than captured by
@@ -78,6 +87,14 @@ EGUI_DELAY_MS="8000"
 EGUI_WAKE_COMMAND="${CORRAL_EGUI_WAKE_COMMAND:-}"
 CAPTURE_TIMEOUT_SECONDS="90"
 CHROME_TIMEOUT_SECONDS="30"
+# A complete PNG is the evidence contract. Process cleanup is deliberately
+# short and bounded; these are not user-tunable so a caller cannot accidentally
+# turn a failed capture into an unbounded child leak.
+CAPTURE_TERM_GRACE_SECONDS="2"
+CAPTURE_KILL_GRACE_SECONDS="2"
+CAPTURE_POLL_INTERVAL_SECONDS="0.1"
+CHROME_DEVTOOLS_ADDRESS="127.0.0.1"
+CHROME_DEVTOOLS_ORIGIN="http://127.0.0.1"
 FORCE=0
 BUILD_EGUI=1
 BUILD_IOS=1
@@ -472,6 +489,116 @@ assert_png() {
     || die "capture is not a valid PNG: $path"
 }
 
+child_is_owned() {
+  local pid="$1"
+  local parent_pid
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  parent_pid="$(ps -p "$pid" -o ppid= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [[ "$parent_pid" == "$$" ]]
+}
+
+child_is_running() {
+  local pid="$1"
+  local process_state
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A direct child remains waitable as a zombie until reaped. Treating Z as
+  # stopped keeps the TERM/KILL deadline honest and lets wait reap it below.
+  process_state="$(ps -p "$pid" -o stat= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [[ -n "$process_state" && "$process_state" != Z* ]]
+}
+
+reap_capture_child() {
+  local pid="$1"
+  set +e
+  wait "$pid" 2>/dev/null
+  set -e
+  if [[ "${CAPTURE_PID:-}" == "$pid" ]]; then
+    CAPTURE_PID=""
+  fi
+  return 0
+}
+
+terminate_owned_child() {
+  local pid="$1"
+  local label="$2"
+  local deadline
+
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  if ! child_is_running "$pid"; then
+    reap_capture_child "$pid"
+    return 0
+  fi
+  child_is_owned "$pid" \
+    || {
+      printf 'error: refusing to terminate non-owned %s child pid %s\n' "$label" "$pid" >&2
+      return 1
+    }
+
+  log "requesting TERM for lingering $label child (pid $pid)"
+  kill -TERM "$pid" 2>/dev/null || true
+  deadline=$((SECONDS + 10#$CAPTURE_TERM_GRACE_SECONDS))
+  while child_is_running "$pid" && [[ $SECONDS -lt $deadline ]]; do
+    sleep "$CAPTURE_POLL_INTERVAL_SECONDS"
+  done 2>/dev/null
+  if child_is_running "$pid"; then
+    log "escalating to KILL for owned $label child (pid $pid)"
+    kill -KILL "$pid" 2>/dev/null || true
+    deadline=$((SECONDS + 10#$CAPTURE_KILL_GRACE_SECONDS))
+    while child_is_running "$pid" && [[ $SECONDS -lt $deadline ]]; do
+      sleep "$CAPTURE_POLL_INTERVAL_SECONDS"
+    done 2>/dev/null
+  fi
+  if child_is_running "$pid"; then
+    printf 'error: owned %s child pid %s survived TERM and KILL\n' "$label" "$pid" >&2
+    return 1
+  fi
+  # A killed direct child can remain as a zombie until its parent waits for
+  # it. Reap only after the bounded liveness check so an already-dead child
+  # cannot be reported as surviving and a genuinely stuck child cannot turn
+  # cleanup into an unbounded wait.
+  reap_capture_child "$pid"
+}
+
+PNG_WAIT_REASON=""
+wait_for_complete_png() {
+  local path="$1"
+  local label="$2"
+  local timeout_seconds="$3"
+  local deadline
+  local dimensions
+
+  PNG_WAIT_REASON=""
+  deadline=$((SECONDS + 10#$timeout_seconds))
+  while :; do
+    if [[ -s "$path" ]]; then
+      if dimensions="$(png_dimensions "$path" 2>&1)"; then
+        return 0
+      fi
+      PNG_WAIT_REASON="$dimensions"
+    else
+      PNG_WAIT_REASON="$label has not written a non-empty PNG"
+    fi
+
+    # A writer that exits before publishing a complete PNG is normally a hard
+    # failure; revalidate once because the writer may have completed between
+    # the first validator call and this liveness check.
+    if [[ -z "${CAPTURE_PID:-}" ]] || ! child_is_running "$CAPTURE_PID"; then
+      if [[ -s "$path" ]]; then
+        if dimensions="$(png_dimensions "$path" 2>&1)"; then
+          return 0
+        fi
+        PNG_WAIT_REASON="$dimensions"
+      fi
+      return 1
+    fi
+    if [[ $SECONDS -ge $deadline ]]; then
+      return 1
+    fi
+    sleep "$CAPTURE_POLL_INTERVAL_SECONDS"
+  done
+}
+
 sha256_file() {
   "$PYTHON_BIN" - "$1" <<'PY'
 import hashlib
@@ -526,10 +653,14 @@ lines = active_port.read_text(encoding="utf-8").splitlines()
 if len(lines) < 2:
     raise SystemExit("Chrome DevToolsActivePort is incomplete")
 port = int(lines[0])
-browser_path = lines[1]
+_browser_path = lines[1]
 with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as response:
     version = json.load(response)
 parts = urlsplit(version["webSocketDebuggerUrl"])
+if parts.hostname != "127.0.0.1":
+    raise SystemExit(
+        f"Chrome DevTools endpoint escaped the loopback boundary: {parts.hostname!r}"
+    )
 key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
 request = (
     f"GET {parts.path} HTTP/1.1\r\n"
@@ -538,7 +669,7 @@ request = (
     "Connection: Upgrade\r\n"
     f"Sec-WebSocket-Key: {key}\r\n"
     "Sec-WebSocket-Version: 13\r\n"
-    "Origin: http://localhost\r\n\r\n"
+    "Origin: http://127.0.0.1\r\n\r\n"
 ).encode("ascii")
 payload = json.dumps({"id": 1, "method": "Browser.close"}).encode("utf-8")
 mask = secrets.token_bytes(4)
@@ -568,6 +699,8 @@ make_prototype_view() {
   local output="$1"
   "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$output" <<'PY'
 from html import escape
+from html.parser import HTMLParser
+import json
 from pathlib import Path
 import sys
 
@@ -579,49 +712,178 @@ source = source_path.read_text(encoding="utf-8")
 if "</head>" not in source.lower():
     raise SystemExit(f"prototype has no </head> element: {source_path}")
 
-if surface == "egui":
-    if ".desk" not in source:
-        raise SystemExit(
-            f"egui prototype must contain a .desk surface: {source_path}; "
-            "pass the approved egui HTML with --prototype"
+target_class = "desk" if surface == "egui" else "phone"
+target_selector = f".{target_class}"
+
+
+class SurfaceParser(HTMLParser):
+    _void_tags = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self, target_class):
+        super().__init__(convert_charrefs=True)
+        self.target_class = target_class
+        self.stack = []
+        self.template_depth = 0
+        self.found = False
+
+    @staticmethod
+    def _classes(attrs):
+        class_value = next(
+            (value for name, value in attrs if name.lower() == "class"), ""
         )
+        return set((class_value or "").split())
+
+    def _has_valid_frame_ancestor(self):
+        for index, node in enumerate(self.stack[:-1]):
+            if index < 2:
+                continue
+            frame_parent = self.stack[index - 1]
+            frame_grandparent = self.stack[index - 2]
+            if (
+                "frame" in node["classes"]
+                and "rack" in frame_parent["classes"]
+                and frame_grandparent["tag"] == "body"
+            ):
+                return True
+        return False
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        node = {"tag": tag, "classes": self._classes(attrs)}
+        self.stack.append(node)
+        # The template element itself remains in the DOM; only its content is
+        # inert and unreachable by the frame's querySelector.
+        if (
+            self.template_depth == 0
+            and self.target_class in node["classes"]
+            and self._has_valid_frame_ancestor()
+        ):
+            self.found = True
+        if tag == "template":
+            self.template_depth += 1
+        if node["tag"] in self._void_tags:
+            self.stack.pop()
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in self._void_tags and self.stack:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index]["tag"] == tag:
+                self.template_depth -= sum(
+                    node["tag"] == "template" for node in self.stack[index:]
+                )
+                del self.stack[index:]
+                return
+
+
+parser = SurfaceParser(target_class)
+parser.feed(source)
+parser.close()
+if not parser.found:
+    raise SystemExit(
+        f"{surface} prototype must contain {target_selector} inside "
+        f"body > .rack > .frame: {source_path}"
+    )
+
+if surface == "egui":
     style = """
 html, body { width: 1160px !important; height: 631px !important; overflow: hidden !important; }
 body { padding: 8px !important; }
-body > h1, body > .sub { display: none !important; }
-body > .rack { display: block !important; width: 1080px !important; }
-body > .rack > .frame { display: none !important; }
-body > .rack > .frame:has(.desk) {
-  display: block !important;
-  width: 1080px !important;
-  max-width: 1080px !important;
-  margin: 0 !important;
-}
-"""
+    body > h1, body > .sub { display: none !important; }
+    body > .rack { display: block !important; width: 1080px !important; }
+    body > .rack > .frame { display: none !important; }
+    body > .rack > .frame.design-gate-target {
+      display: block !important;
+      width: 1080px !important;
+      max-width: 1080px !important;
+      margin: 0 !important;
+    }
+    #design-gate-error {
+      display: block !important;
+      margin: 24px !important;
+      padding: 18px !important;
+      border: 2px solid #f85149 !important;
+      background: #3d1618 !important;
+      color: #ffb4ab !important;
+      font: 700 18px system-ui, sans-serif !important;
+    }
+    """
     width, height = 1160, 631
 elif surface == "ios":
-    if ".phone" not in source:
-        raise SystemExit(
-            f"iOS prototype must contain a .phone surface: {source_path}; "
-            "pass the approved iOS HTML with --prototype"
-        )
     style = """
 html, body { width: 900px !important; height: 900px !important; overflow: hidden !important; }
-body { padding: 8px !important; }
-body > h1, body > .sub { display: none !important; }
-body > .rack { display: flex !important; flex-wrap: nowrap !important; width: 840px !important; gap: 28px !important; }
-body > .rack > .frame:has(.desk) { display: none !important; }
-body > .rack > .frame { flex: 0 0 auto !important; }
-"""
+    body { padding: 8px !important; }
+    body > h1, body > .sub { display: none !important; }
+    body > .rack { display: flex !important; flex-wrap: nowrap !important; width: 840px !important; gap: 28px !important; }
+    body > .rack > .frame { flex: 0 0 auto !important; }
+    body > .rack > .frame { display: none !important; }
+    body > .rack > .frame.design-gate-target { display: block !important; }
+    #design-gate-error {
+      display: block !important;
+      margin: 24px !important;
+      padding: 18px !important;
+      border: 2px solid #f85149 !important;
+      background: #3d1618 !important;
+      color: #ffb4ab !important;
+      font: 700 18px system-ui, sans-serif !important;
+    }
+    """
     width, height = 900, 900
 else:
     raise SystemExit(f"unsupported surface: {surface}")
 
 base_href = escape(source_path.parent.as_uri() + "/", quote=True)
+target_error = escape(
+    f"Design-gate render failed: no frame containing {target_selector} was found."
+)
+surface_script = f"""
+<script id="design-gate-surface-script">
+(() => {{
+  const targetSelector = {json.dumps(target_selector)};
+  const markSurface = () => {{
+    const frames = Array.from(document.querySelectorAll("body > .rack > .frame"));
+    const targets = frames.filter((frame) => frame.querySelector(targetSelector));
+    if (targets.length === 0) {{
+      const error = document.createElement("div");
+      error.id = "design-gate-error";
+      error.textContent = {json.dumps(target_error)};
+      document.body.prepend(error);
+      return;
+    }}
+    targets.forEach((frame) => frame.classList.add("design-gate-target"));
+  }};
+  if (document.readyState === "loading") {{
+    document.addEventListener("DOMContentLoaded", markSurface, {{ once: true }});
+  }} else {{
+    markSurface();
+  }}
+}})();
+</script>
+"""
 injection = (
     f'<base href="{base_href}">\n'
     '<meta name="design-gate-render" content="generated without editing the source">\n'
     f'<style id="design-gate-surface">{style}</style>\n'
+    f'{surface_script}'
 )
 head_end = source.lower().index("</head>")
 derived = source[:head_end] + injection + source[head_end:]
@@ -640,10 +902,7 @@ run_chrome_screenshot() {
   local chrome_log="$STAGE/chrome-$label.log"
   local url
   local chrome_pid
-  local deadline
-  local exit_status
   local dimensions
-  local close_requested=0
 
   mkdir -p "$profile"
   url="$(file_url "$html_path")"
@@ -661,8 +920,9 @@ run_chrome_screenshot() {
     --force-device-scale-factor=1 \
     --run-all-compositor-stages-before-draw \
     --allow-file-access-from-files \
+    --remote-debugging-address="$CHROME_DEVTOOLS_ADDRESS" \
     --remote-debugging-port=0 \
-    --remote-allow-origins=http://localhost \
+    --remote-allow-origins="$CHROME_DEVTOOLS_ORIGIN" \
     --window-size="$width,$height" \
     --user-data-dir="$profile" \
     --no-first-run \
@@ -672,37 +932,17 @@ run_chrome_screenshot() {
     "$url" >"$chrome_log" 2>&1 &
   chrome_pid=$!
   CAPTURE_PID="$chrome_pid"
-  deadline=$((SECONDS + 10#$CHROME_TIMEOUT_SECONDS))
-  while kill -0 "$chrome_pid" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do
-    if [[ -s "$output_path" && "$close_requested" -eq 0 ]]; then
-      if gracefully_close_chrome "$profile"; then
-        log "requested graceful Chrome shutdown after $label completed"
-      else
-        warn "could not request graceful Chrome shutdown for $label; waiting for process exit"
-      fi
-      close_requested=1
-    fi
-    sleep 1
-  done
-  if kill -0 "$chrome_pid" 2>/dev/null; then
-    kill "$chrome_pid" 2>/dev/null || true
-    set +e
-    wait "$chrome_pid"
-    exit_status=$?
-    set -e
-    CAPTURE_PID=""
+  if ! wait_for_complete_png "$output_path" "$label" "$CHROME_TIMEOUT_SECONDS"; then
     tail -40 "$chrome_log" >&2 || true
-    die "headless Chrome did not finish $label within ${CHROME_TIMEOUT_SECONDS}s"
+    die "headless Chrome did not publish a complete PNG for $label within ${CHROME_TIMEOUT_SECONDS}s: ${PNG_WAIT_REASON}"
   fi
-  set +e
-  wait "$chrome_pid"
-  exit_status=$?
-  set -e
-  CAPTURE_PID=""
-  if [[ "$exit_status" -ne 0 ]]; then
-    tail -40 "$chrome_log" >&2 || true
-    die "headless Chrome exited with status $exit_status while rendering $label"
+  if gracefully_close_chrome "$profile"; then
+    log "requested loopback-only DevTools Browser.close after $label completed"
+  else
+    warn "could not request loopback-only DevTools shutdown for $label; using owned-child cleanup"
   fi
+  terminate_owned_child "$chrome_pid" "$label" \
+    || die "could not clean up the owned headless Chrome child for $label"
   assert_png "$output_path"
   dimensions="$(png_dimensions "$output_path")"
   [[ "$dimensions" == "${width}x${height}" ]] \
@@ -778,8 +1018,6 @@ capture_egui() {
   local health
   local snapshot_path="$STAGE/snapshot.json"
   local ui_pid
-  local deadline
-  local exit_status
   local binary
 
   require_egui_dependencies
@@ -866,34 +1104,17 @@ PY
     if ! CORRAL_UI_SCREENSHOT_PID="$ui_pid" \
       CORRAL_UI_SCREENSHOT_PATH="$STAGE/live-after.png" \
       bash -c "$EGUI_WAKE_COMMAND" >>"$STAGE/capture.log" 2>&1; then
-      kill "$ui_pid" 2>/dev/null || true
-      wait "$ui_pid" 2>/dev/null || true
+      terminate_owned_child "$ui_pid" "egui" \
+        || die "egui wake command failed and owned-child cleanup failed"
       die "egui wake command failed; no live screenshot claim was made"
     fi
   fi
-  deadline=$((SECONDS + 10#$CAPTURE_TIMEOUT_SECONDS))
-  while kill -0 "$ui_pid" 2>/dev/null && [[ $SECONDS -lt $deadline ]]; do
-    sleep 1
-  done
-  if kill -0 "$ui_pid" 2>/dev/null; then
-    kill "$ui_pid" 2>/dev/null || true
-    set +e
-    wait "$ui_pid"
-    exit_status=$?
-    set -e
-    CAPTURE_PID=""
+  if ! wait_for_complete_png "$STAGE/live-after.png" "egui" "$CAPTURE_TIMEOUT_SECONDS"; then
     tail -80 "$STAGE/capture.log" >&2 || true
-    die "egui did not finish its screenshot within ${CAPTURE_TIMEOUT_SECONDS}s"
+    die "egui did not publish a complete PNG within ${CAPTURE_TIMEOUT_SECONDS}s: ${PNG_WAIT_REASON}"
   fi
-  set +e
-  wait "$ui_pid"
-  exit_status=$?
-  set -e
-  CAPTURE_PID=""
-  if [[ "$exit_status" -ne 0 ]]; then
-    tail -80 "$STAGE/capture.log" >&2 || true
-    die "egui exited with status $exit_status before completing the live capture"
-  fi
+  terminate_owned_child "$ui_pid" "egui" \
+    || die "could not clean up the owned egui child"
   if [[ -n "$LIVE_AGENT" ]] \
     && ! grep -q "native screenshot evidence selected live agent" "$STAGE/capture.log"; then
     tail -80 "$STAGE/capture.log" >&2 || true
@@ -1028,13 +1249,16 @@ mkdir -p "$OUTPUT_DIR"
 STAGE="$(mktemp -d "$OUTPUT_DIR/.design-gate.stage.XXXXXX")"
 CAPTURE_PID=""
 cleanup() {
+  local cleanup_status=0
   if [[ -n "${CAPTURE_PID:-}" ]]; then
-    kill "$CAPTURE_PID" 2>/dev/null || true
-    wait "$CAPTURE_PID" 2>/dev/null || true
+    if ! terminate_owned_child "$CAPTURE_PID" "capture"; then
+      cleanup_status=1
+    fi
   fi
   if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
     rm -rf -- "$STAGE"
   fi
+  return "$cleanup_status"
 }
 trap cleanup EXIT
 
@@ -1096,6 +1320,8 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '- Capture kind: %s\n' "$CAPTURE_KIND"
   printf -- '- Live description: %s\n' "$LIVE_DESCRIPTION"
   printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
+  printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
+  printf -- '- Chrome trust boundary: temporary DevTools is loopback-only on `127.0.0.1`, uses an ephemeral port/private profile, and receives only `Browser.close`; local approved HTML and the owned process are trusted inputs.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
     printf -- '- Host health URL: `%s` (checked before capture)\n' "$HOST_URL"
   elif [[ "$SURFACE" == "ios" ]]; then

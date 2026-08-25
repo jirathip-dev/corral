@@ -239,6 +239,31 @@ scripts/design-gate-evidence.sh --issue 206 --surface egui \
   --live-agent herdr:AGENT_ID
 ```
 
+The capture contract is a complete, CRC-checked PNG: the writer may linger
+after publishing it, but a partial file is never accepted or published. The
+script validates the PNG before cleanup and again afterward, then sends TERM
+to only its owned direct child, waits a bounded grace period, and escalates to
+KILL if needed. Prototype rendering marks the selected `.desk` or `.phone`
+frame with a small compatibility script; the wrapper also rejects a prototype
+unless the target is inside `body > .rack > .frame`. The derived page retains
+a visible failure if the target is absent at runtime instead of silently
+capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
+`127.0.0.1`, and
+allows only the matching loopback origin; it is used solely for the scoped
+`Browser.close` request against the private profile.
+
+For a real macOS egui lifecycle check—fake herdr fixture, real corrald,
+registered native UI, real target selection, native wgpu PNG, exact-pid wake,
+and bounded cleanup—run:
+
+```sh
+bash scripts/test-design-gate-egui-integration.sh
+```
+
+It is intentionally local/platform-dependent and requires a macOS window
+server, Chrome, Cargo, OpenSSL, and `osascript`; it uses only scratch config,
+repo, worktree, and loopback resources and removes them on completion.
+
 The iOS path uses only `hermes-sim-task`. `--ios-mode demo` is an explicit
 Debug fixture; live mode requires `--ios-command` to prepare and launch the
 real app inside the temporary simulator. The approved #205 transcript HTML is
@@ -258,10 +283,12 @@ previously captured frame. Existing issue bundles require `--force` before they
 can be replaced. The composite labels supplied PNG and Debug-demo modes
 directly. Use `--dry-run` to inspect the resolved operation;
 `bash scripts/test-design-gate-evidence.sh` verifies complete-PNG validation,
-provenance labels, dimensions, force-gated reruns, writer completion, egui
-capture/wake seams, argument failures, and preservation of an existing bundle
-after a failed run. This remains a local/platform-dependent developer check;
-it is not wired into CI.
+the exit-during-validation recheck, structural prototype rejection through the
+real Chrome path, provenance labels, dimensions, force-gated reruns, lingering and
+TERM-ignoring writers, Chrome trust-boundary flags, egui capture/wake seams,
+argument failures, and preservation of an existing bundle after a failed run.
+These remain local/platform-dependent developer checks; they are not wired into
+CI.
 
 ## Rust coverage gate and baseline
 

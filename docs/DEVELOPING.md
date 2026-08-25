@@ -244,9 +244,11 @@ after publishing it, but a partial file is never accepted or published. The
 script validates the PNG before cleanup and again afterward, then sends TERM
 to only its owned direct child, waits a bounded grace period, and escalates to
 KILL if needed. Prototype rendering marks the selected `.desk` or `.phone`
-frame with a small compatibility script; if no target frame is found, the
-derived page shows a visible failure instead of silently capturing the wrong
-surface. Chrome's DevTools endpoint is ephemeral, bound to `127.0.0.1`, and
+frame with a small compatibility script; the wrapper also rejects a prototype
+unless the target is inside `body > .rack > .frame`. The derived page retains
+a visible failure if the target is absent at runtime instead of silently
+capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
+`127.0.0.1`, and
 allows only the matching loopback origin; it is used solely for the scoped
 `Browser.close` request against the private profile.
 
@@ -281,7 +283,8 @@ previously captured frame. Existing issue bundles require `--force` before they
 can be replaced. The composite labels supplied PNG and Debug-demo modes
 directly. Use `--dry-run` to inspect the resolved operation;
 `bash scripts/test-design-gate-evidence.sh` verifies complete-PNG validation,
-provenance labels, dimensions, force-gated reruns, lingering and
+the exit-during-validation recheck, structural prototype rejection through the
+real Chrome path, provenance labels, dimensions, force-gated reruns, lingering and
 TERM-ignoring writers, Chrome trust-boundary flags, egui capture/wake seams,
 argument failures, and preservation of an existing bundle after a failed run.
 These remain local/platform-dependent developer checks; they are not wired into

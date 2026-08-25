@@ -18,10 +18,10 @@
 # The default egui prototype is the approved HTML design source at
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
 # through headless Chrome at 1160×631. A custom HTML target can be supplied with
-# --prototype; egui targets must contain .desk and iOS targets must contain
-# .phone. The iOS surface is rendered at 900×900 so the complete phone frame
-# remains visible. The source is wrapped without changing the checked-in
-# prototype.
+# --prototype; the requested .desk or .phone must be contained by a direct
+# body > .rack > .frame chain. The iOS surface is rendered at 900×900 so the
+# complete phone frame remains visible. The source is wrapped without changing
+# the checked-in prototype.
 #
 # egui capture is deliberately live-only by default. The script requires a
 # healthy --host-url (default http://127.0.0.1:8474), builds
@@ -580,9 +580,16 @@ wait_for_complete_png() {
       PNG_WAIT_REASON="$label has not written a non-empty PNG"
     fi
 
-    # A writer that exits before publishing a complete PNG is a hard failure;
-    # a writer that is still alive gets the full bounded capture deadline.
+    # A writer that exits before publishing a complete PNG is normally a hard
+    # failure; revalidate once because the writer may have completed between
+    # the first validator call and this liveness check.
     if [[ -z "${CAPTURE_PID:-}" ]] || ! child_is_running "$CAPTURE_PID"; then
+      if [[ -s "$path" ]]; then
+        if dimensions="$(png_dimensions "$path" 2>&1)"; then
+          return 0
+        fi
+        PNG_WAIT_REASON="$dimensions"
+      fi
       return 1
     fi
     if [[ $SECONDS -ge $deadline ]]; then
@@ -692,6 +699,7 @@ make_prototype_view() {
   local output="$1"
   "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$output" <<'PY'
 from html import escape
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import sys
@@ -704,12 +712,86 @@ source = source_path.read_text(encoding="utf-8")
 if "</head>" not in source.lower():
     raise SystemExit(f"prototype has no </head> element: {source_path}")
 
-if surface == "egui":
-    if ".desk" not in source:
-        raise SystemExit(
-            f"egui prototype must contain a .desk surface: {source_path}; "
-            "pass the approved egui HTML with --prototype"
+target_class = "desk" if surface == "egui" else "phone"
+target_selector = f".{target_class}"
+
+
+class SurfaceParser(HTMLParser):
+    _void_tags = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self, target_class):
+        super().__init__(convert_charrefs=True)
+        self.target_class = target_class
+        self.stack = []
+        self.found = False
+
+    @staticmethod
+    def _classes(attrs):
+        class_value = next(
+            (value for name, value in attrs if name.lower() == "class"), ""
         )
+        return set((class_value or "").split())
+
+    def _has_valid_frame_ancestor(self):
+        for index, node in enumerate(self.stack[:-1]):
+            if index < 2:
+                continue
+            frame_parent = self.stack[index - 1]
+            frame_grandparent = self.stack[index - 2]
+            if (
+                "frame" in node["classes"]
+                and "rack" in frame_parent["classes"]
+                and frame_grandparent["tag"] == "body"
+            ):
+                return True
+        return False
+
+    def handle_starttag(self, tag, attrs):
+        node = {"tag": tag.lower(), "classes": self._classes(attrs)}
+        self.stack.append(node)
+        if self.target_class in node["classes"] and self._has_valid_frame_ancestor():
+            self.found = True
+        if node["tag"] in self._void_tags:
+            self.stack.pop()
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in self._void_tags and self.stack:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index]["tag"] == tag:
+                del self.stack[index:]
+                return
+
+
+parser = SurfaceParser(target_class)
+parser.feed(source)
+parser.close()
+if not parser.found:
+    raise SystemExit(
+        f"{surface} prototype must contain {target_selector} inside "
+        f"body > .rack > .frame: {source_path}"
+    )
+
+if surface == "egui":
     style = """
 html, body { width: 1160px !important; height: 631px !important; overflow: hidden !important; }
 body { padding: 8px !important; }
@@ -762,7 +844,6 @@ else:
     raise SystemExit(f"unsupported surface: {surface}")
 
 base_href = escape(source_path.parent.as_uri() + "/", quote=True)
-target_selector = ".desk" if surface == "egui" else ".phone"
 target_error = escape(
     f"Design-gate render failed: no frame containing {target_selector} was found."
 )

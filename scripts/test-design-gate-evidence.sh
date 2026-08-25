@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Hermetic tests for scripts/design-gate-evidence.sh. They cover the supplied
-# PNG seam, complete-PNG rejection, visible provenance labels, explicit force
-# overwrites, normalized conformance stability, complete-but-lingering writers,
-# TERM-ignoring child escalation, Chrome trust-boundary flags, argument
-# validation, and the egui wake-command failure path.
+# PNG seam, complete-PNG rejection, exit-during-validation rechecking, visible
+# provenance labels, explicit force overwrites, normalized conformance
+# stability, complete-but-lingering writers, TERM-ignoring child escalation,
+# structural prototype rejection through real Chrome, Chrome trust-boundary
+# flags, argument validation, and the egui wake-command failure path.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -128,7 +129,7 @@ if [[ -n "${CORRAL_TEST_EGUI_PID_FILE:-}" ]]; then
 fi
 printf '%s\n' 'native screenshot evidence selected live agent; fixture writer'
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
-if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" ]]; then
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
 from pathlib import Path
 import os
@@ -141,8 +142,18 @@ destination = Path(sys.argv[2])
 mode = sys.argv[3]
 split = max(1, len(source) // 2)
 destination.write_bytes(source[:split])
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-if mode == "partial-then-linger":
+if mode == "race-during-validation":
+    marker = Path(os.environ["CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"])
+    deadline = time.monotonic() + 5
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not marker.exists():
+        raise SystemExit("PNG race validator did not start")
+    with destination.open("ab") as stream:
+        stream.write(source[split:])
+    Path(os.environ["CORRAL_TEST_PNG_RACE_WRITER_FINISHED"]).touch()
+elif mode == "partial-then-linger":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(0.5)
     with destination.open("ab") as stream:
         stream.write(source[split:])
@@ -150,6 +161,7 @@ if mode == "partial-then-linger":
     while True:
         time.sleep(1)
 else:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(10)
 PY
 else
@@ -169,8 +181,48 @@ fi
 STUB
 chmod +x "$WORK/bin/egui"
 
+cat > "$WORK/bin/python-race" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${CORRAL_TEST_PNG_RACE:-0}" == "1" \
+  && "${1:-}" == "-" \
+  && "${2:-}" == *"live-after.png" \
+  && ! -e "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]]; then
+  touch "$CORRAL_TEST_PNG_RACE_INTERCEPTED"
+  # Run the real validator against the partial file first. Then let the
+  # writer finish and exit, but report the first validation as failed so the
+  # production waiter's exit-during-validation recheck is exercised.
+  "$CORRAL_TEST_REAL_PYTHON" "$@" >/dev/null 2>&1 || true
+  touch "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"
+  deadline=$((SECONDS + 5))
+  while [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" \
+    && $SECONDS -lt $deadline ]]; do
+    sleep 0.01
+  done
+  [[ -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]]
+  exit 1
+fi
+exec "$CORRAL_TEST_REAL_PYTHON" "$@"
+STUB
+chmod +x "$WORK/bin/python-race"
+
+cat > "$WORK/malformed-prototype.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Malformed design gate fixture</title><style>.desk {}</style></head>
+<body>
+  <main class="rack">
+    <div class="wrapper">
+      <section class="frame"><div class="desk"></div></section>
+    </div>
+  </main>
+</body>
+</html>
+HTML
+
 export CHROME_BIN="$WORK/bin/chrome"
 export PYTHON_BIN
+export CORRAL_TEST_REAL_PYTHON="$PYTHON_BIN"
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_LIVE_PNG="$WORK/live.png"
 export CORRAL_TEST_COMPOSITE_PNG="$WORK/composite.png"
@@ -255,6 +307,42 @@ grep -q 'design-gate-surface-script' "$CORRAL_TEST_PROTOTYPE_HTML" \
   || fail "generated prototype view has no surface-selection script"
 grep -q 'design-gate-target' "$CORRAL_TEST_PROTOTYPE_HTML" \
   || fail "generated prototype view has no explicit target marker"
+
+REAL_CHROME_BIN=""
+for candidate in \
+  "$(command -v google-chrome 2>/dev/null || true)" \
+  "$(command -v google-chrome-stable 2>/dev/null || true)" \
+  "$(command -v chromium 2>/dev/null || true)" \
+  "$(command -v chromium-browser 2>/dev/null || true)" \
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    REAL_CHROME_BIN="$candidate"
+    break
+  fi
+done
+if [[ -n "$REAL_CHROME_BIN" ]]; then
+  if CHROME_BIN="$REAL_CHROME_BIN" bash "$SCRIPT" \
+    --issue 217 \
+    --surface egui \
+    --prototype "$WORK/malformed-prototype.html" \
+    --live-png "$WORK/live.png" \
+    --output-root "$WORK/malformed-output" \
+    --chrome-timeout-seconds 5 \
+    >"$WORK/malformed.log" 2>&1; then
+    fail "malformed prototype unexpectedly published evidence"
+  fi
+  grep -q 'body > .rack > .frame' "$WORK/malformed.log" \
+    || fail "malformed prototype failure did not identify the required structure"
+  for artifact in prototype.png live-after.png comparison.png conformance.md; do
+    [[ ! -e "$WORK/malformed-output/issue-217/$artifact" ]] \
+      || fail "malformed prototype published $artifact"
+  done
+else
+  echo "SKIP: real Chrome unavailable for structural prototype regression" >&2
+fi
+
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
   [[ -s "$WORK/output/issue-211/$artifact" ]] || fail "missing artifact after first run: $artifact"
 done
@@ -346,6 +434,40 @@ assert_stopped "partial then lingering egui" "$CORRAL_TEST_EGUI_PID_FILE"
 grep -q 'native egui viewport screenshot' "$WORK/egui-output/issue-213/conformance.md" \
   || fail "egui capture provenance is missing"
 unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=217
+export CORRAL_TEST_PNG_RACE=1
+export CORRAL_TEST_PNG_RACE_INTERCEPTED="$WORK/png-race-intercepted"
+export CORRAL_TEST_PNG_RACE_VALIDATE_STARTED="$WORK/png-race-validate-started"
+export CORRAL_TEST_PNG_RACE_WRITER_FINISHED="$WORK/png-race-writer-finished"
+rm -f \
+  "$CORRAL_TEST_EGUI_FINISHED" \
+  "$CORRAL_TEST_EGUI_PID_FILE" \
+  "$CORRAL_TEST_PNG_RACE_INTERCEPTED" \
+  "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" \
+  "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED"
+export CORRAL_TEST_EGUI_MODE=race-during-validation
+PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 217 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/png-race-output" \
+  --chrome-timeout-seconds 5
+[[ -f "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]] \
+  || fail "PNG race validator seam was not exercised"
+[[ -f "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" ]] \
+  || fail "PNG race did not validate the partial file before writer completion"
+[[ -f "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]] \
+  || fail "PNG race writer did not finish during validation"
+[[ -s "$WORK/png-race-output/issue-217/comparison.png" ]] \
+  || fail "exit-during-validation recheck did not publish complete evidence"
+unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_PNG_RACE
 
 export CORRAL_TEST_EXPECTED_ISSUE=215
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"

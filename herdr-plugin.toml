@@ -3,8 +3,8 @@
 # Commands are argv arrays. Herdr runs them from the linked or installed
 # plugin root and supplies the normal HERDR_PLUGIN_* environment.
 
-id = "corral.control-plane"
-name = "Corral control plane"
+id = "corral.fleet"
+name = "Corral Fleet"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
 description = "Set up Corral and inspect the live corrald fleet."

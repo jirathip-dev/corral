@@ -272,8 +272,15 @@ uploads after those gates (the files stay under ignored `target/` and must not
 be committed):
 
 ```sh
+set -euo pipefail
 mkdir -p target
 stage="$(mktemp -d target/.rust-core-coverage.XXXXXX)"
+cleanup() {
+  if [ -n "${stage:-}" ] && [ -d "$stage" ]; then
+    rm -rf -- "$stage"
+  fi
+}
+trap cleanup EXIT
 cargo llvm-cov report \
   --locked \
   --package corrald \
@@ -315,17 +322,36 @@ for report in \
   rust-client-summary.json \
   rust-client.lcov
 do
-  test -s "$stage/$report"
+  if [ ! -s "$stage/$report" ]; then
+    echo "::error::coverage report missing or empty: $report"
+    exit 1
+  fi
 done
 for summary in rust-core-summary.json rust-client-summary.json
 do
-  grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"
-  grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"
+  if ! grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"; then
+    echo "::error::coverage summary has no source-file records: $summary"
+    exit 1
+  fi
+  if ! grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"; then
+    echo "::error::coverage summary has no positive covered lines: $summary"
+    exit 1
+  fi
 done
-grep -q '^SF:' "$stage/rust-core.lcov"
-grep -q '^SF:' "$stage/rust-client.lcov"
+for report in rust-core.lcov rust-client.lcov
+do
+  if ! grep -q '^SF:' "$stage/$report"; then
+    echo "::error::coverage LCOV has no source-file records: $report"
+    exit 1
+  fi
+  if ! grep -q '^DA:' "$stage/$report"; then
+    echo "::error::coverage LCOV has no line records: $report"
+    exit 1
+  fi
+done
 rm -rf -- target/coverage
 mv "$stage" target/coverage
+stage=
 ```
 
 The uploaded artifact is named **`rust-core-coverage`** and contains the
@@ -343,14 +369,17 @@ with valid profiles still uploads diagnostics, while a pre-profile failure or
 cancellation publishes nothing. `cargo-llvm-cov` 0.8.7 does not expose a
 report path-remapping option, so LCOV `SF:` paths retain the runner checkout
 prefix; the LCOV files are diagnostic line-level reports rather than
-path-independent comparison data.
+path-independent comparison data. Each staged-report validation failure emits
+a precise GitHub Actions `::error::` annotation before the step exits.
 
-Measured on **macOS** on **2026-08-25**, with Cargo/rustc **1.97.1**,
-`cargo-llvm-cov` **0.8.7**, the command's exact package/target/test scope
-above, and live `#[ignore]` tests left disabled. The table records the lower
-result observed across repeated macOS runs so the floors are not based on a
-lucky test-process schedule; the first baseline run was 20,708/23,814 lines
-(86.957252%).
+### macOS observations
+
+The original local baseline was measured on **macOS** on **2026-08-25**, with
+Cargo/rustc **1.97.1**, `cargo-llvm-cov` **0.8.7**, the exact package/target/test
+scope above, and live `#[ignore]` tests disabled. Repeated local runs observed
+20,701–20,711 covered combined lines; the per-package rows below are the lower
+observations collected across those runs, not a claim that every row came from
+one process schedule.
 
 | Scope | Lines | Functions |
 |---|---:|---:|
@@ -358,24 +387,44 @@ lucky test-process schedule; the first baseline run was 20,708/23,814 lines
 | `corrald` | 20,264/22,805 = **88.857707%** | 1,783/2,024 = **88.092885%** |
 | `corrald-client` | 440/1,009 = **43.607532%** | 49/125 = **39.200000%** |
 
-The blocking floors for the combined core scope are **85% lines** and **82%
-functions**. They are evidence-based and intentionally below the measured
-baseline to leave deterministic headroom for Linux/platform differences and
-normal additions, while still rejecting a material regression. Repeated local
-runs observed 20,701–20,710 covered lines; the lower result above is the one
-used for the floor decision.
+The first local combined baseline run was 20,708/23,814 lines (86.957252%).
 
-All measurements above are macOS-only; neither floor is presented as Ubuntu
-portable yet. Revisit both floors after hosted Ubuntu evidence is available.
+### Hosted Ubuntu evidence
 
-The separate blocking `corrald-client` floors are **40% lines** and **35%
-functions**. Against the measured client baseline, that leaves **3.607532
-percentage points** of line headroom and **4.2 percentage points** of function
-headroom. These client floors are deliberately provisional pending the first
-hosted Ubuntu measurement; they are not a claim that macOS and Ubuntu produce
-identical coverage. They remain positive so deleting all client tests cannot
-pass: an isolated no-client-test run produced a client report with 0 executed
-lines/functions and the report gate exited 1 at these floors.
+The authoritative hosted measurement is from PR **#223**, on the
+`ubuntu-latest` runner: workflow run **32878400410**, job **97901802378**, and
+artifact **9575131839** ([run](https://github.com/jirathip-dev/corral/actions/runs/32878400410),
+[artifact](https://github.com/jirathip-dev/corral/actions/runs/32878400410/artifacts/9575131839)).
+All gates passed and the artifact contained six non-empty files.
+
+| Scope | Lines | Functions |
+|---|---:|---:|
+| `corrald` + `corrald-client` | 20,701/23,814 = **86.9278575627782%** | 1,832/2,149 = **85.248953001396%** |
+| `corrald` | 20,261/22,805 = **88.844551633413725%** | 1,783/2,024 = **88.092885375494071%** |
+| `corrald-client` | 440/1,009 = **43.60753221010902%** | 49/125 = **39.2%** |
+
+The Ubuntu line-level LCOV reports contained **22,629 DA records / 50 SF
+records** for the combined core scope and **970 DA records / 8 SF records**
+for `corrald-client`. The three-line difference in the per-package `corrald`
+row versus the earlier macOS observation is retained as honest platform/run
+evidence; the combined and client gate totals match the macOS lower
+observations.
+
+The blocking floors remain **85% lines / 82% functions** for the combined core
+scope and **40% lines / 35% functions** for `corrald-client`. The Ubuntu
+baseline leaves 1.9278575627782 percentage points of combined line headroom
+and 3.248953001396 percentage points of combined function headroom. The client
+baseline leaves 3.60753221010902 percentage points of line headroom and 4.2
+percentage points of function headroom. These unchanged, round floors are
+supported by both observed platforms while retaining deterministic room for
+normal additions; they do not imply identical per-file coverage across
+platforms.
+
+The empty-client collapse remains explicitly fail-closed. An isolated run that
+executed only `corrald` tests produced `files: []` and zero client totals. The
+staged-report validation rejects that empty client scope with an error before
+CI reaches the report-only client threshold step; the direct client report
+gate also exits 1 at 40/35. Deleting all client tests therefore cannot pass.
 
 ## Supply-chain gates and baseline
 

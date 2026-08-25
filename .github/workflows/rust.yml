@@ -210,7 +210,10 @@ jobs:
             rust-client-summary.json \
             rust-client.lcov
           do
-            test -s "$stage/$report"
+            if [ ! -s "$stage/$report" ]; then
+              echo "::error::coverage report missing or empty: $report"
+              exit 1
+            fi
           done
 
           # No-profile llvm-cov reports can still be non-empty JSON with an
@@ -219,11 +222,26 @@ jobs:
           # before allowing the staged directory to become uploadable.
           for summary in rust-core-summary.json rust-client-summary.json
           do
-            grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"
-            grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"
+            if ! grep -Eq '"files":[[:space:]]*\[[[:space:]]*\{' "$stage/$summary"; then
+              echo "::error::coverage summary has no source-file records: $summary"
+              exit 1
+            fi
+            if ! grep -Eq '"lines":\{"count":[1-9][0-9]*,"covered":[1-9][0-9]*' "$stage/$summary"; then
+              echo "::error::coverage summary has no positive covered lines: $summary"
+              exit 1
+            fi
           done
-          grep -q '^SF:' "$stage/rust-core.lcov"
-          grep -q '^SF:' "$stage/rust-client.lcov"
+          for report in rust-core.lcov rust-client.lcov
+          do
+            if ! grep -q '^SF:' "$stage/$report"; then
+              echo "::error::coverage LCOV has no source-file records: $report"
+              exit 1
+            fi
+            if ! grep -q '^DA:' "$stage/$report"; then
+              echo "::error::coverage LCOV has no line records: $report"
+              exit 1
+            fi
+          done
 
           rm -rf -- target/coverage
           mv "$stage" target/coverage

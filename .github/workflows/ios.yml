@@ -3,9 +3,10 @@ name: iOS build
 on:
   # Dispatch-only since 2026-08: the per-PR macOS job burned 10x-billed
   # minutes on every push, and the billing block (Aug 2026) showed the iOS
-  # build+test is a manual gate, not a PR requirement. Trigger it by hand
-  # from the Actions tab (or `gh workflow run ios.yml`) when iOS code
-  # changes; TestFlight upload is a separate local fastlane lane, never CI.
+  # build+test is a manual gate, not a PR requirement. It does not run
+  # automatically on PRs; the orchestrator can dispatch a final branch SHA
+  # with `gh workflow run ios.yml --ref <branch>`. TestFlight upload is a
+  # separate local fastlane lane, never CI.
   workflow_dispatch:
 
 concurrency:
@@ -34,43 +35,102 @@ jobs:
 
       # Advisory-first: the vendored package and Package.resolved keep the
       # SwiftSyntax tool reproducible, while the two source paths deliberately
-      # exclude generated ios/build/. A non-zero lint run is annotated and
-      # allowed through so this adoption does not become an iOS build gate.
+      # exclude generated ios/build/. This workflow is manual-dispatch-only to
+      # preserve the deliberate macOS cost policy. A non-zero lint run is
+      # annotated and summarized, then allowed through so this adoption does
+      # not become an iOS build gate.
       - name: anti-slop Swift lint (advisory)
         continue-on-error: true
         working-directory: ios
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/anti-slop.txt"
+          summary="$GITHUB_STEP_SUMMARY"
           set +e
           swift run --package-path tools/anti-slop-swift anti-slop \
             FleetNotifier FleetNotifierTests 2>&1 | tee "$output"
           lint_status=${PIPESTATUS[0]}
           set -e
 
+          diagnostic_count="$(grep -Ec '^(FleetNotifier|FleetNotifierTests)/.*:[0-9]+:[0-9]+: error: \[[^]]+\] ' "$output" || true)"
+
+          # GitHub renders at most ten annotations from one step. Keep the
+          # complete raw output in the job log and in the step summary, with
+          # HTML-sensitive bytes escaped so multiline diagnostics remain
+          # readable and durable even when the annotation UI is capped.
+          write_summary() {
+            {
+              printf '%s\n' '### anti-slop Swift lint (advisory)' '' \
+                "Result: linter exit $lint_status; $diagnostic_count diagnostic starts." \
+                'This workflow is manual-dispatch-only. GitHub may render at most 10 warning annotations per step; the complete escaped output below and the job log are the source of truth.' '' \
+                '<details><summary>Complete raw linter output</summary>' '' '<pre>'
+              sed \
+                -e 's/&/\&amp;/g' \
+                -e 's/</\&lt;/g' \
+                -e 's/>/\&gt;/g' \
+                "$output"
+              printf '%s\n' '</pre>' '</details>'
+            } >> "$summary"
+          }
+          write_summary
+
           if [ "$lint_status" -eq 0 ]; then
             echo "::notice::anti-slop clean for FleetNotifier and FleetNotifierTests"
             exit 0
           fi
 
-          # Convert the linter's stable file:line:column diagnostics into
-          # review-visible warnings. Build/resolution failures still produce
-          # the generic advisory below and remain non-blocking by design.
-          while IFS=: read -r file line column kind message; do
-            [ "$kind" = " error" ] || continue
-            case "$file" in
-              FleetNotifier/*|FleetNotifierTests/*) ;;
-              *) continue ;;
+          # Convert diagnostics into review-visible warnings. Accumulate each
+          # diagnostic through the next diagnostic or the linter summary so a
+          # reachable multiline message is encoded rather than truncated.
+          is_diagnostic_start() {
+            case "$1" in
+              FleetNotifier/*|FleetNotifierTests/*)
+                [[ "$1" =~ :[0-9]+:[0-9]+:\ error:\ \[[^]]+\]\  ]]
+                ;;
+              *) return 1 ;;
             esac
+          }
+
+          emit_annotation() {
+            local diagnostic="$1"
+            local first_line file line column kind message rule detail continuation
+            first_line="${diagnostic%%$'\n'*}"
+            IFS=: read -r file line column kind message <<< "$first_line"
+            [ "$kind" = " error" ] || return 0
             message="${message# }"
             rule="${message#\[}"
             rule="${rule%%\]*}"
             detail="${message#*\] }"
-            detail="${detail//'%'/'%25'}"
-            detail="${detail//$'\r'/'%0D'}"
-            detail="${detail//$'\n'/'%0A'}"
-            echo "::warning file=ios/$file,line=$line,col=$column,title=anti-slop/$rule::$detail"
-          done < <(grep -E '^(FleetNotifier|FleetNotifierTests)/' "$output" | grep -E ':[0-9]+:[0-9]+: error: \[[^]]+\] ' || true)
+            if [[ "$diagnostic" == *$'\n'* ]]; then
+              continuation="${diagnostic#*$'\n'}"
+              detail="${detail}"$'\n'"${continuation}"
+            fi
+            detail="${detail//%/%25}"
+            detail="${detail//$'\r'/%0D}"
+            detail="${detail//$'\n'/%0A}"
+            printf '::warning file=ios/%s,line=%s,col=%s,title=anti-slop/%s::%s\n' \
+              "$file" "$line" "$column" "$rule" "$detail"
+          }
+
+          diagnostic=""
+          while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+            if is_diagnostic_start "$raw_line"; then
+              if [ -n "$diagnostic" ]; then
+                emit_annotation "$diagnostic"
+              fi
+              diagnostic="$raw_line"
+            elif [[ "$raw_line" == "[anti-slop]"* ]]; then
+              if [ -n "$diagnostic" ]; then
+                emit_annotation "$diagnostic"
+                diagnostic=""
+              fi
+            elif [ -n "$diagnostic" ]; then
+              diagnostic="${diagnostic}"$'\n'"${raw_line}"
+            fi
+          done < "$output"
+          if [ -n "$diagnostic" ]; then
+            emit_annotation "$diagnostic"
+          fi
 
           echo "::warning::anti-slop exited $lint_status; findings are advisory until the baseline is retired"
           exit "$lint_status"

@@ -111,9 +111,29 @@ swift run --package-path ios/tools/anti-slop-swift anti-slop \
 The committed root `.anti-slop.json` initially disables
 `no-any-dictionary-value` and `no-any-parameters`. The command intentionally
 passes only `FleetNotifier` and `FleetNotifierTests`; generated `ios/build/`
-is therefore excluded and is never linted. The CI step emits GitHub warning
-annotations for findings and uses `continue-on-error` while this baseline is
-being retired.
+is therefore excluded and is never linted. The iOS workflow is deliberately
+`workflow_dispatch`-only because macOS minutes are a manual-cost gate; it does
+not run automatically on PRs. After a branch push, the orchestrator can
+dispatch the final SHA with:
+
+```sh
+gh workflow run ios.yml --ref g208/ios-anti-slop
+```
+
+The advisory step emits warning commands for findings, but GitHub renders at
+most 10 warning annotations from one step. It also writes the complete
+HTML-escaped linter output — including multiline diagnostics — to the job log
+and the GitHub step summary; those are the durable source of truth for the
+full baseline. The step uses `continue-on-error` while this baseline is being
+retired.
+
+The upstream README is retained byte-for-byte in the vendored snapshot for
+provenance and re-sync checks, although SwiftPM does not need it to build or
+run the pinned package. Its intentionally fake `apiKey` example is covered by
+a path-and-exact-line allowlist in the repository `.gitleaks.toml`; the secret
+scan regression keeps a changed same-line value detectable. If the upstream
+snapshot changes that example, update only this narrow allowlist and its
+regression fixture alongside the re-sync.
 
 Measured on 2026-08-25 with Swift 6.3.3:
 
@@ -140,8 +160,10 @@ The enabled advisory findings are triaged as follows:
 | `no-force-try` | 1 | Test-only `DeviceMeta` JSON seeding uses a known `Codable` value. Make the helper throwing/XCTUnwrap-based in a focused test cleanup. |
 
 No application source, assertion, or test behavior was changed for this
-advisory adoption. The remaining findings are visible in CI and documented
-above rather than hidden by broad rule changes.
+advisory adoption. The remaining findings are available in the manually
+dispatched workflow's job log and complete step summary, with the rendered
+annotation list limited by GitHub's per-step cap; they are documented above
+rather than hidden by broad rule changes.
 
 ## Signing / distribution status
 

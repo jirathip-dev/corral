@@ -236,33 +236,97 @@ enum RecentOutputModel {
         // suffix. This is the one mutation that must preserve the reader's
         // position rather than follow the newest tail.
         if newIDs.count > oldIDs.count,
-           Array(newIDs.suffix(oldIDs.count)) == oldIDs {
+           hasSuffix(newIDs, matching: oldIDs) {
             return false
         }
 
         // Normal append and a bounded tail slide both expose the old tail at
         // the front of the new sequence (the latter only partially).
         if newIDs.count >= oldIDs.count,
-           Array(newIDs.prefix(oldIDs.count)) == oldIDs {
+           hasPrefix(newIDs, matching: oldIDs) {
             return true
         }
-        let overlapLimit = min(oldIDs.count, newIDs.count)
-        if overlapLimit > 0 {
-            for overlap in stride(from: overlapLimit, through: 1, by: -1) {
-                if Array(oldIDs.suffix(overlap)) == Array(newIDs.prefix(overlap)) {
-                    return true
-                }
-            }
+
+        // A bounded tail can slide while the previous last block is still
+        // being completed. Compare the old sequence without its last block
+        // with the new sequence without its last block; an exact suffix /
+        // prefix overlap proves that the change is at the tail even when the
+        // overlapping last block itself changed. The scan is linear and uses
+        // one prefix table rather than allocating arrays for each candidate.
+        let oldBeforeLast = max(oldIDs.count - 1, 0)
+        let newBeforeLast = max(newIDs.count - 1, 0)
+        if suffixPrefixOverlapLength(
+            old: oldIDs,
+            oldCount: oldBeforeLast,
+            new: newIDs,
+            newCount: newBeforeLast) > 0 {
+            return true
         }
 
-        // A streaming producer commonly extends the last block in place
-        // instead of appending a new block. The unchanged prefix proves this
-        // is tail growth, including the one-block case.
+        // A one-block stream has no unchanged prefix to overlap, but a
+        // changed sole block is still tail growth rather than a replacement.
         if oldIDs.count == newIDs.count,
-           oldIDs.dropLast() == newIDs.dropLast() {
+           oldIDs.count == 1 {
             return true
         }
         return false
+    }
+
+    private static func hasPrefix(_ values: [String], matching prefix: [String]) -> Bool {
+        guard prefix.count <= values.count else { return false }
+        for index in prefix.indices where values[index] != prefix[index] {
+            return false
+        }
+        return true
+    }
+
+    private static func hasSuffix(_ values: [String], matching suffix: [String]) -> Bool {
+        guard suffix.count <= values.count else { return false }
+        let start = values.count - suffix.count
+        for index in suffix.indices where values[start + index] != suffix[index] {
+            return false
+        }
+        return true
+    }
+
+    /// Return the longest suffix of `old[0..<oldCount]` that is also a
+    /// prefix of `new[0..<newCount]` in O(oldCount + newCount) time.
+    private static func suffixPrefixOverlapLength(old: [String],
+                                                  oldCount: Int,
+                                                  new: [String],
+                                                  newCount: Int) -> Int {
+        guard oldCount > 0, newCount > 0 else { return 0 }
+
+        var failure = Array(repeating: 0, count: newCount)
+        var prefixLength = 0
+        var patternIndex = 1
+        while patternIndex < newCount {
+            if new[patternIndex] == new[prefixLength] {
+                prefixLength += 1
+                failure[patternIndex] = prefixLength
+                patternIndex += 1
+            } else if prefixLength > 0 {
+                prefixLength = failure[prefixLength - 1]
+            } else {
+                patternIndex += 1
+            }
+        }
+
+        var matched = 0
+        var textIndex = 0
+        while textIndex < oldCount {
+            while matched > 0 && old[textIndex] != new[matched] {
+                matched = failure[matched - 1]
+            }
+            if old[textIndex] == new[matched] {
+                matched += 1
+            }
+            if matched == newCount, textIndex < oldCount - 1 {
+                matched = failure[matched - 1]
+            }
+            textIndex += 1
+        }
+        return matched
     }
 
     /// Keep the top reader anchor only when a successful page really inserted
@@ -443,18 +507,26 @@ struct RecentOutputSnapshot: Equatable, Sendable {
 // MARK: - Pure block and code helpers
 
 extension RecentOutputRender {
-    private static let timestampFormatter: DateFormatter = {
+    private static func makeTimestampFormatter(timeZone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.timeZone = timeZone
         formatter.dateFormat = "HH:mm:ss"
         return formatter
-    }()
+    }
 
-    static func timestamp(_ ms: UInt64) -> String {
+    private static let localTimestampFormatter = makeTimestampFormatter(
+        timeZone: .autoupdatingCurrent)
+
+    static func timestamp(_ ms: UInt64, timeZone: TimeZone? = nil) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        return timestampFormatter.string(from: date)
+        if let timeZone {
+            let formatter = localTimestampFormatter.copy() as! DateFormatter
+            formatter.timeZone = timeZone
+            return formatter.string(from: date)
+        }
+        return localTimestampFormatter.string(from: date)
     }
 
     static func messageLines(_ text: String) -> [String] {
@@ -480,10 +552,6 @@ extension RecentOutputRender {
         case .tool: return "Tool: \(block.text)"
         case .system: return "System: \(block.text)"
         }
-    }
-
-    static func combinesMessageChildren(for kind: TranscriptBlockKind) -> Bool {
-        kind == .user || kind == .agent
     }
 
     static func disclosureAccessibilityLabel(_ block: TranscriptBlock) -> String {

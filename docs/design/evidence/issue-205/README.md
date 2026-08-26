@@ -3,8 +3,9 @@
 This bundle records the approved transcript-chat comparison and two iOS
 simulator frames for issue #205. The before frame is the prior monotone
 concatenated output; the after frame is the semantic transcript surface with
-agent and user bubbles, an expanded diff, model/effort/worktree badges, a
-rounded output border, and an enabled dark-ink Send button.
+a user bubble plus agent/tool segmentation, an expanded diff,
+model/effort/worktree badges, a rounded output border, and an enabled dark-ink
+Send button.
 
 ## Approved source
 
@@ -17,7 +18,7 @@ rounded output border, and an enabled dark-ink Send button.
   capture scripts, this prototype, and the selected renderer lock records.
   Generated evidence is excluded from its own identity.
 - The recorded implementation content digest is
-  `sha256:358d5ed17353d787652a97960356d5dc69f4387153d48e5f986a64480b0ee18b`;
+  `sha256:2d279aa962d4008cc7200041ebf28893167c803f42101db507f7c12ad06a2502`;
   the per-file manifest is in `conformance.md`.
 
 ## Artifacts
@@ -29,7 +30,7 @@ rounded output border, and an enabled dark-ink Send button.
 | `live-after.png` | 1206x2622 | `ad9535c545a1e41b0388f25c84dea272d579c771a45af6ab334a75b02f93cb60` |
 | `comparison.png` | 2400x960 | `69d473601cd49d03b4e75573f73dad6b67e1873f6b97083408d77da26a2db7cf` |
 | `capture.log` | n/a | `648c404a1ec78fdfdb3d43a6a35c29bb4e6669c13522e508c86601e88c390e0b` |
-| `conformance.md` | n/a | `188dd40535a13ad8e666e734033ce2b72aea0249617240dab5f6c51e17eb3ff8` |
+| `conformance.md` | n/a | `15c7dfcb68313d1fe5c369437f35332e35e3404ecf636a5a63b2a528ca2f68ad` |
 
 `capture.log` is the complete Herdr build/install/launch/screenshot record,
 not a copied image provenance note. Both PNG frames were generated from the
@@ -65,7 +66,8 @@ capture does not depend on an untracked navigation hook or copied image.
 ## Gates
 
 - `hermes-sim-task` focused iOS tests:
-  `RecentOutputModelTests` — 29 passed, 0 failed.
+  `RecentOutputModelTests` — 31 passed, 0 failed.
+- `hermes-sim-task` full iOS tests — 195 passed, 0 failed.
 - `cargo fmt --all --check` — passed.
 - `cargo test -p corrald-ui recent_ --lib` — 12 passed, 0 failed.
 - `cargo clippy -p corrald-ui --all-targets -- -D warnings` — passed.
@@ -76,12 +78,6 @@ capture does not depend on an untracked navigation hook or copied image.
 - Real design-gate capture with explicit Google Chrome/private profile —
   passed; `conformance.md` records the per-file implementation and artifact
   hashes.
-
-The full iOS suite was attempted four times through `hermes-sim-task`; each
-attempt stopped before `xcodebuild` because the wrapper-owned simulator failed
-to reach booted state. The successful 29/29 focused suite remains the iOS
-code-level result. The orchestrator will retry the full suite on the amended
-SHA before reviewer handoff.
 
 ## Documentation audit
 

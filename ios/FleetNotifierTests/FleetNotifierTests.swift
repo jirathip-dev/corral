@@ -4120,6 +4120,47 @@ final class RecentOutputModelTests: XCTestCase {
                                                            to: [extended]))
     }
 
+    func testAutoscrollFollowsLastBlockMutationAndAppend() {
+        let oldRows = [
+            RecentOutputRow.block(block(.agent, "A")),
+            .block(block(.agent, "B (partial)")),
+        ]
+        let newRows = [
+            RecentOutputRow.block(block(.agent, "A")),
+            .block(block(.agent, "B (complete)")),
+            .block(block(.agent, "C")),
+        ]
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: oldRows,
+                                                           to: newRows))
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(
+            from: oldRows,
+            to: [.block(block(.agent, "history"))] + oldRows),
+            "a true history prepend must preserve the reader position")
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(
+            from: oldRows,
+            to: [.block(block(.agent, "replacement A")),
+                 .block(block(.agent, "replacement B")),
+                 .block(block(.agent, "replacement C"))]),
+            "a full replacement without tail overlap must not autoscroll")
+    }
+
+    func testAutoscrollFollowsLastBlockMutationAfterBoundedWindowSlide() {
+        let oldRows = [
+            RecentOutputRow.block(block(.agent, "l1")),
+            .block(block(.agent, "l2")),
+            .block(block(.agent, "Hi")),
+        ]
+        let newRows = [
+            RecentOutputRow.block(block(.agent, "l2")),
+            .block(block(.agent, "Hi there")),
+            .block(block(.agent, "C")),
+        ]
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: oldRows,
+                                                           to: newRows))
+    }
+
     func testAutoscrollFollowsSlidingTwoHundredItemTailButNotPrepend() {
         let oldTail = (0..<200).map {
             RecentOutputRow.block(block(.agent, "line-\($0)"))
@@ -4156,11 +4197,13 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(snapshot.identifiedRows.count, snapshot.visibleRows.count)
     }
 
-    func testAccessibilityCombinesMessagesAndKeepsDisclosureToggleLabelDistinct() {
-        XCTAssertTrue(RecentOutputRender.combinesMessageChildren(for: .user))
-        XCTAssertTrue(RecentOutputRender.combinesMessageChildren(for: .agent))
-        XCTAssertFalse(RecentOutputRender.combinesMessageChildren(for: .tool))
-        XCTAssertFalse(RecentOutputRender.combinesMessageChildren(for: .system))
+    func testAccessibilityUsesCombinedMessageLabelsAndDistinctDisclosureToggle() {
+        let user = block(.user, "user message")
+        let agent = block(.agent, "agent message")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(user),
+                       "You: user message")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(agent),
+                       "Agent: agent message")
 
         let tool = block(.tool, "$ cargo test")
         XCTAssertEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
@@ -4218,9 +4261,13 @@ final class RecentOutputModelTests: XCTestCase {
             "the next tail append follows the latest output after a no-op")
     }
 
-    func testTimestampUsesFixedUTCLocaleAndFormat() {
-        XCTAssertEqual(RecentOutputRender.timestamp(0), "00:00:00")
-        XCTAssertEqual(RecentOutputRender.timestamp(12 * 60 * 60 * 1000), "12:00:00")
+    func testTimestampUsesInjectedTimezoneAndFixedLocale() {
+        let utc = try! XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let bangkok = try! XCTUnwrap(TimeZone(secondsFromGMT: 7 * 60 * 60))
+        XCTAssertEqual(RecentOutputRender.timestamp(0, timeZone: utc), "00:00:00")
+        XCTAssertEqual(RecentOutputRender.timestamp(12 * 60 * 60 * 1000,
+                                                     timeZone: utc), "12:00:00")
+        XCTAssertEqual(RecentOutputRender.timestamp(0, timeZone: bangkok), "07:00:00")
         XCTAssertEqual(RecentOutputPalette.sendInkHex, "#052420")
         XCTAssertEqual(RecentOutputPalette.panelCornerRadius, 8)
     }

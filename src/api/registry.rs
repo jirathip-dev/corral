@@ -5,7 +5,9 @@
 //! by `/issues` ([`crate::fleet::config::default_path`] + [`load`]) into the
 //! board's read view. A parse, validation, or IO failure is still HTTP 200
 //! with `status="error"` — a broken registry is visible in the UI, never
-//! silently replaced by an empty list.
+//! silently replaced by an empty list. The additive `repos` field remains
+//! available in every state and is the union of live agent `workspace.repo`
+//! values and validated registry `gh_repo` basenames.
 //!
 //! ## Auth scope
 //!
@@ -14,20 +16,30 @@
 //! never mutates the registry or GitHub. Do NOT expose the daemon on a
 //! public interface.
 
+use std::sync::Arc;
+
+use axum::extract::State;
 use axum::response::Json;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::fleet::config::{self, Fleet};
 
+use super::AppState;
+use super::repo::live_workspace_repos;
+use super::repo::union_with_registry;
+
 /// `GET /fleet-registry` response: either a full projection of the loaded
-/// registry or a prominent error with an empty fleet list.
+/// registry or a prominent error with an empty fleet list. `repos` is the
+/// board category union and is intentionally separate from `fleets`: live
+/// Herdr categories must remain visible without inventing registry entries.
 #[derive(Debug, Serialize)]
 pub struct FleetRegistryResponse {
     pub status: &'static str,
     pub path: String,
     pub error: Option<String>,
     pub fleets: Vec<FleetRegistryEntry>,
+    pub repos: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,25 +67,36 @@ pub struct FleetModels {
 
 /// `GET /fleet-registry`: the configured fleet registry projected for the
 /// board. Always HTTP 200; `status` distinguishes a loaded registry from a
-/// parse/IO/validation failure.
-pub(crate) async fn fleet_registry() -> Json<FleetRegistryResponse> {
+/// parse/IO/validation failure. The category list is still populated from
+/// live agent records when the registry cannot be loaded.
+pub(crate) async fn fleet_registry(
+    State(state): State<Arc<AppState>>,
+) -> Json<FleetRegistryResponse> {
     let path = config::default_path();
+    let live_repos = live_workspace_repos(&state.store).await;
     let response = match config::load(&path) {
-        Ok(registry) => FleetRegistryResponse {
-            status: "ok",
-            path: path.display().to_string(),
-            error: None,
-            fleets: registry
-                .fleets
-                .iter()
-                .map(|fleet| project_fleet(fleet, registry.reasoning_effort(&fleet.name)))
-                .collect(),
-        },
+        Ok(registry) => {
+            let repos = union_with_registry(live_repos, Some(&registry))
+                .into_iter()
+                .collect();
+            FleetRegistryResponse {
+                status: "ok",
+                path: path.display().to_string(),
+                error: None,
+                fleets: registry
+                    .fleets
+                    .iter()
+                    .map(|fleet| project_fleet(fleet, registry.reasoning_effort(&fleet.name)))
+                    .collect(),
+                repos,
+            }
+        }
         Err(error) => FleetRegistryResponse {
             status: "error",
             path: path.display().to_string(),
             error: Some(error.to_string()),
             fleets: Vec::new(),
+            repos: live_repos.into_iter().collect(),
         },
     };
     Json(response)

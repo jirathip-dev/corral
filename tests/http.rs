@@ -1,6 +1,7 @@
 //! HTTP read path tests: /snapshot JSON shape, /healthz, SSE resume with
 //! Last-Event-ID (fresh cursor -> deltas; stale cursor -> full snapshot).
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
@@ -78,6 +79,63 @@ async fn app() -> (Store, axum::Router) {
         ..Default::default()
     });
     (store, app)
+}
+
+async fn app_with_repos(repos: &[Option<&str>]) -> (Store, axum::Router) {
+    let (store, app) = app().await;
+    for (index, repo) in repos.iter().enumerate() {
+        let mut agent = agent(&format!("agent-{index}"), AgentState::Working);
+        agent.workspace.repo = repo.map(str::to_string);
+        store.apply(Change::upsert(agent)).await;
+    }
+    (store, app)
+}
+
+fn registry_body(fleets: &[(&str, &str)]) -> String {
+    let fleets = fleets
+        .iter()
+        .map(|(name, gh_repo)| {
+            serde_json::json!({
+                "name": name,
+                "gh_repo": gh_repo,
+                "local": format!("/tmp/{name}"),
+                "worktree_dir": format!("wt-{name}"),
+                "orch": "orch",
+                "workers": [],
+                "models": {"orch": "o", "impl": "i", "review": "r"}
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "fleets": fleets }).to_string()
+}
+
+fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
+    value
+        .as_object()
+        .expect("repo category map")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn array_values(value: &serde_json::Value) -> BTreeSet<String> {
+    value
+        .as_array()
+        .expect("repo category list")
+        .iter()
+        .map(|repo| repo.as_str().expect("repo category string").to_string())
+        .collect()
+}
+
+async fn get_json(app: &axum::Router, path: &str) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).expect("JSON response")
 }
 
 /// Read one data frame from an SSE body stream.
@@ -255,6 +313,139 @@ async fn fleet_registry_malformed_file_returns_http_200_error_shape() {
     assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
     assert!(body["fleets"].as_array().unwrap().is_empty());
     assert_eq!(body["path"], path.to_string_lossy().as_ref());
+}
+
+/// #216: all registry states must retain the live category source. The
+/// fixtures deliberately use a fleet name that differs from its canonical
+/// `gh_repo` basename: fleet names remain the start-worktree issue keys, but
+/// the separate registry category list is canonical and the `/issues` map
+/// contains both compatible keys and live-only placeholders.
+#[tokio::test]
+async fn union_read_model_handles_absent_unloadable_partial_and_full_registry() {
+    let live = [Some("primary-repo"), Some("herdr-only"), None];
+    let expected_live = BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()]);
+
+    // Absent registry: status remains an explicit error, while both read
+    // surfaces still expose the live categories and the orphan contributes
+    // no guessed category.
+    {
+        let dir = tempfile::tempdir().expect("absent registry dir");
+        let path = dir.path().join("missing-fleets.json");
+        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+        let (store, app) = app_with_repos(&live).await;
+        let issues = get_json(&app, "/issues").await;
+        let registry = get_json(&app, "/fleet-registry").await;
+
+        assert_eq!(
+            issues["repos"],
+            serde_json::json!({
+                "herdr-only": [],
+                "primary-repo": []
+            })
+        );
+        assert_eq!(registry["status"], "error");
+        assert!(registry["fleets"].as_array().unwrap().is_empty());
+        assert_eq!(array_values(&registry["repos"]), expected_live);
+        assert!(
+            store
+                .get("agent-2")
+                .await
+                .expect("orphan agent")
+                .workspace
+                .repo
+                .is_none(),
+            "a missing repo identity stays in the orphan bucket"
+        );
+    }
+
+    // Unloadable registry: malformed content has the same live fallback but
+    // must remain visibly distinct from a successful empty registry.
+    {
+        let (_dir, path) = write_registry(r#"{ "fleets": [ oops"#);
+        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+        let (_store, app) = app_with_repos(&live).await;
+        let issues = get_json(&app, "/issues").await;
+        let registry = get_json(&app, "/fleet-registry").await;
+
+        assert_eq!(object_keys(&issues["repos"]), expected_live);
+        assert_eq!(registry["status"], "error");
+        assert!(
+            registry["error"]
+                .as_str()
+                .is_some_and(|error| { error.contains("cannot parse fleet registry") })
+        );
+        assert_eq!(array_values(&registry["repos"]), expected_live);
+    }
+
+    // Partial registry: canonical registry identity and a live-only Herdr
+    // identity are both present; no registry entry is fabricated for the
+    // live-only repo.
+    {
+        let (_dir, path) = write_registry(&registry_body(&[(
+            "fleet-canonical",
+            "owner/canonical-repo",
+        )]));
+        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+        let (_store, app) = app_with_repos(&live).await;
+        let issues = get_json(&app, "/issues").await;
+        let registry = get_json(&app, "/fleet-registry").await;
+
+        assert_eq!(
+            object_keys(&issues["repos"]),
+            BTreeSet::from([
+                "canonical-repo".to_string(),
+                "fleet-canonical".to_string(),
+                "herdr-only".to_string(),
+                "primary-repo".to_string(),
+            ])
+        );
+        assert_eq!(
+            array_values(&registry["repos"]),
+            BTreeSet::from([
+                "canonical-repo".to_string(),
+                "herdr-only".to_string(),
+                "primary-repo".to_string(),
+            ])
+        );
+        assert_eq!(registry["fleets"].as_array().unwrap().len(), 1);
+    }
+
+    // Full registry: the union includes every canonical registry basename and
+    // every live workspace repo, with the shared identity deduplicated.
+    {
+        let (_dir, path) = write_registry(&registry_body(&[
+            ("primary-fleet", "owner/primary-repo"),
+            ("registry-fleet", "owner/registry-only"),
+        ]));
+        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+        let (_store, app) = app_with_repos(&live).await;
+        let issues = get_json(&app, "/issues").await;
+        let registry = get_json(&app, "/fleet-registry").await;
+
+        assert_eq!(
+            object_keys(&issues["repos"]),
+            BTreeSet::from([
+                "herdr-only".to_string(),
+                "primary-fleet".to_string(),
+                "primary-repo".to_string(),
+                "registry-fleet".to_string(),
+                "registry-only".to_string(),
+            ])
+        );
+        assert_eq!(
+            array_values(&registry["repos"]),
+            BTreeSet::from([
+                "herdr-only".to_string(),
+                "primary-repo".to_string(),
+                "registry-only".to_string(),
+            ])
+        );
+        assert_eq!(registry["fleets"].as_array().unwrap().len(), 2);
+    }
 }
 
 #[tokio::test]

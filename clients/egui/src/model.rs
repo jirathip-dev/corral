@@ -243,10 +243,10 @@ fn shortened_agent_id(agent_id: &str) -> String {
     tail.chars().take(SHORT_ID_MAX_CHARS).collect()
 }
 
-/// #135: read-only `GET /fleet-registry` response mirror. A daemon parse/IO
-/// failure is still a successful HTTP response with `status="error"` and an
-/// empty registry, so the board renders the failure instead of an empty
-/// fleet list.
+/// #135/#216: read-only `GET /fleet-registry` response mirror. A daemon
+/// parse/IO failure is still a successful HTTP response with `status="error"`
+/// and an empty `fleets` registry, while `repos` retains live board categories
+/// so the failure does not erase the useful read model.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FleetRegistry {
     pub status: String,
@@ -254,6 +254,10 @@ pub struct FleetRegistry {
     #[serde(default)]
     pub error: Option<String>,
     pub fleets: Vec<FleetRegistryEntry>,
+    /// Sorted union of live `workspace.repo` values and registry `gh_repo`
+    /// basenames. Empty on older daemons that predate #216.
+    #[serde(default)]
+    pub repos: Vec<String>,
 }
 
 impl FleetRegistry {
@@ -552,6 +556,7 @@ mod tests {
             "status": "ok",
             "path": "/tmp/fleets.json",
             "error": null,
+            "repos": ["corral"],
             "fleets": [
                 {
                     "name": "corral",
@@ -582,6 +587,7 @@ mod tests {
         assert_eq!(registry.path, "/tmp/fleets.json");
         assert_eq!(registry.error, None);
         assert!(!registry.failed());
+        assert_eq!(registry.repos, vec!["corral"]);
         assert_eq!(registry.fleets.len(), 1);
 
         let fleet = &registry.fleets[0];
@@ -605,6 +611,7 @@ mod tests {
             "status": "error",
             "path": "/tmp/broken.json",
             "error": "parse: expected value at line 1",
+            "repos": ["live-only"],
             "fleets": []
         });
         let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
@@ -614,6 +621,7 @@ mod tests {
             Some("parse: expected value at line 1")
         );
         assert!(registry.fleets.is_empty());
+        assert_eq!(registry.repos, vec!["live-only"]);
     }
 
     #[test]
@@ -634,6 +642,7 @@ mod tests {
             }]
         });
         let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
+        assert!(registry.repos.is_empty());
         let models = &registry.fleets[0].models;
         assert_eq!(models.impl_alt, None);
         assert_eq!(models.impl_alt2, None);

@@ -1835,6 +1835,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn absent_registry_keeps_primary_and_unknown_paths_separate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let primary = temp.path().join("primary-repo");
+        let worktrees = temp.path().join("worktrees");
+        let linked = worktrees.join("herdr-only/feature");
+        let unknown = temp.path().join("unknown");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::create_dir_all(&unknown).unwrap();
+
+        let (roots, aliases) = workspace_roots(&primary, None);
+        let attribution = WorkspaceAttribution::from_roots_with_aliases(roots, aliases, worktrees);
+
+        assert_eq!(
+            attribution.repo_for(&primary).as_deref(),
+            Some("primary-repo"),
+            "the configured primary remains attributable without a registry"
+        );
+        assert_eq!(
+            attribution.repo_for(&linked).as_deref(),
+            Some("herdr-only"),
+            "a live Herdr worktree category remains distinct without a registry"
+        );
+        assert_eq!(
+            attribution.repo_for(&unknown),
+            None,
+            "an unrelated path remains genuinely unattributed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn fleet_registry_aliases_stale_worktree_dir_to_canonical_repo() {
         // #182: `worktree_dir` is a location, not repo identity. The primary
         // checkout and linked worktree both use stale folder names, while the

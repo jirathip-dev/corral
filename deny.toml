@@ -52,6 +52,10 @@ exceptions = [
     # Ubuntu-font-1.0. Those font-specific terms are accepted only for the
     # bundled asset crate.
     { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # reqwest 0.13.4 -> rustls-platform-verifier 0.7.0 pulls Mozilla trust
+    # anchors in webpki-root-certs 1.0.9, whose metadata and bundled LICENSE
+    # identify CDLA-Permissive-2.0. Keep this exception at the reviewed version.
+    { crate = "webpki-root-certs@1.0.9", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]

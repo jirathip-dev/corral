@@ -47,7 +47,9 @@ chmod +x "$WORK/design-gate-wrapper.sh"
   "$WORK/invalid-grayscale-palette.png" "$WORK/nonconsecutive-idat.png" \
   "$WORK/valid-palette.png" "$WORK/unknown-critical.png" \
   "$WORK/indexed-trns-before-plte.png" "$WORK/trns-after-idat.png" \
-  "$WORK/duplicate-trns.png" <<'PY'
+  "$WORK/duplicate-trns.png" "$WORK/truecolor-trns-before-plte.png" \
+  "$WORK/truecolor-bkgd-before-plte.png" "$WORK/invalid-reserved-chunk.png" \
+  "$WORK/invalid-trns-sample.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -183,6 +185,46 @@ duplicate_trns += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
 duplicate_trns += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
 duplicate_trns += chunk(b"IEND", b"")
 Path(sys.argv[18]).write_bytes(duplicate_trns)
+truecolor_trns_before_plte = b"\x89PNG\r\n\x1a\n"
+truecolor_trns_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_trns_before_plte += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+truecolor_trns_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_trns_before_plte += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+truecolor_trns_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[19]).write_bytes(truecolor_trns_before_plte)
+truecolor_bkgd_before_plte = b"\x89PNG\r\n\x1a\n"
+truecolor_bkgd_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_bkgd_before_plte += chunk(b"bKGD", b"\x00\x00\x00\x00\x00\x00")
+truecolor_bkgd_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_bkgd_before_plte += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+truecolor_bkgd_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[20]).write_bytes(truecolor_bkgd_before_plte)
+invalid_reserved_chunk = b"\x89PNG\r\n\x1a\n"
+invalid_reserved_chunk += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+invalid_reserved_chunk += chunk(b"abcd", b"")
+invalid_reserved_chunk += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+invalid_reserved_chunk += chunk(b"IEND", b"")
+Path(sys.argv[21]).write_bytes(invalid_reserved_chunk)
+invalid_trns_sample = b"\x89PNG\r\n\x1a\n"
+invalid_trns_sample += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 0, 0, 0, 0)
+)
+invalid_trns_sample += chunk(b"tRNS", b"\x00\x02")
+invalid_trns_sample += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_trns_sample += chunk(b"IEND", b"")
+Path(sys.argv[22]).write_bytes(invalid_trns_sample)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -1179,6 +1221,34 @@ if run_capture --force --live-png "$WORK/duplicate-trns.png" \
 fi
 grep -q 'duplicate tRNS' "$WORK/duplicate-trns.log" \
   || fail "duplicate tRNS failure was not actionable"
+
+if run_capture --force --live-png "$WORK/truecolor-trns-before-plte.png" \
+  >"$WORK/truecolor-trns-before-plte.log" 2>&1; then
+  fail "truecolor tRNS before PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/truecolor-trns-before-plte.log" \
+  || fail "truecolor tRNS/PLTE ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/truecolor-bkgd-before-plte.png" \
+  >"$WORK/truecolor-bkgd-before-plte.log" 2>&1; then
+  fail "truecolor bKGD before PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/truecolor-bkgd-before-plte.log" \
+  || fail "truecolor bKGD/PLTE ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-reserved-chunk.png" \
+  >"$WORK/invalid-reserved-chunk.log" 2>&1; then
+  fail "PNG with an invalid chunk reserved bit unexpectedly passed validation"
+fi
+grep -q 'reserved bit' "$WORK/invalid-reserved-chunk.log" \
+  || fail "invalid chunk reserved-bit failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-trns-sample.png" \
+  >"$WORK/invalid-trns-sample.log" 2>&1; then
+  fail "PNG with an out-of-range tRNS sample unexpectedly passed validation"
+fi
+grep -q 'tRNS sample outside' "$WORK/invalid-trns-sample.log" \
+  || fail "out-of-range tRNS sample failure was not actionable"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"

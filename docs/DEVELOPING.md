@@ -251,9 +251,9 @@ for documented path substitutions and the explicit middle omission marker, and
 never decodes invalid UTF-8 with replacement.
 Recognized checkout, staging, configured Herdr, generic `.herdr/worktrees`, and
 disposable temporary paths are normalized so evidence is checkout-independent.
-Quoted or punctuation-bounded terminal paths retain their delimiters; ambiguous
-unquoted terminal names are fully redacted. Capture producers should quote paths
-when arbitrary diagnostic text must follow a space-containing name.
+Quoted terminal paths retain their delimiters; ambiguous unquoted terminal names
+are fully redacted. Capture producers should quote paths when arbitrary
+diagnostic text must follow a space-containing name.
 Historical evidence may instead be an explicitly labeled sanitized summary of
 an older capture.
 

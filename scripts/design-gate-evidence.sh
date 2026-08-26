@@ -723,6 +723,8 @@ while offset < len(data):
         not (65 <= value <= 90 or 97 <= value <= 122) for value in chunk_type
     ):
         raise SystemExit(f"{path} has an invalid PNG chunk type")
+    if not 65 <= chunk_type[2] <= 90:
+        raise SystemExit(f"{path} has an invalid PNG chunk reserved bit")
     if chunk_type[0] <= 90 and chunk_type not in known_critical:
         raise SystemExit(f"{path} has an unknown critical chunk: {chunk_type.decode('ascii')}")
     if not seen_ihdr and chunk_type != b"IHDR":
@@ -780,6 +782,9 @@ while offset < len(data):
             seen_plte
             or seen_idat
             or color_type in (0, 4)
+            or b"tRNS" in seen_singletons
+            or b"bKGD" in seen_singletons
+            or b"hIST" in seen_singletons
             or length == 0
             or length % 3 != 0
             or length > 768
@@ -794,8 +799,15 @@ while offset < len(data):
             raise SystemExit(f"{path} has an invalid tRNS chunk order or color type")
         if color_type == 0 and length != 2:
             raise SystemExit(f"{path} has an invalid grayscale tRNS chunk")
+        if color_type == 0 and int.from_bytes(payload, "big") >= (1 << bit_depth):
+            raise SystemExit(f"{path} has a grayscale tRNS sample outside its bit depth")
         if color_type == 2 and length != 6:
             raise SystemExit(f"{path} has an invalid truecolor tRNS chunk")
+        if color_type == 2 and any(
+            sample >= (1 << bit_depth)
+            for sample in struct.unpack(">HHH", payload)
+        ):
+            raise SystemExit(f"{path} has a truecolor tRNS sample outside its bit depth")
         if color_type == 3:
             if not seen_plte:
                 raise SystemExit(f"{path} has indexed tRNS data before its PLTE chunk")
@@ -804,9 +816,22 @@ while offset < len(data):
     elif chunk_type == b"bKGD":
         if seen_idat or (color_type == 3 and not seen_plte):
             raise SystemExit(f"{path} has bKGD before PLTE or after IDAT")
+        if color_type in (0, 4):
+            if length != 2 or int.from_bytes(payload, "big") >= (1 << bit_depth):
+                raise SystemExit(f"{path} has an invalid grayscale bKGD chunk")
+        elif color_type in (2, 6):
+            if length != 6 or any(
+                sample >= (1 << bit_depth)
+                for sample in struct.unpack(">HHH", payload)
+            ):
+                raise SystemExit(f"{path} has an invalid truecolor bKGD chunk")
+        elif length != 1 or payload[0] >= palette_entries:
+            raise SystemExit(f"{path} has an invalid indexed bKGD chunk")
     elif chunk_type == b"hIST":
         if color_type != 3 or not seen_plte or seen_idat:
             raise SystemExit(f"{path} has hIST without a preceding indexed PLTE")
+        if length != 2 * palette_entries:
+            raise SystemExit(f"{path} has an invalid hIST chunk length")
     elif chunk_type == b"IEND":
         if length != 0:
             raise SystemExit(f"{path} has a non-empty IEND")
@@ -1157,11 +1182,7 @@ def is_word_byte(value):
     )
 
 
-def is_whitespace_byte(value):
-    return value in (9, 11, 12, 32)
-
-
-def terminal_path_end(data_value, path_start, component_start, line_end):
+def terminal_path_end(data_value, path_start, line_end):
     # A quote immediately before the root unambiguously bounds the complete
     # terminal component, including spaces in a quoted worktree name.
     if path_start > 0 and data_value[path_start - 1] in (34, 39):
@@ -1178,20 +1199,10 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
                     return index
             index += 1
 
-    end = line_end
-    # Punctuation followed by whitespace (or a closing quote) is a diagnostic
-    # separator, while punctuation embedded in an unquoted path is retained.
-    for index in range(component_start, line_end):
-        if data_value[index] not in (41, 44, 59, 58, 93, 125):
-            continue
-        next_value = data_value[index + 1] if index + 1 < line_end else None
-        if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
-            end = min(end, index)
-
     # Unquoted terminal paths with spaces are inherently ambiguous. Consume
     # the full terminal component; callers that need arbitrary diagnostic text
-    # to follow a path must quote it or use punctuation as an explicit bound.
-    return end
+    # to follow a path must quote it.
+    return line_end
 
 
 def redact_configured_worktree(data_value):
@@ -1225,7 +1236,7 @@ def redact_configured_worktree(data_value):
                     )
                     if second_slash == -1:
                         second_slash = terminal_path_end(
-                            data_value, start, first_slash + 1, line_end
+                            data_value, start, line_end
                         )
                     if second_slash > first_slash + 1:
                         replacements.append((start, second_slash))
@@ -1296,7 +1307,7 @@ def replace_generic_worktrees(data_value, protected_paths=()):
                     )
                     if second_slash == -1:
                         second_slash = terminal_path_end(
-                            data_value, eligible_start, first_slash + 1, line_end
+                            data_value, eligible_start, line_end
                         )
                     if second_slash > first_slash + 1 and valid_path_component(
                         data_value[first_slash + 1 : second_slash]

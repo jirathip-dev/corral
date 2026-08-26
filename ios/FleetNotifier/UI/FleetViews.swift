@@ -547,10 +547,11 @@ private struct AgentDetailContent: View {
                     promptControl
                 }
 
-                // #167: the single live Recent-output surface. It auto-loads
-                // and auto-refreshes while the detail view is open; older
-                // history is paged in with the transcript cursor via the
-                // full-width "Load earlier" divider.
+                // #167: the single live iOS Recent-output surface. It
+                // auto-loads and auto-refreshes while this detail view is
+                // open; older history is paged in with the transcript cursor
+                // via the full-width "Load earlier" divider. This existing
+                // iOS behavior is unchanged by egui issue #207.
                 RecentOutputView(agent: agent, model: model)
             }
             .padding()

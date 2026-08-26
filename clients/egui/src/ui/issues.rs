@@ -146,7 +146,7 @@ pub fn show(
 
 fn toolbar(
     ui: &mut Ui,
-    _fleet: &Fleet,
+    fleet: &Fleet,
     _allowed: &dyn Fn(&str) -> bool,
     _drive: &mut dyn FnMut(DriveIntent),
     refresh_issues: &mut dyn FnMut(),
@@ -177,7 +177,18 @@ fn toolbar(
                     .insert_temp(egui::Id::new("corral-ui-issues-search"), query.clone())
             });
         }
-        if ui.small_button("↻ refresh").clicked() {
+        let refresh_label = if fleet.issues_loading {
+            "↻ refreshing…"
+        } else {
+            "↻ refresh"
+        };
+        if ui
+            .add_enabled(
+                !fleet.issues_loading,
+                egui::Button::new(RichText::new(refresh_label).small()),
+            )
+            .clicked()
+        {
             refresh_issues();
         }
     });

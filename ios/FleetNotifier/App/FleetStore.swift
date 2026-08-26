@@ -33,8 +33,10 @@ final class FleetStore: ObservableObject {
     /// daemon now serves `{lines, blocks}` additively; the block renderer
     /// reads this pane, the legacy text surface reads `tails`.
     @Published private(set) var tailPanes: [String: TailPane] = [:]
-    /// Lazy, bounded per-agent full-chat panes. Never prefetched: a pane is
-    /// created only when the detail surface asks the daemon for a page.
+    /// Lazy, bounded per-agent full-chat panes. No fleet-wide prefetch: a
+    /// pane is created only when the currently open detail surface asks the
+    /// daemon for a page. The iOS detail auto-load/refresh policy is separate
+    /// from the egui one-shot selected-card hydration in #207.
     @Published private(set) var transcripts: [String: TranscriptPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected

@@ -42,7 +42,10 @@ adapter executions on that drive plane).
 - Board: agent fleet (state/reason/waiting_on kinds distinct), worktree
   topology (repo/branch/dirty/ahead-behind), PR/CI columns, audit log view.
 - Drive controls rendered from `capabilities`: prompt, interrupt,
-  read_tail (bounded, on tap), approve (choice buttons from the claim),
+  read_tail (bounded; egui Cards performs one automatic fetch only for its
+  currently visible, attention-resolved selected card when the capability
+  and device grant allow it; later pages remain explicit Load earlier
+  requests, with no background/pane-wide prefetch), approve (choice buttons from the claim),
   kill (`pane.close`), attach (`terminal_ref`). Step-up prompt for
   destructive payloads.
 - Device registration UX on first run (paste registration token / auto-
@@ -91,8 +94,11 @@ or a scratch UI run churned a new restricted-ACL item.
   bound to prompt_hash — the D8 claim flow end to end.
 - Keypair in Secure Enclave/Keychain (D10); read-only default; step-up via
   Face ID for destructive patterns.
-- Tails: 200 lines on tap, never prefetch (D5). Backgrounded = no
-  connection (D5).
+- Tails: the egui Cards surface may hydrate one visible selected card once,
+  only when `read_tail` is advertised and granted; older pages remain on-tap
+  and no other cards are prefetched (D5). The existing iOS detail-view
+  auto-load/refresh behavior is unchanged by #207 and is not a fleet
+  prefetch. Backgrounded = no connection (D5).
 - Debug/simulator development retains a seeded deterministic demo fixture;
   Release/distribution builds expose only real registration, live SSE, and
   signed drives. The fixture is not an App Review or TestFlight product path.

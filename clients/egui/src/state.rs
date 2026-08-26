@@ -93,8 +93,9 @@ pub struct Fleet {
     pub generated_at: Option<u64>,
     /// Drive outcome bookkeeping per agent, newest first.
     pub recent_drives: HashMap<String, VecDeque<DriveState>>,
-    /// read_tail content per agent (bounded; initially hydrated for the
-    /// selected board card and still reloadable from its control).
+    /// read_tail content per agent (bounded; initially hydrated once for the
+    /// visible Cards selection when capability/grant-gated, and still
+    /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
     /// #64: transcript pane per agent (fetched on demand; each pane is a
     /// bounded sliding window, and at most 64 agents are cached here —

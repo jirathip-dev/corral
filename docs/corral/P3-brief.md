@@ -30,7 +30,10 @@ against the "approve the wrong question" race.
 - Idempotent: same `request_id` → same response, no double-send (D3).
   Response carries the new monotonic `rev`.
 - NO send-keys-by-coordinates in the public API (D8 — banned).
-- `read_tail` returns bounded tail (200 lines / 32KB, D5) — never prefetch.
+- `read_tail` returns a bounded tail (200 lines / 32KB, D5). The daemon does
+  not prefetch or push tails; a client request may be an explicit control or
+  the egui Cards client's one-shot fetch for its visible selected card after
+  capability/grant checks. No other cards are fetched implicitly.
 
 ### W2 — Claim-based approvals (D8, load-bearing)
 - Adapter emits approval request: `{approval_id, prompt_hash, choices[]}`.

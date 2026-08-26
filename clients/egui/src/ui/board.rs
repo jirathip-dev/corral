@@ -209,7 +209,7 @@ pub fn show(
     fleet: &mut Fleet,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
-) {
+) -> Option<String> {
     reset_right_tab(ui.ctx());
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
@@ -219,14 +219,13 @@ pub fn show(
                     .color(theme::ui::TEXT_MUTED),
             );
         });
-        return;
+        return None;
     }
 
     let mut view = view_mode(ui.ctx());
     let mut flat = flat_view(ui.ctx(), view);
     if view == BoardView::Cards {
-        show_cards(ui, fleet, &mut view, &mut flat, allowed, actions);
-        return;
+        return show_cards(ui, fleet, &mut view, &mut flat, allowed, actions);
     }
 
     let mut query = search_query(ui.ctx());
@@ -234,7 +233,7 @@ pub fn show(
     toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
     view_mode_controls(ui, &mut view, flat);
     if view == BoardView::Cards {
-        return;
+        return None;
     }
     // Board / Issues / Audit remain detail-owned on every Board surface,
     // including an empty Table result. The global chrome intentionally hides
@@ -248,9 +247,10 @@ pub fn show(
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
     if visible.is_empty() {
         show_empty_table_state(ui, &query);
-        return;
+        return None;
     }
     show_table(ui, fleet, &visible, flat, allowed, actions);
+    None
 }
 
 /// Persistent sidebar state helpers are intentionally tiny; every query
@@ -582,14 +582,15 @@ fn show_cards(
     flat: &mut bool,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
-) {
+) -> Option<String> {
     ScrollArea::both()
         .id_salt("corral-ui-cards-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_size(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
-            show_cards_surface(ui, fleet, view, flat, allowed, actions);
-        });
+            show_cards_surface(ui, fleet, view, flat, allowed, actions)
+        })
+        .inner
 }
 
 fn show_cards_surface(
@@ -599,7 +600,7 @@ fn show_cards_surface(
     flat: &mut bool,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
-) {
+) -> Option<String> {
     let available = ui
         .available_size()
         .max(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
@@ -673,9 +674,10 @@ fn show_cards_surface(
         allowed,
         actions,
     );
-    if let Some(id) = clicked {
-        fleet.select_agent(&id);
+    if let Some(id) = clicked.as_deref() {
+        fleet.select_agent(id);
     }
+    clicked.or(selected)
 }
 
 fn show_empty_table_state(ui: &mut Ui, query: &str) {

@@ -176,7 +176,9 @@ impl DriveIntent {
     }
 
     /// Bounded read_tail: default 200 lines, clamped by the daemon to
-    /// `1..=200` (D5: never prefetch — only on tap).
+    /// `1..=200`. The Cards app may use this for the one-shot hydration of
+    /// its already-resolved visible selection; every other fetch remains
+    /// explicit and callers must not enumerate agents or prefetch panes.
     pub fn read_tail(agent_id: &str, rev: Option<u64>) -> Self {
         Self {
             request_id: new_request_id("tail"),

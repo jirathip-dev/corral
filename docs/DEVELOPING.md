@@ -214,7 +214,7 @@ command is `cargo deny --locked --workspace check`: `--workspace` makes all thre
 members (`corrald`, `corrald-client`, and `corrald-ui`) graph roots. Its
 `all-features` graph setting evaluates feature branches for every target, and
 `licenses.include-dev = true` includes workspace dev-dependencies in the
-license check. The checked-in `Cargo.lock` contains 554 package records; `cargo audit` scans that lockfile
+license check. The checked-in `Cargo.lock` contains 570 package records; `cargo audit` scans that lockfile
 directly, while cargo-deny evaluates the complete workspace graph rooted at
 the three members.
 
@@ -224,7 +224,11 @@ accepted only for the transitive `option-ext` utility, because its copyleft is
 file-level and does not change this project's MIT/Apache terms. The bundled
 `epaint_default_fonts` asset crate is the only exception for OFL-1.1 and
 Ubuntu-font-1.0. CC0-1.0 is allowed as a public-domain dedication, not as an
-OSI-approved software license. Unknown registries and git sources fail, the
+OSI-approved software license. CDLA-Permissive-2.0 is accepted only for
+`webpki-root-certs` 1.0.9, the wasm32-only `rustls-platform-verifier`
+trust-anchor fallback; Linux and Darwin do not compile it, but cargo-deny's
+all-features evaluation checks every target triple. The exact-version pin
+requires re-review if it is bumped. Unknown registries and git sources fail, the
 legacy `failure`, `rust-crypto`, and `yaml-rust` crates are banned, and
 registry/git wildcard requirements fail. The two current wildcard path
 dependencies are workspace dev-dependencies. `allow-wildcard-paths` applies

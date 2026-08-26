@@ -682,6 +682,7 @@ seen_ihdr = False
 seen_iend = False
 seen_plte = False
 seen_idat = False
+idat_closed = False
 while offset < len(data):
     if len(data) - offset < 12:
         raise SystemExit(f"{path} has a truncated PNG chunk")
@@ -699,6 +700,10 @@ while offset < len(data):
         raise SystemExit(f"{path} has an invalid {chunk_type.decode('ascii', 'replace')} CRC")
     if not seen_ihdr and chunk_type != b"IHDR":
         raise SystemExit(f"{path} does not start with IHDR")
+    if chunk_type == b"IDAT" and idat_closed:
+        raise SystemExit(f"{path} has non-consecutive IDAT chunks")
+    if chunk_type != b"IDAT" and seen_idat:
+        idat_closed = True
     if chunk_type == b"IHDR":
         if seen_ihdr or length != 13:
             raise SystemExit(f"{path} has an invalid IHDR")
@@ -739,11 +744,15 @@ while offset < len(data):
         if (
             seen_plte
             or seen_idat
+            or color_type in (0, 4)
             or length == 0
             or length % 3 != 0
             or length > 768
         ):
             raise SystemExit(f"{path} has an invalid PLTE chunk")
+        palette_entries = length // 3
+        if color_type == 3 and palette_entries > (1 << bit_depth):
+            raise SystemExit(f"{path} has too many PLTE entries for its bit depth")
         seen_plte = True
     elif chunk_type == b"IEND":
         if length != 0:
@@ -812,14 +821,60 @@ if len(raw) != expected_raw_bytes:
     )
 
 
+def paeth(left, above, upper_left):
+    estimate = left + above - upper_left
+    left_distance = abs(estimate - left)
+    above_distance = abs(estimate - above)
+    upper_left_distance = abs(estimate - upper_left)
+    if left_distance <= above_distance and left_distance <= upper_left_distance:
+        return left
+    if above_distance <= upper_left_distance:
+        return above
+    return upper_left
+
+
 def validate_filters(pass_width, pass_height, offset):
     if pass_width == 0 or pass_height == 0:
         return offset
     row_bytes = (pass_width * bits_per_pixel + 7) // 8
+    filter_bytes_per_pixel = max(1, (bits_per_pixel + 7) // 8)
+    previous = bytearray(row_bytes)
     for _ in range(pass_height):
         filter_type = raw[offset]
         if filter_type > 4:
             raise SystemExit(f"{path} has an invalid scanline filter: {filter_type}")
+        source = raw[offset + 1 : offset + 1 + row_bytes]
+        reconstructed = bytearray(row_bytes)
+        for index, value in enumerate(source):
+            left = reconstructed[index - filter_bytes_per_pixel] if index >= filter_bytes_per_pixel else 0
+            above = previous[index]
+            upper_left = (
+                previous[index - filter_bytes_per_pixel]
+                if index >= filter_bytes_per_pixel
+                else 0
+            )
+            if filter_type == 0:
+                reconstructed[index] = value
+            elif filter_type == 1:
+                reconstructed[index] = (value + left) & 0xFF
+            elif filter_type == 2:
+                reconstructed[index] = (value + above) & 0xFF
+            elif filter_type == 3:
+                reconstructed[index] = (value + ((left + above) // 2)) & 0xFF
+            else:
+                reconstructed[index] = (value + paeth(left, above, upper_left)) & 0xFF
+        if color_type == 3:
+            if bit_depth == 8:
+                palette_indices = reconstructed
+            else:
+                palette_indices = (
+                    (reconstructed[index // 8] >> (8 - bit_depth - (index % 8)))
+                    & ((1 << bit_depth) - 1)
+                    for index in range(0, pass_width * bit_depth, bit_depth)
+                )
+            if any(index >= palette_entries for index in palette_indices):
+                raise SystemExit(f"{path} has a pixel outside its PLTE entries")
+        previous = reconstructed
         offset += row_bytes + 1
     return offset
 
@@ -1083,15 +1138,18 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
     # Unquoted paths with spaces are inherently ambiguous. Consume the full
     # terminal component by default, but preserve a broad set of diagnostic
     # verbs/status phrases so the failure evidence remains readable. A bare
-    # word such as "failed" is intentionally not enough: it may be part of a
-    # legitimate space-containing worktree name. Quoted and punctuation-bounded
-    # paths above do not need this heuristic.
+    # word such as "failed" or "crashed" is intentionally not enough: it may
+    # be part of a legitimate space-containing worktree name. Quoted and
+    # punctuation-bounded paths above do not need this heuristic.
     for marker in (
-        b" crashed",
-        b" crash",
-        b" exploded",
-        b" panicked",
-        b" panic",
+        b" crashed during",
+        b" crashed while",
+        b" crashed with",
+        b" crashed at",
+        b" exploded during",
+        b" exploded while",
+        b" panicked during",
+        b" panicked while",
         b" fatal error",
         b" exception:",
         b" traceback",
@@ -1105,6 +1163,9 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
         b" failed to",
         b" failed with",
         b" failed during",
+        b" became unreadable",
+        b" became unavailable",
+        b" became invalid",
         b" failure:",
         b" error:",
         b" warning:",

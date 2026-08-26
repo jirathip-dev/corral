@@ -42,7 +42,10 @@ chmod +x "$WORK/design-gate-wrapper.sh"
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
   "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" \
   "$WORK/invalid-raster.png" "$WORK/invalid-filter.png" \
-  "$WORK/interlaced.png" "$WORK/invalid-palette.png" <<'PY'
+  "$WORK/interlaced.png" "$WORK/invalid-palette.png" \
+  "$WORK/invalid-palette-size.png" "$WORK/invalid-palette-index.png" \
+  "$WORK/invalid-grayscale-palette.png" "$WORK/nonconsecutive-idat.png" \
+  "$WORK/valid-palette.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -101,6 +104,49 @@ invalid_palette += chunk(
 invalid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
 invalid_palette += chunk(b"IEND", b"")
 Path(sys.argv[9]).write_bytes(invalid_palette)
+invalid_palette_size = b"\x89PNG\r\n\x1a\n"
+invalid_palette_size += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 3, 0, 0, 0)
+)
+invalid_palette_size += chunk(b"PLTE", b"\x00\x00\x00\xff\xff\xff\x80\x80\x80")
+invalid_palette_size += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_palette_size += chunk(b"IEND", b"")
+Path(sys.argv[10]).write_bytes(invalid_palette_size)
+invalid_palette_index = b"\x89PNG\r\n\x1a\n"
+invalid_palette_index += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+invalid_palette_index += chunk(b"PLTE", b"\x00\x00\x00")
+invalid_palette_index += chunk(b"IDAT", zlib.compress(b"\x00\x01"))
+invalid_palette_index += chunk(b"IEND", b"")
+Path(sys.argv[11]).write_bytes(invalid_palette_index)
+invalid_grayscale_palette = b"\x89PNG\r\n\x1a\n"
+invalid_grayscale_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+)
+invalid_grayscale_palette += chunk(b"PLTE", b"\x00\x00\x00")
+invalid_grayscale_palette += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_grayscale_palette += chunk(b"IEND", b"")
+Path(sys.argv[12]).write_bytes(invalid_grayscale_palette)
+nonconsecutive_idat = b"\x89PNG\r\n\x1a\n"
+nonconsecutive_idat += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+compressed = zlib.compress(b"\x00\x00\x00\x00")
+split = max(1, len(compressed) // 2)
+nonconsecutive_idat += chunk(b"IDAT", compressed[:split])
+nonconsecutive_idat += chunk(b"tEXt", b"comment\x00between IDAT chunks")
+nonconsecutive_idat += chunk(b"IDAT", compressed[split:])
+nonconsecutive_idat += chunk(b"IEND", b"")
+Path(sys.argv[13]).write_bytes(nonconsecutive_idat)
+valid_palette = b"\x89PNG\r\n\x1a\n"
+valid_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 3, 0, 0, 0)
+)
+valid_palette += chunk(b"PLTE", b"\x00\x00\x00\xff\xff\xff")
+valid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x01"))
+valid_palette += chunk(b"IEND", b"")
+Path(sys.argv[14]).write_bytes(valid_palette)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -231,7 +277,9 @@ if mode == "large-log":
         + b"generic-bare-real=/Users/jirathip/.herdr/worktrees/corral/other-branch\n"
         + b"generic-bare-spaces=/prefix with spaces/.herdr/worktrees/repo name/worktree name\n"
         + b"generic-space-marker=/prefix with spaces/.herdr/worktrees/repo/my failed experiment\n"
-        + b"generic-unfamiliar=/prefix with spaces/.herdr/worktrees/repo/my feature branch crashed during capture\n"
+        + b"generic-crash-name=/prefix with spaces/.herdr/worktrees/repo/my crashed experiment\n"
+        + b"generic-unfamiliar=/prefix with spaces/.herdr/worktrees/repo/my feature branch became unreadable\n"
+        + b"generic-crash-diagnostic=/prefix with spaces/.herdr/worktrees/repo/my feature branch crashed during capture\n"
         + b"same-line-two-paths=cp /tmp/x /prefix with spaces/.herdr/worktrees/r n/w n/f\n"
         + b"known-repo-child="
         + repo_root
@@ -1028,12 +1076,45 @@ run_capture --force --live-png "$WORK/interlaced.png" \
 grep -q '1x1' "$WORK/interlaced-output/issue-211/conformance.md" \
   || fail "valid interlaced PNG was not accepted"
 
+run_capture --force --live-png "$WORK/valid-palette.png" \
+  --output-root "$WORK/valid-palette-output"
+grep -q '1x1' "$WORK/valid-palette-output/issue-211/conformance.md" \
+  || fail "valid indexed PNG was not accepted"
+
 if run_capture --force --live-png "$WORK/invalid-palette.png" \
   >"$WORK/invalid-palette.log" 2>&1; then
   fail "indexed PNG without a palette unexpectedly passed validation"
 fi
 grep -q 'indexed raster data' "$WORK/invalid-palette.log" \
   || fail "indexed PNG palette failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-palette-size.png" \
+  >"$WORK/invalid-palette-size.log" 2>&1; then
+  fail "indexed PNG with an oversized palette unexpectedly passed validation"
+fi
+grep -q 'too many PLTE entries' "$WORK/invalid-palette-size.log" \
+  || fail "indexed PNG palette-size failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-palette-index.png" \
+  >"$WORK/invalid-palette-index.log" 2>&1; then
+  fail "indexed PNG with an out-of-range pixel unexpectedly passed validation"
+fi
+grep -q 'outside its PLTE entries' "$WORK/invalid-palette-index.log" \
+  || fail "indexed PNG pixel-range failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-grayscale-palette.png" \
+  >"$WORK/invalid-grayscale-palette.log" 2>&1; then
+  fail "grayscale PNG with a PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/invalid-grayscale-palette.log" \
+  || fail "grayscale PNG palette failure was not actionable"
+
+if run_capture --force --live-png "$WORK/nonconsecutive-idat.png" \
+  >"$WORK/nonconsecutive-idat.log" 2>&1; then
+  fail "non-consecutive IDAT chunks unexpectedly passed validation"
+fi
+grep -q 'non-consecutive IDAT' "$WORK/nonconsecutive-idat.log" \
+  || fail "non-consecutive IDAT failure was not actionable"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
@@ -1199,7 +1280,9 @@ assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root w
 assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
 assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
 assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
-assert b"generic-unfamiliar=<herdr-worktree> crashed during capture\n" in data, "unfamiliar diagnostic suffix was lost"
+assert b"generic-crash-name=<herdr-worktree>\n" in data, "crash marker inside a worktree name was leaked"
+assert b"generic-unfamiliar=<herdr-worktree> became unreadable\n" in data, "unfamiliar diagnostic suffix was lost"
+assert b"generic-crash-diagnostic=<herdr-worktree> crashed during capture\n" in data, "crash diagnostic suffix was lost"
 assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data

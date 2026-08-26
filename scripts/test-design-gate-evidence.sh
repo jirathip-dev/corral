@@ -49,7 +49,8 @@ chmod +x "$WORK/design-gate-wrapper.sh"
   "$WORK/indexed-trns-before-plte.png" "$WORK/trns-after-idat.png" \
   "$WORK/duplicate-trns.png" "$WORK/truecolor-trns-before-plte.png" \
   "$WORK/truecolor-bkgd-before-plte.png" "$WORK/invalid-reserved-chunk.png" \
-  "$WORK/masked-samples.png" <<'PY'
+  "$WORK/masked-samples.png" "$WORK/truecolor-hist.png" \
+  "$WORK/truecolor-alpha-hist.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -226,6 +227,26 @@ masked_samples += chunk(b"bKGD", b"\x00\x02")
 masked_samples += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
 masked_samples += chunk(b"IEND", b"")
 Path(sys.argv[22]).write_bytes(masked_samples)
+truecolor_hist = b"\x89PNG\r\n\x1a\n"
+truecolor_hist += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_hist += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_hist += chunk(b"hIST", b"\x00\x01")
+truecolor_hist += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+truecolor_hist += chunk(b"IEND", b"")
+Path(sys.argv[23]).write_bytes(truecolor_hist)
+truecolor_alpha_hist = b"\x89PNG\r\n\x1a\n"
+truecolor_alpha_hist += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+)
+truecolor_alpha_hist += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_alpha_hist += chunk(b"hIST", b"\x00\x01")
+truecolor_alpha_hist += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00\x00")
+)
+truecolor_alpha_hist += chunk(b"IEND", b"")
+Path(sys.argv[24]).write_bytes(truecolor_alpha_hist)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -1248,6 +1269,16 @@ run_capture --force --live-png "$WORK/masked-samples.png" \
   --output-root "$WORK/masked-samples-output"
 grep -q '1x1' "$WORK/masked-samples-output/issue-211/conformance.md" \
   || fail "valid sub-16-bit tRNS/bKGD samples were not accepted"
+
+run_capture --force --live-png "$WORK/truecolor-hist.png" \
+  --output-root "$WORK/truecolor-hist-output"
+grep -q '1x1' "$WORK/truecolor-hist-output/issue-211/conformance.md" \
+  || fail "valid truecolor PLTE/hIST was not accepted"
+
+run_capture --force --live-png "$WORK/truecolor-alpha-hist.png" \
+  --output-root "$WORK/truecolor-alpha-hist-output"
+grep -q '1x1' "$WORK/truecolor-alpha-hist-output/issue-211/conformance.md" \
+  || fail "valid alpha truecolor PLTE/hIST was not accepted"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"

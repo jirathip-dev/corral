@@ -818,8 +818,8 @@ while offset < len(data):
         elif length != 1 or payload[0] >= palette_entries:
             raise SystemExit(f"{path} has an invalid indexed bKGD chunk")
     elif chunk_type == b"hIST":
-        if color_type != 3 or not seen_plte or seen_idat:
-            raise SystemExit(f"{path} has hIST without a preceding indexed PLTE")
+        if color_type not in (2, 3, 6) or not seen_plte or seen_idat:
+            raise SystemExit(f"{path} has hIST without a preceding suggested PLTE")
         if length != 2 * palette_entries:
             raise SystemExit(f"{path} has an invalid hIST chunk length")
     elif chunk_type == b"IEND":

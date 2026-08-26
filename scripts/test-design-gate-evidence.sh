@@ -49,7 +49,7 @@ chmod +x "$WORK/design-gate-wrapper.sh"
   "$WORK/indexed-trns-before-plte.png" "$WORK/trns-after-idat.png" \
   "$WORK/duplicate-trns.png" "$WORK/truecolor-trns-before-plte.png" \
   "$WORK/truecolor-bkgd-before-plte.png" "$WORK/invalid-reserved-chunk.png" \
-  "$WORK/invalid-trns-sample.png" <<'PY'
+  "$WORK/masked-samples.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -217,14 +217,15 @@ invalid_reserved_chunk += chunk(
 )
 invalid_reserved_chunk += chunk(b"IEND", b"")
 Path(sys.argv[21]).write_bytes(invalid_reserved_chunk)
-invalid_trns_sample = b"\x89PNG\r\n\x1a\n"
-invalid_trns_sample += chunk(
+masked_samples = b"\x89PNG\r\n\x1a\n"
+masked_samples += chunk(
     b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 0, 0, 0, 0)
 )
-invalid_trns_sample += chunk(b"tRNS", b"\x00\x02")
-invalid_trns_sample += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
-invalid_trns_sample += chunk(b"IEND", b"")
-Path(sys.argv[22]).write_bytes(invalid_trns_sample)
+masked_samples += chunk(b"tRNS", b"\x00\x02")
+masked_samples += chunk(b"bKGD", b"\x00\x02")
+masked_samples += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+masked_samples += chunk(b"IEND", b"")
+Path(sys.argv[22]).write_bytes(masked_samples)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -1243,12 +1244,10 @@ fi
 grep -q 'reserved bit' "$WORK/invalid-reserved-chunk.log" \
   || fail "invalid chunk reserved-bit failure was not actionable"
 
-if run_capture --force --live-png "$WORK/invalid-trns-sample.png" \
-  >"$WORK/invalid-trns-sample.log" 2>&1; then
-  fail "PNG with an out-of-range tRNS sample unexpectedly passed validation"
-fi
-grep -q 'tRNS sample outside' "$WORK/invalid-trns-sample.log" \
-  || fail "out-of-range tRNS sample failure was not actionable"
+run_capture --force --live-png "$WORK/masked-samples.png" \
+  --output-root "$WORK/masked-samples-output"
+grep -q '1x1' "$WORK/masked-samples-output/issue-211/conformance.md" \
+  || fail "valid sub-16-bit tRNS/bKGD samples were not accepted"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"

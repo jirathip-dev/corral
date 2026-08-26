@@ -799,15 +799,8 @@ while offset < len(data):
             raise SystemExit(f"{path} has an invalid tRNS chunk order or color type")
         if color_type == 0 and length != 2:
             raise SystemExit(f"{path} has an invalid grayscale tRNS chunk")
-        if color_type == 0 and int.from_bytes(payload, "big") >= (1 << bit_depth):
-            raise SystemExit(f"{path} has a grayscale tRNS sample outside its bit depth")
         if color_type == 2 and length != 6:
             raise SystemExit(f"{path} has an invalid truecolor tRNS chunk")
-        if color_type == 2 and any(
-            sample >= (1 << bit_depth)
-            for sample in struct.unpack(">HHH", payload)
-        ):
-            raise SystemExit(f"{path} has a truecolor tRNS sample outside its bit depth")
         if color_type == 3:
             if not seen_plte:
                 raise SystemExit(f"{path} has indexed tRNS data before its PLTE chunk")
@@ -817,13 +810,10 @@ while offset < len(data):
         if seen_idat or (color_type == 3 and not seen_plte):
             raise SystemExit(f"{path} has bKGD before PLTE or after IDAT")
         if color_type in (0, 4):
-            if length != 2 or int.from_bytes(payload, "big") >= (1 << bit_depth):
+            if length != 2:
                 raise SystemExit(f"{path} has an invalid grayscale bKGD chunk")
         elif color_type in (2, 6):
-            if length != 6 or any(
-                sample >= (1 << bit_depth)
-                for sample in struct.unpack(">HHH", payload)
-            ):
+            if length != 6:
                 raise SystemExit(f"{path} has an invalid truecolor bKGD chunk")
         elif length != 1 or payload[0] >= palette_entries:
             raise SystemExit(f"{path} has an invalid indexed bKGD chunk")

@@ -8,7 +8,7 @@
 # writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
 # UTF-8 and configured worktree roots, a bounded generic-worktree scan,
 # structural prototype rejection through real Chrome, Chrome trust-boundary
-# flags, argument validation, atomic publication rollback, and the egui
+# flags, argument validation, locked atomic publication rollback, and the egui
 # wake-command failure path.
 #
 # Run with one command:
@@ -41,7 +41,7 @@ chmod +x "$WORK/design-gate-wrapper.sh"
 
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
   "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" \
-  "$WORK/invalid-raster.png" <<'PY'
+  "$WORK/invalid-raster.png" "$WORK/invalid-filter.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -79,6 +79,13 @@ invalid_raster += chunk(
 invalid_raster += chunk(b"IDAT", zlib.compress(b""))
 invalid_raster += chunk(b"IEND", b"")
 Path(sys.argv[6]).write_bytes(invalid_raster)
+invalid_filter = b"\x89PNG\r\n\x1a\n"
+invalid_filter += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+invalid_filter += chunk(b"IDAT", zlib.compress(b"\x05\x00\x00\x00"))
+invalid_filter += chunk(b"IEND", b"")
+Path(sys.argv[7]).write_bytes(invalid_filter)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -221,6 +228,9 @@ if mode == "large-log":
         + b"configured-diagnostic="
         + configured_root
         + b"/repo/branch failed to compile\n"
+        + b'quoted-diagnostic="'
+        + configured_root
+        + b'/repo/branch": permission denied\n'
         + b"generic-diagnostic=/Users/jirathip/.herdr/worktrees/corral/branch failed to compile\n"
         b"FAILURE: exact bounded-log diagnostic \xff\n"
     )
@@ -529,6 +539,13 @@ fi
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
   [[ -s "$WORK/output/issue-211/$artifact" ]] || fail "missing artifact after first run: $artifact"
 done
+mkdir "$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/lock-failure.log" 2>&1; then
+  fail "publication lock contention unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/lock-failure.log" \
+  || fail "publication lock failure was not actionable"
+rmdir "$WORK/output/.design-gate.lock"
 "$PYTHON_BIN" - "$WORK/output/issue-211" <<'PY'
 from pathlib import Path
 import sys
@@ -793,7 +810,7 @@ assert note in data, "trailing newline in non-path note was lost"
 assert b"<external-path>" not in data
 PY
 
-opaque_command="$WORK/wake-window.sh --output $WORK/result"
+opaque_command="$WORK/wake-window.sh PATH=$WORK/cache:/usr/bin --config=$WORK/a,/etc/stable"
 run_capture --force \
   --egui-wake-command "$opaque_command" \
   --ios-command "$WORK/ios-command.sh" \
@@ -809,6 +826,8 @@ work = os.fsencode(sys.argv[2])
 assert work not in data, "opaque command or launch argument leaked the disposable path"
 assert b"external-temp" in data, "opaque disposable paths were not normalized"
 assert b"external-input" in data, "absolute launch arguments were not normalized"
+assert b"PATH=\\<external-temp\\>:/usr/bin" in data, "opaque colon-separated content was not preserved"
+assert b"--config=\\<external-temp\\>\\,/etc/stable" in data, "opaque comma-separated content was not preserved"
 PY
 
 known_worktrees_root="$WORK/known herdr root"
@@ -935,6 +954,37 @@ rollback_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.
   || fail "directory publication failure changed prior conformance"
 rm -f "$WORK/bin/mv" "$WORK/mv-failed"
 
+cat >"$WORK/bin/mv" <<MV_COLLISION_STUB
+#!/usr/bin/env bash
+set -euo pipefail
+last_argument=""
+for argument in "\$@"; do last_argument="\$argument"; done
+if [[ "\$last_argument" == "$WORK/output/issue-211" && ! -e "$WORK/mv-collision" ]]; then
+  mkdir "$WORK/output/issue-211"
+  touch "$WORK/mv-collision"
+  exit 73
+fi
+exec /bin/mv "\$@"
+MV_COLLISION_STUB
+chmod +x "$WORK/bin/mv"
+if PATH="$WORK/bin:$ORIGINAL_PATH" run_capture --force \
+  >"$WORK/publication-collision.log" 2>&1; then
+  fail "forced publication unexpectedly succeeded after destination collision"
+fi
+grep -q 'could not publish the validated evidence bundle' \
+  "$WORK/publication-collision.log" \
+  || fail "destination collision failure was not actionable"
+shopt -s nullglob
+collision_backups=("$WORK/output"/.design-gate.backup.*)
+[[ "${#collision_backups[@]}" -eq 1 ]] \
+  || fail "destination collision did not retain exactly one old evidence backup"
+/bin/rm -rf -- "$WORK/output/issue-211"
+/bin/mv -- "${collision_backups[0]}" "$WORK/output/issue-211"
+collision_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
+[[ "$collision_sha" == "$after_sha" ]] \
+  || fail "destination collision recovery did not preserve prior evidence"
+rm -f "$WORK/bin/mv" "$WORK/mv-collision"
+
 if run_capture --force --live-png "$WORK/truncated.png" \
   >"$WORK/truncated.log" 2>&1; then
   fail "truncated PNG unexpectedly passed validation"
@@ -948,6 +998,13 @@ if run_capture --force --live-png "$WORK/invalid-raster.png" \
 fi
 grep -E -q 'decompressed raster|expected' "$WORK/invalid-raster.log" \
   || fail "invalid PNG raster failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-filter.png" \
+  >"$WORK/invalid-filter.log" 2>&1; then
+  fail "invalid PNG filter unexpectedly passed validation"
+fi
+grep -q 'invalid scanline filter' "$WORK/invalid-filter.log" \
+  || fail "invalid PNG filter failure was not actionable"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
@@ -1111,12 +1168,13 @@ assert b"configured-root=<herdr-worktree>\n" in data, "bare configured root was 
 assert b"configured-sibling=/tmp/Configured Herdr Root.bak/repo name/worktree name/ios" in data, "configured sibling was over-redacted"
 assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root was not redacted"
 assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
-assert b"generic-bare-spaces=<herdr-worktree> name\n" in data, "space-containing bare root was not redacted without consuming its suffix"
+assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
 assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data
 assert b"output-dot-sibling=" + output_root + b".bak/file" in data
 assert b"configured-diagnostic=<herdr-worktree> failed to compile\n" in data, "configured worktree redaction consumed diagnostic text"
+assert b'quoted-diagnostic="<herdr-worktree>": permission denied\n' in data, "quoted worktree redaction consumed its diagnostic delimiter"
 assert b"generic-diagnostic=<herdr-worktree> failed to compile\n" in data, "generic worktree redaction consumed diagnostic text"
 PY
 unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
@@ -1202,6 +1260,10 @@ staging_entries=(
 )
 if [[ "${#staging_entries[@]}" -ne 0 ]]; then
   fail "temporary staging directory survived a failed run"
+fi
+lock_entries=("$WORK"/*/.design-gate.lock)
+if [[ "${#lock_entries[@]}" -ne 0 ]]; then
+  fail "publication lock survived a completed or failed run"
 fi
 
 printf 'Real Chrome structural prototype regression: %s\n' "$REAL_CHROME_RESULT"

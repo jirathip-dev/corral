@@ -268,9 +268,12 @@ capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
 `127.0.0.1`, and
 allows only the matching loopback origin; it is used solely for the scoped
 `Browser.close` request against the private profile.
-
 Validated artifacts are assembled in a private directory and published with a
 directory-level rename; a failed replacement restores the prior bundle.
+Publication is serialized by an output-root lock; unexpected destination
+collisions retain the old bundle for recovery. iOS capture is simulator-only through
+`hermes-sim-task`; `--ios-mode demo` is explicitly labeled as a Debug fixture,
+while live mode requires a caller-supplied launch command.
 
 For a real macOS egui lifecycle check—fake herdr fixture, real corrald,
 registered native UI, real target selection, native wgpu PNG, exact-pid wake,

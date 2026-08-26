@@ -793,6 +793,36 @@ if len(raw) != expected_raw_bytes:
         f"{path} has {len(raw)} decompressed raster bytes; "
         f"expected {expected_raw_bytes} for {width}x{height}"
     )
+
+
+def validate_filters(pass_width, pass_height, offset):
+    row_bytes = (pass_width * bits_per_pixel + 7) // 8
+    for _ in range(pass_height):
+        filter_type = raw[offset]
+        if filter_type > 4:
+            raise SystemExit(f"{path} has an invalid scanline filter: {filter_type}")
+        offset += row_bytes + 1
+    return offset
+
+
+if interlace_method == 0:
+    validated_bytes = validate_filters(width, height, 0)
+else:
+    validated_bytes = 0
+    for start_x, start_y, step_x, step_y in (
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ):
+        pass_width = max(0, (width - start_x + step_x - 1) // step_x)
+        pass_height = max(0, (height - start_y + step_y - 1) // step_y)
+        validated_bytes = validate_filters(pass_width, pass_height, validated_bytes)
+if validated_bytes != len(raw):
+    raise SystemExit(f"{path} has an invalid scanline layout")
 print(f"{width}x{height}")
 PY
 }
@@ -991,6 +1021,70 @@ def replace_path(data_value, path_value, label, prefix=False):
     return data_value
 
 
+def is_word_byte(value):
+    return (
+        48 <= value <= 57
+        or 65 <= value <= 90
+        or 97 <= value <= 122
+        or value == 95
+    )
+
+
+def is_whitespace_byte(value):
+    return value in (9, 11, 12, 32)
+
+
+def terminal_path_end(data_value, path_start, component_start, line_end):
+    # A quote immediately before the root unambiguously bounds the complete
+    # terminal component, including spaces in a quoted worktree name.
+    if path_start > 0 and data_value[path_start - 1] in (34, 39):
+        quote = data_value[path_start - 1]
+        index = path_start
+        while index < line_end:
+            if data_value[index] == quote:
+                backslashes = 0
+                cursor = index - 1
+                while cursor >= path_start and data_value[cursor] == 92:
+                    backslashes += 1
+                    cursor -= 1
+                if backslashes % 2 == 0:
+                    return index
+            index += 1
+
+    end = line_end
+    # Punctuation followed by whitespace (or a closing quote) is a diagnostic
+    # separator, while punctuation embedded in an unquoted path is retained.
+    for index in range(component_start, line_end):
+        if data_value[index] not in (41, 44, 59, 58, 93, 125):
+            continue
+        next_value = data_value[index + 1] if index + 1 < line_end else None
+        if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
+            end = min(end, index)
+
+    # Unquoted paths with spaces are inherently ambiguous. Consume the full
+    # terminal component by default, but preserve common diagnostic suffixes
+    # so the failure evidence remains readable. Quoted and punctuation-bounded
+    # paths above do not need this heuristic.
+    for marker in (
+        b" failed",
+        b" error",
+        b" warning",
+        b" permission",
+        b" denied",
+        b" not found",
+        b" cannot",
+        b" could not",
+        b" unable",
+        b" timed out",
+        b" exited",
+        b" invalid",
+    ):
+        marker_index = data_value.find(marker, component_start, end)
+        if marker_index != -1:
+            end = min(end, marker_index)
+    return end
+
+
 def redact_configured_worktree(data_value):
     if not worktrees_root:
         return data_value
@@ -1021,14 +1115,9 @@ def redact_configured_worktree(data_value):
                         b"/", first_slash + 1, line_end
                     )
                     if second_slash == -1:
-                        second_end = line_end
-                        for delimiter in (b" ", b"\t", b"\f", b"\v"):
-                            delimiter_end = data_value.find(
-                                delimiter, first_slash + 1, second_end
-                            )
-                            if delimiter_end != -1:
-                                second_end = min(second_end, delimiter_end)
-                        second_slash = second_end
+                        second_slash = terminal_path_end(
+                            data_value, start, first_slash + 1, line_end
+                        )
                     if second_slash > first_slash + 1:
                         replacements.append((start, second_slash))
             search = root_end
@@ -1044,15 +1133,6 @@ def redact_configured_worktree(data_value):
         cursor = end
     output.extend(data_value[cursor:])
     return bytes(output)
-
-
-def is_word_byte(value):
-    return (
-        48 <= value <= 57
-        or 65 <= value <= 90
-        or 97 <= value <= 122
-        or value == 95
-    )
 
 
 def is_token_boundary_byte(value):
@@ -1106,17 +1186,9 @@ def replace_generic_worktrees(data_value, protected_paths=()):
                         b"/", first_slash + 1, line_end
                     )
                     if second_slash == -1:
-                        # A terminal component is ambiguous when it contains
-                        # spaces. Consume only its first token so diagnostic
-                        # text after the path is never discarded; a path with
-                        # a descendant slash remains fully component-aware.
-                        second_slash = line_end
-                        for delimiter in (b" ", b"\t", b"\f", b"\v"):
-                            delimiter_end = data_value.find(
-                                delimiter, first_slash + 1, second_slash
-                            )
-                            if delimiter_end != -1:
-                                second_slash = min(second_slash, delimiter_end)
+                        second_slash = terminal_path_end(
+                            data_value, eligible_start, first_slash + 1, line_end
+                        )
                     if second_slash > first_slash + 1 and valid_path_component(
                         data_value[first_slash + 1 : second_slash]
                     ):
@@ -1162,7 +1234,7 @@ def redact_ephemeral_paths(data_value):
         pattern = (
             rb"(?<![A-Za-z0-9_])"
             + re.escape(os.fsencode(root))
-            + rb"/[^\x00\r\n\t \"'`;&|()<>]+"
+            + rb"/[^\x00\r\n\t \"'`:,;&|()<>]+"
         )
         data_value = re.sub(pattern, b"<external-temp>", data_value)
     return data_value
@@ -2088,9 +2160,16 @@ publish_bundle() {
     fi
   fi
 
+  if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+    die "output path appeared during publication; the old evidence backup is retained"
+  fi
   if ! mv -f -- "$final_dir" "$OUTPUT_DIR"; then
     die "could not publish the validated evidence bundle"
   fi
+  for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
+    [[ -s "$OUTPUT_DIR/$artifact" ]] \
+      || die "output path changed during publication; the old evidence backup is retained"
+  done
   FINAL_DIR=""
   PUBLISHED=1
 
@@ -2116,13 +2195,13 @@ IMPLEMENTATION_MANIFEST="${IMPLEMENTATION_IDENTITY#*$'\n'}"
   || die "implementation identity did not return a sha256 digest"
 
 OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
-if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
-  [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
-  [[ "$FORCE" -eq 1 ]] \
-    || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
+mkdir -p "$OUTPUT_ROOT" \
+  || die "could not create output root: $OUTPUT_ROOT"
+LOCK_DIR="$OUTPUT_ROOT/.design-gate.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  die "could not acquire evidence publication lock: $LOCK_DIR (another run may be active)"
 fi
-mkdir -p "$OUTPUT_ROOT"
-STAGE="$(mktemp -d "$OUTPUT_ROOT/.design-gate.stage.XXXXXX")"
+STAGE=""
 CAPTURE_PID=""
 FINAL_DIR=""
 BACKUP_DIR=""
@@ -2155,28 +2234,42 @@ cleanup() {
   if [[ -n "${FINAL_DIR:-}" && -d "$FINAL_DIR" ]]; then
     rm -rf -- "$FINAL_DIR"
   fi
-  if [[ "$PUBLISHED" -eq 0 \
-    && -n "${BACKUP_DIR:-}" \
-    && -d "$BACKUP_DIR" \
-    && ! -e "$OUTPUT_DIR" \
-    && ! -L "$OUTPUT_DIR" ]]; then
-    if ! mv -f -- "$BACKUP_DIR" "$OUTPUT_DIR"; then
-      cleanup_status=1
+  if [[ -n "${BACKUP_DIR:-}" && -d "$BACKUP_DIR" ]]; then
+    if [[ "$PUBLISHED" -eq 1 ]]; then
+      if ! rm -rf -- "$BACKUP_DIR"; then
+        cleanup_status=1
+      else
+        BACKUP_DIR=""
+      fi
+    elif [[ ! -e "$OUTPUT_DIR" && ! -L "$OUTPUT_DIR" ]]; then
+      if ! mv -f -- "$BACKUP_DIR" "$OUTPUT_DIR"; then
+        cleanup_status=1
+      else
+        BACKUP_DIR=""
+      fi
     else
-      BACKUP_DIR=""
+      warn "old evidence backup retained at $BACKUP_DIR because output path is occupied"
+      cleanup_status=1
     fi
   fi
-  if [[ -n "${BACKUP_DIR:-}" && -d "$BACKUP_DIR" \
-    && ("$PUBLISHED" -eq 1 || -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR") ]]; then
-    if ! rm -rf -- "$BACKUP_DIR"; then
+  if [[ -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+    if ! rmdir -- "$LOCK_DIR"; then
       cleanup_status=1
     else
-      BACKUP_DIR=""
+      LOCK_DIR=""
     fi
   fi
   return "$cleanup_status"
 }
 trap cleanup EXIT
+
+if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+  [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
+  [[ "$FORCE" -eq 1 ]] \
+    || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
+fi
+STAGE="$(mktemp -d "$OUTPUT_ROOT/.design-gate.stage.XXXXXX")" \
+  || die "could not create staging directory below $OUTPUT_ROOT"
 
 PROTOTYPE_VIEW="$STAGE/prototype-view.html"
 if ! prototype_size="$(make_prototype_view "$PROTOTYPE_VIEW")"; then

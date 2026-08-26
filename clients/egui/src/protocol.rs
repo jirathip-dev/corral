@@ -639,6 +639,7 @@ pub fn spawn_read_loop(
     base_url: String,
     tx_apply: tokio::sync::mpsc::UnboundedSender<ApplyMsg>,
     stop_rx: tokio::sync::watch::Receiver<bool>,
+    auto_reconnect: bool,
 ) {
     rt.spawn(async move {
         let mut last_rev: Option<u64> = None;
@@ -693,6 +694,12 @@ pub fn spawn_read_loop(
                         let _ = tx_apply.send(ApplyMsg::Sse(SseEvent::Snapshot(snap)));
                     }
                 }
+            }
+            if !auto_reconnect {
+                let _ = tx_apply.send(ApplyMsg::ConnError(
+                    "connection stopped (auto-reconnect is disabled)".to_string(),
+                ));
+                return;
             }
             // Stop if requested (settings changed host or app is quitting).
             if *stop_rx.borrow() {

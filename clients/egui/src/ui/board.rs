@@ -1,8 +1,9 @@
-//! Fleet board: a cards master/detail split (default) plus an exact
-//! nine-column conformance table. The master pane is attention-ranked by
+//! Fleet board: the Cards-only master/detail surface used by the #206
+//! workspace. The master pane is attention-ranked by
 //! [`crate::theme::AgentStateLike::rank`], searchable, state-chipped, and
-//! optionally grouped by repo or flattened. The detail pane owns drive
-//! controls, the full waiting-on claim, and Recent output/transcript.
+//! grouped by repo. The detail pane owns drive controls, the full waiting-on
+//! claim, and Recent output/transcript. The old table renderer remains only as
+//! an internal conformance helper; no native navigation reaches it.
 
 use std::cmp::Ordering;
 
@@ -32,6 +33,7 @@ const COL_CI: f32 = 76.0;
 /// Board columns in render order. Both the header and every agent row draw
 /// from this one width source so labels and values start at identical x
 /// positions.
+#[allow(dead_code)]
 const BOARD_COLUMNS: [(&str, f32); 9] = [
     ("AGENT", COL_AGENT),
     ("STATE", COL_STATE),
@@ -46,6 +48,7 @@ const BOARD_COLUMNS: [(&str, f32); 9] = [
 
 /// Keep at least this much branch text even when the inferred marker is
 /// unusually long; the marker segment is bounded to the remaining width.
+#[allow(dead_code)]
 const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 
 /// Reserved `State · relative age` slot on a master card.
@@ -53,16 +56,16 @@ const BRANCH_MIN_TEXT_WIDTH: f32 = 36.0;
 /// Header for the bucket of agents without `workspace.repo` (sorts last).
 const NO_REPO_LABEL: &str = "(no repo)";
 
-/// egui temp-memory key for the Table flat-list toggle. The Table stays
-/// grouped by repo unless the operator explicitly asks for a flat list.
+/// Legacy egui temp-memory key retained for the internal table conformance
+/// renderer. The native #206 surface never reads or writes it.
 const FLAT_VIEW: &str = "corral-ui-board-flat";
 
-/// egui temp-memory key for the Cards flat-list toggle. Cards default to
-/// the prototype's prioritized flat list independently of the Table.
+/// Legacy egui temp-memory key retained for migration of older client state.
+/// The native Cards surface no longer exposes a flat-sort switch.
 const CARDS_FLAT_VIEW: &str = "corral-ui-cards-flat";
 
 const DEFAULT_FLAT: bool = false;
-const DEFAULT_CARDS_FLAT: bool = true;
+const DEFAULT_CARDS_FLAT: bool = false;
 
 /// The approved desktop prototype is a true 42/58 master/detail split.
 pub const MASTER_DETAIL_RATIO: (f32, f32) = (0.42, 0.58);
@@ -79,6 +82,10 @@ const MASTER_IDENTITY_INSET: f32 = 36.0;
 /// narrow pane the left column is dropped first and ordinary ages are never
 /// clipped; only extreme timestamps truncate inside this bound.
 const MASTER_STATE_WIDTH: f32 = 160.0;
+/// Keep the terminal state label clear of the master/detail divider and the
+/// right-hand theme padding. This also leaves room for the final glyph in a
+/// right-aligned label instead of painting it into the divider.
+const MASTER_STATE_RIGHT_INSET: f32 = 8.0;
 
 #[cfg(test)]
 const CARD_AGE_WIDTH: f32 = MASTER_STATE_WIDTH;
@@ -86,11 +93,9 @@ const CARD_AGE_WIDTH: f32 = MASTER_STATE_WIDTH;
 /// egui temp-memory key for the master/detail search query.
 const SEARCH_QUERY: &str = "corral-ui-board-search";
 
-/// egui temp-memory key for the cards/table view (default: cards).
+/// Legacy egui temp-memory key retained for old renderer tests. The native
+/// #206 surface is Cards-only.
 const VIEW_MODE: &str = "corral-ui-board-view";
-
-const RIGHT_TAB: &str = "corral-ui-right-tab";
-const RIGHT_TAB_REQUEST: &str = "corral-ui-right-tab-request";
 const KILL_CONFIRM: &str = "corral-ui-kill-confirm";
 const KILL_CONFIRM_STARTED: &str = "corral-ui-kill-confirm-started";
 const KILL_CONFIRM_TIMEOUT_SECONDS: f64 = 10.0;
@@ -100,28 +105,10 @@ const EARLIER_LINES_LABEL: &str = "229 earlier lines";
 const LOAD_EARLIER_LABEL: &str = "Load earlier";
 const USER_BLOCK_INSET: f32 = 24.0;
 
-/// The compact tabs that live inside the Board surface's detail-owned area.
-/// They are rendered on both Cards and Table because the application chrome
-/// hides the duplicate Board / Issues / Audit destinations while Board is
-/// active.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RightTab {
-    #[default]
-    Board,
-    Issues,
-    Audit,
-}
-
-/// Consume a right-pane navigation request after the app frame has rendered.
-pub fn take_right_tab_request(ctx: &egui::Context) -> Option<RightTab> {
-    ctx.memory_mut(|memory| {
-        memory
-            .data
-            .remove_temp::<RightTab>(egui::Id::new(RIGHT_TAB_REQUEST))
-    })
-}
-
-/// Cards or the exact nine-column conformance table.
+/// Cards or the exact nine-column internal conformance table. Only Cards is
+/// reachable from the native workspace; the table variant exists so the
+/// renderer's historical geometry tests remain honest without exposing it to
+/// operators.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BoardView {
     #[default]
@@ -210,7 +197,6 @@ pub fn show(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
-    reset_right_tab(ui.ctx());
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
@@ -221,36 +207,12 @@ pub fn show(
         });
         return None;
     }
-
-    let mut view = view_mode(ui.ctx());
-    let mut flat = flat_view(ui.ctx(), view);
-    if view == BoardView::Cards {
-        return show_cards(ui, fleet, &mut view, &mut flat, allowed, actions);
-    }
-
-    let mut query = search_query(ui.ctx());
-    let mut filter = state_filter(ui.ctx());
-    toolbar(ui, fleet, &mut view, &mut flat, &mut query, &mut filter);
-    view_mode_controls(ui, &mut view, flat);
-    if view == BoardView::Cards {
-        return None;
-    }
-    // Board / Issues / Audit remain detail-owned on every Board surface,
-    // including an empty Table result. The global chrome intentionally hides
-    // these destinations while the Board is active.
-    right_tabs(ui);
-    ui.separator();
-    let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    if visible.is_empty() {
-        show_empty_table_state(ui, &query);
-        return None;
-    }
-    show_table(ui, fleet, &visible, flat, allowed, actions);
-    None
+    // The public board entry point is intentionally fixed to Cards. The
+    // legacy view-mode memory cannot resurrect Table after a persisted client
+    // state migration or a test harness restores an older value.
+    let mut view = BoardView::Cards;
+    let mut flat = false;
+    show_cards(ui, fleet, &mut view, &mut flat, allowed, actions)
 }
 
 /// Persistent sidebar state helpers are intentionally tiny; every query
@@ -287,18 +249,9 @@ fn toolbar(
             }
         });
 
-        // Cards intentionally stay as the prototype's flat attention list.
-        // The legacy grouped/flat switch remains available for the exact
-        // table view, where repo grouping is useful and does not pollute the
-        // approved cards surface.
-        if *view == BoardView::Table
-            && ui
-                .checkbox(flat, "flat sort")
-                .on_hover_text("one flat list of every agent, instead of repo groups")
-                .changed()
-        {
-            changed = true;
-        }
+        // Cards-only navigation deliberately has no flat-sort control. The
+        // `flat` argument remains only for compatibility with the internal
+        // table geometry tests and is never changed by native UI.
     });
     if *filter == StateFilter::Blocked
         && !fleet
@@ -314,38 +267,6 @@ fn toolbar(
             *flat = flat_view(ui.ctx(), *view);
         }
         persist_toolbar_state(ui, *view, *flat, query, *filter);
-    }
-}
-
-/// Cards owns this control row in the right pane. Table gets the same row at
-/// the top of its surface so switching into Table never removes the only
-/// route back to the prototype's Cards view.
-fn view_mode_controls(ui: &mut Ui, view: &mut BoardView, flat: bool) {
-    ui.horizontal(|ui| {
-        view_mode_buttons(ui, view, flat);
-    });
-}
-
-fn view_mode_buttons(ui: &mut Ui, view: &mut BoardView, flat: bool) {
-    if action_button(ui, "Cards", *view == BoardView::Cards, false).clicked() {
-        *view = BoardView::Cards;
-        persist_toolbar_state(
-            ui,
-            *view,
-            flat,
-            &search_query(ui.ctx()),
-            state_filter(ui.ctx()),
-        );
-    }
-    if action_button(ui, "Table", *view == BoardView::Table, false).clicked() {
-        *view = BoardView::Table;
-        persist_toolbar_state(
-            ui,
-            *view,
-            flat,
-            &search_query(ui.ctx()),
-            state_filter(ui.ctx()),
-        );
     }
 }
 
@@ -441,14 +362,6 @@ fn flat_view(ctx: &egui::Context, view: BoardView) -> bool {
         m.data
             .get_temp::<bool>(egui::Id::new(key))
             .unwrap_or(default)
-    })
-}
-
-fn view_mode(ctx: &egui::Context) -> BoardView {
-    ctx.memory(|m| {
-        m.data
-            .get_temp::<BoardView>(egui::Id::new(VIEW_MODE))
-            .unwrap_or_default()
     })
 }
 
@@ -680,6 +593,86 @@ fn show_cards_surface(
     clicked.or(selected)
 }
 
+/// Render the persistent repo-grouped master bar used by every workspace tab.
+/// Search and state chips intentionally live here so changing the right-hand
+/// tab never changes the selected fleet context.
+pub fn show_master(
+    ui: &mut Ui,
+    fleet: &mut Fleet,
+    group_by_repo: bool,
+    show_idle_collapsed: bool,
+) -> Option<String> {
+    let mut query = search_query(ui.ctx());
+    let mut filter = state_filter(ui.ctx());
+    let mut cards = BoardView::Cards;
+    let mut grouped = false;
+    toolbar(ui, fleet, &mut cards, &mut grouped, &mut query, &mut filter);
+    ui.add_space(2.0);
+    ui.ctx().memory_mut(|memory| {
+        memory.data.insert_temp(
+            egui::Id::new("corral-ui-show-idle-collapsed"),
+            show_idle_collapsed,
+        );
+    });
+    let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
+    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    let clicked = if visible.is_empty() {
+        empty_pane_message(ui, &query);
+        None
+    } else {
+        master_list(
+            ui,
+            fleet,
+            &visible,
+            !group_by_repo,
+            selected.as_deref(),
+            now_millis(),
+        )
+    };
+    if let Some(id) = clicked.as_deref() {
+        fleet.select_agent(id);
+    }
+    clicked.or(selected)
+}
+
+/// Render the Board detail pane after the app has drawn the common tab strip.
+/// The view argument is deliberately fixed to Cards; Table is not a reachable
+/// native navigation state for the #206 surface.
+pub fn show_board_detail(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    selected: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    show_board_detail_with_options(ui, fleet, selected, allowed, actions, true);
+}
+
+/// Render the Cards detail with the persisted Board behavior toggles applied.
+/// The default wrapper above keeps the pure rendering/conformance tests on the
+/// approved prototype defaults while the app supplies the user's setting.
+pub fn show_board_detail_with_options(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    selected: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+    stick_to_bottom: bool,
+) {
+    ui.ctx().memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(egui::Id::new("corral-ui-stick-to-bottom"), stick_to_bottom);
+    });
+    let mut view = BoardView::Cards;
+    right_pane(ui, fleet, selected, &mut view, false, allowed, actions);
+}
+
+#[allow(dead_code)]
 fn show_empty_table_state(ui: &mut Ui, query: &str) {
     let total_width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
     ScrollArea::both()
@@ -734,7 +727,12 @@ fn master_list(
                                 .color(theme::ui::TEXT_MUTED),
                         )
                         .id_salt("corral-ui-idle-done")
-                        .default_open(false)
+                        .default_open(!ui.ctx().memory(|memory| {
+                            memory
+                                .data
+                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
+                                .unwrap_or(true)
+                        }))
                         .show_unindented(ui, |ui| {
                             for id in &section.agent_ids {
                                 if let Some(id) =
@@ -759,13 +757,30 @@ fn master_list(
                         continue;
                     }
                     let title = group.repo.unwrap_or(NO_REPO_LABEL);
+                    let idle_only = group.agent_ids.iter().all(|id| {
+                        matches!(
+                            fleet.agents.get(*id).map(|agent| agent.state.into()),
+                            Some(crate::theme::AgentStateLike::Idle)
+                                | Some(crate::theme::AgentStateLike::Unknown)
+                                | Some(crate::theme::AgentStateLike::Done)
+                        )
+                    });
                     CollapsingHeader::new(
                         RichText::new(format!("{title}  ({})", group.agent_ids.len()))
                             .monospace()
                             .color(theme::ui::TEXT_STRONG),
                     )
                     .id_salt(("corral-ui-repo-group", title))
-                    .default_open(true)
+                    .default_open(if idle_only {
+                        !ui.ctx().memory(|memory| {
+                            memory
+                                .data
+                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
+                                .unwrap_or(true)
+                        })
+                    } else {
+                        true
+                    })
                     .show_unindented(ui, |ui| {
                         for id in &group.agent_ids {
                             if let Some(id) =
@@ -807,7 +822,7 @@ fn master_column_header(ui: &mut Ui, width: f32) {
     );
     let state_rect = egui::Rect::from_min_max(
         egui::pos2(rect.right() - state_width, rect.top()),
-        rect.right_bottom(),
+        egui::pos2(rect.right() - MASTER_STATE_RIGHT_INSET, rect.bottom()),
     );
     let mut state_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -933,7 +948,10 @@ fn master_card_with_response(
     );
     let right_rect = egui::Rect::from_min_max(
         egui::pos2((rect.right() - state_width).max(rect.left()), rect.top()),
-        rect.right_bottom(),
+        egui::pos2(
+            (rect.right() - MASTER_STATE_RIGHT_INSET).max(rect.left()),
+            rect.bottom(),
+        ),
     );
     let mut left_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -1019,14 +1037,12 @@ fn right_pane(
     ui: &mut Ui,
     fleet: &Fleet,
     selected: Option<&str>,
-    view: &mut BoardView,
-    flat: bool,
+    _view: &mut BoardView,
+    _flat: bool,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
     sync_kill_confirmation(ui.ctx(), selected);
-    right_tabs(ui);
-    ui.separator();
     let selected_agent = selected.and_then(|id| fleet.agents.get(id));
     let interrupt_state = selected_agent
         .map(|agent| drive_control_state(&agent.capabilities, "interrupt", allowed("interrupt")))
@@ -1042,7 +1058,7 @@ fn right_pane(
     // outside the original Kill trigger rect, so a double-click cannot turn
     // the second release into an immediate destructive action.
     ui.horizontal(|ui| {
-        view_mode_buttons(ui, view, flat);
+        action_button(ui, "Cards", true, false);
         if let Some(button) =
             gated_action_button(ui, "Interrupt", "interrupt", false, interrupt_state)
             && button.clicked()
@@ -1087,63 +1103,6 @@ fn right_pane(
             .color(theme::ui::INK),
     );
     recent_output_surface(ui, fleet, selected, allowed, actions);
-}
-
-fn right_tabs(ui: &mut Ui) {
-    let active = ui
-        .ctx()
-        .memory(|memory| memory.data.get_temp::<RightTab>(egui::Id::new(RIGHT_TAB)))
-        .unwrap_or_default();
-    ui.horizontal(|ui| {
-        for tab in [RightTab::Board, RightTab::Issues, RightTab::Audit] {
-            if underlined_tab(ui, tab.label(), active == tab).clicked() {
-                ui.ctx().memory_mut(|memory| {
-                    memory
-                        .data
-                        .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), tab);
-                    if tab != RightTab::Board {
-                        memory
-                            .data
-                            .insert_temp(egui::Id::new(RIGHT_TAB_REQUEST), tab);
-                    }
-                });
-            }
-        }
-    });
-}
-
-impl RightTab {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Board => "Board",
-            Self::Issues => "Issues",
-            Self::Audit => "Audit",
-        }
-    }
-}
-
-fn underlined_tab(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
-    let font = FontId::proportional(11.0);
-    let color = if active {
-        theme::ui::INK
-    } else {
-        theme::ui::MUTED
-    };
-    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(label.to_string(), font, color));
-    let size = galley.size() + egui::vec2(28.0, 18.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    ui.painter()
-        .galley(rect.min + egui::vec2(14.0, 8.0), galley, color);
-    if active {
-        ui.painter().line_segment(
-            [
-                egui::pos2(rect.left(), rect.bottom() - 1.0),
-                egui::pos2(rect.right(), rect.bottom() - 1.0),
-            ],
-            Stroke::new(2.0, theme::ui::ACCENT),
-        );
-    }
-    response
 }
 
 fn action_button(ui: &mut Ui, label: &str, active: bool, danger: bool) -> egui::Response {
@@ -1260,17 +1219,6 @@ fn sync_kill_confirmation(ctx: &egui::Context, selected: Option<&str>) {
     }
 }
 
-fn reset_right_tab(ctx: &egui::Context) {
-    ctx.memory_mut(|memory| {
-        memory
-            .data
-            .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), RightTab::Board);
-        memory
-            .data
-            .remove::<RightTab>(egui::Id::new(RIGHT_TAB_REQUEST));
-    });
-}
-
 fn recent_output_surface(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -1278,6 +1226,12 @@ fn recent_output_surface(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    let stick_to_bottom = ui.ctx().memory(|memory| {
+        memory
+            .data
+            .get_temp::<bool>(egui::Id::new("corral-ui-stick-to-bottom"))
+            .unwrap_or(true)
+    });
     let Some(id) = selected else {
         live_indicator(ui);
         return;
@@ -1295,9 +1249,12 @@ fn recent_output_surface(
                 live_indicator(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("stick-to-bottom")
-                            .small()
-                            .color(theme::ui::MUTED),
+                        RichText::new(format!(
+                            "stick-to-bottom: {}",
+                            if stick_to_bottom { "on" } else { "off" }
+                        ))
+                        .small()
+                        .color(theme::ui::MUTED),
                     );
                 });
             });
@@ -1311,12 +1268,12 @@ fn recent_output_surface(
                 // older pages at the end. Keep the newest six, then paint
                 // that slice oldest-to-newest so the newest message sits at
                 // the bottom of the stick-to-bottom surface.
-                for entry in pane.entries.iter().take(6).rev() {
-                    recent_transcript_entry(ui, entry);
+                for index in recent_output_indices(pane.entries.len(), stick_to_bottom) {
+                    recent_transcript_entry(ui, &pane.entries[index]);
                 }
             } else if let Some(lines) = fleet.tails.get(id) {
-                for line in lines.iter().rev().take(6).rev() {
-                    recent_tail_entry(ui, line);
+                for index in recent_output_indices(lines.len(), stick_to_bottom) {
+                    recent_tail_entry(ui, &lines[index]);
                 }
             } else if let Some(state) = read_tail_state {
                 let feedback = match state {
@@ -1380,6 +1337,18 @@ fn recent_output_surface(
                 }
             });
         });
+}
+
+/// Transcript pages are newest-first. Stick-to-bottom paints the visible
+/// window oldest-to-newest; when disabled the newest entry remains first so
+/// the operator can inspect the latest output without automatic bottom bias.
+pub(crate) fn recent_output_indices(len: usize, stick_to_bottom: bool) -> Vec<usize> {
+    let count = len.min(6);
+    if stick_to_bottom {
+        (0..count).rev().collect()
+    } else {
+        (0..count).collect()
+    }
 }
 
 fn latest_read_tail_state<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
@@ -1557,6 +1526,7 @@ fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str) {
     ui.add_space(4.0);
 }
 
+#[allow(dead_code)]
 fn show_table(
     ui: &mut Ui,
     fleet: &mut Fleet,
@@ -3132,12 +3102,12 @@ mod tests {
         let short_layout_inset = short.0 - short.2;
         let long_layout_inset = long.0 - long.2;
         assert!(
-            short_layout_inset.abs() <= 1.0,
-            "short age layout edge must stay at the card's right edge: inset={short_layout_inset}"
+            (short_layout_inset - MASTER_STATE_RIGHT_INSET).abs() <= 1.0,
+            "short age layout edge must stay inside the themed right inset: inset={short_layout_inset}"
         );
         assert!(
-            long_layout_inset.abs() <= 1.0,
-            "long age layout edge must stay at the card's right edge: inset={long_layout_inset}"
+            (long_layout_inset - MASTER_STATE_RIGHT_INSET).abs() <= 1.0,
+            "long age layout edge must stay inside the themed right inset: inset={long_layout_inset}"
         );
     }
 
@@ -3614,75 +3584,14 @@ mod tests {
             (header_state.layout_right - row_state.layout_right).abs() <= 0.1,
             "State · time header aligns to the row value's right edge"
         );
-        clear_textures(&mut output);
-    }
-
-    #[test]
-    fn right_tabs_reach_issues_and_audit_and_reset_on_board_return() {
-        let ctx = row_test_context();
-        ctx.memory_mut(|memory| {
-            memory
-                .data
-                .insert_temp::<RightTab>(egui::Id::new(RIGHT_TAB), RightTab::Board);
-        });
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        let issues_pos = text_rect(&output, "Issues")
-            .expect("detail pane keeps Issues reachable")
-            .center();
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_down_input(issues_pos), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_up_input(issues_pos), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        assert_eq!(take_right_tab_request(&ctx), Some(RightTab::Issues));
-        clear_textures(&mut output);
-
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        let audit_pos = text_rect(&output, "Audit")
-            .expect("detail pane keeps Audit reachable")
-            .center();
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_down_input(audit_pos), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_up_input(audit_pos), |ui| {
-            row_test_style(ui);
-            right_tabs(ui);
-        });
-        assert_eq!(take_right_tab_request(&ctx), Some(RightTab::Audit));
-        clear_textures(&mut output);
-
-        let agent = agent_with_caps(&["read_tail"]);
-        let mut fleet = Fleet {
-            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
-            ..Default::default()
-        };
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
-        });
-        let active =
-            ctx.memory(|memory| memory.data.get_temp::<RightTab>(egui::Id::new(RIGHT_TAB)));
-        assert_eq!(active, Some(RightTab::Board));
-        assert!(take_right_tab_request(&ctx).is_none());
+        assert!(
+            header_state.layout_right <= width - MASTER_STATE_RIGHT_INSET + 0.1,
+            "header terminal glyph stays inside the themed right inset"
+        );
+        assert!(
+            row_state.layout_right <= width - MASTER_STATE_RIGHT_INSET + 0.1,
+            "row terminal glyph stays inside the themed right inset"
+        );
         clear_textures(&mut output);
     }
 
@@ -3751,11 +3660,7 @@ mod tests {
             );
         });
         for required in [
-            "Board",
-            "Issues",
-            "Audit",
             "Cards",
-            "Table",
             "Interrupt",
             "Kill",
             "Recent output",
@@ -3768,13 +3673,13 @@ mod tests {
                 "detail pane must render {required:?}"
             );
         }
-        let controls = ["Cards", "Table", "Interrupt", "Kill"]
+        let controls = ["Cards", "Interrupt", "Kill"]
             .map(|label| text_rect(&output, label).expect("primary control rendered"));
         assert!(
             controls
                 .windows(2)
                 .all(|pair| pair[0].left() < pair[1].left()),
-            "Cards controls stay in prototype order Cards / Table / Interrupt / Kill"
+            "Cards controls stay in prototype order Cards / Interrupt / Kill"
         );
         let controls_share_row = controls
             .windows(2)
@@ -3791,41 +3696,15 @@ mod tests {
             text_rect(&output, "recent drives").is_none(),
             "Cards detail must keep Recent output as the sole selected-agent surface"
         );
-        let table_pos = text_rect(&output, "Table")
-            .expect("detail pane owns the Table action")
-            .center();
         clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_down_input(table_pos), |ui| {
-            row_test_style(ui);
-            right_pane(
-                ui,
-                &fleet,
-                Some("herdr:alpha"),
-                &mut view,
-                true,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_up_input(table_pos), |ui| {
-            row_test_style(ui);
-            right_pane(
-                ui,
-                &fleet,
-                Some("herdr:alpha"),
-                &mut view,
-                true,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        assert_eq!(
-            view,
-            BoardView::Table,
-            "Table is owned by the detail action row"
-        );
-        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn recent_output_order_honors_stick_to_bottom_setting() {
+        assert_eq!(recent_output_indices(8, true), vec![5, 4, 3, 2, 1, 0]);
+        assert_eq!(recent_output_indices(8, false), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(recent_output_indices(3, true), vec![2, 1, 0]);
+        assert_eq!(recent_output_indices(0, false), Vec::<usize>::new());
     }
 
     #[test]
@@ -3888,7 +3767,7 @@ mod tests {
     }
 
     #[test]
-    fn show_table_has_a_real_cards_round_trip() {
+    fn public_board_entry_is_cards_only_after_legacy_table_state() {
         let ctx = row_test_context();
         ctx.memory_mut(|memory| {
             memory
@@ -3909,52 +3788,17 @@ mod tests {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
         });
-        for tab in [RightTab::Issues, RightTab::Audit] {
-            let label = tab.label();
-            let tab_pos = text_rect(&output, label)
-                .expect("Table surface keeps detail-owned navigation reachable")
-                .center();
-            clear_textures(&mut output);
-            let mut next = ctx.run_ui(pointer_down_input(tab_pos), |ui| {
-                row_test_style(ui);
-                show(ui, &mut fleet, &|_| true, &mut actions);
-            });
-            clear_textures(&mut next);
-            next = ctx.run_ui(pointer_up_input(tab_pos), |ui| {
-                row_test_style(ui);
-                show(ui, &mut fleet, &|_| true, &mut actions);
-            });
-            assert_eq!(
-                take_right_tab_request(&ctx),
-                Some(tab),
-                "Table {label} tab must dispatch its real navigation request"
-            );
-            output = next;
-        }
-        let cards_pos = text_rect(&output, "Cards")
-            .expect("Table surface exposes a Cards return control")
-            .center();
-        assert!(text_rect(&output, "AGENT").is_some());
-        clear_textures(&mut output);
-
-        let mut output = ctx.run_ui(pointer_down_input(cards_pos), |ui| {
-            row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
-        });
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_up_input(cards_pos), |ui| {
-            row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
-        });
-        clear_textures(&mut output);
-
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
-        });
         assert!(
             text_rect(&output, "Recent output").is_some(),
-            "a real Table → Cards click must restore the Cards surface"
+            "the public board entry must render the Cards detail surface"
+        );
+        assert!(
+            text_rect(&output, "AGENT").is_none(),
+            "legacy Table state must not expose the removed table surface"
+        );
+        assert!(
+            text_rect(&output, "Audit").is_none(),
+            "Audit must not return as a board-local navigation tab"
         );
         clear_textures(&mut output);
     }

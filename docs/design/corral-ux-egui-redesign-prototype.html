@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Corral — egui redesign prototype (persistent left bar + repo-grouped)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#10151c; --panel2:#161b22; --panel3:#1c2128;
+    --line:#30363d; --ink:#e6edf3; --muted:#8b949e; --accent:#2dd4bf;
+    --blocked:#f85149; --done:#d29922; --working:#58a6ff; --idle:#8b949e; --unknown:#6e7681;
+    --user-tint:#12263f;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:#05070a; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; padding:32px;}
+  h1{font-size:15px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:4px;}
+  .sub{font-size:12px; color:var(--muted); margin-bottom:24px; max-width:1200px; line-height:1.5;}
+  .sub b{color:var(--ink);}
+  .rack{display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start;}
+  .frame{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 20px 60px rgba(0,0,0,.45);}
+  .framelabel{font-size:11px; color:var(--muted); letter-spacing:.05em; text-transform:uppercase; margin-bottom:10px; text-align:center;}
+  /* ---- egui desktop ---- */
+  .desk{width:100%; max-width:1080px; height:620px; background:var(--bg); border-radius:12px; border:1px solid #2a2f37; overflow:hidden; display:grid; grid-template-columns:42% 58%;}
+  .dleft{border-right:1px solid var(--line); display:flex; flex-direction:column; background:var(--panel); min-width:0;}
+  .dright{background:var(--bg); display:flex; flex-direction:column; min-width:0;}
+  /* left topbar */
+  .dtop{display:flex; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); align-items:center;}
+  .dtop input{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--ink); font-size:12px; padding:7px 10px; min-width:0;}
+  .dtop .chip{font-size:10px; padding:5px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; cursor:pointer;}
+  .dtop .chip.on{background:var(--working); color:#08131f; border-color:transparent; font-weight:600;}
+  .dtop .chip.need{background:rgba(248,81,73,.16); color:var(--blocked);}
+  /* left repo-grouped list */
+  .lists{flex:1; overflow-y:auto;}
+  .repogroup{border-bottom:1px solid var(--line);}
+  .repohdr{display:flex; align-items:center; gap:7px; padding:8px 12px 6px; font-size:11px; font-weight:700; color:var(--muted); letter-spacing:.02em; cursor:pointer;}
+  .repohdr .chev{font-size:9px; color:var(--muted); transition:.15s; width:10px;}
+  .repohdr .cnt{margin-left:auto; font-size:10px; color:var(--muted); font-weight:600;}
+  .repohdr .n{color:var(--ink);}
+  .colhead{display:grid; grid-template-columns:1fr 96px; font-size:9px; color:var(--muted); padding:3px 12px 5px; letter-spacing:.05em;}
+  .lrow{display:grid; grid-template-columns:1fr 96px; gap:6px; padding:7px 12px; border-left:3px solid transparent; align-items:center; cursor:pointer;}
+  .lrow:hover{background:var(--panel2);}
+  .lrow.sel{background:var(--panel2);}
+  .lrow.b{background:rgba(248,81,73,.06); border-left-color:var(--blocked);}
+  .lrow.d{background:rgba(210,153,34,.05); border-left-color:var(--done);}
+  .lrow.w{background:rgba(88,166,255,.05); border-left-color:var(--working);}
+  .lr1{display:flex; gap:7px; align-items:center; min-width:0;}
+  .lr1 .t{font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
+  .lr1 .tl{font-size:9px; font-family:ui-monospace,monospace; padding:1px 5px; border-radius:3px; background:var(--panel3); color:var(--muted); flex:none;}
+  .lr2{font-size:10px; font-family:ui-monospace,monospace; color:var(--muted); text-align:right; white-space:nowrap; overflow:hidden;}
+  .lr2 .s{font-weight:700;}
+  .idlefoot{border-top:1px solid var(--line); padding:8px 12px; font-size:11px; color:var(--muted); font-weight:600; display:flex; gap:7px; align-items:center; cursor:pointer;}
+  .idlefoot .chev{font-size:9px;}
+  /* right — tab strip (constant) */
+  .dtabs{display:flex; border-bottom:1px solid var(--line); padding:0 8px;}
+  .dtab{padding:10px 16px; font-size:12px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer;}
+  .dtab.on{color:var(--ink); border-bottom-color:var(--accent);}
+  .rcontent{flex:1; overflow-y:auto; display:flex; flex-direction:column; min-height:0;}
+  /* Board content */
+  .dtail{padding:6px 12px 0;}
+  .dtailcards{display:flex; gap:6px; padding:8px 0;}
+  .dbtn{font-size:11px; font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); cursor:pointer;}
+  .dbtn.on{color:var(--ink); border-color:var(--accent);}
+  .dbtn.red{color:var(--blocked);}
+  .rhead{font-size:12px; font-weight:700; padding:8px 12px 4px;}
+  .transcript{flex:1; overflow-y:auto; padding:8px 12px;}
+  .tlive{font-size:10px; color:var(--accent); display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-weight:600;}
+  .tlive .rg{font-size:9px; color:var(--muted); font-weight:400;}
+  .blk{font-size:12px; line-height:1.5; margin-bottom:8px;}
+  .blk .tm{font-size:9px; float:right; color:var(--muted); font-family:ui-monospace,monospace;}
+  .blk.user{background:var(--user-tint); border-radius:10px 10px 3px 10px; padding:8px 10px; margin-left:24px;}
+  .blk.user .who{font-size:9px; color:#6ea8ff; font-weight:700; margin-bottom:2px;}
+  .blk.agent{margin-right:24px;}
+  .blk.tool{color:var(--muted); font-family:ui-monospace,monospace; font-size:11px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:6px 10px;}
+  .blk.tool .tgl{color:var(--working); cursor:pointer;}
+  .divider{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:10px; font-family:ui-monospace,monospace; margin:8px 0;}
+  .divider::before,.divider::after{content:""; flex:1; height:1px; background:var(--line);}
+  .divider .ld{color:var(--accent); cursor:pointer;}
+  /* Issues content */
+  .isearch{display:flex; gap:6px; padding:8px 12px; align-items:center;}
+  .isearch .chip{font-size:10px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); cursor:pointer;}
+  .isearch .chip.on{background:var(--accent); color:#052420; border-color:transparent; font-weight:600;}
+  .ilist{flex:1; overflow-y:auto; padding:0 12px 12px;}
+  .irepo{font-size:11px; font-weight:700; color:var(--muted); padding:8px 2px 6px;}
+  .irow{display:flex; gap:8px; align-items:baseline; padding:6px 10px; border-radius:6px; cursor:pointer;}
+  .irow:hover{background:var(--panel2);}
+  .irow .num{font-family:ui-monospace,monospace; font-size:11px; color:var(--working); flex:none;}
+  .irow .it{font-size:12px; color:var(--ink); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .irow .st{font-size:9px; color:var(--done); flex:none; font-family:ui-monospace,monospace;}
+  .irepo .empty{font-size:11px; color:var(--muted); padding:2px;}
+  /* Registry content */
+  .rtop{display:flex; gap:8px; padding:8px 12px; align-items:center; border-bottom:1px solid var(--line);}
+  .rtop .chip{font-size:10px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); cursor:pointer;}
+  .rtop .chip.on{background:var(--accent); color:#052420; border-color:transparent; font-weight:600;}
+  .rklist{flex:1; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px;}
+  .rkcard{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px;}
+  .rkhead{display:flex; align-items:center; gap:8px; margin-bottom:8px;}
+  .rkhead .n{font-size:13px; font-weight:700;}
+  .rkbadge{font-size:9px; padding:2px 8px; border-radius:999px; font-weight:700;}
+  .rkbadge.active{background:rgba(46,160,67,.15); color:#3fb950;}
+  .rkbadge.paused{background:rgba(210,153,34,.15); color:var(--done);}
+  .rkform{font-family:ui-monospace,monospace; font-size:10.5px; color:var(--muted); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; white-space:pre; overflow-x:auto; line-height:1.6;}
+  .rkform .k{color:var(--working);}
+  .rkform .v{color:var(--ink);}
+  .rkedit{display:flex; gap:6px; margin-top:8px;}
+  .rkedit .dbtn{font-size:10px; padding:4px 10px;}
+  .rkedit .dbtn.save{background:var(--accent); color:#052420; border-color:transparent;}
+  /* Settings content */
+  .set{flex:1; overflow-y:auto; padding:10px 14px;}
+  .set h4{font-size:12px; font-weight:700; color:var(--muted); letter-spacing:.02em; margin:12px 0 8px; text-transform:uppercase;}
+  .setrow{display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--line);}
+  .setrow .lbl{font-size:12px; flex:1; color:var(--ink);}
+  .setrow .sub2{font-size:10px; color:var(--muted); display:block;}
+  .toggle{width:38px; height:20px; border-radius:999px; background:var(--panel3); border:1px solid var(--line); position:relative; flex:none; cursor:pointer;}
+  .toggle.on{background:rgba(45,212,191,.25); border-color:var(--accent);}
+  .toggle .knob{position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:var(--muted); transition:.15s;}
+  .toggle.on .knob{left:20px; background:var(--accent);}
+  .setrow input{background:var(--panel2); border:1px solid var(--line); border-radius:6px; color:var(--ink); font-size:12px; padding:6px 8px;}
+  .setbtns{display:flex; gap:6px; justify-content:flex-end; padding:12px 0;}
+  .sk-badge{font-size:9px; padding:2px 8px; border-radius:999px; background:var(--panel3); border:1px solid var(--line); color:var(--muted); font-family:ui-monospace,monospace;}
+  .note{font-size:10px; color:var(--muted); padding:6px 2px; line-height:1.4; border-left:2px solid var(--accent); padding-left:8px; margin:4px 0;}
+  .chk{color:var(--accent);}
+</style>
+</head>
+<body>
+  <h1>Corral — egui board redesign (design gate)</h1>
+  <div class="sub">Interactive prototype. Click the top <b>Board / Issues / Registry / Settings</b> tabs — the <b>left agent bar stays constant</b> on every page. Cards are now <b>grouped by repo</b>; flat-sort and Table view are <b>removed</b>. Issues shows <b>all issues per repo</b>; Registry is <b>editable fleets.json</b>; Settings redesigned. Draft for visual approval — not implementation.</div>
+
+  <div class="rack">
+    <div class="frame" style="width:100%;max-width:1080px;">
+      <div class="framelabel">egui board · persistent left bar + repo-grouped cards</div>
+      <div class="desk">
+        <!-- LEFT: constant master bar -->
+        <div class="dleft">
+          <div class="dtop">
+            <input placeholder="Search repo / branch / issue…">
+            <span class="chip need">Needs you</span>
+            <span class="chip on">All</span>
+          </div>
+          <div class="lists">
+            <div class="repogroup">
+              <div class="repohdr"><span class="chev">▾</span><span class="n">corral</span><span class="cnt">6</span></div>
+              <div class="colhead"><span>Agent</span><span>State · time</span></div>
+              <div class="lrow w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">review-625-scope-overlay-opus</span><span class="tl">claude</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Review</span> · <span>3m</span></div></div>
+              <div class="lrow sel w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">impl-g205-luna</span><span class="tl">codex</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Working</span> · <span>3m</span></div></div>
+              <div class="lrow"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid transparent;flex:none;"></span><span class="t">orch-corral</span><span class="tl">codex</span></div><div class="lr2"><span class="s" style="color:#e6edf3">Working</span> · <span>5m</span></div></div>
+            </div>
+            <div class="repogroup">
+              <div class="repohdr"><span class="chev">▾</span><span class="n">plush-meadow</span><span class="cnt">14</span></div>
+              <div class="lrow w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">impl-106-luna</span><span class="tl">codex</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Working</span> · <span>27m</span></div></div>
+              <div class="lrow w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">impl-116-luna</span><span class="tl">codex</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Working</span> · <span>31m</span></div></div>
+            </div>
+            <div class="repogroup">
+              <div class="repohdr"><span class="chev">▾</span><span class="n">sendmeter</span><span class="cnt">14</span></div>
+              <div class="lrow w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">impl-747-s5-watch-ingest</span><span class="tl">codex</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Working</span> · <span>12m</span></div></div>
+              <div class="lrow w"><div class="lr1"><span class="dot" style="width:10px;height:10px;border-radius:50%;border:1.5px solid #58a6ff;flex:none;"></span><span class="t">rev-747-s5-watch-ingest</span><span class="tl">claude</span></div><div class="lr2"><span class="s" style="color:#58a6ff">Review</span> · <span>8m</span></div></div>
+            </div>
+            <div class="idlefoot"><span class="chev">▸</span> Idle / done (25) — expandable</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: constant tab strip + switching content -->
+        <div class="dright">
+          <div class="dtabs">
+            <span class="dtab" data-tab="board">Board</span>
+            <span class="dtab" data-tab="issues">Issues</span>
+            <span class="dtab" data-tab="registry">Registry</span>
+            <span class="dtab" data-tab="settings">Settings</span>
+          </div>
+          <div class="rcontent" id="content">
+            <!-- BOARD -->
+            <div data-panel="board" class="pane">
+              <div class="dtail">
+                <div class="dtailcards"><span class="dbtn on">Cards</span><span class="dbtn">Interrupt</span><span class="dbtn red">Kill</span></div>
+              </div>
+              <div class="rhead">Recent output</div>
+              <div class="transcript">
+                <div class="tlive"><span>● live</span><span class="rg">stick-to-bottom · impl-g205-luna</span></div>
+                <div class="blk tool"><span class="tgl">▸</span> ran cargo test (exit 0)</div>
+                <div class="blk agent"><span class="tm">14:02</span>Snapshot read model is consistent across the board — now wiring the single state-token map into the iOS client.</div>
+                <div class="blk tool"><span class="tgl">▾</span> git diff --stat (partial)</div>
+                <div class="blk user"><span class="tm">14:04</span><div class="who">you</div>Conform the transcript to the approved chat prototype.</div>
+                <div class="blk agent"><span class="tm">14:04</span>Done — composer pinned, live follows newest, history pages in on scroll-up.</div>
+                <div class="divider">─────────  229 earlier lines  ·  <span class="ld">Load earlier</span>  ─────────</div>
+              </div>
+            </div>
+
+            <!-- ISSUES -->
+            <div data-panel="issues" class="pane" style="display:none;">
+              <div class="isearch">
+                <span class="chip on">all</span><span class="chip">open</span><span class="chip">closed</span>
+                <input placeholder="search title or #number" style="flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--ink);font-size:12px;padding:6px 8px;">
+                <span class="chip">⟳ refresh</span>
+              </div>
+              <div class="ilist">
+                <div class="irepo">corral <span class="st" style="font-weight:400;margin-left:6px;">(1)</span></div>
+                <div class="irow"><span class="num">#205</span><span class="it">iOS transcript → chat UX: pinned composer, autoscroll, model badge, wrapping, load-more</span><span class="st">OPEN</span></div>
+                <div class="irepo">fleet-operations <span class="st" style="font-weight:400;margin-left:6px;">(1)</span></div>
+                <div class="irow"><span class="num">#28</span><span class="it">fleet-rearm: controller does not invalidate a terminal stale registration …</span><span class="st">OPEN</span></div>
+                <div class="irepo">plush-meadow <span class="st" style="font-weight:400;margin-left:6px;">(10)</span></div>
+                <div class="irow"><span class="num">#101</span><span class="it">[P2.1] Time-of-day, sky, fog, and environment lighting rig</span><span class="st">OPEN</span></div>
+                <div class="irow"><span class="num">#103</span><span class="it">[P2.3] Motion and secondary animation pass</span><span class="st">OPEN</span></div>
+                <div class="irow"><span class="num">#104</span><span class="it">[P2.4] Budgeted GPU VFX library</span><span class="st">OPEN</span></div>
+                <div class="irow"><span class="num">#105</span><span class="it">[P2.5] Illustrated UI, portraits, panel art, and photo mode</span><span class="st">OPEN</span></div>
+                <div class="irow"><span class="num">#106</span><span class="it">[P2.6] Adversarial review and performance regression guard for The Look</span><span class="st">OPEN</span></div>
+              </div>
+            </div>
+
+            <!-- REGISTRY -->
+            <div data-panel="registry" class="pane" style="display:none;">
+              <div class="rtop">
+                <span class="chip on">fleet registry</span>
+                <span class="chip">⟳ refresh</span>
+                <span class="note" style="border:none;padding:0;margin:0;color:var(--muted);font-size:10px;">edit fleets.json in place</span>
+              </div>
+              <div class="rklist">
+                <div class="rkcard">
+                  <div class="rkhead"><span class="n">corral</span><span class="rkbadge active">ACTIVE</span></div>
+                  <div class="rkform"><span class="k">name</span>: <span class="v">corral</span>
+<span class="k">gh_repo</span>: <span class="v">jirathip-dev/corral</span>
+<span class="k">local</span>: <span class="v">~/Projects/corral</span>
+<span class="k">worktree_dir</span>: <span class="v">corral</span>
+<span class="k">orch</span>: <span class="v">orch-corral</span>
+<span class="k">models</span>:
+  <span class="k">orch</span>: <span class="v">codex/gpt-5.6-sol</span>
+  <span class="k">impl</span>: <span class="v">codex/gpt-5.6-luna</span>
+  <span class="k">review</span>: <span class="v">opus</span></div>
+                  <div class="rkedit"><span class="dbtn save">Save &amp; apply</span><span class="dbtn">Send to fleet</span><span class="dbtn">Pause</span></div>
+                </div>
+                <div class="rkcard">
+                  <div class="rkhead"><span class="n">plush-meadow</span><span class="rkbadge active">ACTIVE</span></div>
+                  <div class="rkform"><span class="k">name</span>: <span class="v">plush</span>
+<span class="k">gh_repo</span>: <span class="v">jirathip-dev/plush-meadow</span>
+<span class="k">orch</span>: <span class="v">orch-plush</span></div>
+                  <div class="rkedit"><span class="dbtn save">Save &amp; apply</span><span class="dbtn">Pause</span></div>
+                </div>
+                <div class="rkcard">
+                  <div class="rkhead"><span class="n">sendmeter</span><span class="rkbadge paused">PAUSED</span></div>
+                  <div class="rkform"><span class="k">name</span>: <span class="v">sendmeter</span>
+<span class="k">gh_repo</span>: <span class="v">jirathip-dev/sendmeter</span>
+<span class="k">orch</span>: <span class="v">orch-sendmeter</span></div>
+                  <div class="rkedit"><span class="dbtn save">Resume</span><span class="dbtn">Send to fleet</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- SETTINGS -->
+            <div data-panel="settings" class="pane" style="display:none;">
+              <div class="set">
+                <h4>Connection</h4>
+                <div class="setrow"><span class="lbl">Host URL<span class="sub2">daemon endpoint the board talks to</span></span><input value="127.0.0.1:8474"></div>
+                <div class="setrow"><span class="lbl">Auto-reconnect<span class="sub2">reconnect SSE on drop</span></span><span class="toggle on"><span class="knob"></span></span></div>
+                <h4>Board</h4>
+                <div class="setrow"><span class="lbl">Group cards by repo<span class="sub2">const — flat-sort and Table view removed</span></span><span class="toggle on"><span class="knob"></span></span></div>
+                <div class="setrow"><span class="lbl">Show Idle / done collapsed<span class="sub2">collapse idle agents into a footer</span></span><span class="toggle on"><span class="knob"></span></span></div>
+                <div class="setrow"><span class="lbl">Stick transcript to bottom<span class="sub2">auto-follow newest</span></span><span class="toggle on"><span class="knob"></span></span></div>
+                <h4>Display</h4>
+                <div class="setrow"><span class="lbl">Theme<span class="sub2">dark tokens are constant</span></span><span class="sk-badge">dark · #0d1117</span></div>
+                <div class="setbtns"><span class="dbtn save" style="background:var(--accent);color:#052420;border-color:transparent;">Save settings</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const tabs = document.querySelectorAll('.dtab');
+  const panels = document.querySelectorAll('[data-panel]');
+  tabs.forEach(tab => tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('on'));
+    tab.classList.add('on');
+    panels.forEach(p => p.style.display = p.dataset.panel === tab.dataset.tab ? '' : 'none');
+  }));
+  // default board
+  document.querySelector('[data-tab="board"]').classList.add('on');
+</script>
+</body>
+</html>

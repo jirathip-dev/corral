@@ -128,6 +128,23 @@ if [[ -n "${CORRAL_TEST_EGUI_PID_FILE:-}" ]]; then
   printf '%s\n' "$$" >"$CORRAL_TEST_EGUI_PID_FILE"
 fi
 printf '%s\n' 'native screenshot evidence selected live agent; fixture writer'
+printf '%s\n' 'requesting viewport screenshot'
+printf '%s\n' 'screenshot event received'
+printf '%s\n' 'screenshot saved — exiting'
+if [[ -n "${CORRAL_UI_WINDOW_DIAGNOSTIC_LOG:-}" ]]; then
+  printf '%s\n' '{"action":"dispatch_evaluation","cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":100.0,"width":100.0,"x":0.0,"y":0.0},"layer":0,"onscreen":true,"placement":0,"window_number":9}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":42,"key_window":true,"main_window":true,"non_target_window_count":3,"pid":42,"probe_ok":true,"process_visible":true,"reason_code":"dispatch_ready","visible_gate":true,"frontmost_gate":true,"window_visible":true}' >"$CORRAL_UI_WINDOW_DIAGNOSTIC_LOG"
+fi
+if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
+  case "${CORRAL_UI_CONFIG_DIR:-}" in
+    "$CORRAL_TEST_UI_CONFIG_ROOT"/.design-gate.stage.*/ui-config) ;;
+    *)
+      printf '%s\n' "egui did not receive an isolated staged config directory: ${CORRAL_UI_CONFIG_DIR:-<unset>}" >&2
+      exit 1
+      ;;
+  esac
+  [[ -s "${CORRAL_UI_CONFIG_DIR}/config.json" ]] \
+    || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
+fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
 if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
@@ -385,6 +402,139 @@ grep -q 'complete, CRC-checked PNG' "$WORK/output/issue-211/conformance.md" \
   || fail "complete-PNG success contract is not recorded"
 grep -q 'loopback-only' "$WORK/output/issue-211/conformance.md" \
   || fail "Chrome trust boundary is not recorded"
+grep -F -q '| `capture.log` | `n/a` |' "$WORK/output/issue-211/conformance.md" \
+  || fail "capture.log row is not recorded in the artifact table"
+grep -E -q '\| `capture\.log` \| `n/a` \| `[0-9a-f]{64}` \|' \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "capture.log SHA-256 is not recorded in the artifact table"
+grep -q 'scripts/design-gate-evidence.sh --issue 211 --surface egui' \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "conformance invocation was not normalized to a stable command"
+
+"$PYTHON_BIN" - "$SCRIPT_DIR/verify-design-gate-egui-evidence.py" "$WORK" <<'PY'
+import hashlib
+import importlib.util
+from pathlib import Path
+import struct
+import sys
+import zlib
+
+spec = importlib.util.spec_from_file_location("verify_egui_evidence", sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit("could not load the egui evidence verifier")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+bundle = Path(sys.argv[2]) / "artifact-manifest-regression"
+bundle.mkdir()
+
+
+def write_png(path, width, height):
+    rows = b"".join(b"\x00" + b"\x12\x34\x56" * width for _ in range(height))
+
+    def chunk(name, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + name
+            + payload
+            + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+        )
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+write_png(bundle / "prototype.png", 1160, 631)
+write_png(bundle / "live-after.png", 2640, 1720)
+write_png(bundle / "comparison.png", 2400, 960)
+(bundle / "capture.log").write_text("native capture\n", encoding="utf-8")
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def table():
+    return "\n".join(
+        [
+            f"| `prototype.png` | `1160x631` | `{digest(bundle / 'prototype.png')}` |",
+            f"| `live-after.png` | `2640x1720` | `{digest(bundle / 'live-after.png')}` |",
+            f"| `comparison.png` | `2400x960` | `{digest(bundle / 'comparison.png')}` |",
+            f"| `capture.log` | `n/a` | `{digest(bundle / 'capture.log')}` |",
+        ]
+    )
+
+
+module.verify_artifact_manifest(bundle, table(), "manifest regression")
+
+
+def expect_failure(label, callback):
+    try:
+        callback()
+    except SystemExit:
+        return
+    raise SystemExit(f"{label} unexpectedly passed")
+
+
+expect_failure(
+    "swapped dimensions",
+    lambda: module.verify_artifact_manifest(
+        bundle,
+        table().replace("| `prototype.png` | `1160x631` |", "| `prototype.png` | `2640x1720` |"),
+        "swapped dimensions",
+    ),
+)
+write_png(bundle / "live-after.png", 32, 24)
+expect_failure(
+    "undersized live PNG",
+    lambda: module.verify_artifact_manifest(
+        bundle,
+        table().replace("| `live-after.png` | `2640x1720` |", "| `live-after.png` | `32x24` |"),
+        "undersized live PNG",
+    ),
+)
+write_png(bundle / "live-after.png", 2640, 1720)
+old_table = table()
+(bundle / "live-after.png").write_bytes((bundle / "live-after.png").read_bytes() + b"changed")
+expect_failure(
+    "artifact hash mismatch",
+    lambda: module.verify_artifact_manifest(bundle, old_table, "artifact hash mismatch"),
+)
+print("verified exact artifact dimensions, recorded hashes, and negative paths")
+PY
+
+"$PYTHON_BIN" - "$SCRIPT_DIR/design-gate-content-identity.py" "$REPO_DIR/Cargo.lock" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("content_identity", sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit("could not load the content identity helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+lock = Path(sys.argv[2]).read_text(encoding="utf-8")
+original = module.renderer_dependency_fingerprint(lock)
+eframe_change = lock.replace(
+    'name = "eframe"\nversion = "0.36.1"',
+    'name = "eframe"\nversion = "0.36.2"',
+    1,
+)
+assert eframe_change != lock
+assert module.renderer_dependency_fingerprint(eframe_change) != original
+unrelated_change = lock.replace(
+    'name = "lazy_static"\nversion = "1.5.0"',
+    'name = "lazy_static"\nversion = "1.5.1"',
+    1,
+)
+assert unrelated_change != lock
+assert module.renderer_dependency_fingerprint(unrelated_change) == original
+print("verified narrow eframe/wgpu lockfile fingerprint")
+PY
 
 before_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
 before_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
@@ -437,6 +587,10 @@ grep -q '900x900' "$WORK/ios-output/issue-205/conformance.md" \
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_EXPECTED_ISSUE=213
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
+mkdir -p "$WORK/ui-config-seed"
+printf '%s\n' '{"host_url":"http://fixture"}' >"$WORK/ui-config-seed/config.json"
+export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config-seed"
+export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output/issue-213"
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
 export CORRAL_TEST_EGUI_MODE=partial-then-linger
 egui_partial_start_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
@@ -462,6 +616,7 @@ assert_stopped "partial then lingering egui" "$CORRAL_TEST_EGUI_PID_FILE"
 grep -q 'native egui viewport screenshot' "$WORK/egui-output/issue-213/conformance.md" \
   || fail "egui capture provenance is missing"
 unset CORRAL_TEST_EGUI_MODE
+unset CORRAL_UI_CONFIG_SEED_DIR CORRAL_TEST_UI_CONFIG_ROOT
 
 export CORRAL_TEST_EXPECTED_ISSUE=217
 export CORRAL_TEST_PNG_RACE=1

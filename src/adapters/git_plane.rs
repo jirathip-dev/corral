@@ -44,6 +44,13 @@
 //! still detected when fsevents missed them. The PRIMARY mechanism remains
 //! fsevents; the sweep is a documented catch-up only.
 //!
+//! Healthy topology is checked every 10s, but a source whose registry scan
+//! fails is removed from the hot path: retries back off through 10s, 60s, and
+//! 5m, then the source is suppressed until the 15m rediscovery pass. The
+//! first failure in a continuous outage is WARNed; repeated failures are
+//! DEBUG-only. A source-presence change immediately re-arms that source, so a
+//! recreated checkout does not have to wait for the next rediscovery pass.
+//!
 //! All GitPlane git subprocesses share a four-command admission budget,
 //! including fsevents-triggered probes and registry scans. Registry scans are
 //! serialized because topology reconciliation also performs synchronous
@@ -106,6 +113,9 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// are the primary topology signals; this is a bounded backstop for repos or
 /// worktrees registered without a deliverable event.
 const TOPOLOGY_INTERVAL: Duration = Duration::from_secs(10);
+/// Slow source rediscovery cadence. Suppressed repo sources are retried here,
+/// while healthy sources continue to use the 10s topology safety net.
+const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// One-shot startup rescan after the watcher warm-up. This closes the race
 /// where `git worktree add` completes before the initial FSEvents stream is
 /// live, without polling repeatedly during idle operation.
@@ -136,6 +146,90 @@ const RESCAN_RETRY_DELAY: Duration = Duration::from_millis(400);
 /// Upper bound on fsevents frames coalesced into one watcher batch before
 /// the loop yields again.
 const FS_EVENT_BATCH_MAX: usize = 256;
+/// Backoff ladder for a source whose `git worktree list` scan fails. The final
+/// entry is reused until the source reaches the 15m suppression expiry.
+const MISSING_SOURCE_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(10),
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+];
+/// After this continuous failure window, ordinary topology scans stop
+/// attempting the source. `REDISCOVERY_INTERVAL` deliberately matches the
+/// expiry so the next forced rediscovery is the only retry in the cold path.
+const MISSING_SOURCE_EXPIRY: Duration = REDISCOVERY_INTERVAL;
+const MISSING_SOURCE_EXPIRY_FAILURES: u32 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceFailureState {
+    /// Whether the source was a directory when the current failure period
+    /// began. A transition between missing and present is a source change and
+    /// re-arms the scan immediately.
+    source_is_dir: bool,
+    consecutive_failures: u32,
+    first_failed_at: Instant,
+    next_retry_at: Instant,
+    /// WARN is emitted once per continuous source failure period, including
+    /// failures observed after the 15m cold-path expiry.
+    warned: bool,
+}
+
+impl SourceFailureState {
+    fn new(source_is_dir: bool, now: Instant) -> Self {
+        Self {
+            source_is_dir,
+            consecutive_failures: 0,
+            first_failed_at: now,
+            next_retry_at: now,
+            warned: false,
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        self.consecutive_failures > 0
+            && now.saturating_duration_since(self.first_failed_at) >= MISSING_SOURCE_EXPIRY
+    }
+
+    fn should_retry(&self, now: Instant, force: bool) -> bool {
+        force || (!self.expired(now) && now >= self.next_retry_at)
+    }
+
+    /// Record one failed scan. Returns true when this failure starts a new
+    /// WARN-worthy period. After expiry, retain the warning state and move the
+    /// source into another rediscovery-sized cold period rather than letting
+    /// the 10s topology loop resume.
+    fn record_failure(&mut self, now: Instant) -> bool {
+        let warn = !self.warned;
+        self.warned = true;
+        if self.expired(now) {
+            self.first_failed_at = now;
+            self.consecutive_failures = MISSING_SOURCE_EXPIRY_FAILURES;
+            self.next_retry_at = now + MISSING_SOURCE_EXPIRY;
+            return warn;
+        }
+
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        let backoff_index = self
+            .consecutive_failures
+            .saturating_sub(1)
+            .min((MISSING_SOURCE_BACKOFF.len() - 1) as u32) as usize;
+        self.next_retry_at = now + MISSING_SOURCE_BACKOFF[backoff_index];
+        warn
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    /// Normal 10s/60s topology work. Backoff and expiry are honored.
+    Regular,
+    /// The 15m cold-path pass. Suppressed sources get one fresh attempt.
+    Rediscovery,
+}
+
+impl ScanMode {
+    fn force_missing_sources(self) -> bool {
+        matches!(self, Self::Rediscovery)
+    }
+}
 
 /// Commands sent to the watcher task by fsevents handling and the safety-net
 /// sweep. Registration is intentionally separate from rescanning: the sweep
@@ -286,6 +380,10 @@ struct PlaneState {
     /// continuous skip period, so a legitimate out-of-scope worktree cannot
     /// spam the log every sweep).
     skip_warned: HashSet<PathBuf>,
+    /// Repo/container sources whose `git worktree list` scan is unavailable.
+    /// Entries stay in state so the regular topology cadence can cheaply
+    /// suppress them while the 15m rediscovery pass retains a recovery path.
+    source_failures: HashMap<PathBuf, SourceFailureState>,
 }
 
 /// Snapshot of one worktree, re-read on every reconcile.
@@ -352,12 +450,12 @@ impl GitPlane {
     pub fn with_repo_roots(repo_roots: Vec<PathBuf>, worktrees_root: PathBuf) -> Self {
         let mut canonical_roots = Vec::new();
         for root in repo_roots {
-            let root = fs::canonicalize(&root).unwrap_or(root);
+            let root = canonicalize_existing_prefix(&root);
             if !canonical_roots.contains(&root) {
                 canonical_roots.push(root);
             }
         }
-        let worktrees_root = fs::canonicalize(&worktrees_root).unwrap_or(worktrees_root);
+        let worktrees_root = canonicalize_existing_prefix(&worktrees_root);
         Self {
             repo_roots: canonical_roots,
             worktrees_root,
@@ -818,8 +916,10 @@ impl GitPlane {
     /// SAFETY NET: every `SWEEP_INTERVAL`, re-verify every watched worktree
     /// (one concurrent `git` subprocess per worktree) and emit only on
     /// change. Also rescans the registry so WorktreeAdded/WorktreeRemoved
-    /// are detected even when fsevents missed them. The primary mechanism
-    /// remains the fsevents watcher; this only catches up what it missed.
+    /// are detected even when fsevents missed them. Every
+    /// `REDISCOVERY_INTERVAL`, the cold source pass also retries suppressed
+    /// repo/container sources. The primary mechanism remains the fsevents
+    /// watcher; these paths only catch up what it missed.
     async fn run_sweep(
         self: Arc<Self>,
         sink: PlaneSink,
@@ -843,11 +943,14 @@ impl GitPlane {
 
         let mut topology_ticker = tokio::time::interval(TOPOLOGY_INTERVAL);
         topology_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut rediscovery_ticker = tokio::time::interval(REDISCOVERY_INTERVAL);
+        rediscovery_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut status_ticker = tokio::time::interval(SWEEP_INTERVAL);
         status_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Consume the immediate first tick; the watcher already did the boot
+        // Consume the immediate first ticks; the watcher already did the boot
         // rescan and the startup rescan above ran the same reconciliation.
         topology_ticker.tick().await;
+        rediscovery_ticker.tick().await;
         loop {
             tokio::select! {
                 _ = topology_ticker.tick() => {
@@ -856,6 +959,25 @@ impl GitPlane {
                         break;
                     }
                     let added = self.rescan(&sink).await;
+                    if self.stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = watcher_cmd_tx.try_send(WatcherCommand::RegisterNew);
+                    for wt in added {
+                        self.debounce(wt, sink.clone());
+                    }
+                }
+                _ = rediscovery_ticker.tick() => {
+                    if self.stopped.load(Ordering::Relaxed) {
+                        info!("git plane: safety-net sweep exiting (sink closed)");
+                        break;
+                    }
+                    // Cold-path rediscovery is the only regular operation
+                    // allowed to bypass a suppressed source's backoff. It
+                    // gives deleted/recreated explicit roots a recovery path
+                    // without turning the 10s topology loop into a retry
+                    // loop.
+                    let added = self.rediscover(&sink).await;
                     if self.stopped.load(Ordering::Relaxed) {
                         break;
                     }
@@ -1026,8 +1148,20 @@ impl GitPlane {
     /// WorktreeAdded/WorktreeRemoved (the first scan reports the current
     /// registry — path-keyed, idempotent for the consumer), and refresh
     /// gitdirs, the branch map and the per-repo commondir topology. Returns
-    /// the added worktree paths.
+    /// the added worktree paths. Regular rescans honor source backoff;
+    /// [`Self::rediscover`] is the explicit cold-path override.
     async fn rescan(&self, sink: &PlaneSink) -> Vec<PathBuf> {
+        self.rescan_with_mode(sink, ScanMode::Regular).await
+    }
+
+    /// Force one cold-path source pass. This is intentionally separate from
+    /// the normal rescan so callers cannot accidentally defeat the missing
+    /// source backoff from an event or safety-net loop.
+    async fn rediscover(&self, sink: &PlaneSink) -> Vec<PathBuf> {
+        self.rescan_with_mode(sink, ScanMode::Rediscovery).await
+    }
+
+    async fn rescan_with_mode(&self, sink: &PlaneSink, mode: ScanMode) -> Vec<PathBuf> {
         // `scan_all_worktrees` interleaves async git calls with synchronous
         // filesystem enumeration/canonicalization. Keep one complete
         // topology reconciliation in flight per plane: the command semaphore
@@ -1037,7 +1171,7 @@ impl GitPlane {
         let _guard = self.rescan_lock.lock().await;
         #[cfg(test)]
         let _rescan_load = TestRescanLoadGuard::acquire();
-        let scan = self.scan_all_worktrees().await;
+        let scan = self.scan_all_worktrees_with_mode(mode).await;
         let mut tracked: HashMap<PathBuf, WorktreeEntry> = HashMap::new();
         let mut skipped: HashSet<PathBuf> = HashSet::new();
         for entry in scan.entries {
@@ -1149,7 +1283,81 @@ struct ScanResult {
     by_branch: HashMap<(PathBuf, String), PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceFailureNotice {
+    warn: bool,
+    consecutive_failures: u32,
+    next_retry_at: Instant,
+}
+
 impl GitPlane {
+    fn source_scan_allowed(&self, source: &Path, mode: ScanMode) -> bool {
+        let source_is_dir = source.is_dir();
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap();
+        let Some(failure) = state.source_failures.get(source).copied() else {
+            return true;
+        };
+        if failure.source_is_dir != source_is_dir {
+            // A missing source was recreated (or a broken directory vanished),
+            // so its old failure period no longer describes the source.
+            state.source_failures.remove(source);
+            return true;
+        }
+        failure.should_retry(now, mode.force_missing_sources())
+    }
+
+    fn note_source_failure(&self, source: &Path) -> SourceFailureNotice {
+        let source_is_dir = source.is_dir();
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap();
+        let mut failure = state
+            .source_failures
+            .remove(source)
+            .filter(|failure| failure.source_is_dir == source_is_dir)
+            .unwrap_or_else(|| SourceFailureState::new(source_is_dir, now));
+        let warn = failure.record_failure(now);
+        let notice = SourceFailureNotice {
+            warn,
+            consecutive_failures: failure.consecutive_failures,
+            next_retry_at: failure.next_retry_at,
+        };
+        state.source_failures.insert(source.to_path_buf(), failure);
+        notice
+    }
+
+    fn log_source_failure(&self, source: &Path) {
+        let notice = self.note_source_failure(source);
+        let retry_in_ms = notice
+            .next_retry_at
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64;
+        if notice.warn {
+            warn!(
+                source = %source.display(),
+                failures = notice.consecutive_failures,
+                retry_in_ms,
+                "git plane: worktree scan failed for repo source"
+            );
+        } else {
+            debug!(
+                source = %source.display(),
+                failures = notice.consecutive_failures,
+                retry_in_ms,
+                "git plane: worktree scan still failing for repo source; source suppressed"
+            );
+        }
+    }
+
+    fn clear_source_failure(&self, source: &Path) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .source_failures
+            .remove(source)
+            .is_some()
+    }
+
     /// WS3 F2: enumerate worktrees PER REPO. `git worktree list` from the
     /// main checkout covers only that repo; the herdr worktrees root holds
     /// one container dir per repo (`<root>/<repo>/<label>`) and the
@@ -1159,19 +1367,46 @@ impl GitPlane {
     /// porcelain entry of each probe is that repo's main checkout; its
     /// gitdir resolves to the repo's commondir. Results are merged and
     /// deduped by canonical path (WS3 F5: one spelling for registry keys,
-    /// emitted events and commondir lookups).
-    async fn scan_all_worktrees(&self) -> ScanResult {
-        let mut sources = self.repo_roots.clone();
+    /// emitted events and commondir lookups). `mode` controls whether the
+    /// normal source-failure backoff is honored or the 15m rediscovery pass
+    /// forces one attempt for suppressed sources.
+    async fn scan_all_worktrees_with_mode(&self, mode: ScanMode) -> ScanResult {
+        let mut sources = Vec::with_capacity(self.repo_roots.len());
+        let mut source_set = HashSet::new();
+        for source in &self.repo_roots {
+            if source_set.insert(source.clone()) {
+                sources.push(source.clone());
+            }
+        }
         if let Ok(entries) = fs::read_dir(&self.worktrees_root) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    sources.push(entry.path());
+                let source = entry.path();
+                if source.is_dir() && source_set.insert(source.clone()) {
+                    sources.push(source);
                 }
             }
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            // A dynamic worktree container that disappeared from the root is
+            // a source change, not a reason to retain a stale backoff epoch if
+            // it is later recreated at the same path.
+            state
+                .source_failures
+                .retain(|source, _| source_set.contains(source));
         }
         let mut result = ScanResult::default();
         let mut seen: HashSet<PathBuf> = HashSet::new();
         for source in sources {
+            if !self.source_scan_allowed(&source, mode) {
+                continue;
+            }
+            // Avoid even spawning a short-lived `git -C` process for a source
+            // that is already gone. This is the hot-loop case from #229.
+            if !source.is_dir() {
+                self.log_source_failure(&source);
+                continue;
+            }
             let mut out = run_git(
                 self.git_command_budget.clone(),
                 &source,
@@ -1201,9 +1436,12 @@ impl GitPlane {
                 }
             }
             let Some(out) = out else {
-                warn!(source = %source.display(), "git plane: worktree scan failed for repo source");
+                self.log_source_failure(&source);
                 continue;
             };
+            if self.clear_source_failure(&source) {
+                info!(source = %source.display(), "git plane: repo source recovered");
+            }
             let parsed = parse_worktree_list(&out);
             let commondir = parsed
                 .first()
@@ -1613,7 +1851,8 @@ impl Plane for GitPlane {
         "git"
     }
 
-    /// Spawn the fsevents watcher (primary) and the 60s sweep (safety net).
+    /// Spawn the fsevents watcher (primary) and the bounded topology/status
+    /// safety nets, including 15m source rediscovery.
     /// Never blocks: all work happens on background tasks. Resets the
     /// sink-close flag so a supervised restart can re-arm cleanly (WS3 F4).
     fn start(self: Arc<Self>, sink: PlaneSink) {
@@ -1662,6 +1901,64 @@ mod tests {
                 Ok(None) | Err(_) => return false,
             }
         }
+    }
+
+    #[test]
+    fn missing_source_backoff_is_bounded_and_expires_into_rediscovery() {
+        let start = Instant::now();
+        let at = |duration: Duration| start + duration;
+        let mut failure = SourceFailureState::new(false, start);
+        assert!(
+            failure.record_failure(at(Duration::ZERO)),
+            "the first failure is WARN-worthy"
+        );
+        assert_eq!(failure.consecutive_failures, 1);
+        assert_eq!(failure.next_retry_at, at(MISSING_SOURCE_BACKOFF[0]));
+        assert!(!failure.should_retry(at(Duration::from_millis(9_999)), false));
+        assert!(failure.should_retry(at(MISSING_SOURCE_BACKOFF[0]), false));
+
+        assert!(!failure.record_failure(at(MISSING_SOURCE_BACKOFF[0])));
+        assert_eq!(
+            failure.next_retry_at,
+            at(MISSING_SOURCE_BACKOFF[0] + MISSING_SOURCE_BACKOFF[1])
+        );
+        assert!(!failure.record_failure(at(MISSING_SOURCE_BACKOFF[0] + MISSING_SOURCE_BACKOFF[1])));
+        assert_eq!(
+            failure.next_retry_at,
+            at(MISSING_SOURCE_BACKOFF[0] + MISSING_SOURCE_BACKOFF[1] + MISSING_SOURCE_BACKOFF[2])
+        );
+
+        // The capped 5m retry remains available before expiry, but the
+        // regular topology path is cold once the 15m epoch ends.
+        let fourth_failure =
+            MISSING_SOURCE_BACKOFF[0] + MISSING_SOURCE_BACKOFF[1] + MISSING_SOURCE_BACKOFF[2];
+        assert!(!failure.record_failure(at(fourth_failure)));
+        assert!(failure.should_retry(at(fourth_failure + MISSING_SOURCE_BACKOFF[2]), false));
+        assert!(!failure.should_retry(at(MISSING_SOURCE_EXPIRY), false));
+        assert!(failure.should_retry(at(MISSING_SOURCE_EXPIRY), true));
+
+        // A forced rediscovery starts another cold epoch without re-WARNing
+        // the same continuous failure.
+        assert!(!failure.record_failure(at(MISSING_SOURCE_EXPIRY)));
+        assert_eq!(failure.next_retry_at, at(MISSING_SOURCE_EXPIRY * 2));
+        assert!(!failure.should_retry(at(MISSING_SOURCE_EXPIRY + Duration::from_millis(1)), false));
+        assert!(failure.should_retry(at(MISSING_SOURCE_EXPIRY * 2), true));
+    }
+
+    #[test]
+    fn missing_source_warn_cap_resets_only_after_source_change() {
+        let start = Instant::now();
+        let at = |duration: Duration| start + duration;
+        let mut failure = SourceFailureState::new(false, start);
+        assert!(failure.record_failure(at(Duration::ZERO)));
+        assert!(!failure.record_failure(at(MISSING_SOURCE_BACKOFF[0])));
+        assert!(!failure.record_failure(at(MISSING_SOURCE_BACKOFF[0] + MISSING_SOURCE_BACKOFF[1])));
+        assert!(!failure.record_failure(at(MISSING_SOURCE_EXPIRY)));
+
+        // The scanner replaces this state when `source_is_dir` changes. A
+        // recreated source therefore gets one useful warning of its own.
+        let mut recreated = SourceFailureState::new(true, at(MISSING_SOURCE_EXPIRY));
+        assert!(recreated.record_failure(at(MISSING_SOURCE_EXPIRY)));
     }
 
     #[test]
@@ -2297,6 +2594,29 @@ mod tests {
         );
     }
 
+    fn init_repo_at(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git subprocess runs");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "plane@test.local"]);
+        git(&["config", "user.name", "Plane Test"]);
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "initial"]);
+    }
+
     /// A throwaway repo with one committed file. The owning `TempDir` stays
     /// live with the test, so setup failures and assertion panics still clean
     /// up the checkout and any linked worktrees.
@@ -2325,6 +2645,118 @@ mod tests {
         let sha = git(&["rev-parse", "HEAD"]).stdout;
         let sha = String::from_utf8_lossy(&sha).trim().to_string();
         (temp, root, sha)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_repo_source_is_not_retried_by_the_hot_topology_loop() {
+        let _guard = PROBE_LOCK.lock().await;
+        let _load = TestGitDelayReset::new(0);
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("deleted-repo");
+        let wts = temp.path().join("wts");
+        fs::create_dir_all(&wts).unwrap();
+        let plane = GitPlane::new(missing.clone(), wts);
+        let (sink, _rx) = crate::core::plane_channel();
+
+        let before = GIT_CALLS.load(Ordering::SeqCst);
+        for _ in 0..32 {
+            plane.rescan(&sink).await;
+        }
+        let delta = GIT_CALLS.load(Ordering::SeqCst) - before;
+        assert_eq!(
+            delta, 0,
+            "a missing source is checked with metadata only, never one git child per topology tick"
+        );
+        let state = plane.state.lock().unwrap();
+        let failure = state
+            .source_failures
+            .get(&canonicalize_existing_prefix(&missing))
+            .expect("missing source failure is tracked");
+        assert!(!failure.source_is_dir);
+        assert_eq!(failure.consecutive_failures, 1);
+        assert!(
+            failure.warned,
+            "the first missing-source failure is recorded as warned"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_repo_source_uses_backoff_but_rediscovery_can_retry() {
+        let _guard = PROBE_LOCK.lock().await;
+        let _load = TestGitDelayReset::new(0);
+        let temp = tempfile::tempdir().unwrap();
+        let invalid = temp.path().join("not-a-repo");
+        let wts = temp.path().join("wts");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::create_dir_all(&wts).unwrap();
+        let plane = GitPlane::new(invalid.clone(), wts);
+        let (sink, _rx) = crate::core::plane_channel();
+
+        let before = GIT_CALLS.load(Ordering::SeqCst);
+        plane.rescan(&sink).await;
+        let after_first = GIT_CALLS.load(Ordering::SeqCst);
+        assert_eq!(
+            after_first - before,
+            1,
+            "the first failure preserves the existing git scan attempt"
+        );
+
+        for _ in 0..8 {
+            plane.rescan(&sink).await;
+        }
+        assert_eq!(
+            GIT_CALLS.load(Ordering::SeqCst),
+            after_first,
+            "regular rescans honor the initial 10s backoff"
+        );
+
+        plane.rediscover(&sink).await;
+        assert_eq!(
+            GIT_CALLS.load(Ordering::SeqCst) - after_first,
+            1,
+            "the 15m rediscovery path can force one suppressed-source retry"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rediscovery_reconciles_a_recreated_repo_without_restart() {
+        let _guard = PROBE_LOCK.lock().await;
+        let _load = TestGitDelayReset::new(0);
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("recreated-repo");
+        let wts = temp.path().join("wts");
+        fs::create_dir_all(&wts).unwrap();
+        let plane = GitPlane::new(repo.clone(), wts);
+        let (sink, mut rx) = crate::core::plane_channel();
+
+        // Boot sees the stale configured root and records it without spawning
+        // a failing git process. The cold path is the recovery mechanism.
+        plane.rescan(&sink).await;
+        init_repo_at(&repo);
+        let canonical_repo = fs::canonicalize(&repo).unwrap();
+        let added = plane.rediscover(&sink).await;
+        assert_eq!(added, vec![canonical_repo.clone()]);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("WorktreeAdded arrives")
+                .is_some_and(|event| matches!(
+                    event,
+                    PlaneEvent::Git(GitEvent::WorktreeAdded { worktree })
+                        if worktree == canonical_repo
+                )),
+            "rediscovery emits the recreated repo"
+        );
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(
+            plane.rediscover(&sink).await.is_empty(),
+            "removal does not report an added path"
+        );
+        assert!(
+            wait_for_removed(&mut rx, &canonical_repo, Duration::from_secs(1)).await,
+            "rediscovery emits removal without a daemon restart"
+        );
     }
 
     struct TestGitDelayReset(u64);

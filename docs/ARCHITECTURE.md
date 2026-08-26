@@ -46,7 +46,7 @@ today, not a bug.
 ```
 herdr socket ── herdr adapter (push: events.subscribe + bounded catalog refresh)
 git worktrees ─ GitPlane (fsevents push + 10s topology / 60s status safety net;
-              │  shared four-command git budget)
+              │  missing-source backoff + 15m rediscovery; four-command budget)
 GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: no polling
               │  until the first SSE client ever connects)
               ▼
@@ -104,6 +104,16 @@ latency, not part of that child timeout. The budget is backpressure, not a
 failure suppression or a revision reset. This keeps git-plane load from
 consuming the executor needed by the Herdr reader and leaves Store/SSE
 revisions owned solely by the existing coalescer.
+
+A repo/container source whose `git worktree list` scan fails is tracked
+independently of the command budget. The first failure emits one WARN for
+that continuous failure period; retries use a 10s, 60s, then 5m backoff and
+repeated failures stay at DEBUG. After 15m, the regular topology path stops
+touching the source until the cold rediscovery pass retries it. A source
+being recreated re-arms immediately, and a successful scan clears the
+failure period, so a later outage gets one new warning. This keeps stale
+registry paths out of the hot loop without changing healthy FSEvents,
+topology, or status behavior.
 
 An unknown `commondir/worktrees/` FSEvents path makes the watcher await its
 throttled topology rescan so the newly discovered worktree can be debounced

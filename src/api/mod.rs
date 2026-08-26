@@ -6,11 +6,13 @@
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
-//! - `GET /issues` — #113: read-only repo-level issue view for the board's
-//!   issue browser and worktree action (grouped by configured fleet).
-//! - `GET /fleet-registry` — #135: read-only projection of the local
-//!   `fleets.json` for the board's Registry tab (same loader as `/issues`;
-//!   parse/IO failures are returned as HTTP 200 `status="error"`).
+//! - `GET /issues` — #113/#216: read-only repo-level issue view for the
+//!   board's issue browser and worktree action (configured fleet groups plus
+//!   live/canonical repo categories).
+//! - `GET /fleet-registry` — #135/#216: read-only projection of the local
+//!   `fleets.json` for the board's Registry tab, with the live/canonical repo
+//!   category union (same loader as `/issues`; parse/IO failures are returned
+//!   as HTTP 200 `status="error"`).
 //! - `GET /transcript` — #63: device-grant-gated (`read_tail`) on-demand
 //!   transcript pages for one agent, newest first, redacted at the module
 //!   boundary (see [`crate::api::transcript`]). The only device-grant-gated
@@ -45,6 +47,7 @@
 pub mod drive;
 pub mod issues;
 pub mod registry;
+pub(crate) mod repo;
 pub mod transcript;
 
 use std::convert::Infallible;

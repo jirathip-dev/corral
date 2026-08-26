@@ -136,7 +136,11 @@ the watcher/safety overlap is covered by a deterministic regression test.
 The gh plane also publishes the *repo-level* issue set it fetches into a
 read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's
 Issues tab renders — separate from the per-agent `closingIssuesReferences`
-join in the snapshot. The write side has one fleet-level capability,
+join in the snapshot. The endpoint retains the union of live agent
+`workspace.repo` values and canonical registry `gh_repo` basenames as empty
+category entries when no issues are cached; fleet-name keys remain for the
+registry-backed start-worktree guard. The write side has one fleet-level
+capability,
 `start_worktree` (#113), routed by `src/api/drive.rs` to
 `src/fleet/worktree.rs` (validate → plan → idempotent create → herdr
 handoff) instead of the per-agent adapter dispatch. GitHub stays READ-ONLY:
@@ -202,7 +206,10 @@ probes. Repo identity and the other workspace/GitHub fields survive that
 boundary; this prevents a missed removal event from reviving a vanished
 worktree's old branch. Paths that match neither source are not reconciled and
 remain `workspace.repo: null`, therefore staying in the `(no repo)` orphan
-bucket.
+bucket. The `/fleet-registry` read view separately exposes `repos`, the same
+sorted union of live nonempty `workspace.repo` values and validated registry
+`gh_repo` basenames. Its `fleets` projection and error/status boundary do not
+change when that category source is missing or unloadable.
 
 ## Write side: the signed drive plane
 

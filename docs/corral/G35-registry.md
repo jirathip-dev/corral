@@ -220,9 +220,12 @@ After setup, all of these consume the same file:
   fleet-operations template; this checked-in template is kept in schema
   lockstep with it.
 - The `corrald` daemon's `GET /issues` loads the same default path, inserts a
-  key for every fleet name, and workspace attribution uses each fleet's
-  `gh_repo`/`local`/`worktree_dir` identity. The daemon has no `--registry`
-  flag, so a CLI-only override cannot silently change what it attributes.
+  key for every fleet name, and adds empty category entries for the union of
+  live agent `workspace.repo` values and canonical `gh_repo` basenames.
+  Workspace attribution uses each fleet's `gh_repo`/`local`/`worktree_dir`
+  identity. The daemon has no `--registry` flag, so a CLI-only override
+  cannot silently change what it attributes. Live-only category entries are
+  read-model placeholders; they do not make an unregistered repo startable.
 
 The canonical path may also be overridden for Corral with
 `$CORRAL_FLEETS_PATH` or `$CORRAL_CONFIG_DIR`; the checked-in template itself is
@@ -241,15 +244,19 @@ Success returns HTTP 200:
   "status": "ok",
   "path": "/absolute/path/to/fleets.json",
   "error": null,
-  "fleets": [{ "name": "corral", "gh_repo": "owner/repo", "local": "…", "worktree_dir": "…", "orch": "…", "workers": [], "paused": false, "models": { "orch": "…", "impl": "…", "review": "…", "impl_alt": null, "impl_alt2": null, "reasoning_effort": {} } }]
+  "fleets": [{ "name": "corral", "gh_repo": "owner/repo", "local": "…", "worktree_dir": "…", "orch": "…", "workers": [], "paused": false, "models": { "orch": "…", "impl": "…", "review": "…", "impl_alt": null, "impl_alt2": null, "reasoning_effort": {} } }],
+  "repos": ["repo"]
 }
 ```
 
 An IO, parse, or validation failure is still HTTP 200 with `status="error"`,
 a human-readable `error`, and `fleets=[]`, so the desktop Registry tab shows
-the failure rather than silently appearing to have no fleets. The board
-fetches this view alongside `/issues` and exposes a manual refresh; the
-optional pause/resume/models drive path is explicitly out of scope for #135.
+the failure rather than silently appearing to have no fleets. The additive
+`repos` list still contains live `workspace.repo` categories when the file is
+absent or unloadable, and includes canonical `gh_repo` basenames when the
+registry loads. The board fetches this view alongside `/issues` and exposes a
+manual refresh; the optional pause/resume/models drive path is explicitly out
+of scope for #135.
 
 ## Commands
 

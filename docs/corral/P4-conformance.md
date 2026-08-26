@@ -20,8 +20,8 @@ src/drive/mod.rs and src/api/* on main.
 | `/grants` | POST | admin Bearer token | `{action: set_grants\|revoke, key_id, grants[]}` |
 | `/audit` | GET | admin Bearer token | `{entries[], valid}` — hash-chained log, grows only on writes |
 | `/drive` | POST | device signature | signed command envelope |
-| `/issues` | GET | none (read-only) | `{repos: {repo: [GhIssueRef…]}}` — repo-level issue view |
-| `/fleet-registry` | GET | none (read-only) | `{status, path, error, fleets[]}` — local fleet registry for the board's Registry tab |
+| `/issues` | GET | none (read-only) | `{repos: {repo: [GhIssueRef…]}}` — repo-level issue view; empty arrays also retain live workspace and canonical registry categories |
+| `/fleet-registry` | GET | none (read-only) | `{status, path, error, fleets[], repos[]}` — local fleet registry plus the live workspace/registry category union |
 
 ## Drive wire shapes (normative)
 

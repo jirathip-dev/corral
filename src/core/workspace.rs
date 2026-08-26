@@ -117,6 +117,39 @@ impl WorkspaceAttribution {
         }
     }
 
+    /// Replace the live primary-root and registry-alias snapshot. The daemon
+    /// uses this at the same slow cadence as git-plane source discovery so a
+    /// fleet added to `fleets.json` is attributed immediately and a removed
+    /// fleet cannot leave a stale primary-root branch fact behind.
+    pub fn replace_roots_with_aliases<I, A>(&self, roots: I, aliases: A)
+    where
+        I: IntoIterator<Item = RepoRoot>,
+        A: IntoIterator<Item = WorktreeAlias>,
+    {
+        let mut next_roots = BTreeMap::new();
+        for root in roots {
+            if root.repo.is_empty() {
+                continue;
+            }
+            let path = canonicalize_existing_prefix(&root.path);
+            next_roots.entry(path).or_insert(root.repo);
+        }
+        let mut next_aliases = BTreeMap::new();
+        for alias in aliases {
+            if alias.worktree_dir.is_empty() || alias.repo.is_empty() {
+                continue;
+            }
+            next_aliases.entry(alias.worktree_dir).or_insert(alias.repo);
+        }
+        let root_paths: std::collections::HashSet<PathBuf> = next_roots.keys().cloned().collect();
+        *self.roots.write().unwrap() = next_roots;
+        *self.worktree_aliases.write().unwrap() = next_aliases;
+        self.branches
+            .write()
+            .unwrap()
+            .retain(|path, _| root_paths.contains(path) || path.starts_with(&self.worktrees_root));
+    }
+
     fn add_worktree_alias(&self, alias: WorktreeAlias) -> bool {
         if alias.worktree_dir.is_empty() || alias.repo.is_empty() {
             return false;

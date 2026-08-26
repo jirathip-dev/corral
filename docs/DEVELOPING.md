@@ -563,10 +563,13 @@ future findings cannot be silently carried forward as part of this baseline.
   and demotion requires two consecutive corroborating refreshes. The gh plane is
   poll-by-design (one GraphQL round-trip per poll, SWR); the git plane is
   fsevents push with one immutable watcher per commondir, a 10s topology / 60s
-  status safety net, and a 15-minute source rediscovery pass. Failed
-  repo/container sources use a 10s → 60s → 5m backoff,
-  then stay out of the hot path until the 15-minute rediscovery pass; the
-  first failure is WARNed once and repeats are DEBUG-only.
+  status safety net, and a 15-minute live source rediscovery pass. That pass
+  rereads `fleets.json` and scans immediate Git checkouts under `~/Projects`,
+  so new and removed primary roots converge without a daemon restart. Failed
+  repo/container sources use a 10s → 60s → 5m backoff, then stay out of the
+  hot path until rediscovery; a present source retains its last-known
+  worktrees/topology while Git is unavailable, and the first failure is
+  WARNed once while repeats are DEBUG-only.
 - **Additive-only versioned schema.** New fields/variants extend the
   model (`SCHEMA_VERSION` bumps additively); existing shapes never
   change. The drive contract in `src/drive/mod.rs` is frozen — add
@@ -645,4 +648,5 @@ Expected (verified): `GET /healthz` → `ok`; config dir minted with
 `admin-token`, `host-key`, `registration-token`; with a throwaway repo
 root the git plane emits one benign `worktree scan failed` WARN (there
 is no `.git` to scan), suppresses repeated scans with bounded backoff,
-and revisits the source on the 15-minute rediscovery pass.
+retains any last-known facts if a present source has a transient Git failure,
+and revisits live fleet/Projects sources on the 15-minute rediscovery pass.

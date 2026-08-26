@@ -26,16 +26,22 @@ and the native capture log.
   pause, candidate-rejection, stale-draft, and forward-key paths have focused
   tests. “Send to fleet” is explicitly validation-only because no daemon
   distribution endpoint exists in this layout-only scope. Registry mutations
-  use the client-local registry path and are refused for non-loopback hosts;
-  the daemon-reported path is display-only.
+  use the client-local registry path, are refused for non-loopback hosts, and
+  compare canonical/normalized client and daemon-reported paths before any
+  write; a mismatch names both paths and refuses the mutation.
 - Implementation identity: each conformance note records a SHA-256 digest of
   an explicit manifest covering only the egui client, native
-  capture/verification scripts, and approved prototype. Generated
+  capture/verification scripts, approved prototype, and a narrow fingerprint
+  of the selected eframe/wgpu Cargo.lock package records. Generated
   `docs/design/evidence/issue-206/` and unrelated daemon/workspace files are
   excluded, so an unrelated merge cannot invalidate an otherwise identical
-  capture. Runtime daemon/fixture and native-binary hashes are recorded
-  separately. Verification recomputes the digest and refuses stale bundles;
-  it never rewrites them.
+  capture. The selected dependency fingerprint catches renderer lockfile-only
+  changes without hashing the broad workspace lockfile. Each conformance note
+  also records the native UI binary, runtime daemon binary, and fixture
+  registry SHA-256 values used by that capture. Verification recomputes the
+  implementation digest, checks those runtime provenance fields and every
+  non-self-referential artifact hash, and refuses stale or swapped bundles; it
+  never rewrites them.
 - Verification: `scripts/test-design-gate-egui-integration.sh` is read-only by
   default and asserts that `git status --porcelain` is unchanged. Native
   capture/publication requires the explicit `--publish` mode.
@@ -50,6 +56,11 @@ and the native capture log.
 
 The generated `conformance.md` in each tab directory records the capture's
 parent HEAD for context, the content-addressed implementation identity and
-manifest for actual provenance, the command line, and the native binary hash.
-Native screenshots are not fixture PNGs: they come from the running egui
-binary after its health check and selected `/snapshot` agent validation.
+manifest for actual provenance, stable `scripts/test-design-gate-egui-integration.sh --publish`
+reproduction guidance, the native/daemon/fixture hashes, and exact artifact
+dimensions and hashes. `conformance.md` is the manifest itself, so its own
+self-referential hash is intentionally omitted. If the default renderer
+cannot complete on a host, set `CHROME_BIN` to a complete GUI-capable
+Chrome/Chromium executable. Native screenshots are not fixture PNGs: they
+come from the running egui binary after its health check and selected
+`/snapshot` agent validation.

@@ -74,7 +74,6 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
-ORIGINAL_ARGS=("$@")
 
 ISSUE=""
 SURFACE=""
@@ -83,6 +82,8 @@ LIVE_PNG=""
 LIVE_AGENT=""
 HOST_URL="${CORRAL_UI_HOST_URL:-http://127.0.0.1:8474}"
 EGUI_BINARY=""
+DAEMON_BINARY=""
+FIXTURE_REGISTRY=""
 EGUI_DELAY_MS="8000"
 EGUI_TAB="${CORRAL_UI_SCREENSHOT_TAB:-board}"
 EGUI_WAKE_COMMAND="${CORRAL_EGUI_WAKE_COMMAND:-}"
@@ -125,6 +126,8 @@ Options:
   --live-png PATH             Explicit supplied PNG fixture seam.
   --host-url URL              egui health endpoint (default: 127.0.0.1:8474).
   --egui-binary PATH          corrald-ui binary override.
+  --daemon-binary PATH        Runtime corrald binary to hash in provenance.
+  --fixture-registry PATH     Runtime fleets.json to hash in provenance.
   --egui-tab board|issues|registry|settings
                               Native/prototype tab to capture (default: board).
   --delay-ms N                egui screenshot delay (default: 8000).
@@ -202,6 +205,16 @@ while [[ $# -gt 0 ]]; do
     --egui-binary)
       require_value "$1" "${2:-}"
       EGUI_BINARY="$2"
+      shift 2
+      ;;
+    --daemon-binary)
+      require_value "$1" "${2:-}"
+      DAEMON_BINARY="$2"
+      shift 2
+      ;;
+    --fixture-registry)
+      require_value "$1" "${2:-}"
+      FIXTURE_REGISTRY="$2"
       shift 2
       ;;
     --egui-tab)
@@ -349,6 +362,12 @@ fi
 if [[ -n "$EGUI_BINARY" && "$EGUI_BINARY" != /* ]]; then
   EGUI_BINARY="$PWD/$EGUI_BINARY"
 fi
+if [[ -n "$DAEMON_BINARY" && "$DAEMON_BINARY" != /* ]]; then
+  DAEMON_BINARY="$PWD/$DAEMON_BINARY"
+fi
+if [[ -n "$FIXTURE_REGISTRY" && "$FIXTURE_REGISTRY" != /* ]]; then
+  FIXTURE_REGISTRY="$PWD/$FIXTURE_REGISTRY"
+fi
 if [[ -n "$IOS_APP" && "$IOS_APP" != /* ]]; then
   IOS_APP="$PWD/$IOS_APP"
 fi
@@ -370,6 +389,10 @@ fi
   || die "--live-agent cannot be combined with the explicit --live-png fixture seam"
 [[ "$SURFACE" == "egui" || -z "$LIVE_AGENT" ]] \
   || die "--live-agent is only valid for the egui surface"
+[[ -z "$DAEMON_BINARY" || -f "$DAEMON_BINARY" ]] \
+  || die "--daemon-binary does not exist: $DAEMON_BINARY"
+[[ -z "$FIXTURE_REGISTRY" || -f "$FIXTURE_REGISTRY" ]] \
+  || die "--fixture-registry does not exist: $FIXTURE_REGISTRY"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -378,6 +401,10 @@ fi
 [[ -n "$PYTHON_BIN" && -x "$PYTHON_BIN" ]] \
   || die "Python 3 is required; set PYTHON_BIN to an executable Python 3"
 
+CHROME_BIN_EXPLICIT=0
+if [[ -n "${CHROME_BIN:-}" ]]; then
+  CHROME_BIN_EXPLICIT=1
+fi
 CHROME_BIN="${CHROME_BIN:-}"
 if [[ -n "$CHROME_BIN" ]]; then
   [[ -x "$CHROME_BIN" ]] || die "CHROME_BIN is not executable: $CHROME_BIN"
@@ -1189,6 +1216,7 @@ PY
     (cd "$REPO_DIR" && cargo build --release -p corrald-ui)
   fi
   [[ -x "$binary" ]] || die "egui binary was not produced: $binary"
+  EGUI_BINARY="$binary"
 
   if [[ "$(uname -s)" == "Darwin" ]]; then
     if [[ -z "$native_probe_helper" ]]; then
@@ -1204,12 +1232,11 @@ PY
   fi
 
   CAPTURE_KIND="native egui viewport screenshot"
-  LIVE_DESCRIPTION="real egui process launched from $binary against $HOST_URL"
-  LIVE_DESCRIPTION+="; selected live agent $LIVE_AGENT from /snapshot"
+  LIVE_DESCRIPTION="real egui process launched against a loopback corrald; selected live agent $LIVE_AGENT from /snapshot"
   CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
   CAPTURE_COMMAND+=" CORRAL_UI_DISABLE_KEYRING=1"
-  CAPTURE_COMMAND+=" CORRAL_UI_CONFIG_DIR=<stage>/ui-config $binary"
+  CAPTURE_COMMAND+=" CORRAL_UI_CONFIG_DIR=<stage>/ui-config <corrald-ui>"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
     CAPTURE_COMMAND+="; wake with caller command"
   fi
@@ -1487,8 +1514,39 @@ if [[ -n "$EGUI_BINARY" && -f "$EGUI_BINARY" ]]; then
 else
   LIVE_BINARY_SHA="not applicable"
 fi
+if [[ -n "$DAEMON_BINARY" ]]; then
+  DAEMON_BINARY_SHA="$(sha256_file "$DAEMON_BINARY")"
+else
+  DAEMON_BINARY_SHA="not applicable (not supplied)"
+fi
+if [[ -n "$FIXTURE_REGISTRY" ]]; then
+  FIXTURE_REGISTRY_SHA="$(sha256_file "$FIXTURE_REGISTRY")"
+else
+  FIXTURE_REGISTRY_SHA="not applicable (not supplied)"
+fi
+CAPTURE_LOG_SHA="$(sha256_file "$STAGE/capture.log")"
 GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
+if [[ "$SURFACE" == "egui" && "$ISSUE" == "206" && -z "$LIVE_PNG" ]]; then
+  COMMAND_LINE="scripts/test-design-gate-egui-integration.sh --publish"
+else
+  COMMAND_LINE="scripts/design-gate-evidence.sh --issue $ISSUE --surface $SURFACE"
+  if [[ "$SURFACE" == "egui" ]]; then
+    COMMAND_LINE+=" --egui-tab $EGUI_TAB"
+  fi
+  if [[ -n "$LIVE_PNG" ]]; then
+    COMMAND_LINE+=" --live-png <supplied-png>"
+  fi
+fi
+if [[ "$CHROME_BIN_EXPLICIT" -eq 1 && "$SURFACE" == "egui" ]]; then
+  RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
+else
+  RENDERER_GUIDANCE=""
+fi
+if [[ "$PROTOTYPE" == "$REPO_DIR/"* ]]; then
+  PROTOTYPE_DISPLAY="${PROTOTYPE#"$REPO_DIR/"}"
+else
+  PROTOTYPE_DISPLAY="$PROTOTYPE"
+fi
 
 # Markdown backticks are literal printf text, not shell command substitutions.
 # shellcheck disable=SC2016
@@ -1506,7 +1564,7 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
   printf -- '- Chrome trust boundary: temporary DevTools is loopback-only on `127.0.0.1`, uses an ephemeral port/private profile, and receives only `Browser.close`; local approved HTML and the owned process are trusted inputs.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
-    printf -- '- Host health URL: `%s` (checked before capture)\n' "$HOST_URL"
+    printf -- '- Host health URL: `loopback corrald /healthz` (checked before capture)\n'
   elif [[ "$SURFACE" == "ios" ]]; then
     printf -- '- Host health URL: not applicable (iOS simulator capture)\n'
   else
@@ -1524,16 +1582,21 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   if [[ -n "$PROVENANCE_NOTE" ]]; then
     printf -- '- Operator/environment note: %s\n' "$PROVENANCE_NOTE"
   fi
+  if [[ -n "$RENDERER_GUIDANCE" ]]; then
+    printf -- '- Renderer guidance: %s\n' "$RENDERER_GUIDANCE"
+  fi
   printf '\n## Sources\n\n'
-  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE"
+  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE_DISPLAY"
   printf -- '- Prototype source SHA-256: `%s`\n' "$PROTOTYPE_SOURCE_SHA"
   printf -- '- Generator SHA-256: `%s`\n' "$GENERATOR_SHA"
   printf -- '- Live input: `%s`\n' "$LIVE_SOURCE_PATH"
   printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
   printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
   printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
-  printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, and approved prototype only; unrelated workspace/daemon files and generated `docs/design/evidence/issue-206/` are excluded, while runtime daemon/fixture and binary hashes are recorded separately.\n'
-  printf -- '- Native binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
+  printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated `docs/design/evidence/issue-206/` are excluded.\n'
+  printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
+  printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
+  printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
   printf -- '- Reproducible invocation: `%s`\n' "$COMMAND_LINE"
   printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
   printf '\n## Artifacts\n\n'
@@ -1541,6 +1604,7 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '| `prototype.png` | `%s` | `%s` |\n' "$PROTOTYPE_DIMS" "$PROTOTYPE_SHA"
   printf -- '| `live-after.png` | `%s` | `%s` |\n' "$LIVE_DIMS" "$LIVE_SHA"
   printf -- '| `comparison.png` | `%s` | `%s` |\n' "$COMPARISON_DIMS" "$COMPARISON_SHA"
+  printf -- '| `capture.log` | `n/a` | `%s` |\n' "$CAPTURE_LOG_SHA"
   printf '\nThe comparison header is stamped with the target issue number. A supplied PNG or iOS Debug demo is explicitly labeled above and must not be read as proof of a live daemon session.\n'
 } >"$STAGE/conformance.md"
 

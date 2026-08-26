@@ -15,6 +15,13 @@ import zlib
 
 TABS = ("board", "issues", "registry", "settings")
 REQUIRED = ("prototype.png", "live-after.png", "comparison.png", "conformance.md", "capture.log")
+ARTIFACTS = ("prototype.png", "live-after.png", "comparison.png", "capture.log")
+EXPECTED_DIMENSIONS = {
+    "prototype.png": "1160x631",
+    "live-after.png": "2640x1720",
+    "comparison.png": "2400x960",
+}
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def sha(path: Path) -> str:
@@ -42,7 +49,11 @@ def complete_png(path: Path) -> tuple[int, int]:
         if zlib.crc32(kind + payload) & 0xFFFFFFFF != crc:
             raise SystemExit(f"{path} has a bad PNG CRC")
         if kind == b"IHDR":
+            if length != 13:
+                raise SystemExit(f"{path} has an invalid IHDR")
             width, height = struct.unpack(">II", payload[:8])
+            if width == 0 or height == 0:
+                raise SystemExit(f"{path} has empty dimensions")
         elif kind == b"IDAT":
             idat.append(payload)
         elif kind == b"IEND":
@@ -55,11 +66,63 @@ def complete_png(path: Path) -> tuple[int, int]:
     if not seen_iend or offset != len(data):
         raise SystemExit(f"{path} is incomplete or has trailing bytes")
     decoder = zlib.decompressobj()
-    decoder.decompress(b"".join(idat))
-    decoder.flush()
+    decoded = decoder.decompress(b"".join(idat))
+    decoded += decoder.flush()
     if not decoder.eof or decoder.unused_data:
         raise SystemExit(f"{path} has an incomplete IDAT stream")
+    if not decoded:
+        raise SystemExit(f"{path} has an empty image payload")
     return width, height
+
+
+def verify_artifact_manifest(bundle: Path, conformance: str, tab: str) -> None:
+    rows: dict[str, tuple[str, str]] = {}
+    for line in conformance.splitlines():
+        match = re.fullmatch(r"\| `([^`]+)` \| `([^`]+)` \| `([^`]+)` \|", line.strip())
+        if match:
+            name, dimensions, digest = match.groups()
+            rows[name] = (dimensions, digest)
+    if set(rows) != set(ARTIFACTS):
+        missing = sorted(set(ARTIFACTS) - set(rows))
+        unexpected = sorted(set(rows) - set(ARTIFACTS))
+        detail = []
+        if missing:
+            detail.append(f"missing {', '.join(missing)}")
+        if unexpected:
+            detail.append(f"unexpected {', '.join(unexpected)}")
+        raise SystemExit(f"{tab} conformance artifact table mismatch: {'; '.join(detail)}")
+
+    for name in ARTIFACTS:
+        path = bundle / name
+        recorded_dimensions, recorded_digest = rows[name]
+        if not SHA256.fullmatch(recorded_digest):
+            raise SystemExit(f"{tab} conformance has an invalid SHA-256 for {name}")
+        actual_digest = sha(path)
+        if actual_digest != recorded_digest:
+            raise SystemExit(f"{tab} conformance SHA-256 does not match {name}")
+        if name in EXPECTED_DIMENSIONS:
+            width, height = complete_png(path)
+            actual_dimensions = f"{width}x{height}"
+            if recorded_dimensions != actual_dimensions:
+                raise SystemExit(
+                    f"{tab} conformance dimensions for {name} do not match the PNG"
+                )
+            if actual_dimensions != EXPECTED_DIMENSIONS[name]:
+                raise SystemExit(
+                    f"{tab} {name} has dimensions {actual_dimensions}; expected {EXPECTED_DIMENSIONS[name]}"
+                )
+        elif recorded_dimensions != "n/a":
+            raise SystemExit(f"{tab} conformance dimensions for {name} must be n/a")
+
+
+def provenance_hash(conformance: str, label: str, tab: str) -> str:
+    match = re.search(rf"- {re.escape(label)}: `([^`]+)`", conformance)
+    if not match:
+        raise SystemExit(f"{tab} conformance is missing {label}")
+    value = match.group(1)
+    if not (SHA256.fullmatch(value) or value.startswith("not applicable (")):
+        raise SystemExit(f"{tab} conformance has an invalid {label}")
+    return value
 
 
 def verify_native_probe(capture_log: str, tab: str) -> None:
@@ -132,6 +195,7 @@ def main() -> int:
     prototype = repo / "docs/design/corral-ux-egui-redesign-prototype.html"
     expected_prototype = sha(prototype)
     live_hashes = []
+    runtime_hashes = []
     for tab in TABS:
         bundle = evidence_root / tab
         if not bundle.is_dir():
@@ -154,6 +218,14 @@ def main() -> int:
         )
         if not prototype_match or prototype_match.group(1) != expected_prototype:
             raise SystemExit(f"{tab} prototype provenance does not match the checked-in source")
+        runtime = (
+            provenance_hash(conformance, "Native UI binary SHA-256", tab),
+            provenance_hash(conformance, "Daemon binary SHA-256", tab),
+            provenance_hash(conformance, "Fixture registry SHA-256", tab),
+        )
+        if any(not SHA256.fullmatch(value) for value in runtime):
+            raise SystemExit(f"{tab} native evidence must record all runtime SHA-256 values")
+        runtime_hashes.append(runtime)
         if "requesting viewport screenshot" not in capture_log:
             raise SystemExit(f"{tab} capture log does not prove a completed native capture")
         if "screenshot event received" not in capture_log:
@@ -161,11 +233,12 @@ def main() -> int:
         if "screenshot saved — exiting" not in capture_log:
             raise SystemExit(f"{tab} capture log does not prove a saved Screenshot PNG")
         verify_native_probe(capture_log, tab)
-        for name in ("prototype.png", "live-after.png", "comparison.png"):
-            complete_png(bundle / name)
+        verify_artifact_manifest(bundle, conformance, tab)
         live_hashes.append(sha(bundle / "live-after.png"))
     if len(set(live_hashes)) != len(TABS):
         raise SystemExit("native tab screenshots are not distinct")
+    if len(set(runtime_hashes)) != 1:
+        raise SystemExit("runtime daemon/fixture provenance differs across native tabs")
     print(f"verified committed native evidence: {', '.join(TABS)}")
     print(f"implementation identity: {expected_identity}")
     print("verification is read-only; no evidence artifact was regenerated")

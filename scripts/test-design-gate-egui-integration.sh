@@ -736,6 +736,8 @@ for tab in board issues registry settings; do
     --host-url "$BASE_URL" \
     --live-agent "$AGENT_ID" \
     --egui-binary "$UI_BIN" \
+    --daemon-binary "$DAEMON_BIN" \
+    --fixture-registry "$WORK/daemon-config/fleets.json" \
     --no-build \
     --delay-ms 12000 \
     --timeout-seconds 45 \

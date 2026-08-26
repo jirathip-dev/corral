@@ -989,6 +989,34 @@ mod tests {
     }
 
     #[test]
+    fn corrald_resolution_finds_the_per_user_release_install() {
+        let root = std::env::temp_dir().join(format!(
+            "corral-ui-corrald-home-resolution-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let home = root.join("home");
+        let release = home.join(".local/share/corral/release/corrald");
+        write_executable(&release);
+
+        assert_eq!(
+            resolve_corrald_binary_from(
+                None,
+                Some(Path::new("/missing/corrald-ui")),
+                Some(Path::new("/missing/install")),
+                Some(&home),
+                Some(OsStr::new("")),
+            )
+            .unwrap(),
+            release
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn refreshed_registry_projection_detects_a_stale_draft_without_discarding_it() {
         let entry = FleetRegistryEntry {
             name: "corral".into(),

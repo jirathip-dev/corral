@@ -85,8 +85,9 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   `CORRALD_BIN`, executable sibling, installed release root, then `PATH`; a
   missing binary reports the `CORRALD_BIN` remedy.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
-  into its own top-level tab, keeping the issue-linked and issue-free
-  worktree actions alongside the board's other tabs.
+  into its own top-level tab, keeping the issue-linked worktree action
+  alongside the board's other tabs. Issue-free worktree creation is not
+  exposed in this view.
 
 ## Build + run
 

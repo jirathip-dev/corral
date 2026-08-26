@@ -295,11 +295,38 @@ where
     let Some(keyring_seed) = keyring_seed else {
         return Ok(());
     };
-    // Keep the keychain identity recoverable in the fallback store until the
-    // delete succeeds. Atomic file replacement makes an existing fallback
-    // safe to update without exposing a partially written seed.
-    write_key_file(path, &keyring_seed)?;
-    delete()
+    // A fallback file is authoritative once it exists. Never replace it with
+    // a possibly stale keychain value: if deletion fails, normal key loading
+    // must continue using the existing file identity.
+    match read_key_file(path) {
+        Ok(existing_seed) if existing_seed == keyring_seed => {
+            delete().map_err(|error| {
+                format!(
+                    "could not remove the stale keychain identity; existing fallback {} remains authoritative: {error}",
+                    path.display()
+                )
+            })
+        }
+        Ok(_) => Err(format!(
+            "refusing to reconcile stale keychain identity: existing fallback {} contains a different identity; delete the stale keychain entry manually before retrying",
+            path.display()
+        )),
+        Err(_error) if !path.exists() => {
+            // With no fallback to preserve, create one before deletion so a
+            // failed delete still leaves the identity recoverable locally.
+            write_key_file(path, &keyring_seed)?;
+            delete().map_err(|error| {
+                format!(
+                    "could not remove the stale keychain identity; newly created fallback {} remains authoritative: {error}",
+                    path.display()
+                )
+            })
+        }
+        Err(error) => Err(format!(
+            "refusing to reconcile stale keychain identity without overwriting existing fallback {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn ensure_dir_0700(dir: &Path) -> Result<(), String> {
@@ -440,6 +467,61 @@ mod tests {
 
         assert!(deleted.get());
         assert_eq!(read_key_file(&path).unwrap(), stale_keyring_seed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disabled_reconcile_never_overwrites_an_existing_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-key-reconcile-existing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("keys/fp.key");
+        let existing_seed = [3u8; 32];
+        let stale_keyring_seed = [9u8; 32];
+        write_key_file(&path, &existing_seed).unwrap();
+        let delete_called = std::cell::Cell::new(false);
+
+        let error = reconcile_disabled_keyring_with(&path, Some(stale_keyring_seed), || {
+            delete_called.set(true);
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("different identity"));
+        assert!(
+            !delete_called.get(),
+            "an identity conflict must not delete either store"
+        );
+        assert_eq!(read_key_file(&path).unwrap(), existing_seed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disabled_reconcile_keeps_existing_fallback_when_delete_fails() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-key-reconcile-delete-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("keys/fp.key");
+        let existing_seed = [3u8; 32];
+        write_key_file(&path, &existing_seed).unwrap();
+
+        let error = reconcile_disabled_keyring_with(&path, Some(existing_seed), || {
+            Err("simulated keychain delete failure".to_string())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("remains authoritative"));
+        assert_eq!(read_key_file(&path).unwrap(), existing_seed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

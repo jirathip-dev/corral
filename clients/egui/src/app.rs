@@ -3,7 +3,7 @@
 //! workspace tabs (Board / Issues / Registry / Settings).
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -29,6 +29,10 @@ fn local_registry_path_for_host(host_url: &str, local_path: PathBuf) -> Result<P
     let parsed = reqwest::Url::parse(host_url)
         .map_err(|error| format!("cannot edit registry: invalid host URL: {error}"))?;
     let is_loopback = parsed.host_str().is_some_and(|host| {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
         host.eq_ignore_ascii_case("localhost")
             || host
                 .parse::<std::net::IpAddr>()
@@ -41,6 +45,55 @@ fn local_registry_path_for_host(host_url: &str, local_path: PathBuf) -> Result<P
         );
     }
     Ok(local_path)
+}
+
+fn comparable_registry_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| normalized_registry_path(path))
+}
+
+fn normalized_registry_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+fn validate_registry_edit_path(local_path: &Path, reported_path: &str) -> Result<(), String> {
+    if reported_path.trim().is_empty() {
+        return Err(format!(
+            "cannot edit registry: daemon reported an empty registry path while the client-local path is {}; refusing mutation",
+            local_path.display()
+        ));
+    }
+    let reported = Path::new(reported_path);
+    let local_comparable = comparable_registry_path(local_path);
+    let reported_comparable = comparable_registry_path(reported);
+    if local_comparable != reported_comparable {
+        return Err(format!(
+            "cannot edit registry: daemon reported path {} (normalized {}) differs from client-local path {} (normalized {}); refusing mutation. Set CORRAL_FLEETS_PATH to the client-local registry used by this daemon or connect to the matching local daemon",
+            reported.display(),
+            reported_comparable.display(),
+            local_path.display(),
+            local_comparable.display()
+        ));
+    }
+    Ok(())
 }
 
 /// The four top-level views in the persistent right-hand tab strip. Audit is
@@ -544,13 +597,178 @@ struct MacosCgWindowProbe {
 }
 
 #[cfg(target_os = "macos")]
+const NATIVE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(target_os = "macos")]
+const NATIVE_PROBE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[cfg(target_os = "macos")]
+fn terminate_native_probe_process_group(pid: u32) {
+    // The probe helper is placed in its own process group before exec. Killing
+    // the group is necessary because a hung helper can leave a grandchild
+    // holding stdout/stderr open after the direct child is gone.
+    let process_group = -(pid as libc::pid_t);
+    // SAFETY: `process_group` names only the process group created for this
+    // helper, never the egui process group.
+    unsafe {
+        libc::kill(process_group, libc::SIGKILL);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_native_probe_helper_with_timeout(
+    helper: &Path,
+    pid: u32,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    run_native_probe_helper_with_timeout_using(
+        helper,
+        pid,
+        timeout,
+        terminate_native_probe_process_group,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn run_native_probe_helper_with_timeout_using(
+    helper: &Path,
+    pid: u32,
+    timeout: std::time::Duration,
+    terminate_process_group: impl Fn(u32),
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Instant;
+
+    let mut command = Command::new(helper);
+    command
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: the pre-exec closure performs only the async-signal-safe
+    // process-group setup needed to make timeout cleanup cover descendants.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not spawn helper: {error}"))?;
+    let child_pid = child.id();
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("piped native probe stdout is available after spawn");
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("piped native probe stderr is available after spawn");
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+            .map_err(|error| error.to_string())
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+            .map_err(|error| error.to_string())
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let mut wait_error = None;
+    let mut status = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                status = Some(exit_status);
+                break;
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                break;
+            }
+            Ok(None) => thread::sleep(NATIVE_PROBE_POLL_INTERVAL),
+            Err(error) => {
+                wait_error = Some(error.to_string());
+                break;
+            }
+        }
+    }
+
+    if timed_out || wait_error.is_some() {
+        // `try_wait` returning `Some` already reaped the child. Only the
+        // timeout/error paths may still have a live or unreaped child, so
+        // never signal a successfully exited PID or its possibly reused
+        // process group.
+        terminate_process_group(child_pid);
+    }
+    let reap_error = if status.is_none() {
+        match child.wait() {
+            Ok(reaped_status) => {
+                status = Some(reaped_status);
+                None
+            }
+            Err(error) => Some(error.to_string()),
+        }
+    } else {
+        // `try_wait` reaps the child when it returns `Some`.
+        None
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "native probe stdout reader panicked".to_string())?
+        .map_err(|error| format!("could not read helper stdout: {error}"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "native probe stderr reader panicked".to_string())?
+        .map_err(|error| format!("could not read helper stderr: {error}"))?;
+
+    if let Some(error) = wait_error {
+        return Err(format!(
+            "could not wait for helper; its process group was terminated: {error}"
+        ));
+    }
+    if timed_out {
+        return Err(format!(
+            "helper timed out after {}ms; its process group was terminated",
+            timeout.as_millis()
+        ));
+    }
+    let status = status.ok_or_else(|| {
+        format!(
+            "helper exited without a status{}",
+            reap_error
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        )
+    })?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn macos_cg_window_probe(pid: u32) -> Result<MacosCgWindowProbe, String> {
     let helper = std::env::var_os("CORRAL_UI_WINDOW_PROBE_HELPER")
         .ok_or_else(|| "CORRAL_UI_WINDOW_PROBE_HELPER is not configured".to_string())?;
-    let output = std::process::Command::new(&helper)
-        .arg(pid.to_string())
-        .output()
-        .map_err(|error| format!("could not run CoreGraphics probe helper: {error}"))?;
+    let output =
+        run_native_probe_helper_with_timeout(Path::new(&helper), pid, NATIVE_PROBE_TIMEOUT)
+            .map_err(|error| format!("could not run CoreGraphics probe helper: {error}"))?;
     if !output.status.success() {
         return Err(format!(
             "CoreGraphics probe helper status={} stdout={:?} stderr={:?}",
@@ -1194,6 +1412,22 @@ impl CorralApp {
             self.refresh_registry(true);
             return;
         }
+        let reported_path = match self
+            .fleet
+            .registry
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|registry| registry.reported_path.clone())
+        {
+            Some(path) => path,
+            None => {
+                self.registry_notice = Some((
+                    Level::Error,
+                    "registry has not loaded; refresh before editing".into(),
+                ));
+                return;
+            }
+        };
         let path = match local_registry_path_for_edit(&self.config.host_url) {
             Ok(path) => path,
             Err(error) => {
@@ -1201,17 +1435,8 @@ impl CorralApp {
                 return;
             }
         };
-        if self
-            .fleet
-            .registry
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .is_none()
-        {
-            self.registry_notice = Some((
-                Level::Error,
-                "registry has not loaded; refresh before editing".into(),
-            ));
+        if let Err(error) = validate_registry_edit_path(&path, &reported_path) {
+            self.registry_notice = Some((Level::Error, error));
             return;
         }
         let Some(path) = path.to_str() else {
@@ -2640,6 +2865,34 @@ mod tests {
     }
 
     #[test]
+    fn registry_edits_accept_bracketed_ipv6_loopback() {
+        let client_path = PathBuf::from("/client-local/fleets.json");
+        assert_eq!(
+            local_registry_path_for_host("http://[::1]:8474", client_path.clone()).unwrap(),
+            client_path
+        );
+    }
+
+    #[test]
+    fn registry_edits_refuse_a_daemon_path_that_differs_from_the_client_path() {
+        let local_path = Path::new("/client-local/fleets.json");
+        let error = validate_registry_edit_path(local_path, "/daemon-local/fleets.json")
+            .expect_err("different registry paths must fail closed");
+        assert!(error.contains("/daemon-local/fleets.json"));
+        assert!(error.contains("/client-local/fleets.json"));
+        assert!(error.contains("refusing mutation"));
+    }
+
+    #[test]
+    fn registry_path_comparison_normalizes_dot_segments() {
+        validate_registry_edit_path(
+            Path::new("/client-local/./nested/../fleets.json"),
+            "/client-local/fleets.json",
+        )
+        .expect("equivalent normalized registry paths should be editable");
+    }
+
+    #[test]
     fn native_probe_reason_classifies_fail_closed_fields() {
         let ready = NativeProbeFacts {
             probe_ok: true,
@@ -2731,6 +2984,79 @@ mod tests {
         assert!(state.visible);
         assert!(!state.frontmost);
         assert_eq!(state.reason_code, "defer_not_frontmost_or_unknown");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_probe_helper_timeout_reaps_a_hung_grandchild() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-native-probe-timeout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("probe.sh");
+        std::fs::write(&helper, b"#!/bin/sh\nsleep 30 &\nwait\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let started = Instant::now();
+        let terminations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let terminations_for_call = Arc::clone(&terminations);
+        let error = run_native_probe_helper_with_timeout_using(
+            &helper,
+            42,
+            std::time::Duration::from_millis(150),
+            move |pid| {
+                terminations_for_call.lock().unwrap().push(pid);
+                terminate_native_probe_process_group(pid);
+            },
+        )
+        .expect_err("a hung helper must fail closed");
+
+        assert!(error.contains("timed out after 150ms"));
+        assert_eq!(terminations.lock().unwrap().len(), 1);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "probe timeout must include descendant cleanup"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_probe_helper_success_does_not_terminate_reaped_child() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-native-probe-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("probe.sh");
+        std::fs::write(&helper, b"#!/bin/sh\nprintf success\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let terminations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let terminations_for_call = Arc::clone(&terminations);
+        let output = run_native_probe_helper_with_timeout_using(
+            &helper,
+            42,
+            std::time::Duration::from_secs(1),
+            move |pid| terminations_for_call.lock().unwrap().push(pid),
+        )
+        .expect("a successful helper must return its output");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"success");
+        assert!(terminations.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

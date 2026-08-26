@@ -82,6 +82,10 @@ const MASTER_IDENTITY_INSET: f32 = 36.0;
 /// narrow pane the left column is dropped first and ordinary ages are never
 /// clipped; only extreme timestamps truncate inside this bound.
 const MASTER_STATE_WIDTH: f32 = 160.0;
+/// Keep the terminal state label clear of the master/detail divider and the
+/// right-hand theme padding. This also leaves room for the final glyph in a
+/// right-aligned label instead of painting it into the divider.
+const MASTER_STATE_RIGHT_INSET: f32 = 8.0;
 
 #[cfg(test)]
 const CARD_AGE_WIDTH: f32 = MASTER_STATE_WIDTH;
@@ -818,7 +822,7 @@ fn master_column_header(ui: &mut Ui, width: f32) {
     );
     let state_rect = egui::Rect::from_min_max(
         egui::pos2(rect.right() - state_width, rect.top()),
-        rect.right_bottom(),
+        egui::pos2(rect.right() - MASTER_STATE_RIGHT_INSET, rect.bottom()),
     );
     let mut state_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -944,7 +948,10 @@ fn master_card_with_response(
     );
     let right_rect = egui::Rect::from_min_max(
         egui::pos2((rect.right() - state_width).max(rect.left()), rect.top()),
-        rect.right_bottom(),
+        egui::pos2(
+            (rect.right() - MASTER_STATE_RIGHT_INSET).max(rect.left()),
+            rect.bottom(),
+        ),
     );
     let mut left_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -3095,12 +3102,12 @@ mod tests {
         let short_layout_inset = short.0 - short.2;
         let long_layout_inset = long.0 - long.2;
         assert!(
-            short_layout_inset.abs() <= 1.0,
-            "short age layout edge must stay at the card's right edge: inset={short_layout_inset}"
+            (short_layout_inset - MASTER_STATE_RIGHT_INSET).abs() <= 1.0,
+            "short age layout edge must stay inside the themed right inset: inset={short_layout_inset}"
         );
         assert!(
-            long_layout_inset.abs() <= 1.0,
-            "long age layout edge must stay at the card's right edge: inset={long_layout_inset}"
+            (long_layout_inset - MASTER_STATE_RIGHT_INSET).abs() <= 1.0,
+            "long age layout edge must stay inside the themed right inset: inset={long_layout_inset}"
         );
     }
 
@@ -3576,6 +3583,14 @@ mod tests {
         assert!(
             (header_state.layout_right - row_state.layout_right).abs() <= 0.1,
             "State · time header aligns to the row value's right edge"
+        );
+        assert!(
+            header_state.layout_right <= width - MASTER_STATE_RIGHT_INSET + 0.1,
+            "header terminal glyph stays inside the themed right inset"
+        );
+        assert!(
+            row_state.layout_right <= width - MASTER_STATE_RIGHT_INSET + 0.1,
+            "row terminal glyph stays inside the themed right inset"
         );
         clear_textures(&mut output);
     }

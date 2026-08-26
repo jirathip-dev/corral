@@ -23,10 +23,26 @@ and the native capture log.
   is not GitHub evidence.
 - Registry path: the fixture is a real `fleets.json` loaded by the daemon;
   `corrald fleet check --registry` is run before capture, and the UI's save,
-  pause, and forwarding code paths have focused atomic-update tests.
+  pause, candidate-rejection, stale-draft, and forward-key paths have focused
+  tests. “Send to fleet” is explicitly validation-only because no daemon
+  distribution endpoint exists in this layout-only scope.
+- Implementation identity: each conformance note records a SHA-256 digest of
+  an explicit manifest covering the egui source, daemon registry rules, build
+  inputs, capture/verification scripts, and approved prototype. Generated
+  `docs/design/evidence/issue-206/` is excluded, so the identity is stable and
+  non-circular. Verification recomputes the digest and refuses stale bundles;
+  it never rewrites them.
+- Verification: `scripts/test-design-gate-egui-integration.sh` is read-only by
+  default and asserts that `git status --porcelain` is unchanged. Native
+  capture/publication requires the explicit `--publish` mode.
+- Native readiness: each capture records an exact-PID CoreGraphics window list
+  plus structured process/window visibility, frontmost, key/main, and
+  active-space probes. The screenshot dispatch, later eframe Screenshot event,
+  non-empty PNG, and dimensions are all required before publication.
 - No iOS surface and no #215 behavior is included in this bundle.
 
-The generated `conformance.md` in each tab directory records the exact
-working-tree HEAD and command line for that capture. Native screenshots are
-not fixture PNGs: they come from the running egui binary after its health
-check and selected `/snapshot` agent validation.
+The generated `conformance.md` in each tab directory records the capture's
+parent HEAD for context, the content-addressed implementation identity and
+manifest for actual provenance, the command line, and the native binary hash.
+Native screenshots are not fixture PNGs: they come from the running egui
+binary after its health check and selected `/snapshot` agent validation.

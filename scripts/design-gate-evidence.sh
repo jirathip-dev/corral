@@ -409,6 +409,14 @@ PY
 
 python_check || die "Python 3.8 or newer is required"
 
+CONTENT_IDENTITY_HELPER="$SCRIPT_DIR/design-gate-content-identity.py"
+[[ -f "$CONTENT_IDENTITY_HELPER" ]] \
+  || die "implementation identity helper is missing: $CONTENT_IDENTITY_HELPER"
+
+implementation_identity() {
+  "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR"
+}
+
 absolute_path() {
   local value="$1"
   if [[ "$value" = /* ]]; then
@@ -643,6 +651,64 @@ normalized = "\n".join(lines)
 if raw.endswith(("\n", "\r")):
     normalized += "\n"
 path.write_text(normalized, encoding="utf-8")
+PY
+}
+
+validate_native_probe() {
+  "$PYTHON_BIN" - "$1" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(f"native window probe log is missing: {path}")
+
+records = []
+for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"native window probe line {line_number} is not JSON: {error}")
+    if not isinstance(record, dict):
+        raise SystemExit(f"native window probe line {line_number} is not an object")
+    records.append(record)
+
+if not records:
+    raise SystemExit("native window probe emitted no observations")
+
+def ready(record):
+    if record.get("action") != "dispatch_evaluation":
+        return False
+    required = {
+        "probe_ok": True,
+        "exact_pid_match": True,
+        "process_visible": True,
+        "window_visible": True,
+        "frontmost": True,
+        "key_window": True,
+        "main_window": True,
+        "frontmost_application_matches_target": True,
+        "on_active_space": True,
+        "cg_owner_pid_match": True,
+        "visible_gate": True,
+        "frontmost_gate": True,
+        "reason_code": "dispatch_ready",
+    }
+    if any(record.get(key) != value for key, value in required.items()):
+        return False
+    windows = record.get("cg_window_list")
+    return isinstance(windows, list) and any(
+        isinstance(window, dict) and window.get("owner_pid_exact_match") is True
+        for window in windows
+    )
+
+if not any(ready(record) for record in records):
+    raise SystemExit(
+        "native window probe never observed an exact-PID, visible, frontmost, "
+        "key/main, active-space window before screenshot dispatch"
+    )
+print(f"verified native window readiness observations: {len(records)}")
 PY
 }
 
@@ -937,6 +1003,7 @@ run_chrome_screenshot() {
   url="$(file_url "$html_path")"
   log "rendering $label with headless Chrome at ${width}x${height}"
   "$CHROME_BIN" \
+    --password-store=basic \
     --headless=new \
     --disable-gpu \
     --disable-background-networking \
@@ -1048,6 +1115,8 @@ capture_egui() {
   local snapshot_path="$STAGE/snapshot.json"
   local ui_pid
   local binary
+  local native_probe_helper="${CORRAL_UI_WINDOW_PROBE_HELPER:-}"
+  local native_probe_log="$STAGE/native-window-probe.jsonl"
 
   require_egui_dependencies
   health="$(curl --fail --silent --show-error --max-time 5 "$HOST_URL/healthz")" \
@@ -1107,15 +1176,30 @@ PY
   fi
   [[ -x "$binary" ]] || die "egui binary was not produced: $binary"
 
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if [[ -z "$native_probe_helper" ]]; then
+      command -v swiftc >/dev/null 2>&1 \
+        || die "swiftc is required to compile the exact-PID CoreGraphics probe"
+      native_probe_helper="$STAGE/native-window-probe"
+      swiftc -O "$REPO_DIR/scripts/native-window-probe.swift" \
+        -o "$native_probe_helper" \
+        || die "could not compile the exact-PID CoreGraphics probe"
+    fi
+    [[ -x "$native_probe_helper" ]] \
+      || die "native window probe helper is not executable: $native_probe_helper"
+  fi
+
   CAPTURE_KIND="native egui viewport screenshot"
   LIVE_DESCRIPTION="real egui process launched from $binary against $HOST_URL"
   LIVE_DESCRIPTION+="; selected live agent $LIVE_AGENT from /snapshot"
   CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
+  CAPTURE_COMMAND+=" CORRAL_UI_DISABLE_KEYRING=1"
   CAPTURE_COMMAND+=" $binary"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
     CAPTURE_COMMAND+="; wake with caller command"
   fi
+  CAPTURE_COMMAND+="; exact-PID native visible/frontmost/key/space probe"
 
   log "capturing live egui board; health check passed"
   if [[ -n "$LIVE_AGENT" ]]; then
@@ -1123,8 +1207,12 @@ PY
   fi
   CORRAL_UI_SCREENSHOT_AGENT="$LIVE_AGENT" \
     CORRAL_UI_SCREENSHOT="$STAGE/live-after.png" \
-    CORRAL_UI_SCREENSHOT_DELAY_MS="$EGUI_DELAY_MS" \
-    CORRAL_UI_SCREENSHOT_TAB="$EGUI_TAB" \
+  CORRAL_UI_SCREENSHOT_DELAY_MS="$EGUI_DELAY_MS" \
+  CORRAL_UI_SCREENSHOT_TAB="$EGUI_TAB" \
+  CORRAL_UI_SCREENSHOT_WAKE_COMMAND="$EGUI_WAKE_COMMAND" \
+    CORRAL_UI_DISABLE_KEYRING=1 \
+    CORRAL_UI_WINDOW_PROBE_HELPER="$native_probe_helper" \
+    CORRAL_UI_WINDOW_DIAGNOSTIC_LOG="$native_probe_log" \
     RUST_LOG="${RUST_LOG:-info}" "$binary" >"$STAGE/capture.log" 2>&1 &
   ui_pid=$!
   CAPTURE_PID="$ui_pid"
@@ -1134,6 +1222,7 @@ PY
     if ! CORRAL_UI_SCREENSHOT_PID="$ui_pid" \
       CORRAL_UI_SCREENSHOT_PATH="$STAGE/live-after.png" \
       bash -c "$EGUI_WAKE_COMMAND" >>"$STAGE/capture.log" 2>&1; then
+      tail -40 "$STAGE/capture.log" >&2 || true
       terminate_owned_child "$ui_pid" "egui" \
         || die "egui wake command failed and owned-child cleanup failed"
       die "egui wake command failed; no live screenshot claim was made"
@@ -1145,6 +1234,21 @@ PY
   fi
   terminate_owned_child "$ui_pid" "egui" \
     || die "could not clean up the owned egui child"
+  validate_native_probe "$native_probe_log" \
+    || {
+      tail -80 "$STAGE/capture.log" >&2 || true
+      die "egui capture did not prove exact-PID native window readiness"
+    }
+  {
+    printf '\n--- native window probe records ---\n'
+    cat "$native_probe_log"
+  } >>"$STAGE/capture.log"
+  grep -F -- "requesting viewport screenshot" "$STAGE/capture.log" \
+    || die "egui capture did not dispatch a viewport screenshot"
+  grep -F -- "screenshot event received" "$STAGE/capture.log" \
+    || die "egui capture did not receive a Screenshot event"
+  grep -F -- "screenshot saved — exiting" "$STAGE/capture.log" \
+    || die "egui capture did not save the Screenshot event PNG"
   if [[ -n "$LIVE_AGENT" ]] \
     && ! grep -q "native screenshot evidence selected live agent" "$STAGE/capture.log"; then
     tail -80 "$STAGE/capture.log" >&2 || true
@@ -1269,6 +1373,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+IMPLEMENTATION_IDENTITY="$(implementation_identity)" \
+  || die "could not compute the implementation content identity"
+IMPLEMENTATION_CONTENT_DIGEST="${IMPLEMENTATION_IDENTITY%%$'\n'*}"
+IMPLEMENTATION_MANIFEST="${IMPLEMENTATION_IDENTITY#*$'\n'}"
+[[ "$IMPLEMENTATION_CONTENT_DIGEST" == sha256:* ]] \
+  || die "implementation identity did not return a sha256 digest"
+
 OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
 if [[ -e "$OUTPUT_DIR" ]]; then
   [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
@@ -1338,6 +1449,15 @@ PROTOTYPE_DIMS="$(png_dimensions "$STAGE/prototype.png")"
 LIVE_DIMS="$(png_dimensions "$STAGE/live-after.png")"
 COMPARISON_DIMS="$(png_dimensions "$STAGE/comparison.png")"
 GIT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+IDENTITY_AFTER="$(implementation_identity)" \
+  || die "could not re-check the implementation content identity"
+[[ "${IDENTITY_AFTER%%$'\n'*}" == "$IMPLEMENTATION_CONTENT_DIGEST" ]] \
+  || die "implementation content changed during capture; evidence was not published"
+if [[ -n "$EGUI_BINARY" && -f "$EGUI_BINARY" ]]; then
+  LIVE_BINARY_SHA="$(sha256_file "$EGUI_BINARY")"
+else
+  LIVE_BINARY_SHA="not applicable"
+fi
 GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
 
@@ -1381,8 +1501,12 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '- Generator SHA-256: `%s`\n' "$GENERATOR_SHA"
   printf -- '- Live input: `%s`\n' "$LIVE_SOURCE_PATH"
   printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
-  printf -- '- Repository HEAD: `%s`\n' "$GIT_SHA"
+  printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
+  printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
+  printf -- '- Implementation identity scope: explicit source/build/provenance inputs; generated `docs/design/evidence/issue-206/` is excluded to avoid a circular digest.\n'
+  printf -- '- Native binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
   printf -- '- Reproducible invocation: `%s`\n' "$COMMAND_LINE"
+  printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'
   printf -- '| `prototype.png` | `%s` | `%s` |\n' "$PROTOTYPE_DIMS" "$PROTOTYPE_SHA"

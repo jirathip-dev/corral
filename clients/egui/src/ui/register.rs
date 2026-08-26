@@ -1,10 +1,11 @@
 //! Registration + settings view: host URL, device registration (paste
 //! token or localhost auto-register), device identity status (key store
-//! + warnings), and host-side administration (audit + device grants).
+//! + warnings), and host-side administration (device grants plus a
+//!   subordinate audit surface).
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{RichText, TextEdit, Ui};
+use eframe::egui::{self, RichText, TextEdit, Ui};
 
 use crate::keys::KeyStore;
 use crate::protocol::{GRANT_CAPABILITIES, GrantDevice};
@@ -21,6 +22,9 @@ pub struct SettingsState {
     pub token_input: String,
     pub admin_token_input: String,
     pub notice: Option<(Level, String)>,
+    /// Audit is reachable only below Advanced device access, never as a
+    /// top-level workspace tab.
+    pub audit_open: bool,
     /// Set by the view when the user asks for an action.
     pub requested: Option<Request>,
     /// Host-admin credential availability for the grant editor, refreshed
@@ -41,7 +45,23 @@ pub enum Request {
     SelectGrantDevice(String),
     ApplyGrantSet,
     RevokeGrantDevice,
+    OpenAudit,
+    CloseAudit,
+    RefreshAudit,
     SaveSettings,
+}
+
+/// Read-only data owned by the app while the Settings surface renders.
+/// Grouping it keeps the immediate-mode entry point small while making the
+/// subordinate audit path explicit rather than hiding it in global state.
+pub struct SettingsPaneContext<'a> {
+    pub key_id: &'a str,
+    pub grants: &'a [String],
+    pub store: Option<&'a KeyStore>,
+    pub conn: ConnState,
+    pub rev: Option<u64>,
+    pub audit: &'a Option<Result<crate::protocol::AuditView, String>>,
+    pub audit_loading: bool,
 }
 
 impl Default for SettingsState {
@@ -56,6 +76,7 @@ impl Default for SettingsState {
             token_input: String::new(),
             admin_token_input: String::new(),
             notice: None,
+            audit_open: false,
             requested: None,
             admin_token_configured: false,
             grant_admin: GrantAdminState::default(),
@@ -252,15 +273,7 @@ pub fn register_screen(ui: &mut Ui, settings: &mut SettingsState, conn: ConnStat
 }
 
 /// Settings tab (device already registered).
-pub fn settings_pane(
-    ui: &mut Ui,
-    settings: &mut SettingsState,
-    key_id: &str,
-    grants: &[String],
-    store: Option<&KeyStore>,
-    conn: ConnState,
-    rev: Option<u64>,
-) {
+pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: SettingsPaneContext<'_>) {
     let mut requested = None;
     let admin_token_configured = settings.admin_token_configured;
     egui::ScrollArea::vertical()
@@ -273,8 +286,8 @@ pub fn settings_pane(
                         .heading()
                         .color(theme::ui::TEXT_STRONG),
                 );
-                crate::ui::connection_pill(ui, conn);
-                if let Some(rev) = rev {
+                crate::ui::connection_pill(ui, context.conn);
+                if let Some(rev) = context.rev {
                     ui.label(
                         RichText::new(format!("rev {rev}"))
                             .monospace()
@@ -345,12 +358,17 @@ pub fn settings_pane(
                     );
                     ui.horizontal(|ui| {
                         ui.label("theme");
-                        egui::ComboBox::from_id_salt("corral-ui-theme")
-                            .selected_text(&settings.theme)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut settings.theme, "dark".to_string(), "dark");
-                            });
+                        ui.label(
+                            RichText::new("dark dashboard (approved prototype)")
+                                .monospace()
+                                .color(theme::ui::TEXT_STRONG),
+                        );
                     });
+                    ui.label(
+                        RichText::new("Theme selection is intentionally fixed to the approved dark dashboard.")
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
                 });
             ui.add_space(10.0);
             if ui
@@ -366,10 +384,10 @@ pub fn settings_pane(
                     .strong()
                     .color(theme::ui::TEXT_STRONG),
             )
-            .default_open(false)
+            .default_open(settings.audit_open)
             .show(ui, |ui| {
                 ui.label(
-                    RichText::new("Device identity, host-admin credentials, grants, and the demoted audit view live here.")
+                    RichText::new("Device identity, host-admin credentials, grants, and the subordinate audit view live here.")
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
@@ -380,22 +398,23 @@ pub fn settings_pane(
                         .color(theme::ui::TEXT_STRONG),
                 );
                 ui.horizontal_wrapped(|ui| {
-                    detail_kv(ui, "key_id", key_id);
-                    let store_text = store
+                    detail_kv(ui, "key_id", context.key_id);
+                    let store_text = context
+                        .store
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "uninitialized".to_string());
                     detail_kv(ui, "key store", &store_text);
                     detail_kv(
                         ui,
                         "grants",
-                        &if grants.is_empty() {
+                        &if context.grants.is_empty() {
                             "read-only".to_string()
                         } else {
-                            grants.join(", ")
+                            context.grants.join(", ")
                         },
                     );
                 });
-                if let Some(KeyStore::File { path }) = store {
+                if let Some(KeyStore::File { path }) = context.store {
                     ui.label(
                         RichText::new(format!(
                             "WARNING: OS keychain unavailable — device key stored in plaintext file (0600) at {}.",
@@ -445,7 +464,46 @@ pub fn settings_pane(
                         .small()
                         .color(theme::ui::TEXT_MUTED),
                 );
-                grant_management_block(ui, settings, key_id, admin_token_configured, &mut requested);
+                grant_management_block(
+                    ui,
+                    settings,
+                    context.key_id,
+                    admin_token_configured,
+                    &mut requested,
+                );
+                ui.add_space(12.0);
+                if settings.audit_open {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Audit — subordinate Settings surface")
+                                .strong()
+                                .color(theme::ui::TEXT_STRONG),
+                        );
+                        if ui.small_button("hide audit").clicked() {
+                            requested = Some(Request::CloseAudit);
+                        }
+                    });
+                    crate::ui::audit::show(
+                        ui,
+                        context.audit,
+                        admin_token_configured,
+                        context.audit_loading,
+                        &mut || requested = Some(Request::RefreshAudit),
+                    );
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("open audit log").clicked() {
+                            requested = Some(Request::OpenAudit);
+                        }
+                        ui.label(
+                            RichText::new(
+                                "Host-admin audit is available here when needed; it is not a top-level tab.",
+                            )
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                        );
+                    });
+                }
             });
 
             if let Some((level, text)) = &settings.notice {
@@ -783,5 +841,61 @@ mod tests {
     fn start_worktree_gets_a_distinct_fleet_level_label() {
         assert!(capability_label("start_worktree").contains("fleet-level"));
         assert_eq!(capability_label("read_tail"), "read_tail");
+    }
+
+    fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(shape) => {
+                text.push_str(shape.galley.text());
+                text.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    rendered_text(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn audit_renders_only_as_a_reachable_settings_subordinate_surface() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState {
+            audit_open: true,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                settings_pane(
+                    ui,
+                    &mut settings,
+                    SettingsPaneContext {
+                        key_id: "dev_test",
+                        grants: &[],
+                        store: None,
+                        conn: ConnState::Connected,
+                        rev: None,
+                        audit: &None,
+                        audit_loading: false,
+                    },
+                );
+            },
+        );
+        let mut text = String::new();
+        for clipped in &output.shapes {
+            rendered_text(&clipped.shape, &mut text);
+        }
+        output.textures_delta.clear();
+        assert!(text.contains("Audit — subordinate Settings surface"));
+        assert!(text.contains("AUDIT LOG"));
+        assert!(!text.contains("Board / Issues / Registry / Settings / Audit"));
     }
 }

@@ -75,7 +75,11 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   `Registry` tab fetches the same `fleets.json` source `/issues` uses and
   lists every fleet's repo, local path, orchestrator, workers, pause state,
   and model map including `reasoning_effort`; parse/transport failures render
-  prominently with a manual refresh.
+  prominently with a manual refresh. Save & apply validates the complete
+  candidate with `corrald fleet check` before an atomic replacement and
+  refuses stale drafts; pause/resume uses the same candidate validation.
+  Send to fleet is labeled validation-only because no daemon distribution
+  endpoint exists in this layout-only scope.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
   into its own top-level tab, keeping the issue-linked and issue-free
   worktree actions alongside the board's other tabs.
@@ -113,7 +117,15 @@ evidence harness accepts the file only after complete PNG/CRC validation, so a
 writer that lingers is cleaned up with bounded TERM→KILL against its owned
 direct child. (eframe's own wgpu screenshot event is
 flaky without an explicit `device.poll`; this path polls with a bounded
-wait and captures the presented surface.)
+wait and captures the presented surface.) On macOS, evidence mode also keeps
+the eframe 0.36.1 root viewport visible/key during its hidden-first-frame
+startup, and the harness compiles the exact-PID CoreGraphics probe. Dispatch is
+fail-closed until the process, window, frontmost, key/main, and active-space
+observations all agree.
+
+For unattended scratch runs, `CORRAL_UI_DISABLE_KEYRING=1` selects the
+documented 0600 file fallback and prevents a macOS Keychain prompt from
+blocking the native event loop; the integration harness sets it automatically.
 
 For native live-agent evidence, add `CORRAL_UI_SCREENSHOT_AGENT` with an agent
 id observed in the daemon's `/snapshot` response. The app resolves that real
@@ -134,7 +146,8 @@ registered native UI, safe exact-pid window wake, and cleanup—run from the
 repository root on macOS:
 
 ```sh
-bash scripts/test-design-gate-egui-integration.sh
+bash scripts/test-design-gate-egui-integration.sh                 # read-only verify
+bash scripts/test-design-gate-egui-integration.sh --publish       # native regenerate/publish
 ```
 
 ## Conformance + tests

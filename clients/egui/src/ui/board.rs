@@ -645,6 +645,25 @@ pub fn show_board_detail(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    show_board_detail_with_options(ui, fleet, selected, allowed, actions, true);
+}
+
+/// Render the Cards detail with the persisted Board behavior toggles applied.
+/// The default wrapper above keeps the pure rendering/conformance tests on the
+/// approved prototype defaults while the app supplies the user's setting.
+pub fn show_board_detail_with_options(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    selected: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+    stick_to_bottom: bool,
+) {
+    ui.ctx().memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(egui::Id::new("corral-ui-stick-to-bottom"), stick_to_bottom);
+    });
     let mut view = BoardView::Cards;
     right_pane(ui, fleet, selected, &mut view, false, allowed, actions);
 }
@@ -704,7 +723,12 @@ fn master_list(
                                 .color(theme::ui::TEXT_MUTED),
                         )
                         .id_salt("corral-ui-idle-done")
-                        .default_open(false)
+                        .default_open(!ui.ctx().memory(|memory| {
+                            memory
+                                .data
+                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
+                                .unwrap_or(true)
+                        }))
                         .show_unindented(ui, |ui| {
                             for id in &section.agent_ids {
                                 if let Some(id) =
@@ -1195,6 +1219,12 @@ fn recent_output_surface(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) {
+    let stick_to_bottom = ui.ctx().memory(|memory| {
+        memory
+            .data
+            .get_temp::<bool>(egui::Id::new("corral-ui-stick-to-bottom"))
+            .unwrap_or(true)
+    });
     let Some(id) = selected else {
         live_indicator(ui);
         return;
@@ -1212,9 +1242,12 @@ fn recent_output_surface(
                 live_indicator(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("stick-to-bottom")
-                            .small()
-                            .color(theme::ui::MUTED),
+                        RichText::new(format!(
+                            "stick-to-bottom: {}",
+                            if stick_to_bottom { "on" } else { "off" }
+                        ))
+                        .small()
+                        .color(theme::ui::MUTED),
                     );
                 });
             });
@@ -1228,12 +1261,12 @@ fn recent_output_surface(
                 // older pages at the end. Keep the newest six, then paint
                 // that slice oldest-to-newest so the newest message sits at
                 // the bottom of the stick-to-bottom surface.
-                for entry in pane.entries.iter().take(6).rev() {
-                    recent_transcript_entry(ui, entry);
+                for index in recent_output_indices(pane.entries.len(), stick_to_bottom) {
+                    recent_transcript_entry(ui, &pane.entries[index]);
                 }
             } else if let Some(lines) = fleet.tails.get(id) {
-                for line in lines.iter().rev().take(6).rev() {
-                    recent_tail_entry(ui, line);
+                for index in recent_output_indices(lines.len(), stick_to_bottom) {
+                    recent_tail_entry(ui, &lines[index]);
                 }
             } else if let Some(state) = read_tail_state {
                 let feedback = match state {
@@ -1297,6 +1330,18 @@ fn recent_output_surface(
                 }
             });
         });
+}
+
+/// Transcript pages are newest-first. Stick-to-bottom paints the visible
+/// window oldest-to-newest; when disabled the newest entry remains first so
+/// the operator can inspect the latest output without automatic bottom bias.
+pub(crate) fn recent_output_indices(len: usize, stick_to_bottom: bool) -> Vec<usize> {
+    let count = len.min(6);
+    if stick_to_bottom {
+        (0..count).rev().collect()
+    } else {
+        (0..count).collect()
+    }
 }
 
 fn latest_read_tail_state<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
@@ -3637,6 +3682,14 @@ mod tests {
             "Cards detail must keep Recent output as the sole selected-agent surface"
         );
         clear_textures(&mut output);
+    }
+
+    #[test]
+    fn recent_output_order_honors_stick_to_bottom_setting() {
+        assert_eq!(recent_output_indices(8, true), vec![5, 4, 3, 2, 1, 0]);
+        assert_eq!(recent_output_indices(8, false), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(recent_output_indices(3, true), vec![2, 1, 0]);
+        assert_eq!(recent_output_indices(0, false), Vec::<usize>::new());
     }
 
     #[test]

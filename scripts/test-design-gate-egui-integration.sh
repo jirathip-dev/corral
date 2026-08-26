@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Real egui design-gate integration: scratch corrald + fake herdr socket +
-# native corrald-ui/wgpu capture. This is separate from the fast hermetic
-# seam tests because it needs a macOS window server and a real Chrome.
+# native corrald-ui/wgpu capture. The default mode is a read-only verifier for
+# committed evidence. Native regeneration and publication are explicit via
+# `--publish`, so normal verification never overwrites tracked artifacts.
 #
 # Run with:
 #   bash scripts/test-design-gate-egui-integration.sh
+#   bash scripts/test-design-gate-egui-integration.sh --publish
 #
 # The harness owns every process it starts, uses a fresh loopback port/config,
 # creates a real scratch git repo for the fake agent, prepares a registered UI
 # config, and asks the design-gate script to capture that target. The wake
-# helper brings only the exact corrald-ui pid's process frontmost; it does not
-# send keystrokes, broadcast input, or click arbitrary windows. The EXIT trap
+# helper brings only the exact corrald-ui pid's process frontmost and sends one
+# Escape key event to wake its native event loop; it does not broadcast input
+# or click arbitrary windows. The EXIT trap
 # uses TERM, a short grace period, then KILL for the direct children it owns.
 
 set -euo pipefail
@@ -22,6 +25,64 @@ SCRIPT="$SCRIPT_DIR/design-gate-evidence.sh"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
 DAEMON_BIN="$REPO_DIR/target/release/corrald"
 UI_BIN="$REPO_DIR/target/release/corrald-ui"
+MODE="verify"
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --publish|--regenerate)
+      MODE="publish"
+      shift
+      ;;
+    --verify)
+      MODE="verify"
+      shift
+      ;;
+    -h|--help)
+      printf '%s\n' \
+        "Usage: $0 [--verify|--publish]" \
+        "  --verify   read and validate committed four-tab evidence (default)" \
+        "  --publish  run native captures and explicitly replace issue-206 evidence"
+      exit 0
+      ;;
+    *)
+      printf 'egui integration: error: unknown option: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$PYTHON_BIN" && -x "$PYTHON_BIN" ]] \
+  || {
+    printf 'egui integration: error: Python 3 is required\n' >&2
+    exit 1
+  }
+CONTENT_IDENTITY_HELPER="$SCRIPT_DIR/design-gate-content-identity.py"
+[[ -f "$CONTENT_IDENTITY_HELPER" ]] \
+  || {
+    printf 'egui integration: error: implementation identity helper is missing\n' >&2
+    exit 1
+  }
+
+STATUS_BEFORE="$(git -C "$REPO_DIR" status --porcelain=v1)"
+
+verify_committed_evidence() {
+  local status_after
+  "$PYTHON_BIN" "$SCRIPT_DIR/verify-design-gate-egui-evidence.py" \
+    "$REPO_DIR" "$CONTENT_IDENTITY_HELPER"
+  status_after="$(git -C "$REPO_DIR" status --porcelain=v1)"
+  if [[ "$status_after" != "$STATUS_BEFORE" ]]; then
+    printf 'egui integration: error: read-only verification changed git status\n' >&2
+    git -C "$REPO_DIR" status --short >&2
+    return 1
+  fi
+  printf 'egui integration: git status unchanged by verification\n'
+}
+
+if [[ "$MODE" == "verify" ]]; then
+  verify_committed_evidence
+  exit 0
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/corral-design-gate-egui.XXXXXX")"
 HERDR_PID=""
 DAEMON_PID=""
@@ -84,6 +145,45 @@ stop_owned_child() {
   wait "$pid" 2>/dev/null || true
 }
 
+work_process_pids() {
+  ps -axo pid=,command= 2>/dev/null \
+    | awk -v work="$WORK" -v self="$$" \
+      '$1 != self && index($0, "--user-data-dir=" work) { print $1 }'
+}
+
+stop_owned_work_processes() {
+  local pid
+  local deadline
+  local remaining
+
+  # Browser.close can reparent a helper before the direct Chrome child is
+  # reaped. The unique scratch path is the ownership boundary for this
+  # harness; never match a broad executable name or a shared browser profile.
+  for pid in $(work_process_pids); do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  deadline=$((SECONDS + TERM_GRACE_SECONDS))
+  while [[ $SECONDS -lt "$deadline" ]]; do
+    remaining="$(work_process_pids)"
+    [[ -z "$remaining" ]] && return 0
+    sleep 0.1
+  done
+  for pid in $(work_process_pids); do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  deadline=$((SECONDS + KILL_GRACE_SECONDS))
+  while [[ $SECONDS -lt "$deadline" ]]; do
+    remaining="$(work_process_pids)"
+    [[ -z "$remaining" ]] && return 0
+    sleep 0.1
+  done
+  remaining="$(work_process_pids)"
+  if [[ -n "$remaining" ]]; then
+    printf 'egui integration: error: scratch-owned processes survived TERM/KILL: %s\n' "$remaining" >&2
+    return 1
+  fi
+}
+
 cleanup() {
   local cleanup_status=0
   if [[ "$CLEANED" -eq 0 ]]; then
@@ -94,6 +194,9 @@ cleanup() {
       cleanup_status=1
     fi
     if ! stop_owned_child "$PROXY_PID" issues-proxy; then
+      cleanup_status=1
+    fi
+    if ! stop_owned_work_processes; then
       cleanup_status=1
     fi
     if [[ "$cleanup_status" -eq 0 ]]; then
@@ -548,13 +651,22 @@ cat >"$WORK/wake-window.sh" <<'WAKE'
 set -euo pipefail
 : "${CORRAL_UI_SCREENSHOT_PID:?missing screenshot pid}"
 : "${CORRAL_TEST_WAKE_LOG:?missing wake log path}"
+set +e
 osascript >"$CORRAL_TEST_WAKE_LOG" 2>&1 <<APPLESCRIPT
 tell application "System Events"
   tell first application process whose unix id is ${CORRAL_UI_SCREENSHOT_PID}
     set frontmost to true
+    key code 53
   end tell
 end tell
 APPLESCRIPT
+status=$?
+set -e
+if [[ "$status" -ne 0 ]]; then
+  printf 'exact-PID wake failed (status %s):\n' "$status" >&2
+  sed -n '1,80p' "$CORRAL_TEST_WAKE_LOG" >&2 || true
+  exit "$status"
+fi
 WAKE
 chmod +x "$WORK/wake-window.sh"
 
@@ -563,6 +675,7 @@ export CORRAL_CONFIG_DIR="$WORK/daemon-config"
 export CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json"
 export CORRALD_BIN="$DAEMON_BIN"
 export CORRAL_UI_CONFIG_DIR="$WORK/ui-config"
+export CORRAL_UI_DISABLE_KEYRING=1
 export CORRAL_TEST_WAKE_LOG="$WORK/wake-osascript.log"
 
 printf 'egui integration: capturing all four native #206 tabs\n'
@@ -595,10 +708,12 @@ for tab in board issues registry settings; do
     || die "$tab native app log did not prove target selection"
   grep -F -- "$AGENT_ID" "$OUTPUT_DIR/capture.log" \
     || die "$tab native app log did not contain the selected target id"
-  mkdir -p "$PUBLISH_DIR"
-  for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
-    cp -- "$OUTPUT_DIR/$artifact" "$PUBLISH_DIR/$artifact"
-  done
+  if [[ "$MODE" == "publish" ]]; then
+    mkdir -p "$PUBLISH_DIR"
+    for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
+      cp -- "$OUTPUT_DIR/$artifact" "$PUBLISH_DIR/$artifact"
+    done
+  fi
 done
 
 "$PYTHON_BIN" - \
@@ -645,6 +760,9 @@ for argument in sys.argv[1:]:
 PY
 
 cleanup
+
+"$PYTHON_BIN" "$SCRIPT_DIR/verify-design-gate-egui-evidence.py" \
+  "$REPO_DIR" "$CONTENT_IDENTITY_HELPER"
 
 "$PYTHON_BIN" - "$WORK" "$UI_BIN" "$DAEMON_BIN" <<'PY'
 import os

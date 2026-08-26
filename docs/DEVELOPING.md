@@ -257,12 +257,17 @@ registered native UI, real target selection, native wgpu PNG, exact-pid wake,
 and bounded cleanup—run:
 
 ```sh
-bash scripts/test-design-gate-egui-integration.sh
+bash scripts/test-design-gate-egui-integration.sh             # read-only verify
+bash scripts/test-design-gate-egui-integration.sh --publish   # explicit native regenerate/publish
 ```
 
-It is intentionally local/platform-dependent and requires a macOS window
-server, Chrome, Cargo, OpenSSL, and `osascript`; it uses only scratch config,
-repo, worktree, and loopback resources and removes them on completion.
+The default command reads the committed four-tab bundles, recomputes their
+non-circular implementation content digest, validates tab/log/PNG provenance,
+and asserts that `git status --porcelain` is unchanged. Only `--publish` runs
+native captures and replaces the tracked issue-206 artifacts. It is
+intentionally local/platform-dependent and requires a macOS window server,
+Chrome, Cargo, OpenSSL, and `osascript`; it uses only scratch config, repo,
+worktree, and loopback resources and removes them on completion.
 
 The iOS path uses only `hermes-sim-task`. `--ios-mode demo` is an explicit
 Debug fixture; live mode requires `--ios-command` to prepare and launch the

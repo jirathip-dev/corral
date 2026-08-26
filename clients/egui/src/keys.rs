@@ -50,6 +50,13 @@ impl fmt::Display for KeyStore {
 
 const KEYRING_SERVICE: &str = "corrald-ui";
 
+fn keyring_enabled() -> bool {
+    !matches!(
+        std::env::var("CORRAL_UI_DISABLE_KEYRING").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 /// A loaded device identity.
 pub struct DeviceKey {
     pub signing: SigningKey,
@@ -67,7 +74,9 @@ fn account_for(host_fingerprint: &str) -> String {
 /// UI can surface the warning banner.
 pub fn load_or_create_key(host_fingerprint: &str) -> Result<DeviceKey, String> {
     let account = account_for(host_fingerprint);
-    if let Ok(seed) = read_keyring(&account) {
+    if keyring_enabled()
+        && let Ok(seed) = read_keyring(&account)
+    {
         let signing = SigningKey::from_bytes(&seed);
         return Ok(DeviceKey {
             signing,
@@ -88,31 +97,50 @@ pub fn load_or_create_key(host_fingerprint: &str) -> Result<DeviceKey, String> {
     getrandom::fill(&mut seed).map_err(|e| format!("OS RNG failure: {e}"))?;
     let signing = SigningKey::from_bytes(&seed);
 
-    // Prefer the keychain; fall back to the 0600 file.
-    match write_keyring(&account, &seed) {
-        Ok(()) => {
-            seed.zeroize();
-            Ok(DeviceKey {
-                signing,
-                store: KeyStore::Keyring,
-            })
+    // Prefer the keychain; fall back to the 0600 file. The explicit disabled
+    // mode is used by unattended scratch/evidence runs so macOS cannot stop
+    // the native window behind an interactive Keychain prompt.
+    if keyring_enabled() {
+        match write_keyring(&account, &seed) {
+            Ok(()) => {
+                seed.zeroize();
+                Ok(DeviceKey {
+                    signing,
+                    store: KeyStore::Keyring,
+                })
+            }
+            Err(keyring_err) => {
+                write_key_file(&path, &seed).map_err(|file_err| {
+                    format!(
+                        "keychain unavailable ({keyring_err}) and file write failed: {file_err}"
+                    )
+                })?;
+                seed.zeroize();
+                Ok(DeviceKey {
+                    signing,
+                    store: KeyStore::File { path },
+                })
+            }
         }
-        Err(keyring_err) => {
-            write_key_file(&path, &seed).map_err(|file_err| {
-                format!("keychain unavailable ({keyring_err}) and file write failed: {file_err}")
-            })?;
-            seed.zeroize();
-            Ok(DeviceKey {
-                signing,
-                store: KeyStore::File { path },
-            })
-        }
+    } else {
+        write_key_file(&path, &seed)?;
+        seed.zeroize();
+        Ok(DeviceKey {
+            signing,
+            store: KeyStore::File { path },
+        })
     }
 }
 
 /// Rotate: replace the stored seed (used on re-registration).
 pub fn rotate_key(host_fingerprint: &str, seed: &[u8; 32]) -> Result<(), String> {
     let account = account_for(host_fingerprint);
+    if !keyring_enabled() {
+        let path = client_config_dir()
+            .join("keys")
+            .join(format!("{host_fingerprint}.key"));
+        return write_key_file(&path, seed);
+    }
     match write_keyring(&account, seed) {
         Ok(()) => {
             // Best-effort remove of any earlier file fallback.
@@ -136,6 +164,9 @@ pub fn rotate_key(host_fingerprint: &str, seed: &[u8; 32]) -> Result<(), String>
 /// keychain-only (never written to a plaintext config). Returns the store
 /// kind used.
 pub fn store_admin_token(host_fingerprint: &str, token: &str) -> Result<KeyStore, String> {
+    if !keyring_enabled() {
+        return Err("keychain disabled by CORRAL_UI_DISABLE_KEYRING".to_string());
+    }
     let account = format!("corral-admin:{host_fingerprint}");
     match write_keyring(&account, token.as_bytes()) {
         Ok(()) => Ok(KeyStore::Keyring),
@@ -144,6 +175,9 @@ pub fn store_admin_token(host_fingerprint: &str, token: &str) -> Result<KeyStore
 }
 
 pub fn load_admin_token(host_fingerprint: &str) -> Option<String> {
+    if !keyring_enabled() {
+        return None;
+    }
     let account = format!("corral-admin:{host_fingerprint}");
     read_keyring(&account)
         .ok()

@@ -303,11 +303,14 @@ daemon's typed error banner (`not_granted`, `expired`, `revoked`, …).
 Every visible agent row is a full-width navigation target. Its detail surface
 re-resolves the live fleet record before dispatch and exposes Recent output,
 Prompt, Interrupt, and blocked approval controls. Recent output auto-loads the
-live tail (no tap) and auto-refreshes while the detail view is open, merging
-older transcript pages on scroll-up; the non-jamming `[info] Tail …` fleet
-banner is gone, and the result stays in the detail view. Approvals echo the
-current `approval_id` and `prompt_hash`, and a changed/deleted target is
-refused locally before signed bytes leave the device.
+live tail (no tap) and auto-refreshes while the detail view is open. The
+approved transcript-chat prototype supersedes the earlier unbounded detail
+scroll: Recent output owns one bounded nested transcript scroll, while the
+composer remains its sibling below it; older transcript pages are loaded from
+the top history affordance. The non-jamming `[info] Tail …` fleet banner is
+gone, and the result stays in the detail view. Approvals echo the current
+`approval_id` and `prompt_hash`, and a changed/deleted target is refused
+locally before signed bytes leave the device.
 
 The Idle / done section is collapsed by default. Its header is a full-width,
 44-point disclosure target with visible `Collapsed` / `Expanded` text and the
@@ -381,14 +384,13 @@ so reset clears only the configured store.
 Exiting Debug demo is also model-owned: it validates the persisted live identity,
 clears demo rows and cursors so a fresh snapshot is required, and falls back
 to setup without dispatch when that identity is missing or inconsistent.
-Runtime execution remains pending an installed iOS runtime.
-The current verification host has the iOS SDK but no installed iOS runtime or
-device platform, so no simulator/device interaction evidence is claimed here;
-see `ios/evidence/tappable-controls.md` for the source/type-check record.
+Simulator execution is covered by the reproducible #205 design-gate bundle;
+this repository still makes no physical-device or TestFlight claim. See
+`docs/design/evidence/issue-205/conformance.md` for the exact capture record.
 
 ## Demo mode (Debug only)
 
-Debug builds retain the Settings/registration → "Demo fleet" harness: seven
+Debug builds retain the Settings/registration → "Demo fleet" harness: eight
 seeded agents cover every `WaitingOnKind` (ApproveTool/Menu/AnswerQuestion/
 Crash), with choices, workspace/PR/CI columns, and locally answered drives.
 `-demoMode`, the Demo mode/Exit demo controls, the fake fleet, and the local
@@ -399,6 +401,42 @@ tests; it is not an App Review or TestFlight product path.
 
 `DemoSeedTests` and the lifecycle/action tests continue to exercise the
 Debug-only fixture. No physical-device or TestFlight result is claimed here.
+
+### Transcript-chat evidence route (#205)
+
+The checked-in Debug build has one opt-in, deterministic detail route for the
+approved transcript-chat capture. `-corralDemoDetail` selects the featured
+transcript agent and its after-state; adding `-corralDemoBefore` selects the
+legacy monotone-output presentation used only for the before frame. The route
+is state-driven, seeds the composer with a non-empty draft, and is compiled
+only under `#if DEBUG`; production and Release builds cannot enter it.
+
+The dark transcript surface intentionally forces SwiftUI's `.dark` color
+scheme so the prototype's charcoal tokens remain coherent even when the
+containing app follows the system appearance. User-role blue is centralized
+as `RecentOutputPalette.userBlue`, and Model/Effort/Worktree chips expose
+their field names to VoiceOver.
+
+From the repository root, regenerate the bundle from committed source through
+the real renderer and the Herdr-owned simulator:
+
+```sh
+CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  scripts/design-gate-evidence.sh --issue 205 --surface ios \
+  --prototype docs/design/corral-ux-transcript-chat-prototype.html \
+  --ios-mode demo --ios-launch-arg -corralDemoDetail \
+  --ios-before-launch-arg -corralDemoDetail \
+  --ios-before-launch-arg -corralDemoBefore \
+  --output-root docs/design/evidence --force
+```
+
+The gate creates its own temporary Chrome profile, uses loopback-only DevTools
+for shutdown, and removes its private staging directory. It never reads or
+modifies the user's Chrome profile, and iOS simulator installation/launch is
+owned by `hermes-sim-task`. The resulting `prototype.png`,
+`ios-before-detail.png`, `live-after.png`, `comparison.png`, `capture.log`,
+and `conformance.md` are all published together with per-file hashes and an
+issue-205 implementation identity; no copied `/tmp` PNG is an input.
 
 ## Live verification (historical Debug evidence)
 

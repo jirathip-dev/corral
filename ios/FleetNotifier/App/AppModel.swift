@@ -851,46 +851,49 @@ final class AppModel: ObservableObject {
     /// Open the newest page. The detail control is already disabled without
     /// capability/grant; this method re-checks so a direct caller cannot
     /// bypass the gate either.
-    func openTranscript(agentId: String, driveClient: DriveClient? = nil) {
+    @discardableResult
+    func openTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
         requestTranscriptPage(agentId: agentId, cursor: nil,
                               driveClient: driveClient)
     }
 
-    func loadOlderTranscript(agentId: String, driveClient: DriveClient? = nil) {
+    @discardableResult
+    func loadOlderTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
         guard let pane = fleet.transcript(agentId), let cursor = pane.nextCursor,
-              !pane.loading else { return }
-        requestTranscriptPage(agentId: agentId, cursor: cursor,
-                              driveClient: driveClient)
+              !pane.loading else { return false }
+        return requestTranscriptPage(agentId: agentId, cursor: cursor,
+                                     driveClient: driveClient)
     }
 
-    func retryTranscript(agentId: String, driveClient: DriveClient? = nil) {
-        guard let pane = fleet.transcript(agentId), pane.canRetry else { return }
-        requestTranscriptPage(agentId: agentId, cursor: pane.nextCursor,
-                              driveClient: driveClient)
+    @discardableResult
+    func retryTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
+        guard let pane = fleet.transcript(agentId), pane.canRetry else { return false }
+        return requestTranscriptPage(agentId: agentId, cursor: pane.nextCursor,
+                                     driveClient: driveClient)
     }
 
     /// #167: the tappable full-width "Load earlier" divider. If no older
     /// transcript page has been fetched yet, open the newest page; otherwise
     /// continue walking the existing cursor.
-    func loadEarlierOutput(agentId: String, driveClient: DriveClient? = nil) {
+    @discardableResult
+    func loadEarlierOutput(agentId: String, driveClient: DriveClient? = nil) -> Bool {
         guard let pane = fleet.transcript(agentId) else {
-            openTranscript(agentId: agentId, driveClient: driveClient)
-            return
+            return openTranscript(agentId: agentId, driveClient: driveClient)
         }
         if pane.nextCursor != nil {
-            loadOlderTranscript(agentId: agentId, driveClient: driveClient)
+            return loadOlderTranscript(agentId: agentId, driveClient: driveClient)
         } else {
-            openTranscript(agentId: agentId, driveClient: driveClient)
+            return openTranscript(agentId: agentId, driveClient: driveClient)
         }
     }
 
     private func requestTranscriptPage(agentId: String, cursor: String?,
                                        driveClient: DriveClient?,
-                                       autoReload: Bool = false) {
+                                       autoReload: Bool = false) -> Bool {
         guard let live = fleet.agent(agentId) else {
             banner = .error("stale_agent",
                             "This agent was deleted or migrated; refresh the fleet before reading its transcript.")
-            return
+            return false
         }
         guard mode == .live else {
             fleet.noteTranscriptFailure(TranscriptFailure(
@@ -898,7 +901,7 @@ final class AppModel: ObservableObject {
                 message: "Older output is live-only; demo mode does not fetch or fake transcripts.",
                 candidates: []
             ), for: agentId)
-            return
+            return false
         }
         guard let signer, let keyId else {
             fleet.noteTranscriptFailure(TranscriptFailure(
@@ -907,14 +910,14 @@ final class AppModel: ObservableObject {
                 candidates: []
             ), for: agentId)
             banner = .error("unregistered", "Device is not registered.")
-            return
+            return false
         }
-        guard authorize(.readTail, for: live) else { return }
+        guard authorize(.readTail, for: live) else { return false }
         guard let fetch = fleet.prepareTranscriptFetch(agent: agentId,
                                                        cursor: cursor,
                                                        newest: cursor == nil,
                                                        autoReload: autoReload) else {
-            return
+            return false
         }
         let context = lifecycleContext()
         let client = driveClient ?? DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!,
@@ -956,8 +959,8 @@ final class AppModel: ObservableObject {
                 case .dropped:
                     return
                 case .needsReload:
-                    self.requestTranscriptPage(agentId: agentId, cursor: nil,
-                                               driveClient: client, autoReload: true)
+                    _ = self.requestTranscriptPage(agentId: agentId, cursor: nil,
+                                                   driveClient: client, autoReload: true)
                 case .applied, .notGranted:
                     if failure.isNotGranted {
                         self.banner = .error("not_granted", failure.message)
@@ -966,6 +969,7 @@ final class AppModel: ObservableObject {
             }
         }
         lifecycleTasks[taskId] = task
+        return true
     }
 
     /// Resolve an action's target from the current read model. A detail view
@@ -1203,12 +1207,27 @@ final class AppModel: ObservableObject {
 #if DEBUG
     // MARK: - Demo mode (Debug only)
 
-    func enterDemo() {
+    /// Presentation state used only by the reproducible design-gate fixture.
+    /// The legacy frame is useful as a before image, while `.after` is the
+    /// approved transcript-chat surface. Neither state is compiled into a
+    /// Release app.
+    enum DemoPresentation: String, Equatable, Sendable {
+        case before
+        case after
+    }
+
+    @Published var demoPresentation: DemoPresentation = .after
+    @Published var demoDetailAgentId: String?
+
+    func enterDemo(presentation: DemoPresentation = .after,
+                   detailAgentId: String? = nil) {
         cancelLifecycleTasks()
         fleet.disconnect()
         fleet.reset()
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
         mode = .demo
+        demoPresentation = presentation
+        demoDetailAgentId = detailAgentId
         identityLifecycle.setCurrent(mode: .demo, hostURL: hostURL,
                                     keyId: keyId,
                                     signerPublicKeyB64: signer?.publicKeyB64)
@@ -1221,6 +1240,8 @@ final class AppModel: ObservableObject {
         guard mode == .demo else { return }
         cancelLifecycleTasks()
         fleet.reset()
+        demoPresentation = .after
+        demoDetailAgentId = nil
 
         guard let identity = persistedLiveIdentity() else {
             signer = nil

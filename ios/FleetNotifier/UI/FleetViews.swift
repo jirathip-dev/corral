@@ -503,58 +503,83 @@ private struct AgentDetailContent: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                AgentStateSummary(agent: agent,
-                                  stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
-                if let reason = agent.reason, !reason.isEmpty {
-                    Text(reason)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-
-                if let waiting = agent.waitingOn, agent.isBlocked,
-                   let approval = availability.first(where: { $0.action == .approveDeny }) {
-                    let approvalInFlight = model.isActionInFlight(agentId: agent.agentId,
-                                                                  capability: .approve)
-                    ClaimCard(
-                        agent: agent,
-                        waiting: waiting,
-                        approvalEnabled: approval.isEnabled && !approvalInFlight,
-                        approvalDisabledReason: approval.disabledReason
-                            ?? (approvalInFlight ? "An approval action is already in progress." : nil),
-                        onChoice: { choice in
-                            dispatchApproval(choice, expectedPromptHash: waiting.promptHash)
-                        },
-                        onCanned: { action in
-                            dispatchCanned(action, expectedPromptHash: waiting.promptHash)
-                        })
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Controls")
-                        .font(.headline)
-                    primaryActionControl
-                    overflowMenu
-                    if let killItem = availability.first(where: { $0.action == .kill }),
-                       !killItem.isEnabled {
-                        Text(killItem.disabledReason ?? "Kill unavailable")
-                            .font(.caption)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    AgentStateSummary(agent: agent,
+                                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
+                    if let reason = agent.reason, !reason.isEmpty {
+                        Text(reason)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel(killItem.disabledReason ?? "Kill unavailable")
+                            .textSelection(.enabled)
                     }
-                    promptControl
-                }
 
-                // #167: the single live iOS Recent-output surface. It
-                // auto-loads and auto-refreshes while this detail view is
-                // open; older history is paged in with the transcript cursor
-                // via the full-width "Load earlier" divider. This existing
-                // iOS behavior is unchanged by egui issue #207.
-                RecentOutputView(agent: agent, model: model)
+                    if let waiting = agent.waitingOn, agent.isBlocked,
+                       let approval = availability.first(where: { $0.action == .approveDeny }) {
+                        let approvalInFlight = model.isActionInFlight(agentId: agent.agentId,
+                                                                      capability: .approve)
+                        ClaimCard(
+                            agent: agent,
+                            waiting: waiting,
+                            approvalEnabled: approval.isEnabled && !approvalInFlight,
+                            approvalDisabledReason: approval.disabledReason
+                                ?? (approvalInFlight ? "An approval action is already in progress." : nil),
+                            onChoice: { choice in
+                                dispatchApproval(choice, expectedPromptHash: waiting.promptHash)
+                            },
+                            onCanned: { action in
+                                dispatchCanned(action, expectedPromptHash: waiting.promptHash)
+                            })
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Controls")
+                            .font(.headline)
+                        primaryActionControl
+                        overflowMenu
+                        if let killItem = availability.first(where: { $0.action == .kill }),
+                           !killItem.isEnabled {
+                            Text(killItem.disabledReason ?? "Kill unavailable")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel(killItem.disabledReason ?? "Kill unavailable")
+                        }
+                    }
+                }
+                .padding()
             }
-            .padding()
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            // The transcript owns its viewport and the composer is a sibling
+            // below it, so scrolling history never moves the prompt controls.
+#if DEBUG
+            if model.mode == .demo && model.demoPresentation == .before {
+                RecentOutputBeforeView(
+                    agent: agent,
+                    model: model,
+                    drafts: drafts,
+                    focusPrompt: $focusPrompt,
+                    onSend: dispatchPrompt)
+                    .frame(minHeight: 260, maxHeight: .infinity)
+            } else {
+                RecentOutputView(
+                    agent: agent,
+                    model: model,
+                    drafts: drafts,
+                    focusPrompt: $focusPrompt,
+                    onSend: dispatchPrompt)
+                    .frame(minHeight: 260, maxHeight: .infinity)
+            }
+#else
+            RecentOutputView(
+                agent: agent,
+                model: model,
+                drafts: drafts,
+                focusPrompt: $focusPrompt,
+                onSend: dispatchPrompt)
+                .frame(minHeight: 260, maxHeight: .infinity)
+#endif
         }
         .accessibilityElement(children: .contain)
         .confirmationDialog("Kill Agent?",
@@ -679,35 +704,6 @@ private struct AgentDetailContent: View {
         .accessibilityLabel("More actions")
     }
 
-    @ViewBuilder
-    private var promptControl: some View {
-        if let item = availability.first(where: { $0.action == .prompt }) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Prompt")
-                    .font(.subheadline.weight(.semibold))
-                HStack {
-                    TextField("Send a prompt…", text: drafts.binding(for: agent.agentId))
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focusPrompt)
-                        .disabled(!item.isEnabled)
-                    Button("Send Prompt") {
-                        dispatchPrompt()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!item.isEnabled
-                              || drafts.drafts[agent.agentId]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
-                              || model.isActionInFlight(agentId: agent.agentId, capability: .prompt))
-                }
-                if let reason = item.disabledReason {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("Why Prompt is disabled: \(reason)")
-                }
-            }
-        }
-    }
-
     private func dispatchInterrupt() {
         guard let live = model.fleet.agent(agent.agentId) else { return }
 #if DEBUG
@@ -825,9 +821,152 @@ private struct AgentStateSummary: View {
 
 }
 
+/// Debug-only baseline used by the design gate. It intentionally renders the
+/// pre-#205 terminal-shaped concatenation as one text payload, while the
+/// production path below renders semantic blocks and disclosures.
+#if DEBUG
+private struct RecentOutputBeforeView: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+    let drafts: PromptDrafts
+    let focusPrompt: FocusState<Bool>.Binding
+    let onSend: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Recent output")
+                    .font(.headline)
+                    .foregroundStyle(RecentOutputPalette.ink)
+                Spacer()
+                Text("legacy")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(RecentOutputPalette.muted)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            ScrollView(.vertical) {
+                Text(DemoFleet.monotoneOutput(for: agent))
+                    .font(.subheadline.monospaced())
+                    .foregroundStyle(RecentOutputPalette.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(maxHeight: .infinity)
+
+            RecentPromptComposer(
+                agent: agent,
+                model: model,
+                drafts: drafts,
+                focusPrompt: focusPrompt,
+                onSend: onSend)
+        }
+        .background(RecentOutputPalette.bg,
+                    in: RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius)
+                .stroke(RecentOutputPalette.line, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius))
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
+    }
+}
+#endif
+
+/// Exact color literals from the approved transcript-chat prototype. Keeping
+/// this table next to the native palette gives tests a drift guard for every
+/// prototype hex, including literals that are not currently painted by the
+/// native surface.
+enum RecentOutputPrototypeTokens {
+    static let hexes: [String: String] = [
+        "body": "#05070a",
+        "bg": "#0d1117",
+        "panel": "#10151c",
+        "panel2": "#161b22",
+        "panel3": "#1c2128",
+        "line": "#30363d",
+        "ink": "#e6edf3",
+        "muted": "#8b949e",
+        "accent": "#2dd4bf",
+        "blocked": "#f85149",
+        "done": "#d29922",
+        "working": "#58a6ff",
+        "idle": "#8b949e",
+        "unknown": "#6e7681",
+        "user-tint": "#12263f",
+        "code-bg": "#0d1117",
+        "code-line": "#21262d",
+        "code-ink": "#e6edf3",
+        "syn-diff-add": "#3fb950",
+        "syn-diff-del": "#f85149",
+        "syn-str": "#a5d6ff",
+        "syn-kw": "#ff7b72",
+        "syn-com": "#8b949e",
+        "phone-border": "#2a2f37",
+        "notch": "#000",
+        "send-ink": "#052420",
+        "user-blue": "#6ea8ff"
+    ]
+}
+
+enum RecentOutputAccessibility {
+    static func modelLabel(_ value: String) -> String { "Model: \(value)" }
+    static func effortLabel(_ value: String) -> String { "Effort: \(value)" }
+    static func worktreeLabel(_ value: String) -> String { "Worktree: \(value)" }
+}
+
+enum RecentOutputPalette {
+    static let panelCornerRadius: CGFloat = 8
+    /// The approved prototype is a dark-only surface. Explicitly injecting
+    /// `.dark` below also keeps system controls such as the TextField aligned
+    /// with the charcoal tokens when the containing app uses light mode.
+    static let colorSchemePolicy = "forced-dark"
+    static let forcesDarkSurface = true
+    static let panel = Color(red: 16 / 255, green: 21 / 255, blue: 28 / 255)
+    static let bg = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
+    static let panel2 = Color(red: 22 / 255, green: 27 / 255, blue: 34 / 255)
+    static let panel3 = Color(red: 28 / 255, green: 33 / 255, blue: 40 / 255)
+    static let line = Color(red: 48 / 255, green: 54 / 255, blue: 61 / 255)
+    static let ink = Color(red: 230 / 255, green: 237 / 255, blue: 243 / 255)
+    static let muted = Color(red: 139 / 255, green: 148 / 255, blue: 158 / 255)
+    static let accent = Color(red: 45 / 255, green: 212 / 255, blue: 191 / 255)
+    static let sendInk = Color(red: 5 / 255, green: 36 / 255, blue: 32 / 255)
+    static let sendInkHex = "#052420"
+    static let userBlue = Color(red: 110 / 255, green: 168 / 255, blue: 255 / 255)
+    static let userBlueHex = "#6ea8ff"
+    static let userTint = Color(red: 18 / 255, green: 38 / 255, blue: 63 / 255)
+    static let codeBg = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
+    static let codeLine = Color(red: 33 / 255, green: 38 / 255, blue: 45 / 255)
+    static let diffAdd = Color(red: 63 / 255, green: 185 / 255, blue: 80 / 255)
+    static let diffDel = Color(red: 248 / 255, green: 81 / 255, blue: 73 / 255)
+    static let string = Color(red: 165 / 255, green: 214 / 255, blue: 255 / 255)
+    static let keyword = Color(red: 255 / 255, green: 123 / 255, blue: 114 / 255)
+    static let comment = Color(red: 139 / 255, green: 148 / 255, blue: 158 / 255)
+}
+
+private struct RecentSendButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(RecentOutputPalette.sendInk)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RecentOutputPalette.accent,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
+
 private struct RecentOutputView: View {
     let agent: Agent
     @ObservedObject var model: AppModel
+    let drafts: PromptDrafts
+    let focusPrompt: FocusState<Bool>.Binding
+    let onSend: () -> Void
+    @State private var paginationAnchor: String?
 
     private var driveClient: DriveClient {
         model.makeDriveClient()
@@ -836,29 +975,41 @@ private struct RecentOutputView: View {
     private var tail: TailPane? { model.fleet.tailPane(for: agent.agentId) }
     private var transcript: TranscriptPane? { model.fleet.transcript(agent.agentId) }
 
-    private var render: RecentOutputRender {
-        RecentOutputModel.render(tail: tail, transcript: transcript)
-    }
-
     private var availability: AgentActionAvailability? {
         BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
             .first { $0.action == .tail }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Recent output")
-                .font(.headline)
+        let snapshot = RecentOutputModel.snapshot(tail: tail, transcript: transcript)
+        VStack(alignment: .leading, spacing: 0) {
+            header
             if let availability, !availability.isEnabled {
                 Label(availability.disabledReason ?? "Recent output unavailable",
                       systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecentOutputPalette.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .accessibilityLabel(availability.disabledReason ?? "Recent output unavailable")
             } else {
-                content
+                metadataBar(snapshot: snapshot)
+                historyBar(snapshot: snapshot)
+                content(snapshot: snapshot)
             }
+            composer
         }
+        // The approved #205 prototype supersedes the earlier unbounded
+        // detail-scroll decision: this is the one bounded transcript scroll
+        // cage, with the composer kept outside it. Use the same rounded shape
+        // for the fill, stroke, and clip so the border remains continuous.
+        .background(RecentOutputPalette.bg,
+                    in: RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius)
+                .stroke(RecentOutputPalette.line, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius))
+        .environment(\.colorScheme, .dark)
         .task {
             refresh()
             guard model.mode == .live else { return }
@@ -871,67 +1022,249 @@ private struct RecentOutputView: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var header: some View {
+        let showLive = RecentOutputModel.shouldShowLiveIndicator(
+            isLiveMode: model.mode == .live,
+            hasFreshNonErrorTail: RecentOutputModel.hasFreshNonErrorTail(tail))
+        let indicatorColor = showLive ? RecentOutputPalette.accent : RecentOutputPalette.muted
+        return HStack(spacing: 8) {
+            Text("Recent output")
+                .font(.headline)
+                .foregroundStyle(RecentOutputPalette.ink)
+            Spacer()
+            Circle()
+                .fill(indicatorColor)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(showLive ? "live" : "paused")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(indicatorColor)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+    }
+
     @ViewBuilder
-    private var content: some View {
-        switch render.phase {
+    private func metadataBar(snapshot: RecentOutputSnapshot) -> some View {
+        HStack(spacing: 6) {
+            let model = snapshot.render.metadata.model ?? agent.tool
+            metadataChip(model, color: RecentOutputPalette.accent)
+                .accessibilityLabel(RecentOutputAccessibility.modelLabel(model))
+            if let effort = snapshot.render.metadata.effort {
+                metadataChip(effort)
+                    .accessibilityLabel(RecentOutputAccessibility.effortLabel(effort))
+            }
+            if let worktree = snapshot.render.metadata.worktree
+                ?? agent.workspace.worktreePath {
+                Text(worktree)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RecentOutputPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(RecentOutputPalette.panel3,
+                                in: Capsule())
+                    .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
+                    .accessibilityLabel(RecentOutputAccessibility.worktreeLabel(worktree))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metadataChip(_ text: String, color: Color = RecentOutputPalette.ink) -> some View {
+        Text(text)
+            .font(.caption2.monospaced())
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RecentOutputPalette.panel3,
+                        in: Capsule())
+            .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func content(snapshot: RecentOutputSnapshot) -> some View {
+        switch snapshot.render.phase {
         case .loading:
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
+                    .tint(RecentOutputPalette.accent)
                 Text("Loading recent output…")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecentOutputPalette.muted)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(12)
         case .empty:
             Text("No output yet.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecentOutputPalette.muted)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(12)
         case .error(let failure):
             VStack(alignment: .leading, spacing: 6) {
                 Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(RecentOutputPalette.diffDel)
                     .accessibilityLabel(TranscriptText.errorText(failure))
                 Button("Retry") {
                     if tail?.error != nil {
                         refresh()
-                    } else if transcript?.error != nil {
-                        model.retryTranscript(agentId: agent.agentId)
                     } else {
-                        refresh()
+                        model.retryTranscript(agentId: agent.agentId)
                     }
                 }
                 .buttonStyle(.bordered)
+                .tint(RecentOutputPalette.accent)
                 .accessibilityLabel("Retry recent output")
             }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case .loaded:
-            // No nested ScrollView: this section grows with the parent
-            // detail ScrollView (brief D10 — no maxHeight cage). The reader
-            // controls the parent scroll for stick-to-bottom on live updates.
             ScrollViewReader { proxy in
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(render.rows.enumerated()), id: \.offset) { index, row in
-                        RecentOutputRowView(row: row, model: model, agent: agent,
-                                            previousBlock: previousBlock(in: render.rows, at: index))
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(snapshot.identifiedRows.enumerated()), id: \.element.id) {
+                            index, identified in
+                            RecentOutputRowView(
+                                row: identified.row,
+                                model: model,
+                                agent: agent,
+                                previousBlock: previousBlock(in: snapshot.visibleRows, at: index))
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id("recent-output-bottom")
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id("recent-output-bottom")
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                 }
-                .padding(.vertical, 4)
-                .onChange(of: tail?.blocks.count ?? 0) { _, _ in
-                    withAnimation { proxy.scrollTo("recent-output-bottom", anchor: .bottom) }
+                .frame(maxHeight: .infinity)
+                .onAppear {
+                    paginationAnchor = nil
+                    scrollToBottom(proxy, animated: false)
+                }
+                .onChange(of: snapshot.render.rows) { oldRows, newRows in
+                    if let anchor = paginationAnchor {
+                        // `prepareTranscriptFetch` publishes a loading row
+                        // before the page result arrives. Keep the anchor
+                        // armed across that intermediate state; only a
+                        // completed page, failure, or timeout may consume it.
+                        guard !snapshot.render.transcriptLoading else { return }
+                        paginationAnchor = nil
+                        if RecentOutputModel.shouldPreservePaginationAnchor(
+                            anchor,
+                            from: oldRows,
+                            to: newRows) {
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(anchor, anchor: .top)
+                            }
+                        } else if RecentOutputModel.shouldFollowLatest(
+                            from: oldRows,
+                            to: newRows) {
+                            scrollToBottom(proxy, animated: true)
+                        }
+                    } else if RecentOutputModel.shouldFollowLatest(from: oldRows, to: newRows) {
+                        scrollToBottom(proxy, animated: true)
+                    }
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private func historyBar(snapshot: RecentOutputSnapshot) -> some View {
+        if snapshot.render.canLoadOlder
+            || snapshot.render.rows.contains(where: {
+                if case .loadEarlier = $0 { return true }
+                return false
+            }) {
+            Button { loadEarlier(snapshot: snapshot) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.up")
+                    if let earlierCount = snapshot.render.rows.compactMap({ row -> UInt32? in
+                        if case .loadEarlier(let count) = row { return count }
+                        return nil
+                    }).first, earlierCount > 0 {
+                        Text("Load earlier (\(earlierCount) lines)")
+                    } else {
+                        Text("Load earlier")
+                    }
+                    Spacer()
+                    if snapshot.render.transcriptLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(RecentOutputPalette.accent)
+                    } else {
+                        Text("history")
+                            .font(.caption2)
+                            .foregroundStyle(RecentOutputPalette.muted)
+                    }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(RecentOutputPalette.accent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RecentOutputPalette.panel2)
+                .overlay(Rectangle().stroke(RecentOutputPalette.line, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(snapshot.render.transcriptLoading)
+            .accessibilityLabel(snapshot.render.rows.compactMap { row -> UInt32? in
+                if case .loadEarlier(let count) = row { return count }
+                return nil
+            }.first.map {
+                "Load earlier, \($0) lines omitted"
+            } ?? "Load earlier")
+        }
+    }
+
     private func previousBlock(in rows: [RecentOutputRow], at index: Int) -> TranscriptBlock? {
         guard index > 0 else { return nil }
-        for i in stride(from: index - 1, through: 0, by: -1) {
-            if case .block(let block) = rows[i] { return block }
+        for position in stride(from: index - 1, through: 0, by: -1) {
+            if case .block(let block) = rows[position] {
+                return block
+            }
         }
         return nil
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation {
+                    proxy.scrollTo("recent-output-bottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("recent-output-bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private func loadEarlier(snapshot: RecentOutputSnapshot) {
+        guard snapshot.render.canLoadOlder else { return }
+        let anchor = snapshot.identifiedRows.first?.id
+        guard model.loadEarlierOutput(agentId: agent.agentId) else {
+            paginationAnchor = nil
+            return
+        }
+        paginationAnchor = anchor
+    }
+
+    private var composer: some View {
+        RecentPromptComposer(
+            agent: agent,
+            model: model,
+            drafts: drafts,
+            focusPrompt: focusPrompt,
+            onSend: onSend)
     }
 
     private func refresh() {
@@ -946,6 +1279,58 @@ private struct RecentOutputView: View {
     }
 }
 
+private struct RecentPromptComposer: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+    @ObservedObject var drafts: PromptDrafts
+    let focusPrompt: FocusState<Bool>.Binding
+    let onSend: () -> Void
+
+    private var promptAvailability: AgentActionAvailability? {
+        BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
+            .first { $0.action == .prompt }
+    }
+
+    var body: some View {
+        if let item = promptAvailability {
+            let draftIsEmpty = drafts.drafts[agent.agentId]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty != false
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    TextField("Reply to agent…", text: drafts.binding(for: agent.agentId))
+                        .textFieldStyle(.roundedBorder)
+                        .focused(focusPrompt)
+                        .disabled(!item.isEnabled)
+                    Button("Send", action: onSend)
+                        .buttonStyle(RecentSendButtonStyle())
+                        .disabled(!item.isEnabled
+                                  || draftIsEmpty
+                                  || model.isActionInFlight(agentId: agent.agentId,
+                                                            capability: .prompt))
+                }
+                if let reason = item.disabledReason {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(RecentOutputPalette.muted)
+                        .accessibilityLabel("Why Prompt is disabled: \(reason)")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .background(RecentOutputPalette.bg)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(RecentOutputPalette.line)
+                    .frame(height: 1)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Pinned prompt composer")
+        }
+    }
+}
+
 private struct RecentOutputRowView: View {
     let row: RecentOutputRow
     @ObservedObject var model: AppModel
@@ -955,23 +1340,24 @@ private struct RecentOutputRowView: View {
     var body: some View {
         switch row {
         case .block(let block):
-            RecentBlockRow(block: block,
-                           showTimestamp: RecentOutputRender.isBoundary(previous: previousBlock,
-                                                                        current: block))
-        case .loadEarlier(let count):
-            LoadEarlierDivider(count: count) {
-                model.loadEarlierOutput(agentId: agent.agentId)
-            }
-        case .error(_):
+            RecentBlockRow(
+                block: block,
+                showTimestamp: RecentOutputRender.isBoundary(
+                    previous: previousBlock,
+                    current: block))
+        case .loadEarlier:
+            EmptyView()
+        case .error:
             HStack {
-                Text("Couldn't load earlier output")
+                Text("Couldn’t load earlier output")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecentOutputPalette.muted)
                 Spacer()
                 Button("Retry") {
                     model.retryTranscript(agentId: agent.agentId)
                 }
                 .font(.caption)
+                .foregroundStyle(RecentOutputPalette.accent)
                 .accessibilityLabel("Retry loading earlier output")
             }
             .accessibilityElement(children: .combine)
@@ -979,9 +1365,10 @@ private struct RecentOutputRowView: View {
             HStack(spacing: 6) {
                 ProgressView()
                     .controlSize(.small)
+                    .tint(RecentOutputPalette.accent)
                 Text("Loading earlier…")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecentOutputPalette.muted)
             }
         }
     }
@@ -990,88 +1377,184 @@ private struct RecentOutputRowView: View {
 private struct RecentBlockRow: View {
     let block: TranscriptBlock
     let showTimestamp: Bool
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(block: TranscriptBlock, showTimestamp: Bool) {
+        self.block = block
+        self.showTimestamp = showTimestamp
+        _expanded = State(initialValue: block.kind == .tool
+                          && RecentOutputRender.isCodeOrDiff(block.text))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if showTimestamp, let at = block.at {
-                Text(Self.timestamp(at))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .accessibilityLabel("\(Self.timestamp(at))")
-            }
+        Group {
             switch block.kind {
             case .user:
-                Text(block.text)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .background(Color.accentColor.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 8))
-                    .textSelection(.enabled)
+                userMessage
+                    .accessibilityElement(children: .combine)
                     .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
             case .agent:
-                Text(block.text)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                agentMessage
+                    .accessibilityElement(children: .combine)
                     .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
             case .tool, .system:
-                DisclosureGroup(isExpanded: $expanded) {
-                    Text(block.text)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } label: {
-                    Text(RecentOutputRender.toolSummary(block.text))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(block.kind == .system ? Color.secondary : Color.primary)
-                        .lineLimit(1)
-                }
-                .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+                toolMessage
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private static func timestamp(_ ms: UInt64) -> String {
-        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+    private var userMessage: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            roleHeader
+            HStack {
+                Spacer(minLength: 24)
+                messageLines
+                    .padding(10)
+                    .background(RecentOutputPalette.userTint,
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var agentMessage: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            roleHeader
+            messageLines
+                .textSelection(.enabled)
+        }
+    }
+
+    private var toolMessage: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(RecentOutputRender.codeLines(for: block).enumerated()),
+                        id: \.offset) { item in
+                    RecentCodeLineView(line: item.element)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RecentOutputPalette.codeBg,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(RecentOutputPalette.codeLine, lineWidth: 1))
+            .textSelection(.enabled)
+        } label: {
+            HStack(spacing: 6) {
+                Text(RecentOutputRender.toolSummary(block.text))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RecentOutputPalette.ink)
+                    .lineLimit(1)
+                Spacer()
+                if showTimestamp, let at = block.at {
+                    Text(RecentOutputRender.timestamp(at))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(RecentOutputPalette.muted)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .padding(8)
+        .background(RecentOutputPalette.panel2,
+                    in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(RecentOutputPalette.line, lineWidth: 1))
+        // This label is for the disclosure control only; its value/hint
+        // preserve the expanded/collapsed toggle semantics.
+        .accessibilityLabel(RecentOutputRender.disclosureAccessibilityLabel(block))
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        .accessibilityHint(RecentOutputRender.disclosureAccessibilityHint)
+    }
+
+    private var roleHeader: some View {
+        HStack(spacing: 6) {
+            Text(roleLabel)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(roleColor)
+            Spacer()
+            if showTimestamp, let at = block.at {
+                Text(RecentOutputRender.timestamp(at))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RecentOutputPalette.muted)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private var messageLines: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(RecentOutputRender.messageLines(block.text).enumerated()),
+                    id: \.offset) { item in
+                Text(item.element)
+                    .font(.subheadline)
+                    .foregroundStyle(RecentOutputPalette.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var roleLabel: String {
+        switch block.kind {
+        case .user: return "you"
+        case .agent: return "assistant"
+        case .tool: return "tool"
+        case .system: return "system"
+        }
+    }
+
+    private var roleColor: Color {
+        switch block.kind {
+        case .user: return RecentOutputPalette.userBlue
+        case .agent: return RecentOutputPalette.ink
+        case .tool: return RecentOutputPalette.accent
+        case .system: return RecentOutputPalette.muted
+        }
     }
 }
 
-private struct LoadEarlierDivider: View {
-    let count: UInt32?
-    let action: () -> Void
+private struct RecentCodeLineView: View {
+    let line: RecentCodeLine
 
     var body: some View {
-        Button(action: action) {
-            HStack {
-                if let count, count > 0 {
-                    Text("Load earlier (\(count) lines omitted)")
-                } else {
-                    Text("Load earlier")
-                }
-                Spacer()
-                Image(systemName: "chevron.up")
+        HStack(alignment: .top, spacing: 8) {
+            if let number = line.number {
+                Text("\(number)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RecentOutputPalette.muted)
+                    .frame(width: 24, alignment: .trailing)
+                    .accessibilityHidden(true)
             }
-            .font(.caption.weight(.medium))
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(Color.secondary.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: 6))
+            highlightedText
+                .font(.caption2.monospaced())
+                .foregroundStyle(RecentOutputPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(count.map { "Load earlier, \($0) lines omitted" } ?? "Load earlier")
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var highlightedText: Text {
+        line.segments.reduce(Text("")) { partial, segment in
+            partial + Text(segment.text)
+                .foregroundStyle(color(for: segment.kind))
+        }
+    }
+
+    private func color(for kind: RecentCodeSegmentKind) -> Color {
+        switch kind {
+        case .plain: return RecentOutputPalette.ink
+        case .keyword: return RecentOutputPalette.keyword
+        case .string: return RecentOutputPalette.string
+        case .addition: return RecentOutputPalette.diffAdd
+        case .deletion: return RecentOutputPalette.diffDel
+        case .comment: return RecentOutputPalette.comment
+        }
     }
 }
-
 /// Line 2 (D26): repo·branch·worktree basename — no nesting level — with
 /// PR / dirty / one `↑a↓b` badge trailing (D29: not separate columns).
 ///
@@ -1333,6 +1816,17 @@ struct FleetView: View {
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
             .navigationTitle("Fleet")
+#if DEBUG
+            .task {
+                applyDebugDemoRoute()
+            }
+            .onChange(of: model.demoDetailAgentId) { _, _ in
+                applyDebugDemoRoute()
+            }
+            .onChange(of: model.mode) { _, _ in
+                applyDebugDemoRoute()
+            }
+#endif
             .modifier(FleetSearchable(mode: model.mode, text: $searchText))
             // #166 review F1/F3: the connection indicator and the pinned
             // filter-chip row live in a persistent top inset, so they stay
@@ -1407,6 +1901,23 @@ struct FleetView: View {
     /// re-run this body. The rows observe the object (`@ObservedObject`)
     /// and re-render themselves.
     @State private var promptDrafts = PromptDrafts()
+
+#if DEBUG
+    /// Apply the opt-in launch route after the demo task has seeded the store.
+    /// This is deliberately state-driven rather than a hidden tap target, so
+    /// the design-gate command can reproduce the same detail from a clean app
+    /// launch and normal users never enter it accidentally.
+    private func applyDebugDemoRoute() {
+        guard model.mode == .demo,
+              let agentId = model.demoDetailAgentId,
+              model.fleet.agent(agentId) != nil else { return }
+        viewState.open(agentId: agentId)
+        if promptDrafts.drafts[agentId]
+            .map({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) != true {
+            promptDrafts.binding(for: agentId).wrappedValue = "Please verify the diff too."
+        }
+    }
+#endif
 
     /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
     /// promotion, not a filter: the same agents also appear in their repo

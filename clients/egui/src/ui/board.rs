@@ -101,7 +101,8 @@ const KILL_CONFIRM_STARTED: &str = "corral-ui-kill-confirm-started";
 const KILL_CONFIRM_TIMEOUT_SECONDS: f64 = 10.0;
 
 const LIVE_LABEL: &str = "live";
-const EARLIER_LINES_LABEL: &str = "229 earlier lines";
+const PAUSED_LABEL: &str = "paused";
+const EARLIER_OUTPUT_LABEL: &str = "Earlier output";
 const LOAD_EARLIER_LABEL: &str = "Load earlier";
 const USER_BLOCK_INSET: f32 = 24.0;
 
@@ -1219,6 +1220,39 @@ fn sync_kill_confirmation(ctx: &egui::Context, selected: Option<&str>) {
     }
 }
 
+/// Native font bundles do not consistently contain the bullet glyph used by
+/// the HTML reference, so paint the tiny live mark and keep the label textual.
+fn live_indicator(ui: &mut Ui, live: bool) {
+    let color = if live {
+        theme::ui::ACCENT
+    } else {
+        theme::ui::MUTED
+    };
+    let label = if live { LIVE_LABEL } else { PAUSED_LABEL };
+    ui.horizontal(|ui| {
+        painted_dot(ui, color, 3.0);
+        ui.label(RichText::new(label).small().strong().color(color));
+    });
+}
+
+fn recent_should_show_live(state: Option<&DriveState>, has_visible_output: bool) -> bool {
+    has_visible_output
+        && matches!(
+            state,
+            Some(DriveState::Sending { .. } | DriveState::Ok { .. })
+        )
+}
+
+fn painted_dot(ui: &mut Ui, color: Color32, radius: f32) {
+    let diameter = radius * 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(diameter + 4.0, 12.0), Sense::hover());
+    ui.painter().circle_filled(
+        egui::pos2(rect.left() + 2.0 + radius, rect.center().y),
+        radius,
+        color,
+    );
+}
+
 fn recent_output_surface(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -1233,20 +1267,74 @@ fn recent_output_surface(
             .unwrap_or(true)
     });
     let Some(id) = selected else {
-        live_indicator(ui);
+        live_indicator(ui, false);
         return;
     };
     let Some(agent) = fleet.agents.get(id) else {
         return;
     };
     let read_tail_state = latest_read_tail_state(fleet, id);
+    let has_visible_output = fleet
+        .transcripts
+        .get(id)
+        .filter(|pane| !pane.entries.is_empty())
+        .map(|pane| {
+            !recent_visible_indices(pane.entries.iter().map(|entry| entry.text.as_str())).is_empty()
+        })
+        .or_else(|| {
+            fleet
+                .tails
+                .get(id)
+                .map(|lines| !recent_visible_indices(lines.iter().map(String::as_str)).is_empty())
+        })
+        .unwrap_or(false);
+    let show_live = recent_should_show_live(read_tail_state, has_visible_output);
+    let read_tail_control =
+        drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
+    let prompt_control = drive_control_state(&agent.capabilities, "prompt", allowed("prompt"));
+
+    let mut metadata_texts: Vec<&str> = Vec::new();
+    if let Some(pane) = fleet
+        .transcripts
+        .get(id)
+        .filter(|pane| !pane.entries.is_empty())
+    {
+        metadata_texts.extend(pane.entries.iter().map(|entry| entry.text.as_str()));
+    } else if let Some(lines) = fleet.tails.get(id) {
+        metadata_texts.extend(lines.iter().map(String::as_str));
+    }
+    let metadata = recent_metadata_from_texts(&metadata_texts);
+
     egui::Frame::NONE
         .fill(theme::ui::PANEL2)
         .stroke(Stroke::new(1.0, theme::ui::LINE))
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                live_indicator(ui);
+                live_indicator(ui, show_live);
+                recent_metadata_chip(
+                    ui,
+                    metadata.model.as_deref().unwrap_or(&agent.tool),
+                    theme::ui::ACCENT,
+                );
+                if let Some(effort) = metadata.effort.as_deref() {
+                    recent_metadata_chip(ui, effort, theme::ui::INK);
+                }
+                if let Some(worktree) = metadata
+                    .worktree
+                    .as_deref()
+                    .or(agent.workspace.worktree_path.as_deref())
+                {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(worktree)
+                                .monospace()
+                                .small()
+                                .color(theme::ui::MUTED),
+                        )
+                        .truncate(),
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(format!(
@@ -1258,58 +1346,19 @@ fn recent_output_surface(
                     );
                 });
             });
-            ui.add_space(4.0);
-            if let Some(pane) = fleet
-                .transcripts
-                .get(id)
-                .filter(|pane| !pane.entries.is_empty())
-            {
-                // TranscriptPane stores entries newest-first and appends
-                // older pages at the end. Keep the newest six, then paint
-                // that slice oldest-to-newest so the newest message sits at
-                // the bottom of the stick-to-bottom surface.
-                for index in recent_output_indices(pane.entries.len(), stick_to_bottom) {
-                    recent_transcript_entry(ui, &pane.entries[index]);
-                }
-            } else if let Some(lines) = fleet.tails.get(id) {
-                for index in recent_output_indices(lines.len(), stick_to_bottom) {
-                    recent_tail_entry(ui, &lines[index]);
-                }
-            } else if let Some(state) = read_tail_state {
-                let feedback = match state {
-                    DriveState::Sending { .. } => "Fetching recent output…".to_string(),
-                    DriveState::Ok { .. } => {
-                        "read_tail returned no output — click Load earlier to retry".to_string()
-                    }
-                    DriveState::Failed { .. } => {
-                        format!("Recent output unavailable: {}", drive_state_text(state))
-                    }
-                };
-                ui.label(
-                    RichText::new(feedback)
-                        .small()
-                        .color(drive_state_color(state)),
-                );
-            } else {
-                ui.label(
-                    RichText::new("No recent output fetched yet — click Load earlier")
-                        .small()
-                        .color(theme::ui::INK),
-                );
-            }
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                painted_rule(ui, 28.0);
-                ui.label(
-                    RichText::new(EARLIER_LINES_LABEL)
-                        .small()
-                        .color(theme::ui::MUTED),
-                );
-                painted_dot(ui, theme::ui::MUTED, 2.0);
-                let read_tail_control =
-                    drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
-                let load = if read_tail_control == DriveControlState::Ready {
-                    Some(
+
+            // This is deliberately outside the scroll area. It remains the
+            // first history affordance while the transcript grows below it.
+            let load_clicked = ui
+                .horizontal(|ui| {
+                    ui.add_space(2.0);
+                    painted_dot(ui, theme::ui::MUTED, 2.0);
+                    ui.label(
+                        RichText::new(EARLIER_OUTPUT_LABEL)
+                            .small()
+                            .color(theme::ui::MUTED),
+                    );
+                    if read_tail_control == DriveControlState::Ready {
                         ui.add(
                             egui::Button::new(
                                 RichText::new(LOAD_EARLIER_LABEL)
@@ -1318,24 +1367,114 @@ fn recent_output_surface(
                                     .color(theme::ui::ACCENT),
                             )
                             .frame(false),
-                        ),
-                    )
-                } else {
-                    disabled_drive_button(ui, LOAD_EARLIER_LABEL, "read_tail", read_tail_control);
-                    None
-                };
-                painted_rule(ui, 28.0);
-                if load.is_some_and(|response| response.clicked()) {
-                    (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
-                    (actions.transcript)(crate::transcript::TranscriptRequest {
-                        agent_id: agent.agent_id.clone(),
-                        cursor: fleet
-                            .transcripts
-                            .get(id)
-                            .and_then(|pane| pane.next_cursor.clone()),
-                    });
-                }
-            });
+                        )
+                        .clicked()
+                    } else {
+                        disabled_drive_button(
+                            ui,
+                            LOAD_EARLIER_LABEL,
+                            "read_tail",
+                            read_tail_control,
+                        );
+                        false
+                    }
+                })
+                .inner;
+            if load_clicked {
+                (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
+                (actions.transcript)(crate::transcript::TranscriptRequest {
+                    agent_id: agent.agent_id.clone(),
+                    cursor: fleet
+                        .transcripts
+                        .get(id)
+                        .and_then(|pane| pane.next_cursor.clone()),
+                });
+            }
+
+            ui.add_space(2.0);
+            let available_height = ui.available_height();
+            let max_height = if available_height.is_finite() {
+                (available_height - 86.0).max(120.0)
+            } else {
+                260.0
+            };
+            ScrollArea::vertical()
+                .id_salt(("corral-ui-recent-transcript", id))
+                .auto_shrink([false, false])
+                .stick_to_bottom(stick_to_bottom)
+                .max_height(max_height)
+                .show(ui, |ui| {
+                    if let Some(pane) = fleet
+                        .transcripts
+                        .get(id)
+                        .filter(|pane| !pane.entries.is_empty())
+                    {
+                        let visible_indices = recent_visible_indices(
+                            pane.entries.iter().map(|entry| entry.text.as_str()),
+                        );
+                        if visible_indices.is_empty() {
+                            ui.label(
+                                RichText::new("No readable recent output.")
+                                    .small()
+                                    .color(theme::ui::MUTED),
+                            );
+                        } else {
+                            // Entries are newest-first. The visible window is
+                            // painted oldest-to-newest when following the tail.
+                            for position in
+                                recent_output_indices(visible_indices.len(), stick_to_bottom)
+                            {
+                                let source_index = visible_indices[position];
+                                recent_transcript_entry(
+                                    ui,
+                                    &pane.entries[source_index],
+                                    pane.base_offset + source_index,
+                                );
+                            }
+                        }
+                    } else if let Some(lines) = fleet.tails.get(id) {
+                        let visible_indices =
+                            recent_visible_indices(lines.iter().map(String::as_str));
+                        if visible_indices.is_empty() {
+                            ui.label(
+                                RichText::new("No readable recent output.")
+                                    .small()
+                                    .color(theme::ui::MUTED),
+                            );
+                        } else {
+                            for position in
+                                recent_output_indices(visible_indices.len(), stick_to_bottom)
+                            {
+                                let source_index = visible_indices[position];
+                                recent_tail_entry(ui, &lines[source_index], source_index);
+                            }
+                        }
+                    } else if let Some(state) = read_tail_state {
+                        let feedback = match state {
+                            DriveState::Sending { .. } => "Fetching recent output…".to_string(),
+                            DriveState::Ok { .. } => {
+                                "read_tail returned no output — use the history control to retry"
+                                    .to_string()
+                            }
+                            DriveState::Failed { .. } => {
+                                format!("Recent output unavailable: {}", drive_state_text(state))
+                            }
+                        };
+                        ui.label(
+                            RichText::new(feedback)
+                                .small()
+                                .color(drive_state_color(state)),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("No recent output fetched yet — use the history control")
+                                .small()
+                                .color(theme::ui::INK),
+                        );
+                    }
+                });
+
+            recent_prompt_composer(ui, agent, fleet.rev, prompt_control, actions.drive);
         });
 }
 
@@ -1343,12 +1482,20 @@ fn recent_output_surface(
 /// window oldest-to-newest; when disabled the newest entry remains first so
 /// the operator can inspect the latest output without automatic bottom bias.
 pub(crate) fn recent_output_indices(len: usize, stick_to_bottom: bool) -> Vec<usize> {
-    let count = len.min(6);
+    let count = len;
     if stick_to_bottom {
         (0..count).rev().collect()
     } else {
         (0..count).collect()
     }
+}
+
+fn recent_visible_indices<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<usize> {
+    texts
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, text)| recent_visible_text(text).map(|_| index))
+        .collect()
 }
 
 fn latest_read_tail_state<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
@@ -1363,40 +1510,208 @@ fn latest_read_tail_state<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a Dr
     })
 }
 
-/// Native font bundles do not consistently contain the bullet/box-drawing
-/// glyphs used by the HTML reference. Paint those two tiny marks instead so
-/// the semantic labels remain readable in Retina screenshots.
-fn live_indicator(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        painted_dot(ui, theme::ui::ACCENT, 3.0);
-        ui.label(
-            RichText::new(LIVE_LABEL)
-                .small()
-                .strong()
-                .color(theme::ui::ACCENT),
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RecentMetadata {
+    model: Option<String>,
+    effort: Option<String>,
+    worktree: Option<String>,
+}
+
+fn recent_metadata_chip(ui: &mut Ui, text: &str, color: Color32) {
+    egui::Frame::NONE
+        .fill(theme::ui::PANEL3)
+        .stroke(Stroke::new(1.0, theme::ui::LINE))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).monospace().small().color(color));
+        });
+}
+
+fn recent_metadata_from_texts(texts: &[&str]) -> RecentMetadata {
+    let mut found = RecentMetadata::default();
+    for text in texts {
+        for line in text.split('\n') {
+            let Some(parsed) = parse_recent_metadata(line) else {
+                continue;
+            };
+            if found.model.is_none() {
+                found.model = parsed.model;
+            }
+            if found.effort.is_none() {
+                found.effort = parsed.effort;
+            }
+            if found.worktree.is_none() {
+                found.worktree = parsed.worktree;
+            }
+        }
+    }
+    found
+}
+
+fn parse_recent_metadata(line: &str) -> Option<RecentMetadata> {
+    let value = line.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let mut pieces: Vec<&str> = value.split('·').map(str::trim).collect();
+    let path = pieces.pop()?;
+    if !recent_worktree_path(path) {
+        return None;
+    }
+    let left = pieces.join(" · ");
+    let mut words: Vec<&str> = left.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    let effort = words
+        .last()
+        .and_then(|word| recent_effort(word))
+        .map(str::to_string);
+    if effort.is_some() {
+        words.pop();
+    }
+    let model = words.join(" ");
+    if model.is_empty() || !recent_model_name(&model) {
+        return None;
+    }
+    Some(RecentMetadata {
+        model: Some(model),
+        effort,
+        worktree: Some(path.to_string()),
+    })
+}
+
+fn recent_metadata_line(line: &str) -> bool {
+    parse_recent_metadata(line).is_some()
+}
+
+fn recent_effort(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+fn recent_worktree_path(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.starts_with('~')
+        || value.starts_with('/')
+        || lower.contains("worktree")
+        || value.contains('/')
+}
+
+fn recent_model_name(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("gpt")
+        || lower.contains("claude")
+        || lower.contains("gemini")
+        || lower.contains("sonnet")
+        || lower.contains("opus")
+        || lower.contains("luna")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+}
+
+fn recent_visible_text(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .collect();
+    let first_content = lines.iter().position(|line| !line.trim().is_empty());
+    let last_content = lines.iter().rposition(|line| !line.trim().is_empty());
+    let strip_metadata = matches!(
+        (first_content, last_content),
+        (Some(first), Some(last))
+            if first != last && recent_metadata_line(lines[last])
+    );
+    let lines: Vec<&str> = lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if strip_metadata && Some(index) == last_content {
+                None
+            } else {
+                Some(line)
+            }
+        })
+        .collect();
+    if lines.is_empty() || lines.iter().all(|line| line.trim().is_empty()) {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn recent_prompt_composer(
+    ui: &mut Ui,
+    agent: &Agent,
+    rev: Option<u64>,
+    control: DriveControlState,
+    drive: &mut dyn FnMut(DriveIntent),
+) {
+    let id = eframe::egui::Id::new(("corral-ui-recent-prompt", &agent.agent_id));
+    let mut text: String = ui
+        .ctx()
+        .memory(|memory| memory.data.get_temp::<String>(id).unwrap_or_default());
+    let enabled = control == DriveControlState::Ready;
+    let mut submitted = false;
+    egui::Frame::NONE
+        .fill(theme::ui::BG)
+        .stroke(Stroke::new(1.0, theme::ui::LINE))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let input_width = (ui.available_width() - 72.0).max(80.0);
+                let response = ui.add_enabled(
+                    enabled,
+                    TextEdit::singleline(&mut text)
+                        .id(id)
+                        .hint_text("Reply to agent…")
+                        .desired_width(input_width),
+                );
+                let enter = response.has_focus()
+                    && ui.input(|input| input.key_pressed(eframe::egui::Key::Enter));
+                let send = ui.add_enabled(
+                    enabled && !text.trim().is_empty(),
+                    egui::Button::new(RichText::new("Send").strong().color(theme::ui::SEND_INK))
+                        .fill(theme::ui::ACCENT)
+                        .corner_radius(CornerRadius::same(8))
+                        .min_size(egui::vec2(56.0, 32.0)),
+                );
+                submitted = enter || send.clicked();
+            });
+            if control != DriveControlState::Ready
+                && let Some(reason) = drive_disabled_reason("prompt", control)
+            {
+                ui.label(RichText::new(reason).small().color(theme::ui::MUTED));
+            }
+        });
+    if submitted && enabled {
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            drive(DriveIntent::prompt(&agent.agent_id, trimmed, rev));
+        }
+        ui.ctx()
+            .memory_mut(|memory| memory.data.remove::<String>(id));
+    } else {
+        ui.ctx()
+            .memory_mut(|memory| memory.data.insert_temp::<String>(id, text));
+    }
+}
+
+fn recent_message_lines(ui: &mut Ui, text: &str, font: FontId) {
+    for line in text.split('\n') {
+        ui.add(
+            egui::Label::new(RichText::new(line).font(font.clone()).color(theme::ui::INK)).wrap(),
         );
-    });
-}
-
-fn painted_dot(ui: &mut Ui, color: Color32, radius: f32) {
-    let diameter = radius * 2.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(diameter + 4.0, 12.0), Sense::hover());
-    ui.painter().circle_filled(
-        egui::pos2(rect.left() + 2.0 + radius, rect.center().y),
-        radius,
-        color,
-    );
-}
-
-fn painted_rule(ui: &mut Ui, width: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 12.0), Sense::hover());
-    ui.painter().line_segment(
-        [
-            egui::pos2(rect.left(), rect.center().y),
-            egui::pos2(rect.right(), rect.center().y),
-        ],
-        Stroke::new(1.0, theme::ui::MUTED),
-    );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1413,9 +1728,8 @@ struct RecentBlockStyle {
     monospace: bool,
 }
 
-/// The daemon's bounded tail is terminal-oriented rather than role-tagged
-/// JSON. Preserve every returned line, but recover the same chat hierarchy
-/// from the terminal markers that operators actually see.
+/// Recover user/tool/assistant semantics from the terminal-shaped read_tail
+/// fallback. Structured transcript roles use the same styles below.
 fn classify_tail_line(line: &str) -> RecentBlockKind {
     let trimmed = line.trim_start();
     let lower = trimmed.to_ascii_lowercase();
@@ -1461,20 +1775,45 @@ fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
     }
 }
 
-fn recent_tail_entry(ui: &mut Ui, line: &str) {
-    recent_chat_block(ui, classify_tail_line(line), line);
+fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize) {
+    let Some(text) = recent_visible_text(line) else {
+        return;
+    };
+    recent_chat_block(ui, classify_tail_line(line), &text, position);
 }
 
-fn recent_transcript_entry(ui: &mut Ui, entry: &crate::transcript::TranscriptEntry) {
+fn recent_transcript_entry(
+    ui: &mut Ui,
+    entry: &crate::transcript::TranscriptEntry,
+    position: usize,
+) {
     let kind = match entry.role.to_ascii_lowercase().as_str() {
         "user" => RecentBlockKind::User,
         "assistant" | "agent" => RecentBlockKind::Agent,
         _ => RecentBlockKind::Tool,
     };
-    recent_chat_block(ui, kind, &entry.text);
+    let Some(text) = recent_visible_text(&entry.text) else {
+        return;
+    };
+    recent_chat_block(ui, kind, &text, position);
 }
 
-fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str) {
+fn recent_tool_summary(text: &str) -> String {
+    let first = text
+        .split('\n')
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(text)
+        .trim();
+    let command = first.strip_prefix("$ ").unwrap_or(first).trim();
+    command.chars().take(48).collect()
+}
+
+fn recent_tool_disclosure_id(position: usize) -> egui::Id {
+    egui::Id::new(("corral-ui-tool-block", position))
+}
+
+fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str, position: usize) {
+    let block_width = ui.available_width();
     let style = recent_block_style(kind);
     let frame = egui::Frame::NONE
         .fill(style.fill)
@@ -1492,38 +1831,266 @@ fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str) {
                     RichText::new("you")
                         .small()
                         .strong()
-                        .color(Color32::from_rgb(0x6e, 0xa8, 0xff)),
+                        .color(theme::ui::USER_BLUE),
                 );
-                ui.label(RichText::new(text).size(12.0).color(theme::ui::INK));
+                recent_message_lines(ui, text, FontId::proportional(12.0));
             });
         });
     } else {
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             if style.monospace {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("tool")
+                if recent_is_code_or_diff(text) {
+                    CollapsingHeader::new(
+                        RichText::new(format!("tool  {}", recent_tool_summary(text)))
                             .small()
                             .strong()
-                            .color(theme::ui::MUTED),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(text)
-                                .monospace()
+                            .color(theme::ui::ACCENT),
+                    )
+                    .id_salt(recent_tool_disclosure_id(position))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.set_max_width((block_width - 40.0).max(40.0));
+                        egui::Frame::NONE
+                            .fill(theme::ui::BG)
+                            .stroke(Stroke::new(1.0, recent_code_line_color()))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                for (number, line) in text.split('\n').enumerate() {
+                                    recent_code_line(ui, line, number + 1);
+                                }
+                            });
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("tool")
                                 .small()
+                                .strong()
                                 .color(theme::ui::MUTED),
-                        )
-                        .wrap(),
-                    );
-                });
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(text)
+                                    .monospace()
+                                    .small()
+                                    .color(theme::ui::MUTED),
+                            )
+                            .wrap(),
+                        );
+                    });
+                }
             } else {
-                ui.label(RichText::new(text).size(12.0).color(theme::ui::INK));
+                ui.label(
+                    RichText::new("assistant")
+                        .small()
+                        .strong()
+                        .color(theme::ui::INK),
+                );
+                recent_message_lines(ui, text, FontId::proportional(12.0));
             }
         });
     }
     ui.add_space(4.0);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecentCodeSegmentKind {
+    Plain,
+    Keyword,
+    String,
+    Addition,
+    Deletion,
+    Comment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecentCodeSegment {
+    text: String,
+    kind: RecentCodeSegmentKind,
+}
+
+fn recent_code_line_color() -> Color32 {
+    Color32::from_rgb(0x21, 0x26, 0x2d)
+}
+
+fn recent_code_color(kind: RecentCodeSegmentKind) -> Color32 {
+    match kind {
+        RecentCodeSegmentKind::Plain => theme::ui::INK,
+        RecentCodeSegmentKind::Keyword => Color32::from_rgb(0xff, 0x7b, 0x72),
+        RecentCodeSegmentKind::String => Color32::from_rgb(0xa5, 0xd6, 0xff),
+        RecentCodeSegmentKind::Addition => theme::ci::SUCCESS,
+        RecentCodeSegmentKind::Deletion => theme::state::BLOCKED,
+        RecentCodeSegmentKind::Comment => theme::ui::MUTED,
+    }
+}
+
+fn recent_is_code_or_diff(text: &str) -> bool {
+    let mut has_git_header = false;
+    let mut has_file_header = false;
+    let mut has_hunk = false;
+    let mut has_change = false;
+    let mut has_fence = false;
+    let lines: Vec<&str> = text.split('\n').collect();
+    for line in &lines {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        has_git_header =
+            has_git_header || lower.starts_with("git diff") || lower.starts_with("diff --git");
+        has_file_header = has_file_header || lower.starts_with("+++ ") || lower.starts_with("--- ");
+        has_hunk = has_hunk || lower.starts_with("@@");
+        has_change = has_change
+            || (trimmed.starts_with('+') && !trimmed.starts_with("+++"))
+            || (trimmed.starts_with('-') && !trimmed.starts_with("---"));
+        has_fence = has_fence || trimmed.starts_with("```");
+    }
+    let has_diff_evidence = (has_git_header && (has_hunk || (has_file_header && has_change)))
+        || (has_hunk && has_change)
+        || (has_file_header && has_hunk);
+    has_fence || has_diff_evidence
+}
+
+fn append_recent_segment(
+    segments: &mut Vec<RecentCodeSegment>,
+    text: &str,
+    kind: RecentCodeSegmentKind,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = segments.last_mut()
+        && last.kind == kind
+    {
+        last.text.push_str(text);
+        return;
+    }
+    segments.push(RecentCodeSegment {
+        text: text.to_string(),
+        kind,
+    });
+}
+
+fn recent_highlight(line: &str) -> Vec<RecentCodeSegment> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+        return vec![RecentCodeSegment {
+            text: line.to_string(),
+            kind: RecentCodeSegmentKind::Addition,
+        }];
+    }
+    if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+        return vec![RecentCodeSegment {
+            text: line.to_string(),
+            kind: RecentCodeSegmentKind::Deletion,
+        }];
+    }
+    if trimmed.starts_with("@@") {
+        return vec![RecentCodeSegment {
+            text: line.to_string(),
+            kind: RecentCodeSegmentKind::Keyword,
+        }];
+    }
+
+    let chars: Vec<char> = line.chars().collect();
+    let first_non_whitespace = chars
+        .iter()
+        .position(|character| !character.is_whitespace());
+    let mut segments = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        if character == '"' || character == '\'' {
+            let quote = character;
+            let mut end = index + 1;
+            let mut escaped = false;
+            while end < chars.len() {
+                let candidate = chars[end];
+                if escaped {
+                    escaped = false;
+                } else if candidate == '\\' {
+                    escaped = true;
+                } else if candidate == quote {
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            let token: String = chars[index..end].iter().collect();
+            append_recent_segment(&mut segments, &token, RecentCodeSegmentKind::String);
+            index = end;
+        } else if (character == '#' && first_non_whitespace == Some(index))
+            || (character == '/' && index + 1 < chars.len() && chars[index + 1] == '/')
+        {
+            let token: String = chars[index..].iter().collect();
+            append_recent_segment(&mut segments, &token, RecentCodeSegmentKind::Comment);
+            break;
+        } else if character.is_alphabetic() || character == '_' {
+            let mut end = index + 1;
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+            let word: String = chars[index..end].iter().collect();
+            let kind = if matches!(
+                word.as_str(),
+                "actor"
+                    | "class"
+                    | "const"
+                    | "else"
+                    | "enum"
+                    | "fn"
+                    | "for"
+                    | "func"
+                    | "if"
+                    | "impl"
+                    | "import"
+                    | "in"
+                    | "let"
+                    | "match"
+                    | "mut"
+                    | "pub"
+                    | "return"
+                    | "struct"
+                    | "switch"
+                    | "var"
+                    | "where"
+                    | "while"
+            ) {
+                RecentCodeSegmentKind::Keyword
+            } else {
+                RecentCodeSegmentKind::Plain
+            };
+            append_recent_segment(&mut segments, &word, kind);
+            index = end;
+        } else {
+            let token = character.to_string();
+            append_recent_segment(&mut segments, &token, RecentCodeSegmentKind::Plain);
+            index += 1;
+        }
+    }
+    segments
+}
+
+fn recent_code_line(ui: &mut Ui, line: &str, number: usize) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(format!("{number:>3} "))
+                .monospace()
+                .small()
+                .color(theme::ui::MUTED),
+        );
+        for segment in recent_highlight(line) {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(segment.text)
+                        .monospace()
+                        .small()
+                        .color(recent_code_color(segment.kind)),
+                )
+                .wrap(),
+            );
+        }
+    });
 }
 
 #[allow(dead_code)]
@@ -2323,8 +2890,8 @@ fn detail(
                                     .id_salt("corral-ui-recent-output")
                                     .max_height(200.0)
                                     .show(ui, |ui| {
-                                        for line in tail {
-                                            recent_tail_entry(ui, line);
+                                        for (position, line) in tail.iter().enumerate() {
+                                            recent_tail_entry(ui, line, position);
                                         }
                                     });
                             }
@@ -3375,6 +3942,111 @@ mod tests {
     }
 
     #[test]
+    fn recent_metadata_is_badged_and_not_rendered_as_prose() {
+        let metadata = recent_metadata_from_texts(&[
+            "assistant text\ngpt-5.6-luna max · ~/.herdr/worktrees/project-hearthwild/gauntlet-54",
+        ]);
+        assert_eq!(metadata.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(metadata.effort.as_deref(), Some("max"));
+        assert_eq!(
+            metadata.worktree.as_deref(),
+            Some("~/.herdr/worktrees/project-hearthwild/gauntlet-54")
+        );
+        assert_eq!(
+            recent_visible_text(
+                "assistant text\ngpt-5.6-luna max · ~/.herdr/worktrees/project-hearthwild/gauntlet-54"
+            )
+            .as_deref(),
+            Some("assistant text")
+        );
+        let keyed_prose = "path: src/main.rs\nmodel: tool output";
+        assert_eq!(
+            recent_visible_text(keyed_prose).as_deref(),
+            Some(keyed_prose),
+            "key-looking prose remains content"
+        );
+        let canonical = "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session";
+        assert_eq!(
+            recent_visible_text(&format!("assistant text\n{canonical}")).as_deref(),
+            Some("assistant text"),
+            "only a trailing canonical line is lifted"
+        );
+        assert_eq!(
+            recent_visible_text(canonical).as_deref(),
+            Some(canonical),
+            "a sole canonical line is never deleted"
+        );
+        assert!(
+            parse_recent_metadata("The model is ready · no slash").is_none(),
+            "ordinary prose must not be removed as metadata"
+        );
+    }
+
+    #[test]
+    fn recent_highlighting_is_restricted_to_code_or_diff_tool_blocks() {
+        let diff = "git diff -- src/catalog.rs\n@@ -1,1 +1,2 @@\n-let old = \"plain\";\n+let new = \"highlighted\";";
+        assert!(recent_is_code_or_diff(diff));
+        assert!(!recent_is_code_or_diff(
+            "The tool reports a model mismatch."
+        ));
+        assert!(!recent_is_code_or_diff("index out of bounds"));
+        assert!(!recent_is_code_or_diff("---"));
+        assert!(!recent_is_code_or_diff("git diff -- src/catalog.rs"));
+        assert!(
+            recent_highlight("+let value = \"highlighted\";")
+                .iter()
+                .any(|segment| segment.kind == RecentCodeSegmentKind::Addition)
+        );
+        assert!(
+            recent_highlight("let value = \"highlighted\";")
+                .iter()
+                .any(|segment| segment.kind == RecentCodeSegmentKind::String)
+        );
+        let tick = '\u{60}';
+        assert!(
+            !recent_is_code_or_diff(&format!("{tick}let value = \"plain\";{tick}")),
+            "single backticks are inline prose, not a fenced code block"
+        );
+        assert!(
+            recent_is_code_or_diff(&format!(
+                "{tick}{tick}{tick}rust\nlet value = \"highlighted\";\n{tick}{tick}{tick}"
+            )),
+            "only triple backticks form a fenced code block"
+        );
+        assert!(
+            recent_highlight("# comment")
+                .iter()
+                .any(|segment| segment.kind == RecentCodeSegmentKind::Comment)
+        );
+        assert!(
+            recent_highlight("value#hash")
+                .iter()
+                .all(|segment| segment.kind != RecentCodeSegmentKind::Comment),
+            "a mid-line hash is not a comment marker"
+        );
+    }
+
+    #[test]
+    fn recent_tool_summary_preserves_the_full_trimmed_command() {
+        assert_eq!(
+            recent_tool_summary("  $ cargo test --workspace  \ntest result: ok"),
+            "cargo test --workspace"
+        );
+        assert_eq!(
+            recent_tool_summary("\n  npm run lint -- --strict  \noutput"),
+            "npm run lint -- --strict"
+        );
+    }
+
+    #[test]
+    fn recent_tool_disclosure_ids_are_positional_and_history_count_is_unknown_safe() {
+        assert_eq!(recent_tool_disclosure_id(4), recent_tool_disclosure_id(4));
+        assert_ne!(recent_tool_disclosure_id(4), recent_tool_disclosure_id(5));
+        assert_eq!(EARLIER_OUTPUT_LABEL, "Earlier output");
+        assert!(!EARLIER_OUTPUT_LABEL.contains("229"));
+    }
+
+    #[test]
     fn recent_transcript_renders_newest_window_in_stable_order_after_older_page() {
         let ctx = row_test_context();
         let agent_id = "herdr:transcript-window";
@@ -3415,8 +4087,8 @@ mod tests {
                 recent_output_surface(ui, fleet, Some(agent_id), &|_| true, &mut actions);
             })
         };
-        let rendered_order = |output: &egui::FullOutput| {
-            let mut positions: Vec<(f32, usize)> = (0..6)
+        let rendered_order = |output: &egui::FullOutput, count: usize| {
+            let mut positions: Vec<(f32, usize)> = (0..count)
                 .map(|index| {
                     let marker = format!("transcript-marker-{index}");
                     (
@@ -3436,18 +4108,12 @@ mod tests {
 
         let mut output = render_recent(&fleet);
         assert_eq!(
-            rendered_order(&output),
-            vec![5, 4, 3, 2, 1, 0],
-            "Cards renders the newest six oldest-to-newest with newest last"
+            rendered_order(&output, 8),
+            vec![7, 6, 5, 4, 3, 2, 1, 0],
+            "Cards renders every loaded entry oldest-to-newest with newest last"
         );
-        for index in 6..8 {
-            assert!(
-                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
-                "older held marker {index} must not displace the newest window"
-            );
-        }
-        let oldest_visible = text_rect(&output, "transcript-marker-5")
-            .expect("oldest visible newest-window marker")
+        let oldest_visible = text_rect(&output, "transcript-marker-7")
+            .expect("oldest visible loaded-history marker")
             .top();
         let newest_visible = text_rect(&output, "transcript-marker-0")
             .expect("newest visible marker")
@@ -3456,7 +4122,7 @@ mod tests {
             newest_visible > oldest_visible,
             "newest visible transcript entry must sit lowest in the chat"
         );
-        let initial_order = rendered_order(&output);
+        let initial_order = rendered_order(&output, 8);
         clear_textures(&mut output);
 
         let generation = fleet
@@ -3492,16 +4158,17 @@ mod tests {
 
         let mut output = render_recent(&fleet);
         assert_eq!(
-            rendered_order(&output),
-            initial_order,
-            "appending an older page leaves the displayed newest window stable"
+            rendered_order(&output, 10),
+            vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+            "paging earlier renders the newly loaded history without clipping the tail"
         );
-        for index in 6..10 {
+        for index in 0..10 {
             assert!(
-                text_rect(&output, &format!("transcript-marker-{index}")).is_none(),
-                "older marker {index} must remain outside the Cards newest window"
+                text_rect(&output, &format!("transcript-marker-{index}")).is_some(),
+                "loaded marker {index} must remain rendered after paging earlier"
             );
         }
+        assert_ne!(rendered_order(&output, 10), initial_order);
         clear_textures(&mut output);
     }
 
@@ -3537,7 +4204,7 @@ mod tests {
             |ui| {
                 row_test_style(ui);
                 ui.set_max_width(180.0);
-                recent_chat_block(ui, RecentBlockKind::Tool, &long_tool_line);
+                recent_chat_block(ui, RecentBlockKind::Tool, &long_tool_line, 0);
             },
         );
         let rendered = rendered_text(&output, &long_tool_line)
@@ -3664,8 +4331,8 @@ mod tests {
             "Interrupt",
             "Kill",
             "Recent output",
-            LIVE_LABEL,
-            EARLIER_LINES_LABEL,
+            PAUSED_LABEL,
+            EARLIER_OUTPUT_LABEL,
             LOAD_EARLIER_LABEL,
         ] {
             assert!(
@@ -3701,10 +4368,58 @@ mod tests {
 
     #[test]
     fn recent_output_order_honors_stick_to_bottom_setting() {
-        assert_eq!(recent_output_indices(8, true), vec![5, 4, 3, 2, 1, 0]);
-        assert_eq!(recent_output_indices(8, false), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(recent_output_indices(8, true), vec![7, 6, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(
+            recent_output_indices(8, false),
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
         assert_eq!(recent_output_indices(3, true), vec![2, 1, 0]);
         assert_eq!(recent_output_indices(0, false), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn recent_output_filters_before_rendering_the_full_loaded_history() {
+        let lines = [
+            "assistant output",
+            "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session\nassistant output",
+            "second output",
+            "third output",
+            "fourth output",
+            "fifth output",
+            "sixth output",
+            "seventh output",
+        ];
+        assert_eq!(recent_visible_indices(lines), vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            recent_output_indices(recent_visible_indices(lines).len(), true),
+            vec![7, 6, 5, 4, 3, 2, 1, 0],
+            "a loaded history longer than six rows is not clipped"
+        );
+        assert!(
+            recent_visible_indices(["\n", " \t"]).is_empty(),
+            "an all-metadata/blank pane gets the explicit empty-state path"
+        );
+    }
+
+    #[test]
+    fn recent_live_indicator_requires_visible_output_and_non_error_drive() {
+        let sending = DriveState::Sending {
+            request_id: "r1".into(),
+            capability: "read_tail".into(),
+        };
+        let ok = DriveState::Ok {
+            rev: 1,
+            capability: "read_tail".into(),
+        };
+        let failed = DriveState::Failed {
+            failure: DriveFailure::NotGranted("grant".into()),
+            capability: "read_tail".into(),
+        };
+        assert!(recent_should_show_live(Some(&sending), true));
+        assert!(recent_should_show_live(Some(&ok), true));
+        assert!(!recent_should_show_live(Some(&failed), true));
+        assert!(!recent_should_show_live(Some(&ok), false));
+        assert!(!recent_should_show_live(None, true));
     }
 
     #[test]

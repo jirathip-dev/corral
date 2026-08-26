@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # checkout.  It catches ordinary source drift or a mismatched artifact when
 # that phase runs; it is not an authenticity mechanism.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "9a9eac039716477d602457c08e6f64444b9106fc41b4a0e545f2f6e4aad07004"
+    "927537c4297939f87521c4c7403d059728af144600b25c3c9e5aa0276112e333"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -127,7 +127,7 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
         "model.driveKill(",
         "model.driveAttach(",
         "model.drivePrompt(",
-        "model.openTranscript(",
+        "model.loadEarlierOutput(",
         "model.retryTranscript(",
         "model.driveApprove(",
         "model.handleCannedAction(",

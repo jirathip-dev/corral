@@ -90,6 +90,11 @@ pub mod ui {
     pub const INK: Color32 = Color32::from_rgb(0xe6, 0xed, 0xf3);
     pub const MUTED: Color32 = Color32::from_rgb(0x8b, 0x94, 0x9e);
     pub const ACCENT: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
+    /// Dark foreground for enabled accent controls, including Send.
+    pub const SEND_INK: Color32 = Color32::from_rgb(0x05, 0x24, 0x20);
+    /// Role blue is shared by the transcript's human-message label and the
+    /// approved prototype's `--working`-family role cue.
+    pub const USER_BLUE: Color32 = Color32::from_rgb(0x6e, 0xa8, 0xff);
     pub const USER_TINT: Color32 = Color32::from_rgb(0x12, 0x26, 0x3f);
     /// The approved prototype uses this slightly darker outer frame border.
     pub const FRAME_BORDER: Color32 = Color32::from_rgb(0x2a, 0x2f, 0x37);
@@ -339,6 +344,11 @@ mod tests {
             default.widgets.inactive.bg_fill
         );
         assert_ne!(ours.window_fill, default.window_fill);
+    }
+
+    #[test]
+    fn transcript_role_blue_matches_approved_prototype_token() {
+        assert_eq!(ui::USER_BLUE, Color32::from_rgb(0x6e, 0xa8, 0xff));
     }
 
     /// Drift guard for the shared state token contract

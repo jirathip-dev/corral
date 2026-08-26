@@ -7,6 +7,17 @@ import Foundation
 /// answered locally and mutate the seeded fleet.
 enum DemoFleet {
 
+    /// The opt-in detail route used by the reproducible #205 evidence gate.
+    /// Keeping the target in the fixture makes the route deterministic without
+    /// changing normal fleet selection behavior.
+    static let featuredAgentID = "herdr:demo-transcript"
+
+    struct RecentBlock: Equatable, Sendable {
+        let kind: TranscriptBlockKind
+        let text: String
+        let truncatedBefore: UInt32?
+    }
+
     /// Deterministic seed so the demo is stable across launches.
     static func seed(rev: UInt64 = 1) -> [String: Agent] {
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -102,6 +113,18 @@ enum DemoFleet {
                                  prNumber: 15, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
             seq: 9, tsOffset: 20)
 
+        // Dedicated transcript fixture: no approval card consumes the
+        // viewport, so the design gate can show assistant/user bubbles, the
+        // expanded diff, and the enabled pinned Send control together.
+        agents[featuredAgentID] = agent(featuredAgentID, tool: "codex", state: .working,
+            reason: "streaming a segmented transcript",
+            waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
+            displayName: "demo-transcript", title: "Review transcript chat",
+            workspace: Workspace(repo: "corral", branch: "g205/ios-transcript-chat",
+                                 worktreePath: "~/worktrees/corral/g205-ios-transcript-chat",
+                                 prNumber: 205, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
+            seq: 10, tsOffset: 12)
+
         agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "claude", state: .idle,
             reason: nil, waiting: nil, capabilities: ["read_tail", "prompt"],
             displayName: "demo-idle", title: "Investigate SSO migration",
@@ -127,25 +150,23 @@ enum DemoFleet {
                         agent: Agent, rev: UInt64) -> DriveResult {
         switch capability {
         case .readTail:
+            let blocks = recentBlocks(for: agent)
+            let lines = recentLines(from: blocks)
             let result: CodableValue = .object([
                 "agent_id": .string(agent.agentId),
-                "lines": .array([
-                    .string("(demo) last lines of \(agent.displayName ?? agent.agentId)"),
-                    .string("…seeded tail, no daemon in demo mode")
-                ]),
-                // #167: demo serves segmented blocks too so the block
-                // renderer has a wire-shaped input.
-                "blocks": .array([
-                    .object([
-                        "kind": .string("agent"),
-                        "text": .string("(demo) last lines of \(agent.displayName ?? agent.agentId)")
-                    ]),
-                    .object([
-                        "kind": .string("system"),
-                        "text": .string("…seeded tail, no daemon in demo mode"),
-                        "truncated_before": .int(1)
-                    ])
-                ])
+                "lines": .array(lines.map { .string($0) }),
+                // #167: demo serves the exact same segmented blocks used to
+                // derive `lines`; the fixture cannot drift into two scripts.
+                "blocks": .array(blocks.map { block in
+                    var value: [String: CodableValue] = [
+                        "kind": .string(block.kind.rawValue),
+                        "text": .string(block.text)
+                    ]
+                    if let truncatedBefore = block.truncatedBefore {
+                        value["truncated_before"] = .int(Int64(truncatedBefore))
+                    }
+                    return .object(value)
+                })
             ])
             return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev, result: result))
@@ -158,6 +179,71 @@ enum DemoFleet {
             return .dispatched(DriveResponse(requestId: "demo", ok: true, error: nil, errorKind: nil,
                                              rev: rev + 1, result: nil))
         }
+    }
+
+    /// The demo's metadata is derived from the source tool and agent identity,
+    /// rather than copied from one shared sample. That makes each seeded agent
+    /// useful for testing badges and keeps the capture route representative.
+    static func model(for agent: Agent) -> String {
+        let slug = agent.agentId.split(separator: ":", maxSplits: 1).last
+            .map(String.init)
+            ?? "demo"
+        let normalized = slug.replacingOccurrences(of: "_", with: "-")
+        switch agent.tool.lowercased() {
+        case "codex": return "gpt-5.6-\(normalized)"
+        case "claude": return "claude-4.1-\(normalized)"
+        case "gemini": return "gemini-2.5-\(normalized)"
+        case "opencode": return "gpt-5.4-\(normalized)"
+        default: return "\(agent.tool)-\(normalized)"
+        }
+    }
+
+    static func worktree(for agent: Agent) -> String {
+        if let worktree = agent.workspace.worktreePath, !worktree.isEmpty {
+            return worktree
+        }
+        let repo = agent.workspace.repo ?? "demo"
+        let branch = agent.workspace.branch ?? agent.agentId.replacingOccurrences(of: ":", with: "-")
+        return "~/worktrees/\(repo)/\(branch)"
+    }
+
+    static func effort(for agent: Agent) -> String {
+        switch agent.state {
+        case .blocked: return "max"
+        case .working: return "high"
+        case .done: return "medium"
+        case .idle, .unknown: return "low"
+        }
+    }
+
+    static func recentBlocks(for agent: Agent) -> [RecentBlock] {
+        let metadata = "\(model(for: agent)) \(effort(for: agent)) · \(worktree(for: agent))"
+        let file = agent.workspace.repo.map { "src/\($0.replacingOccurrences(of: "-", with: "_"))_view.rs" }
+            ?? "src/recent_output.rs"
+        let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
+        return [
+            RecentBlock(
+                kind: .agent,
+                text: "(demo) Snapshot read model is consistent.\n\(metadata)",
+                truncatedBefore: omitted),
+            RecentBlock(kind: .user,
+                        text: "Please verify the diff too.",
+                        truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}",
+                truncatedBefore: nil)
+        ]
+    }
+
+    static func recentLines(from blocks: [RecentBlock]) -> [String] {
+        blocks.flatMap { $0.text.components(separatedBy: .newlines) }
+    }
+
+    /// Debug-only baseline for the before frame: one terminal-shaped text
+    /// stream with no semantic bubbles or disclosure boundaries.
+    static func monotoneOutput(for agent: Agent) -> String {
+        recentLines(from: recentBlocks(for: agent)).joined(separator: " ")
     }
 }
 

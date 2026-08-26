@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Hermetic tests for scripts/design-gate-evidence.sh. They cover the supplied
 # PNG seam, complete-PNG rejection, exit-during-validation rechecking, visible
-# provenance labels, explicit force overwrites, normalized conformance
-# stability, complete-but-lingering writers, TERM-ignoring child escalation,
-# structural prototype rejection through real Chrome, Chrome trust-boundary
-# flags, argument validation, and the egui wake-command failure path.
+# provenance labels, canonical symlink/wrapper identity (including spaces),
+# stable repo-relative paths across cwd spellings, byte-stable conformance,
+# lossless slash-prefixed argv, targeted note redaction, load-bearing path
+# normalization failures, complete-but-lingering writers, TERM-ignoring child
+# escalation, bounded raw-byte logs with invalid UTF-8 and configured worktree
+# roots, a bounded generic-worktree scan, structural prototype rejection
+# through real Chrome, Chrome trust-boundary flags, argument validation, and
+# the egui wake-command failure path.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -24,6 +28,15 @@ fail() {
 }
 
 mkdir -p "$WORK/bin" "$WORK/output"
+
+ln -s "$SCRIPT" "$WORK/design-gate-link.sh"
+ln -s "$SCRIPT" "$WORK/design gate.sh"
+cat >"$WORK/design-gate-wrapper.sh" <<WRAPPER
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$WORK/design-gate-link.sh" "\$@"
+WRAPPER
+chmod +x "$WORK/design-gate-wrapper.sh"
 
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
   "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" <<'PY'
@@ -146,7 +159,7 @@ if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
     || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
 fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
-if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" ]]; then
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
 from pathlib import Path
 import os
@@ -157,6 +170,55 @@ import time
 source = Path(sys.argv[1]).read_bytes()
 destination = Path(sys.argv[2])
 mode = sys.argv[3]
+if mode == "invalid-bytes":
+    sys.stdout.buffer.write(b"raw diagnostic with invalid byte: \xff\n")
+    sys.stdout.buffer.write(b"FAILURE: exact invalid-byte diagnostic\n")
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
+if mode == "large-log":
+    configured_root = os.environ.get(
+        "CORRAL_TEST_WORKTREES_ROOT", "/tmp/Configured Herdr Root"
+    ).encode()
+    repo_root = os.environ.get("CORRAL_TEST_REPO_ROOT", "/tmp/corral-repo").encode()
+    output_root = os.environ.get("CORRAL_TEST_OUTPUT_ROOT", "/tmp/corral-output").encode()
+    sys.stdout.buffer.write(b"capture header\n")
+    sys.stdout.buffer.write(b"x" * 100000)
+    sys.stdout.buffer.write(
+        b"\nconfigured-worktree="
+        + configured_root
+        + b"/repo name/worktree name/ios\n"
+        + b"configured-root="
+        + configured_root
+        + b"\n"
+        + b"configured-sibling="
+        + configured_root
+        + b".bak/repo name/worktree name/ios\n"
+        + b"generic-worktree=/prefix with spaces/.herdr/worktrees/repo name/worktree name/ios\n"
+        + b"generic-bare=/h/.herdr/worktrees/a/b\n"
+        + b"generic-bare-real=/Users/jirathip/.herdr/worktrees/corral/other-branch\n"
+        + b"generic-bare-spaces=/prefix with spaces/.herdr/worktrees/repo name/worktree name\n"
+        + b"same-line-two-paths=cp /tmp/x /prefix with spaces/.herdr/worktrees/r n/w n/f\n"
+        + b"known-repo-child="
+        + repo_root
+        + b"/scripts\n"
+        + b"output-sibling="
+        + output_root
+        + b"-backup/file\n"
+        + b"output-dot-sibling="
+        + output_root
+        + b".bak/file\n"
+        b"FAILURE: exact bounded-log diagnostic \xff\n"
+    )
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
+if mode == "generic-path-chaff":
+    sys.stdout.buffer.write(b" /seg name/sub dir/file.o" * 32000)
+    sys.stdout.buffer.write(b"\nFAILURE: generic path scan completed\n")
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
 split = max(1, len(source) // 2)
 destination.write_bytes(source[:split])
 if mode == "race-during-validation":
@@ -226,6 +288,19 @@ exec "$CORRAL_TEST_REAL_PYTHON" "$@"
 STUB
 chmod +x "$WORK/bin/python-race"
 
+cat > "$WORK/bin/python-fail-path" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${2:-}" == *fail-normalization-app* ]]; then
+  exit 77
+fi
+if [[ "${3:-}" == *fail-note-normalization* ]]; then
+  exit 78
+fi
+exec "$CORRAL_TEST_REAL_PYTHON" "$@"
+STUB
+chmod +x "$WORK/bin/python-fail-path"
+
 cat > "$WORK/malformed-prototype.html" <<'HTML'
 <!doctype html>
 <html lang="en">
@@ -269,29 +344,76 @@ export CORRAL_TEST_PROTOTYPE_HTML="$WORK/prototype-view.html"
 export CORRAL_TEST_EXPECTED_ISSUE=211
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
 
-normalized_conformance_sha() {
-  "$PYTHON_BIN" - "$1" <<'PY'
-from pathlib import Path
-import hashlib
-import re
-import sys
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-normalized = re.sub(r"Generated: `[^`]+`", "Generated: `TIMESTAMP`", text)
-normalized = normalized.replace(" --force", "")
-print(hashlib.sha256(normalized.encode()).hexdigest())
-PY
+conformance_sha() {
+  shasum -a 256 "$1" | awk '{print $1}'
 }
 
-run_capture() {
-  bash "$SCRIPT" \
+run_capture_with() {
+  local invocation="$1"
+  local output_root="$2"
+  shift 2
+  bash "$invocation" \
     --issue 211 \
     --surface egui \
     --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
     --live-png "$WORK/live.png" \
-    --output-root "$WORK/output" \
+    --output-root "$output_root" \
     --chrome-timeout-seconds 5 \
     "$@"
+}
+
+run_capture() {
+  run_capture_with "$SCRIPT" "$WORK/output" "$@"
+}
+
+run_bounded() {
+  local timeout_seconds="$1"
+  shift
+  "$PYTHON_BIN" - "$timeout_seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+command = sys.argv[2:]
+process = subprocess.Popen(command, start_new_session=True)
+try:
+    return_code = process.wait(timeout=timeout)
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    print(
+        f"command exceeded {timeout:g}-second bound: {' '.join(command)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+raise SystemExit(return_code)
+PY
+}
+
+run_capture_from() {
+  local cwd="$1"
+  local invocation="$2"
+  local output_root="$3"
+  local prototype="$4"
+  local live_png="$5"
+  shift 5
+  (
+    cd "$cwd"
+    bash "$invocation" \
+      --issue 211 \
+      --surface egui \
+      --prototype "$prototype" \
+      --live-png "$live_png" \
+      --output-root "$output_root" \
+      --chrome-timeout-seconds 5 \
+      "$@"
+  )
 }
 
 assert_stopped() {
@@ -325,7 +447,7 @@ grep -q -- "--ios-command" "$WORK/missing-ios-command.log" \
 
 rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE" "$CORRAL_TEST_CHROME_ARGS_FILE"
 export CORRAL_TEST_CHROME_LINGER=1
-run_capture
+run_capture --force
 unset CORRAL_TEST_CHROME_LINGER
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "Chrome writer was not allowed to exit cleanly"
@@ -343,6 +465,7 @@ grep -q 'design-gate-target' "$CORRAL_TEST_PROTOTYPE_HTML" \
   || fail "generated prototype view has no explicit target marker"
 
 REAL_CHROME_BIN=""
+REAL_CHROME_RESULT="SKIP: real Chrome unavailable for structural prototype regression"
 for candidate in \
   "$(command -v google-chrome 2>/dev/null || true)" \
   "$(command -v google-chrome-stable 2>/dev/null || true)" \
@@ -384,8 +507,9 @@ if [[ -n "$REAL_CHROME_BIN" ]]; then
 
   assert_rejected_prototype malformed 217 "$WORK/malformed-prototype.html"
   assert_rejected_prototype template 218 "$WORK/template-prototype.html"
+  REAL_CHROME_RESULT="PASS: real Chrome structural prototype regressions"
 else
-  echo "SKIP: real Chrome unavailable for structural prototype regression" >&2
+  echo "$REAL_CHROME_RESULT" >&2
 fi
 
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
@@ -532,12 +656,173 @@ unrelated_change = lock.replace(
     1,
 )
 assert unrelated_change != lock
-assert module.renderer_dependency_fingerprint(unrelated_change) == original
-print("verified narrow eframe/wgpu lockfile fingerprint")
+  assert module.renderer_dependency_fingerprint(unrelated_change) == original
+  print("verified narrow eframe/wgpu lockfile fingerprint")
+PY
+grep -q 'byte-stable for identical semantic inputs' "$WORK/output/issue-211/conformance.md" \
+  || fail "manifest stability contract is not documented"
+grep -q 'Generator script (canonical .*BASH_SOURCE' "$WORK/output/issue-211/conformance.md" \
+  || fail "canonical generator identity is not recorded"
+grep -F 'scripts/design-gate-evidence.sh' "$WORK/output/issue-211/conformance.md" \
+  || fail "generator path was not made repo-relative"
+"$PYTHON_BIN" - "$WORK/output/issue-211/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"sanitized summary.\n\n## Capture\n" in data
+assert b"\\<external-input\\>" in data
+assert b"\\<external-output\\>" in data
+PY
+for artifact in conformance.md capture.log; do
+  if grep -F "$REPO_DIR" "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained the disposable checkout path"
+  fi
+  if grep -F "$WORK" "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained the disposable test path"
+  fi
+  if grep -F '.herdr/worktrees' "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained a Herdr worktree path"
+  fi
+done
+
+run_capture_with "$WORK/design-gate-wrapper.sh" "$WORK/wrapper-output" --force
+cmp "$WORK/output/issue-211/conformance.md" \
+  "$WORK/wrapper-output/issue-211/conformance.md" \
+  || fail "symlink/wrapper invocation changed the manifest"
+cmp "$WORK/output/issue-211/capture.log" \
+  "$WORK/wrapper-output/issue-211/capture.log" \
+  || fail "symlink/wrapper invocation changed the normalized capture log"
+
+run_capture_with "$WORK/design gate.sh" "$WORK/space-output" --force
+cmp "$WORK/output/issue-211/conformance.md" \
+  "$WORK/space-output/issue-211/conformance.md" \
+  || fail "script path containing spaces changed the manifest"
+cmp "$WORK/output/issue-211/capture.log" \
+  "$WORK/space-output/issue-211/capture.log" \
+  || fail "script path containing spaces changed the capture log"
+
+relative_live_from_scripts="$($PYTHON_BIN - "$WORK/live.png" "$REPO_DIR/scripts" <<'PY'
+import os
+import sys
+print(os.path.relpath(sys.argv[1], sys.argv[2]))
+PY
+)"
+run_capture_from "$REPO_DIR" "scripts/design-gate-evidence.sh" \
+  "$WORK/equivalent-output-a" \
+  "./docs/design/corral-ux-prototype.html" "$WORK/live.png" --force
+run_capture_from "$REPO_DIR/scripts" "../scripts/design-gate-evidence.sh" \
+  "$WORK/equivalent-output-b" \
+  "../docs/design/corral-ux-prototype.html" \
+  "$relative_live_from_scripts" --force
+cmp "$WORK/equivalent-output-a/issue-211/conformance.md" \
+  "$WORK/equivalent-output-b/issue-211/conformance.md" \
+  || fail "equivalent path spellings changed the manifest"
+cmp "$WORK/equivalent-output-a/issue-211/capture.log" \
+  "$WORK/equivalent-output-b/issue-211/capture.log" \
+  || fail "equivalent path spellings changed the capture log"
+
+slash_note=$'/operator/path is plain text\n'
+wake_command=$'/usr/bin/osascript -e wake\n'
+launch_arg='/literal/launch-argument'
+literal_option_value='--prototype'
+run_capture --force \
+  --provenance-note "$slash_note" \
+  --egui-wake-command "$wake_command" \
+  --ios-launch-arg "$launch_arg" \
+  --ios-launch-arg "$literal_option_value" \
+  --output-root "$WORK/nonpath-output"
+note_q="$(printf '%q' "$slash_note")"
+wake_q="$(printf '%q' "$wake_command")"
+grep -F -- "--provenance-note $note_q" \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "slash-prefixed provenance note was normalized as a path"
+grep -F -- "--egui-wake-command $wake_q" \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "slash-prefixed wake command was normalized as a path"
+grep -F -- '--ios-launch-arg --prototype --output-root \<' \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "option-shaped launch argument changed path typing"
+"$PYTHON_BIN" - "$WORK/nonpath-output/issue-211/conformance.md" "$slash_note" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+note = os.fsencode(sys.argv[2])
+assert note in data, "trailing newline in non-path note was lost"
+assert b"<external-path>" not in data
 PY
 
+known_worktrees_root="$WORK/known herdr root"
+redaction_note="${REPO_DIR}/docs/design/corral-ux-prototype.html"$'\n'"${known_worktrees_root}/repo name/worktree name/ios"$'\n'
+redaction_note="${redaction_note}"$'\xff\n'
+export CORRAL_WORKTREES_ROOT="$known_worktrees_root"
+run_capture --force \
+  --provenance-note "$redaction_note" \
+  --output-root "$WORK/note-redaction-output"
+unset CORRAL_WORKTREES_ROOT
+"$PYTHON_BIN" - \
+  "$WORK/note-redaction-output/issue-211/conformance.md" \
+  "$REPO_DIR" "$known_worktrees_root" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+repo = os.fsencode(sys.argv[2])
+worktrees_root = os.fsencode(sys.argv[3])
+assert repo not in data, "provenance note leaked the absolute repository root"
+assert worktrees_root not in data, "provenance note leaked the configured worktree root"
+assert b"docs/design/corral-ux-prototype.html" in data
+assert b"<herdr-worktree>/ios" in data
+assert b"\xff\n" in data, "invalid provenance-note bytes were replaced"
+PY
+
+boundary_note="boundary=${REPO_DIR}. ${REPO_DIR}> ${REPO_DIR}! ${REPO_DIR}? ${REPO_DIR}, ${REPO_DIR}: ${REPO_DIR}; quote=\"${REPO_DIR}\""
+sibling_note="siblings=${REPO_DIR}.bak/x ${REPO_DIR}-backup/x ${REPO_DIR}.bak ${REPO_DIR}-backup"
+run_capture --force \
+  --provenance-note "$boundary_note $sibling_note" \
+  --output-root "$WORK/boundary-output"
+expected_boundary_note="boundary=.. .> .! .? ., .: .; quote=\".\" siblings=${REPO_DIR}.bak/x ${REPO_DIR}-backup/x ${REPO_DIR}.bak ${REPO_DIR}-backup"
+expected_boundary_q="$(printf '%q' "$expected_boundary_note")"
+grep -F -- "--provenance-note $expected_boundary_q" \
+  "$WORK/boundary-output/issue-211/conformance.md" \
+  || fail "known-root punctuation boundary or sibling guard changed"
+
+if PYTHON_BIN="$WORK/bin/python-fail-path" \
+  PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+    --issue 211 \
+    --surface egui \
+    --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+    --live-png "$WORK/live.png" \
+    --ios-app "$WORK/fail-normalization-app" \
+    --output-root "$WORK/path-normalization-failure-output" \
+    --chrome-timeout-seconds 5 \
+    --force >"$WORK/path-normalization-failure.log" 2>&1; then
+  fail "path-normalizer failure was swallowed"
+fi
+grep -q 'could not normalize path argument' "$WORK/path-normalization-failure.log" \
+  || fail "path-normalizer failure did not remain load-bearing"
+
+if PYTHON_BIN="$WORK/bin/python-fail-path" \
+  PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+    --issue 211 \
+    --surface egui \
+    --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+    --live-png "$WORK/live.png" \
+    --provenance-note "$WORK/fail-note-normalization" \
+    --output-root "$WORK/note-normalization-failure-output" \
+    --chrome-timeout-seconds 5 \
+    --force >"$WORK/note-normalization-failure.log" 2>&1; then
+  fail "provenance-note normalizer failure was swallowed"
+fi
+grep -q 'could not normalize provenance note' \
+  "$WORK/note-normalization-failure.log" \
+  || fail "provenance-note normalizer failure did not remain load-bearing"
+
 before_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
-before_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
+before_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
 
 if run_capture >"$WORK/no-force.log" 2>&1; then
   fail "existing evidence bundle was overwritten without --force"
@@ -551,7 +836,7 @@ after_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print
 [[ "$before_sha" == "$after_sha" ]] || fail "rerun changed deterministic fixture output"
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "forced rerun did not wait for the Chrome writer"
-after_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
+after_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
 [[ "$before_conformance_sha" == "$after_conformance_sha" ]] \
   || fail "normalized conformance changed across a forced rerun"
 
@@ -672,6 +957,100 @@ PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
 assert_stopped "TERM-ignoring egui" "$CORRAL_TEST_EGUI_PID_FILE"
 unset CORRAL_TEST_EGUI_MODE
 
+export CORRAL_TEST_EXPECTED_ISSUE=219
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=invalid-bytes
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 219 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/invalid-bytes-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/invalid-bytes-output/issue-219/capture.log" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"\xff" in data, "invalid UTF-8 byte was replaced"
+assert b"FAILURE: exact invalid-byte diagnostic" in data
+PY
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=220
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=large-log
+export CORRAL_TEST_WORKTREES_ROOT="/tmp/Configured Herdr Root"
+export CORRAL_TEST_REPO_ROOT="$REPO_DIR"
+export CORRAL_TEST_OUTPUT_ROOT="$WORK/large-log-output"
+export CORRAL_WORKTREES_ROOT="$CORRAL_TEST_WORKTREES_ROOT"
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 220 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/large-log-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/large-log-output/issue-220/capture.log" "$WORK/large-log-output" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+output_root = os.fsencode(sys.argv[2])
+assert len(data) <= 65536, f"capture log exceeded bound: {len(data)}"
+assert b"capture log truncated" in data
+assert b"FAILURE: exact bounded-log diagnostic" in data
+assert b".herdr/worktrees" not in data, "generic Herdr marker leaked"
+assert b"<herdr-worktree>/ios" in data, "full configured worktree was not redacted"
+assert b"configured-root=<herdr-worktree>\n" in data, "bare configured root was not redacted"
+assert b"configured-sibling=/tmp/Configured Herdr Root.bak/repo name/worktree name/ios" in data, "configured sibling was over-redacted"
+assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root was not redacted"
+assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
+assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing bare root was not redacted"
+assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
+assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
+assert b"output-sibling=" + output_root + b"-backup/file" in data
+assert b"output-dot-sibling=" + output_root + b".bak/file" in data
+PY
+unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=221
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=generic-path-chaff
+run_bounded 15 env PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 221 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/path-chaff-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/path-chaff-output/issue-221/capture.log" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"capture log truncated" in data
+assert b"FAILURE: generic path scan completed" in data
+PY
+unset CORRAL_TEST_EGUI_MODE
+
 export CORRAL_TEST_EXPECTED_ISSUE=216
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
 export CORRAL_TEST_EGUI_MODE=partial-stuck
@@ -722,8 +1101,15 @@ grep -q 'egui wake command failed' "$WORK/wake-failure.log" \
 shopt -s nullglob
 staging_entries=(
   "$WORK/output/issue-211"/.design-gate.stage.*
+  "$WORK/wrapper-output/issue-211"/.design-gate.stage.*
+  "$WORK/space-output/issue-211"/.design-gate.stage.*
+  "$WORK/equivalent-output-a/issue-211"/.design-gate.stage.*
+  "$WORK/equivalent-output-b/issue-211"/.design-gate.stage.*
+  "$WORK/nonpath-output/issue-211"/.design-gate.stage.*
   "$WORK/egui-output/issue-213"/.design-gate.stage.*
   "$WORK/term-ignore-output/issue-215"/.design-gate.stage.*
+  "$WORK/invalid-bytes-output/issue-219"/.design-gate.stage.*
+  "$WORK/large-log-output/issue-220"/.design-gate.stage.*
   "$WORK/partial-stuck-output/issue-216"/.design-gate.stage.*
   "$WORK/wake-output/issue-214"/.design-gate.stage.*
 )
@@ -731,4 +1117,5 @@ if [[ "${#staging_entries[@]}" -ne 0 ]]; then
   fail "temporary staging directory survived a failed run"
 fi
 
+printf 'Real Chrome structural prototype regression: %s\n' "$REAL_CHROME_RESULT"
 echo "OK: design-gate evidence validation, complete-PNG contract, bounded cleanup, trust boundary, capture seams, and failure paths"

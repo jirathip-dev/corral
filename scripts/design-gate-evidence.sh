@@ -16,6 +16,16 @@
 #   docs/design/evidence/issue-<N>/conformance.md
 #   docs/design/evidence/issue-<N>/capture.log
 #
+# Newly generated conformance.md files are the stable manifest contract: they
+# omit wall-clock metadata, record the canonical generator path/hash and a
+# typed, lossless invocation, and use repo-relative paths or stable external
+# placeholders. Non-path arguments remain byte-for-byte except that provenance
+# notes receive targeted known-root substitutions. Newly generated capture.log
+# files are byte-oriented bounded views (64 KiB by default); exact head/tail
+# bytes survive documented path substitution, and invalid UTF-8 is never
+# decoded or replaced. Historical checked-in evidence may predate this
+# contract and is labeled accordingly.
+#
 # The default egui prototype is the approved HTML design source at
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
 # through headless Chrome at 1160×631. A custom HTML target can be supplied with
@@ -72,9 +82,41 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRIPT_NAME="$(basename "$0")"
+canonical_script_path() {
+  local candidate="$1"
+  local directory
+  local target
+  local link_hops=0
+
+  if [[ "$candidate" != /* ]]; then
+    candidate="$PWD/$candidate"
+  fi
+  while [[ -L "$candidate" ]]; do
+    link_hops=$((link_hops + 1))
+    [[ "$link_hops" -le 40 ]] || return 1
+    directory="$(cd -P "$(dirname "$candidate")" 2>/dev/null && pwd)" \
+      || return 1
+    target="$(readlink "$candidate")" || return 1
+    if [[ "$target" == /* ]]; then
+      candidate="$target"
+    else
+      candidate="$directory/$target"
+    fi
+  done
+  directory="$(cd -P "$(dirname "$candidate")" 2>/dev/null && pwd)" \
+    || return 1
+  printf '%s/%s\n' "$directory" "$(basename "$candidate")"
+}
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_PATH="$(canonical_script_path "$SCRIPT_SOURCE")" \
+  || {
+    printf 'error: could not resolve canonical BASH_SOURCE path: %s\n' "$SCRIPT_SOURCE" >&2
+    exit 1
+  }
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+ORIGINAL_ARGS=("$@")
 
 ISSUE=""
 SURFACE=""
@@ -110,7 +152,19 @@ IOS_LAUNCH_ARGS=()
 IOS_BEFORE_LAUNCH_ARGS=()
 PROVENANCE_NOTE=""
 OUTPUT_ROOT="$REPO_DIR/docs/design/evidence"
+WORKTREES_ROOT="${CORRAL_WORKTREES_ROOT:-}"
 DRY_RUN=0
+STAGE=""
+
+# Published capture.log is a byte-oriented, bounded view. The exact first and
+# last bytes survive normalization; only known checkout/staging roots, generic
+# disposable Herdr worktree roots/descendants, and an explicitly documented middle
+# omission marker are changed. In particular, this must never decode with
+# replacement characters. CORRAL_WORKTREES_ROOT, when set, identifies the
+# configured root even when it contains spaces or does not use .herdr.
+CAPTURE_LOG_MAX_BYTES=65536
+CAPTURE_LOG_HEAD_BYTES=8192
+CAPTURE_LOG_TAIL_BYTES=57344
 
 usage() {
   cat <<'USAGE'
@@ -153,6 +207,7 @@ Options:
 Environment:
   CHROME_BIN                  Chrome/Chromium executable override.
   PYTHON_BIN                  Python 3 executable override.
+  CORRAL_WORKTREES_ROOT       Worktree root to redact from generated logs.
 USAGE
 }
 
@@ -408,6 +463,9 @@ fi
 if [[ -n "$LIVE_PNG" && "$LIVE_PNG" != /* ]]; then
   LIVE_PNG="$PWD/$LIVE_PNG"
 fi
+if [[ -n "$WORKTREES_ROOT" && "$WORKTREES_ROOT" != /* ]]; then
+  WORKTREES_ROOT="$PWD/$WORKTREES_ROOT"
+fi
 
 [[ -f "$PROTOTYPE" ]] || die "prototype does not exist: $PROTOTYPE"
 if [[ "$SURFACE" == "egui" ]]; then
@@ -491,6 +549,92 @@ absolute_path() {
   else
     printf '%s/%s\n' "$PWD" "$value"
   fi
+}
+
+repo_relative_path() {
+  "$PYTHON_BIN" - "$1" "$REPO_DIR" "${2:-<external-path>}" <<'PY'
+import os
+import sys
+
+candidate = os.path.realpath(sys.argv[1])
+root = os.path.realpath(sys.argv[2])
+external_label = sys.argv[3]
+try:
+    relative = os.path.relpath(candidate, root)
+except ValueError:
+    label = external_label
+else:
+    if relative == ".":
+        label = "."
+    elif relative == ".." or relative.startswith(".." + os.sep):
+        label = external_label
+    else:
+        label = relative.replace(os.sep, "/")
+sys.stdout.buffer.write(os.fsencode(label))
+PY
+}
+
+SCRIPT_RELATIVE_PATH="$(repo_relative_path "$SCRIPT_PATH")"
+PROTOTYPE_PATH_LABEL="$(repo_relative_path "$PROTOTYPE" "<external-input>")"
+LIVE_INPUT_PATH_LABEL=""
+if [[ -n "$LIVE_PNG" ]]; then
+  LIVE_INPUT_PATH_LABEL="$(repo_relative_path "$LIVE_PNG" "<external-input>")"
+fi
+OUTPUT_PATH_LABEL="$(repo_relative_path "$OUTPUT_ROOT" "<external-output>")"
+
+normalize_path_argument() {
+  local value="$1"
+  local external_label="${2:-<external-path>}"
+
+  if ! NORMALIZED_PATH="$(repo_relative_path "$value" "$external_label")"; then
+    die "could not normalize path argument"
+  fi
+}
+
+recorded_invocation() {
+  local argument
+  local value_kind=""
+
+  printf '%q' "$SCRIPT_RELATIVE_PATH"
+  for argument in "$@"; do
+    if [[ -n "$value_kind" ]]; then
+      if [[ "$value_kind" == "provenance-note" ]]; then
+        normalize_provenance_note "$argument"
+        printf ' %q' "$NORMALIZED_NOTE"
+      elif [[ "$value_kind" == "raw" ]]; then
+        printf ' %q' "$argument"
+      else
+        normalize_path_argument "$argument" "$value_kind"
+        printf ' %q' "$NORMALIZED_PATH"
+      fi
+      value_kind=""
+      continue
+    fi
+    # Non-path argv is emitted directly: a slash-prefixed note, wake command,
+    # launch argument, or trailing newline must not be interpreted as a path
+    # or pass through command substitution.
+    printf ' %q' "$argument"
+    case "$argument" in
+      --prototype|--egui-binary|--ios-app)
+        value_kind="<external-input>"
+        ;;
+      --live-png)
+        value_kind="<external-input>"
+        ;;
+      --output-root)
+        value_kind="<external-output>"
+        ;;
+      --issue|--surface|--live-agent|--host-url|--delay-ms|\
+      --egui-wake-command|--timeout-seconds|--chrome-timeout-seconds|\
+      --ios-bundle-id|--ios-mode|--ios-command|--ios-launch-arg|\
+      --ios-delay-seconds)
+        value_kind="raw"
+        ;;
+      --provenance-note)
+        value_kind="provenance-note"
+        ;;
+    esac
+  done
 }
 
 shell_quote() {
@@ -706,18 +850,230 @@ print(digest.hexdigest())
 PY
 }
 
-normalize_capture_log() {
-  "$PYTHON_BIN" - "$1" <<'PY'
+run_byte_normalizer() {
+  "$PYTHON_BIN" - "$@" <<'PY'
+import os
 from pathlib import Path
+import re
 import sys
 
-path = Path(sys.argv[1])
-raw = path.read_text(encoding="utf-8", errors="replace")
-lines = [line.rstrip(" \t") for line in raw.splitlines()]
-normalized = "\n".join(lines)
-if raw.endswith(("\n", "\r")):
-    normalized += "\n"
-path.write_text(normalized, encoding="utf-8")
+mode = sys.argv[1]
+source = sys.argv[2]
+if mode == "capture":
+    path = Path(source)
+    data = path.read_bytes()
+elif mode == "note":
+    data = os.fsencode(source)
+else:
+    raise SystemExit(f"unknown byte normalizer mode: {mode}")
+
+repo = sys.argv[3]
+repo_label = sys.argv[4]
+worktrees_root = sys.argv[5]
+worktrees_label = sys.argv[6]
+
+
+def path_boundary(prefix):
+    if prefix:
+        # A known root may be followed by any non-path punctuation, but a
+        # dotted/dashed component followed by a path boundary is a sibling
+        # lookalike rather than the root itself.
+        return (
+            rb"(?=$|/|"
+            rb"(?!(?:[.-][A-Za-z0-9_.-]+)(?=$|/|[^A-Za-z0-9_/]))"
+            rb"[^A-Za-z0-9_/])"
+        )
+    # Do not treat a .bak sibling or a suffixed name as the path itself.
+    return rb"(?=$|[/\x00\r\n\t \"'`:,;)\]}])"
+
+
+def path_variants(path_value):
+    variants = []
+    for candidate in (path_value, os.path.abspath(path_value), os.path.realpath(path_value)):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def replace_path(data_value, path_value, label, prefix=False):
+    if not path_value:
+        return data_value
+    for variant in sorted(path_variants(path_value), key=len, reverse=True):
+        if variant == os.path.sep:
+            continue
+        pattern = (
+            rb"(?<![A-Za-z0-9_])"
+            + re.escape(os.fsencode(variant))
+            + path_boundary(prefix)
+        )
+        data_value = re.sub(pattern, os.fsencode(label), data_value)
+    return data_value
+
+
+def redact_configured_worktree(data_value):
+    if not worktrees_root:
+        return data_value
+    patterns = []
+    for root in path_variants(worktrees_root):
+        if root == os.path.sep:
+            continue
+        patterns.append(
+            rb"(?<![A-Za-z0-9_])"
+            + re.escape(os.fsencode(root))
+            + rb"/[^/\x00\r\n]+/[^/\x00\r\n]+"
+        )
+    for pattern in sorted(patterns, key=len, reverse=True):
+        data_value = re.sub(pattern, b"<herdr-worktree>", data_value)
+    return data_value
+
+
+def is_word_byte(value):
+    return (
+        48 <= value <= 57
+        or 65 <= value <= 90
+        or 97 <= value <= 122
+        or value == 95
+    )
+
+
+def is_token_boundary_byte(value):
+    # Whitespace and assignment separators start a new diagnostic token. A
+    # slash preceded by a component character remains part of that path,
+    # including components whose names contain spaces.
+    return value in (9, 32, 61)
+
+
+def valid_path_component(component):
+    return not any(delimiter in component for delimiter in (b"\x00", b"\r", b"\n"))
+
+
+def replace_generic_worktrees(data_value, protected_paths=()):
+    # Search for the fixed marker and find the eligible path start in the same
+    # forward pass. A slash after a token separator starts a new candidate,
+    # while a slash inside a space-containing path keeps its current candidate.
+    # This avoids a backtracking expression over every slash in a long line.
+    marker = b"/.herdr/worktrees/"
+    protected_variants = [
+        os.fsencode(variant)
+        for path_value in protected_paths
+        for variant in path_variants(path_value)
+        if variant != os.path.sep
+    ]
+    replacements = []
+    eligible_start = None
+    index = 0
+    while index < len(data_value):
+        value = data_value[index]
+        if value in (0, 10, 13):
+            eligible_start = None
+        elif value == 47:
+            if index == 0 or not is_word_byte(data_value[index - 1]):
+                if eligible_start is None or is_token_boundary_byte(
+                    data_value[index - 1]
+                ):
+                    eligible_start = index
+            if eligible_start is not None and data_value.startswith(marker, index):
+                cursor = index + len(marker)
+                line_end = len(data_value)
+                for delimiter in (b"\x00", b"\r", b"\n"):
+                    delimiter_end = data_value.find(delimiter, cursor)
+                    if delimiter_end != -1 and delimiter_end < line_end:
+                        line_end = delimiter_end
+                first_slash = data_value.find(b"/", cursor, line_end)
+                if first_slash > cursor and valid_path_component(
+                    data_value[cursor:first_slash]
+                ):
+                    second_slash = data_value.find(
+                        b"/", first_slash + 1, line_end
+                    )
+                    if second_slash == -1:
+                        # The second component may be the final component of
+                        # a bare two-component worktree root.
+                        second_slash = line_end
+                    if second_slash > first_slash + 1 and valid_path_component(
+                        data_value[first_slash + 1 : second_slash]
+                    ):
+                        start = eligible_start
+                        end = second_slash
+                        candidate = data_value[start:end]
+                        is_known_sibling = any(
+                            candidate.startswith(variant)
+                            and candidate[len(variant) :].startswith((b".", b"-"))
+                            for variant in protected_variants
+                        )
+                        if is_known_sibling:
+                            eligible_start = None
+                        elif not replacements or start >= replacements[-1][1]:
+                            replacements.append((start, end))
+                            eligible_start = None
+                            index = end
+        index += 1
+
+    if not replacements:
+        return data_value
+    output = bytearray()
+    cursor = 0
+    for start, end in replacements:
+        output.extend(data_value[cursor:start])
+        output.extend(b"<herdr-worktree>")
+        cursor = end
+    output.extend(data_value[cursor:])
+    return bytes(output)
+
+# Longest specific paths go first so a concrete file/path wins before its
+# repository root and before generic Herdr redaction. This keeps a checkout
+# inside a Herdr worktree repo-relative instead of turning it into a generic
+# placeholder.
+known_paths = [
+    (sys.argv[7], sys.argv[8], False),
+    (sys.argv[9], sys.argv[10], False),
+    (sys.argv[11], sys.argv[12], False),
+    (sys.argv[13], sys.argv[14], True),
+    (sys.argv[15], sys.argv[16], True),
+    (repo, repo_label, True),
+]
+for path_value, label, prefix in sorted(
+    known_paths, key=lambda item: len(os.fsencode(item[0])), reverse=True
+):
+    data = replace_path(data, path_value, label, prefix)
+
+# Redact configured and generic Herdr paths only after known checkout/staging
+# paths have had the opportunity to establish stable identities. A capture or
+# note may mention only the configured root, without a repo/worktree suffix.
+data = redact_configured_worktree(data)
+data = replace_path(data, worktrees_root, worktrees_label, True)
+data = replace_generic_worktrees(
+    data, [path_value for path_value, _, _ in known_paths]
+)
+
+if mode == "capture":
+    max_bytes = int(sys.argv[17])
+    head_bytes = int(sys.argv[18])
+    tail_bytes = int(sys.argv[19])
+if mode == "capture" and len(data) > max_bytes:
+    head_size = min(head_bytes, len(data))
+    tail_size = min(tail_bytes, len(data) - head_size)
+    while True:
+        omitted = len(data) - head_size - tail_size
+        marker = (
+            f"\n[... capture log truncated: omitted {omitted} bytes; "
+            "exact head and tail bytes retained ...]\n"
+        ).encode("ascii")
+        available_tail = max_bytes - head_size - len(marker)
+        if available_tail < 0:
+            raise SystemExit("capture log bound is too small for its marker")
+        if tail_size <= available_tail:
+            break
+        tail_size = available_tail
+    tail = data[-tail_size:] if tail_size else b""
+    data = data[:head_size] + marker + tail
+    if len(data) > max_bytes:
+        raise SystemExit("capture log exceeded its configured byte bound")
+
+if mode == "capture":
+    path.write_bytes(data)
+else:
+    sys.stdout.buffer.write(data)
 PY
 }
 
@@ -790,6 +1146,43 @@ if not any(ready(record) for record in records):
     )
 print(f"verified native window readiness observations: {len(records)}")
 PY
+}
+
+normalize_capture_log() {
+  run_byte_normalizer capture "$1" \
+    "$REPO_DIR" "." \
+    "$WORKTREES_ROOT" "<herdr-worktree>" \
+    "$SCRIPT_PATH" "$SCRIPT_RELATIVE_PATH" \
+    "$PROTOTYPE" "$PROTOTYPE_PATH_LABEL" \
+    "$LIVE_PNG" "$LIVE_INPUT_PATH_LABEL" \
+    "$OUTPUT_ROOT" "$OUTPUT_PATH_LABEL" \
+    "$STAGE" "<stage>" \
+    "$CAPTURE_LOG_MAX_BYTES" "$CAPTURE_LOG_HEAD_BYTES" \
+    "$CAPTURE_LOG_TAIL_BYTES"
+}
+
+normalize_provenance_note() {
+  local note="$1"
+  local note_file="$STAGE/.design-gate.note-normalized"
+
+  NORMALIZED_NOTE=""
+  if ! run_byte_normalizer note "$note" \
+    "$REPO_DIR" "." \
+    "$WORKTREES_ROOT" "<herdr-worktree>" \
+    "$SCRIPT_PATH" "$SCRIPT_RELATIVE_PATH" \
+    "$PROTOTYPE" "$PROTOTYPE_PATH_LABEL" \
+    "$LIVE_PNG" "$LIVE_INPUT_PATH_LABEL" \
+    "$OUTPUT_ROOT" "$OUTPUT_PATH_LABEL" \
+    "$STAGE" "<stage>" \
+    0 0 0 >"$note_file"; then
+    die "could not normalize provenance note"
+  fi
+  if ! IFS= read -r -d '' NORMALIZED_NOTE < <(
+    cat "$note_file"
+    printf '\0'
+  ); then
+    die "could not read normalized provenance note"
+  fi
 }
 
 gracefully_close_chrome() {
@@ -1198,6 +1591,7 @@ capture_egui() {
   local native_probe_helper="${CORRAL_UI_WINDOW_PROBE_HELPER:-}"
   local native_probe_log="$STAGE/native-window-probe.jsonl"
   local ui_config_seed_dir="${CORRAL_UI_CONFIG_SEED_DIR:-}"
+  local binary_path
 
   require_egui_dependencies
   health="$(curl --fail --silent --show-error --max-time 5 "$HOST_URL/healthz")" \
@@ -1271,8 +1665,9 @@ PY
       || die "native window probe helper is not executable: $native_probe_helper"
   fi
 
+  binary_path="$(repo_relative_path "$binary" "<external-input>")"
   CAPTURE_KIND="native egui viewport screenshot"
-  LIVE_DESCRIPTION="real egui process launched against a loopback corrald; selected live agent $LIVE_AGENT from /snapshot"
+  LIVE_DESCRIPTION="real egui process launched from $binary_path against a loopback corrald; selected live agent $LIVE_AGENT from /snapshot"
   CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
   CAPTURE_COMMAND+=" CORRAL_UI_DISABLE_KEYRING=1"
@@ -1569,9 +1964,9 @@ CAPTURE_COMMAND=""
 if [[ -n "$LIVE_PNG" ]]; then
   CAPTURE_KIND="explicit supplied PNG fixture"
   LIVE_DESCRIPTION="caller-supplied file; this run did not capture a live surface"
-  CAPTURE_COMMAND="cp $LIVE_PNG <issue-dir>/live-after.png"
+  CAPTURE_COMMAND="cp $LIVE_INPUT_PATH_LABEL <issue-dir>/live-after.png"
   cp -- "$LIVE_PNG" "$STAGE/live-after.png"
-  printf 'supplied fixture: %s\n' "$LIVE_PNG" >"$STAGE/capture.log"
+  printf 'supplied fixture: %s\n' "$LIVE_INPUT_PATH_LABEL" >"$STAGE/capture.log"
   assert_png "$STAGE/live-after.png"
 elif [[ "$SURFACE" == "egui" ]]; then
   capture_egui
@@ -1585,11 +1980,12 @@ make_composite_html "$COMPOSITE_HTML" "$CAPTURE_KIND"
 run_chrome_screenshot "$COMPOSITE_HTML" "$STAGE/comparison.png" 2400 960 comparison
 
 PROTOTYPE_SOURCE_SHA="$(sha256_file "$PROTOTYPE")"
-GENERATOR_SHA="$(sha256_file "$SCRIPT_DIR/$SCRIPT_NAME")"
+GENERATOR_PATH="$SCRIPT_RELATIVE_PATH"
+GENERATOR_SHA="$(sha256_file "$SCRIPT_PATH")"
 PROTOTYPE_SHA="$(sha256_file "$STAGE/prototype.png")"
 LIVE_SHA="$(sha256_file "$STAGE/live-after.png")"
 if [[ -n "$LIVE_PNG" ]]; then
-  LIVE_SOURCE_PATH="$LIVE_PNG"
+  LIVE_SOURCE_PATH="$LIVE_INPUT_PATH_LABEL"
   LIVE_SOURCE_SHA="$(sha256_file "$LIVE_PNG")"
 else
   LIVE_SOURCE_PATH="generated by the capture command above"
@@ -1626,52 +2022,26 @@ else
   FIXTURE_REGISTRY_SHA="not applicable (not supplied)"
 fi
 CAPTURE_LOG_SHA="$(sha256_file "$STAGE/capture.log")"
-GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-if [[ "$PROTOTYPE" == "$REPO_DIR/"* ]]; then
-  PROTOTYPE_DISPLAY="${PROTOTYPE#"$REPO_DIR/"}"
-else
-  PROTOTYPE_DISPLAY="$PROTOTYPE"
-fi
-if [[ "$SURFACE" == "egui" && "$ISSUE" == "206" && -z "$LIVE_PNG" ]]; then
-  COMMAND_LINE="scripts/test-design-gate-egui-integration.sh --publish"
-else
-  COMMAND_LINE="scripts/design-gate-evidence.sh --issue $ISSUE --surface $SURFACE"
-  if [[ -n "$PROTOTYPE_DISPLAY" ]]; then
-    COMMAND_LINE+=" --prototype $PROTOTYPE_DISPLAY"
-  fi
-  if [[ "$SURFACE" == "egui" ]]; then
-    COMMAND_LINE+=" --egui-tab $EGUI_TAB"
-  else
-    COMMAND_LINE+=" --ios-mode $IOS_MODE"
-    if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
-      for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
-        COMMAND_LINE+=" --ios-launch-arg $(shell_quote "$launch_arg")"
-      done
-    fi
-    if (( ${#IOS_BEFORE_LAUNCH_ARGS[@]} > 0 )); then
-      for launch_arg in "${IOS_BEFORE_LAUNCH_ARGS[@]}"; do
-        COMMAND_LINE+=" --ios-before-launch-arg $(shell_quote "$launch_arg")"
-      done
-    fi
-  fi
-  if [[ -n "$LIVE_PNG" ]]; then
-    COMMAND_LINE+=" --live-png <supplied-png>"
-  fi
-fi
-if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
-  COMMAND_LINE="CHROME_BIN=$(shell_quote "$CHROME_BIN") $COMMAND_LINE"
-fi
 if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
   RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
 else
   RENDERER_GUIDANCE=""
 fi
+PROVENANCE_NOTE_DISPLAY=""
+if [[ -n "$PROVENANCE_NOTE" ]]; then
+  normalize_provenance_note "$PROVENANCE_NOTE"
+  PROVENANCE_NOTE_DISPLAY="$NORMALIZED_NOTE"
+fi
 # Markdown backticks are literal printf text, not shell command substitutions.
 # shellcheck disable=SC2016
 {
   printf '# Issue #%s design-gate evidence\n\n' "$ISSUE"
-  printf 'Generated: `%s`\n\n' "$GENERATED_AT"
-  printf '## Capture\n\n'
+  printf '## Contract\n\n'
+  printf -- '- Newly generated bundle contract: this manifest is byte-stable for identical semantic inputs; wall-clock generation time is intentionally omitted.\n'
+  printf -- '- Newly generated capture-log contract: `capture.log` is byte-bounded to %s bytes, retains exact head/tail bytes after documented path substitutions, and never decodes invalid UTF-8.\n' "$CAPTURE_LOG_MAX_BYTES"
+  printf -- '- Provenance-note contract: arbitrary note bytes are preserved except for targeted substitutions of recognized repository, staging, and worktree roots.\n'
+  printf -- '- This contract applies to bundles generated by this version; historical checked-in evidence may be a separately labeled sanitized summary.\n'
+  printf '\n## Capture\n\n'
   printf -- '- Surface: `%s`\n' "$SURFACE"
   printf -- '- Capture kind: %s\n' "$CAPTURE_KIND"
   if [[ "$SURFACE" == "egui" ]]; then
@@ -1697,15 +2067,16 @@ fi
     printf -- '- Simulator ownership: `hermes-sim-task`; no simulator deletion command is used.\n'
     printf -- '- iOS mode: `%s`\n' "$IOS_MODE"
   fi
-  if [[ -n "$PROVENANCE_NOTE" ]]; then
-    printf -- '- Operator/environment note: %s\n' "$PROVENANCE_NOTE"
+  if [[ -n "$PROVENANCE_NOTE_DISPLAY" ]]; then
+    printf -- '- Operator/environment note: %s\n' "$PROVENANCE_NOTE_DISPLAY"
   fi
   if [[ -n "$RENDERER_GUIDANCE" ]]; then
     printf -- '- Renderer guidance: %s\n' "$RENDERER_GUIDANCE"
   fi
   printf '\n## Sources\n\n'
-  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE_DISPLAY"
+  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE_PATH_LABEL"
   printf -- '- Prototype source SHA-256: `%s`\n' "$PROTOTYPE_SOURCE_SHA"
+  printf -- '- Generator script (canonical `BASH_SOURCE[0]`): `%s`\n' "$GENERATOR_PATH"
   printf -- '- Generator SHA-256: `%s`\n' "$GENERATOR_SHA"
   printf -- '- Live input: `%s`\n' "$LIVE_SOURCE_PATH"
   printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
@@ -1720,7 +2091,10 @@ fi
   printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
   printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
   printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
-  printf -- '- Reproducible invocation: `%s`\n' "$COMMAND_LINE"
+  printf -- '- Repository HEAD: `%s`\n' "$GIT_SHA"
+  printf -- '- Reproducible invocation: `'
+  recorded_invocation "${ORIGINAL_ARGS[@]}"
+  printf '`\n'
   printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'

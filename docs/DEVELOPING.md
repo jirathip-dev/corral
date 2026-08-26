@@ -239,6 +239,19 @@ scripts/design-gate-evidence.sh --issue 206 --surface egui \
   --live-agent herdr:AGENT_ID
 ```
 
+The generated `conformance.md` is a stable manifest: it omits wall-clock
+metadata, derives the generator path and SHA-256 from one canonical
+`BASH_SOURCE[0]` path (including symlink/wrapper invocation), and records path
+arguments as repo-relative paths or stable external placeholders. Non-path
+arguments are shell-quoted from their original bytes. The generated
+`capture.log` is a byte-oriented view capped at 64 KiB; it preserves exact
+head/tail bytes except for documented path substitutions and the explicit
+middle omission marker, and never decodes invalid UTF-8 with replacement.
+Recognized checkout, staging, configured Herdr, and generic
+`.herdr/worktrees` paths are normalized so evidence is checkout independent.
+Historical evidence may instead be an explicitly labeled sanitized summary of
+an older capture.
+
 The capture contract is a complete, CRC-checked PNG: the writer may linger
 after publishing it, but a partial file is never accepted or published. The
 script validates the PNG before cleanup and again afterward, then sends TERM
@@ -302,6 +315,10 @@ TERM-ignoring writers, Chrome trust-boundary flags, egui capture/wake seams,
 argument failures, and preservation of an existing bundle after a failed run.
 These remain local/platform-dependent developer checks; they are not wired into
 CI.
+
+The hermetic suite also covers symlink and wrapper identity, path normalization,
+manifest stability, invalid UTF-8, bounded logs, complete-PNG races,
+structural prototype rejection, and capture failure cleanup.
 
 ## Rust coverage gate and baseline
 

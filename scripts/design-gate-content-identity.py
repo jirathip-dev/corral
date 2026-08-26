@@ -2,10 +2,11 @@
 """Compute the non-circular implementation identity for #206 evidence.
 
 The manifest is intentionally explicit and excludes every generated evidence
-path. It covers the egui source, the daemon-authoritative registry rules, the
-build lockfiles, the capture/verification scripts, and the approved prototype.
-The digest is therefore stable across a commit while still changing whenever
-the implementation content used by the native capture changes.
+path and unrelated workspace code. It covers only the egui client, the native
+capture/probe/verifier tooling, and the approved prototype. Runtime inputs
+such as the daemon, fixture repositories, and the built binary are recorded
+separately in each conformance file, so an unrelated merge cannot invalidate
+an otherwise identical capture.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ import sys
 
 
 FILES = (
-    "Cargo.lock",
-    "Cargo.toml",
     "clients/egui/Cargo.toml",
     "clients/egui/src",
     "docs/design/corral-ux-egui-redesign-prototype.html",
@@ -26,9 +25,6 @@ FILES = (
     "scripts/native-window-probe.swift",
     "scripts/test-design-gate-egui-integration.sh",
     "scripts/verify-design-gate-egui-evidence.py",
-    "src/fleet/config.rs",
-    "src/fleet/ops.rs",
-    "src/main.rs",
 )
 
 

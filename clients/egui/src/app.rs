@@ -21,6 +21,28 @@ use crate::state::{
 };
 use crate::theme;
 
+fn local_registry_path_for_edit(host_url: &str) -> Result<PathBuf, String> {
+    local_registry_path_for_host(host_url, crate::keys::local_registry_path())
+}
+
+fn local_registry_path_for_host(host_url: &str, local_path: PathBuf) -> Result<PathBuf, String> {
+    let parsed = reqwest::Url::parse(host_url)
+        .map_err(|error| format!("cannot edit registry: invalid host URL: {error}"))?;
+    let is_loopback = parsed.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if !is_loopback {
+        return Err(
+            "registry editing is disabled for non-loopback hosts; connect to a local corrald before changing fleets.json"
+                .into(),
+        );
+    }
+    Ok(local_path)
+}
+
 /// The four top-level views in the persistent right-hand tab strip. Audit is
 /// intentionally not a top-level destination; it is rendered below Settings
 /// → Advanced device access when explicitly opened.
@@ -181,26 +203,24 @@ impl ScreenshotCaptureState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeProbeReason {
     DispatchReady,
-    DispatchReadySpaceMismatch,
-    DispatchReadySpaceUnknown,
     DeferProbeFailed,
     DeferExactPidMismatch,
     DeferProcessHidden,
     DeferWindowHidden,
     DeferNotFrontmost,
+    DeferCgWindowMissing,
 }
 
 impl NativeProbeReason {
     fn code(self) -> &'static str {
         match self {
             Self::DispatchReady => "dispatch_ready",
-            Self::DispatchReadySpaceMismatch => "dispatch_ready_space_mismatch_observed",
-            Self::DispatchReadySpaceUnknown => "dispatch_ready_space_unknown",
             Self::DeferProbeFailed => "defer_probe_failed",
             Self::DeferExactPidMismatch => "defer_exact_pid_mismatch",
             Self::DeferProcessHidden => "defer_process_hidden_or_unknown",
             Self::DeferWindowHidden => "defer_window_hidden_or_unknown",
             Self::DeferNotFrontmost => "defer_not_frontmost_or_unknown",
+            Self::DeferCgWindowMissing => "defer_cg_window_missing",
         }
     }
 }
@@ -214,7 +234,6 @@ struct NativeProbeFacts {
     frontmost: Option<bool>,
     key_window: Option<bool>,
     main_window: Option<bool>,
-    on_active_space: Option<bool>,
     cg_owner_pid_match: Option<bool>,
 }
 
@@ -229,10 +248,6 @@ struct NativeProbeObservation {
     frontmost_application_pid: Option<i64>,
     frontmost_application_matches_target: Option<bool>,
     exact_pid_match: bool,
-    on_active_space: Option<bool>,
-    current_space_index: Option<i64>,
-    target_space_index: Option<i64>,
-    space_index_reason: String,
     cg_owner_pid_match: Option<bool>,
 }
 
@@ -250,12 +265,8 @@ fn classify_native_probe(facts: NativeProbeFacts) -> NativeProbeReason {
         || facts.main_window != Some(true)
     {
         NativeProbeReason::DeferNotFrontmost
-    } else if facts.cg_owner_pid_match == Some(false) {
-        NativeProbeReason::DispatchReadySpaceMismatch
-    } else if facts.on_active_space.is_none() {
-        NativeProbeReason::DispatchReadySpaceUnknown
-    } else if facts.on_active_space == Some(false) {
-        NativeProbeReason::DispatchReadySpaceMismatch
+    } else if facts.cg_owner_pid_match != Some(true) {
+        NativeProbeReason::DeferCgWindowMissing
     } else {
         NativeProbeReason::DispatchReady
     }
@@ -276,10 +287,6 @@ struct CgWindowRecord {
     layer: Option<i64>,
     onscreen: Option<bool>,
     bounds: Option<CgWindowBounds>,
-    owner: Option<String>,
-    owner_pid: Option<i64>,
-    owner_pid_exact_match: bool,
-    name: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -294,12 +301,9 @@ struct NativeWindowState {
     main_window: Option<bool>,
     frontmost_application_pid: Option<i64>,
     frontmost_application_matches_target: Option<bool>,
-    on_active_space: Option<bool>,
-    current_space_index: Option<i64>,
-    target_space_index: Option<i64>,
-    space_index_reason: String,
     cg_owner_pid_match: Option<bool>,
     cg_windows: Vec<CgWindowRecord>,
+    non_target_window_count: Option<usize>,
     probe_ok: bool,
     probe_error: Option<String>,
     cg_error: Option<String>,
@@ -315,6 +319,7 @@ impl NativeWindowState {
         pid: u32,
         observation: NativeProbeObservation,
         cg_windows: Vec<CgWindowRecord>,
+        non_target_window_count: Option<usize>,
         probe_ok: bool,
         probe_error: Option<String>,
         cg_error: Option<String>,
@@ -327,12 +332,10 @@ impl NativeWindowState {
             frontmost: observation.frontmost_observed,
             key_window: observation.key_window,
             main_window: observation.main_window,
-            on_active_space: observation.on_active_space,
             cg_owner_pid_match: observation.cg_owner_pid_match,
         });
         let exact_process_ready = probe_ok && observation.exact_pid_match;
-        let cg_window_ready = observation.cg_owner_pid_match != Some(false)
-            && observation.on_active_space != Some(false);
+        let cg_window_ready = observation.cg_owner_pid_match == Some(true);
         Self {
             pid,
             process_pid: observation.process_pid,
@@ -344,12 +347,9 @@ impl NativeWindowState {
             main_window: observation.main_window,
             frontmost_application_pid: observation.frontmost_application_pid,
             frontmost_application_matches_target: observation.frontmost_application_matches_target,
-            on_active_space: observation.on_active_space,
-            current_space_index: observation.current_space_index,
-            target_space_index: observation.target_space_index,
-            space_index_reason: observation.space_index_reason,
             cg_owner_pid_match: observation.cg_owner_pid_match,
             cg_windows,
+            non_target_window_count,
             probe_ok,
             probe_error,
             cg_error,
@@ -391,12 +391,9 @@ fn emit_native_window_probe(action: &str, state: &NativeWindowState) {
         "main_window": state.main_window,
         "frontmost_application_pid": state.frontmost_application_pid,
         "frontmost_application_matches_target": state.frontmost_application_matches_target,
-        "on_active_space": state.on_active_space,
-        "current_space_index": state.current_space_index,
-        "target_space_index": state.target_space_index,
-        "space_index_reason": state.space_index_reason,
         "cg_owner_pid_match": state.cg_owner_pid_match,
         "cg_window_list": state.cg_windows,
+        "non_target_window_count": state.non_target_window_count,
         "probe_ok": state.probe_ok,
         "probe_error": state.probe_error,
         "cg_error": state.cg_error,
@@ -420,11 +417,9 @@ fn emit_native_window_probe(action: &str, state: &NativeWindowState) {
         main_window = ?state.main_window,
         frontmost_application_pid = ?state.frontmost_application_pid,
         frontmost_application_matches_target = ?state.frontmost_application_matches_target,
-        on_active_space = ?state.on_active_space,
-        current_space_index = ?state.current_space_index,
-        target_space_index = ?state.target_space_index,
         cg_owner_pid_match = ?state.cg_owner_pid_match,
         cg_window_count = state.cg_windows.len(),
+        non_target_window_count = ?state.non_target_window_count,
         cg_windows = %record_text,
         reason_code = state.reason_code,
         "native window probe evaluation"
@@ -444,8 +439,10 @@ fn emit_native_window_probe(action: &str, state: &NativeWindowState) {
 }
 
 /// Probe only the current corrald-ui process. The exact-PID helper combines
-/// Accessibility properties with the active-space/CoreGraphics observation;
-/// every evaluation is emitted and failure remains fail-closed.
+/// Accessibility properties with an on-screen CoreGraphics observation;
+/// every evaluation is emitted and failure remains fail-closed. CoreGraphics
+/// does not expose a public, independent Space membership query here, so the
+/// capture gate makes no synthetic active-space claim.
 fn native_window_state(action: &str) -> NativeWindowState {
     #[cfg(target_os = "macos")]
     {
@@ -458,6 +455,9 @@ fn native_window_state(action: &str) -> NativeWindowState {
             .as_ref()
             .map(|probe| probe.windows.clone())
             .unwrap_or_default();
+        let non_target_window_count = native_probe
+            .as_ref()
+            .map(|probe| probe.non_target_window_count);
         let state = NativeWindowState::from_facts(
             pid,
             NativeProbeObservation {
@@ -478,22 +478,10 @@ fn native_window_state(action: &str) -> NativeWindowState {
                 exact_pid_match: native_probe.as_ref().is_some_and(|probe| {
                     probe.accessibility_probe_ok && probe.process_pid == Some(pid)
                 }),
-                on_active_space: native_probe
-                    .as_ref()
-                    .and_then(|probe| probe.on_active_space),
-                current_space_index: native_probe
-                    .as_ref()
-                    .and_then(|probe| probe.current_space_index),
-                target_space_index: native_probe
-                    .as_ref()
-                    .and_then(|probe| probe.target_space_index),
-                space_index_reason: native_probe
-                    .as_ref()
-                    .map(|probe| probe.space_index_reason.clone())
-                    .unwrap_or_else(|| "unavailable_without_private_CGS_space_api".into()),
                 cg_owner_pid_match: native_probe.as_ref().map(|probe| probe.cg_owner_pid_match),
             },
             cg_windows,
+            non_target_window_count,
             native_probe
                 .as_ref()
                 .is_some_and(|probe| probe.accessibility_probe_ok),
@@ -523,13 +511,10 @@ fn native_window_state(action: &str) -> NativeWindowState {
                 frontmost_application_pid: None,
                 frontmost_application_matches_target: None,
                 exact_pid_match: true,
-                on_active_space: Some(true),
-                current_space_index: None,
-                target_space_index: None,
-                space_index_reason: "unavailable_without_private_CGS_space_api".into(),
                 cg_owner_pid_match: Some(true),
             },
             Vec::new(),
+            None,
             true,
             None,
             None,
@@ -554,10 +539,7 @@ struct MacosCgWindowProbe {
     frontmost_matches_target: Option<bool>,
     cg_owner_pid_match: bool,
     window_visible: bool,
-    on_active_space: Option<bool>,
-    current_space_index: Option<i64>,
-    target_space_index: Option<i64>,
-    space_index_reason: String,
+    non_target_window_count: usize,
     windows: Vec<CgWindowRecord>,
 }
 
@@ -1212,16 +1194,30 @@ impl CorralApp {
             self.refresh_registry(true);
             return;
         }
-        let Some(path) = self
+        let path = match local_registry_path_for_edit(&self.config.host_url) {
+            Ok(path) => path,
+            Err(error) => {
+                self.registry_notice = Some((Level::Error, error));
+                return;
+            }
+        };
+        if self
             .fleet
             .registry
             .as_ref()
             .and_then(|result| result.as_ref().ok())
-            .map(|registry| registry.path.clone())
-        else {
+            .is_none()
+        {
             self.registry_notice = Some((
                 Level::Error,
                 "registry has not loaded; refresh before editing".into(),
+            ));
+            return;
+        }
+        let Some(path) = path.to_str() else {
+            self.registry_notice = Some((
+                Level::Error,
+                "cannot edit registry: local registry path is not valid UTF-8".into(),
             ));
             return;
         };
@@ -1229,16 +1225,17 @@ impl CorralApp {
             crate::ui::registry::Action::Save(draft) => {
                 let draft = *draft;
                 let old_name = draft.original_name.clone();
-                let result = crate::ui::registry::apply_draft(&path, &draft);
+                let result = crate::ui::registry::apply_draft(path, &draft);
                 if result.is_ok() {
                     self.registry_drafts.remove(&old_name);
                 }
                 result.map(|_| format!("{} saved and applied", draft.name))
             }
-            crate::ui::registry::Action::Send(name) => crate::ui::registry::send_to_fleet(&path)
-                .map(|message| format!("{name}: {message}")),
+            crate::ui::registry::Action::Send(name) => {
+                crate::ui::registry::send_to_fleet(path).map(|message| format!("{name}: {message}"))
+            }
             crate::ui::registry::Action::Pause { fleet_name, paused } => {
-                let result = crate::ui::registry::set_paused(&path, &fleet_name, paused);
+                let result = crate::ui::registry::set_paused(path, &fleet_name, paused);
                 match result {
                     Ok(()) => {
                         self.registry_drafts.remove(&fleet_name);
@@ -1543,6 +1540,13 @@ impl CorralApp {
             ));
             return;
         };
+        if rotate && let Err(error) = crate::keys::prepare_key_rotation(&fp) {
+            self.settings.notice = Some((
+                Level::Error,
+                format!("cannot safely rotate device identity: {error}"),
+            ));
+            return;
+        }
         let client = self.client.clone();
         let host_url = self.config.host_url.clone();
         let rt = self.rt.clone();
@@ -2618,6 +2622,24 @@ mod tests {
     }
 
     #[test]
+    fn registry_edits_refuse_a_remote_daemon_path_before_file_lookup() {
+        let error =
+            local_registry_path_for_edit("https://remote.example.invalid:8474").unwrap_err();
+        assert!(error.contains("non-loopback"));
+        assert!(!error.contains("Unknown target"));
+        assert!(!error.contains("remote.example.invalid"));
+    }
+
+    #[test]
+    fn registry_edits_use_the_client_path_for_a_loopback_daemon() {
+        let client_path = PathBuf::from("/client-local/fleets.json");
+        assert_eq!(
+            local_registry_path_for_host("http://127.0.0.1:8474", client_path.clone()).unwrap(),
+            client_path
+        );
+    }
+
+    #[test]
     fn native_probe_reason_classifies_fail_closed_fields() {
         let ready = NativeProbeFacts {
             probe_ok: true,
@@ -2627,7 +2649,6 @@ mod tests {
             frontmost: Some(true),
             key_window: Some(true),
             main_window: Some(true),
-            on_active_space: Some(true),
             cg_owner_pid_match: Some(true),
         };
         assert_eq!(
@@ -2685,18 +2706,10 @@ mod tests {
         );
         assert_eq!(
             classify_native_probe(NativeProbeFacts {
-                on_active_space: Some(false),
-                ..ready
-            }),
-            NativeProbeReason::DispatchReadySpaceMismatch
-        );
-        assert_eq!(
-            classify_native_probe(NativeProbeFacts {
-                on_active_space: None,
                 cg_owner_pid_match: None,
                 ..ready
             }),
-            NativeProbeReason::DispatchReadySpaceUnknown
+            NativeProbeReason::DeferCgWindowMissing
         );
     }
 
@@ -2712,13 +2725,9 @@ mod tests {
             frontmost_application_pid: Some(42),
             frontmost_application_matches_target: Some(true),
             exact_pid_match: true,
-            on_active_space: Some(true),
-            current_space_index: None,
-            target_space_index: None,
-            space_index_reason: "test".into(),
             cg_owner_pid_match: Some(true),
         };
-        let state = NativeWindowState::from_facts(42, observation, vec![], true, None, None);
+        let state = NativeWindowState::from_facts(42, observation, vec![], None, true, None, None);
         assert!(state.visible);
         assert!(!state.frontmost);
         assert_eq!(state.reason_code, "defer_not_frontmost_or_unknown");

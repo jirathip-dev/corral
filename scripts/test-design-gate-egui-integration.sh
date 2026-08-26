@@ -674,9 +674,56 @@ export HOME="$WORK/home"
 export CORRAL_CONFIG_DIR="$WORK/daemon-config"
 export CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json"
 export CORRALD_BIN="$DAEMON_BIN"
-export CORRAL_UI_CONFIG_DIR="$WORK/ui-config"
+export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config"
 export CORRAL_UI_DISABLE_KEYRING=1
 export CORRAL_TEST_WAKE_LOG="$WORK/wake-osascript.log"
+
+"$PYTHON_BIN" - "$SCRIPT_DIR/verify-design-gate-egui-evidence.py" <<'PY'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("verify_egui_evidence", sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit("could not load the egui evidence verifier")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+record = {
+    "action": "dispatch_evaluation",
+    "probe_ok": True,
+    "pid": 42,
+    "exact_pid_match": True,
+    "process_visible": True,
+    "window_visible": True,
+    "frontmost": True,
+    "key_window": True,
+    "main_window": True,
+    "frontmost_application_pid": 42,
+    "frontmost_application_matches_target": True,
+    "cg_owner_pid_match": True,
+    "non_target_window_count": 3,
+    "visible_gate": True,
+    "frontmost_gate": True,
+    "reason_code": "dispatch_ready",
+    "cg_window_list": [{
+        "placement": 1,
+        "window_number": 9,
+        "layer": 0,
+        "onscreen": True,
+        "bounds": {"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0},
+    }],
+}
+module.verify_native_probe(json.dumps(record), "fixture")
+record["cg_window_list"] = [{**record["cg_window_list"][0], "owner": "Other App"}]
+try:
+    module.verify_native_probe(json.dumps(record), "privacy fixture")
+except SystemExit:
+    pass
+else:
+    raise SystemExit("the evidence verifier accepted a non-target window field")
+print("verified native evidence privacy schema and rejection path")
+PY
 
 printf 'egui integration: capturing all four native #206 tabs\n'
 for tab in board issues registry settings; do

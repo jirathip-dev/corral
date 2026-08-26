@@ -84,7 +84,6 @@ def verify_native_probe(capture_log: str, tab: str) -> None:
             "key_window": True,
             "main_window": True,
             "frontmost_application_matches_target": True,
-            "on_active_space": True,
             "cg_owner_pid_match": True,
             "visible_gate": True,
             "frontmost_gate": True,
@@ -92,15 +91,29 @@ def verify_native_probe(capture_log: str, tab: str) -> None:
         }
         if any(record.get(key) != value for key, value in required.items()):
             return False
+        if record.get("frontmost_application_pid") != record.get("pid"):
+            return False
+        non_target_count = record.get("non_target_window_count")
+        if not isinstance(non_target_count, int) or isinstance(non_target_count, bool):
+            return False
         windows = record.get("cg_window_list")
-        return isinstance(windows, list) and any(
-            isinstance(window, dict) and window.get("owner_pid_exact_match") is True
+        if not isinstance(windows, list) or not windows:
+            return False
+        allowed_window_keys = {
+            "placement",
+            "window_number",
+            "layer",
+            "onscreen",
+            "bounds",
+        }
+        return all(
+            isinstance(window, dict) and set(window).issubset(allowed_window_keys)
             for window in windows
         )
 
     if not any(ready(record) for record in records):
         raise SystemExit(
-            f"{tab} capture log lacks an exact-PID visible/frontmost/key/space readiness probe"
+            f"{tab} capture log lacks an exact-PID visible/frontmost/key/main readiness probe"
         )
 
 

@@ -689,7 +689,6 @@ def ready(record):
         "key_window": True,
         "main_window": True,
         "frontmost_application_matches_target": True,
-        "on_active_space": True,
         "cg_owner_pid_match": True,
         "visible_gate": True,
         "frontmost_gate": True,
@@ -697,16 +696,30 @@ def ready(record):
     }
     if any(record.get(key) != value for key, value in required.items()):
         return False
+    if record.get("frontmost_application_pid") != record.get("pid"):
+        return False
+    non_target_count = record.get("non_target_window_count")
+    if not isinstance(non_target_count, int) or isinstance(non_target_count, bool):
+        return False
     windows = record.get("cg_window_list")
-    return isinstance(windows, list) and any(
-        isinstance(window, dict) and window.get("owner_pid_exact_match") is True
+    if not isinstance(windows, list) or not windows:
+        return False
+    allowed_window_keys = {
+        "placement",
+        "window_number",
+        "layer",
+        "onscreen",
+        "bounds",
+    }
+    return all(
+        isinstance(window, dict) and set(window).issubset(allowed_window_keys)
         for window in windows
     )
 
 if not any(ready(record) for record in records):
     raise SystemExit(
         "native window probe never observed an exact-PID, visible, frontmost, "
-        "key/main, active-space window before screenshot dispatch"
+        "key/main window before screenshot dispatch"
     )
 print(f"verified native window readiness observations: {len(records)}")
 PY
@@ -1117,6 +1130,7 @@ capture_egui() {
   local binary
   local native_probe_helper="${CORRAL_UI_WINDOW_PROBE_HELPER:-}"
   local native_probe_log="$STAGE/native-window-probe.jsonl"
+  local ui_config_seed_dir="${CORRAL_UI_CONFIG_SEED_DIR:-}"
 
   require_egui_dependencies
   health="$(curl --fail --silent --show-error --max-time 5 "$HOST_URL/healthz")" \
@@ -1195,15 +1209,29 @@ PY
   CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
   CAPTURE_COMMAND+=" CORRAL_UI_DISABLE_KEYRING=1"
-  CAPTURE_COMMAND+=" $binary"
+  CAPTURE_COMMAND+=" CORRAL_UI_CONFIG_DIR=<stage>/ui-config $binary"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
     CAPTURE_COMMAND+="; wake with caller command"
   fi
-  CAPTURE_COMMAND+="; exact-PID native visible/frontmost/key/space probe"
+  CAPTURE_COMMAND+="; exact-PID native visible/frontmost/key/main/on-screen probe"
 
   log "capturing live egui board; health check passed"
   if [[ -n "$LIVE_AGENT" ]]; then
     log "selected target: $LIVE_AGENT"
+  fi
+  local ui_config_dir="$STAGE/ui-config"
+  mkdir -p "$ui_config_dir"
+  if [[ -n "$ui_config_seed_dir" ]]; then
+    [[ -d "$ui_config_seed_dir" ]] \
+      || die "egui UI config seed directory does not exist: $ui_config_seed_dir"
+    [[ -f "$ui_config_seed_dir/config.json" ]] \
+      || die "egui UI config seed is missing config.json: $ui_config_seed_dir"
+    cp -p -- "$ui_config_seed_dir/config.json" "$ui_config_dir/config.json"
+    for key_path in "$ui_config_seed_dir"/keys/*.key; do
+      [[ -f "$key_path" ]] || continue
+      mkdir -p "$ui_config_dir/keys"
+      cp -p -- "$key_path" "$ui_config_dir/keys/"
+    done
   fi
   CORRAL_UI_SCREENSHOT_AGENT="$LIVE_AGENT" \
     CORRAL_UI_SCREENSHOT="$STAGE/live-after.png" \
@@ -1211,6 +1239,7 @@ PY
   CORRAL_UI_SCREENSHOT_TAB="$EGUI_TAB" \
   CORRAL_UI_SCREENSHOT_WAKE_COMMAND="$EGUI_WAKE_COMMAND" \
     CORRAL_UI_DISABLE_KEYRING=1 \
+    CORRAL_UI_CONFIG_DIR="$ui_config_dir" \
     CORRAL_UI_WINDOW_PROBE_HELPER="$native_probe_helper" \
     CORRAL_UI_WINDOW_DIAGNOSTIC_LOG="$native_probe_log" \
     RUST_LOG="${RUST_LOG:-info}" "$binary" >"$STAGE/capture.log" 2>&1 &
@@ -1503,7 +1532,7 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
   printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
   printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
-  printf -- '- Implementation identity scope: explicit source/build/provenance inputs; generated `docs/design/evidence/issue-206/` is excluded to avoid a circular digest.\n'
+  printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, and approved prototype only; unrelated workspace/daemon files and generated `docs/design/evidence/issue-206/` are excluded, while runtime daemon/fixture and binary hashes are recorded separately.\n'
   printf -- '- Native binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
   printf -- '- Reproducible invocation: `%s`\n' "$COMMAND_LINE"
   printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"

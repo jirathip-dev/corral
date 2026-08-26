@@ -29,6 +29,23 @@ fn daemon_config_dir() -> PathBuf {
     PathBuf::from(home).join(".config/corral")
 }
 
+/// The registry file owned by this client process. A daemon response may
+/// describe a path on another machine, so registry mutations must never use
+/// that response as a local filesystem target.
+pub fn local_registry_path() -> PathBuf {
+    let path = std::env::var_os("CORRAL_FLEETS_PATH")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| daemon_config_dir().join("fleets.json"));
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
 /// Where the device key actually lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStore {
@@ -133,12 +150,19 @@ pub fn load_or_create_key(host_fingerprint: &str) -> Result<DeviceKey, String> {
 }
 
 /// Rotate: replace the stored seed (used on re-registration).
+///
+/// When keyring use is disabled, reconcile an existing keychain entry before
+/// writing the file fallback. Otherwise a later normal launch would prefer
+/// the stale keychain seed and split the device identity. A keychain error is
+/// fatal and leaves the file untouched; callers must not proceed with a
+/// rotation they cannot persist consistently.
 pub fn rotate_key(host_fingerprint: &str, seed: &[u8; 32]) -> Result<(), String> {
     let account = account_for(host_fingerprint);
     if !keyring_enabled() {
         let path = client_config_dir()
             .join("keys")
             .join(format!("{host_fingerprint}.key"));
+        reconcile_disabled_keyring(&account, &path)?;
         return write_key_file(&path, seed);
     }
     match write_keyring(&account, seed) {
@@ -158,6 +182,21 @@ pub fn rotate_key(host_fingerprint: &str, seed: &[u8; 32]) -> Result<(), String>
                 .map_err(|file_err| format!("keychain unavailable ({keyring_err}): {file_err}"))
         }
     }
+}
+
+/// Reconcile a disabled-mode keychain entry before the re-register request is
+/// sent. This preserves the old key in the fallback file if the daemon later
+/// rejects the new registration, and makes the subsequent normal launch use
+/// the same identity rather than a stale keychain entry.
+pub fn prepare_key_rotation(host_fingerprint: &str) -> Result<(), String> {
+    if keyring_enabled() {
+        return Ok(());
+    }
+    let account = account_for(host_fingerprint);
+    let path = client_config_dir()
+        .join("keys")
+        .join(format!("{host_fingerprint}.key"));
+    reconcile_disabled_keyring(&account, &path)
 }
 
 /// Host admin token for host-side administration (audit + grants):
@@ -205,14 +244,23 @@ pub fn host_fingerprint(host_public_key_b64: Option<&str>, host_url: &str) -> St
 // ---------------------------------------------------------------------------
 
 fn read_keyring(account: &str) -> Result<[u8; 32], String> {
+    read_keyring_seed(account)?.ok_or_else(|| "keychain entry is missing".to_string())
+}
+
+fn read_keyring_seed(account: &str) -> Result<Option<[u8; 32]>, String> {
     let entry =
         keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| format!("keyring entry: {e}"))?;
-    let pw = entry.get_password().map_err(|e| e.to_string())?;
+    let pw = match entry.get_password() {
+        Ok(pw) => pw,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, pw.trim())
         .map_err(|e| format!("corrupt keychain payload: {e}"))?;
-    bytes
+    let seed = bytes
         .try_into()
-        .map_err(|_| "corrupt keychain payload: not 32 bytes".to_string())
+        .map_err(|_| "corrupt keychain payload: not 32 bytes".to_string())?;
+    Ok(Some(seed))
 }
 
 fn write_keyring(account: &str, seed: &[u8]) -> Result<(), String> {
@@ -220,6 +268,38 @@ fn write_keyring(account: &str, seed: &[u8]) -> Result<(), String> {
         keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| format!("keyring entry: {e}"))?;
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, seed);
     entry.set_password(&encoded).map_err(|e| e.to_string())
+}
+
+fn delete_keyring(account: &str) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| format!("keyring entry: {e}"))?;
+    entry
+        .delete_credential()
+        .map_err(|error| format!("could not delete stale keychain identity: {error}"))
+}
+
+fn reconcile_disabled_keyring(account: &str, path: &Path) -> Result<(), String> {
+    let keyring_seed = read_keyring_seed(account)
+        .map_err(|error| format!("could not inspect stale keychain identity: {error}"))?;
+    reconcile_disabled_keyring_with(path, keyring_seed, || delete_keyring(account))
+}
+
+fn reconcile_disabled_keyring_with<F>(
+    path: &Path,
+    keyring_seed: Option<[u8; 32]>,
+    delete: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let Some(keyring_seed) = keyring_seed else {
+        return Ok(());
+    };
+    // Keep the keychain identity recoverable in the fallback store until the
+    // delete succeeds. Atomic file replacement makes an existing fallback
+    // safe to update without exposing a partially written seed.
+    write_key_file(path, &keyring_seed)?;
+    delete()
 }
 
 fn ensure_dir_0700(dir: &Path) -> Result<(), String> {
@@ -336,6 +416,31 @@ mod tests {
         write_key_file(&path, &seed).unwrap();
         assert_eq!(read_key_file(&path).unwrap(), seed);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn disabled_rotation_reconciles_stale_keyring_before_deleting_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-key-reconcile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("keys/fp.key");
+        let stale_keyring_seed = [9u8; 32];
+        let deleted = std::cell::Cell::new(false);
+
+        reconcile_disabled_keyring_with(&path, Some(stale_keyring_seed), || {
+            deleted.set(true);
+            Ok(())
+        })
+        .expect("stale keychain identity is reconciled");
+
+        assert!(deleted.get());
+        assert_eq!(read_key_file(&path).unwrap(), stale_keyring_seed);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -250,7 +250,10 @@ fn shortened_agent_id(agent_id: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FleetRegistry {
     pub status: String,
-    pub path: String,
+    /// Path reported by the daemon for display/provenance only. The client
+    /// never uses this remote value as a local write target.
+    #[serde(rename = "path")]
+    pub reported_path: String,
     #[serde(default)]
     pub error: Option<String>,
     pub fleets: Vec<FleetRegistryEntry>,
@@ -584,7 +587,7 @@ mod tests {
         });
         let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
         assert_eq!(registry.status, "ok");
-        assert_eq!(registry.path, "/tmp/fleets.json");
+        assert_eq!(registry.reported_path, "/tmp/fleets.json");
         assert_eq!(registry.error, None);
         assert!(!registry.failed());
         assert_eq!(registry.repos, vec!["corral"]);

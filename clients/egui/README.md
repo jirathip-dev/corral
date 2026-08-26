@@ -79,7 +79,11 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   candidate with `corrald fleet check` before an atomic replacement and
   refuses stale drafts; pause/resume uses the same candidate validation.
   Send to fleet is labeled validation-only because no daemon distribution
-  endpoint exists in this layout-only scope.
+  endpoint exists in this layout-only scope. Mutations are restricted to a
+  loopback daemon and the client-local `CORRAL_FLEETS_PATH` (or local config
+  default), never a path reported by a remote daemon. `corrald` resolution is
+  `CORRALD_BIN`, executable sibling, installed release root, then `PATH`; a
+  missing binary reports the `CORRALD_BIN` remedy.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
   into its own top-level tab, keeping the issue-linked and issue-free
   worktree actions alongside the board's other tabs.
@@ -120,12 +124,17 @@ flaky without an explicit `device.poll`; this path polls with a bounded
 wait and captures the presented surface.) On macOS, evidence mode also keeps
 the eframe 0.36.1 root viewport visible/key during its hidden-first-frame
 startup, and the harness compiles the exact-PID CoreGraphics probe. Dispatch is
-fail-closed until the process, window, frontmost, key/main, and active-space
-observations all agree.
+fail-closed until the process, window, frontmost, key/main, and exact-PID
+on-screen CoreGraphics observations all agree. macOS has no reliable public
+independent Space-membership query in this probe, so evidence does not claim
+an active-space result; the exact target window and aggregate non-target count
+are recorded instead.
 
 For unattended scratch runs, `CORRAL_UI_DISABLE_KEYRING=1` selects the
 documented 0600 file fallback and prevents a macOS Keychain prompt from
 blocking the native event loop; the integration harness sets it automatically.
+Re-registration in this mode first reconciles and removes any stale keychain
+entry, refusing to continue if that identity cannot be reconciled.
 
 For native live-agent evidence, add `CORRAL_UI_SCREENSHOT_AGENT` with an agent
 id observed in the daemon's `/snapshot` response. The app resolves that real

@@ -9,10 +9,6 @@ struct WindowRecord: Encodable {
     let layer: Int?
     let onscreen: Bool?
     let bounds: [String: Double?]?
-    let owner: String?
-    let owner_pid: Int?
-    let owner_pid_exact_match: Bool
-    let name: String?
 }
 
 struct ProbeOutput: Encodable {
@@ -29,10 +25,7 @@ struct ProbeOutput: Encodable {
     let frontmost_matches_target: Bool?
     let cg_owner_pid_match: Bool
     let window_visible: Bool
-    let on_active_space: Bool?
-    let current_space_index: Int?
-    let target_space_index: Int?
-    let space_index_reason: String
+    let non_target_window_count: Int
     let windows: [WindowRecord]
 }
 
@@ -106,25 +99,21 @@ let mainWindow = accessibilityWindows.contains {
     boolAttribute($0, kAXMainAttribute as CFString) == true
 }
 
-let windows = rawWindows.enumerated().map { placement, dictionary in
+let windows = rawWindows.enumerated().compactMap { placement, dictionary -> WindowRecord? in
     let ownerPID = number(dictionary[kCGWindowOwnerPID as String])
+    guard ownerPID == Int(targetPID) else { return nil }
     return WindowRecord(
         placement: placement,
         window_number: number(dictionary[kCGWindowNumber as String]),
         layer: number(dictionary[kCGWindowLayer as String]),
         onscreen: boolean(dictionary[kCGWindowIsOnscreen as String]),
-        bounds: bounds(dictionary[kCGWindowBounds as String]),
-        owner: dictionary[kCGWindowOwnerName as String] as? String,
-        owner_pid: ownerPID,
-        owner_pid_exact_match: ownerPID == Int(targetPID),
-        name: dictionary[kCGWindowName as String] as? String
+        bounds: bounds(dictionary[kCGWindowBounds as String])
     )
 }
 
-let ownerMatch = windows.contains { $0.owner_pid_exact_match }
+let ownerMatch = !windows.isEmpty
 let targetWindowVisible = windows.contains { window in
-    guard window.owner_pid_exact_match,
-          window.onscreen == true,
+    guard window.onscreen == true,
           window.layer == 0,
           let bounds = window.bounds,
           let width = bounds["width"],
@@ -146,14 +135,11 @@ let output = ProbeOutput(
     key_window: accessibilityWindows.isEmpty ? nil : keyWindow,
     main_window: accessibilityWindows.isEmpty ? nil : mainWindow,
     window_count: accessibilityWindows.count,
-    frontmost_application_pid: frontmostPID,
+    frontmost_application_pid: frontmostPID == Int(targetPID) ? frontmostPID : nil,
     frontmost_matches_target: frontmostPID.map { $0 == Int(targetPID) },
     cg_owner_pid_match: ownerMatch,
     window_visible: targetWindowVisible,
-    on_active_space: targetWindowVisible ? true : false,
-    current_space_index: nil,
-    target_space_index: nil,
-    space_index_reason: "unavailable_without_private_CGS_space_api",
+    non_target_window_count: rawWindows.count - windows.count,
     windows: windows
 )
 

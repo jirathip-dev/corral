@@ -9,7 +9,8 @@
 //! was loaded from, so a refresh or another writer cannot be silently lost.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use eframe::egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -147,7 +148,7 @@ pub fn show(
                     RichText::new(format!(
                         "{} fleet(s) · {}",
                         registry.fleets.len(),
-                        registry.path
+                        registry.reported_path
                     ))
                     .monospace()
                     .small()
@@ -319,11 +320,11 @@ fn set_paused_with_validator(
 /// reported as validation rather than pretending there is a daemon mutation
 /// endpoint for registry distribution in the #206 layout-only scope.
 pub fn send_to_fleet(path: &str) -> Result<String, String> {
-    let binary = std::env::var_os("CORRALD_BIN").unwrap_or_else(|| "corrald".into());
+    let binary = resolve_corrald_binary()?;
     let output = Command::new(binary)
         .args(["fleet", "check", "--registry", path])
         .output()
-        .map_err(|error| format!("could not run corrald fleet check: {error}"))?;
+        .map_err(|error| format_corrald_run_error(&error))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
@@ -331,6 +332,123 @@ pub fn send_to_fleet(path: &str) -> Result<String, String> {
     } else {
         Err(if stderr.is_empty() { stdout } else { stderr })
     }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn path_command(path: Option<&OsStr>, command: &str) -> Option<PathBuf> {
+    let path = path?;
+    std::env::split_paths(path)
+        .map(|directory| directory.join(command))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn resolve_corrald_binary() -> Result<PathBuf, String> {
+    let explicit = std::env::var_os("CORRALD_BIN");
+    let current_exe = std::env::current_exe().ok();
+    let install_root = std::env::var_os("CORRAL_INSTALL_DIR");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_corrald_binary_from(
+        explicit.as_deref(),
+        current_exe.as_deref(),
+        install_root.as_deref().map(Path::new),
+        home.as_deref(),
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+fn resolve_corrald_binary_from(
+    explicit: Option<&OsStr>,
+    current_exe: Option<&Path>,
+    install_root: Option<&Path>,
+    home: Option<&Path>,
+    path: Option<&OsStr>,
+) -> Result<PathBuf, String> {
+    if let Some(explicit) = explicit.filter(|value| !value.is_empty()) {
+        let explicit_path = PathBuf::from(explicit);
+        if is_executable_file(&explicit_path) {
+            return Ok(explicit_path);
+        }
+        // A bare CORRALD_BIN is still a useful explicit command override; it
+        // is resolved through PATH while preserving the override's priority.
+        if explicit_path.components().count() == 1
+            && let Some(found) = path_command(path, explicit_path.to_string_lossy().as_ref())
+        {
+            return Ok(found);
+        }
+        return Err(format!(
+            "CORRALD_BIN={} is not an executable corrald binary; set CORRALD_BIN to the full path of the corrald executable",
+            explicit.to_string_lossy()
+        ));
+    }
+
+    let mut candidates = Vec::new();
+    let mut add_candidate = |candidate: PathBuf| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    // A source/release install places corrald beside corrald-ui. This also
+    // covers a raw release directory launched by a desktop entry.
+    if let Some(current_exe) = current_exe
+        && let Some(parent) = current_exe.parent()
+    {
+        add_candidate(parent.join("corrald"));
+    }
+
+    // The packaged installer keeps the daemon below CORRAL_INSTALL_DIR/release
+    // while the Finder-launched UI lives in Corral.app. Honor an explicit
+    // install root first, then the documented per-user default.
+    let mut roots = Vec::new();
+    if let Some(root) = install_root {
+        roots.push(root.to_path_buf());
+    }
+    if let Some(home) = home {
+        roots.push(home.join(".local/share/corral"));
+    }
+    for root in roots {
+        add_candidate(root.join("corrald"));
+        add_candidate(root.join("release/corrald"));
+        add_candidate(root.join("bin/corrald"));
+    }
+
+    if let Some(found) = candidates
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+    {
+        return Ok(found);
+    }
+    if let Some(found) = path_command(path, "corrald") {
+        return Ok(found);
+    }
+
+    Err(
+        "could not find an executable corrald for registry validation; set CORRALD_BIN to the full path of the corrald executable (for example CORRALD_BIN=/path/to/corrald)"
+            .to_string(),
+    )
+}
+
+fn format_corrald_run_error(error: &std::io::Error) -> String {
+    format!(
+        "could not run corrald fleet check ({error}); set CORRALD_BIN to the full path of the corrald executable"
+    )
 }
 
 fn send_validation_success_message(stdout: &str) -> String {
@@ -510,14 +628,14 @@ fn validate_candidate_with_corrald(path: &Path, bytes: &[u8]) -> Result<(), Stri
     if let Ok(metadata) = std::fs::metadata(path) {
         let _ = std::fs::set_permissions(&candidate, metadata.permissions());
     }
-    let binary = std::env::var_os("CORRALD_BIN").unwrap_or_else(|| "corrald".into());
+    let binary = resolve_corrald_binary()?;
     let output = Command::new(binary)
         .args(["fleet", "check", "--registry"])
         .arg(&candidate)
         .stdin(std::process::Stdio::null())
         .output();
     let _ = std::fs::remove_file(&candidate);
-    let output = output.map_err(|error| format!("could not run corrald fleet check: {error}"))?;
+    let output = output.map_err(|error| format_corrald_run_error(&error))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -744,6 +862,16 @@ fn scalar_text(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
 
+    fn write_executable(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
     fn authoritative_test_validator(path: &Path, bytes: &[u8]) -> Result<(), String> {
         if std::env::var_os("CORRALD_BIN").is_some() {
             validate_candidate_with_corrald(path, bytes)
@@ -785,6 +913,79 @@ mod tests {
         let with_daemon_output = send_validation_success_message("fleet check: 1 valid");
         assert!(with_daemon_output.contains("fleet check: 1 valid"));
         assert!(with_daemon_output.contains("no daemon distribution endpoint"));
+    }
+
+    #[test]
+    fn corrald_resolution_honors_override_then_sibling_install_root_and_path() {
+        let root = std::env::temp_dir().join(format!(
+            "corral-ui-corrald-resolution-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let current_exe = root.join("bin/corrald-ui");
+        let sibling = root.join("bin/corrald");
+        let install_root = root.join("install");
+        let installed = install_root.join("corrald");
+        let path_dir = root.join("path");
+        let path_binary = path_dir.join("corrald");
+        write_executable(&sibling);
+        write_executable(&installed);
+        write_executable(&path_binary);
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+
+        assert_eq!(
+            resolve_corrald_binary_from(
+                Some(sibling.as_os_str()),
+                Some(&current_exe),
+                Some(&install_root),
+                None,
+                Some(&path_env),
+            )
+            .unwrap(),
+            sibling
+        );
+        std::fs::remove_file(&sibling).unwrap();
+        assert_eq!(
+            resolve_corrald_binary_from(
+                None,
+                Some(&current_exe),
+                Some(&install_root),
+                None,
+                Some(&path_env),
+            )
+            .unwrap(),
+            installed
+        );
+        std::fs::remove_file(&installed).unwrap();
+        assert_eq!(
+            resolve_corrald_binary_from(
+                None,
+                Some(&current_exe),
+                Some(&install_root),
+                None,
+                Some(&path_env),
+            )
+            .unwrap(),
+            path_binary
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn corrald_resolution_error_explains_corrald_bin_override() {
+        let error = resolve_corrald_binary_from(
+            None,
+            Some(Path::new("/missing/corrald-ui")),
+            Some(Path::new("/missing/install")),
+            Some(Path::new("/missing/home")),
+            Some(OsStr::new("")),
+        )
+        .unwrap_err();
+        assert!(error.contains("CORRALD_BIN"));
+        assert!(error.contains("full path"));
     }
 
     #[test]

@@ -128,6 +128,23 @@ if [[ -n "${CORRAL_TEST_EGUI_PID_FILE:-}" ]]; then
   printf '%s\n' "$$" >"$CORRAL_TEST_EGUI_PID_FILE"
 fi
 printf '%s\n' 'native screenshot evidence selected live agent; fixture writer'
+printf '%s\n' 'requesting viewport screenshot'
+printf '%s\n' 'screenshot event received'
+printf '%s\n' 'screenshot saved — exiting'
+if [[ -n "${CORRAL_UI_WINDOW_DIAGNOSTIC_LOG:-}" ]]; then
+  printf '%s\n' '{"action":"dispatch_evaluation","cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":100.0,"width":100.0,"x":0.0,"y":0.0},"layer":0,"onscreen":true,"placement":0,"window_number":9}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":42,"key_window":true,"main_window":true,"non_target_window_count":3,"pid":42,"probe_ok":true,"process_visible":true,"reason_code":"dispatch_ready","visible_gate":true,"frontmost_gate":true,"window_visible":true}' >"$CORRAL_UI_WINDOW_DIAGNOSTIC_LOG"
+fi
+if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
+  case "${CORRAL_UI_CONFIG_DIR:-}" in
+    "$CORRAL_TEST_UI_CONFIG_ROOT"/.design-gate.stage.*/ui-config) ;;
+    *)
+      printf '%s\n' "egui did not receive an isolated staged config directory: ${CORRAL_UI_CONFIG_DIR:-<unset>}" >&2
+      exit 1
+      ;;
+  esac
+  [[ -s "${CORRAL_UI_CONFIG_DIR}/config.json" ]] \
+    || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
+fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
 if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
@@ -437,6 +454,10 @@ grep -q '900x900' "$WORK/ios-output/issue-205/conformance.md" \
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_EXPECTED_ISSUE=213
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
+mkdir -p "$WORK/ui-config-seed"
+printf '%s\n' '{"host_url":"http://fixture"}' >"$WORK/ui-config-seed/config.json"
+export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config-seed"
+export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output/issue-213"
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
 export CORRAL_TEST_EGUI_MODE=partial-then-linger
 egui_partial_start_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
@@ -462,6 +483,7 @@ assert_stopped "partial then lingering egui" "$CORRAL_TEST_EGUI_PID_FILE"
 grep -q 'native egui viewport screenshot' "$WORK/egui-output/issue-213/conformance.md" \
   || fail "egui capture provenance is missing"
 unset CORRAL_TEST_EGUI_MODE
+unset CORRAL_UI_CONFIG_SEED_DIR CORRAL_TEST_UI_CONFIG_ROOT
 
 export CORRAL_TEST_EXPECTED_ISSUE=217
 export CORRAL_TEST_PNG_RACE=1

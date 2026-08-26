@@ -269,6 +269,12 @@ intentionally local/platform-dependent and requires a macOS window server,
 Chrome, Cargo, OpenSSL, and `osascript`; it uses only scratch config, repo,
 worktree, and loopback resources and removes them on completion.
 
+The macOS readiness record is intentionally privacy-scoped: it retains the
+exact target PID's process/window visibility, frontmost, key/main state, and
+on-screen CoreGraphics target records, plus an aggregate non-target window
+count. It does not claim independent active-Space membership because the
+public probe has no reliable query for that fact.
+
 The iOS path uses only `hermes-sim-task`. `--ios-mode demo` is an explicit
 Debug fixture; live mode requires `--ios-command` to prepare and launch the
 real app inside the temporary simulator. The approved #205 transcript HTML is

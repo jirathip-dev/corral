@@ -28,6 +28,7 @@ enum Tab {
 
 const BOARD_TOP_NAV: [&str; 2] = ["settings", "registry"];
 const NON_BOARD_TOP_NAV: [&str; 5] = ["settings", "registry", "audit", "issues", "board"];
+const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Board mode owns Board / Issues / Audit navigation in the detail pane. The
 /// global chrome keeps only utility destinations there so the two surfaces
@@ -124,6 +125,7 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     audit_last_refresh: std::time::Instant,
+    issues_last_refresh: std::time::Instant,
 
     // Tabs.
     tab: Tab,
@@ -201,6 +203,7 @@ impl CorralApp {
             audit: None,
             audit_loading: false,
             audit_last_refresh: std::time::Instant::now(),
+            issues_last_refresh: std::time::Instant::now(),
             tab: Tab::Board,
             screenshot_path: std::env::var("CORRAL_UI_SCREENSHOT")
                 .ok()
@@ -333,7 +336,7 @@ impl CorralApp {
                 self.conn = ConnState::Connected;
                 self.conn_detail = None;
                 // #113/#135: fetch both read-only views on connection.
-                self.refresh_issues(false);
+                self.refresh_issues(true);
                 self.refresh_registry(false);
             }
             ApplyMsg::Conn(protocol::Live::Disconnected) => {
@@ -352,8 +355,8 @@ impl CorralApp {
                 self.conn = ConnState::Down;
                 self.conn_detail = Some(e);
             }
-            ApplyMsg::Issues(issues) => {
-                self.fleet.set_issues(issues);
+            ApplyMsg::Issues(result) => {
+                self.fleet.set_issues(result);
             }
             ApplyMsg::Registry(result) => {
                 self.fleet.set_registry(result);
@@ -363,27 +366,72 @@ impl CorralApp {
         }
     }
 
-    /// #113: fetch the daemon's read-only repo-level issue view once per
-    /// connection. The board renders from this authoritative set (never
-    /// from branch inference); a failed/absent endpoint leaves the browser
-    /// empty with a hint instead of guessing.
+    /// #113: fetch the daemon's read-only repo-level issue view on connect,
+    /// manual refresh, and while the Issues tab is visible. A previous
+    /// successful snapshot remains rendered while a retry is in flight; a
+    /// transient failure is never converted into a permanent empty cache.
     fn refresh_issues(&mut self, force: bool) {
-        if !force && self.fleet.issues_loaded {
+        if self.fleet.issues_loading {
             return;
         }
+        if !force && self.conn != ConnState::Connected {
+            return;
+        }
+        if !force
+            && self.fleet.issues_loaded
+            && self.issues_last_refresh.elapsed() < ISSUES_REFRESH_INTERVAL
+        {
+            return;
+        }
+        self.fleet.issues_loading = true;
+        self.issues_last_refresh = std::time::Instant::now();
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
-            match protocol::fetch_issues(&client, &base_url).await {
-                Ok(issues) => {
-                    let _ = tx.send(ApplyMsg::Issues(issues));
-                }
-                Err(error) => {
-                    tracing::warn!(error, "GET /issues unavailable");
-                }
+            let result = protocol::fetch_issues(&client, &base_url).await;
+            if let Err(error) = &result {
+                tracing::warn!(error, "GET /issues unavailable");
             }
+            let _ = tx.send(ApplyMsg::Issues(result));
         });
+    }
+
+    /// Hydrate the selected Cards detail pane once the live snapshot and the
+    /// persisted device grant are both ready. Recent output is a composed
+    /// surface: the bounded read_tail result is the immediate fallback while
+    /// the signed transcript page supplies chat roles and the older cursor.
+    /// Both requests share the same UI-owned caches, so either payload can
+    /// make the surface useful without waiting for the other endpoint.
+    fn hydrate_recent_output(&mut self) {
+        let Some(agent_id) = self
+            .fleet
+            .selected_agent
+            .clone()
+            .filter(|id| self.fleet.agents.contains_key(id))
+            .or_else(|| self.fleet.agents.keys().next().cloned())
+        else {
+            return;
+        };
+        self.fleet.select_agent(&agent_id);
+
+        let Some(agent) = self.fleet.agents.get(&agent_id) else {
+            return;
+        };
+        if !agent.capabilities.iter().any(|cap| cap == "read_tail")
+            || !self.ledger.allowed("read_tail")
+            || self.registration.is_none()
+            || self.device_key.is_none()
+            || !self.fleet.needs_recent_output(&agent_id)
+        {
+            return;
+        }
+
+        self.request_transcript_page(crate::transcript::TranscriptRequest {
+            agent_id: agent_id.clone(),
+            cursor: None,
+        });
+        self.dispatch_drive_intents(vec![DriveIntent::read_tail(&agent_id, self.fleet.rev)]);
     }
 
     /// #135: fetch the daemon's read-only fleet registry view once per
@@ -626,8 +674,8 @@ impl CorralApp {
     }
 
     /// Native screenshot evidence helper. It is deliberately opt-in and
-    /// targets an id observed in the live `/snapshot`; content still has to
-    /// be fetched by clicking the shipped Cards `Load earlier` control.
+    /// targets an id observed in the live `/snapshot`; normal board hydration
+    /// still owns the capability- and grant-gated content fetch.
     fn prepare_screenshot_evidence(&mut self) {
         let Some(agent_id) = self.screenshot_agent_id.clone() else {
             return;
@@ -645,7 +693,7 @@ impl CorralApp {
             agent_id = %agent_id,
             read_tail_advertised,
             read_tail_granted = self.ledger.allowed("read_tail"),
-            "native screenshot evidence selected live agent; Cards fetch remains user-driven"
+            "native screenshot evidence selected live agent; Cards hydration remains grant-gated"
         );
     }
 
@@ -1286,6 +1334,7 @@ impl eframe::App for CorralApp {
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 let mut pending_full_chat: Vec<String> = Vec::new();
                 self.prepare_screenshot_evidence();
+                self.hydrate_recent_output();
                 crate::ui::board::show(
                     ui,
                     &mut self.fleet,
@@ -1312,6 +1361,7 @@ impl eframe::App for CorralApp {
                 self.dispatch_drive_intents(pending);
             }
             Tab::Issues => {
+                self.refresh_issues(false);
                 let ledger = self.ledger.clone();
                 let allowed = |cap: &str| ledger.allowed(cap);
                 let mut pending: Vec<DriveIntent> = Vec::new();

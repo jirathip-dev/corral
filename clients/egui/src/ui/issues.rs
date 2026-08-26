@@ -64,6 +64,8 @@ pub fn show(
     let total: usize = fleet.issues.values().map(Vec::len).sum();
     let title = if fleet.issues_loaded {
         format!("issues  ({total})")
+    } else if fleet.issues_loading {
+        "issues  (loading…)".to_string()
     } else {
         "issues".to_string()
     };
@@ -78,11 +80,14 @@ pub fn show(
         toolbar(ui, fleet, allowed, drive, refresh_issues);
         ui.separator();
         if !fleet.issues_loaded {
-            ui.label(
-                RichText::new("issue view not loaded — connect to corrald and refresh")
-                    .small()
-                    .color(theme::ui::TEXT_MUTED),
-            );
+            let message = if fleet.issues_loading {
+                "loading repo-level issues…"
+            } else if fleet.issues_error.is_some() {
+                "issue view unavailable — refresh to retry"
+            } else {
+                "issue view not loaded — connect to corrald and refresh"
+            };
+            ui.label(RichText::new(message).small().color(theme::ui::TEXT_MUTED));
         } else if total == 0 {
             // The issue-free path is explicitly reachable even when a
             // configured fleet has zero fetched issues (or before the first
@@ -126,6 +131,13 @@ pub fn show(
                     });
                 }
             });
+        }
+        if let Some(error) = &fleet.issues_error {
+            ui.label(
+                RichText::new(format!("latest refresh failed: {error}"))
+                    .small()
+                    .color(theme::ui::WARN),
+            );
         }
         ui.separator();
         free_path(ui, fleet, allowed, drive);

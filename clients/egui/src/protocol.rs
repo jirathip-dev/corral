@@ -149,12 +149,23 @@ pub async fn fetch_issues(
     if !response.status().is_success() {
         return Err(format!("GET /issues -> {}", response.status()));
     }
+    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
+    decode_issues(body)
+}
+
+/// Decode the complete `/issues` envelope in one place before it crosses the
+/// async boundary. Keeping the grouped map intact is important: the daemon
+/// includes configured repos with zero issues alongside repos with a full
+/// snapshot, and the UI must not accidentally project this into one repo or
+/// one issue per group.
+fn decode_issues(body: serde_json::Value) -> Result<BTreeMap<String, Vec<GhIssueRef>>, String> {
     #[derive(Deserialize)]
     struct Wire {
         repos: BTreeMap<String, Vec<GhIssueRef>>,
     }
-    let wire: Wire = response.json().await.map_err(|e| format!("body: {e}"))?;
-    Ok(wire.repos)
+    serde_json::from_value::<Wire>(body)
+        .map(|wire| wire.repos)
+        .map_err(|e| format!("body: {e}"))
 }
 
 /// #135: `GET /fleet-registry` — the same local registry source the daemon
@@ -708,8 +719,9 @@ pub enum ApplyMsg {
     /// Registration round-trip result: `(key_id, grants)`.
     RegisterResult(Result<(String, Vec<String>), String>),
     /// #113: repo-level issue view arrived from the read-only `GET /issues`
-    /// endpoint (keyed by repo/fleet name).
-    Issues(BTreeMap<String, Vec<GhIssueRef>>),
+    /// endpoint (keyed by repo/fleet name). Keep failures in the message so
+    /// the UI can retry instead of treating a dropped response as "empty".
+    Issues(Result<BTreeMap<String, Vec<GhIssueRef>>, String>),
     /// #135: read-only registry view arrived from `GET /fleet-registry`.
     /// `Err` is a transport/endpoint failure; daemon parse failures ride an
     /// `Ok(FleetRegistry)` with `status="error"`.
@@ -777,6 +789,45 @@ mod tests {
                 .len()
                 == GRANT_CAPABILITIES.len()
         );
+    }
+
+    #[test]
+    fn issues_decoder_keeps_every_repo_and_issue_in_the_wire_snapshot() {
+        let body = serde_json::json!({
+            "repos": {
+                "corral": [
+                    {
+                        "repo": "corral",
+                        "number": 207,
+                        "state": "OPEN",
+                        "title": "fetch path",
+                        "labels": [{"name": "bug", "color": "f85149"}],
+                        "url": "https://github.com/example/corral/issues/207"
+                    },
+                    {
+                        "repo": "corral",
+                        "number": 208,
+                        "state": "CLOSED",
+                        "title": "older issue"
+                    }
+                ],
+                "fleet-ops": [],
+                "plush": [{
+                    "repo": "plush",
+                    "number": 10,
+                    "state": "OPEN",
+                    "title": "another repo"
+                }]
+            }
+        });
+
+        let issues = decode_issues(body).expect("daemon /issues envelope parses");
+        assert_eq!(issues.len(), 3);
+        assert_eq!(issues["corral"].len(), 2);
+        assert_eq!(issues["corral"][0].number, 207);
+        assert_eq!(issues["corral"][1].number, 208);
+        assert!(issues["fleet-ops"].is_empty(), "empty repo is retained");
+        assert_eq!(issues["plush"][0].title, "another repo");
     }
 
     #[test]

@@ -93,7 +93,8 @@ pub struct Fleet {
     pub generated_at: Option<u64>,
     /// Drive outcome bookkeeping per agent, newest first.
     pub recent_drives: HashMap<String, VecDeque<DriveState>>,
-    /// read_tail content per agent (only ever fetched on tap; bounded).
+    /// read_tail content per agent (bounded; initially hydrated for the
+    /// selected board card and still reloadable from its control).
     pub tails: HashMap<String, Vec<String>>,
     /// #64: transcript pane per agent (fetched on demand; each pane is a
     /// bounded sliding window, and at most 64 agents are cached here —
@@ -116,6 +117,11 @@ pub struct Fleet {
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
     /// Whether the repo-level issues have been fetched at least once.
     pub issues_loaded: bool,
+    /// Whether a repo-level issue request is currently in flight.
+    pub issues_loading: bool,
+    /// Last issue-fetch failure. A previous successful snapshot remains
+    /// visible while this is set so a transient refresh cannot blank the tab.
+    pub issues_error: Option<String>,
     /// #135: read-only registry view. `Ok` includes daemon-side
     /// `status="error"` responses so a broken registry is visible; `Err` is
     /// a transport/endpoint failure.
@@ -187,12 +193,50 @@ impl Fleet {
         self.expanded.iter().any(|e| e == agent_id)
     }
 
-    /// #113: replace the repo-level issue view (from `GET /issues`). The
-    /// browser sorts/renders it; the daemon remains the authority on which
-    /// issue is startable.
-    pub fn set_issues(&mut self, issues: BTreeMap<String, Vec<GhIssueRef>>) {
-        self.issues = issues;
-        self.issues_loaded = true;
+    /// #113: fold one repo-level issue fetch outcome into the view model.
+    /// The browser sorts/renders the successful snapshot; the daemon remains
+    /// the authority on which issue is startable. Errors do not discard the
+    /// last successful snapshot, which keeps a refresh failure visible and
+    /// retryable instead of turning it into a misleading empty state.
+    pub fn set_issues(&mut self, result: Result<BTreeMap<String, Vec<GhIssueRef>>, String>) {
+        self.issues_loading = false;
+        match result {
+            Ok(issues) => {
+                self.issues = issues;
+                self.issues_loaded = true;
+                self.issues_error = None;
+            }
+            Err(error) => {
+                self.issues_error = Some(error);
+            }
+        }
+    }
+
+    /// Whether the selected agent needs its first Recent-output hydration.
+    /// A cached empty tail is still a successful response and must not cause
+    /// a request loop; an existing drive or loading transcript likewise
+    /// proves that the fetch path is already in flight or has completed.
+    pub fn needs_recent_output(&self, agent_id: &str) -> bool {
+        if self.tails.contains_key(agent_id) {
+            return false;
+        }
+        if self.recent_drives.get(agent_id).is_some_and(|drives| {
+            drives.iter().any(|state| {
+                matches!(
+                    state,
+                    DriveState::Sending { capability, .. }
+                        | DriveState::Ok { capability, .. }
+                        | DriveState::Failed { capability, .. }
+                        if capability == "read_tail"
+                )
+            })
+        }) {
+            return false;
+        }
+        !self
+            .transcripts
+            .get(agent_id)
+            .is_some_and(|pane| pane.loading || !pane.entries.is_empty())
     }
 
     /// #135: fold one registry fetch outcome into the tab's view model.
@@ -554,6 +598,80 @@ mod tests {
         assert!(!fleet.registry_loading);
     }
 
+    fn issue(repo: &str, number: u64, title: &str) -> GhIssueRef {
+        GhIssueRef {
+            repo: repo.into(),
+            number,
+            state: "OPEN".into(),
+            title: title.into(),
+            labels: vec![],
+            url: format!("https://github.com/example/{repo}/issues/{number}"),
+        }
+    }
+
+    #[test]
+    fn issues_apply_keeps_the_full_grouped_snapshot_and_retry_error() {
+        let mut fleet = Fleet {
+            issues_loading: true,
+            ..Default::default()
+        };
+        let issues = BTreeMap::from([
+            (
+                "corral".into(),
+                vec![
+                    issue("corral", 207, "fetch path"),
+                    issue("corral", 208, "other"),
+                ],
+            ),
+            ("fleet-ops".into(), vec![issue("fleet-ops", 15, "ops")]),
+        ]);
+
+        // This is the ApplyMsg::Issues consumer contract: no repo or issue
+        // may be dropped while the result crosses into UI-owned state.
+        fleet.set_issues(Ok(issues.clone()));
+        assert!(fleet.issues_loaded);
+        assert!(!fleet.issues_loading);
+        assert_eq!(fleet.issues, issues);
+        assert_eq!(fleet.issues.values().map(Vec::len).sum::<usize>(), 3);
+        assert!(fleet.issues_error.is_none());
+
+        // A later transport failure must not replace a known-good full view
+        // with the misleading "no repo-level issues fetched" state.
+        fleet.issues_loading = true;
+        fleet.set_issues(Err("GET /issues unavailable".into()));
+        assert!(!fleet.issues_loading);
+        assert_eq!(fleet.issues, issues);
+        assert_eq!(
+            fleet.issues_error.as_deref(),
+            Some("GET /issues unavailable")
+        );
+    }
+
+    #[test]
+    fn recent_output_hydration_is_one_shot_until_a_payload_or_result_arrives() {
+        let mut fleet = Fleet::default();
+        assert!(fleet.needs_recent_output("a"));
+
+        fleet.remember_drive(
+            "a",
+            DriveState::Sending {
+                request_id: "r1".into(),
+                capability: "read_tail".into(),
+            },
+        );
+        assert!(
+            !fleet.needs_recent_output("a"),
+            "in-flight fetch is not duplicated"
+        );
+
+        fleet.recent_drives.clear();
+        fleet.remember_tail("a", Vec::new());
+        assert!(
+            !fleet.needs_recent_output("a"),
+            "an empty daemon result is still loaded"
+        );
+    }
+
     #[test]
     fn deletion_cleans_derived_state() {
         let mut fleet = Fleet::default();
@@ -771,6 +889,51 @@ mod tests {
             FoldOutcome::NotGranted,
             "grant refusals reach the ledger"
         );
+    }
+
+    #[test]
+    fn transcript_apply_appends_older_page_and_keeps_the_daemon_cursor() {
+        use crate::transcript::FoldOutcome;
+
+        let mut fleet = Fleet::default();
+        let generation = fleet.transcript_pane_mut("a").generation;
+        let page = |text: &str, next_cursor: Option<&str>| {
+            serde_json::from_value(serde_json::json!({
+                "agent": "a",
+                "store": "claude",
+                "session": "claude:s.jsonl",
+                "bind": "session_id",
+                "entries": [{"role": "assistant", "text": text, "ts": null}],
+                "next_cursor": next_cursor,
+                "skipped": 0,
+            }))
+            .expect("daemon page shape parses")
+        };
+
+        assert_eq!(
+            fleet.fold_transcript(msg(
+                "a",
+                generation,
+                Ok(page("newest page", Some("older-cursor"))),
+            )),
+            FoldOutcome::AppliedOk
+        );
+        let generation = fleet.transcripts["a"].generation;
+        assert_eq!(
+            fleet.fold_transcript(msg("a", generation, Ok(page("older page", None)))),
+            FoldOutcome::AppliedOk
+        );
+
+        let pane = &fleet.transcripts["a"];
+        assert_eq!(
+            pane.entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            ["newest page", "older page"]
+        );
+        assert_eq!(pane.next_cursor, None, "older-page cursor is consumed");
+        assert_eq!(pane.pages, 2);
     }
 
     #[test]

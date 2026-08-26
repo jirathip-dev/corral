@@ -3,12 +3,13 @@
 # PNG seam, complete-PNG rejection, exit-during-validation rechecking, visible
 # provenance labels, canonical symlink/wrapper identity (including spaces),
 # stable repo-relative paths across cwd spellings, byte-stable conformance,
-# lossless slash-prefixed argv, targeted note redaction, load-bearing path
-# normalization failures, complete-but-lingering writers, TERM-ignoring child
-# escalation, bounded raw-byte logs with invalid UTF-8 and configured worktree
-# roots, a bounded generic-worktree scan, structural prototype rejection
-# through real Chrome, Chrome trust-boundary flags, argument validation, and
-# the egui wake-command failure path.
+# lossless slash-prefixed argv, opaque command-path redaction, targeted note
+# redaction, load-bearing path normalization failures, complete-but-lingering
+# writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
+# UTF-8 and configured worktree roots, a bounded generic-worktree scan,
+# structural prototype rejection through real Chrome, Chrome trust-boundary
+# flags, argument validation, atomic publication rollback, and the egui
+# wake-command failure path.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -39,23 +40,25 @@ WRAPPER
 chmod +x "$WORK/design-gate-wrapper.sh"
 
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
-  "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" <<'PY'
+  "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" \
+  "$WORK/invalid-raster.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
 import zlib
 
 
+def chunk(name, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + name
+        + payload
+        + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+    )
+
+
 def write_png(path, width, height, rgb):
     rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
-
-    def chunk(name, payload):
-        return (
-            struct.pack(">I", len(payload))
-            + name
-            + payload
-            + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
-        )
 
     data = b"\x89PNG\r\n\x1a\n"
     data += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
@@ -69,6 +72,13 @@ write_png(Path(sys.argv[2]), 900, 900, (45, 212, 191))
 write_png(Path(sys.argv[3]), 32, 24, (88, 166, 255))
 write_png(Path(sys.argv[4]), 2400, 960, (13, 17, 23))
 Path(sys.argv[5]).write_bytes(Path(sys.argv[3]).read_bytes()[:-12])
+invalid_raster = b"\x89PNG\r\n\x1a\n"
+invalid_raster += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 10, 10, 8, 2, 0, 0, 0)
+)
+invalid_raster += chunk(b"IDAT", zlib.compress(b""))
+invalid_raster += chunk(b"IEND", b"")
+Path(sys.argv[6]).write_bytes(invalid_raster)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -208,6 +218,10 @@ if mode == "large-log":
         + b"output-dot-sibling="
         + output_root
         + b".bak/file\n"
+        + b"configured-diagnostic="
+        + configured_root
+        + b"/repo/branch failed to compile\n"
+        + b"generic-diagnostic=/Users/jirathip/.herdr/worktrees/corral/branch failed to compile\n"
         b"FAILURE: exact bounded-log diagnostic \xff\n"
     )
     sys.stdout.buffer.flush()
@@ -515,6 +529,23 @@ fi
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
   [[ -s "$WORK/output/issue-211/$artifact" ]] || fail "missing artifact after first run: $artifact"
 done
+"$PYTHON_BIN" - "$WORK/output/issue-211" <<'PY'
+from pathlib import Path
+import sys
+
+entries = sorted(
+    path.name
+    for path in Path(sys.argv[1]).iterdir()
+    if not path.name.startswith(".")
+)
+assert entries == [
+    "capture.log",
+    "comparison.png",
+    "conformance.md",
+    "live-after.png",
+    "prototype.png",
+], f"published bundle contains unexpected entries: {entries!r}"
+PY
 
 grep -q 'Issue #211' "$WORK/output/issue-211/conformance.md" \
   || fail "provenance does not identify issue #211"
@@ -656,8 +687,8 @@ unrelated_change = lock.replace(
     1,
 )
 assert unrelated_change != lock
-  assert module.renderer_dependency_fingerprint(unrelated_change) == original
-  print("verified narrow eframe/wgpu lockfile fingerprint")
+assert module.renderer_dependency_fingerprint(unrelated_change) == original
+print("verified narrow eframe/wgpu lockfile fingerprint")
 PY
 grep -q 'byte-stable for identical semantic inputs' "$WORK/output/issue-211/conformance.md" \
   || fail "manifest stability contract is not documented"
@@ -665,6 +696,14 @@ grep -q 'Generator script (canonical .*BASH_SOURCE' "$WORK/output/issue-211/conf
   || fail "canonical generator identity is not recorded"
 grep -F 'scripts/design-gate-evidence.sh' "$WORK/output/issue-211/conformance.md" \
   || fail "generator path was not made repo-relative"
+prototype_source_sha="$(conformance_sha "$REPO_DIR/docs/design/corral-ux-prototype.html")"
+grep -F -- "- Prototype source SHA-256: \`$prototype_source_sha\`" \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "prototype source hash did not describe the bytes used to render"
+live_source_sha="$(conformance_sha "$WORK/live.png")"
+grep -F -- "- Live input SHA-256: \`$live_source_sha\`" \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "live source hash did not describe the copied fixture bytes"
 "$PYTHON_BIN" - "$WORK/output/issue-211/conformance.md" <<'PY'
 from pathlib import Path
 import sys
@@ -752,6 +791,24 @@ data = Path(sys.argv[1]).read_bytes()
 note = os.fsencode(sys.argv[2])
 assert note in data, "trailing newline in non-path note was lost"
 assert b"<external-path>" not in data
+PY
+
+opaque_command="$WORK/wake-window.sh --output $WORK/result"
+run_capture --force \
+  --egui-wake-command "$opaque_command" \
+  --ios-command "$WORK/ios-command.sh" \
+  --ios-launch-arg "$WORK/launch payload" \
+  --output-root "$WORK/opaque-output"
+"$PYTHON_BIN" - "$WORK/opaque-output/issue-211/conformance.md" "$WORK" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+work = os.fsencode(sys.argv[2])
+assert work not in data, "opaque command or launch argument leaked the disposable path"
+assert b"external-temp" in data, "opaque disposable paths were not normalized"
+assert b"external-input" in data, "absolute launch arguments were not normalized"
 PY
 
 known_worktrees_root="$WORK/known herdr root"
@@ -848,12 +905,49 @@ unset CORRAL_TEST_CHROME_FAIL
 final_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
 [[ "$final_sha" == "$after_sha" ]] || fail "failed rerun replaced the prior evidence bundle"
 
+cat >"$WORK/bin/mv" <<MV_STUB
+#!/usr/bin/env bash
+set -euo pipefail
+last_argument=""
+for argument in "\$@"; do last_argument="\$argument"; done
+if [[ "\$last_argument" == "$WORK/output/issue-211" && ! -e "$WORK/mv-failed" ]]; then
+  touch "$WORK/mv-failed"
+  exit 73
+fi
+exec /bin/mv "\$@"
+MV_STUB
+chmod +x "$WORK/bin/mv"
+if PATH="$WORK/bin:$ORIGINAL_PATH" run_capture --force \
+  >"$WORK/publication-failure.log" 2>&1; then
+  fail "forced publication unexpectedly succeeded after injected directory rename failure"
+fi
+grep -q 'could not publish the validated evidence bundle' \
+  "$WORK/publication-failure.log" \
+  || {
+    sed -n '1,120p' "$WORK/publication-failure.log" >&2
+    fail "directory publication failure was not actionable"
+  }
+rollback_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
+[[ "$rollback_sha" == "$after_sha" ]] \
+  || fail "directory publication failure did not restore prior evidence"
+rollback_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
+[[ "$rollback_conformance_sha" == "$after_conformance_sha" ]] \
+  || fail "directory publication failure changed prior conformance"
+rm -f "$WORK/bin/mv" "$WORK/mv-failed"
+
 if run_capture --force --live-png "$WORK/truncated.png" \
   >"$WORK/truncated.log" 2>&1; then
   fail "truncated PNG unexpectedly passed validation"
 fi
 grep -E -q 'IEND|IDAT|truncated' "$WORK/truncated.log" \
   || fail "truncated PNG failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-raster.png" \
+  >"$WORK/invalid-raster.log" 2>&1; then
+  fail "invalid PNG raster unexpectedly passed validation"
+fi
+grep -E -q 'decompressed raster|expected' "$WORK/invalid-raster.log" \
+  || fail "invalid PNG raster failure was not actionable"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
@@ -1017,11 +1111,13 @@ assert b"configured-root=<herdr-worktree>\n" in data, "bare configured root was 
 assert b"configured-sibling=/tmp/Configured Herdr Root.bak/repo name/worktree name/ios" in data, "configured sibling was over-redacted"
 assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root was not redacted"
 assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
-assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing bare root was not redacted"
+assert b"generic-bare-spaces=<herdr-worktree> name\n" in data, "space-containing bare root was not redacted without consuming its suffix"
 assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data
 assert b"output-dot-sibling=" + output_root + b".bak/file" in data
+assert b"configured-diagnostic=<herdr-worktree> failed to compile\n" in data, "configured worktree redaction consumed diagnostic text"
+assert b"generic-diagnostic=<herdr-worktree> failed to compile\n" in data, "generic worktree redaction consumed diagnostic text"
 PY
 unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
 unset CORRAL_TEST_EGUI_MODE
@@ -1100,18 +1196,9 @@ grep -q 'egui wake command failed' "$WORK/wake-failure.log" \
 
 shopt -s nullglob
 staging_entries=(
-  "$WORK/output/issue-211"/.design-gate.stage.*
-  "$WORK/wrapper-output/issue-211"/.design-gate.stage.*
-  "$WORK/space-output/issue-211"/.design-gate.stage.*
-  "$WORK/equivalent-output-a/issue-211"/.design-gate.stage.*
-  "$WORK/equivalent-output-b/issue-211"/.design-gate.stage.*
-  "$WORK/nonpath-output/issue-211"/.design-gate.stage.*
-  "$WORK/egui-output/issue-213"/.design-gate.stage.*
-  "$WORK/term-ignore-output/issue-215"/.design-gate.stage.*
-  "$WORK/invalid-bytes-output/issue-219"/.design-gate.stage.*
-  "$WORK/large-log-output/issue-220"/.design-gate.stage.*
-  "$WORK/partial-stuck-output/issue-216"/.design-gate.stage.*
-  "$WORK/wake-output/issue-214"/.design-gate.stage.*
+  "$WORK"/*/.design-gate.stage.*
+  "$WORK"/*/.design-gate.final.*
+  "$WORK"/*/.design-gate.backup.*
 )
 if [[ "${#staging_entries[@]}" -ne 0 ]]; then
   fail "temporary staging directory survived a failed run"

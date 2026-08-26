@@ -18,13 +18,14 @@
 #
 # Newly generated conformance.md files are the stable manifest contract: they
 # omit wall-clock metadata, record the canonical generator path/hash and a
-# typed, lossless invocation, and use repo-relative paths or stable external
-# placeholders. Non-path arguments remain byte-for-byte except that provenance
-# notes receive targeted known-root substitutions. Newly generated capture.log
-# files are byte-oriented bounded views (64 KiB by default); exact head/tail
-# bytes survive documented path substitution, and invalid UTF-8 is never
-# decoded or replaced. Historical checked-in evidence may predate this
-# contract and is labeled accordingly.
+# typed invocation, and use repo-relative paths or stable external
+# placeholders. Ordinary non-path arguments remain byte-for-byte; provenance
+# notes and opaque command/path values receive only targeted known-root and
+# disposable-path substitutions. Newly generated capture.log files are
+# byte-oriented bounded views (64 KiB by default); exact head/tail bytes survive
+# documented path substitution, and invalid UTF-8 is never decoded or replaced.
+# Historical checked-in evidence may predate this contract and is labeled
+# accordingly.
 #
 # The default egui prototype is the approved HTML design source at
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
@@ -71,9 +72,9 @@
 # this run; it never silently becomes live evidence. --dry-run validates the
 # interface and prints the planned capture without writing an evidence bundle.
 # Existing evidence is never overwritten unless --force is explicit. Re-runs
-# with --force are safe: all work is staged in a private temporary directory
-# below the target issue directory, existing evidence is untouched on failure,
-# and the validated files are replaced at the end using atomic file renames.
+# with --force are safe: all work is staged in private sibling directories,
+# existing evidence is untouched on failure, and the validated artifact set is
+# published with a directory-level rename plus rollback of the old bundle.
 #
 # Dependencies: Bash 3+, Python 3, headless-capable Chrome/Chromium, and (for
 # native captures) curl/cargo or hermes-sim-task as described above. Set
@@ -601,6 +602,12 @@ recorded_invocation() {
       if [[ "$value_kind" == "provenance-note" ]]; then
         normalize_provenance_note "$argument"
         printf ' %q' "$NORMALIZED_NOTE"
+      elif [[ "$value_kind" == "opaque" ]]; then
+        normalize_opaque_argument "$argument"
+        printf ' %q' "$NORMALIZED_ARGUMENT"
+      elif [[ "$value_kind" == "launch-arg" ]]; then
+        normalize_launch_argument "$argument"
+        printf ' %q' "$NORMALIZED_ARGUMENT"
       elif [[ "$value_kind" == "raw" ]]; then
         printf ' %q' "$argument"
       else
@@ -610,9 +617,10 @@ recorded_invocation() {
       value_kind=""
       continue
     fi
-    # Non-path argv is emitted directly: a slash-prefixed note, wake command,
-    # launch argument, or trailing newline must not be interpreted as a path
-    # or pass through command substitution.
+    # Non-path argv is emitted directly unless it is an opaque command or
+    # launch argument. Those values are normalized as bytes below so a
+    # disposable checkout/temp path inside a command cannot destabilize the
+    # manifest; shell syntax and all other bytes remain intact.
     printf ' %q' "$argument"
     case "$argument" in
       --prototype|--egui-binary|--ios-app)
@@ -624,10 +632,15 @@ recorded_invocation() {
       --output-root)
         value_kind="<external-output>"
         ;;
+      --egui-wake-command|--ios-command)
+        value_kind="opaque"
+        ;;
+      --ios-launch-arg)
+        value_kind="launch-arg"
+        ;;
       --issue|--surface|--live-agent|--host-url|--delay-ms|\
-      --egui-wake-command|--timeout-seconds|--chrome-timeout-seconds|\
-      --ios-bundle-id|--ios-mode|--ios-command|--ios-launch-arg|\
-      --ios-delay-seconds)
+      --timeout-seconds|--chrome-timeout-seconds|--ios-bundle-id|\
+      --ios-mode|--ios-delay-seconds)
         value_kind="raw"
         ;;
       --provenance-note)
@@ -662,6 +675,8 @@ if data[:8] != b"\x89PNG\r\n\x1a\n":
     raise SystemExit(f"{path} is not a PNG")
 offset = 8
 width = height = None
+bit_depth = color_type = None
+interlace_method = None
 idat = []
 seen_ihdr = False
 seen_iend = False
@@ -685,9 +700,33 @@ while offset < len(data):
     if chunk_type == b"IHDR":
         if seen_ihdr or length != 13:
             raise SystemExit(f"{path} has an invalid IHDR")
-        width, height = struct.unpack(">II", payload[:8])
+        (
+            width,
+            height,
+            bit_depth,
+            color_type,
+            compression_method,
+            filter_method,
+            interlace_method,
+        ) = struct.unpack(">IIBBBBB", payload)
         if width == 0 or height == 0:
             raise SystemExit(f"{path} has an empty dimension")
+        channel_counts = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+        valid_depths = {
+            0: {1, 2, 4, 8, 16},
+            2: {8, 16},
+            3: {1, 2, 4, 8},
+            4: {8, 16},
+            6: {8, 16},
+        }
+        if color_type not in channel_counts or bit_depth not in valid_depths.get(
+            color_type, set()
+        ):
+            raise SystemExit(f"{path} has an invalid bit-depth/color-type pair")
+        if compression_method != 0 or filter_method != 0:
+            raise SystemExit(f"{path} has unsupported PNG compression or filter method")
+        if interlace_method not in (0, 1):
+            raise SystemExit(f"{path} has an invalid interlace method")
         seen_ihdr = True
     elif chunk_type == b"IDAT":
         idat.append(payload)
@@ -699,7 +738,14 @@ while offset < len(data):
         break
     offset = crc_end
 
-if not seen_ihdr or width is None or height is None:
+if (
+    not seen_ihdr
+    or width is None
+    or height is None
+    or bit_depth is None
+    or color_type is None
+    or interlace_method is None
+):
     raise SystemExit(f"{path} has no IHDR")
 if not seen_iend:
     raise SystemExit(f"{path} is missing IEND")
@@ -709,12 +755,44 @@ if not idat:
     raise SystemExit(f"{path} has no IDAT data")
 decoder = zlib.decompressobj()
 try:
-    decoder.decompress(b"".join(idat))
-    decoder.flush()
+    raw = decoder.decompress(b"".join(idat))
+    raw += decoder.flush()
 except zlib.error as error:
     raise SystemExit(f"{path} has incomplete IDAT data: {error}")
 if not decoder.eof or decoder.unused_data:
     raise SystemExit(f"{path} has incomplete or trailing compressed IDAT data")
+
+bits_per_pixel = channel_counts[color_type] * bit_depth
+
+
+def pass_size(pass_width, pass_height):
+    if pass_width == 0 or pass_height == 0:
+        return 0
+    row_bytes = (pass_width * bits_per_pixel + 7) // 8
+    return (row_bytes + 1) * pass_height
+
+
+if interlace_method == 0:
+    expected_raw_bytes = pass_size(width, height)
+else:
+    expected_raw_bytes = 0
+    for start_x, start_y, step_x, step_y in (
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ):
+        pass_width = max(0, (width - start_x + step_x - 1) // step_x)
+        pass_height = max(0, (height - start_y + step_y - 1) // step_y)
+        expected_raw_bytes += pass_size(pass_width, pass_height)
+if len(raw) != expected_raw_bytes:
+    raise SystemExit(
+        f"{path} has {len(raw)} decompressed raster bytes; "
+        f"expected {expected_raw_bytes} for {width}x{height}"
+    )
 print(f"{width}x{height}")
 PY
 }
@@ -850,6 +928,9 @@ print(digest.hexdigest())
 PY
 }
 
+GENERATOR_PATH="$SCRIPT_RELATIVE_PATH"
+GENERATOR_SHA="$(sha256_file "$SCRIPT_PATH")"
+
 run_byte_normalizer() {
   "$PYTHON_BIN" - "$@" <<'PY'
 import os
@@ -862,7 +943,7 @@ source = sys.argv[2]
 if mode == "capture":
     path = Path(source)
     data = path.read_bytes()
-elif mode == "note":
+elif mode in ("note", "opaque"):
     data = os.fsencode(source)
 else:
     raise SystemExit(f"unknown byte normalizer mode: {mode}")
@@ -913,18 +994,56 @@ def replace_path(data_value, path_value, label, prefix=False):
 def redact_configured_worktree(data_value):
     if not worktrees_root:
         return data_value
-    patterns = []
+    replacements = []
     for root in path_variants(worktrees_root):
+        root_bytes = os.fsencode(root)
         if root == os.path.sep:
             continue
-        patterns.append(
-            rb"(?<![A-Za-z0-9_])"
-            + re.escape(os.fsencode(root))
-            + rb"/[^/\x00\r\n]+/[^/\x00\r\n]+"
-        )
-    for pattern in sorted(patterns, key=len, reverse=True):
-        data_value = re.sub(pattern, b"<herdr-worktree>", data_value)
-    return data_value
+        search = 0
+        while True:
+            start = data_value.find(root_bytes, search)
+            if start == -1:
+                break
+            root_end = start + len(root_bytes)
+            if (
+                (start == 0 or not is_word_byte(data_value[start - 1]))
+                and root_end < len(data_value)
+                and data_value[root_end] == 47
+            ):
+                line_end = len(data_value)
+                for delimiter in (b"\x00", b"\r", b"\n"):
+                    delimiter_end = data_value.find(delimiter, root_end)
+                    if delimiter_end != -1 and delimiter_end < line_end:
+                        line_end = delimiter_end
+                first_slash = data_value.find(b"/", root_end + 1, line_end)
+                if first_slash > root_end + 1:
+                    second_slash = data_value.find(
+                        b"/", first_slash + 1, line_end
+                    )
+                    if second_slash == -1:
+                        second_end = line_end
+                        for delimiter in (b" ", b"\t", b"\f", b"\v"):
+                            delimiter_end = data_value.find(
+                                delimiter, first_slash + 1, second_end
+                            )
+                            if delimiter_end != -1:
+                                second_end = min(second_end, delimiter_end)
+                        second_slash = second_end
+                    if second_slash > first_slash + 1:
+                        replacements.append((start, second_slash))
+            search = root_end
+    if not replacements:
+        return data_value
+    output = bytearray()
+    cursor = 0
+    for start, end in sorted(replacements):
+        if start < cursor:
+            continue
+        output.extend(data_value[cursor:start])
+        output.extend(b"<herdr-worktree>")
+        cursor = end
+    output.extend(data_value[cursor:])
+    return bytes(output)
 
 
 def is_word_byte(value):
@@ -987,9 +1106,17 @@ def replace_generic_worktrees(data_value, protected_paths=()):
                         b"/", first_slash + 1, line_end
                     )
                     if second_slash == -1:
-                        # The second component may be the final component of
-                        # a bare two-component worktree root.
+                        # A terminal component is ambiguous when it contains
+                        # spaces. Consume only its first token so diagnostic
+                        # text after the path is never discarded; a path with
+                        # a descendant slash remains fully component-aware.
                         second_slash = line_end
+                        for delimiter in (b" ", b"\t", b"\f", b"\v"):
+                            delimiter_end = data_value.find(
+                                delimiter, first_slash + 1, second_slash
+                            )
+                            if delimiter_end != -1:
+                                second_slash = min(second_slash, delimiter_end)
                     if second_slash > first_slash + 1 and valid_path_component(
                         data_value[first_slash + 1 : second_slash]
                     ):
@@ -1020,6 +1147,27 @@ def replace_generic_worktrees(data_value, protected_paths=()):
     output.extend(data_value[cursor:])
     return bytes(output)
 
+
+def redact_ephemeral_paths(data_value):
+    if mode not in ("note", "opaque"):
+        return data_value
+    roots = [
+        "/tmp",
+        "/private/tmp",
+        "/var/folders",
+        "/private/var/folders",
+        os.environ.get("TMPDIR", "").rstrip("/")
+    ]
+    for root in sorted({value for value in roots if value}, key=len, reverse=True):
+        pattern = (
+            rb"(?<![A-Za-z0-9_])"
+            + re.escape(os.fsencode(root))
+            + rb"/[^\x00\r\n\t \"'`;&|()<>]+"
+        )
+        data_value = re.sub(pattern, b"<external-temp>", data_value)
+    return data_value
+
+
 # Longest specific paths go first so a concrete file/path wins before its
 # repository root and before generic Herdr redaction. This keeps a checkout
 # inside a Herdr worktree repo-relative instead of turning it into a generic
@@ -1045,6 +1193,7 @@ data = replace_path(data, worktrees_root, worktrees_label, True)
 data = replace_generic_worktrees(
     data, [path_value for path_value, _, _ in known_paths]
 )
+data = redact_ephemeral_paths(data)
 
 if mode == "capture":
     max_bytes = int(sys.argv[17])
@@ -1161,12 +1310,15 @@ normalize_capture_log() {
     "$CAPTURE_LOG_TAIL_BYTES"
 }
 
-normalize_provenance_note() {
-  local note="$1"
-  local note_file="$STAGE/.design-gate.note-normalized"
+NORMALIZED_ARGUMENT=""
+normalize_argument_bytes() {
+  local mode="$1"
+  local argument="$2"
+  local normalized_file="$3"
+  local label="$4"
 
-  NORMALIZED_NOTE=""
-  if ! run_byte_normalizer note "$note" \
+  NORMALIZED_ARGUMENT=""
+  if ! run_byte_normalizer "$mode" "$argument" \
     "$REPO_DIR" "." \
     "$WORKTREES_ROOT" "<herdr-worktree>" \
     "$SCRIPT_PATH" "$SCRIPT_RELATIVE_PATH" \
@@ -1174,14 +1326,36 @@ normalize_provenance_note() {
     "$LIVE_PNG" "$LIVE_INPUT_PATH_LABEL" \
     "$OUTPUT_ROOT" "$OUTPUT_PATH_LABEL" \
     "$STAGE" "<stage>" \
-    0 0 0 >"$note_file"; then
-    die "could not normalize provenance note"
+    0 0 0 >"$normalized_file"; then
+    die "could not normalize $label"
   fi
-  if ! IFS= read -r -d '' NORMALIZED_NOTE < <(
-    cat "$note_file"
+  if ! IFS= read -r -d '' NORMALIZED_ARGUMENT < <(
+    cat "$normalized_file"
     printf '\0'
   ); then
-    die "could not read normalized provenance note"
+    die "could not read normalized $label"
+  fi
+}
+
+normalize_provenance_note() {
+  normalize_argument_bytes note "$1" \
+    "$STAGE/.design-gate.note-normalized" "provenance note"
+  NORMALIZED_NOTE="$NORMALIZED_ARGUMENT"
+}
+
+normalize_opaque_argument() {
+  normalize_argument_bytes opaque "$1" \
+    "$STAGE/.design-gate.opaque-normalized" "opaque invocation argument"
+}
+
+normalize_launch_argument() {
+  local argument="$1"
+  if [[ "$argument" == /* || "$argument" == ./* || "$argument" == ../* ]]; then
+    if ! NORMALIZED_ARGUMENT="$(repo_relative_path "$argument" "<external-input>")"; then
+      die "could not normalize launch argument"
+    fi
+  else
+    normalize_opaque_argument "$argument"
   fi
 }
 
@@ -1257,6 +1431,7 @@ make_prototype_view() {
   "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$EGUI_TAB" "$output" <<'PY'
 from html import escape
 from html.parser import HTMLParser
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -1265,7 +1440,8 @@ source_path = Path(sys.argv[1]).resolve()
 surface = sys.argv[2]
 egui_tab = sys.argv[3]
 output_path = Path(sys.argv[4])
-source = source_path.read_text(encoding="utf-8")
+source_bytes = source_path.read_bytes()
+source = source_bytes.decode("utf-8")
 
 if "</head>" not in source.lower():
     raise SystemExit(f"prototype has no </head> element: {source_path}")
@@ -1456,7 +1632,7 @@ injection = (
 head_end = source.lower().index("</head>")
 derived = source[:head_end] + injection + source[head_end:]
 output_path.write_text(derived, encoding="utf-8")
-print(f"{width} {height}")
+print(f"{width} {height} {hashlib.sha256(source_bytes).hexdigest()}")
 PY
 }
 
@@ -1899,6 +2075,34 @@ print_dry_run() {
   fi
 }
 
+publish_bundle() {
+  local final_dir="$1"
+
+  if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+    BACKUP_DIR="$(mktemp -d "$OUTPUT_ROOT/.design-gate.backup.XXXXXX")"
+    rmdir -- "$BACKUP_DIR"
+    if ! mv -f -- "$OUTPUT_DIR" "$BACKUP_DIR"; then
+      rmdir -- "$BACKUP_DIR" 2>/dev/null || true
+      BACKUP_DIR=""
+      die "could not stage the existing evidence bundle for replacement"
+    fi
+  fi
+
+  if ! mv -f -- "$final_dir" "$OUTPUT_DIR"; then
+    die "could not publish the validated evidence bundle"
+  fi
+  FINAL_DIR=""
+  PUBLISHED=1
+
+  if [[ -n "$BACKUP_DIR" ]]; then
+    if rm -rf -- "$BACKUP_DIR"; then
+      BACKUP_DIR=""
+    else
+      warn "old evidence backup could not be removed: $BACKUP_DIR"
+    fi
+  fi
+}
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
   print_dry_run
   exit 0
@@ -1912,15 +2116,17 @@ IMPLEMENTATION_MANIFEST="${IMPLEMENTATION_IDENTITY#*$'\n'}"
   || die "implementation identity did not return a sha256 digest"
 
 OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
-if [[ -e "$OUTPUT_DIR" ]]; then
+if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
   [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
   [[ "$FORCE" -eq 1 ]] \
     || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
 fi
 mkdir -p "$OUTPUT_ROOT"
-mkdir -p "$OUTPUT_DIR"
-STAGE="$(mktemp -d "$OUTPUT_DIR/.design-gate.stage.XXXXXX")"
+STAGE="$(mktemp -d "$OUTPUT_ROOT/.design-gate.stage.XXXXXX")"
 CAPTURE_PID=""
+FINAL_DIR=""
+BACKUP_DIR=""
+PUBLISHED=0
 cleanup() {
   local cleanup_status=0
   local remove_attempt
@@ -1946,6 +2152,28 @@ cleanup() {
       cleanup_status=1
     fi
   fi
+  if [[ -n "${FINAL_DIR:-}" && -d "$FINAL_DIR" ]]; then
+    rm -rf -- "$FINAL_DIR"
+  fi
+  if [[ "$PUBLISHED" -eq 0 \
+    && -n "${BACKUP_DIR:-}" \
+    && -d "$BACKUP_DIR" \
+    && ! -e "$OUTPUT_DIR" \
+    && ! -L "$OUTPUT_DIR" ]]; then
+    if ! mv -f -- "$BACKUP_DIR" "$OUTPUT_DIR"; then
+      cleanup_status=1
+    else
+      BACKUP_DIR=""
+    fi
+  fi
+  if [[ -n "${BACKUP_DIR:-}" && -d "$BACKUP_DIR" \
+    && ("$PUBLISHED" -eq 1 || -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR") ]]; then
+    if ! rm -rf -- "$BACKUP_DIR"; then
+      cleanup_status=1
+    else
+      BACKUP_DIR=""
+    fi
+  fi
   return "$cleanup_status"
 }
 trap cleanup EXIT
@@ -1954,7 +2182,10 @@ PROTOTYPE_VIEW="$STAGE/prototype-view.html"
 if ! prototype_size="$(make_prototype_view "$PROTOTYPE_VIEW")"; then
   die "could not prepare the prototype render; check the --prototype surface"
 fi
-IFS=' ' read -r PROTOTYPE_WIDTH PROTOTYPE_HEIGHT <<<"$prototype_size"
+IFS=' ' read -r PROTOTYPE_WIDTH PROTOTYPE_HEIGHT PROTOTYPE_SOURCE_SHA <<<"$prototype_size"
+PROTOTYPE_SOURCE_SHA_CHECK="$(sha256_file "$PROTOTYPE")"
+[[ "$PROTOTYPE_SOURCE_SHA" == "$PROTOTYPE_SOURCE_SHA_CHECK" ]] \
+  || die "prototype changed while it was being prepared; refusing mismatched evidence"
 run_chrome_screenshot "$PROTOTYPE_VIEW" "$STAGE/prototype.png" \
   "$PROTOTYPE_WIDTH" "$PROTOTYPE_HEIGHT" prototype
 
@@ -1966,6 +2197,7 @@ if [[ -n "$LIVE_PNG" ]]; then
   LIVE_DESCRIPTION="caller-supplied file; this run did not capture a live surface"
   CAPTURE_COMMAND="cp $LIVE_INPUT_PATH_LABEL <issue-dir>/live-after.png"
   cp -- "$LIVE_PNG" "$STAGE/live-after.png"
+  LIVE_SOURCE_SHA="$(sha256_file "$STAGE/live-after.png")"
   printf 'supplied fixture: %s\n' "$LIVE_INPUT_PATH_LABEL" >"$STAGE/capture.log"
   assert_png "$STAGE/live-after.png"
 elif [[ "$SURFACE" == "egui" ]]; then
@@ -1979,14 +2211,10 @@ COMPOSITE_HTML="$STAGE/comparison.html"
 make_composite_html "$COMPOSITE_HTML" "$CAPTURE_KIND"
 run_chrome_screenshot "$COMPOSITE_HTML" "$STAGE/comparison.png" 2400 960 comparison
 
-PROTOTYPE_SOURCE_SHA="$(sha256_file "$PROTOTYPE")"
-GENERATOR_PATH="$SCRIPT_RELATIVE_PATH"
-GENERATOR_SHA="$(sha256_file "$SCRIPT_PATH")"
 PROTOTYPE_SHA="$(sha256_file "$STAGE/prototype.png")"
 LIVE_SHA="$(sha256_file "$STAGE/live-after.png")"
 if [[ -n "$LIVE_PNG" ]]; then
   LIVE_SOURCE_PATH="$LIVE_INPUT_PATH_LABEL"
-  LIVE_SOURCE_SHA="$(sha256_file "$LIVE_PNG")"
 else
   LIVE_SOURCE_PATH="generated by the capture command above"
   LIVE_SOURCE_SHA="not applicable (generated capture)"
@@ -2117,11 +2345,13 @@ for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
   [[ -s "$STAGE/$artifact" ]] || die "validated artifact is missing or empty: $artifact"
 done
 
+FINAL_DIR="$(mktemp -d "$OUTPUT_ROOT/.design-gate.final.XXXXXX")"
 for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
-  mv -f -- "$STAGE/$artifact" "$OUTPUT_DIR/$artifact"
+  mv -f -- "$STAGE/$artifact" "$FINAL_DIR/$artifact"
 done
 rm -rf -- "$STAGE"
 STAGE=""
+publish_bundle "$FINAL_DIR"
 
 log "wrote $OUTPUT_DIR"
 log "prototype: $OUTPUT_DIR/prototype.png ($PROTOTYPE_DIMS)"

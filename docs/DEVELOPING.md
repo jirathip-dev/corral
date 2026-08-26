@@ -243,12 +243,16 @@ The generated `conformance.md` is a stable manifest: it omits wall-clock
 metadata, derives the generator path and SHA-256 from one canonical
 `BASH_SOURCE[0]` path (including symlink/wrapper invocation), and records path
 arguments as repo-relative paths or stable external placeholders. Non-path
-arguments are shell-quoted from their original bytes. The generated
-`capture.log` is a byte-oriented view capped at 64 KiB; it preserves exact
-head/tail bytes except for documented path substitutions and the explicit
-middle omission marker, and never decodes invalid UTF-8 with replacement.
-Recognized checkout, staging, configured Herdr, and generic
-`.herdr/worktrees` paths are normalized so evidence is checkout independent.
+arguments are shell-quoted from their original bytes, except that provenance
+notes, opaque command values, and path-like launch arguments receive targeted
+known-root/disposable-path substitutions. The generated `capture.log` is a
+byte-oriented view capped at 64 KiB; it preserves exact head/tail bytes except
+for documented path substitutions and the explicit middle omission marker, and
+never decodes invalid UTF-8 with replacement.
+Recognized checkout, staging, configured Herdr, generic `.herdr/worktrees`, and
+disposable temporary paths are normalized so evidence is checkout-independent.
+When an unquoted terminal worktree component contains spaces, redaction keeps
+the following diagnostic text instead of guessing where the path ends.
 Historical evidence may instead be an explicitly labeled sanitized summary of
 an older capture.
 
@@ -264,6 +268,9 @@ capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
 `127.0.0.1`, and
 allows only the matching loopback origin; it is used solely for the scoped
 `Browser.close` request against the private profile.
+
+Validated artifacts are assembled in a private directory and published with a
+directory-level rename; a failed replacement restores the prior bundle.
 
 For a real macOS egui lifecycle check—fake herdr fixture, real corrald,
 registered native UI, real target selection, native wgpu PNG, exact-pid wake,

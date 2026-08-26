@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use corrald::adapters::Adapter;
 use corrald::adapters::gh_plane::GhPlane;
-use corrald::adapters::git_plane::GitPlane;
+use corrald::adapters::git_plane::{GitPlane, LiveRepoSourceDiscovery};
 use corrald::adapters::herdr::HerdrAdapter;
 use corrald::api::AppState;
 use corrald::api::drive::ReplayTable;
@@ -1463,6 +1463,8 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"));
     let attribution = workspace_attribution(&repo_root, &worktrees_root);
+    let repo_source_discovery =
+        Arc::new(LiveRepoSourceDiscovery::from_env().with_attribution(attribution.clone()));
 
     let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new_with_attribution(
         socket_path.clone(),
@@ -1479,6 +1481,8 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         store.clone(),
         attribution.clone(),
         issues_cache.clone(),
+        repo_root.clone(),
+        repo_source_discovery,
     ));
     tracing::info!(
         repo_roots = ?attribution.repo_roots(),
@@ -1665,6 +1669,8 @@ async fn supervise_planes(
     store: Store,
     attribution: WorkspaceAttribution,
     issues: Arc<corrald::api::issues::IssuesCache>,
+    fallback_repo_root: PathBuf,
+    source_discovery: Arc<LiveRepoSourceDiscovery>,
 ) {
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
@@ -1675,9 +1681,10 @@ async fn supervise_planes(
         // emit nothing until the next real change), and the per-instance
         // stopped flag must not couple generations (a lingering old
         // watcher's sink failure must not kill the new watcher too).
-        let git_plane: Arc<dyn Plane> = Arc::new(GitPlane::with_repo_roots(
-            attribution.repo_roots(),
+        let git_plane: Arc<dyn Plane> = Arc::new(GitPlane::with_repo_roots_and_discovery(
+            vec![fallback_repo_root.clone()],
             attribution.worktrees_root(),
+            source_discovery.clone(),
         ));
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
             Arc::new(store.clone()),

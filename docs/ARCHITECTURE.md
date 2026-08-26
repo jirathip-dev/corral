@@ -46,7 +46,7 @@ today, not a bug.
 ```
 herdr socket ── herdr adapter (push: events.subscribe + bounded catalog refresh)
 git worktrees ─ GitPlane (fsevents push + 10s topology / 60s status safety net;
-              │  shared four-command git budget)
+              │  missing-source backoff + live 15m rediscovery; four-command budget)
 GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: no polling
               │  until the first SSE client ever connects)
               ▼
@@ -104,6 +104,25 @@ latency, not part of that child timeout. The budget is backpressure, not a
 failure suppression or a revision reset. This keeps git-plane load from
 consuming the executor needed by the Herdr reader and leaves Store/SSE
 revisions owned solely by the existing coalescer.
+
+A repo/container source whose `git worktree list` scan fails is tracked
+independently of the command budget. The first failure emits one WARN for
+that continuous failure period; retries use a 10s, 60s, then 5m backoff and
+repeated failures stay at DEBUG. After 15m, the regular topology path stops
+touching the source until the cold rediscovery pass retries it. A present but
+temporarily failing source retains its last-known worktrees and commondir
+topology, so suppression cannot manufacture `WorktreeRemoved` events; an
+actually missing worktree directory is still removed. A source being
+recreated re-arms immediately, and a successful scan emits a recovery log and
+clears the failure period, so a later outage gets one new warning.
+
+The cold rediscovery pass rereads the live `fleets.json` registry and scans
+immediate Git checkouts under `~/Projects` in addition to the fixed fallback
+root. It replaces the primary-source set before reconciling, so removed fleet
+roots disappear and new fleet or Projects checkouts produce
+`WorktreeAdded` without a daemon restart. Healthy FSEvents, topology, and
+status behavior remains unchanged; only unavailable-source handling and the
+slow source-discovery safety net are special-cased.
 
 An unknown `commondir/worktrees/` FSEvents path makes the watcher await its
 throttled topology rescan so the newly discovered worktree can be debounced

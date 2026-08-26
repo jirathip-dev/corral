@@ -41,7 +41,8 @@ chmod +x "$WORK/design-gate-wrapper.sh"
 
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
   "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" \
-  "$WORK/invalid-raster.png" "$WORK/invalid-filter.png" <<'PY'
+  "$WORK/invalid-raster.png" "$WORK/invalid-filter.png" \
+  "$WORK/interlaced.png" "$WORK/invalid-palette.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -86,6 +87,20 @@ invalid_filter += chunk(
 invalid_filter += chunk(b"IDAT", zlib.compress(b"\x05\x00\x00\x00"))
 invalid_filter += chunk(b"IEND", b"")
 Path(sys.argv[7]).write_bytes(invalid_filter)
+interlaced = b"\x89PNG\r\n\x1a\n"
+interlaced += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 1)
+)
+interlaced += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+interlaced += chunk(b"IEND", b"")
+Path(sys.argv[8]).write_bytes(interlaced)
+invalid_palette = b"\x89PNG\r\n\x1a\n"
+invalid_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+invalid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_palette += chunk(b"IEND", b"")
+Path(sys.argv[9]).write_bytes(invalid_palette)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -215,6 +230,8 @@ if mode == "large-log":
         + b"generic-bare=/h/.herdr/worktrees/a/b\n"
         + b"generic-bare-real=/Users/jirathip/.herdr/worktrees/corral/other-branch\n"
         + b"generic-bare-spaces=/prefix with spaces/.herdr/worktrees/repo name/worktree name\n"
+        + b"generic-space-marker=/prefix with spaces/.herdr/worktrees/repo/my failed experiment\n"
+        + b"generic-unfamiliar=/prefix with spaces/.herdr/worktrees/repo/my feature branch crashed during capture\n"
         + b"same-line-two-paths=cp /tmp/x /prefix with spaces/.herdr/worktrees/r n/w n/f\n"
         + b"known-repo-child="
         + repo_root
@@ -1006,6 +1023,18 @@ fi
 grep -q 'invalid scanline filter' "$WORK/invalid-filter.log" \
   || fail "invalid PNG filter failure was not actionable"
 
+run_capture --force --live-png "$WORK/interlaced.png" \
+  --output-root "$WORK/interlaced-output"
+grep -q '1x1' "$WORK/interlaced-output/issue-211/conformance.md" \
+  || fail "valid interlaced PNG was not accepted"
+
+if run_capture --force --live-png "$WORK/invalid-palette.png" \
+  >"$WORK/invalid-palette.log" 2>&1; then
+  fail "indexed PNG without a palette unexpectedly passed validation"
+fi
+grep -q 'indexed raster data' "$WORK/invalid-palette.log" \
+  || fail "indexed PNG palette failure was not actionable"
+
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/ios-prototype.png"
@@ -1169,6 +1198,8 @@ assert b"configured-sibling=/tmp/Configured Herdr Root.bak/repo name/worktree na
 assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root was not redacted"
 assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
 assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
+assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
+assert b"generic-unfamiliar=<herdr-worktree> crashed during capture\n" in data, "unfamiliar diagnostic suffix was lost"
 assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data

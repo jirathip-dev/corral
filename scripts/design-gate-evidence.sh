@@ -680,6 +680,8 @@ interlace_method = None
 idat = []
 seen_ihdr = False
 seen_iend = False
+seen_plte = False
+seen_idat = False
 while offset < len(data):
     if len(data) - offset < 12:
         raise SystemExit(f"{path} has a truncated PNG chunk")
@@ -729,7 +731,20 @@ while offset < len(data):
             raise SystemExit(f"{path} has an invalid interlace method")
         seen_ihdr = True
     elif chunk_type == b"IDAT":
+        if color_type == 3 and not seen_plte:
+            raise SystemExit(f"{path} has indexed raster data before its PLTE chunk")
         idat.append(payload)
+        seen_idat = True
+    elif chunk_type == b"PLTE":
+        if (
+            seen_plte
+            or seen_idat
+            or length == 0
+            or length % 3 != 0
+            or length > 768
+        ):
+            raise SystemExit(f"{path} has an invalid PLTE chunk")
+        seen_plte = True
     elif chunk_type == b"IEND":
         if length != 0:
             raise SystemExit(f"{path} has a non-empty IEND")
@@ -753,6 +768,8 @@ if offset != len(data):
     raise SystemExit(f"{path} has data after IEND")
 if not idat:
     raise SystemExit(f"{path} has no IDAT data")
+if color_type == 3 and not seen_plte:
+    raise SystemExit(f"{path} has indexed raster data without a PLTE chunk")
 decoder = zlib.decompressobj()
 try:
     raw = decoder.decompress(b"".join(idat))
@@ -796,6 +813,8 @@ if len(raw) != expected_raw_bytes:
 
 
 def validate_filters(pass_width, pass_height, offset):
+    if pass_width == 0 or pass_height == 0:
+        return offset
     row_bytes = (pass_width * bits_per_pixel + 7) // 8
     for _ in range(pass_height):
         filter_type = raw[offset]
@@ -1062,22 +1081,42 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
             end = min(end, index)
 
     # Unquoted paths with spaces are inherently ambiguous. Consume the full
-    # terminal component by default, but preserve common diagnostic suffixes
-    # so the failure evidence remains readable. Quoted and punctuation-bounded
+    # terminal component by default, but preserve a broad set of diagnostic
+    # verbs/status phrases so the failure evidence remains readable. A bare
+    # word such as "failed" is intentionally not enough: it may be part of a
+    # legitimate space-containing worktree name. Quoted and punctuation-bounded
     # paths above do not need this heuristic.
     for marker in (
-        b" failed",
-        b" error",
-        b" warning",
-        b" permission",
-        b" denied",
+        b" crashed",
+        b" crash",
+        b" exploded",
+        b" panicked",
+        b" panic",
+        b" fatal error",
+        b" exception:",
+        b" traceback",
+        b" segmentation fault",
+        b" terminated",
+        b" killed",
+        b" aborted",
+        b" hung",
+        b" timeout",
+        b" timed out",
+        b" failed to",
+        b" failed with",
+        b" failed during",
+        b" failure:",
+        b" error:",
+        b" warning:",
+        b" permission denied",
+        b" denied:",
         b" not found",
         b" cannot",
         b" could not",
         b" unable",
-        b" timed out",
-        b" exited",
-        b" invalid",
+        b" exited with",
+        b" exit status",
+        b" signal ",
     ):
         marker_index = data_value.find(marker, component_start, end)
         if marker_index != -1:

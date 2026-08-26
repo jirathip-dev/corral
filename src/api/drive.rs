@@ -15,8 +15,10 @@
 //!    are never audited (AC5: the audit grows only on writes).
 //! 3. Payload parse: [`DrivePayload::parse`] for prompt/read_tail/approve;
 //!    interrupt/kill/attach take no payload (`null` or `{}`). `read_tail`
-//!    lines are clamped to [`READ_TAIL_MAX_LINES`] (D5: 200 lines /
-//!    32 KiB, never prefetch).
+//!    lines are clamped to [`READ_TAIL_MAX_LINES`] (D5: 200 lines / 32 KiB).
+//!    The daemon only serves a client request; it does not prefetch or push
+//!    tails (the egui client may make one visible-card request after its own
+//!    capability/grant checks).
 //! 4. Idempotency claim on [`ReplayTable`], keyed by `request_id` (bounded,
 //!    LRU-ish). The claim is atomic with the table lookup: exactly one
 //!    caller ever dispatches for a given id, even under concurrent

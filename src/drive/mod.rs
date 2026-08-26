@@ -21,14 +21,17 @@
 //! - Every write is idempotent by `request_id` (W1 keeps the replay table);
 //!   responses always carry the new monotonic `rev`.
 //! - The daemon never sends keys by coordinates (D8); `read_tail` is bounded
-//!   (200 lines / 32 KiB, D5) and never prefetches.
+//!   (200 lines / 32 KiB, D5). The daemon never prefetches or pushes a tail;
+//!   a client may request it explicitly (or for one visible egui Cards
+//!   selection after its own capability/grant checks).
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Bounds for `read_tail` (D5): 200 lines / 32 KiB, never prefetch.
+/// Bounds for `read_tail` (D5): 200 lines / 32 KiB. The daemon does not
+/// prefetch or push this client-requested view.
 pub const READ_TAIL_MAX_LINES: u32 = 200;
 pub const READ_TAIL_MAX_BYTES: usize = 32 * 1024;
 

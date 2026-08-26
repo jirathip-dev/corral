@@ -47,7 +47,10 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   `stale_agent` refusal. The board removes that row immediately and performs
   one snapshot refresh while SSE remains authoritative for the replacement.
 - **Drive controls from capabilities** — prompt (Enter sends), interrupt,
-  read_tail (bounded 200 lines, on tap only — never prefetch), approve
+  read_tail (bounded 200 lines; Cards performs at most one automatic fetch
+  for the currently visible, attention-resolved detail card when the agent
+  advertises the capability and the device grant allows it; later pages stay
+  explicit via Load earlier, with no background or pane-wide prefetch), approve
   (choice buttons from `waiting_on.choices`; the claim echoes
   `approval_id` + `prompt_hash` byte-for-byte from the snapshot prompt),
   kill/attach (typed refusals surface when the source doesn't implement
@@ -113,9 +116,11 @@ flaky without an explicit `device.poll`; this path polls with a bounded
 wait and captures the presented surface.)
 
 For native live-agent evidence, add `CORRAL_UI_SCREENSHOT_AGENT` with an agent
-id observed in the daemon's `/snapshot` response. The app selects that real
-agent and requests its signed `read_tail` plus transcript page before capture;
-it does not create demo data:
+id observed in the daemon's `/snapshot` response. The app resolves that real
+agent through the visible Cards selection, then performs the same one-shot,
+capability- and grant-gated signed `read_tail` plus transcript-page hydration
+used by the board; it does not create demo data. Subsequent pages remain
+explicit Load earlier requests:
 
 ```sh
 CORRAL_UI_SCREENSHOT=/tmp/board-live.png \

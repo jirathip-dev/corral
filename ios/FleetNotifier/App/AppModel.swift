@@ -729,10 +729,11 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    /// `read_tail` is bounded (D5): 200 lines, never prefetched. #167:
-    /// the detail view auto-loads it (no tap) and auto-refreshes while open;
-    /// `silent` suppresses the in-flight/again banners so the auto timer does
-    /// not spam the fleet banner.
+    /// `read_tail` is bounded (D5): 200 lines, with no fleet-wide prefetch.
+    /// #167: the currently open iOS detail view auto-loads it (no tap) and
+    /// auto-refreshes while open; this existing iOS policy is unchanged by
+    /// #207. `silent` suppresses the in-flight/again banners so the auto timer
+    /// does not spam the fleet banner.
     func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false) {
         guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {

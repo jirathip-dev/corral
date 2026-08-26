@@ -28,6 +28,7 @@ enum Tab {
 
 const BOARD_TOP_NAV: [&str; 2] = ["settings", "registry"];
 const NON_BOARD_TOP_NAV: [&str; 5] = ["settings", "registry", "audit", "issues", "board"];
+const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Board mode owns Board / Issues / Audit navigation in the detail pane. The
 /// global chrome keeps only utility destinations there so the two surfaces
@@ -124,6 +125,7 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     audit_last_refresh: std::time::Instant,
+    issues_last_refresh: std::time::Instant,
 
     // Tabs.
     tab: Tab,
@@ -201,6 +203,9 @@ impl CorralApp {
             audit: None,
             audit_loading: false,
             audit_last_refresh: std::time::Instant::now(),
+            // Permit the first Issues visit to fetch immediately; every
+            // subsequent attempt records its start time, including errors.
+            issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
             tab: Tab::Board,
             screenshot_path: std::env::var("CORRAL_UI_SCREENSHOT")
                 .ok()
@@ -333,7 +338,7 @@ impl CorralApp {
                 self.conn = ConnState::Connected;
                 self.conn_detail = None;
                 // #113/#135: fetch both read-only views on connection.
-                self.refresh_issues(false);
+                self.refresh_issues(true);
                 self.refresh_registry(false);
             }
             ApplyMsg::Conn(protocol::Live::Disconnected) => {
@@ -352,8 +357,8 @@ impl CorralApp {
                 self.conn = ConnState::Down;
                 self.conn_detail = Some(e);
             }
-            ApplyMsg::Issues(issues) => {
-                self.fleet.set_issues(issues);
+            ApplyMsg::Issues(result) => {
+                self.fleet.set_issues(result);
             }
             ApplyMsg::Registry(result) => {
                 self.fleet.set_registry(result);
@@ -363,27 +368,60 @@ impl CorralApp {
         }
     }
 
-    /// #113: fetch the daemon's read-only repo-level issue view once per
-    /// connection. The board renders from this authoritative set (never
-    /// from branch inference); a failed/absent endpoint leaves the browser
-    /// empty with a hint instead of guessing.
+    /// #113: fetch the daemon's read-only repo-level issue view on connect,
+    /// manual refresh, and while the Issues tab is visible. A previous
+    /// successful snapshot remains rendered while a retry is in flight; a
+    /// transient failure is never converted into a permanent empty cache.
     fn refresh_issues(&mut self, force: bool) {
-        if !force && self.fleet.issues_loaded {
+        if !issues_refresh_due(
+            force,
+            self.conn,
+            self.fleet.issues_loading,
+            self.issues_last_refresh,
+        ) {
             return;
         }
+        self.fleet.issues_loading = true;
+        self.issues_last_refresh = std::time::Instant::now();
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
-            match protocol::fetch_issues(&client, &base_url).await {
-                Ok(issues) => {
-                    let _ = tx.send(ApplyMsg::Issues(issues));
-                }
-                Err(error) => {
-                    tracing::warn!(error, "GET /issues unavailable");
-                }
+            let result = protocol::fetch_issues(&client, &base_url).await;
+            if let Err(error) = &result {
+                tracing::warn!(error, "GET /issues unavailable");
             }
+            let _ = tx.send(ApplyMsg::Issues(result));
         });
+    }
+
+    /// Hydrate the resolved visible Cards detail pane once the live snapshot
+    /// and the persisted device grant are both ready. The board owns the
+    /// visible/attention-ranked resolver; this method consumes that result,
+    /// never selects a fallback and never writes `selected_agent`.
+    ///
+    /// Recent output is a composed surface: the bounded read_tail result is
+    /// the immediate fallback while the signed transcript page supplies chat
+    /// roles and the older cursor. Both requests share the same UI-owned
+    /// caches, so either payload can make the surface useful without waiting
+    /// for the other endpoint.
+    fn hydrate_recent_output(&mut self, resolved_selection: Option<&str>) {
+        let Some(agent_id) = hydration_target(&self.fleet, resolved_selection) else {
+            return;
+        };
+        if !self.ledger.allowed("read_tail")
+            || self.registration.is_none()
+            || self.device_key.is_none()
+            || !self.fleet.needs_recent_output(&agent_id)
+        {
+            return;
+        }
+
+        self.request_transcript_page(crate::transcript::TranscriptRequest {
+            agent_id: agent_id.clone(),
+            cursor: None,
+        });
+        self.dispatch_drive_intents(vec![DriveIntent::read_tail(&agent_id, self.fleet.rev)]);
     }
 
     /// #135: fetch the daemon's read-only fleet registry view once per
@@ -610,6 +648,13 @@ impl CorralApp {
     /// (agent with no output) stores an empty tail so the view shows the
     /// clean empty state.
     fn remember_tail_result(&mut self, msg: &DriveMsg) {
+        Self::apply_read_tail_result(&mut self.fleet, msg);
+    }
+
+    /// Apply the response half of the app's `read_tail` control path. Keeping
+    /// this as a small app-layer operation makes the intent -> DriveMsg -> UI
+    /// cache contract testable without starting an eframe window.
+    fn apply_read_tail_result(fleet: &mut Fleet, msg: &DriveMsg) {
         let DriveOutcome::Ok { result, .. } = &msg.outcome else {
             return;
         };
@@ -622,12 +667,12 @@ impl CorralApp {
             lines = lines.len(),
             "read_tail result applied to screenshot/detail cache"
         );
-        self.fleet.remember_tail(&msg.agent_id, lines);
+        fleet.remember_tail(&msg.agent_id, lines);
     }
 
     /// Native screenshot evidence helper. It is deliberately opt-in and
-    /// targets an id observed in the live `/snapshot`; content still has to
-    /// be fetched by clicking the shipped Cards `Load earlier` control.
+    /// targets an id observed in the live `/snapshot`; normal board hydration
+    /// still owns the capability- and grant-gated content fetch.
     fn prepare_screenshot_evidence(&mut self) {
         let Some(agent_id) = self.screenshot_agent_id.clone() else {
             return;
@@ -645,7 +690,7 @@ impl CorralApp {
             agent_id = %agent_id,
             read_tail_advertised,
             read_tail_granted = self.ledger.allowed("read_tail"),
-            "native screenshot evidence selected live agent; Cards fetch remains user-driven"
+            "native screenshot evidence selected live agent; Cards hydration remains grant-gated"
         );
     }
 
@@ -1286,7 +1331,7 @@ impl eframe::App for CorralApp {
                 let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
                 let mut pending_full_chat: Vec<String> = Vec::new();
                 self.prepare_screenshot_evidence();
-                crate::ui::board::show(
+                let resolved_selection = crate::ui::board::show(
                     ui,
                     &mut self.fleet,
                     &allowed,
@@ -1310,8 +1355,10 @@ impl eframe::App for CorralApp {
                     self.request_transcript_page(request);
                 }
                 self.dispatch_drive_intents(pending);
+                self.hydrate_recent_output(resolved_selection.as_deref());
             }
             Tab::Issues => {
+                self.refresh_issues(false);
                 let ledger = self.ledger.clone();
                 let allowed = |cap: &str| ledger.allowed(cap);
                 let mut pending: Vec<DriveIntent> = Vec::new();
@@ -1404,6 +1451,35 @@ impl eframe::App for CorralApp {
     }
 }
 
+/// Return whether the app may start a non-forced Issues fetch. The timestamp
+/// is recorded when every fetch starts, not only after a successful result,
+/// so a folded transport error cannot turn the next frame into a retry loop.
+fn issues_refresh_due(
+    force: bool,
+    conn: ConnState,
+    loading: bool,
+    last_refresh: std::time::Instant,
+) -> bool {
+    if loading || (!force && conn != ConnState::Connected) {
+        return false;
+    }
+    force || last_refresh.elapsed() >= ISSUES_REFRESH_INTERVAL
+}
+
+/// Select the only agent eligible for automatic Recent-output hydration.
+/// `resolved_selection` must come from the Cards surface's visible resolver;
+/// no map-order fallback belongs here, and this helper deliberately never
+/// mutates `Fleet::selected_agent`.
+fn hydration_target(fleet: &Fleet, resolved_selection: Option<&str>) -> Option<String> {
+    let agent_id = resolved_selection?;
+    let agent = fleet.agents.get(agent_id)?;
+    agent
+        .capabilities
+        .iter()
+        .any(|capability| capability == "read_tail")
+        .then(|| agent_id.to_string())
+}
+
 fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
     ui.horizontal(|ui| {
         ui.label(
@@ -1494,7 +1570,32 @@ fn bottom_bar(ui: &mut egui::Ui, app: &CorralApp) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Tab, top_level_nav_labels};
+    use std::time::Instant;
+
+    use super::*;
+    use crate::model::{Agent, AgentState, Workspace};
+    use crate::ui::board::{self, StateFilter};
+
+    fn agent(id: &str, state: AgentState, capabilities: &[&str]) -> Agent {
+        Agent {
+            agent_id: id.into(),
+            source: "herdr".into(),
+            tool: "codex".into(),
+            state,
+            reason: None,
+            seq: 1,
+            ts: 1,
+            capabilities: capabilities.iter().map(|cap| (*cap).into()).collect(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: Workspace::default(),
+            attachment: None,
+            display_name: None,
+            title: None,
+            issues: vec![],
+        }
+    }
 
     #[test]
     fn board_surface_has_no_duplicate_global_board_issue_audit_navigation() {
@@ -1516,5 +1617,117 @@ mod tests {
         assert!(labels.contains(&"board"));
         assert!(labels.contains(&"issues"));
         assert!(labels.contains(&"audit"));
+    }
+
+    #[test]
+    fn folded_issue_error_does_not_trigger_an_immediate_retry() {
+        let mut fleet = Fleet {
+            issues_loading: true,
+            ..Default::default()
+        };
+        fleet.set_issues(Err("GET /issues unavailable".into()));
+        assert!(!fleet.issues_loaded);
+        assert!(!fleet.issues_loading);
+        assert_eq!(
+            fleet.issues_error.as_deref(),
+            Some("GET /issues unavailable")
+        );
+        assert!(
+            !issues_refresh_due(
+                false,
+                ConnState::Connected,
+                fleet.issues_loading,
+                Instant::now()
+            ),
+            "the frame after a folded error must remain inside the refresh interval"
+        );
+        assert!(issues_refresh_due(
+            false,
+            ConnState::Connected,
+            false,
+            Instant::now() - ISSUES_REFRESH_INTERVAL
+        ));
+    }
+
+    #[test]
+    fn hydration_uses_the_attention_ranked_visible_default_without_persisting_it() {
+        let idle = agent("herdr:a-idle", AgentState::Idle, &["read_tail"]);
+        let blocked = agent("herdr:z-blocked", AgentState::Blocked, &["read_tail"]);
+        let fleet = Fleet {
+            agents: [
+                (idle.agent_id.clone(), idle),
+                (blocked.agent_id.clone(), blocked),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let visible = board::visible_agent_ids(&fleet, StateFilter::All, "");
+        assert_eq!(visible, ["herdr:z-blocked", "herdr:a-idle"]);
+        let resolved = board::resolve_selection(&fleet, &visible);
+        assert_eq!(resolved, Some("herdr:z-blocked"));
+        assert_eq!(
+            hydration_target(&fleet, resolved),
+            Some("herdr:z-blocked".into())
+        );
+        assert_eq!(
+            fleet.selected_agent, None,
+            "default resolution is not persisted"
+        );
+    }
+
+    #[test]
+    fn hydration_follows_a_filtered_visible_card_and_ignores_hidden_pinned_agent() {
+        let hidden_pinned = agent("herdr:a-pinned", AgentState::Blocked, &[]);
+        let visible = agent("herdr:z-visible", AgentState::Working, &["read_tail"]);
+        let fleet = Fleet {
+            agents: [
+                (hidden_pinned.agent_id.clone(), hidden_pinned),
+                (visible.agent_id.clone(), visible),
+            ]
+            .into_iter()
+            .collect(),
+            selected_agent: Some("herdr:a-pinned".into()),
+            ..Default::default()
+        };
+
+        let visible_ids = board::visible_agent_ids(&fleet, StateFilter::Working, "");
+        let resolved = board::resolve_selection(&fleet, &visible_ids);
+        assert_eq!(visible_ids, ["herdr:z-visible"]);
+        assert_eq!(resolved, Some("herdr:z-visible"));
+        assert_eq!(
+            hydration_target(&fleet, resolved),
+            Some("herdr:z-visible".into())
+        );
+        assert_eq!(
+            hydration_target(&fleet, Some("herdr:a-pinned")),
+            None,
+            "a hidden pinned card without read_tail is never hydrated"
+        );
+        assert_eq!(fleet.selected_agent.as_deref(), Some("herdr:a-pinned"));
+    }
+
+    #[test]
+    fn load_earlier_drive_response_reaches_the_app_tail_cache() {
+        let intent = DriveIntent::read_tail("herdr:load-earlier", Some(42));
+        let mut fleet = Fleet::default();
+        let msg = DriveMsg {
+            agent_id: intent.target.clone(),
+            capability: intent.capability.to_string(),
+            outcome: DriveOutcome::Ok {
+                rev: 43,
+                result: Some(serde_json::json!({
+                    "lines": ["older line one", "older line two"]
+                })),
+            },
+        };
+
+        CorralApp::apply_read_tail_result(&mut fleet, &msg);
+        assert_eq!(msg.capability, "read_tail");
+        assert_eq!(
+            fleet.tails["herdr:load-earlier"],
+            ["older line one", "older line two"]
+        );
     }
 }

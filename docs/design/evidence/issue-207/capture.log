@@ -1,0 +1,43 @@
+2026-08-26T05:40:04.342522Z  INFO corrald_ui::protocol: SSE connected to corrald /events base_url=http://127.0.0.1:61486
+2026-08-26T05:40:04.353951Z  INFO corrald_ui::app: native screenshot evidence selected live agent; Cards hydration remains grant-gated agent_id=herdr:pane:issue-207:p1 read_tail_advertised=true read_tail_granted=true
+2026-08-26T05:40:04.372105Z  INFO corrald_ui::app: read_tail result applied to screenshot/detail cache agent_id=herdr:pane:issue-207:p1 lines=3
+2026-08-26T05:40:04.372139Z  INFO corrald_ui::app: transcript result folded into detail cache agent_id=herdr:pane:issue-207:p1 outcome=Applied entries=0 has_error=true
+2026-08-26T05:40:16.679177Z  INFO corrald_ui::app: requesting viewport screenshot path=/Users/jirathip/.herdr/worktrees/corral/g207-egui-client-fetch-path/docs/design/evidence/issue-207/.design-gate.stage.VdCk2y/live-after.png
+2026-08-26T05:40:16.726047Z  INFO corrald_ui::app: screenshot saved — exiting path=/Users/jirathip/.herdr/worktrees/corral/g207-egui-client-fetch-path/docs/design/evidence/issue-207/.design-gate.stage.VdCk2y/live-after.png
+
+--- hermetic fixture verification ---
+issue #207 native scratch fixture
+scratch daemon: http://127.0.0.1:61478 (real corrald release binary)
+loopback /issues proxy: http://127.0.0.1:61486/issues (fixture envelope only)
+/snapshot target: herdr:pane:issue-207:p1, title=Issue #207 — native fetch path
+/issues fixture: repos=3, issues=6, numbers=[207, 206] + [18, 17] + [41, 39]
+register: key_id=dev_64904ff825031b9ca511b1fe12db34fe, initial_grants=[]
+admin grant: {'key_id': 'dev_64904ff825031b9ca511b1fe12db34fe', 'ok': True}
+native live-after.png: 2640x1720
+post-capture /issues repos=3, issues=6
+proxy requests:
+incoming GET /host-key content_length=0 body_bytes=0
+forwarded GET /host-key -> 200 body_bytes=0
+incoming POST /register content_length=119 body_bytes=119
+forwarded POST /register -> 200 body_bytes=119
+incoming GET /healthz content_length=0 body_bytes=0
+forwarded GET /healthz -> 200 body_bytes=0
+incoming GET /snapshot content_length=0 body_bytes=0
+forwarded GET /snapshot -> 200 body_bytes=0
+incoming GET /host-key content_length=0 body_bytes=0
+incoming GET /events content_length=0 body_bytes=0
+forwarded GET /host-key -> 200 body_bytes=0
+forwarded GET /events -> 200 body_bytes=0
+incoming GET /issues content_length=0 body_bytes=0
+incoming GET /fleet-registry content_length=0 body_bytes=0
+forwarded GET /fleet-registry -> 200 body_bytes=0
+incoming POST /drive content_length=334 body_bytes=334
+incoming GET /transcript?agent=herdr%3Apane%3Aissue-207%3Ap1 content_length=0 body_bytes=0
+forwarded GET /transcript?agent=herdr%3Apane%3Aissue-207%3Ap1 -> 404 body_bytes=0
+forwarded POST /drive -> 200 body_bytes=334
+incoming GET /issues content_length=0 body_bytes=0
+post-capture /grants: {"devices": [{"created_ts": 1787722799, "expiry_ts": 1795498799, "grants": ["read_tail"], "key_id": "dev_64904ff825031b9ca511b1fe12db34fe", "revoked": false}], "note": "host admin read for the desktop grant UI; does not expose public keys or push tokens", "ok": true}
+post-capture /audit write entries:
+{"capability": "read_tail", "outcome": "executed", "request_id": "corrald-ui:tail:1787722804356:ce9169da801a", "target": "herdr:pane:issue-207:p1"}
+
+conformance notes: the real native scratch transcript request returned 404 no_session; older-page append is therefore evidenced by the focused board/app/state regressions, not claimed as a live scratch result. The successful signed read_tail is the selected-card hydration path and is audited once.

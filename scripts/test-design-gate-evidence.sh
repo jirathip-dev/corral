@@ -45,7 +45,9 @@ chmod +x "$WORK/design-gate-wrapper.sh"
   "$WORK/interlaced.png" "$WORK/invalid-palette.png" \
   "$WORK/invalid-palette-size.png" "$WORK/invalid-palette-index.png" \
   "$WORK/invalid-grayscale-palette.png" "$WORK/nonconsecutive-idat.png" \
-  "$WORK/valid-palette.png" <<'PY'
+  "$WORK/valid-palette.png" "$WORK/unknown-critical.png" \
+  "$WORK/indexed-trns-before-plte.png" "$WORK/trns-after-idat.png" \
+  "$WORK/duplicate-trns.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
@@ -147,6 +149,40 @@ valid_palette += chunk(b"PLTE", b"\x00\x00\x00\xff\xff\xff")
 valid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x01"))
 valid_palette += chunk(b"IEND", b"")
 Path(sys.argv[14]).write_bytes(valid_palette)
+unknown_critical = b"\x89PNG\r\n\x1a\n"
+unknown_critical += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+unknown_critical += chunk(b"ABCD", b"")
+unknown_critical += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+unknown_critical += chunk(b"IEND", b"")
+Path(sys.argv[15]).write_bytes(unknown_critical)
+indexed_trns_before_plte = b"\x89PNG\r\n\x1a\n"
+indexed_trns_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+indexed_trns_before_plte += chunk(b"tRNS", b"\x00")
+indexed_trns_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+indexed_trns_before_plte += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+indexed_trns_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[16]).write_bytes(indexed_trns_before_plte)
+trns_after_idat = b"\x89PNG\r\n\x1a\n"
+trns_after_idat += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+trns_after_idat += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+trns_after_idat += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+trns_after_idat += chunk(b"IEND", b"")
+Path(sys.argv[17]).write_bytes(trns_after_idat)
+duplicate_trns = b"\x89PNG\r\n\x1a\n"
+duplicate_trns += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+duplicate_trns += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+duplicate_trns += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+duplicate_trns += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+duplicate_trns += chunk(b"IEND", b"")
+Path(sys.argv[18]).write_bytes(duplicate_trns)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -1116,6 +1152,34 @@ fi
 grep -q 'non-consecutive IDAT' "$WORK/nonconsecutive-idat.log" \
   || fail "non-consecutive IDAT failure was not actionable"
 
+if run_capture --force --live-png "$WORK/unknown-critical.png" \
+  >"$WORK/unknown-critical.log" 2>&1; then
+  fail "PNG with an unknown critical chunk unexpectedly passed validation"
+fi
+grep -q 'unknown critical chunk' "$WORK/unknown-critical.log" \
+  || fail "unknown critical chunk failure was not actionable"
+
+if run_capture --force --live-png "$WORK/indexed-trns-before-plte.png" \
+  >"$WORK/indexed-trns-before-plte.log" 2>&1; then
+  fail "indexed PNG with tRNS before PLTE unexpectedly passed validation"
+fi
+grep -q 'tRNS data before' "$WORK/indexed-trns-before-plte.log" \
+  || fail "indexed tRNS ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/trns-after-idat.png" \
+  >"$WORK/trns-after-idat.log" 2>&1; then
+  fail "PNG with tRNS after IDAT unexpectedly passed validation"
+fi
+grep -q 'invalid tRNS chunk order' "$WORK/trns-after-idat.log" \
+  || fail "tRNS-after-IDAT failure was not actionable"
+
+if run_capture --force --live-png "$WORK/duplicate-trns.png" \
+  >"$WORK/duplicate-trns.log" 2>&1; then
+  fail "PNG with duplicate tRNS chunks unexpectedly passed validation"
+fi
+grep -q 'duplicate tRNS' "$WORK/duplicate-trns.log" \
+  || fail "duplicate tRNS failure was not actionable"
+
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/ios-prototype.png"
@@ -1281,15 +1345,15 @@ assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree roo
 assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
 assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
 assert b"generic-crash-name=<herdr-worktree>\n" in data, "crash marker inside a worktree name was leaked"
-assert b"generic-unfamiliar=<herdr-worktree> became unreadable\n" in data, "unfamiliar diagnostic suffix was lost"
-assert b"generic-crash-diagnostic=<herdr-worktree> crashed during capture\n" in data, "crash diagnostic suffix was lost"
+assert b"generic-unfamiliar=<herdr-worktree>\n" in data, "unquoted path suffix was leaked"
+assert b"generic-crash-diagnostic=<herdr-worktree>\n" in data, "unquoted diagnostic suffix was leaked"
 assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data
 assert b"output-dot-sibling=" + output_root + b".bak/file" in data
-assert b"configured-diagnostic=<herdr-worktree> failed to compile\n" in data, "configured worktree redaction consumed diagnostic text"
+assert b"configured-diagnostic=<herdr-worktree>\n" in data, "unquoted configured path suffix was leaked"
 assert b'quoted-diagnostic="<herdr-worktree>": permission denied\n' in data, "quoted worktree redaction consumed its diagnostic delimiter"
-assert b"generic-diagnostic=<herdr-worktree> failed to compile\n" in data, "generic worktree redaction consumed diagnostic text"
+assert b"generic-diagnostic=<herdr-worktree>\n" in data, "unquoted generic path suffix was leaked"
 PY
 unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
 unset CORRAL_TEST_EGUI_MODE

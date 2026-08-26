@@ -683,6 +683,27 @@ seen_iend = False
 seen_plte = False
 seen_idat = False
 idat_closed = False
+seen_singletons = set()
+known_critical = {b"IHDR", b"PLTE", b"IDAT", b"IEND"}
+singleton_ancillary = {
+    b"cHRM",
+    b"gAMA",
+    b"iCCP",
+    b"sRGB",
+    b"sBIT",
+    b"tRNS",
+    b"bKGD",
+    b"hIST",
+    b"pHYs",
+    b"eXIf",
+    b"oFFs",
+    b"pCAL",
+    b"sCAL",
+    b"sTER",
+    b"tIME",
+}
+before_plte = {b"cHRM", b"gAMA", b"iCCP", b"sRGB", b"sBIT"}
+before_idat = before_plte | {b"pHYs", b"eXIf", b"oFFs", b"pCAL", b"sCAL", b"sTER"}
 while offset < len(data):
     if len(data) - offset < 12:
         raise SystemExit(f"{path} has a truncated PNG chunk")
@@ -698,8 +719,22 @@ while offset < len(data):
     actual_crc = zlib.crc32(chunk_type + payload) & 0xFFFFFFFF
     if actual_crc != expected_crc:
         raise SystemExit(f"{path} has an invalid {chunk_type.decode('ascii', 'replace')} CRC")
+    if len(chunk_type) != 4 or any(
+        not (65 <= value <= 90 or 97 <= value <= 122) for value in chunk_type
+    ):
+        raise SystemExit(f"{path} has an invalid PNG chunk type")
+    if chunk_type[0] <= 90 and chunk_type not in known_critical:
+        raise SystemExit(f"{path} has an unknown critical chunk: {chunk_type.decode('ascii')}")
     if not seen_ihdr and chunk_type != b"IHDR":
         raise SystemExit(f"{path} does not start with IHDR")
+    if chunk_type in singleton_ancillary:
+        if chunk_type in seen_singletons:
+            raise SystemExit(f"{path} has a duplicate {chunk_type.decode('ascii')} chunk")
+        seen_singletons.add(chunk_type)
+    if chunk_type in before_plte and (seen_plte or seen_idat):
+        raise SystemExit(f"{path} has {chunk_type.decode('ascii')} after PLTE or IDAT")
+    if chunk_type in before_idat and seen_idat:
+        raise SystemExit(f"{path} has {chunk_type.decode('ascii')} after IDAT")
     if chunk_type == b"IDAT" and idat_closed:
         raise SystemExit(f"{path} has non-consecutive IDAT chunks")
     if chunk_type != b"IDAT" and seen_idat:
@@ -754,6 +789,24 @@ while offset < len(data):
         if color_type == 3 and palette_entries > (1 << bit_depth):
             raise SystemExit(f"{path} has too many PLTE entries for its bit depth")
         seen_plte = True
+    elif chunk_type == b"tRNS":
+        if color_type in (4, 6) or seen_idat:
+            raise SystemExit(f"{path} has an invalid tRNS chunk order or color type")
+        if color_type == 0 and length != 2:
+            raise SystemExit(f"{path} has an invalid grayscale tRNS chunk")
+        if color_type == 2 and length != 6:
+            raise SystemExit(f"{path} has an invalid truecolor tRNS chunk")
+        if color_type == 3:
+            if not seen_plte:
+                raise SystemExit(f"{path} has indexed tRNS data before its PLTE chunk")
+            if length == 0 or length > palette_entries:
+                raise SystemExit(f"{path} has an invalid indexed tRNS chunk")
+    elif chunk_type == b"bKGD":
+        if seen_idat or (color_type == 3 and not seen_plte):
+            raise SystemExit(f"{path} has bKGD before PLTE or after IDAT")
+    elif chunk_type == b"hIST":
+        if color_type != 3 or not seen_plte or seen_idat:
+            raise SystemExit(f"{path} has hIST without a preceding indexed PLTE")
     elif chunk_type == b"IEND":
         if length != 0:
             raise SystemExit(f"{path} has a non-empty IEND")
@@ -1135,53 +1188,9 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
         if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
             end = min(end, index)
 
-    # Unquoted paths with spaces are inherently ambiguous. Consume the full
-    # terminal component by default, but preserve a broad set of diagnostic
-    # verbs/status phrases so the failure evidence remains readable. A bare
-    # word such as "failed" or "crashed" is intentionally not enough: it may
-    # be part of a legitimate space-containing worktree name. Quoted and
-    # punctuation-bounded paths above do not need this heuristic.
-    for marker in (
-        b" crashed during",
-        b" crashed while",
-        b" crashed with",
-        b" crashed at",
-        b" exploded during",
-        b" exploded while",
-        b" panicked during",
-        b" panicked while",
-        b" fatal error",
-        b" exception:",
-        b" traceback",
-        b" segmentation fault",
-        b" terminated",
-        b" killed",
-        b" aborted",
-        b" hung",
-        b" timeout",
-        b" timed out",
-        b" failed to",
-        b" failed with",
-        b" failed during",
-        b" became unreadable",
-        b" became unavailable",
-        b" became invalid",
-        b" failure:",
-        b" error:",
-        b" warning:",
-        b" permission denied",
-        b" denied:",
-        b" not found",
-        b" cannot",
-        b" could not",
-        b" unable",
-        b" exited with",
-        b" exit status",
-        b" signal ",
-    ):
-        marker_index = data_value.find(marker, component_start, end)
-        if marker_index != -1:
-            end = min(end, marker_index)
+    # Unquoted terminal paths with spaces are inherently ambiguous. Consume
+    # the full terminal component; callers that need arbitrary diagnostic text
+    # to follow a path must quote it or use punctuation as an explicit bound.
     return end
 
 

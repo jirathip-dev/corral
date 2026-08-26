@@ -1,8 +1,8 @@
 //! The eframe application: owns the fleet state, the background read
-//! loop (SSE), the signed-drive dispatch, registration, and the five
-//! tabs (Board / Issues / Audit / Registry / Settings).
+//! loop (SSE), the signed-drive dispatch, registration, and the four
+//! workspace tabs (Board / Issues / Registry / Settings).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
 use eframe::egui::{self, RichText};
@@ -16,28 +16,38 @@ use crate::state::{
 };
 use crate::theme;
 
-/// The five top-level views.
+/// The four top-level views in the persistent right-hand tab strip. Audit is
+/// intentionally not a top-level destination; the existing admin view stays
+/// available as an advanced implementation path without competing with the
+/// prototype's four navigation labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Board,
     Issues,
+    #[allow(dead_code)]
     Audit,
     Registry,
     Settings,
 }
 
-const BOARD_TOP_NAV: [&str; 2] = ["settings", "registry"];
-const NON_BOARD_TOP_NAV: [&str; 5] = ["settings", "registry", "audit", "issues", "board"];
+const TAB_LABELS: [(&str, Tab); 4] = [
+    ("Board", Tab::Board),
+    ("Issues", Tab::Issues),
+    ("Registry", Tab::Registry),
+    ("Settings", Tab::Settings),
+];
 const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Board mode owns Board / Issues / Audit navigation in the detail pane. The
-/// global chrome keeps only utility destinations there so the two surfaces
-/// cannot render duplicate navigation labels at once.
-fn top_level_nav_labels(tab: Tab) -> &'static [&'static str] {
-    if tab == Tab::Board {
-        &BOARD_TOP_NAV
-    } else {
-        &NON_BOARD_TOP_NAV
+fn tab_from_env() -> Tab {
+    match std::env::var("CORRAL_UI_SCREENSHOT_TAB")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "issues" => Tab::Issues,
+        "registry" => Tab::Registry,
+        "settings" => Tab::Settings,
+        _ => Tab::Board,
     }
 }
 
@@ -46,6 +56,11 @@ fn top_level_nav_labels(tab: Tab) -> &'static [&'static str] {
 struct PersistedConfig {
     host_url: String,
     registration: Option<RegistrationRecord>,
+    auto_reconnect: bool,
+    group_by_repo: bool,
+    show_idle_collapsed: bool,
+    stick_to_bottom: bool,
+    theme: String,
 }
 
 impl Default for PersistedConfig {
@@ -53,6 +68,11 @@ impl Default for PersistedConfig {
         Self {
             host_url: protocol::DEFAULT_HOST_URL.to_string(),
             registration: None,
+            auto_reconnect: true,
+            group_by_repo: true,
+            show_idle_collapsed: true,
+            stick_to_bottom: true,
+            theme: "dark".to_string(),
         }
     }
 }
@@ -67,6 +87,11 @@ impl PersistedConfig {
                     .host_url
                     .unwrap_or_else(|| protocol::DEFAULT_HOST_URL.to_string()),
                 registration: c.registration,
+                auto_reconnect: c.auto_reconnect.unwrap_or(true),
+                group_by_repo: c.group_by_repo.unwrap_or(true),
+                show_idle_collapsed: c.show_idle_collapsed.unwrap_or(true),
+                stick_to_bottom: c.stick_to_bottom.unwrap_or(true),
+                theme: c.theme.unwrap_or_else(|| "dark".to_string()),
             })
             .unwrap_or_default()
     }
@@ -77,6 +102,11 @@ impl PersistedConfig {
         let wire = crate::state::PersistedConfig {
             host_url: Some(self.host_url.clone()),
             registration: self.registration.clone(),
+            auto_reconnect: Some(self.auto_reconnect),
+            group_by_repo: Some(self.group_by_repo),
+            show_idle_collapsed: Some(self.show_idle_collapsed),
+            stick_to_bottom: Some(self.stick_to_bottom),
+            theme: Some(self.theme.clone()),
         };
         if let Ok(json) = serde_json::to_string_pretty(&wire) {
             let tmp = path.with_extension("tmp");
@@ -109,12 +139,15 @@ pub struct CorralApp {
     config: PersistedConfig,
     config_path: PathBuf,
     settings: crate::ui::register::SettingsState,
+    registry_drafts: BTreeMap<String, crate::ui::registry::FleetDraft>,
+    registry_notice: Option<(Level, String)>,
 
     // Channels.
     tx_apply: UnboundedSender<ApplyMsg>,
     rx_apply: UnboundedReceiver<ApplyMsg>,
     rx_drive: UnboundedReceiver<DriveMsg>,
     tx_drive: UnboundedSender<DriveMsg>,
+    #[allow(dead_code)]
     tx_audit: UnboundedSender<AuditMsg>,
     rx_audit: UnboundedReceiver<AuditMsg>,
     tx_transcript: UnboundedSender<crate::transcript::TranscriptMsg>,
@@ -124,6 +157,7 @@ pub struct CorralApp {
     // Audit view.
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
+    #[allow(dead_code)]
     audit_last_refresh: std::time::Instant,
     issues_last_refresh: std::time::Instant,
 
@@ -185,12 +219,19 @@ impl CorralApp {
             ledger: GrantLedger::default(),
             registration: config.registration.clone(),
             host_fingerprint: None,
-            config,
+            config: config.clone(),
             config_path,
             settings: crate::ui::register::SettingsState {
                 host_url: host_url.clone(),
+                auto_reconnect: config.auto_reconnect,
+                group_by_repo: config.group_by_repo,
+                show_idle_collapsed: config.show_idle_collapsed,
+                stick_to_bottom: config.stick_to_bottom,
+                theme: config.theme.clone(),
                 ..Default::default()
             },
+            registry_drafts: BTreeMap::new(),
+            registry_notice: None,
             tx_apply: tx_apply.clone(),
             rx_apply,
             rx_drive,
@@ -206,7 +247,7 @@ impl CorralApp {
             // Permit the first Issues visit to fetch immediately; every
             // subsequent attempt records its start time, including errors.
             issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
-            tab: Tab::Board,
+            tab: tab_from_env(),
             screenshot_path: std::env::var("CORRAL_UI_SCREENSHOT")
                 .ok()
                 .map(PathBuf::from),
@@ -256,6 +297,7 @@ impl CorralApp {
             host_url.clone(),
             tx.clone(),
             stop_rx.clone(),
+            self.settings.auto_reconnect,
         );
     }
 
@@ -440,6 +482,58 @@ impl CorralApp {
             let result = protocol::fetch_fleet_registry(&client, &base_url).await;
             let _ = tx.send(ApplyMsg::Registry(result));
         });
+    }
+
+    fn registry_action(&mut self, action: crate::ui::registry::Action) {
+        if matches!(action, crate::ui::registry::Action::Refresh) {
+            self.refresh_registry(true);
+            return;
+        }
+        let Some(path) = self
+            .fleet
+            .registry
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|registry| registry.path.clone())
+        else {
+            self.registry_notice = Some((
+                Level::Error,
+                "registry has not loaded; refresh before editing".into(),
+            ));
+            return;
+        };
+        let result = match action {
+            crate::ui::registry::Action::Save(draft) => {
+                let draft = *draft;
+                let old_name = draft.original_name.clone();
+                let result = crate::ui::registry::apply_draft(&path, &draft);
+                if result.is_ok() && old_name != draft.name {
+                    self.registry_drafts.remove(&old_name);
+                }
+                result.map(|_| format!("{} saved and applied", draft.name))
+            }
+            crate::ui::registry::Action::Send(name) => crate::ui::registry::send_to_fleet(&path)
+                .map(|message| format!("{name}: {message}")),
+            crate::ui::registry::Action::Pause { fleet_name, paused } => {
+                crate::ui::registry::set_paused(&path, &fleet_name, paused).map(|_| {
+                    format!(
+                        "{} {}",
+                        fleet_name,
+                        if paused { "paused" } else { "resumed" }
+                    )
+                })
+            }
+            crate::ui::registry::Action::Refresh => unreachable!(),
+        };
+        match result {
+            Ok(message) => {
+                self.registry_notice = Some((Level::Info, message));
+                self.refresh_registry(true);
+            }
+            Err(error) => {
+                self.registry_notice = Some((Level::Error, error));
+            }
+        }
     }
 
     fn on_drive(&mut self, msg: DriveMsg) {
@@ -820,6 +914,7 @@ impl CorralApp {
         crate::keys::load_admin_token(&fp).or_else(crate::keys::read_daemon_admin_token)
     }
 
+    #[allow(dead_code)]
     fn refresh_audit(&mut self) {
         let Some(token) = self.admin_token() else {
             self.audit = Some(Err(
@@ -1143,6 +1238,35 @@ impl CorralApp {
             }
             crate::ui::register::Request::ApplyGrantSet => self.apply_grant_set(),
             crate::ui::register::Request::RevokeGrantDevice => self.revoke_grant_device(),
+            crate::ui::register::Request::SaveSettings => {
+                let url = self.settings.host_url.trim().to_string();
+                if url.is_empty() {
+                    self.settings.notice =
+                        Some((Level::Error, "host URL must not be empty".into()));
+                    return;
+                }
+                let host_changed = url != self.config.host_url;
+                self.settings.host_url = url.clone();
+                self.config.host_url = url.clone();
+                self.config.auto_reconnect = self.settings.auto_reconnect;
+                self.config.group_by_repo = self.settings.group_by_repo;
+                self.config.show_idle_collapsed = self.settings.show_idle_collapsed;
+                self.config.stick_to_bottom = self.settings.stick_to_bottom;
+                self.config.theme = self.settings.theme.clone();
+                if host_changed {
+                    // Registration keys and grants are scoped to the host
+                    // fingerprint. A settings URL change must not carry a
+                    // device identity or capability ledger across hosts.
+                    self.config.registration = None;
+                    self.registration = None;
+                    self.ledger = GrantLedger::default();
+                    self.host_fingerprint = None;
+                }
+                self.config.persist(&self.config_path);
+                self.spawn_read_loop(url.clone());
+                self.resolve_fingerprint(url);
+                self.toast(Level::Info, "settings saved");
+            }
         }
     }
 
@@ -1258,6 +1382,15 @@ impl eframe::App for CorralApp {
             ctx.request_repaint();
         }
 
+        // Resolve the requested native-evidence target before the capture
+        // deadline is allowed to fire. On a cold scratch daemon the first SSE
+        // snapshot can arrive just after the initial frame; taking the PNG
+        // first would produce a truthful but unselected frame and make the
+        // evidence harness unable to prove its target provenance.
+        if self.screenshot_path.is_some() {
+            self.prepare_screenshot_evidence();
+        }
+
         // Esc collapses expanded rows.
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.fleet.expanded.clear();
@@ -1266,14 +1399,26 @@ impl eframe::App for CorralApp {
         // Evidence capture: request the viewport screenshot once the fleet
         // has had time to connect, then write the PNG and exit.
         if let Some(path) = self.screenshot_path.clone() {
+            // A native window can become quiet while the screenshot command
+            // is waiting for its readback event (especially when the wake
+            // command only brings the window frontmost). Keep the eframe
+            // update loop alive both before and after issuing the command;
+            // the PNG/event gate below remains the only success condition.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
             if !self.screenshot_sent
                 && self
                     .screenshot_deadline
                     .is_some_and(|d| std::time::Instant::now() >= d)
+                && (self.screenshot_agent_id.is_none() || self.screenshot_agent_selected)
             {
                 self.screenshot_sent = true;
                 tracing::info!(path = %path.display(), "requesting viewport screenshot");
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                // The screenshot readback event is delivered on a later
+                // frame. Explicitly wake eframe after issuing the viewport
+                // command so a quiet native window cannot strand the pending
+                // GPU map callback.
+                ctx.request_repaint();
             }
             // The wgpu screenshot readback completes on a device poll; the
             // map callback needs it driven from here.
@@ -1306,9 +1451,13 @@ impl eframe::App for CorralApp {
 
         self.update_settings_request();
 
-        egui::Panel::top("top").show(ui, |ui| {
-            top_bar(ui, self);
-        });
+        // Screenshot evidence is one deterministic tab per process. Keep the
+        // requested tab locked while the env-gated capture is alive so a
+        // stray native focus/click event cannot make a Board artifact claim a
+        // different workspace surface.
+        if self.screenshot_path.is_some() {
+            self.tab = tab_from_env();
+        }
 
         if self.registration.is_none() {
             egui::CentralPanel::default().show(ui, |ui| {
@@ -1319,136 +1468,193 @@ impl eframe::App for CorralApp {
             return;
         }
 
-        egui::Panel::bottom("bottom").show(ui, |ui| {
-            bottom_bar(ui, self);
-        });
-
-        egui::CentralPanel::default().show(ui, |ui| match self.tab {
-            Tab::Board => {
-                let ledger = self.ledger.clone();
-                let allowed = |cap: &str| ledger.allowed(cap);
-                let mut pending: Vec<DriveIntent> = Vec::new();
-                let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
-                let mut pending_full_chat: Vec<String> = Vec::new();
-                self.prepare_screenshot_evidence();
-                let resolved_selection = crate::ui::board::show(
-                    ui,
-                    &mut self.fleet,
-                    &allowed,
-                    &mut crate::ui::board::BoardActions {
-                        drive: &mut |intent| pending.push(intent),
-                        transcript: &mut |request| pending_transcripts.push(request),
-                        full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
-                    },
-                );
-                if let Some(request) = crate::ui::board::take_right_tab_request(&ctx) {
-                    self.tab = match request {
-                        crate::ui::board::RightTab::Board => Tab::Board,
-                        crate::ui::board::RightTab::Issues => Tab::Issues,
-                        crate::ui::board::RightTab::Audit => Tab::Audit,
-                    };
-                }
-                for agent_id in pending_full_chat {
-                    self.fleet.toggle_full_chat(&agent_id);
-                }
-                for request in pending_transcripts {
-                    self.request_transcript_page(request);
-                }
-                self.dispatch_drive_intents(pending);
-                self.hydrate_recent_output(resolved_selection.as_deref());
-            }
-            Tab::Issues => {
-                self.refresh_issues(false);
-                let ledger = self.ledger.clone();
-                let allowed = |cap: &str| ledger.allowed(cap);
-                let mut pending: Vec<DriveIntent> = Vec::new();
-                let mut refresh_requested = false;
-                crate::ui::issues::show(
-                    ui,
-                    &self.fleet,
-                    &allowed,
-                    &mut |intent| pending.push(intent),
-                    &mut || refresh_requested = true,
-                );
-                if refresh_requested {
-                    self.refresh_issues(true);
-                }
-                self.dispatch_drive_intents(pending);
-            }
-            Tab::Audit => {
-                let token_configured = self.admin_token().is_some();
-                let mut refresh_requested = false;
-                if self.audit.is_none() {
-                    self.refresh_audit();
-                }
-                if self.audit_last_refresh.elapsed() >= std::time::Duration::from_secs(5) {
-                    self.refresh_audit();
-                    self.audit_last_refresh = std::time::Instant::now();
-                }
-                crate::ui::audit::show(
-                    ui,
-                    &self.audit,
-                    token_configured,
-                    self.audit_loading,
-                    &mut || refresh_requested = true,
-                );
-                if refresh_requested {
-                    self.refresh_audit();
-                    self.audit_last_refresh = std::time::Instant::now();
-                }
-                ctx.request_repaint_after(std::time::Duration::from_secs(2));
-            }
-            Tab::Registry => {
-                if self.fleet.registry.is_none() && self.conn == ConnState::Connected {
-                    self.refresh_registry(false);
-                }
-                let mut refresh_requested = false;
-                crate::ui::registry::show(
-                    ui,
-                    &self.fleet.registry,
-                    self.fleet.registry_loading,
-                    &mut || refresh_requested = true,
-                );
-                if refresh_requested {
-                    self.refresh_registry(true);
-                }
-            }
-            Tab::Settings => {
-                let store = self.device_key.as_ref().map(|k| k.store.clone());
-                let key_id = self
-                    .registration
-                    .as_ref()
-                    .map(|r| r.key_id.clone())
-                    .unwrap_or_default();
-                let grants = self
-                    .registration
-                    .as_ref()
-                    .map(|r| r.grants.clone())
-                    .unwrap_or_default();
-                let admin_token_configured = self.admin_token().is_some();
-                self.settings.admin_token_configured = admin_token_configured;
-                if self.settings.grant_admin.view.is_none()
-                    && !self.settings.grant_admin.loading
-                    && !self.settings.grant_admin.saving
-                    && admin_token_configured
-                {
-                    self.refresh_grant_devices();
-                }
-                crate::ui::register::settings_pane(
-                    ui,
-                    &mut self.settings,
-                    &key_id,
-                    &grants,
-                    store.as_ref(),
-                    self.conn,
-                    self.fleet.rev,
-                );
-            }
+        egui::CentralPanel::default().show(ui, |ui| {
+            workspace(ui, self, &ctx);
         });
 
         crate::ui::toast_area(&ctx, &mut self.toasts);
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
+}
+
+fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
+    let available = ui.available_size();
+    let (workspace_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+    let left_width = (workspace_rect.width() * crate::ui::board::MASTER_DETAIL_RATIO.0).max(280.0);
+    let right_width = (workspace_rect.width() - left_width - 1.0).max(0.0);
+    let left_rect = egui::Rect::from_min_size(
+        workspace_rect.min,
+        egui::vec2(left_width, workspace_rect.height()),
+    );
+    let right_rect = egui::Rect::from_min_size(
+        egui::pos2(left_rect.right() + 1.0, workspace_rect.top()),
+        egui::vec2(right_width, workspace_rect.height()),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(workspace_rect, egui::CornerRadius::same(12), theme::ui::BG);
+    painter.rect_stroke(
+        workspace_rect,
+        egui::CornerRadius::same(12),
+        egui::Stroke::new(1.0, theme::ui::FRAME_BORDER),
+        egui::StrokeKind::Outside,
+    );
+    painter.rect_filled(left_rect, egui::CornerRadius::ZERO, theme::ui::PANEL);
+    painter.line_segment(
+        [left_rect.right_top(), left_rect.right_bottom()],
+        egui::Stroke::new(1.0, theme::ui::LINE),
+    );
+
+    app.prepare_screenshot_evidence();
+    let mut left_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect.shrink(1.0))
+            .id(egui::Id::new("corral-ui-persistent-master-bar"))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let resolved_selection = crate::ui::board::show_master(
+        &mut left_ui,
+        &mut app.fleet,
+        app.settings.group_by_repo,
+        app.settings.show_idle_collapsed,
+    );
+
+    let mut right_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(right_rect.shrink(1.0))
+            .id(egui::Id::new("corral-ui-persistent-detail-pane"))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    tab_strip(&mut right_ui, &mut app.tab);
+    right_ui.separator();
+
+    match app.tab {
+        Tab::Board => {
+            let ledger = app.ledger.clone();
+            let allowed = |cap: &str| ledger.allowed(cap);
+            let mut pending: Vec<DriveIntent> = Vec::new();
+            let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
+            let mut pending_full_chat: Vec<String> = Vec::new();
+            crate::ui::board::show_board_detail(
+                &mut right_ui,
+                &app.fleet,
+                resolved_selection.as_deref(),
+                &allowed,
+                &mut crate::ui::board::BoardActions {
+                    drive: &mut |intent| pending.push(intent),
+                    transcript: &mut |request| pending_transcripts.push(request),
+                    full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
+                },
+            );
+            for agent_id in pending_full_chat {
+                app.fleet.toggle_full_chat(&agent_id);
+            }
+            for request in pending_transcripts {
+                app.request_transcript_page(request);
+            }
+            app.dispatch_drive_intents(pending);
+            app.hydrate_recent_output(resolved_selection.as_deref());
+        }
+        Tab::Issues => {
+            app.refresh_issues(false);
+            let ledger = app.ledger.clone();
+            let allowed = |cap: &str| ledger.allowed(cap);
+            let mut pending: Vec<DriveIntent> = Vec::new();
+            let mut refresh_requested = false;
+            crate::ui::issues::show(
+                &mut right_ui,
+                &app.fleet,
+                &allowed,
+                &mut |intent| pending.push(intent),
+                &mut || refresh_requested = true,
+            );
+            if refresh_requested {
+                app.refresh_issues(true);
+            }
+            app.dispatch_drive_intents(pending);
+        }
+        Tab::Registry => {
+            if app.fleet.registry.is_none() && app.conn == ConnState::Connected {
+                app.refresh_registry(false);
+            }
+            let mut pending = None;
+            crate::ui::registry::show(
+                &mut right_ui,
+                &app.fleet.registry,
+                app.fleet.registry_loading,
+                &mut app.registry_drafts,
+                &mut app.registry_notice,
+                &mut |action| pending = Some(action),
+            );
+            if let Some(action) = pending {
+                app.registry_action(action);
+            }
+        }
+        Tab::Settings => {
+            let store = app.device_key.as_ref().map(|key| key.store.clone());
+            let key_id = app
+                .registration
+                .as_ref()
+                .map(|registration| registration.key_id.clone())
+                .unwrap_or_default();
+            let grants = app
+                .registration
+                .as_ref()
+                .map(|registration| registration.grants.clone())
+                .unwrap_or_default();
+            let admin_token_configured = app.admin_token().is_some();
+            app.settings.admin_token_configured = admin_token_configured;
+            if app.settings.grant_admin.view.is_none()
+                && !app.settings.grant_admin.loading
+                && !app.settings.grant_admin.saving
+                && admin_token_configured
+            {
+                app.refresh_grant_devices();
+            }
+            crate::ui::register::settings_pane(
+                &mut right_ui,
+                &mut app.settings,
+                &key_id,
+                &grants,
+                store.as_ref(),
+                app.conn,
+                app.fleet.rev,
+            );
+        }
+        Tab::Audit => {
+            // Kept reachable for state compatibility, but intentionally absent
+            // from the four-tab chrome required by #206.
+            right_ui.label(
+                RichText::new("Audit is available from Advanced device access in Settings.")
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        }
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+fn tab_strip(ui: &mut egui::Ui, active: &mut Tab) {
+    ui.horizontal(|ui| {
+        for (label, tab) in TAB_LABELS {
+            let selected = *active == tab;
+            let response = ui.selectable_label(
+                selected,
+                RichText::new(label).strong().color(if selected {
+                    theme::ui::INK
+                } else {
+                    theme::ui::MUTED
+                }),
+            );
+            if selected {
+                ui.painter().line_segment(
+                    [response.rect.left_bottom(), response.rect.right_bottom()],
+                    egui::Stroke::new(2.0, theme::ui::ACCENT),
+                );
+            }
+            if response.clicked() {
+                *active = tab;
+            }
+        }
+    });
 }
 
 /// Return whether the app may start a non-forced Issues fetch. The timestamp
@@ -1478,94 +1684,6 @@ fn hydration_target(fleet: &Fleet, resolved_selection: Option<&str>) -> Option<S
         .iter()
         .any(|capability| capability == "read_tail")
         .then(|| agent_id.to_string())
-}
-
-fn top_bar(ui: &mut egui::Ui, app: &mut CorralApp) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("corral fleet")
-                .strong()
-                .color(theme::ui::ACCENT),
-        );
-        ui.separator();
-        let host = app.config.host_url.clone();
-        ui.label(
-            RichText::new(host)
-                .monospace()
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
-        crate::ui::connection_pill(ui, app.conn);
-        if let Some(detail) = &app.conn_detail {
-            ui.label(RichText::new(detail).small().color(theme::ui::TEXT_MUTED));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for label in top_level_nav_labels(app.tab) {
-                match *label {
-                    "settings" => {
-                        ui.selectable_value(&mut app.tab, Tab::Settings, *label);
-                    }
-                    "registry" => {
-                        ui.selectable_value(&mut app.tab, Tab::Registry, *label);
-                    }
-                    "audit" => {
-                        ui.selectable_value(&mut app.tab, Tab::Audit, *label);
-                    }
-                    "issues" => {
-                        ui.selectable_value(&mut app.tab, Tab::Issues, *label);
-                    }
-                    "board" => {
-                        ui.selectable_value(&mut app.tab, Tab::Board, *label);
-                    }
-                    _ => unreachable!("top-level nav labels are fixed"),
-                }
-            }
-        });
-    });
-}
-
-fn bottom_bar(ui: &mut egui::Ui, app: &CorralApp) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("agents {}", app.fleet.agents.len()))
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
-        ui.separator();
-        let blocked = app
-            .fleet
-            .agents
-            .values()
-            .filter(|a| a.state == crate::model::AgentState::Blocked)
-            .count();
-        ui.label(
-            RichText::new(format!("blocked {blocked}"))
-                .small()
-                .color(theme::state::BLOCKED),
-        );
-        ui.separator();
-        let working = app
-            .fleet
-            .agents
-            .values()
-            .filter(|a| a.state == crate::model::AgentState::Working)
-            .count();
-        ui.label(
-            RichText::new(format!("working {working}"))
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
-        if let Some(rev) = app.fleet.rev {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("rev {rev}"))
-                        .monospace()
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-            });
-        }
-    });
 }
 
 #[cfg(test)]
@@ -1598,25 +1716,10 @@ mod tests {
     }
 
     #[test]
-    fn board_surface_has_no_duplicate_global_board_issue_audit_navigation() {
-        let labels = top_level_nav_labels(Tab::Board);
-        assert_eq!(labels, &["settings", "registry"]);
-        for duplicate in ["board", "issues", "audit"] {
-            assert!(
-                !labels.contains(&duplicate),
-                "Board mode must keep {duplicate} navigation inside the detail pane"
-            );
-        }
-    }
-
-    #[test]
-    fn utility_navigation_remains_available_outside_board_surface() {
-        let labels = top_level_nav_labels(Tab::Settings);
-        assert!(labels.contains(&"registry"));
-        assert!(labels.contains(&"settings"));
-        assert!(labels.contains(&"board"));
-        assert!(labels.contains(&"issues"));
-        assert!(labels.contains(&"audit"));
+    fn workspace_navigation_has_exactly_four_tabs_and_demotes_audit() {
+        let labels: Vec<&str> = TAB_LABELS.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["Board", "Issues", "Registry", "Settings"]);
+        assert!(!labels.contains(&"Audit"));
     }
 
     #[test]

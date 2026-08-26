@@ -1,0 +1,4 @@
+2026-08-26T07:23:15.710862Z  INFO corrald_ui::protocol: SSE connected to corrald /events base_url=http://127.0.0.1:55777
+2026-08-26T07:23:15.731446Z  INFO corrald_ui::app: native screenshot evidence selected live agent; Cards hydration remains grant-gated agent_id=herdr:pane:design-gate:p1 read_tail_advertised=true read_tail_granted=false
+2026-08-26T07:23:27.744630Z  INFO corrald_ui::app: requesting viewport screenshot path=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T//corral-design-gate-egui.AMtvso/evidence/registry/issue-206/.design-gate.stage.qQYR26/live-after.png
+2026-08-26T07:23:27.835115Z  INFO corrald_ui::app: screenshot saved — exiting path=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T//corral-design-gate-egui.AMtvso/evidence/registry/issue-206/.design-gate.stage.qQYR26/live-after.png

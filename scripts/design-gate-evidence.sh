@@ -84,6 +84,7 @@ LIVE_AGENT=""
 HOST_URL="${CORRAL_UI_HOST_URL:-http://127.0.0.1:8474}"
 EGUI_BINARY=""
 EGUI_DELAY_MS="8000"
+EGUI_TAB="${CORRAL_UI_SCREENSHOT_TAB:-board}"
 EGUI_WAKE_COMMAND="${CORRAL_EGUI_WAKE_COMMAND:-}"
 CAPTURE_TIMEOUT_SECONDS="90"
 CHROME_TIMEOUT_SECONDS="30"
@@ -124,6 +125,8 @@ Options:
   --live-png PATH             Explicit supplied PNG fixture seam.
   --host-url URL              egui health endpoint (default: 127.0.0.1:8474).
   --egui-binary PATH          corrald-ui binary override.
+  --egui-tab board|issues|registry|settings
+                              Native/prototype tab to capture (default: board).
   --delay-ms N                egui screenshot delay (default: 8000).
   --egui-wake-command SHELL   Explicit eframe wake/input command.
   --timeout-seconds N         Native capture timeout (default: 90).
@@ -199,6 +202,11 @@ while [[ $# -gt 0 ]]; do
     --egui-binary)
       require_value "$1" "${2:-}"
       EGUI_BINARY="$2"
+      shift 2
+      ;;
+    --egui-tab)
+      require_value "$1" "${2:-}"
+      EGUI_TAB="$2"
       shift 2
       ;;
     --delay-ms)
@@ -290,6 +298,12 @@ done
   || die "--surface must be egui or ios"
 [[ "$IOS_MODE" == "live" || "$IOS_MODE" == "demo" ]] \
   || die "--ios-mode must be live or demo"
+if [[ "$SURFACE" == "egui" ]]; then
+  case "$EGUI_TAB" in
+    board|issues|registry|settings) ;;
+    *) die "--egui-tab must be board, issues, registry, or settings" ;;
+  esac
+fi
 
 is_decimal() {
   [[ "$1" =~ ^[0-9]+$ ]]
@@ -313,7 +327,11 @@ is_nonnegative_decimal "$IOS_DELAY_SECONDS" \
 
 if [[ -z "$PROTOTYPE" ]]; then
   if [[ "$SURFACE" == "egui" ]]; then
-    PROTOTYPE="$REPO_DIR/docs/design/corral-ux-prototype.html"
+    if [[ "$ISSUE" == "206" && -f "$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html" ]]; then
+      PROTOTYPE="$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html"
+    else
+      PROTOTYPE="$REPO_DIR/docs/design/corral-ux-prototype.html"
+    fi
   elif [[ -f "$REPO_DIR/docs/design/corral-ux-transcript-chat-prototype.html" ]]; then
     PROTOTYPE="$REPO_DIR/docs/design/corral-ux-transcript-chat-prototype.html"
   else
@@ -697,7 +715,7 @@ PY
 
 make_prototype_view() {
   local output="$1"
-  "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$output" <<'PY'
+  "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$EGUI_TAB" "$output" <<'PY'
 from html import escape
 from html.parser import HTMLParser
 import json
@@ -706,7 +724,8 @@ import sys
 
 source_path = Path(sys.argv[1]).resolve()
 surface = sys.argv[2]
-output_path = Path(sys.argv[3])
+egui_tab = sys.argv[3]
+output_path = Path(sys.argv[4])
 source = source_path.read_text(encoding="utf-8")
 
 if "</head>" not in source.lower():
@@ -859,6 +878,7 @@ surface_script = f"""
 <script id="design-gate-surface-script">
 (() => {{
   const targetSelector = {json.dumps(target_selector)};
+  const requestedTab = {json.dumps(egui_tab)};
   const markSurface = () => {{
     const frames = Array.from(document.querySelectorAll("body > .rack > .frame"));
     const targets = frames.filter((frame) => frame.querySelector(targetSelector));
@@ -871,10 +891,19 @@ surface_script = f"""
     }}
     targets.forEach((frame) => frame.classList.add("design-gate-target"));
   }};
+  const selectRequestedTab = () => {{
+    if ({json.dumps(surface)} !== "egui") return;
+    const tab = document.querySelector(`[data-tab="${{requestedTab}}"]`);
+    if (tab) tab.click();
+  }};
   if (document.readyState === "loading") {{
-    document.addEventListener("DOMContentLoaded", markSurface, {{ once: true }});
+    document.addEventListener("DOMContentLoaded", () => {{
+      markSurface();
+      selectRequestedTab();
+    }}, {{ once: true }});
   }} else {{
     markSurface();
+    selectRequestedTab();
   }}
 }})();
 </script>
@@ -1081,7 +1110,7 @@ PY
   CAPTURE_KIND="native egui viewport screenshot"
   LIVE_DESCRIPTION="real egui process launched from $binary against $HOST_URL"
   LIVE_DESCRIPTION+="; selected live agent $LIVE_AGENT from /snapshot"
-  CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS"
+  CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
   CAPTURE_COMMAND+=" $binary"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
@@ -1095,6 +1124,7 @@ PY
   CORRAL_UI_SCREENSHOT_AGENT="$LIVE_AGENT" \
     CORRAL_UI_SCREENSHOT="$STAGE/live-after.png" \
     CORRAL_UI_SCREENSHOT_DELAY_MS="$EGUI_DELAY_MS" \
+    CORRAL_UI_SCREENSHOT_TAB="$EGUI_TAB" \
     RUST_LOG="${RUST_LOG:-info}" "$binary" >"$STAGE/capture.log" 2>&1 &
   ui_pid=$!
   CAPTURE_PID="$ui_pid"
@@ -1215,6 +1245,7 @@ print_dry_run() {
     log "live source: explicit supplied PNG fixture $LIVE_PNG"
   elif [[ "$SURFACE" == "egui" ]]; then
     log "live source: native corrald-ui capture after health check at $HOST_URL"
+    log "egui tab: $EGUI_TAB"
   else
     log "live source: hermes-sim-task iOS capture in $IOS_MODE mode"
   fi
@@ -1318,6 +1349,9 @@ COMMAND_LINE="$(printf '%q ' "$SCRIPT_DIR/$SCRIPT_NAME" "${ORIGINAL_ARGS[@]}")"
   printf '## Capture\n\n'
   printf -- '- Surface: `%s`\n' "$SURFACE"
   printf -- '- Capture kind: %s\n' "$CAPTURE_KIND"
+  if [[ "$SURFACE" == "egui" ]]; then
+    printf -- '- Egui tab: `%s` (native and approved prototype were both opened on this tab)\n' "$EGUI_TAB"
+  fi
   printf -- '- Live description: %s\n' "$LIVE_DESCRIPTION"
   printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'

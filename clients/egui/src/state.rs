@@ -29,6 +29,16 @@ pub struct RegistrationRecord {
 pub struct PersistedConfig {
     pub host_url: Option<String>,
     pub registration: Option<RegistrationRecord>,
+    #[serde(default)]
+    pub auto_reconnect: Option<bool>,
+    #[serde(default)]
+    pub group_by_repo: Option<bool>,
+    #[serde(default)]
+    pub show_idle_collapsed: Option<bool>,
+    #[serde(default)]
+    pub stick_to_bottom: Option<bool>,
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// One drive action in flight (UI-side bookkeeping only — the actual

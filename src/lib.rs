@@ -14,4 +14,3 @@ pub mod fleet;
 pub mod history;
 pub mod integrate;
 pub mod push;
-pub mod transcript;

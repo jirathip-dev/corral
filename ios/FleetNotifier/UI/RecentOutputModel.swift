@@ -59,7 +59,7 @@ struct RecentOutputMetadata: Equatable, Sendable {
     /// Extract metadata from both structured blocks and legacy tail lines.
     /// The wire format's only display metadata marker is the canonical
     /// `model effort · path` line. Key-looking prose such as `path: ...` is
-    /// still transcript content and must not be consumed as a badge.
+    /// still output content and must not be consumed as a badge.
     static func extract(from blocks: [TranscriptBlock],
                         fallbackLines: [String] = []) -> RecentOutputMetadata {
         var found = RecentOutputMetadata()
@@ -160,10 +160,7 @@ struct RecentOutputRender: Equatable, Sendable {
     let phase: RecentOutputPhase
     let rows: [RecentOutputRow]
     let canLoadOlder: Bool
-    let transcriptLoading: Bool
     let canRetryTail: Bool
-    let canRetryTranscript: Bool
-    let nextCursor: String?
     let metadata: RecentOutputMetadata
 }
 
@@ -190,9 +187,8 @@ enum RecentOutputModel {
     /// A single render/pairing snapshot for one SwiftUI body pass. Keeping
     /// this pure makes it possible to test the expensive work independently
     /// of SwiftUI and prevents each child section from rebuilding it.
-    static func snapshot(tail: TailPane?,
-                         transcript: TranscriptPane?) -> RecentOutputSnapshot {
-        let render = render(tail: tail, transcript: transcript)
+    static func snapshot(tail: TailPane?) -> RecentOutputSnapshot {
+        let render = render(tail: tail)
         let visibleRows = render.rows.filter { row in
             if case .loadEarlier = row { return false }
             return true
@@ -350,30 +346,19 @@ enum RecentOutputModel {
         return identifiedRows(for: newRows).contains { $0.id == anchorID }
     }
 
-    static func render(tail: TailPane?, transcript: TranscriptPane?) -> RecentOutputRender {
+    static func render(tail: TailPane?) -> RecentOutputRender {
         let tail = tail ?? TailPane()
         var rows: [RecentOutputRow] = []
 
-        let transcriptRaw = transcriptBlocks(from: transcript)
-        let transcriptBlocks = visibleBlocks(transcriptRaw)
         let tailRaw = tailBlocks(from: tail)
         let tailBlocks = visibleBlocks(tailRaw)
+        let hasContent = !tailBlocks.isEmpty
+        let oldestTruncated = tailRaw.first?.truncatedBefore
 
-        let transcriptRows = rowsForTranscript(
-            transcript,
-            rawBlocks: transcriptRaw,
-            visibleBlocks: transcriptBlocks)
-        rows.append(contentsOf: transcriptRows)
-
-        let allBlocks = transcriptBlocks + tailBlocks
-        let hasContent = !allBlocks.isEmpty
-        let oldestTruncated = transcriptRaw.last?.truncatedBefore
-            ?? tailRaw.first?.truncatedBefore
-        let transcriptHasContent = !transcriptBlocks.isEmpty
-
-        // A live tail can advertise older content before the first transcript
-        // page has been opened. Keep this one compact affordance at the top.
-        if transcriptHasContent == false, let oldestTruncated,
+        // A bounded tail can advertise older content the daemon elided (the
+        // `+N lines` marker lifted from the pane). Keep this one compact
+        // affordance at the top.
+        if let oldestTruncated,
            !rows.contains(where: { row in
                if case .loadEarlier = row { return true }
                return false
@@ -394,37 +379,21 @@ enum RecentOutputModel {
             phase = .error(tailError)
         } else if hasContent {
             phase = .loaded
-        } else if tail.loading || transcript?.loading == true {
+        } else if tail.loading {
             phase = .loading
-        } else if let error = transcript?.error {
-            phase = .error(error)
         } else {
             phase = .empty
         }
 
         let metadata = RecentOutputMetadata.extract(
-            from: transcriptRaw + tailRaw,
-            fallbackLines: (transcript?.entries ?? []).map(\.text) + tail.lines)
+            from: tailRaw,
+            fallbackLines: tail.lines)
         return RecentOutputRender(
             phase: phase,
             rows: rows,
-            canLoadOlder: (transcript?.canLoadOlder ?? false)
-                || (oldestTruncated != nil && !transcriptHasContent),
-            transcriptLoading: transcript?.loading ?? false,
+            canLoadOlder: oldestTruncated != nil,
             canRetryTail: !tail.loading && tail.error != nil,
-            canRetryTranscript: transcript?.canRetry ?? false,
-            nextCursor: transcript?.nextCursor,
             metadata: metadata)
-    }
-
-    private static func transcriptBlocks(from pane: TranscriptPane?) -> [TranscriptBlock] {
-        guard let pane else { return [] }
-        if !pane.blocks.isEmpty {
-            return pane.blocks
-        }
-        return pane.entries.map { entry in
-            TranscriptBlock(kind: kind(for: entry.role), text: entry.text, at: entry.ts)
-        }
     }
 
     private static func tailBlocks(from pane: TailPane) -> [TranscriptBlock] {
@@ -459,24 +428,6 @@ enum RecentOutputModel {
             visible.text = lines.joined(separator: "\n")
             return visible
         }
-    }
-
-    private static func rowsForTranscript(_ pane: TranscriptPane?,
-                                          rawBlocks: [TranscriptBlock],
-                                          visibleBlocks: [TranscriptBlock]) -> [RecentOutputRow] {
-        guard let pane else { return [] }
-        var rows: [RecentOutputRow] = []
-        if pane.canLoadOlder || rawBlocks.last?.truncatedBefore != nil {
-            rows.append(.loadEarlier(rawBlocks.last?.truncatedBefore))
-        }
-        if pane.loading && rawBlocks.isEmpty {
-            rows.append(.loading)
-        }
-        if let error = pane.error {
-            rows.append(.error(error))
-        }
-        rows.append(contentsOf: visibleBlocks.reversed().map(RecentOutputRow.block))
-        return rows
     }
 
     private static func visibleMessageLines(_ text: String) -> [String] {

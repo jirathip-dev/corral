@@ -7,9 +7,9 @@ the final flip is never performed by a script or plugin action.
 ## Repository-side checks
 
 - [x] W2: README leads with Corral as the control plane for a herdr fleet;
-  harness-agnostic wording is supporting text and the harness-specific
-  session-store caveat is retained (the provider cost meter was retired by
-  issue #107, so the caveat is now framed around the `/transcript` reader).
+  harness-agnostic wording is supporting text (the provider cost meter was
+  retired by issue #107 and the transcript reader by #241 — no session-store
+  caveat remains).
 - [x] W3: `herdr-plugin.toml` links setup and read-only status actions using
   auditable argv arrays; validated as well-formed TOML against the herdr
   0.7.x manifest schema (`contexts` values and `min_herdr_version` are

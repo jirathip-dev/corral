@@ -186,9 +186,6 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
     let auth = state.auth.clone();
     let adapter = state.adapter.clone();
     let issues = state.issues.clone();
-    let transcript_roots = state.transcript_roots.clone();
-    let transcript_limiter = state.transcript_limiter.clone();
-    let role_probe_memo = state.role_probe_memo.clone();
     let fleets = state.fleets.clone();
     let app = router(state);
     let restarted_app = router(AppState {
@@ -198,9 +195,6 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
         issues,
         fleets,
-        transcript_roots,
-        transcript_limiter,
-        role_probe_memo,
     });
 
     // First dispatch: the real git seam creates the branch/worktree and the

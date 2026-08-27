@@ -75,6 +75,7 @@ use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
+use crate::core::blocks::segment_lines;
 use crate::core::events::GhIssueRef;
 use crate::core::model::Agent;
 use crate::core::store::Store;
@@ -88,7 +89,6 @@ use crate::fleet::worktree::{
     self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
     WorktreeRequest,
 };
-use crate::transcript::blocks::segment_lines;
 
 use super::AppState;
 

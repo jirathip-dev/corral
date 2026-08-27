@@ -215,8 +215,8 @@ What the app shows:
   blocked > done > working > idle, each with state, title/session,
   repo·branch·worktree, issue chips, CI glyph, tool.
 - **Recent output** (`read_tail`): bounded live tail (segmented blocks) via
-  signed `/drive`, folded into the same surface as the signed, paged
-  `/transcript` older history (bottom = live, top = scroll-up pages).
+  signed `/drive` — the only output surface; live at the bottom, scroll up
+  for the bounded window.
 - **Prompt** (`prompt`): free-text prompt to an agent.
 - **Interrupt** (`interrupt`), **Kill** (`kill`), and **Attach**
   (`attach`): signed write controls; Kill uses Face ID step-up.

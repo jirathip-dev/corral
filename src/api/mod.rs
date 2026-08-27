@@ -14,10 +14,6 @@
 //!   (name, gh_repo, orch, workers, paused) for the board's read-only Fleets
 //!   tab. NOT a registry projection: no `local`/`worktree_dir`/`models`/path
 //!   fields. A fleet-ops CLI failure is HTTP 200 `status="error"`.
-//! - `GET /transcript` — #63: device-grant-gated (`read_tail`) on-demand
-//!   transcript pages for one agent, newest first, redacted at the module
-//!   boundary (see [`crate::api::transcript`]). The only device-grant-gated
-//!   GET: the signed drive envelope rides the `x-corral-drive` header.
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
 //!   destructive payloads (see [`crate::api::drive`]).
@@ -49,7 +45,6 @@ pub mod drive;
 pub mod fleets;
 pub mod issues;
 pub(crate) mod repo;
-pub mod transcript;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -103,26 +98,6 @@ pub struct AppState {
     /// from this provider. Tests inject a stub; production shells
     /// `herdr-fleet list`.
     pub fleets: Arc<dyn crate::fleet::cli::FleetOpsProvider>,
-    /// #63: where `/transcript` looks for the three session stores.
-    /// `main.rs` passes [`TranscriptRoots::from_env`]; tests point this at
-    /// fixtures — the Default is hermetic (a throwaway temp dir, so no
-    /// test accidentally reads live stores).
-    pub transcript_roots: crate::transcript::bind::TranscriptRoots,
-    /// #63 fresh-review N1/N5: the per-daemon `/transcript` limiter
-    /// (concurrency gate + bind memo). Per-instance, never a
-    /// process-global — the test suite builds one `AppState` per harness,
-    /// and a future multi-root daemon must not share a gate or memo.
-    /// [`TranscriptLimiter::new`] makes the cap injectable (the
-    /// transcript tests shrink it to pin the `busy` path).
-    pub transcript_limiter: crate::api::transcript::TranscriptLimiter,
-    /// #87 round-2 N1: the per-daemon role-column probe memo for the
-    /// opencode transcript reader. Per-instance like
-    /// [`Self::transcript_limiter`], never a process-global — a
-    /// multi-root daemon must not share probe state, and the memo's
-    /// lock never spans the sqlite3 probe. [`Default`] wires the real
-    /// probe; tests inject a counted one via
-    /// [`RoleProbeMemo::new`](crate::transcript::RoleProbeMemo::new).
-    pub role_probe_memo: crate::transcript::RoleProbeMemo,
 }
 
 impl Default for AppState {
@@ -147,15 +122,6 @@ impl Default for AppState {
             // replace it with a stub so the hermetic suite never depends on
             // a live `herdr-fleet` on PATH.
             fleets: Arc::new(crate::fleet::cli::CliFleetOpsProvider),
-            // Hermetic: nonexistent per-process paths, nothing created —
-            // a default-built state can never read this machine's live
-            // session stores (mirrors the N6 no-ambient-env discipline).
-            // Test harnesses that only need roots should set this field
-            // directly via `TranscriptRoots::hermetic()` instead of
-            // paying for this whole Default (review F14).
-            transcript_roots: crate::transcript::bind::TranscriptRoots::hermetic(),
-            transcript_limiter: crate::api::transcript::TranscriptLimiter::default(),
-            role_probe_memo: crate::transcript::RoleProbeMemo::default(),
         }
     }
 }
@@ -170,7 +136,6 @@ pub fn router(state: AppState) -> Router {
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/history", get(history))
-        .route("/transcript", get(self::transcript::transcript))
         .route("/issues", get(issues::issues))
         .route("/fleets", get(fleets::fleets))
         .route("/drive", post(drive))

@@ -881,129 +881,30 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    // MARK: - Older transcript pages (#142 / #64)
+    // MARK: - Load earlier (bounded read_tail)
 
-    /// Open the newest page. The detail control is already disabled without
-    /// capability/grant; this method re-checks so a direct caller cannot
-    /// bypass the gate either.
-    @discardableResult
-    func openTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
-        requestTranscriptPage(agentId: agentId, cursor: nil,
-                              driveClient: driveClient)
-    }
-
-    @discardableResult
-    func loadOlderTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
-        guard let pane = fleet.transcript(agentId), let cursor = pane.nextCursor,
-              !pane.loading else { return false }
-        return requestTranscriptPage(agentId: agentId, cursor: cursor,
-                                     driveClient: driveClient)
-    }
-
-    @discardableResult
-    func retryTranscript(agentId: String, driveClient: DriveClient? = nil) -> Bool {
-        guard let pane = fleet.transcript(agentId), pane.canRetry else { return false }
-        return requestTranscriptPage(agentId: agentId, cursor: pane.nextCursor,
-                                     driveClient: driveClient)
-    }
-
-    /// #167: the tappable full-width "Load earlier" divider. If no older
-    /// transcript page has been fetched yet, open the newest page; otherwise
-    /// continue walking the existing cursor.
+    /// #167: the tappable full-width "Load earlier" divider. The Recent
+    /// output surface is read_tail-only: the daemon's bounded tail is the
+    /// only history, so the action re-requests the tail (fresh 200-line
+    /// window) instead of walking paged history.
     @discardableResult
     func loadEarlierOutput(agentId: String, driveClient: DriveClient? = nil) -> Bool {
-        guard let pane = fleet.transcript(agentId) else {
-            return openTranscript(agentId: agentId, driveClient: driveClient)
-        }
-        if pane.nextCursor != nil {
-            return loadOlderTranscript(agentId: agentId, driveClient: driveClient)
-        } else {
-            return openTranscript(agentId: agentId, driveClient: driveClient)
-        }
-    }
-
-    private func requestTranscriptPage(agentId: String, cursor: String?,
-                                       driveClient: DriveClient?,
-                                       autoReload: Bool = false) -> Bool {
         guard let live = fleet.agent(agentId) else {
             banner = .error("stale_agent",
-                            "This agent was deleted or migrated; refresh the fleet before reading its transcript.")
+                            "This agent was deleted or migrated; refresh the fleet before reading its output.")
             return false
         }
         guard mode == .live else {
-            fleet.noteTranscriptFailure(TranscriptFailure(
+            fleet.foldTailFailure(TranscriptFailure(
                 kind: "demo",
-                message: "Older output is live-only; demo mode does not fetch or fake transcripts.",
+                message: "Older output is live-only; demo mode does not fetch or fake history.",
                 candidates: []
             ), for: agentId)
             return false
         }
-        guard let signer, let keyId else {
-            fleet.noteTranscriptFailure(TranscriptFailure(
-                kind: "not_registered",
-                message: "Register this device to read full chat.",
-                candidates: []
-            ), for: agentId)
-            banner = .error("unregistered", "Device is not registered.")
-            return false
-        }
-        guard authorize(.readTail, for: live) else { return false }
-        guard let fetch = fleet.prepareTranscriptFetch(agent: agentId,
-                                                       cursor: cursor,
-                                                       newest: cursor == nil,
-                                                       autoReload: autoReload) else {
-            return false
-        }
-        let context = lifecycleContext()
         let client = driveClient ?? DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!,
                                                 session: session)
-        let taskId = UUID()
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                self.lifecycleTasks.removeValue(forKey: taskId)
-                if Task.isCancelled {
-                    self.fleet.cancelTranscriptFetch(agent: agentId,
-                                                     generation: fetch.generation)
-                }
-            }
-            guard !Task.isCancelled, self.isCurrent(context) else { return }
-            let header = DriveClient.transcriptAuthHeader(keyId: keyId,
-                                                          signer: signer,
-                                                          target: agentId,
-                                                          cursor: fetch.cursor)
-            // #167 hard timeout: a stalled older page folds to error+Retry,
-            // never an infinite spinner (#160).
-            let op: @Sendable () async -> Result<TranscriptPage, TranscriptFailure> = {
-                await client.fetchTranscript(agentId: agentId, authHeader: header)
-            }
-            let result = await Self.raceTimeout(seconds: Self.recentOutputTimeoutSeconds, op)
-                ?? .failure(TranscriptFailure(kind: "timeout",
-                                              message: "Couldn't load earlier output",
-                                              candidates: []))
-            guard !Task.isCancelled, self.isCurrent(context) else { return }
-            switch result {
-            case .success(let page):
-                guard self.fleet.foldTranscriptPage(page, for: agentId,
-                                                     generation: fetch.generation) else {
-                    return
-                }
-            case .failure(let failure):
-                switch self.fleet.foldTranscriptFailure(failure, for: agentId,
-                                                        generation: fetch.generation) {
-                case .dropped:
-                    return
-                case .needsReload:
-                    _ = self.requestTranscriptPage(agentId: agentId, cursor: nil,
-                                                   driveClient: client, autoReload: true)
-                case .applied, .notGranted:
-                    if failure.isNotGranted {
-                        self.banner = .error("not_granted", failure.message)
-                    }
-                }
-            }
-        }
-        lifecycleTasks[taskId] = task
+        driveReadTail(agent: live, driveClient: client)
         return true
     }
 
@@ -1059,9 +960,8 @@ final class AppModel: ObservableObject {
                         identity: "\(approvalId)|\(promptHash)")
     }
 
-    /// #167 hard timeout for the Recent-output surface (live tail + older
-    /// transcript pages). A stalled fetch must fold to error+Retry, never a
-    /// spinner (#160).
+    /// #167 hard timeout for the Recent-output surface (live tail). A
+    /// stalled fetch must fold to error+Retry, never a spinner (#160).
     private static let recentOutputTimeoutSeconds = 12.0
 
     /// Race an async operation against a hard timeout. If the operation wins
@@ -1244,7 +1144,7 @@ final class AppModel: ObservableObject {
 
     /// Presentation state used only by the reproducible design-gate fixture.
     /// The legacy frame is useful as a before image, while `.after` is the
-    /// approved transcript-chat surface. Neither state is compiled into a
+    /// approved Recent-output surface. Neither state is compiled into a
     /// Release app.
     enum DemoPresentation: String, Equatable, Sendable {
         case before

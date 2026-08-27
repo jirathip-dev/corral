@@ -1023,8 +1023,6 @@ pub struct CorralApp {
     tx_drive: UnboundedSender<DriveMsg>,
     tx_audit: UnboundedSender<AuditMsg>,
     rx_audit: UnboundedReceiver<AuditMsg>,
-    tx_transcript: UnboundedSender<crate::transcript::TranscriptMsg>,
-    rx_transcript: UnboundedReceiver<crate::transcript::TranscriptMsg>,
     stop_read: Option<tokio::sync::watch::Sender<bool>>,
     /// Monotonic identity epoch for the issue and registry read models.
     /// Results from an earlier connection or host are never allowed to fold
@@ -1095,7 +1093,6 @@ impl CorralApp {
         let (tx_apply, rx_apply) = tokio::sync::mpsc::unbounded_channel();
         let (tx_drive, rx_drive) = tokio::sync::mpsc::unbounded_channel();
         let (tx_audit, rx_audit) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_transcript, rx_transcript) = tokio::sync::mpsc::unbounded_channel();
         let (native_probe_tx, native_probe_rx) = std::sync::mpsc::channel();
         let client_for_fp = client.clone();
 
@@ -1154,8 +1151,6 @@ impl CorralApp {
             tx_drive,
             tx_audit: tx_audit.clone(),
             rx_audit,
-            tx_transcript,
-            rx_transcript,
             stop_read: None,
             read_generation: 0,
             read_loop_generation: 0,
@@ -1557,10 +1552,8 @@ impl CorralApp {
     /// never selects a fallback and never writes `selected_agent`.
     ///
     /// Recent output is a composed surface: the bounded read_tail result is
-    /// the immediate fallback while the signed transcript page supplies chat
-    /// roles and the older cursor. Both requests share the same UI-owned
-    /// caches, so either payload can make the surface useful without waiting
-    /// for the other endpoint.
+    /// the only output source (block + text), and payloads share the same
+    /// UI-owned caches.
     fn hydrate_recent_output(&mut self, resolved_selection: Option<&str>) {
         let Some(agent_id) = hydration_target(&self.fleet, resolved_selection) else {
             return;
@@ -1573,10 +1566,6 @@ impl CorralApp {
             return;
         }
 
-        self.request_transcript_page(crate::transcript::TranscriptRequest {
-            agent_id: agent_id.clone(),
-            cursor: None,
-        });
         self.dispatch_drive_intents(vec![DriveIntent::read_tail(&agent_id, self.fleet.rev)]);
     }
 
@@ -1692,117 +1681,6 @@ impl CorralApp {
                     event: protocol::SseEvent::Snapshot(snapshot),
                 });
             }
-        });
-    }
-
-    /// #64: one transcript page arrived (or failed). Correlation and
-    /// state transitions live in [`crate::state::Fleet::fold_transcript`]
-    /// (review F1 — pure, generation-checked, never resurrects a deleted
-    /// pane); this handler only acts on the outcome: refetch on the
-    /// one-shot stale-cursor reload, and keep the grant ledger honest
-    /// (review F5 — a transcript `not_granted` demotes read_tail exactly
-    /// like a drive refusal; a served page proves the grant and clears
-    /// the demotion).
-    fn on_transcript(&mut self, msg: crate::transcript::TranscriptMsg) {
-        use crate::transcript::FoldOutcome;
-        let agent_id = msg.agent_id.clone();
-        let outcome = self.fleet.fold_transcript(msg);
-        let entries = self
-            .fleet
-            .transcripts
-            .get(&agent_id)
-            .map_or(0, |pane| pane.entries.len());
-        let has_error = self
-            .fleet
-            .transcripts
-            .get(&agent_id)
-            .is_some_and(|pane| pane.error.is_some());
-        tracing::info!(
-            agent_id = %agent_id,
-            ?outcome,
-            entries,
-            has_error,
-            "transcript result folded into detail cache"
-        );
-        match outcome {
-            FoldOutcome::Dropped | FoldOutcome::Applied => {}
-            FoldOutcome::AppliedOk => {
-                self.ledger.note_success("read_tail");
-                self.persist_ledger();
-            }
-            FoldOutcome::NotGranted => {
-                self.ledger.note_denied("read_tail");
-                self.persist_ledger();
-            }
-            FoldOutcome::NeedsReload => {
-                self.toast(
-                    Level::Info,
-                    "transcript session changed — reloading from newest".to_string(),
-                );
-                self.request_transcript_page(crate::transcript::TranscriptRequest {
-                    agent_id,
-                    cursor: None,
-                });
-            }
-        }
-    }
-
-    /// #64: spawn one signed `GET /transcript` page fetch, stamped with
-    /// the pane's generation (review F1) so a late response can be
-    /// dropped. `cursor: None` resets the pane and loads the newest
-    /// page; `Some` extends with an older one (or retries the same
-    /// cursor after a transient failure — review F7: dispatch clears
-    /// the error so the spinner shows). No registration/device key is a
-    /// pane-level error, not a toast storm.
-    fn request_transcript_page(&mut self, request: crate::transcript::TranscriptRequest) {
-        let (Some(reg), Some(signing)) = (
-            self.registration.clone(),
-            self.device_key.as_ref().map(|k| k.signing.clone()),
-        ) else {
-            let pane = self.fleet.transcript_pane_mut(&request.agent_id);
-            pane.apply_failure(crate::transcript::TranscriptFailure {
-                kind: "not_registered".to_string(),
-                message: "register this device (Settings) to read transcripts".to_string(),
-                candidates: Vec::new(),
-            });
-            return;
-        };
-        let generation = {
-            let pane = self.fleet.transcript_pane_mut(&request.agent_id);
-            if request.cursor.is_none() && !pane.loading {
-                // Explicit newest-page loads reset under a fresh
-                // generation (touched == the fleet clock the pane_mut
-                // call just stamped, so it is new and unique); the
-                // auto-reload path has already reset before we get here.
-                let fresh = pane.touched;
-                pane.user_reset(fresh);
-            }
-            pane.loading = true;
-            pane.error = None;
-            pane.generation
-        };
-        // Post-#88: the page parameters ride the SIGNED header payload,
-        // so each page is signed with its own cursor/ts/limit — paging
-        // re-signs per page with the new cursor.
-        let header = crate::drive::transcript_auth_header(
-            &reg.key_id,
-            &signing,
-            &request.agent_id,
-            request.cursor.as_deref(),
-            crate::transcript::PAGE_LIMIT,
-        );
-        let client = self.client.clone();
-        let base_url = self.config.host_url.clone();
-        let tx = self.tx_transcript.clone();
-        let agent_id = request.agent_id.clone();
-        self.rt.spawn(async move {
-            let outcome =
-                crate::protocol::fetch_transcript(&client, &base_url, &header, &agent_id).await;
-            let _ = tx.send(crate::transcript::TranscriptMsg {
-                agent_id,
-                generation,
-                outcome,
-            });
         });
     }
 
@@ -2532,10 +2410,6 @@ impl eframe::App for CorralApp {
             self.audit_loading = false;
             self.audit = Some(msg.view);
         }
-        while let Ok(msg) = self.rx_transcript.try_recv() {
-            got_messages = true;
-            self.on_transcript(msg);
-        }
         if got_messages {
             ctx.request_repaint();
         }
@@ -2825,8 +2699,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             let ledger = app.ledger.clone();
             let allowed = |cap: &str| ledger.allowed(cap);
             let mut pending: Vec<DriveIntent> = Vec::new();
-            let mut pending_transcripts: Vec<crate::transcript::TranscriptRequest> = Vec::new();
-            let mut pending_full_chat: Vec<String> = Vec::new();
             crate::ui::board::show_board_detail_with_options(
                 &mut right_ui,
                 &app.fleet,
@@ -2834,17 +2706,9 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
                 &allowed,
                 &mut crate::ui::board::BoardActions {
                     drive: &mut |intent| pending.push(intent),
-                    transcript: &mut |request| pending_transcripts.push(request),
-                    full_chat: &mut |agent_id| pending_full_chat.push(agent_id.to_string()),
                 },
                 app.settings.stick_to_bottom,
             );
-            for agent_id in pending_full_chat {
-                app.fleet.toggle_full_chat(&agent_id);
-            }
-            for request in pending_transcripts {
-                app.request_transcript_page(request);
-            }
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
         }
@@ -3030,7 +2894,6 @@ mod tests {
         let (tx_apply, rx_apply) = tokio::sync::mpsc::unbounded_channel();
         let (tx_drive, rx_drive) = tokio::sync::mpsc::unbounded_channel();
         let (tx_audit, rx_audit) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_transcript, rx_transcript) = tokio::sync::mpsc::unbounded_channel();
         let (native_probe_tx, native_probe_rx) = std::sync::mpsc::channel();
         let config = PersistedConfig {
             host_url: "http://127.0.0.1:1".into(),
@@ -3061,8 +2924,6 @@ mod tests {
             tx_drive,
             tx_audit: tx_audit.clone(),
             rx_audit,
-            tx_transcript,
-            rx_transcript,
             stop_read: None,
             read_generation: 100,
             read_loop_generation: 7,

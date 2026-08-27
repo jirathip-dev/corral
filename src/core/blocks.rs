@@ -1,7 +1,7 @@
-//! #167 (D7): block-segmented transcript surface — ONE segmentation pass in
+//! #167 (D7): pane-tail block segmentation — ONE segmentation pass in
 //! `corrald` so clients stay dumb renderers.
 //!
-//! A raw pane/tail string (or a transcript entry) is cleaned mechanically and
+//! A raw pane-tail string (read_tail delivery) is cleaned mechanically and
 //! then split into [`TranscriptBlock`]s. The five cleaning passes (D10) run
 //! BEFORE any grouping:
 //!
@@ -32,16 +32,13 @@
 //! ## Ordering
 //!
 //! Blocks are emitted in NATURAL (oldest→newest, top→bottom) reading order
-//! for a given input text. Callers that hold newest-first data (the
-//! `/transcript` page's `entries`) are responsible for preserving their own
-//! ordering invariant across pages; this module only segments one text.
+//! for a given input text.
 //!
 //! ## Additive on the wire
 //!
-//! `read_tail` gains a `blocks` field alongside `lines` and `/transcript`
-//! gains a `blocks` field alongside `entries`. Both retain the existing
-//! text/entries so egui (and the signed-envelope contract) keep working until
-//! #168.
+//! `read_tail` gains a `blocks` field alongside `lines`. Both retain the
+//! existing text surface so egui (and the signed-envelope contract) keep
+//! working until #168.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,8 +64,7 @@ pub enum TranscriptBlockKind {
 }
 
 impl TranscriptBlockKind {
-    /// Map a transcript role string (already normalized by
-    /// [`crate::transcript::Entry`]) onto a block kind. Everything not clearly
+    /// Map a role string onto a block kind. Everything not clearly
     /// user/agent/tool collapses to System — that is the whole AC7 demotion
     /// rule.
     pub fn from_role(role: &str) -> Self {

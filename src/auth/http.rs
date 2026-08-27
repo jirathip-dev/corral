@@ -336,7 +336,7 @@ async fn audit(
             "head": head,
             "valid": valid,
             "entries": entries,
-            "note": "grows on drive writes (executions + dispatch refusals) and on served /transcript pages (#63); auth failures are never logged",
+            "note": "grows on drive writes (executions + dispatch refusals); auth failures are never logged",
         })),
     )
 }

@@ -18,8 +18,33 @@ background scan, alert watchdog, pricing table, cap configuration, or desktop
 usage panel. The egui, iOS, and shared client models mirror the same
 harness-agnostic agent shape.
 
-Transcript reading remains a separate, on-demand, grant-gated capability. Its
-store binding is bounded and read-only, its roots are configurable with
-`CORRAL_OPENCODE_DB`, `CORRAL_CLAUDE_DIR`, and `CORRAL_CODEX_DIR`, and all
-entries are redacted before leaving the transcript module. Transcript data is
-never folded into the board model.
+Transcript reading remained a separate, on-demand, grant-gated capability
+(issue #63): its store binding was bounded and read-only, its roots were
+configurable with `CORRAL_OPENCODE_DB`, `CORRAL_CLAUDE_DIR`, and
+`CORRAL_CODEX_DIR`, and all entries were redacted before leaving the
+transcript module. Transcript data never fed the board model. The whole
+transcript/full-chat surface was retired in 2026-08-27 by D35 below.
+
+## D35 (retired 2026-08-27) — remove transcript / full-chat surface
+
+Guy (2026-08-27): all fleets now run on hermes lanes; `corrald`'s
+`GET /transcript` bind ladder only resolved stores for opencode / claude /
+codex and no hermes store arm existed, so `/transcript` served zero live
+agents. The surface was dropped END-TO-END instead of adding a hermes
+store:
+
+- corrald: `GET /transcript` route, handler, paging/auth, and
+  `src/transcript/` (store binding, per-store page readers, `TranscriptRoots`,
+  the `CORRAL_*_DIR` env hooks, `TranscriptLimiter`) were removed.
+  Pane-tail blocks (`TranscriptBlock` + segmentation) moved to
+  `src/core/blocks.rs` because the `/drive` `read_tail` response still
+  serves them additively.
+- iOS FleetNotifier and the egui board: the Full chat action, transcript
+  panes/pages, and transcript fetch helpers were removed; the Recent output
+  surface renders `read_tail` (live bounded tail + block markers) only.
+- `read_tail` capability, grant, and `/drive` delivery are UNCHANGED —
+  the bounded redacted pane tail is the only agent output a client can
+  read.
+
+The paged older-history UX shipped by #205 is superseded by this removal
+(#205 remains closed; the removal was recorded in #241).

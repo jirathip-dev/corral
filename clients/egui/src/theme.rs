@@ -81,7 +81,7 @@ pub mod ui {
 
     /// Exact surface tokens from `docs/design/corral-ux-prototype-spec.md`.
     /// Keep these in one place so the board cannot drift by inventing a
-    /// near-miss gray for one pane or transcript block.
+    /// near-miss gray for one pane or recent-output block.
     pub const BG: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
     pub const PANEL: Color32 = Color32::from_rgb(0x10, 0x15, 0x1c);
     pub const PANEL2: Color32 = Color32::from_rgb(0x16, 0x1b, 0x22);
@@ -92,7 +92,7 @@ pub mod ui {
     pub const ACCENT: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
     /// Dark foreground for enabled accent controls, including Send.
     pub const SEND_INK: Color32 = Color32::from_rgb(0x05, 0x24, 0x20);
-    /// Role blue is shared by the transcript's human-message label and the
+    /// Role blue is shared by the recent-output user-message label and the
     /// approved prototype's `--working`-family role cue.
     pub const USER_BLUE: Color32 = Color32::from_rgb(0x6e, 0xa8, 0xff);
     pub const USER_TINT: Color32 = Color32::from_rgb(0x12, 0x26, 0x3f);
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_role_blue_matches_approved_prototype_token() {
+    fn role_blue_matches_approved_prototype_token() {
         assert_eq!(ui::USER_BLUE, Color32::from_rgb(0x6e, 0xa8, 0xff));
     }
 

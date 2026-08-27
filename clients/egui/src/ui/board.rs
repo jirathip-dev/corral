@@ -2,7 +2,7 @@
 //! workspace. The master pane is attention-ranked by
 //! [`crate::theme::AgentStateLike::rank`], searchable, state-chipped, and
 //! grouped by repo. The detail pane owns drive controls, the full waiting-on
-//! claim, and Recent output/transcript. The old table renderer remains only as
+//! claim, and Recent output. The old table renderer remains only as
 //! an internal conformance helper; no native navigation reaches it.
 
 use std::cmp::Ordering;
@@ -179,16 +179,11 @@ fn available_state_filters(fleet: &Fleet, query: &str) -> Vec<StateFilter> {
         .collect()
 }
 
-/// Callbacks the board issues to the app (drive dispatch + #64
-/// transcript page fetches). Both are the deferred-action pattern: the
-/// board renders against `&Fleet`, so the app collects intents and acts
-/// after `show` returns.
+/// Callbacks the board issues to the app (drive dispatch). Deferred-action
+/// pattern: the board renders against `&Fleet`, so the app collects intents
+/// and acts after `show` returns.
 pub struct BoardActions<'a> {
     pub drive: &'a mut dyn FnMut(DriveIntent),
-    pub transcript: &'a mut dyn FnMut(crate::transcript::TranscriptRequest),
-    /// #141: ask the app to expand/open (or close) the agent's Full chat
-    /// transcript from either the row control or the nested header.
-    pub full_chat: &'a mut dyn FnMut(&str),
 }
 
 /// Render the fleet board.
@@ -1275,18 +1270,9 @@ fn recent_output_surface(
     };
     let read_tail_state = latest_read_tail_state(fleet, id);
     let has_visible_output = fleet
-        .transcripts
+        .tails
         .get(id)
-        .filter(|pane| !pane.entries.is_empty())
-        .map(|pane| {
-            !recent_visible_indices(pane.entries.iter().map(|entry| entry.text.as_str())).is_empty()
-        })
-        .or_else(|| {
-            fleet
-                .tails
-                .get(id)
-                .map(|lines| !recent_visible_indices(lines.iter().map(String::as_str)).is_empty())
-        })
+        .map(|lines| !recent_visible_indices(lines.iter().map(String::as_str)).is_empty())
         .unwrap_or(false);
     let show_live = recent_should_show_live(read_tail_state, has_visible_output);
     let read_tail_control =
@@ -1294,13 +1280,7 @@ fn recent_output_surface(
     let prompt_control = drive_control_state(&agent.capabilities, "prompt", allowed("prompt"));
 
     let mut metadata_texts: Vec<&str> = Vec::new();
-    if let Some(pane) = fleet
-        .transcripts
-        .get(id)
-        .filter(|pane| !pane.entries.is_empty())
-    {
-        metadata_texts.extend(pane.entries.iter().map(|entry| entry.text.as_str()));
-    } else if let Some(lines) = fleet.tails.get(id) {
+    if let Some(lines) = fleet.tails.get(id) {
         metadata_texts.extend(lines.iter().map(String::as_str));
     }
     let metadata = recent_metadata_from_texts(&metadata_texts);
@@ -1348,7 +1328,7 @@ fn recent_output_surface(
             });
 
             // This is deliberately outside the scroll area. It remains the
-            // first history affordance while the transcript grows below it.
+            // first history affordance while the tail reflows below it.
             let load_clicked = ui
                 .horizontal(|ui| {
                     ui.add_space(2.0);
@@ -1382,13 +1362,6 @@ fn recent_output_surface(
                 .inner;
             if load_clicked {
                 (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
-                (actions.transcript)(crate::transcript::TranscriptRequest {
-                    agent_id: agent.agent_id.clone(),
-                    cursor: fleet
-                        .transcripts
-                        .get(id)
-                        .and_then(|pane| pane.next_cursor.clone()),
-                });
             }
 
             ui.add_space(2.0);
@@ -1399,40 +1372,12 @@ fn recent_output_surface(
                 260.0
             };
             ScrollArea::vertical()
-                .id_salt(("corral-ui-recent-transcript", id))
+                .id_salt(("corral-ui-recent-output", id))
                 .auto_shrink([false, false])
                 .stick_to_bottom(stick_to_bottom)
                 .max_height(max_height)
                 .show(ui, |ui| {
-                    if let Some(pane) = fleet
-                        .transcripts
-                        .get(id)
-                        .filter(|pane| !pane.entries.is_empty())
-                    {
-                        let visible_indices = recent_visible_indices(
-                            pane.entries.iter().map(|entry| entry.text.as_str()),
-                        );
-                        if visible_indices.is_empty() {
-                            ui.label(
-                                RichText::new("No readable recent output.")
-                                    .small()
-                                    .color(theme::ui::MUTED),
-                            );
-                        } else {
-                            // Entries are newest-first. The visible window is
-                            // painted oldest-to-newest when following the tail.
-                            for position in
-                                recent_output_indices(visible_indices.len(), stick_to_bottom)
-                            {
-                                let source_index = visible_indices[position];
-                                recent_transcript_entry(
-                                    ui,
-                                    &pane.entries[source_index],
-                                    pane.base_offset + source_index,
-                                );
-                            }
-                        }
-                    } else if let Some(lines) = fleet.tails.get(id) {
+                    if let Some(lines) = fleet.tails.get(id) {
                         let visible_indices =
                             recent_visible_indices(lines.iter().map(String::as_str));
                         if visible_indices.is_empty() {
@@ -1478,9 +1423,10 @@ fn recent_output_surface(
         });
 }
 
-/// Transcript pages are newest-first. Stick-to-bottom paints the visible
-/// window oldest-to-newest; when disabled the newest entry remains first so
-/// the operator can inspect the latest output without automatic bottom bias.
+/// Recent output lines are newest-first in the tail result. Stick-to-bottom
+/// paints the visible window oldest-to-newest; when disabled the newest
+/// entry remains first so the operator can inspect the latest output
+/// without automatic bottom bias.
 pub(crate) fn recent_output_indices(len: usize, stick_to_bottom: bool) -> Vec<usize> {
     let count = len;
     if stick_to_bottom {
@@ -1729,7 +1675,7 @@ struct RecentBlockStyle {
 }
 
 /// Recover user/tool/assistant semantics from the terminal-shaped read_tail
-/// fallback. Structured transcript roles use the same styles below.
+/// fallback.
 fn classify_tail_line(line: &str) -> RecentBlockKind {
     let trimmed = line.trim_start();
     let lower = trimmed.to_ascii_lowercase();
@@ -1780,22 +1726,6 @@ fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize) {
         return;
     };
     recent_chat_block(ui, classify_tail_line(line), &text, position);
-}
-
-fn recent_transcript_entry(
-    ui: &mut Ui,
-    entry: &crate::transcript::TranscriptEntry,
-    position: usize,
-) {
-    let kind = match entry.role.to_ascii_lowercase().as_str() {
-        "user" => RecentBlockKind::User,
-        "assistant" | "agent" => RecentBlockKind::Agent,
-        _ => RecentBlockKind::Tool,
-    };
-    let Some(text) = recent_visible_text(&entry.text) else {
-        return;
-    };
-    recent_chat_block(ui, kind, &text, position);
 }
 
 fn recent_tool_summary(text: &str) -> String {
@@ -2224,9 +2154,8 @@ fn board_row(
         *selection = Some(id.to_string());
     }
     if is_expanded {
-        // Table rows may open Full chat, but its body is deliberately
-        // reflowed into a bounded column instead of consuming the table's
-        // full/right-pane width.
+        // The row detail reflows into a bounded column instead of consuming
+        // the table's full/right-pane width.
         detail(
             ui,
             agent,
@@ -2236,7 +2165,6 @@ fn board_row(
             DetailOptions {
                 show_topology: false,
                 show_recent_output: true,
-                transcript_max_width: Some(520.0),
             },
         );
     }
@@ -2593,14 +2521,12 @@ fn drive_controls(
     allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
-    full_chat: &mut dyn FnMut(&str),
 ) {
     let rev = fleet.rev;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.spacing_mut().item_spacing.y = 2.0;
 
-        full_chat_control(ui, agent, allowed, full_chat);
         for cap in crate::drive::CAPABILITIES_ORDER {
             let state = drive_control_state(&agent.capabilities, cap, allowed(cap));
             match cap {
@@ -2644,27 +2570,6 @@ fn drive_controls(
                 .small()
                 .color(theme::ui::TEXT_MUTED),
         );
-    }
-}
-
-fn full_chat_control(
-    ui: &mut Ui,
-    agent: &Agent,
-    allowed: &dyn Fn(&str) -> bool,
-    full_chat: &mut dyn FnMut(&str),
-) {
-    let state = drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
-    match state {
-        DriveControlState::Ready => {
-            if ui.small_button("Full chat").clicked() {
-                full_chat(&agent.agent_id);
-            }
-        }
-        _ => {
-            if let Some(reason) = drive_disabled_reason("read_tail", state) {
-                crate::ui::disabled_button_with_reason(ui, "Full chat", &reason);
-            }
-        }
     }
 }
 
@@ -2727,7 +2632,6 @@ fn prompt_widget(ui: &mut Ui, agent: &Agent, rev: Option<u64>, drive: &mut dyn F
 struct DetailOptions {
     show_topology: bool,
     show_recent_output: bool,
-    transcript_max_width: Option<f32>,
 }
 
 fn detail(
@@ -2839,14 +2743,7 @@ fn detail(
                     .monospace()
                     .color(theme::ui::TEXT_MUTED),
             );
-            drive_controls(
-                ui,
-                agent,
-                allowed,
-                fleet,
-                &mut *actions.drive,
-                &mut *actions.full_chat,
-            );
+            drive_controls(ui, agent, allowed, fleet, &mut *actions.drive);
             if let Some(w) = &agent.waiting_on {
                 ui.add_space(4.0);
                 ui.label(
@@ -2926,14 +2823,6 @@ fn detail(
                     );
                 }
             }
-            transcript_section(
-                ui,
-                agent,
-                fleet,
-                allowed,
-                actions,
-                options.transcript_max_width,
-            );
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
@@ -2951,324 +2840,6 @@ fn detail(
                 }
             }
         });
-}
-
-/// #64: the lazy-paged full-transcript section inside the row detail.
-/// Collapsed by default; OPENING it triggers the newest-page fetch
-/// (review F11 — the brief's "open at the newest page"); "load older"
-/// follows the cursor. Gated on the advertised read_tail capability AND
-/// the grant ledger like every other capability surface (review F5).
-/// Rows are virtualized (`show_rows` with a pitch measured from what is
-/// actually drawn — review F3);
-/// clicking a row shows a BOUNDED slice of its text below (review F4 —
-/// a ScrollArea clips but does not virtualize a label, so an unbounded
-/// galley would hang the UI thread on a multi-MB entry).
-fn transcript_section(
-    ui: &mut Ui,
-    agent: &Agent,
-    fleet: &Fleet,
-    allowed: &dyn Fn(&str) -> bool,
-    actions: &mut BoardActions,
-    transcript_max_width: Option<f32>,
-) {
-    use crate::transcript::TranscriptRequest;
-    ui.add_space(4.0);
-    let state = drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
-    if state != DriveControlState::Ready {
-        let reason =
-            drive_disabled_reason("read_tail", state).expect("disabled transcript has a reason");
-        ui.label(RichText::new(reason).small().color(theme::ui::TEXT_MUTED));
-        return;
-    }
-    let pane = fleet.transcripts.get(&agent.agent_id);
-    let title = match pane {
-        Some(p) if !p.session.is_empty() => format!("transcript — {}", p.session),
-        _ => "transcript".to_string(),
-    };
-    // Table rows keep the transcript header discoverable, but reflow the
-    // full chat into a bounded column. Cards owns the primary styled chat
-    // surface in Recent output.
-    let open = fleet.is_transcript_open(&agent.agent_id);
-    let header = egui::CollapsingHeader::new(RichText::new(title).small())
-        .id_salt(("corral-ui-transcript", &agent.agent_id))
-        .default_open(false)
-        .open(Some(open))
-        .show(ui, |ui| {
-            if let Some(max_width) = transcript_max_width {
-                ui.set_max_width(max_width);
-            }
-            let Some(pane) = pane else {
-                // First open this frame: the fetch is dispatched below
-                // (the pane exists from the next frame on).
-                ui.spinner();
-                return;
-            };
-
-            // Status line: bind provenance + honesty counters. Paging is
-            // audited server-side (read_tail:transcript) — say so.
-            ui.horizontal_wrapped(|ui| {
-                if !pane.store.is_empty() {
-                    detail_kv(ui, "store", &pane.store);
-                    detail_kv(ui, "bind", &pane.bind);
-                }
-                if pane.skipped > 0 {
-                    ui.label(
-                        RichText::new(format!("{} torn lines skipped", pane.skipped))
-                            .small()
-                            .color(theme::ui::WARN),
-                    );
-                }
-                if !pane.stores_unavailable.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "stores unavailable during this walk: {}",
-                            pane.stores_unavailable.join(", ")
-                        ))
-                        .small()
-                        .color(theme::ui::WARN),
-                    )
-                    .on_hover_text(
-                        "a session store errored while binding — this view may not be \
-                         the agent's newest session",
-                    );
-                }
-                if pane.base_offset > 0 {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} newest entries slid out of the window — reload to return \
-                             to the top",
-                            pane.base_offset
-                        ))
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                    );
-                }
-                ui.label(
-                    RichText::new("reads are audited")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-            });
-
-            if let Some(error) = &pane.error {
-                ui.label(
-                    RichText::new(transcript_error_text(error))
-                        .small()
-                        .color(theme::ui::BAD),
-                );
-                for candidate in &error.candidates {
-                    ui.label(
-                        RichText::new(format!("  candidate: {candidate}"))
-                            .monospace()
-                            .small(),
-                    );
-                }
-            }
-
-            // Selection is salted with the pane GENERATION (review F10):
-            // a reload rebuilds entries, so an index into the old pane
-            // must not silently select a different message in the new one.
-            let selected_id =
-                egui::Id::new(("corral-ui-transcript-sel", &agent.agent_id, pane.generation));
-            let mut selected: Option<usize> =
-                ui.memory_mut(|m| m.data.get_temp(selected_id)).flatten();
-            let row_height = transcript_row_pitch(ui);
-            ScrollArea::vertical()
-                .id_salt(("corral-ui-transcript-rows", &agent.agent_id))
-                .max_height(240.0)
-                .auto_shrink([false, true])
-                .show_rows(ui, row_height, pane.entries.len(), |ui, range| {
-                    for index in range {
-                        let entry = &pane.entries[index];
-                        // R1: selection is ABSOLUTE (base_offset + index)
-                        // — the window slides under relative indices and
-                        // a slid selection would silently highlight a
-                        // different message.
-                        let absolute = pane.base_offset + index;
-                        let line = transcript_row_text(absolute, entry);
-                        let is_selected = selected == Some(absolute);
-                        // Review F3: each row occupies EXACTLY the pitch
-                        // show_rows was given — uniform height holds by
-                        // construction, not by coincidence of two style
-                        // values (the pitch is sized to fit the label;
-                        // pinned by test).
-                        let desired = egui::vec2(ui.available_width(), row_height);
-                        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-                        // R2 (round-3 correction): an EXPLICIT child id —
-                        // id_salt anchors only the child Ui's id, while
-                        // the label's auto-id seeds from the parent
-                        // counter and would still shift with scroll.
-                        // IdSource::Explicit makes the seed derive from
-                        // this id alone; (agent, absolute) is unique
-                        // within the frame.
-                        let mut row_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(rect)
-                                .id(egui::Id::new((
-                                    "corral-ui-transcript-row",
-                                    &agent.agent_id,
-                                    absolute,
-                                )))
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        if row_ui
-                            .selectable_label(is_selected, RichText::new(line).monospace())
-                            .clicked()
-                        {
-                            selected = if is_selected { None } else { Some(absolute) };
-                        }
-                    }
-                });
-            ui.memory_mut(|m| m.data.insert_temp(selected_id, selected));
-
-            if let Some(absolute) = selected
-                && let Some(entry) = absolute
-                    .checked_sub(pane.base_offset)
-                    .and_then(|i| pane.entries.get(i))
-            {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            entry.role,
-                            entry.ts.map(crate::model::clock_of).unwrap_or_default()
-                        ))
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                    );
-                    // Review F4: lay out a BOUNDED slice, never the whole
-                    // entry. Since #86 the daemon truncates every entry to
-                    // its page budget (first entry included), but that cap
-                    // is ~256KiB — still far too big to lay out — and the
-                    // client should not trust the server's cap anyway.
-                    let (shown, truncated) = transcript_detail_text(&entry.text);
-                    ScrollArea::vertical()
-                        .id_salt(("corral-ui-transcript-full", &agent.agent_id))
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            ui.add(egui::Label::new(RichText::new(shown).monospace().small()));
-                        });
-                    if let Some(note) = truncated {
-                        ui.label(RichText::new(note).small().color(theme::ui::WARN));
-                    }
-                });
-            }
-
-            ui.horizontal(|ui| {
-                if pane.loading {
-                    ui.spinner();
-                    ui.label(
-                        RichText::new("loading…")
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                    );
-                }
-                if pane.can_load_older() && ui.small_button("load older").clicked() {
-                    (actions.transcript)(TranscriptRequest {
-                        agent_id: agent.agent_id.clone(),
-                        cursor: pane.next_cursor.clone(),
-                    });
-                }
-                // Review F7: a transient failure keeps the cursor — retry
-                // re-issues it instead of throwing the walk away.
-                if pane.can_retry() && ui.small_button("retry").clicked() {
-                    (actions.transcript)(TranscriptRequest {
-                        agent_id: agent.agent_id.clone(),
-                        cursor: pane.next_cursor.clone(),
-                    });
-                }
-                if pane.next_cursor.is_none() && !pane.loading && pane.error.is_none() {
-                    ui.label(
-                        RichText::new("start of transcript")
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                    );
-                }
-                if !pane.loading && ui.small_button("reload").clicked() {
-                    (actions.transcript)(TranscriptRequest {
-                        agent_id: agent.agent_id.clone(),
-                        cursor: None,
-                    });
-                }
-            });
-        });
-
-    // Keep the Fleet-controlled open state in sync with the nested header;
-    // the app applies the same deferred Full chat action after this frame.
-    if header.header_response.clicked() {
-        (actions.full_chat)(&agent.agent_id);
-    }
-
-    // Review F11: opening the header IS the fetch trigger — no pane yet
-    // and the body is open means this is the first look. One request:
-    // the pane exists (loading) from this same frame's dispatch on.
-    if pane.is_none() && header.body_returned.is_some() {
-        (actions.transcript)(TranscriptRequest {
-            agent_id: agent.agent_id.clone(),
-            cursor: None,
-        });
-    }
-}
-
-/// Review F3: the virtualized-row pitch. Every row is ALLOCATED at
-/// exactly this height (see the show_rows body), so show_rows' uniform
-/// assumption holds by construction; this only has to be big enough to
-/// fit the row's label without clipping — pinned by a test that renders
-/// a real row and asserts pitch >= its natural height.
-pub fn transcript_row_pitch(ui: &Ui) -> f32 {
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let galley = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    (galley + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y)
-}
-
-/// Review F4: the bounded detail slice — at most 64 KiB is ever laid
-/// out; the note says what was withheld.
-pub fn transcript_detail_text(text: &str) -> (&str, Option<String>) {
-    const DETAIL_MAX_BYTES: usize = 64 * 1024;
-    if text.len() <= DETAIL_MAX_BYTES {
-        return (text, None);
-    }
-    let mut end = DETAIL_MAX_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (
-        &text[..end],
-        Some(format!(
-            "… truncated for display ({end} of {} bytes shown)",
-            text.len()
-        )),
-    )
-}
-
-/// One virtualized row: absolute-index labeled, single line, truncated.
-/// Pure so the format is testable. The role is truncated client-side
-/// (review F12): the daemon normalizes onto a short closed set, but the
-/// row's uniform-height invariant must not depend on the other side of
-/// the wire.
-pub fn transcript_row_text(index: usize, entry: &crate::transcript::TranscriptEntry) -> String {
-    let first_line = entry.text.lines().next().unwrap_or("");
-    let mut shown: String = first_line.chars().take(120).collect();
-    if shown.len() < first_line.len() || entry.text.lines().nth(1).is_some() {
-        shown.push('\u{2026}');
-    }
-    let role: String = entry.role.chars().take(12).collect();
-    format!("{index:>4} {role:>9}  {shown}")
-}
-
-/// Pure error copy per typed kind — testable, and the not_granted case
-/// names the grant the operator must issue.
-pub fn transcript_error_text(error: &crate::transcript::TranscriptFailure) -> String {
-    match error.kind.as_str() {
-        // Defensive: after F5's gating a refusal demotes the ledger and
-        // the section is replaced next frame — this copy renders only in
-        // the frame(s) before that propagates. Kept deliberately.
-        "not_granted" => "needs the read_tail grant (host: corrald-grant.sh)".to_string(),
-        "ambiguous_session" => format!("{} — candidates:", error.message),
-        "bad_cursor" => "session changed again while paging — reload to continue".to_string(),
-        "no_session" => "no session store found for this agent's worktree".to_string(),
-        _ => format!("{}: {}", error.kind, error.message),
-    }
 }
 
 fn detail_kv(ui: &mut Ui, key: &str, value: &str) {
@@ -3530,11 +3101,7 @@ mod tests {
         agent.display_name = Some("table agent".into());
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
+        let mut actions = BoardActions { drive: &mut |_| {} };
         let mut toggles = Vec::new();
         let mut selection = None;
         let mut row_rect = None;
@@ -3835,7 +3402,7 @@ mod tests {
     }
 
     #[test]
-    fn master_list_omits_transcript_and_collapses_idle_tail() {
+    fn master_list_omits_full_output_and_collapses_idle_tail() {
         let ctx = row_test_context();
         let mut working = agent_in_repo("herdr:working", Some("corral"));
         working.state = crate::model::AgentState::Working;
@@ -3848,17 +3415,6 @@ mod tests {
             .agents
             .insert(working.agent_id.clone(), working.clone());
         fleet.agents.insert(idle.agent_id.clone(), idle.clone());
-        fleet.transcripts.insert(
-            working.agent_id.clone(),
-            crate::transcript::TranscriptPane {
-                entries: vec![crate::transcript::TranscriptEntry {
-                    role: "assistant".into(),
-                    text: "TRANSCRIPT_ONLY_MARKER".into(),
-                    ts: Some(0),
-                }],
-                ..Default::default()
-            },
-        );
         let visible = ["herdr:working", "herdr:idle"];
 
         let (_, mut output) = master_list_frame(
@@ -3872,15 +3428,11 @@ mod tests {
         );
         assert!(
             text_rect(&output, "working card").is_some(),
-            "non-idle card renders so transcript omission is observable"
+            "non-idle card renders so the output omission is observable"
         );
         assert!(
             text_rect(&output, "Idle / done (1) — expandable").is_some(),
             "idle tail renders as one collapsed expandable section"
-        );
-        assert!(
-            text_rect(&output, "TRANSCRIPT_ONLY_MARKER").is_none(),
-            "the transcript wall never renders inside the master list"
         );
         clear_textures(&mut output);
     }
@@ -3930,7 +3482,7 @@ mod tests {
             theme::ui::PANEL3,
             "tool blocks use the tool panel"
         );
-        assert_eq!(tool.inset, 0.0, "tool blocks fill the transcript width");
+        assert_eq!(tool.inset, 0.0, "tool blocks fill the pane width");
         assert!(
             tool.monospace,
             "tool text keeps terminal monospace treatment"
@@ -4044,132 +3596,6 @@ mod tests {
         assert_ne!(recent_tool_disclosure_id(4), recent_tool_disclosure_id(5));
         assert_eq!(EARLIER_OUTPUT_LABEL, "Earlier output");
         assert!(!EARLIER_OUTPUT_LABEL.contains("229"));
-    }
-
-    #[test]
-    fn recent_transcript_renders_newest_window_in_stable_order_after_older_page() {
-        let ctx = row_test_context();
-        let agent_id = "herdr:transcript-window";
-        let mut agent = agent_with_caps(&["read_tail"]);
-        agent.agent_id = agent_id.into();
-        let mut fleet = Fleet {
-            agents: [(agent_id.to_string(), agent)].into_iter().collect(),
-            transcripts: [(
-                agent_id.to_string(),
-                crate::transcript::TranscriptPane {
-                    // The pane is newest-first: marker 0 is newest, while
-                    // marker 7 is the oldest held entry.
-                    entries: (0..8)
-                        .map(|index| crate::transcript::TranscriptEntry {
-                            role: "assistant".into(),
-                            text: format!("transcript-marker-{index}"),
-                            ts: Some(index as u64),
-                        })
-                        .collect(),
-                    next_cursor: Some("older-page".into()),
-                    generation: 1,
-                    ..Default::default()
-                },
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        };
-
-        let render_recent = |fleet: &Fleet| {
-            let mut actions = BoardActions {
-                drive: &mut |_| {},
-                transcript: &mut |_| {},
-                full_chat: &mut |_| {},
-            };
-            ctx.run_ui(row_test_input(vec![]), |ui| {
-                row_test_style(ui);
-                recent_output_surface(ui, fleet, Some(agent_id), &|_| true, &mut actions);
-            })
-        };
-        let rendered_order = |output: &egui::FullOutput, count: usize| {
-            let mut positions: Vec<(f32, usize)> = (0..count)
-                .map(|index| {
-                    let marker = format!("transcript-marker-{index}");
-                    (
-                        text_rect(output, &marker)
-                            .unwrap_or_else(|| panic!("newest marker {marker} must render"))
-                            .top(),
-                        index,
-                    )
-                })
-                .collect();
-            positions.sort_by(|left, right| left.0.total_cmp(&right.0));
-            positions
-                .into_iter()
-                .map(|(_, index)| index)
-                .collect::<Vec<_>>()
-        };
-
-        let mut output = render_recent(&fleet);
-        assert_eq!(
-            rendered_order(&output, 8),
-            vec![7, 6, 5, 4, 3, 2, 1, 0],
-            "Cards renders every loaded entry oldest-to-newest with newest last"
-        );
-        let oldest_visible = text_rect(&output, "transcript-marker-7")
-            .expect("oldest visible loaded-history marker")
-            .top();
-        let newest_visible = text_rect(&output, "transcript-marker-0")
-            .expect("newest visible marker")
-            .top();
-        assert!(
-            newest_visible > oldest_visible,
-            "newest visible transcript entry must sit lowest in the chat"
-        );
-        let initial_order = rendered_order(&output, 8);
-        clear_textures(&mut output);
-
-        let generation = fleet
-            .transcripts
-            .get(agent_id)
-            .expect("transcript pane seeded")
-            .generation;
-        let older_page = crate::transcript::TranscriptPage {
-            agent: agent_id.into(),
-            store: "test".into(),
-            session: "test-session".into(),
-            bind: "session_id".into(),
-            stores_unavailable: vec![],
-            entries: (8..10)
-                .map(|index| crate::transcript::TranscriptEntry {
-                    role: "assistant".into(),
-                    text: format!("transcript-marker-{index}"),
-                    ts: Some(index as u64),
-                })
-                .collect(),
-            next_cursor: None,
-            skipped: 0,
-        };
-        assert_eq!(
-            fleet.fold_transcript(crate::transcript::TranscriptMsg {
-                agent_id: agent_id.into(),
-                generation,
-                outcome: Ok(older_page),
-            }),
-            crate::transcript::FoldOutcome::AppliedOk,
-            "an older page folds into the existing transcript pane"
-        );
-
-        let mut output = render_recent(&fleet);
-        assert_eq!(
-            rendered_order(&output, 10),
-            vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-            "paging earlier renders the newly loaded history without clipping the tail"
-        );
-        for index in 0..10 {
-            assert!(
-                text_rect(&output, &format!("transcript-marker-{index}")).is_some(),
-                "loaded marker {index} must remain rendered after paging earlier"
-            );
-        }
-        assert_ne!(rendered_order(&output, 10), initial_order);
-        clear_textures(&mut output);
     }
 
     #[test]
@@ -4309,11 +3735,7 @@ mod tests {
         clear_textures(&mut output);
 
         let mut view = BoardView::Cards;
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
+        let mut actions = BoardActions { drive: &mut |_| {} };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             right_pane(
@@ -4430,11 +3852,7 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
+        let mut actions = BoardActions { drive: &mut |_| {} };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
@@ -4456,11 +3874,7 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
+        let mut actions = BoardActions { drive: &mut |_| {} };
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -4494,11 +3908,7 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
+        let mut actions = BoardActions { drive: &mut |_| {} };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
@@ -4519,7 +3929,7 @@ mod tests {
     }
 
     #[test]
-    fn cards_load_earlier_dispatches_real_read_tail_and_transcript() {
+    fn cards_load_earlier_dispatches_real_read_tail() {
         let ctx = row_test_context();
         let mut agent = agent_with_caps(&["read_tail"]);
         agent.agent_id = "herdr:cards-fetch".into();
@@ -4530,11 +3940,8 @@ mod tests {
             ..Default::default()
         };
         let intents = std::cell::RefCell::new(Vec::new());
-        let transcript_requests = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
             drive: &mut |intent| intents.borrow_mut().push(intent),
-            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
-            full_chat: &mut |_| {},
         };
         let mut view = BoardView::Cards;
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
@@ -4593,78 +4000,6 @@ mod tests {
         );
         assert_eq!(intents.borrow()[0].target, "herdr:cards-fetch");
         assert_eq!(intents.borrow()[0].rev, Some(42));
-        assert_eq!(transcript_requests.borrow().len(), 1);
-        assert_eq!(
-            transcript_requests.borrow()[0].agent_id,
-            "herdr:cards-fetch"
-        );
-        assert_eq!(transcript_requests.borrow()[0].cursor, None);
-
-        // Once the first transcript page returns an opaque cursor, the same
-        // real Cards control asks for the next older page instead of
-        // restarting at the newest page.
-        let mut paged_fleet = fleet;
-        paged_fleet.transcripts.insert(
-            "herdr:cards-fetch".into(),
-            crate::transcript::TranscriptPane {
-                next_cursor: Some("older-page-cursor".into()),
-                ..Default::default()
-            },
-        );
-        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
-            row_test_style(ui);
-            right_pane(
-                ui,
-                &paged_fleet,
-                Some("herdr:cards-fetch"),
-                &mut view,
-                true,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        let load_pos = text_rects(&output, LOAD_EARLIER_LABEL)
-            .last()
-            .expect("the paged divider keeps Load earlier actionable")
-            .center();
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_down_input(load_pos), |ui| {
-            row_test_style(ui);
-            right_pane(
-                ui,
-                &paged_fleet,
-                Some("herdr:cards-fetch"),
-                &mut view,
-                true,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        clear_textures(&mut output);
-        let mut output = ctx.run_ui(pointer_up_input(load_pos), |ui| {
-            row_test_style(ui);
-            right_pane(
-                ui,
-                &paged_fleet,
-                Some("herdr:cards-fetch"),
-                &mut view,
-                true,
-                &|_| true,
-                &mut actions,
-            );
-        });
-        assert_eq!(
-            intents.borrow().len(),
-            2,
-            "older-page click keeps the real read_tail drive"
-        );
-        assert_eq!(transcript_requests.borrow().len(), 2);
-        assert_eq!(
-            transcript_requests.borrow()[1].cursor.as_deref(),
-            Some("older-page-cursor"),
-            "older-page click follows the daemon cursor"
-        );
-        clear_textures(&mut output);
     }
 
     #[test]
@@ -4703,8 +4038,6 @@ mod tests {
         let intents = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
             drive: &mut |intent| intents.borrow_mut().push(intent),
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
         };
         let mut view = BoardView::Cards;
         let mut output = render(
@@ -4966,8 +4299,6 @@ mod tests {
             let mut blocked_intents = Vec::new();
             let mut blocked_actions = BoardActions {
                 drive: &mut |intent| blocked_intents.push(intent),
-                transcript: &mut |_| {},
-                full_chat: &mut |_| {},
             };
             let mut view = BoardView::Cards;
             let mut output = render(
@@ -5550,8 +4881,6 @@ mod tests {
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
         };
 
         let mut row_rect = None;
@@ -5654,8 +4983,6 @@ mod tests {
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
         };
 
         let (_, mut output) = board_row_frame_with_allowed(
@@ -5688,275 +5015,6 @@ mod tests {
         );
         assert_eq!(intents[0].capability, crate::drive::Capability::ReadTail);
         assert_eq!(intents[0].target, "herdr:read-tail");
-    }
-
-    #[test]
-    fn full_chat_button_opens_transcript_and_toggles_it_closed() {
-        let ctx = row_test_context();
-        let mut agent = agent_with_caps(&["read_tail"]);
-        agent.agent_id = "herdr:full-chat".into();
-        let mut fleet = Fleet::default();
-        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        fleet.expanded.push(agent.agent_id.clone());
-        let full_chat_requests = std::cell::RefCell::new(Vec::new());
-        let transcript_requests = std::cell::RefCell::new(Vec::new());
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
-            full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
-        };
-
-        let (_, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| true,
-            &mut actions,
-        );
-        let full_chat_rect = text_rect(&output, "Full chat").expect("Full chat button rendered");
-        clear_textures(&mut output);
-
-        let toggles = board_row_click_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            full_chat_rect.center(),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(
-            toggles.is_empty(),
-            "Full chat click must not request a separate row toggle"
-        );
-        assert_eq!(
-            full_chat_requests.borrow().as_slice(),
-            vec![agent.agent_id.clone()],
-            "granted Full chat must ask the app to open the pane"
-        );
-        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
-        for agent_id in requests {
-            fleet.toggle_full_chat(&agent_id);
-        }
-        assert!(fleet.is_expanded(&agent.agent_id));
-        assert!(fleet.is_transcript_open(&agent.agent_id));
-
-        let (toggles, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(toggles.is_empty());
-        assert_eq!(
-            transcript_requests.borrow().len(),
-            1,
-            "opening the controlled transcript must dispatch the newest-page fetch"
-        );
-        let full_chat_rect = text_rect(&output, "Full chat").expect("Full chat still rendered");
-        clear_textures(&mut output);
-
-        let toggles = board_row_click_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            full_chat_rect.center(),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(toggles.is_empty());
-        assert_eq!(
-            full_chat_requests.borrow().as_slice(),
-            vec![agent.agent_id.clone()],
-            "a second Full chat click must toggle the open pane closed"
-        );
-        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
-        for agent_id in requests {
-            fleet.toggle_full_chat(&agent_id);
-        }
-        assert!(
-            !fleet.is_transcript_open(&agent.agent_id),
-            "second click closes the transcript"
-        );
-        assert!(
-            fleet.is_expanded(&agent.agent_id),
-            "closing the transcript keeps the row detail open"
-        );
-    }
-
-    #[test]
-    fn nested_transcript_header_toggles_fleet_state_and_dispatches_first_read_once() {
-        let ctx = row_test_context();
-        let mut agent = agent_with_caps(&["read_tail"]);
-        agent.agent_id = "herdr:nested-chat".into();
-        let mut fleet = Fleet::default();
-        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        fleet.expanded.push(agent.agent_id.clone());
-        let full_chat_requests = std::cell::RefCell::new(Vec::new());
-        let transcript_requests = std::cell::RefCell::new(Vec::new());
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |request| transcript_requests.borrow_mut().push(request),
-            full_chat: &mut |agent_id| full_chat_requests.borrow_mut().push(agent_id.to_string()),
-        };
-
-        let (_, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| true,
-            &mut actions,
-        );
-        let header_rect = text_rect(&output, "transcript").expect("nested header rendered");
-        clear_textures(&mut output);
-
-        let toggles = board_row_click_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            header_rect.center(),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(
-            toggles.is_empty(),
-            "header clicks are consumed by the widget"
-        );
-        assert_eq!(
-            full_chat_requests.borrow().as_slice(),
-            vec![agent.agent_id.clone()],
-            "opening the nested header must sync Fleet open state"
-        );
-        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
-        for agent_id in requests {
-            fleet.toggle_full_chat(&agent_id);
-        }
-        assert!(fleet.is_transcript_open(&agent.agent_id));
-        assert!(fleet.is_expanded(&agent.agent_id));
-
-        let (_, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| true,
-            &mut actions,
-        );
-        assert_eq!(
-            transcript_requests.borrow().len(),
-            1,
-            "the existing first-open fetch must fire exactly once"
-        );
-        let pane = fleet.transcript_pane_mut(&agent.agent_id);
-        pane.loading = true;
-        let header_rect = text_rect(&output, "transcript").expect("open header still rendered");
-        clear_textures(&mut output);
-        let toggles = board_row_click_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            header_rect.center(),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(toggles.is_empty());
-        assert_eq!(
-            full_chat_requests.borrow().as_slice(),
-            vec![agent.agent_id.clone()],
-            "closing the nested header must sync Fleet open state"
-        );
-        assert_eq!(
-            transcript_requests.borrow().len(),
-            1,
-            "closing must not reissue the newest-page fetch"
-        );
-        let requests = std::mem::take(&mut *full_chat_requests.borrow_mut());
-        for agent_id in requests {
-            fleet.toggle_full_chat(&agent_id);
-        }
-        assert!(!fleet.is_transcript_open(&agent.agent_id));
-        assert!(fleet.is_expanded(&agent.agent_id));
-    }
-
-    #[test]
-    fn transcript_header_hidden_without_advertised_read_tail() {
-        let ctx = row_test_context();
-        let mut agent = agent_with_caps(&["kill"]);
-        agent.agent_id = "herdr:no-read-capability".into();
-        let mut fleet = Fleet::default();
-        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        fleet.expanded.push(agent.agent_id.clone());
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |_| {},
-            full_chat: &mut |_| {},
-        };
-        let (_, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| true,
-            &mut actions,
-        );
-        assert!(
-            text_rect(&output, "transcript").is_none(),
-            "a capability not advertised by the agent must not expose the nested header"
-        );
-        assert!(
-            text_rect(&output, "read_tail: not implemented yet").is_some(),
-            "the expanded row must explain why the capability is unavailable"
-        );
-        clear_textures(&mut output);
-    }
-
-    #[test]
-    fn full_chat_is_disabled_without_read_tail_grant() {
-        let ctx = row_test_context();
-        let mut agent = agent_with_caps(&["read_tail"]);
-        agent.agent_id = "herdr:no-read-grant".into();
-        let mut fleet = Fleet::default();
-        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        fleet.expanded.push(agent.agent_id.clone());
-        let mut full_chat_requests = Vec::new();
-        let mut transcript_requests = Vec::new();
-        let mut actions = BoardActions {
-            drive: &mut |_| {},
-            transcript: &mut |request| transcript_requests.push(request),
-            full_chat: &mut |agent_id| full_chat_requests.push(agent_id.to_string()),
-        };
-
-        let (_, mut output) = board_row_frame_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            row_test_input(vec![]),
-            &|_| false,
-            &mut actions,
-        );
-        let full_chat_rect = text_rect(&output, "Full chat").expect("gated Full chat rendered");
-        clear_textures(&mut output);
-
-        let toggles = board_row_click_with_allowed(
-            &ctx,
-            &fleet,
-            &agent.agent_id,
-            full_chat_rect.center(),
-            &|_| false,
-            &mut actions,
-        );
-        assert!(toggles.is_empty());
-        assert!(
-            full_chat_requests.is_empty(),
-            "missing grant must keep Full chat unclickable"
-        );
-        assert!(
-            transcript_requests.is_empty(),
-            "missing grant must never dispatch a transcript read"
-        );
     }
 
     #[test]
@@ -6076,146 +5134,5 @@ mod tests {
             ),
             DriveState::Failed { .. }
         ));
-    }
-
-    /// #64: virtualized rows are one line, truncated, index-stable —
-    /// a multiline or over-long body gets an ellipsis, never a second
-    /// layout line (uniform show_rows height depends on it).
-    #[test]
-    fn transcript_row_text_is_single_line_and_truncated() {
-        let short = crate::transcript::TranscriptEntry {
-            role: "user".into(),
-            text: "hello".into(),
-            ts: None,
-        };
-        assert_eq!(transcript_row_text(3, &short), "   3      user  hello");
-
-        let multiline = crate::transcript::TranscriptEntry {
-            role: "assistant".into(),
-            text: "first line\nsecond".into(),
-            ts: Some(1),
-        };
-        let row = transcript_row_text(0, &multiline);
-        assert!(row.ends_with('\u{2026}'), "{row:?}");
-        assert!(!row.contains('\n'), "single layout line");
-
-        let long = crate::transcript::TranscriptEntry {
-            role: "assistant".into(),
-            text: "x".repeat(500),
-            ts: None,
-        };
-        let row = transcript_row_text(12, &long);
-        assert!(row.chars().count() < 140, "truncated: {}", row.len());
-        assert!(row.ends_with('\u{2026}'));
-    }
-
-    /// #64 review F3: rows are allocated at exactly the pitch, so the
-    /// pitch must FIT a real rendered row — measured against a real
-    /// selectable_label in a real egui pass with the app's spacing. A
-    /// theme change that would clip row text fails here, not on screen.
-    #[test]
-    fn transcript_row_pitch_matches_a_rendered_row() {
-        let ctx = egui::Context::default();
-        ctx.set_visuals(crate::theme::dark_dashboard());
-        let mut measured: Option<(f32, f32)> = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            // The app's board spacing (app.rs sets these per frame).
-            ui.spacing_mut().item_spacing.y = 4.0;
-            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
-            let pitch = transcript_row_pitch(ui);
-            let entry = crate::transcript::TranscriptEntry {
-                role: "assistant".into(),
-                text: "measured row".into(),
-                ts: None,
-            };
-            let line = transcript_row_text(0, &entry);
-            let response = ui.selectable_label(false, egui::RichText::new(line).monospace());
-            measured = Some((pitch, response.rect.height()));
-        });
-        // A headless pass never uploads textures; acknowledge the delta
-        // so its drop guard stays quiet.
-        output.textures_delta.clear();
-        let (pitch, actual) = measured.expect("rendered");
-        assert!(
-            pitch >= actual,
-            "pitch {pitch} must fit the rendered row height {actual} (no clipping)"
-        );
-        assert!(
-            pitch <= actual + 8.0,
-            "pitch {pitch} should not be wildly larger than the row {actual} (dead space)"
-        );
-
-        // R7: the load-bearing invariant is that a row can NEVER wrap to
-        // a second line — pinned with a long line in a deliberately
-        // NARROW rect using the exact render structure (exact-size
-        // allocation + left_to_right child, whose wrap mode is Extend).
-        let mut narrow: Option<(f32, f32)> = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
-            let pitch = transcript_row_pitch(ui);
-            let entry = crate::transcript::TranscriptEntry {
-                role: "assistant".into(),
-                text: "w".repeat(300),
-                ts: None,
-            };
-            let line = transcript_row_text(7, &entry);
-            let desired = egui::vec2(80.0, pitch);
-            let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-            let mut row_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(rect)
-                    .id(egui::Id::new(("corral-ui-transcript-row", "test", 7usize)))
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            let response = row_ui.selectable_label(false, egui::RichText::new(line).monospace());
-            narrow = Some((pitch, response.rect.height()));
-        });
-        // Clear BEFORE asserting: a failed assert must not double-panic
-        // through the TexturesDelta drop guard.
-        output.textures_delta.clear();
-        let (pitch, height) = narrow.expect("narrow row rendered");
-        assert!(
-            height <= pitch,
-            "a long line in a narrow rect must not wrap: row {height} > pitch {pitch}"
-        );
-    }
-
-    /// #64 review F4: the selected-entry detail lays out a BOUNDED slice
-    /// — a multi-MB entry yields a capped slice plus an honest note.
-    #[test]
-    fn transcript_detail_text_is_bounded() {
-        let (shown, note) = transcript_detail_text("short");
-        assert_eq!(shown, "short");
-        assert!(note.is_none());
-
-        let big = "é".repeat(200_000); // 2 bytes/char: boundary-safe slice
-        let (shown, note) = transcript_detail_text(&big);
-        assert!(shown.len() <= 64 * 1024);
-        assert!(shown.len() >= 64 * 1024 - 4, "cap honored tightly");
-        let note = note.expect("truncation is announced");
-        assert!(note.contains("truncated"), "{note}");
-        assert!(note.contains("400000"), "names the full size: {note}");
-    }
-
-    /// #64: typed error copy — the grant refusal names the fix; a stale
-    /// cursor after the one auto-reload tells the user what happened.
-    #[test]
-    fn transcript_error_text_maps_kinds() {
-        let f = |kind: &str, message: &str| crate::transcript::TranscriptFailure {
-            kind: kind.into(),
-            message: message.into(),
-            candidates: vec![],
-        };
-        assert!(transcript_error_text(&f("not_granted", "x")).contains("read_tail grant"));
-        assert!(transcript_error_text(&f("bad_cursor", "x")).contains("reload"));
-        assert!(transcript_error_text(&f("no_session", "x")).contains("no session store"));
-        assert!(
-            transcript_error_text(&f("ambiguous_session", "more than one")).contains("candidates")
-        );
-        assert_eq!(
-            transcript_error_text(&f("query_timeout", "slow")),
-            "query_timeout: slow"
-        );
     }
 }

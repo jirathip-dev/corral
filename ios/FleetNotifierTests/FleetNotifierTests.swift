@@ -55,17 +55,6 @@ final class CanonicalBytesTests: XCTestCase {
                        #"{"request_id":"kill-1","capability":"kill","target":"herdr:a","payload":null,"rev":4}"#)
     }
 
-    func testTranscriptPayloadOmitsCursorForNewestPage() {
-        let newest = CanonicalJSON.encode(CanonicalJSON.transcriptPayload(ts: 1_700_000_000,
-                                                                          cursor: nil,
-                                                                          limit: 50))
-        XCTAssertEqual(newest, #"{"limit":50,"ts":1700000000}"#)
-        let older = CanonicalJSON.encode(CanonicalJSON.transcriptPayload(ts: 1_700_000_000,
-                                                                         cursor: "b.5.aa",
-                                                                         limit: 50))
-        XCTAssertEqual(older, #"{"cursor":"b.5.aa","limit":50,"ts":1700000000}"#)
-    }
-
     func testDriveResponseTailResultDecodesIntoVisibleLines() throws {
         let data = Data(#"{"request_id":"r","ok":true,"rev":4,"result":{"lines":["one","two"]}}"#.utf8)
         let response = try JSONDecoder().decode(DriveResponse.self, from: data)
@@ -894,50 +883,6 @@ final class StepUpDriveFlowTests: XCTestCase {
         XCTAssertEqual(ScriptedURLProtocol.requests.filter { $0.url?.path == "/step-up" }.count, 1)
     }
 
-    func testTranscriptHeaderIsAsciiAndCarriesSignedReadTailEnvelope() throws {
-        let header = DriveClient.transcriptAuthHeader(
-            keyId: "k", signer: signer(), target: "herdr:λ", cursor: nil,
-            limit: 50, ts: 1_700_000_000, requestId: "transcript-1")
-        XCTAssertTrue(header.utf8.allSatisfy { $0 < 0x80 })
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(header.utf8))
-            as? [String: Any])
-        let envelope = try XCTUnwrap(root["envelope"] as? [String: Any])
-        XCTAssertEqual(envelope["capability"] as? String, "read_tail")
-        XCTAssertEqual(envelope["target"] as? String, "herdr:λ")
-        XCTAssertNil(envelope["rev"])
-        let payload = try XCTUnwrap(envelope["payload"] as? [String: Any])
-        XCTAssertEqual(payload["limit"] as? Int, 50)
-        XCTAssertNil(payload["cursor"])
-        XCTAssertTrue((payload["ts"] as? UInt64 ?? 0) > 0)
-    }
-
-    func testFetchTranscriptSendsSignedHeaderAndDecodesPage() async throws {
-        let session = scriptedSession()
-        ScriptedURLProtocol.requests = []
-        let url = URL(string: "http://daemon/transcript?agent=abc")!
-        ScriptedURLProtocol.responses = [
-            url: (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!,
-                  transcriptPageJSON(agent: "abc",
-                                     entries: [("assistant", "hello", 1)],
-                                     cursor: "b.1.aa"))
-        ]
-        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
-        let header = DriveClient.transcriptAuthHeader(keyId: "k", signer: signer(),
-                                                      target: "abc", cursor: nil,
-                                                      ts: 1_700_000_000,
-                                                      requestId: "transcript-1")
-        let result = await client.fetchTranscript(agentId: "abc", authHeader: header)
-        let page = try result.get()
-        XCTAssertEqual(page.session, "claude:s1.jsonl")
-        XCTAssertEqual(page.entries.count, 1)
-        XCTAssertEqual(page.nextCursor, "b.1.aa")
-        XCTAssertEqual(ScriptedURLProtocol.requests.first?.url?.query, "agent=abc")
-        XCTAssertEqual(ScriptedURLProtocol.requests.first?.value(forHTTPHeaderField: "x-corral-drive"),
-                       header)
-    }
-
-    /// Acceptance #3 (negative): a simple approve reply dispatches without
-    /// any biometrics call.
     func testSimpleApproveReplySkipsBiometrics() async throws {
         let session = scriptedSession()
         ScriptedURLProtocol.responses = [
@@ -1348,20 +1293,6 @@ final class TappableDriveSafetyTests: XCTestCase {
         return try XCTUnwrap(root["envelope"] as? [String: Any])
     }
 
-    private func waitForTranscript(
-        _ model: AppModel,
-        agentId: String,
-        _ condition: @escaping @MainActor (TranscriptPane?) -> Bool
-    ) async {
-        for _ in 0..<250 {
-            if condition(model.fleet.transcript(agentId)) {
-                return
-            }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTFail("Timed out waiting for transcript state for \(agentId)")
-    }
-
     func testNoArgInitializerBuildsDelegateForSwiftUIAdaptor() {
         let delegate = AppDelegate()
         XCTAssertTrue(AppDelegate.shared === delegate)
@@ -1486,63 +1417,6 @@ final class TappableDriveSafetyTests: XCTestCase {
         XCTAssertEqual(attachEnvelope["target"] as? String, live.agentId)
     }
 
-    func testFullChatRequiresReadTailGrantAndNeverFetchesWithoutIt() {
-        let script = DeterministicDriveScript(
-            responses: ["/transcript": transcriptPageJSON(entries: [("assistant", "hi", 1)])])
-        let session = session(for: script)
-        defer {
-            session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.clearScript()
-        }
-        let model = AppModel()
-        let live = agent("herdr:no-grant", capabilities: ["read_tail", "kill", "attach"])
-        configure(model, agent: live, grants: [])
-        model.openTranscript(agentId: live.agentId,
-                             driveClient: DriveClient(host: URL(string: "http://daemon")!,
-                                                      session: session))
-        XCTAssertTrue(script.log.requests.isEmpty,
-                      "full chat must never fetch without a read_tail grant")
-        XCTAssertNil(model.fleet.transcript(live.agentId))
-        XCTAssertEqual(model.banner?.kind, "not_granted")
-    }
-
-    func testFullChatFetchIsReachableAndPagesAppend() async throws {
-        let script = DeterministicDriveScript(
-            responses: ["/transcript": transcriptPageJSON(
-                entries: [("assistant", "newest", 2), ("user", "older", 1)],
-                cursor: "b.2.aa")])
-        let session = session(for: script)
-        defer {
-            session.invalidateAndCancel()
-            DeterministicDriveURLProtocol.clearScript()
-        }
-        let model = AppModel()
-        let live = agent("herdr:full-chat", capabilities: ["read_tail"])
-        configure(model, agent: live, grants: ["read_tail"])
-        let client = DriveClient(host: URL(string: "http://daemon")!, session: session)
-
-        model.openTranscript(agentId: live.agentId, driveClient: client)
-        let first = await script.log.observed.waitFor(atLeast: 1)
-        XCTAssertTrue(first)
-        let firstCompleted = await script.log.completed.waitFor(atLeast: 1)
-        XCTAssertTrue(firstCompleted)
-        await waitForTranscript(model, agentId: live.agentId) {
-            $0?.entries.count == 2 && $0?.loading == false
-        }
-        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 2)
-
-        model.loadOlderTranscript(agentId: live.agentId, driveClient: client)
-        let second = await script.log.observed.waitFor(atLeast: 2)
-        XCTAssertTrue(second)
-        let secondCompleted = await script.log.completed.waitFor(atLeast: 2)
-        XCTAssertTrue(secondCompleted)
-        await waitForTranscript(model, agentId: live.agentId) {
-            $0?.entries.count == 4 && $0?.loading == false
-        }
-        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 4)
-        XCTAssertEqual(script.log.requests.count, 2, "each page must be requested separately")
-    }
-
     func testDirectControlsSayUnavailableForUnadvertisedCapability() {
         let model = AppModel()
         let live = Agent(agentId: "herdr:no-cap", state: .blocked,
@@ -1575,61 +1449,6 @@ final class TappableDriveSafetyTests: XCTestCase {
                            "\(testCase.capability): not available for this agent.",
                            testCase.capability)
         }
-    }
-
-    func testInitialTranscriptFailureRetriesFromNewestPage() async throws {
-        let failing = DeterministicDriveScript(
-            responses: ["/transcript": Data("not a page".utf8)])
-        let failingSession = session(for: failing)
-        defer {
-            failingSession.invalidateAndCancel()
-            DeterministicDriveURLProtocol.clearScript()
-        }
-        let model = AppModel()
-        let live = agent("herdr:retry", capabilities: ["read_tail"])
-        configure(model, agent: live, grants: ["read_tail"])
-        model.openTranscript(
-            agentId: live.agentId,
-            driveClient: DriveClient(host: URL(string: "http://daemon")!,
-                                     session: failingSession))
-        let firstCompleted = await failing.log.completed.waitFor(atLeast: 1)
-        XCTAssertTrue(firstCompleted)
-        XCTAssertEqual(failing.log.requests.count, 1)
-        await waitForTranscript(model, agentId: live.agentId) { pane in
-            guard let pane else { return false }
-            return pane.canRetry && !pane.loading && pane.error != nil
-        }
-        XCTAssertTrue(model.fleet.transcript(live.agentId)?.canRetry ?? false)
-        XCTAssertNil(model.fleet.transcript(live.agentId)?.nextCursor)
-
-        let success = DeterministicDriveScript(
-            responses: ["/transcript": transcriptPageJSON(
-                entries: [("assistant", "retried", 1)])])
-        let successSession = session(for: success)
-        defer {
-            successSession.invalidateAndCancel()
-            DeterministicDriveURLProtocol.clearScript()
-        }
-        model.retryTranscript(
-            agentId: live.agentId,
-            driveClient: DriveClient(host: URL(string: "http://daemon")!,
-                                     session: successSession))
-        let retried = await success.log.completed.waitFor(atLeast: 1)
-        XCTAssertTrue(retried)
-        await waitForTranscript(model, agentId: live.agentId) { pane in
-            guard let pane else { return false }
-            return pane.entries.count == 1 && !pane.loading && pane.error == nil
-        }
-        XCTAssertEqual(success.log.requests.count, 1)
-        XCTAssertEqual(model.fleet.transcript(live.agentId)?.entries.count, 1)
-
-        let header = try XCTUnwrap(
-            success.log.requests.first?.value(forHTTPHeaderField: "x-corral-drive"))
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(header.utf8))
-            as? [String: Any])
-        let envelope = try XCTUnwrap(root["envelope"] as? [String: Any])
-        let payload = try XCTUnwrap(envelope["payload"] as? [String: Any])
-        XCTAssertNil(payload["cursor"], "an initial failure must retry the newest page")
     }
 
     func testCancellationDuringBiometricsSendsNoStepUpOrDrive() async {
@@ -2578,141 +2397,6 @@ final class RowActionTests: XCTestCase {
             .first { $0.action == .approveDeny }
         XCTAssertEqual(approval?.isEnabled, false)
         XCTAssertEqual(approval?.disabledReason, "Crash states do not accept approval replies.")
-    }
-}
-
-// MARK: - Older transcript pages pane and store (#142 / #64)
-
-private func transcriptPageJSON(agent: String = "herdr:x",
-                                entries: [(role: String, text: String, ts: UInt64?)],
-                                cursor: String? = nil,
-                                skipped: Int = 0) -> Data {
-    let entriesJSON = entries.map { entry -> String in
-        let ts = entry.ts.map { ", \"ts\": \($0)" } ?? ""
-        return #"{"role":"\#(entry.role)","text":"\#(entry.text)"\#(ts)}"#
-    }.joined(separator: ",")
-    let cursorJSON = cursor.map { #", "next_cursor":"\#($0)""# } ?? ""
-    let json = #"{"agent":"\#(agent)","store":"claude","session":"claude:s1.jsonl","bind":"session_id","stores_unavailable":[],"entries":[\#(entriesJSON)]\#(cursorJSON),"skipped":\#(skipped)}"#
-    return Data(json.utf8)
-}
-
-final class TranscriptPaneTests: XCTestCase {
-    private func page(_ count: Int, cursor: String? = "b.1.aa") throws -> TranscriptPage {
-        let entries = (0..<count).map { index -> TranscriptEntry in
-            TranscriptEntry(role: index % 2 == 0 ? "assistant" : "user",
-                            text: "entry \(index)",
-                            ts: 1_700_000_000_000 + UInt64(index))
-        }
-        return try JSONDecoder().decode(TranscriptPage.self,
-                                        from: transcriptPageJSON(entries: entries.map {
-                                            ($0.role, $0.text, $0.ts)
-                                        },
-                                                                 cursor: cursor))
-    }
-
-    func testPagesAppendAndWindowSlidesBounded() throws {
-        var pane = TranscriptPane()
-        for _ in 0..<(TranscriptLimits.maxEntries / 100) {
-            pane.apply(try page(100, cursor: "b.1.aa"))
-        }
-        XCTAssertEqual(pane.entries.count, TranscriptLimits.maxEntries)
-        XCTAssertEqual(pane.baseOffset, 0)
-        pane.apply(try page(100, cursor: "b.2.aa"))
-        XCTAssertEqual(pane.entries.count, TranscriptLimits.maxEntries)
-        XCTAssertEqual(pane.baseOffset, 100)
-        XCTAssertTrue(pane.canLoadOlder)
-    }
-
-    func testFailureKeepsEntriesAndOffersRetryUntilStaleCursor() throws {
-        var pane = TranscriptPane()
-        pane.apply(try page(2))
-        pane.beginFetch()
-        pane.apply(TranscriptFailure(kind: "query_timeout", message: "slow store",
-                                     candidates: []))
-        XCTAssertEqual(pane.entries.count, 2)
-        XCTAssertFalse(pane.canLoadOlder)
-        XCTAssertTrue(pane.canRetry)
-        pane.apply(TranscriptFailure(kind: "bad_cursor", message: "stale",
-                                     candidates: []))
-        XCTAssertFalse(pane.canRetry)
-    }
-
-    func testDisplaySliceIsBoundedOnUTF8Boundary() {
-        let text = String(repeating: "λ", count: TranscriptLimits.detailMaxBytes)
-        let (shown, truncated) = TranscriptText.displaySlice(text)
-        XCTAssertTrue(truncated)
-        XCTAssertLessThanOrEqual(shown.utf8.count, TranscriptLimits.detailMaxBytes)
-        XCTAssertTrue(shown.utf8.count + 2 <= TranscriptLimits.detailMaxBytes,
-                      "the cut must happen before a multi-byte scalar")
-    }
-}
-
-@MainActor
-final class TranscriptStoreTests: XCTestCase {
-    private var agent: Agent {
-        Agent(agentId: "herdr:x", state: .working, capabilities: ["read_tail"],
-              displayName: "x")
-    }
-
-    func testNewestFetchStoresPageAndPrunesOnDeletion() throws {
-        let store = FleetStore()
-        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
-                                       agents: [agent.agentId: agent])))
-        let fetch = store.prepareTranscriptFetch(agent: agent.agentId, cursor: nil,
-                                                 newest: true)
-        let generation = try XCTUnwrap(fetch?.generation)
-        let page = try JSONDecoder().decode(TranscriptPage.self,
-                                            from: transcriptPageJSON(entries: [("assistant", "hi", 1)]))
-        XCTAssertTrue(store.foldTranscriptPage(page, for: agent.agentId,
-                                               generation: generation))
-        XCTAssertEqual(store.transcript(agent.agentId)?.entries.count, 1)
-
-        store.removeAgent(agent.agentId)
-        XCTAssertFalse(store.foldTranscriptPage(page, for: agent.agentId,
-                                                generation: generation),
-                       "a late page must not resurrect a deleted agent")
-        XCTAssertNil(store.transcript(agent.agentId))
-    }
-
-    func testStaleCursorReloadsOnceThenSurfacesSecondFailure() throws {
-        let store = FleetStore()
-        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
-                                       agents: [agent.agentId: agent])))
-        let fetch = store.prepareTranscriptFetch(agent: agent.agentId, cursor: nil,
-                                                 newest: true)
-        let generation = try XCTUnwrap(fetch?.generation)
-        let stale = TranscriptFailure(kind: "bad_cursor", message: "rebound",
-                                      candidates: [])
-        XCTAssertEqual(store.foldTranscriptFailure(stale, for: agent.agentId,
-                                                   generation: generation),
-                       .needsReload)
-        let reloaded = try XCTUnwrap(store.transcript(agent.agentId))
-        XCTAssertTrue(reloaded.autoReloaded)
-        let autoFetch = store.prepareTranscriptFetch(agent: agent.agentId,
-                                                     cursor: nil, newest: true,
-                                                     autoReload: true)
-        XCTAssertEqual(autoFetch?.generation, reloaded.generation,
-                       "the automatic reload continues the already-reset pane")
-        XCTAssertTrue(try XCTUnwrap(store.transcript(agent.agentId)).autoReloaded)
-        XCTAssertEqual(store.foldTranscriptFailure(stale, for: agent.agentId,
-                                                   generation: autoFetch?.generation ?? 0),
-                       .applied)
-        XCTAssertFalse(try XCTUnwrap(store.transcript(agent.agentId)).canRetry)
-    }
-
-    func testCancelledFetchClearsLoadingSoExplicitReloadCanRestart() {
-        let store = FleetStore()
-        store.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
-                                       agents: [agent.agentId: agent])))
-        let fetch = store.prepareTranscriptFetch(agent: agent.agentId,
-                                                 cursor: nil, newest: true)
-        let generation = try? XCTUnwrap(fetch?.generation)
-        store.cancelTranscriptFetch(agent: agent.agentId, generation: generation ?? 0)
-        XCTAssertFalse(try XCTUnwrap(store.transcript(agent.agentId)).loading)
-        let restarted = store.prepareTranscriptFetch(agent: agent.agentId,
-                                                     cursor: nil, newest: true)
-        XCTAssertNotNil(restarted)
-        XCTAssertNotEqual(restarted?.generation, generation)
     }
 }
 
@@ -3870,44 +3554,29 @@ final class RecentOutputModelTests: XCTestCase {
         return pane
     }
 
-    private func transcript(blocks: [TranscriptBlock]? = nil,
-                            loading: Bool = false,
-                            error: TranscriptFailure? = nil,
-                            nextCursor: String? = nil) -> TranscriptPane {
-        var pane = TranscriptPane()
-        pane.blocks = blocks ?? []
-        pane.entries = []
-        pane.loading = loading
-        pane.error = error
-        pane.nextCursor = nextCursor
-        pane.pages = 0
-        return pane
-    }
-
     func testTailBlocksMapToRenderModel() {
         let render = RecentOutputModel.render(
             tail: tail([block(.agent, "hello"), block(.system, "warn")]),
-            transcript: nil)
+)
         XCTAssertEqual(render.phase, .loaded)
         XCTAssertEqual(render.rows, [
             .block(TranscriptBlock(kind: .agent, text: "hello")),
             .block(TranscriptBlock(kind: .system, text: "warn")),
         ])
         XCTAssertFalse(render.canLoadOlder)
-        XCTAssertNil(render.nextCursor)
     }
 
     func testLoadingStateWhenNoBlocks() {
         let render = RecentOutputModel.render(
             tail: tail([], loading: true),
-            transcript: nil)
+)
         XCTAssertEqual(render.phase, .loading)
         XCTAssertEqual(render.rows, [.loading])
         XCTAssertFalse(render.canRetryTail)
     }
 
     func testEmptyWhenNoBlocksNoLoading() {
-        let render = RecentOutputModel.render(tail: tail([]), transcript: nil)
+        let render = RecentOutputModel.render(tail: tail([]))
         XCTAssertEqual(render.phase, .empty)
         XCTAssertEqual(render.rows, [])
     }
@@ -3917,7 +3586,7 @@ final class RecentOutputModelTests: XCTestCase {
                                         candidates: [])
         let render = RecentOutputModel.render(
             tail: tail([], error: failure),
-            transcript: nil)
+)
         XCTAssertEqual(render.phase, .error(failure))
         XCTAssertEqual(render.rows, [.error(failure)])
         XCTAssertTrue(render.canRetryTail)
@@ -3927,7 +3596,7 @@ final class RecentOutputModelTests: XCTestCase {
         let render = RecentOutputModel.render(
             tail: tail([block(.agent, "cargo test"),
                         block(.tool, "$ cargo test\ntest result: ok. 4 passed")]),
-            transcript: nil)
+)
         XCTAssertEqual(render.phase, .loaded)
         XCTAssertEqual(render.rows.count, 2)
         guard case .block(let b) = render.rows[1] else {
@@ -3949,48 +3618,17 @@ final class RecentOutputModelTests: XCTestCase {
         let failure = TranscriptFailure(kind: "timeout", message: "Recent output timed out.",
                                         candidates: [])
         let pane = tail([block(.agent, "kept")], error: failure)
-        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+        let render = RecentOutputModel.render(tail: pane)
         XCTAssertEqual(render.phase, .loaded)
         XCTAssertTrue(render.canRetryTail)
         XCTAssertEqual(render.rows, [.block(TranscriptBlock(kind: .agent, text: "kept"))])
     }
 
-    func testEmptyTranscriptPageIsNotASpinner() {
-        let render = RecentOutputModel.render(
-            tail: tail([]),
-            transcript: transcript(blocks: []))
-        XCTAssertEqual(render.phase, .empty)
-        XCTAssertFalse(render.transcriptLoading)
-    }
-
-    func testPaginationPreservesCursorAndDivider() {
-        let t = transcript(blocks: [block(.agent, "old")],
-                           nextCursor: "b.2.aa")
-        let render = RecentOutputModel.render(tail: tail([]), transcript: t)
-        XCTAssertTrue(render.canLoadOlder)
-        XCTAssertEqual(render.nextCursor, "b.2.aa")
-        XCTAssertEqual(render.rows.first, .loadEarlier(nil))
-        XCTAssertEqual(render.rows.last, .block(TranscriptBlock(kind: .agent, text: "old")))
-    }
-
-    func testTailTruncationInsertsTopDividerWhenNoTranscript() {
+    func testTailTruncationInsertsTopDivider() {
         let pane = tail([block(.system, "…seeded tail", truncated: 7)])
-        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+        let render = RecentOutputModel.render(tail: pane)
         XCTAssertTrue(render.canLoadOlder)
         XCTAssertEqual(render.rows.first, .loadEarlier(7))
-    }
-
-    func testTranscriptErrorWithHeldBlocksShowsErrorAndRetry() {
-        let failure = TranscriptFailure(kind: "query_timeout", message: "slow",
-                                        candidates: [])
-        let t = transcript(blocks: [block(.agent, "old")],
-                           error: failure, nextCursor: "b.2.aa")
-        let render = RecentOutputModel.render(tail: tail([]), transcript: t)
-        // Held blocks stay visible (loaded), plus the failure + Retry row.
-        XCTAssertEqual(render.phase, .loaded)
-        XCTAssertTrue(render.rows.contains(.error(failure)))
-        XCTAssertTrue(render.canRetryTranscript)
-        XCTAssertFalse(render.canLoadOlder, "an in-flight/error walk cannot page further")
     }
 
     func testMetadataLineBecomesBadgeAndLeavesSemanticMessageText() {
@@ -4001,7 +3639,7 @@ final class RecentOutputModelTests: XCTestCase {
         """
         let render = RecentOutputModel.render(
             tail: tail([block(.agent, text)]),
-            transcript: nil)
+)
 
         XCTAssertEqual(render.metadata.model, "gpt-5.6-luna")
         XCTAssertEqual(render.metadata.effort, "max")
@@ -4019,14 +3657,14 @@ final class RecentOutputModelTests: XCTestCase {
         let prose = "path: src/main.rs\nmodel: a tool printed this"
         let proseRender = RecentOutputModel.render(
             tail: tail([block(.tool, prose)]),
-            transcript: nil)
+)
         XCTAssertTrue(proseRender.metadata.isEmpty)
         XCTAssertEqual(proseRender.rows, [.block(block(.tool, prose))])
 
         let canonical = "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session"
         let canonicalRender = RecentOutputModel.render(
             tail: tail([block(.agent, "use the current checkout\n\(canonical)")]),
-            transcript: nil)
+)
         XCTAssertEqual(canonicalRender.metadata,
                        RecentOutputMetadata(
                            model: "gpt-5.6-luna",
@@ -4037,14 +3675,14 @@ final class RecentOutputModelTests: XCTestCase {
 
         let soleCanonicalRender = RecentOutputModel.render(
             tail: tail([block(.agent, canonical)]),
-            transcript: nil)
+)
         XCTAssertEqual(soleCanonicalRender.rows, [.block(block(.agent, canonical))])
     }
 
     func testLegacyTailLinesBecomeSeparateSemanticRows() {
         var pane = TailPane()
         pane.lines = ["first line", "second line", "third line"]
-        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+        let render = RecentOutputModel.render(tail: pane)
 
         XCTAssertEqual(render.rows, [
             .block(block(.agent, "first line")),
@@ -4190,7 +3828,7 @@ final class RecentOutputModelTests: XCTestCase {
     func testSnapshotPairsRenderAndVisibleRowsOnceForTheView() {
         let snapshot = RecentOutputModel.snapshot(
             tail: tail([block(.agent, "message"), block(.tool, "tool output")]),
-            transcript: nil)
+)
 
         XCTAssertEqual(snapshot.visibleRows, snapshot.identifiedRows.map(\.row))
         XCTAssertEqual(snapshot.visibleRows, snapshot.render.rows)
@@ -4237,8 +3875,8 @@ final class RecentOutputModelTests: XCTestCase {
 
     func testTruncatedMetadataPaneAddsOnlyOneLoadEarlierRow() {
         let canonical = "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session"
-        let pane = transcript(blocks: [block(.agent, canonical, truncated: 12)])
-        let render = RecentOutputModel.render(tail: tail([]), transcript: pane)
+        let pane = tail([block(.agent, canonical, truncated: 12)])
+        let render = RecentOutputModel.render(tail: pane)
         let loadEarlierCount = render.rows.reduce(into: 0) { count, row in
             if case .loadEarlier = row { count += 1 }
         }
@@ -4325,7 +3963,7 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(
             CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoBefore"]),
             .before)
-        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-transcript")
+        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-output")
     }
 
     func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {

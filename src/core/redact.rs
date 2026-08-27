@@ -91,8 +91,8 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
     let mut i = 0;
     // #62 perf: `high_entropy_at` walks the whole alphanumeric run at `i`.
     // Re-scanning that run from every interior position made redaction
-    // O(run²) — 35s on a 64KiB unbroken blob, exactly the shape transcript
-    // pages carry. A failed run can never match from an interior start
+    // O(run²) — 35s on a 64KiB unbroken blob, exactly the shape long pane
+    // tails carry. A failed run can never match from an interior start
     // (a suffix is shorter and has a subset of the run's character
     // classes), so one failed scan clears the whole run. The other two
     // matchers are unaffected: both reject interior positions in O(1) via
@@ -101,7 +101,7 @@ pub fn redact<'a>(input: &'a str) -> Cow<'a, str> {
     // #62 fresh-review R1: the non-env branch of `env_value_at` scans to
     // the first whitespace. In a whitespace-free run dense with
     // secret-ish `name=` idents (a URL query string — the most common
-    // whitespace-free run in real transcripts) that scan restarted from
+    // whitespace-free run in real pane tails) that scan restarted from
     // every candidate, keeping redact O(run²) (measured 2.46s at the
     // 256KiB page cap). One watermark memoizes the run's next-whitespace
     // position and kind — the same trick `entropy_cleared_until` plays
@@ -606,7 +606,7 @@ mod perf_tests {
     use super::redact;
 
     /// #62 regression pin: a 64KiB unbroken alphanumeric blob (the shape
-    /// transcript pages carry) must redact in linear time. Pre-fix this
+    /// long pane tails carry) must redact in linear time. Pre-fix this
     /// took ~35s in debug; the bound below is generous enough for any CI
     /// machine while catching an O(n²) regression by orders of magnitude.
     #[test]

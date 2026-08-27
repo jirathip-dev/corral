@@ -15,5 +15,4 @@ pub mod model;
 pub mod protocol;
 pub mod state;
 pub mod theme;
-pub mod transcript;
 pub mod ui;

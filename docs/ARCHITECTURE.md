@@ -27,13 +27,10 @@ agents).
 The core model, signed drive plane, and HTTP surface are runtime-neutral; the
 current runtime coupling is isolated in the herdr adapter described above.
 
-The canonical board model contains no provider-specific pricing, quota, or
-transcript fields. Provider session stores are consulted only by the
-on-demand transcript boundary (`GET /transcript`), whose store binding and
-redaction live under `src/transcript/` and never feed the snapshot model.
-The three transcript store roots are env-overridable
-(`CORRAL_OPENCODE_DB`, `CORRAL_CLAUDE_DIR`, `CORRAL_CODEX_DIR`) so a
-different install layout can be used without changing the core model.
+The canonical board model contains no provider-specific pricing or quota
+fields. Provider session stores are never consulted: the only agent output
+a client can read is the bounded `read_tail` pane tail, redacted and
+segmented server-side into blocks.
 
 **Implication for a "no-herdr" mode.** The adapter is the runtime coupling
 point. A second-runtime / no-runtime mode would add an `Adapter`
@@ -64,10 +61,6 @@ GitHub ──────── GhPlane (one GraphQL round-trip per poll; SWR: n
               the store-apply choke point, persisted as rotating JSONL;
               `?since=<epoch-millis>` and `?limit=` — 1000 default,
               5000 cap)
-        GET /transcript (#63: on-demand session-transcript pages,
-              newest first, redacted at the module boundary; the ONLY
-              grant-gated GET — requires the `read_tail` grant via a
-              signed envelope in the `x-corral-drive` header)
 ```
 
 Every adapter normalizes into the canonical `Agent` record
@@ -164,11 +157,6 @@ before any bytes leave the machine. The APNs path re-redacts anyway — see
 Two subsystems answer from outside the agent read model, because their
 inputs are files on disk rather than plane events:
 
-- **Transcript reader** (`src/transcript/`, `GET /transcript`) — binds an
-  agent to its own tool's session store, reads one bounded page at a time,
-  and redacts entries before they cross the module boundary. It is an
-  on-demand, grant-gated read path; it does not compute provider usage or
-  alter the fleet snapshot.
 - **Fleet identities** (`src/fleet/`, `corrald fleet switch <name>`,
   `GET /fleets`) — CONFIGLESS (#237): corral does not own, read, or write
   `fleets.json`. The fleet registry is fleet-ops' opinionated config
@@ -267,9 +255,8 @@ signed envelope {key_id, signature,       POST /drive
 ## Capabilities
 
 `prompt`, `interrupt`, `approve`, `read_tail` (bounded live tail served as
-segmented blocks on `/drive`, plus the grant-gated paged `/transcript`
-view that the client folds into the same Recent-output surface),
-`kill`, `attach`, and the fleet-level `start_worktree` — the closed set
+segmented blocks on `/drive`), `kill`, `attach`, and the fleet-level
+`start_worktree` — the closed set
 in `src/drive/mod.rs`. Anything else is refused with a typed error before
 dispatch.
 
@@ -325,9 +312,6 @@ Four places where data crosses a trust line, and what guards each:
    has moved on. Destructive payloads still require biometric step-up, and
    the check is server-side — a compromised client cannot skip it.
 
-Transcript session stores are opened **read-only and bounded**; they are
-inputs, and corral never writes to another tool's state.
-
 ## Clients
 
 - `crates/corrald-client` — shared client layer: typed read model,
@@ -340,7 +324,7 @@ inputs, and corral never writes to another tool's state.
   hosts the admin-token audit log and grant editor.
 - `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive
   (including Kill/Attach), the single Recent-output surface (live
-  segmented blocks merged with paged older transcript pages), APNs registration,
+  segmented blocks), APNs registration,
   and canned lock-screen replies bound to `prompt_hash`. Disabled controls
   name a missing grant or an unadvertised capability. See the README's
   Status section for what is and is not verified on hardware.
@@ -361,12 +345,7 @@ src/approve/         claim-based approvals (prompt_hash checks)
 src/auth/            host identity, device registry, authorizer, step-up,
                      hash-chained audit, HTTP routes
 src/api/             router, /snapshot /events /history /healthz,
-                     GET /transcript (read_tail-gated), POST /drive,
-                     POST /device-token
-src/transcript/      D35: per-store paged transcript readers (opencode
-                     sqlite3-CLI, claude/codex backwards JSONL) +
-                     agent→session binding by worktree; redaction inside
-                     the module boundary
+                     POST /drive, POST /device-token
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
 src/fleet/           configless: fleet-ops CLI identity path + worktree/switch ops
 src/push/            APNs provider, payload build + redaction, transition

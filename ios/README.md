@@ -271,10 +271,10 @@ material is added to the repository.
   requests one fresh snapshot; SSE remains the source of truth afterward.
 - A successful `read_tail` stores the daemon-redacted, bounded `result.lines`
   plus the segmented `result.blocks`, and the agent detail surface renders a
-  single Recent-output pane: live tail (bottom, auto-loaded and auto-refreshed
-  while open) with older history paged in above via the transcript cursor. An
-  empty result is shown as "No output yet". The client applies the same
-  200-line / 32 KiB bounds and a hard timeout (error + Retry, never a spinner).
+  single Recent-output pane: the live bounded tail (bottom, auto-loaded and
+  auto-refreshed while open). An empty result is shown as "No output yet".
+  The client applies the same 200-line / 32 KiB bounds and a hard timeout
+  (error + Retry, never a spinner).
 - **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
   `LocalNotifier.ClaimPayload` — a future relay would register the device
   token and push exactly that claim dict; the action-execution path
@@ -303,11 +303,11 @@ daemon's typed error banner (`not_granted`, `expired`, `revoked`, …).
 Every visible agent row is a full-width navigation target. Its detail surface
 re-resolves the live fleet record before dispatch and exposes Recent output,
 Prompt, Interrupt, and blocked approval controls. Recent output auto-loads the
-live tail (no tap) and auto-refreshes while the detail view is open. The
-approved transcript-chat prototype supersedes the earlier unbounded detail
-scroll: Recent output owns one bounded nested transcript scroll, while the
-composer remains its sibling below it; older transcript pages are loaded from
-the top history affordance. The non-jamming `[info] Tail …` fleet banner is
+live tail (no tap) and auto-refreshes while the detail view is open. Recent
+output owns one bounded nested scroll, while the composer remains its sibling
+below it; the load-earlier affordance re-requests the tail (the bounded pane
+is the only history — transcript paging was removed by #241). The
+non-jamming `[info] Tail …` fleet banner is
 gone, and the result stays in the detail view. Approvals echo the current
 `approval_id` and `prompt_hash`, and a changed/deleted target is refused
 locally before signed bytes leave the device.
@@ -411,16 +411,16 @@ tests; it is not an App Review or TestFlight product path.
 `DemoSeedTests` and the lifecycle/action tests continue to exercise the
 Debug-only fixture. No physical-device or TestFlight result is claimed here.
 
-### Transcript-chat evidence route (#205)
+### Recent-output evidence route
 
 The checked-in Debug build has one opt-in, deterministic detail route for the
-approved transcript-chat capture. `-corralDemoDetail` selects the featured
-transcript agent and its after-state; adding `-corralDemoBefore` selects the
+approved Recent-output capture. `-corralDemoDetail` selects the featured
+recent-output agent and its after-state; adding `-corralDemoBefore` selects the
 legacy monotone-output presentation used only for the before frame. The route
 is state-driven, seeds the composer with a non-empty draft, and is compiled
 only under `#if DEBUG`; production and Release builds cannot enter it.
 
-The dark transcript surface intentionally forces SwiftUI's `.dark` color
+The dark Recent-output surface intentionally forces SwiftUI's `.dark` color
 scheme so the prototype's charcoal tokens remain coherent even when the
 containing app follows the system appearance. User-role blue is centralized
 as `RecentOutputPalette.userBlue`, and Model/Effort/Worktree chips expose
@@ -438,6 +438,9 @@ CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
   --ios-before-launch-arg -corralDemoBefore \
   --output-root docs/design/evidence --force
 ```
+
+(The #205 transcript prototype was retired by #241; the flag above remains
+the documented invocation for the historical evidence record.)
 
 The gate creates its own temporary Chrome profile, uses loopback-only DevTools
 for shutdown, and removes its private staging directory. It never reads or

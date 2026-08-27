@@ -10,7 +10,7 @@ enum DemoFleet {
     /// The opt-in detail route used by the reproducible #205 evidence gate.
     /// Keeping the target in the fixture makes the route deterministic without
     /// changing normal fleet selection behavior.
-    static let featuredAgentID = "herdr:demo-transcript"
+    static let featuredAgentID = "herdr:demo-output"
 
     struct RecentBlock: Equatable, Sendable {
         let kind: TranscriptBlockKind
@@ -113,15 +113,15 @@ enum DemoFleet {
                                  prNumber: 15, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
             seq: 9, tsOffset: 20)
 
-        // Dedicated transcript fixture: no approval card consumes the
+        // Dedicated recent-output fixture: no approval card consumes the
         // viewport, so the design gate can show assistant/user bubbles, the
         // expanded diff, and the enabled pinned Send control together.
         agents[featuredAgentID] = agent(featuredAgentID, tool: "codex", state: .working,
-            reason: "streaming a segmented transcript",
+            reason: "streaming a segmented recent output",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
-            displayName: "demo-transcript", title: "Review transcript chat",
-            workspace: Workspace(repo: "corral", branch: "g205/ios-transcript-chat",
-                                 worktreePath: "~/worktrees/corral/g205-ios-transcript-chat",
+            displayName: "demo-output", title: "Review recent output",
+            workspace: Workspace(repo: "corral", branch: "g205/ios-recent-output",
+                                 worktreePath: "~/worktrees/corral/g205-ios-recent-output",
                                  prNumber: 205, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
             seq: 10, tsOffset: 12)
 

@@ -1394,7 +1394,7 @@ impl CorralApp {
     /// A transport error is stored as `Err` so the tab shows the same
     /// prominent failure path as a daemon `status="error"`.
     fn refresh_registry(&mut self, force: bool) {
-        if !force && self.fleet.registry_loaded {
+        if self.fleet.registry_loading || (!force && self.fleet.registry_ready()) {
             return;
         }
         self.fleet.registry_loading = true;
@@ -2684,6 +2684,14 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         }
         Tab::Issues => {
             app.refresh_issues(false);
+            if app.fleet.registry.is_none() && app.conn == ConnState::Connected {
+                // The Issues tab can win the first frame after connection
+                // while the registry request is still racing the issue
+                // request. The loading guard in refresh_registry prevents a
+                // second request; a later manual Issues refresh retries a
+                // failed projection as well.
+                app.refresh_registry(false);
+            }
             let ledger = app.ledger.clone();
             let allowed = |cap: &str| ledger.allowed(cap);
             let mut pending: Vec<DriveIntent> = Vec::new();
@@ -2697,6 +2705,13 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             if refresh_requested {
                 app.refresh_issues(true);
+                if !app.fleet.registry_ready() {
+                    // A failed or daemon-error registry must be recoverable
+                    // from the surface that needs it. Force only here, after
+                    // the user explicitly refreshed Issues; an in-flight
+                    // request is still protected by refresh_registry's guard.
+                    app.refresh_registry(true);
+                }
             }
             app.dispatch_drive_intents(pending);
         }

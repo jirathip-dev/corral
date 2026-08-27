@@ -59,7 +59,7 @@
 //! Storing and replaying the exact body keeps idempotent retries byte-identical.
 
 use std::collections::hash_map::Entry as HashMapEntry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -75,6 +75,7 @@ use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
+use crate::core::events::GhIssueRef;
 use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
@@ -1007,11 +1008,10 @@ async fn worktree_dispatch(
     // daemon's authoritative issue ref, never trusted from the client. A
     // client could sign a bogus URL; the worktree action echoes the SAME
     // fetched set it validates against.
+    let issue_snapshot = state.issues.snapshot();
     let request = match request {
         WorktreeRequest::Issue { repo, number, .. } => {
-            let authoritative_url = state
-                .issues
-                .get(&fleet.name, number)
+            let authoritative_url = authoritative_issue(&registry, &issue_snapshot, &fleet, number)
                 .map(|issue| issue.url)
                 .unwrap_or_default();
             WorktreeRequest::Issue {
@@ -1025,18 +1025,7 @@ async fn worktree_dispatch(
 
     // The stale/closed-issue guard runs against the SAME repo-level issue set
     // the browser renders (the integrator's cache), never a guess.
-    let issues: Vec<IssueSummary> = state
-        .issues
-        .snapshot()
-        .into_iter()
-        .flat_map(|(repo, iss)| {
-            iss.into_iter().map(move |issue| IssueSummary {
-                repo: repo.clone(),
-                number: issue.number,
-                state: issue.state,
-            })
-        })
-        .collect();
+    let issues = issue_summaries(&registry, issue_snapshot);
     let issue_check = IssueCheck::new(&issues);
 
     let creator = GitCreator;
@@ -1084,6 +1073,87 @@ async fn worktree_dispatch(
     }
 }
 
+/// Return the cached issue for a fleet, including another fleet's cache entry
+/// when both registry entries point at the same full GitHub repository. The
+/// gh plane polls one repository once, so the first fleet's issue key is the
+/// source of truth for every exact fleet-name action in that repository.
+fn authoritative_issue(
+    registry: &config::Registry,
+    snapshot: &BTreeMap<String, Vec<GhIssueRef>>,
+    fleet: &config::Fleet,
+    number: u64,
+) -> Option<GhIssueRef> {
+    let aliases = registry
+        .fleets
+        .iter()
+        .filter(|candidate| same_gh_repo(&candidate.gh_repo, &fleet.gh_repo))
+        .map(|candidate| candidate.name.as_str());
+    let mut names = vec![fleet.name.as_str()];
+    names.extend(aliases.filter(|name| *name != fleet.name));
+    names
+        .into_iter()
+        .filter_map(|name| snapshot.get(name))
+        .flat_map(|issues| issues.iter())
+        .find(|issue| issue.number == number)
+        .cloned()
+}
+
+/// Expand one cached fleet issue onto every exact fleet-name alias that shares
+/// its full GitHub repository. This keeps the daemon-side issue check aligned
+/// with the client surface without adding duplicate entries to `GET /issues`.
+fn issue_summaries(
+    registry: &config::Registry,
+    snapshot: BTreeMap<String, Vec<GhIssueRef>>,
+) -> Vec<IssueSummary> {
+    let mut summaries = BTreeMap::<(String, u64), IssueSummary>::new();
+    for (repo, issues) in snapshot {
+        let aliases: Vec<String> = registry
+            .fleets
+            .iter()
+            .find(|fleet| fleet.name == repo)
+            .map(|source| {
+                registry
+                    .fleets
+                    .iter()
+                    .filter(|candidate| same_gh_repo(&candidate.gh_repo, &source.gh_repo))
+                    .map(|candidate| candidate.name.clone())
+                    .collect()
+            })
+            .filter(|aliases: &Vec<String>| !aliases.is_empty())
+            .unwrap_or_else(|| vec![repo.clone()]);
+        for issue in issues {
+            for alias in &aliases {
+                let summary = IssueSummary {
+                    repo: alias.clone(),
+                    number: issue.number,
+                    state: issue.state.clone(),
+                };
+                let key = (summary.repo.clone(), summary.number);
+                if alias == &repo {
+                    summaries.insert(key, summary);
+                } else {
+                    summaries.entry(key).or_insert(summary);
+                }
+            }
+        }
+    }
+    summaries.into_values().collect()
+}
+
+fn same_gh_repo(left: &str, right: &str) -> bool {
+    canonical_gh_repo(left)
+        .is_some_and(|left| canonical_gh_repo(right).is_some_and(|right| left == right))
+}
+
+fn canonical_gh_repo(gh_repo: &str) -> Option<String> {
+    let (owner, repo) = gh_repo.split_once('/')?;
+    let (owner, repo) = (owner.trim(), repo.trim());
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
 /// Stable wire `error_kind` for a typed worktree failure.
 fn worktree_error_kind(error: &WorktreeError) -> &'static str {
     match error {
@@ -1129,6 +1199,69 @@ mod tests {
     use super::*;
     use crate::drive::canonical_envelope_bytes;
     use serde_json::json;
+
+    fn worktree_fleet(name: &str, gh_repo: &str) -> config::Fleet {
+        config::Fleet {
+            name: name.into(),
+            gh_repo: gh_repo.into(),
+            local: "/tmp/local".into(),
+            worktree_dir: name.into(),
+            orch: "orch".into(),
+            workers: Vec::new(),
+            paused: false,
+            models: config::Models {
+                orch: "orch".into(),
+                impl_: "impl".into(),
+                review: "review".into(),
+                impl_alt: None,
+                impl_alt2: None,
+            },
+        }
+    }
+
+    fn cached_issue(number: u64) -> GhIssueRef {
+        GhIssueRef {
+            repo: "foo".into(),
+            number,
+            state: "OPEN".into(),
+            title: "shared issue".into(),
+            labels: Vec::new(),
+            url: format!("https://github.com/example/foo/issues/{number}"),
+        }
+    }
+
+    #[test]
+    fn shared_gh_repo_issue_cache_serves_each_fleet_target_without_api_duplicates() {
+        let registry = config::Registry::new(vec![
+            worktree_fleet("alpha", "owner/foo"),
+            worktree_fleet("beta", "owner/foo"),
+        ]);
+        let issue = cached_issue(42);
+        let snapshot = BTreeMap::from([
+            ("alpha".to_string(), vec![issue.clone()]),
+            ("beta".to_string(), vec![issue.clone()]),
+        ]);
+
+        let summaries = issue_summaries(&registry, snapshot.clone());
+        assert_eq!(
+            summaries.len(),
+            2,
+            "identical cached issues are deduplicated"
+        );
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|issue| issue.repo.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "one fetched issue is valid for both exact fleet targets"
+        );
+        assert_eq!(
+            authoritative_issue(&registry, &snapshot, &registry.fleets[1], 42,),
+            Some(issue),
+            "the second fleet gets the same authoritative URL without a second poll"
+        );
+    }
 
     #[derive(Debug)]
     struct TombstonedAdapter;

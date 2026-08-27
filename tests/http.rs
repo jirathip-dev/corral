@@ -262,6 +262,10 @@ async fn fleet_registry_projects_status_path_and_all_fleet_fields() {
     assert!(body["error"].is_null());
     assert_eq!(body["path"], path.to_string_lossy().as_ref());
     assert_eq!(body["fleets"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        array_values(&body["repos"]),
+        BTreeSet::from(["corral".to_string(), "herdr-board".to_string()])
+    );
 
     let corral = &body["fleets"][0];
     assert_eq!(corral["name"], "corral");
@@ -322,7 +326,7 @@ async fn fleet_registry_malformed_file_returns_http_200_error_shape() {
 /// contains both compatible keys and live-only placeholders.
 #[tokio::test]
 async fn union_read_model_handles_absent_unloadable_partial_and_full_registry() {
-    let live = [Some("primary-repo"), Some("herdr-only"), None];
+    let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
     let expected_live = BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()]);
 
     // Absent registry: status remains an explicit error, while both read
@@ -510,6 +514,10 @@ async fn fleet_registry_and_issues_read_the_same_registry_source() {
     assert_eq!(registry["fleets"][0]["gh_repo"], "jirathip-dev/corral");
     assert_eq!(registry["fleets"][1]["name"], "board");
     assert_eq!(registry["fleets"][1]["gh_repo"], "jirathip-dev/herdr-board");
+    assert_eq!(
+        array_values(&registry["repos"]),
+        BTreeSet::from(["corral".to_string(), "herdr-board".to_string()])
+    );
 }
 
 #[tokio::test]
@@ -697,4 +705,31 @@ async fn issues_endpoint_serves_last_known_repo_issues() {
         "https://github.com/herdr-board/herdr-board/issues/4"
     );
     assert_eq!(repos["herdr-board"][0]["labels"][0]["name"], "p2");
+}
+
+#[tokio::test]
+async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
+    let (_dir, path) = write_registry(&registry_body(&[
+        ("alpha", "owner/foo"),
+        ("beta", "owner/foo"),
+    ]));
+    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
+    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
+    let state = AppState::default();
+    state.issues.update(
+        "alpha",
+        vec![corrald::core::events::GhIssueRef {
+            repo: "foo".to_string(),
+            number: 42,
+            state: "OPEN".to_string(),
+            title: "shared issue".to_string(),
+            labels: vec![],
+            url: "https://github.com/example/foo/issues/42".to_string(),
+        }],
+    );
+    let app = router(state);
+    let json = get_json(&app, "/issues").await;
+    assert_eq!(json["repos"]["alpha"].as_array().unwrap().len(), 1);
+    assert!(json["repos"]["beta"].as_array().unwrap().is_empty());
+    assert!(json["repos"]["foo"].as_array().unwrap().is_empty());
 }

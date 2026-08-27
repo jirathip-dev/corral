@@ -6,13 +6,52 @@
 //! issue-free worktree box; creation is available only for a selected, open
 //! issue.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use eframe::egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
 
 use crate::drive::DriveIntent;
-use crate::model::GhIssueRef;
+use crate::model::{FleetRegistry, FleetRegistryEntry, GhIssueRef};
 use crate::state::Fleet;
 use crate::theme;
 use crate::ui::badge;
+
+type IssueKey = (String, String, u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoIdentity {
+    display_repo: String,
+    source: String,
+    action_targets: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct IssueGroupBuilder {
+    issues: BTreeMap<(String, u64), DisplayIssueBuilder>,
+}
+
+#[derive(Debug)]
+struct DisplayIssueBuilder {
+    issue: GhIssueRef,
+    action_targets: BTreeSet<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DisplayIssue {
+    source: String,
+    issue: GhIssueRef,
+    action_targets: Vec<String>,
+}
+
+/// A display category after aliases such as a fleet name and its canonical
+/// `gh_repo` basename have been folded together. Action targets stay on each
+/// issue: two different repositories may share a basename, and must not gain
+/// each other's fleet actions merely because they share a display category.
+#[derive(Debug, PartialEq, Eq)]
+struct DisplayIssueGroup {
+    display_repo: String,
+    issues: Vec<DisplayIssue>,
+}
 
 /// State filter for the browser (open/closed are the two state buckets;
 /// `All` shows every fetched issue regardless of state).
@@ -59,7 +98,8 @@ pub fn show(
     drive: &mut dyn FnMut(DriveIntent),
     refresh_issues: &mut dyn FnMut(),
 ) {
-    let total: usize = fleet.issues.values().map(Vec::len).sum();
+    let groups = display_issue_groups(fleet);
+    let total: usize = groups.iter().map(|group| group.issues.len()).sum();
     let title = if fleet.issues_loaded {
         format!("Issues  ({total})")
     } else if fleet.issues_loading {
@@ -100,27 +140,37 @@ pub fn show(
             .id_salt("corral-ui-issues-list")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (repo, issues) in &fleet.issues {
-                    let shown = issues
+                for group in &groups {
+                    let shown = group
+                        .issues
                         .iter()
-                        .filter(|i| filter.keeps(&i.state))
-                        .filter(|i| matches_query(i, &query))
+                        .filter(|display_issue| filter.keeps(&display_issue.issue.state))
+                        .filter(|display_issue| matches_query(&display_issue.issue, &query))
                         .count();
                     if shown == 0 {
                         continue;
                     }
-                    let title = format!("{repo}  ({shown})");
+                    let title = format!("{}  ({shown})", group.display_repo);
                     egui::CollapsingHeader::new(
                         RichText::new(title)
                             .monospace()
                             .color(theme::ui::TEXT_STRONG),
                     )
-                    .id_salt(("corral-ui-issues-repo", repo))
+                    .id_salt(("corral-ui-issues-repo", &group.display_repo))
                     .default_open(true)
                     .show(ui, |ui| {
-                        for issue in issues {
-                            if filter.keeps(&issue.state) && matches_query(issue, &query) {
-                                issue_row(ui, fleet, repo, issue, allowed, drive);
+                        for display_issue in &group.issues {
+                            if filter.keeps(&display_issue.issue.state)
+                                && matches_query(&display_issue.issue, &query)
+                            {
+                                issue_row(
+                                    ui,
+                                    fleet,
+                                    &group.display_repo,
+                                    display_issue,
+                                    allowed,
+                                    drive,
+                                );
                             }
                         }
                     });
@@ -207,12 +257,17 @@ fn matches_query(issue: &GhIssueRef, query: &str) -> bool {
 fn issue_row(
     ui: &mut Ui,
     fleet: &Fleet,
-    repo: &str,
-    issue: &GhIssueRef,
+    display_repo: &str,
+    display_issue: &DisplayIssue,
     allowed: &dyn Fn(&str) -> bool,
     drive: &mut dyn FnMut(DriveIntent),
 ) {
-    let key = (repo.to_string(), issue.number);
+    let issue = &display_issue.issue;
+    let key = (
+        display_repo.to_string(),
+        display_issue.source.clone(),
+        issue.number,
+    );
     let selected = selected_key(ui) == Some(key.clone());
     let row_label = format!("#{}  {}  {}", issue.number, issue.title, issue.state);
     if ui
@@ -222,121 +277,302 @@ fn issue_row(
         set_selected(ui, Some(key.clone()));
     }
     if selected {
-        ui.indent(("corral-ui-issue-detail", repo, issue.number), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let color = if is_open(&issue.state) {
-                    theme::ui::GOOD
-                } else {
-                    theme::ui::TEXT_MUTED
-                };
-                badge(ui, &issue.state, color);
-                if !issue.url.is_empty() && ui.link(issue.url.clone()).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(issue.url.clone()));
-                }
-            });
-            if !issue.labels.is_empty() {
+        ui.indent(
+            (
+                "corral-ui-issue-detail",
+                display_repo,
+                &display_issue.source,
+                issue.number,
+            ),
+            |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for label in &issue.labels {
-                        if label.name.is_empty() {
-                            continue;
-                        }
-                        let color = label_color(&label.color);
-                        badge(ui, &label.name, color);
+                    let color = if is_open(&issue.state) {
+                        theme::ui::GOOD
+                    } else {
+                        theme::ui::TEXT_MUTED
+                    };
+                    badge(ui, &issue.state, color);
+                    if !issue.url.is_empty() && ui.link(issue.url.clone()).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(issue.url.clone()));
                     }
                 });
-            }
-            if !is_open(&issue.state) {
-                ui.label(
-                    RichText::new("closed issue — not startable (the daemon refuses too)")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-            } else if !allowed("start_worktree") {
-                crate::ui::disabled_button_with_reason(
-                    ui,
-                    "start worktree",
-                    "not granted the start_worktree capability — refresh grants in Settings",
-                );
-            } else {
-                confirm_buttons(ui, &key, fleet, issue, drive);
-            }
-        });
+                if !issue.labels.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for label in &issue.labels {
+                            if label.name.is_empty() {
+                                continue;
+                            }
+                            let color = label_color(&label.color);
+                            badge(ui, &label.name, color);
+                        }
+                    });
+                }
+                if !is_open(&issue.state) {
+                    ui.label(
+                        RichText::new("closed issue — not startable (the daemon refuses too)")
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
+                    );
+                } else if display_issue.action_targets.is_empty() {
+                    crate::ui::disabled_button_with_reason(
+                        ui,
+                        "start worktree",
+                        "no registered fleet owns this repo category — refresh the fleet registry",
+                    );
+                } else if !allowed("start_worktree") {
+                    crate::ui::disabled_button_with_reason(
+                        ui,
+                        "start worktree",
+                        "not granted the start_worktree capability — refresh grants in Settings",
+                    );
+                } else {
+                    confirm_buttons(ui, &key, &display_issue.action_targets, fleet, issue, drive);
+                }
+            },
+        );
     }
 }
 
 fn confirm_buttons(
     ui: &mut Ui,
-    key: &(String, u64),
+    key: &IssueKey,
+    action_targets: &[String],
     fleet: &Fleet,
     issue: &GhIssueRef,
     drive: &mut dyn FnMut(DriveIntent),
 ) {
-    // #113 review 7: a visible in-flight indicator while the daemon creates
-    // the worktree. The drive state is keyed by the repo/fleet target.
-    if matches!(
-        fleet.latest_drive(&key.0),
-        Some(crate::state::DriveState::Sending { .. })
-    ) {
+    for action_target in action_targets {
+        // #113 review 7: a visible in-flight indicator while the daemon
+        // creates the worktree. The drive state is keyed by fleet target.
+        if matches!(
+            fleet.latest_drive(action_target),
+            Some(crate::state::DriveState::Sending { .. })
+        ) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new(format!("creating worktree ({action_target})…"))
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+            });
+            continue;
+        }
+        let multiple = action_targets.len() > 1;
+        let confirming = confirming(ui, key, action_target);
+        if !confirming {
+            let label = action_label("start worktree", action_target, multiple);
+            if ui.small_button(label).clicked() {
+                set_confirming(ui, key, action_target, true);
+            }
+            continue;
+        }
         ui.horizontal(|ui| {
-            ui.spinner();
+            let label = action_label("✓ confirm create", action_target, multiple);
+            if ui.small_button(label).clicked() {
+                let intent = DriveIntent::start_worktree_issue(
+                    action_target,
+                    issue.number,
+                    &issue.url,
+                    fleet.rev,
+                );
+                drive(intent);
+                set_confirming(ui, key, action_target, false);
+                set_selected(ui, None);
+            }
+            if ui
+                .small_button(action_label("cancel", action_target, multiple))
+                .clicked()
+            {
+                set_confirming(ui, key, action_target, false);
+            }
             ui.label(
-                RichText::new("creating worktree…")
+                RichText::new("creates exactly one isolated worktree/branch")
                     .small()
                     .color(theme::ui::TEXT_MUTED),
             );
         });
-        return;
     }
-    let confirming = confirming(ui, key);
-    if !confirming {
-        if ui.small_button("start worktree").clicked() {
-            set_confirming(ui, key, true);
-        }
-        return;
-    }
-    ui.horizontal(|ui| {
-        if ui.small_button("✓ confirm create").clicked() {
-            let intent =
-                DriveIntent::start_worktree_issue(&key.0, issue.number, &issue.url, fleet.rev);
-            drive(intent);
-            set_confirming(ui, key, false);
-            set_selected(ui, None);
-        }
-        if ui.small_button("cancel").clicked() {
-            set_confirming(ui, key, false);
-        }
-        ui.label(
-            RichText::new("creates exactly one isolated worktree/branch")
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
-    });
 }
 
-fn selected_key(ui: &Ui) -> Option<(String, u64)> {
+fn action_label(prefix: &str, target: &str, multiple: bool) -> String {
+    if multiple {
+        format!("{prefix} ({target})")
+    } else {
+        prefix.to_string()
+    }
+}
+
+/// Resolve a valid registry identity for a display or issue-map key.
+///
+/// The API intentionally retains both fleet-name placeholders and canonical
+/// category placeholders for backwards compatibility. The client uses the
+/// registry as the identity boundary: either spelling may select an entry,
+/// and an unambiguous action target is always the exact fleet name. Matching
+/// both spellings together is important: a collision between one fleet name
+/// and another fleet's basename is ambiguous in either direction and must be
+/// disabled symmetrically.
+fn registered_repo_identity(fleet: &Fleet, key: &str) -> Option<RepoIdentity> {
+    let registry = ready_registry(fleet)?;
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let matches: Vec<&FleetRegistryEntry> = registry
+        .fleets
+        .iter()
+        .filter(|entry| {
+            let name_matches = entry.name.trim() == key;
+            let repo_matches = canonical_repo_identity(&entry.gh_repo)
+                .is_some_and(|(_, display_repo)| display_repo == key);
+            name_matches || repo_matches
+        })
+        .collect();
+    if matches.is_empty() {
+        return None;
+    }
+
+    let mut canonical_slugs = BTreeSet::new();
+    let mut display_repos = BTreeSet::new();
+    let mut malformed = false;
+    for entry in &matches {
+        if let Some((slug, display_repo)) = canonical_repo_identity(&entry.gh_repo) {
+            canonical_slugs.insert(slug);
+            display_repos.insert(display_repo);
+        } else {
+            malformed = true;
+        }
+    }
+    let unambiguous = !malformed && canonical_slugs.len() == 1;
+    let display_repo = if display_repos.len() == 1 {
+        display_repos.into_iter().next().expect("one display repo")
+    } else {
+        key.to_string()
+    };
+    let source = if unambiguous {
+        canonical_slugs
+            .iter()
+            .next()
+            .cloned()
+            .expect("one canonical repo")
+    } else {
+        format!("ambiguous:{key}")
+    };
+    let action_targets = if unambiguous {
+        let canonical_slug = canonical_slugs.iter().next().expect("one canonical repo");
+        registry
+            .fleets
+            .iter()
+            .filter(|entry| {
+                canonical_repo_identity(&entry.gh_repo)
+                    .is_some_and(|(slug, _)| slug == *canonical_slug)
+            })
+            .filter(|entry| !entry.name.trim().is_empty())
+            .map(|entry| entry.name.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+
+    Some(RepoIdentity {
+        display_repo,
+        source,
+        action_targets,
+    })
+}
+
+fn ready_registry(fleet: &Fleet) -> Option<&FleetRegistry> {
+    match fleet.registry.as_ref()? {
+        Ok(registry) if registry.status.trim() == "ok" => Some(registry),
+        _ => None,
+    }
+}
+
+/// Return the canonical full repository slug and basename for a single
+/// `owner/repo` shape. The daemon validates this before it emits a registry,
+/// but the client remains defensive for hand-built fixtures and older peers.
+fn canonical_repo_identity(gh_repo: &str) -> Option<(String, String)> {
+    let (owner, repo) = gh_repo.split_once('/')?;
+    let (owner, repo) = (owner.trim(), repo.trim());
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((format!("{owner}/{repo}"), repo.to_string()))
+}
+
+/// Fold issue-map aliases into canonical display categories. An unregistered
+/// live-only category stays visible, but its issue action has no target.
+fn display_issue_groups(fleet: &Fleet) -> Vec<DisplayIssueGroup> {
+    let mut groups: BTreeMap<String, IssueGroupBuilder> = BTreeMap::new();
+    for (key, issues) in &fleet.issues {
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let identity = registered_repo_identity(fleet, key).unwrap_or_else(|| RepoIdentity {
+            display_repo: key.to_string(),
+            source: format!("unregistered:{key}"),
+            action_targets: BTreeSet::new(),
+        });
+        let group = groups.entry(identity.display_repo).or_default();
+        for issue in issues {
+            let entry = group
+                .issues
+                .entry((identity.source.clone(), issue.number))
+                .or_insert_with(|| DisplayIssueBuilder {
+                    issue: issue.clone(),
+                    action_targets: BTreeSet::new(),
+                });
+            entry
+                .action_targets
+                .extend(identity.action_targets.iter().cloned());
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|(display_repo, group)| DisplayIssueGroup {
+            display_repo,
+            issues: group
+                .issues
+                .into_iter()
+                .map(|((source, _), issue)| DisplayIssue {
+                    source,
+                    issue: issue.issue,
+                    action_targets: issue.action_targets.into_iter().collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+type SelectedIssueKey = IssueKey;
+
+fn selected_key(ui: &Ui) -> Option<SelectedIssueKey> {
     ui.ctx()
         .memory(|m| {
             m.data
-                .get_temp::<Option<(String, u64)>>(egui::Id::new("corral-ui-issues-selected"))
+                .get_temp::<Option<SelectedIssueKey>>(egui::Id::new("corral-ui-issues-selected"))
         })
         .flatten()
 }
 
-fn set_selected(ui: &Ui, key: Option<(String, u64)>) {
+fn set_selected(ui: &Ui, key: Option<SelectedIssueKey>) {
     ui.ctx().memory_mut(|m| {
         m.data
             .insert_temp(egui::Id::new("corral-ui-issues-selected"), key)
     });
 }
 
-fn confirming(ui: &Ui, key: &(String, u64)) -> bool {
-    let id = egui::Id::new(("corral-ui-issues-confirm", &key.0, key.1));
+fn confirming(ui: &Ui, key: &IssueKey, target: &str) -> bool {
+    let id = egui::Id::new(("corral-ui-issues-confirm", &key.0, &key.1, key.2, target));
     ui.ctx()
         .memory(|m| m.data.get_temp::<bool>(id).unwrap_or(false))
 }
 
-fn set_confirming(ui: &Ui, key: &(String, u64), value: bool) {
-    let id = egui::Id::new(("corral-ui-issues-confirm", &key.0, key.1));
+fn set_confirming(ui: &Ui, key: &IssueKey, target: &str, value: bool) {
+    let id = egui::Id::new(("corral-ui-issues-confirm", &key.0, &key.1, key.2, target));
     ui.ctx()
         .memory_mut(|m| m.data.insert_temp::<bool>(id, value));
 }
@@ -391,21 +627,63 @@ fn label_color(color: &str) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::FleetModels;
 
-    fn issue(number: u64, state: &str, title: &str, labels: &[&str]) -> GhIssueRef {
+    fn issue(repo: &str, number: u64, state: &str, title: &str, labels: &[&str]) -> GhIssueRef {
         GhIssueRef {
-            repo: "corral".to_string(),
+            repo: repo.to_string(),
             number,
             state: state.to_string(),
             title: title.to_string(),
             labels: labels
                 .iter()
-                .map(|n| crate::model::GhIssueLabel {
-                    name: (*n).to_string(),
+                .map(|name| crate::model::GhIssueLabel {
+                    name: (*name).to_string(),
                     color: "d4c5f9".to_string(),
                 })
                 .collect(),
-            url: format!("https://github.com/jirathip-dev/corral/issues/{number}"),
+            url: format!("https://github.com/example/{repo}/issues/{number}"),
+        }
+    }
+
+    fn registry(fleets: &[(&str, &str)], repos: &[&str]) -> FleetRegistry {
+        FleetRegistry {
+            status: "ok".to_string(),
+            reported_path: "/tmp/fleets.json".to_string(),
+            error: None,
+            repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
+            fleets: fleets
+                .iter()
+                .map(|(name, gh_repo)| FleetRegistryEntry {
+                    name: (*name).to_string(),
+                    gh_repo: (*gh_repo).to_string(),
+                    local: "/tmp/local".to_string(),
+                    worktree_dir: "worktrees".to_string(),
+                    orch: "orch".to_string(),
+                    workers: Vec::new(),
+                    paused: false,
+                    models: FleetModels {
+                        orch: "orch".to_string(),
+                        impl_: "impl".to_string(),
+                        review: "review".to_string(),
+                        impl_alt: None,
+                        impl_alt2: None,
+                        reasoning_effort: None,
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn ready_fleet(fleets: &[(&str, &str)], issues: &[(&str, GhIssueRef)]) -> Fleet {
+        Fleet {
+            issues: issues
+                .iter()
+                .map(|(key, issue)| ((*key).to_string(), vec![issue.clone()]))
+                .collect(),
+            issues_loaded: true,
+            registry: Some(Ok(registry(fleets, &[]))),
+            ..Default::default()
         }
     }
 
@@ -428,7 +706,7 @@ mod tests {
 
     #[test]
     fn matches_query_by_title_or_number() {
-        let i = issue(113, "OPEN", "browse issues", &["ui"]);
+        let i = issue("corral", 113, "OPEN", "browse issues", &["ui"]);
         assert!(matches_query(&i, "browse"));
         assert!(matches_query(&i, "113"));
         assert!(matches_query(&i, "#113"));
@@ -440,5 +718,198 @@ mod tests {
         assert_eq!(label_color("d4c5f9"), Color32::from_rgb(0xd4, 0xc5, 0xf9));
         assert_eq!(label_color(""), theme::ui::TEXT_MUTED);
         assert_eq!(label_color("#zzzzzz"), theme::ui::TEXT_MUTED);
+    }
+
+    #[test]
+    fn aliases_fold_to_one_canonical_category_and_dedupe_issues() {
+        let shared = issue("corral", 7, "OPEN", "same issue", &[]);
+        let fleet = ready_fleet(
+            &[("fleet-name", "owner/canonical-repo")],
+            &[("fleet-name", shared.clone()), ("canonical-repo", shared)],
+        );
+
+        let groups = display_issue_groups(&fleet);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].display_repo, "canonical-repo");
+        assert_eq!(groups[0].issues.len(), 1);
+        assert_eq!(groups[0].issues[0].action_targets, ["fleet-name"]);
+    }
+
+    #[test]
+    fn shared_gh_repo_keeps_distinct_actions_and_dedupes_identical_issues() {
+        let shared = issue("foo", 42, "OPEN", "shared issue", &[]);
+        let fleet = ready_fleet(
+            &[("alpha", "owner/foo"), ("beta", "owner/foo")],
+            &[("alpha", shared)],
+        );
+
+        let groups = display_issue_groups(&fleet);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].display_repo, "foo");
+        assert_eq!(groups[0].issues.len(), 1);
+        assert_eq!(groups[0].issues[0].action_targets, ["alpha", "beta"]);
+    }
+
+    #[test]
+    fn alias_ambiguity_is_symmetric_and_not_actionable() {
+        let shared = issue("foo", 1, "OPEN", "ambiguous", &[]);
+        let fleet = ready_fleet(
+            &[("foo", "owner/bar"), ("bar-fleet", "owner/foo")],
+            &[("foo", shared)],
+        );
+
+        let groups = display_issue_groups(&fleet);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].display_repo, "foo");
+        assert!(groups[0].issues[0].action_targets.is_empty());
+        assert_eq!(
+            registered_repo_identity(&fleet, "foo")
+                .expect("the colliding alias remains visible")
+                .action_targets,
+            BTreeSet::new()
+        );
+    }
+
+    fn test_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn pointer_input(pos: egui::Pos2, pressed: bool) -> egui::RawInput {
+        test_input(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ])
+    }
+
+    fn text_rect(output: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
+        fn walk(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Rect> {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text.contains(needle) => {
+                    Some(text.visual_bounding_rect())
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| walk(shape, needle))
+                }
+                _ => None,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| walk(&clipped.shape, needle))
+    }
+
+    fn render(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        input: egui::RawInput,
+        intents: &std::cell::RefCell<Vec<DriveIntent>>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(input, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+            let mut drive = |intent| intents.borrow_mut().push(intent);
+            show(ui, fleet, &|_| true, &mut drive, &mut || {});
+        })
+    }
+
+    fn clear(output: &mut egui::FullOutput) {
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn frame_issue_action_dispatches_the_selected_shared_fleet_target() {
+        let issue = issue("foo", 42, "OPEN", "shared issue", &[]);
+        let fleet = ready_fleet(
+            &[("alpha", "owner/foo"), ("beta", "owner/foo")],
+            &[
+                ("alpha", issue.clone()),
+                ("beta", issue.clone()),
+                ("foo", issue),
+            ],
+        );
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| {
+            memory.data.insert_temp(
+                egui::Id::new("corral-ui-issues-selected"),
+                Some(("foo".to_string(), "owner/foo".to_string(), 42_u64)),
+            );
+        });
+        let intents = std::cell::RefCell::new(Vec::new());
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let start = text_rect(&output, "start worktree (beta)")
+            .expect("the distinct beta fleet action is rendered")
+            .center();
+        clear(&mut output);
+        for pressed in [true, false] {
+            let mut frame = render(&ctx, &fleet, pointer_input(start, pressed), &intents);
+            clear(&mut frame);
+        }
+
+        let mut frame = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let confirm = text_rect(&frame, "✓ confirm create (beta)")
+            .expect("the beta confirmation is keyed independently")
+            .center();
+        clear(&mut frame);
+        for pressed in [true, false] {
+            let mut frame = render(&ctx, &fleet, pointer_input(confirm, pressed), &intents);
+            clear(&mut frame);
+        }
+
+        let intents = intents.into_inner();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].target, "beta");
+        assert_eq!(
+            intents[0].capability,
+            crate::drive::Capability::StartWorktree
+        );
+        assert_eq!(intents[0].payload["mode"], "issue");
+        assert_eq!(intents[0].payload["number"], 42);
+    }
+
+    #[test]
+    fn frame_disabled_unregistered_action_never_dispatches_unknown_fleet() {
+        let issue = issue("herdr-only", 9, "OPEN", "unregistered", &[]);
+        let fleet = Fleet {
+            issues: [("herdr-only".to_string(), vec![issue])]
+                .into_iter()
+                .collect(),
+            issues_loaded: true,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| {
+            memory.data.insert_temp(
+                egui::Id::new("corral-ui-issues-selected"),
+                Some((
+                    "herdr-only".to_string(),
+                    "unregistered:herdr-only".to_string(),
+                    9_u64,
+                )),
+            );
+        });
+        let intents = std::cell::RefCell::new(Vec::new());
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let disabled = text_rect(&output, "start worktree")
+            .expect("the unregistered action is visible but disabled")
+            .center();
+        clear(&mut output);
+        for pressed in [true, false] {
+            let mut frame = render(&ctx, &fleet, pointer_input(disabled, pressed), &intents);
+            clear(&mut frame);
+        }
+        assert!(intents.borrow().is_empty());
     }
 }

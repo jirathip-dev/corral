@@ -253,11 +253,12 @@ replacement.
 Recognized checkout, staging, configured Herdr, generic `.herdr/worktrees`, and
 unambiguous disposable temporary paths are normalized so evidence is
 checkout-independent. Quoted terminal paths retain their delimiters; ambiguous
-unquoted terminal names are redacted conservatively, while documented diagnostic
-suffixes remain visible. Capture producers should quote paths when arbitrary
-diagnostic text must follow a space-containing name. The generated invocation is
-labeled normalized because external placeholders describe the operation but are
-not necessarily runnable.
+unquoted terminal names are redacted conservatively, while an explicit
+whitespace-delimited assignment token (such as `status=FAILED`) or a
+parenthetical diagnostic remains visible. Capture producers should quote paths
+when arbitrary free-form diagnostic text must follow a space-containing name.
+The generated invocation is labeled normalized because external placeholders
+describe the operation but are not necessarily runnable.
 Historical evidence may instead be an explicitly labeled sanitized summary of
 an older capture.
 
@@ -270,11 +271,11 @@ frame with a small compatibility script; the wrapper also rejects a prototype
 unless the target is inside `body > .rack > .frame`. The derived page retains
 a visible failure if the target is absent at runtime instead of silently
 capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
-`127.0.0.1`, and
-allows only the matching loopback origin; it renders the approved prototype and
-comparison pages and is used for the scoped `Browser.close` request against the
-private profile. A caller-supplied `--live-png` remains an explicitly labeled
-fixture and is not represented as a Chrome live capture.
+`127.0.0.1` on an ephemeral port, and allows only the matching loopback origin;
+it renders only the approved prototype and comparison pages and is used for
+the scoped `Browser.close` request against its private temporary profile. A
+caller-supplied `--live-png` remains an explicitly labeled fixture and is not
+represented as a Chrome live capture.
 Validated artifacts are assembled in a private directory and published with a
 directory-level rename; a failed replacement restores the prior bundle.
 Publication is serialized by an output-root lock; unexpected destination

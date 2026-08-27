@@ -338,7 +338,7 @@ if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
     || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
 fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
-if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "invalid-stable" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
 from pathlib import Path
 import os
@@ -355,6 +355,13 @@ if mode == "invalid-bytes":
     sys.stdout.buffer.flush()
     destination.write_bytes(source)
     raise SystemExit(0)
+if mode == "invalid-stable":
+    destination.write_bytes(Path(os.environ["CORRAL_TEST_INVALID_PNG"]).read_bytes())
+    sys.stdout.buffer.write(b"invalid stable PNG fixture published\n")
+    sys.stdout.buffer.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
 if mode == "large-log":
     configured_root = os.environ.get(
         "CORRAL_TEST_WORKTREES_ROOT", "/tmp/Configured Herdr Root"
@@ -391,13 +398,17 @@ if mode == "large-log":
         + b"output-dot-sibling="
         + output_root
         + b".bak/file\n"
-        + b"configured-diagnostic="
-        + configured_root
-        + b"/repo/branch failed to compile\n"
         + b'quoted-diagnostic="'
         + configured_root
         + b'/repo/branch": permission denied\n'
-        + b"generic-diagnostic=/Users/jirathip/.herdr/worktrees/corral/branch failed to compile\n"
+        + b"configured-status="
+        + configured_root
+        + b"/repo/branch status=FAILED code=17\n"
+        + b"configured-parenthetical="
+        + configured_root
+        + b"/repo/branch (No such file)\n"
+        + b"generic-status=/h/.herdr/worktrees/a/b status=FAILED code=17\n"
+        + b"generic-parenthetical=/h/.herdr/worktrees/a/b (No such file)\n"
         b"FAILURE: exact bounded-log diagnostic \xff\n"
     )
     sys.stdout.buffer.flush()
@@ -471,6 +482,15 @@ if [[ "${CORRAL_TEST_PNG_RACE:-0}" == "1" \
     touch "$CORRAL_TEST_PNG_RACE_PREMATURE"
   fi
 fi
+if [[ -n "${CORRAL_TEST_PNG_VALIDATION_COUNT:-}" \
+  && "${1:-}" == "-" \
+  && "${2:-}" == *"live-after.png" ]]; then
+  validation_count=0
+  if [[ -f "$CORRAL_TEST_PNG_VALIDATION_COUNT" ]]; then
+    validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+  fi
+  printf '%s\n' "$((validation_count + 1))" >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
+fi
 exec "$CORRAL_TEST_REAL_PYTHON" "$@"
 STUB
 chmod +x "$WORK/bin/python-race"
@@ -487,6 +507,24 @@ fi
 exec "$CORRAL_TEST_REAL_PYTHON" "$@"
 STUB
 chmod +x "$WORK/bin/python-fail-path"
+
+mkdir -p "$WORK/Fake.app"
+cat > "$WORK/bin/xcrun" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${4:-}" == "screenshot" ]]; then
+  cp -- "$CORRAL_TEST_LIVE_PNG" "${5:?}"
+fi
+STUB
+chmod +x "$WORK/bin/xcrun"
+
+cat > "$WORK/bin/hermes-sim-task" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "--shell" && -n "${2:-}" ]]
+SIMULATOR_UDID=fixture bash -c "$2"
+STUB
+chmod +x "$WORK/bin/hermes-sim-task"
 
 cat > "$WORK/malformed-prototype.html" <<'HTML'
 <!doctype html>
@@ -632,6 +670,14 @@ fi
 grep -q -- "--ios-command" "$WORK/missing-ios-command.log" \
   || fail "missing iOS live command error was not actionable"
 
+invalid_agent=$'agent-1\n`<script>alert(1)</script>'
+if bash "$SCRIPT" --issue 211 --surface egui --live-agent "$invalid_agent" \
+  --dry-run >"$WORK/invalid-agent.log" 2>&1; then
+  fail "invalid live-agent syntax unexpectedly succeeded"
+fi
+grep -q -- '--live-agent must use a stable agent id' "$WORK/invalid-agent.log" \
+  || fail "invalid live-agent syntax was not rejected before rendering"
+
 rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE" "$CORRAL_TEST_CHROME_ARGS_FILE"
 export CORRAL_TEST_CHROME_LINGER=1
 run_capture --force
@@ -729,8 +775,47 @@ grep -q 'recovered stale evidence publication lock' "$WORK/stale-lock-recovery.l
   || fail "stale publication lock recovery was not recorded"
 [[ ! -e "$WORK/output/.design-gate.lock" ]] \
   || fail "recovered publication lock survived the run"
+
+external_lock="$WORK/external-lock"
+mkdir "$external_lock"
+printf '%s\n' external-owner >"$external_lock/owner.pid"
+ln -s "$external_lock" "$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/symlink-lock-failure.log" 2>&1; then
+  fail "symlinked publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/symlink-lock-failure.log" \
+  || fail "symlinked publication lock failure was not actionable"
+[[ -L "$WORK/output/.design-gate.lock" ]] \
+  || fail "symlinked publication lock was replaced"
+[[ "$(<"$external_lock/owner.pid")" == external-owner ]] \
+  || fail "symlinked publication lock recovery touched the external owner"
+rm "$WORK/output/.design-gate.lock"
+
+printf '%s\n' regular-owner >"$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/non-directory-lock-failure.log" 2>&1; then
+  fail "non-directory publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/non-directory-lock-failure.log" \
+  || fail "non-directory publication lock failure was not actionable"
+[[ "$(<"$WORK/output/.design-gate.lock")" == regular-owner ]] \
+  || fail "non-directory publication lock was modified"
+rm "$WORK/output/.design-gate.lock"
+
+mkdir "$WORK/output/.design-gate.lock"
+printf '%s\n' "$stale_lock_pid" >"$WORK/output/.design-gate.lock/owner.pid"
+mkdir "$WORK/output/.design-gate.lock.recovery"
+if run_capture --force >"$WORK/recovery-claim-failure.log" 2>&1; then
+  fail "pre-claimed stale publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/recovery-claim-failure.log" \
+  || fail "pre-claimed stale publication lock failure was not actionable"
+[[ -f "$WORK/output/.design-gate.lock/owner.pid" ]] \
+  || fail "failed recovery claim deleted the stale owner state"
+rm -rf -- "$WORK/output/.design-gate.lock" "$WORK/output/.design-gate.lock.recovery"
+
 for ignored_path in \
   docs/design/evidence/.design-gate.lock/owner.pid \
+  docs/design/evidence/.design-gate.lock.recovery/owner.pid \
   docs/design/evidence/.design-gate.stage.example/manifest \
   docs/design/evidence/.design-gate.final.example/manifest \
   docs/design/evidence/.design-gate.backup.example/manifest; do
@@ -1005,9 +1090,14 @@ assert b"<external-path>" not in data
 PY
 
 opaque_command="$WORK/wake-window.sh PATH=$WORK/cache:/usr/bin --config=$WORK/a,/etc/stable"
+printf '%s\n' daemon >"$WORK/daemon.bin"
+printf '%s\n' fixtures >"$WORK/fleets.json"
 run_capture --force \
   --egui-wake-command "$opaque_command" \
   --ios-command "$WORK/ios-command.sh" \
+  --daemon-binary "$WORK/daemon.bin" \
+  --fixture-registry "$WORK/fleets.json" \
+  --ios-before-launch-arg "$WORK/before payload" \
   --ios-launch-arg "$WORK/launch payload" \
   --output-root "$WORK/opaque-output"
 "$PYTHON_BIN" - "$WORK/opaque-output/issue-211/conformance.md" "$WORK" <<'PY'
@@ -1020,6 +1110,9 @@ work = os.fsencode(sys.argv[2])
 assert work not in data, "opaque command or launch argument leaked the disposable path"
 assert b"external-temp" in data, "opaque disposable paths were not normalized"
 assert b"external-input" in data, "absolute launch arguments were not normalized"
+assert b"--daemon-binary \\<external-input\\>" in data, "daemon binary was not normalized as a path"
+assert b"--fixture-registry \\<external-input\\>" in data, "fixture registry was not normalized as a path"
+assert b"--ios-before-launch-arg \\<external-input\\>" in data, "before-launch argument was not normalized as a launch argument"
 assert b"PATH=\\<external-temp\\>:/usr/bin" in data, "opaque colon-separated content was not preserved"
 assert b"--config=\\<external-temp\\>\\,/etc/stable" in data, "opaque comma-separated content was not preserved"
 PY
@@ -1364,6 +1457,83 @@ bash "$SCRIPT" \
 grep -q '900x900' "$WORK/ios-output/issue-205/conformance.md" \
   || fail "iOS prototype render did not use the unclipped 900x900 viewport"
 
+export CORRAL_TEST_EXPECTED_ISSUE=223
+export CORRAL_TEST_EXPECTED_CAPTURE_KIND="iOS simulator before/after screenshots via hermes-sim-task (Debug demo fixture)"
+ios_adversarial_arg=$'before\n```<script>alert(1)</script>'
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 223 \
+  --surface ios \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --ios-app "$WORK/Fake.app" \
+  --ios-mode demo \
+  --ios-before-launch-arg "$ios_adversarial_arg" \
+  --ios-delay-seconds 0 \
+  --no-build \
+  --output-root "$WORK/ios-adversarial-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/ios-adversarial-output/issue-223/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+prefix = b"- Command: "
+start = data.index(prefix) + len(prefix)
+delimiter_length = 0
+while start + delimiter_length < len(data) and data[start + delimiter_length] == 96:
+    delimiter_length += 1
+assert delimiter_length > 0
+delimiter = b"`" * delimiter_length
+end = data.index(delimiter, start + delimiter_length)
+content = data[start + delimiter_length:end]
+assert b"script" in content and b"\\n" in content
+longest = current = 0
+for value in content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert delimiter_length > longest, "dynamic capture command delimiter is unsafe"
+
+invocation_prefix = b"- Normalized invocation"
+invocation_start = data.index(b": ", data.index(invocation_prefix)) + 2
+invocation_delimiter_length = 0
+while (
+    invocation_start + invocation_delimiter_length < len(data)
+    and data[invocation_start + invocation_delimiter_length] == 96
+):
+    invocation_delimiter_length += 1
+assert invocation_delimiter_length > 0
+invocation_delimiter = b"`" * invocation_delimiter_length
+invocation_end = data.index(
+    invocation_delimiter, invocation_start + invocation_delimiter_length
+)
+invocation_content = data[
+    invocation_start + invocation_delimiter_length : invocation_end
+]
+assert b"script" in invocation_content and b"\\n" in invocation_content
+longest = current = 0
+for value in invocation_content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert invocation_delimiter_length > longest, "normalized invocation delimiter is unsafe"
+safe_ranges = (
+    (start, end + delimiter_length),
+    (invocation_start, invocation_end + invocation_delimiter_length),
+)
+for needle in (b"<script>", b"</script>"):
+    search = 0
+    while True:
+        occurrence = data.find(needle, search)
+        if occurrence == -1:
+            break
+        assert any(begin <= occurrence < finish for begin, finish in safe_ranges)
+        search = occurrence + 1
+PY
+
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_EXPECTED_ISSUE=213
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
@@ -1515,15 +1685,17 @@ assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree roo
 assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
 assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
 assert b"generic-crash-name=<herdr-worktree>\n" in data, "crash marker inside a worktree name was leaked"
-assert b"generic-unfamiliar=<herdr-worktree> became unreadable\n" in data, "unfamiliar diagnostic suffix was lost"
-assert b"generic-crash-diagnostic=<herdr-worktree> crashed during capture\n" in data, "crash diagnostic suffix was lost"
+assert b"generic-unfamiliar=<herdr-worktree>\n" in data, "phrase-like worktree name was not fully redacted"
+assert b"generic-crash-diagnostic=<herdr-worktree>\n" in data, "phrase-like crash worktree name was not fully redacted"
 assert b"same-line-two-paths=cp <external-temp> <herdr-worktree>/f\n" in data, "same-line source path was not normalized"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data
 assert b"output-dot-sibling=" + output_root + b".bak/file" in data
-assert b"configured-diagnostic=<herdr-worktree> failed to compile\n" in data, "configured worktree redaction consumed diagnostic text"
+assert b"configured-status=<herdr-worktree> status=FAILED code=17\n" in data, "configured same-line status diagnostic was consumed"
+assert b"configured-parenthetical=<herdr-worktree> (No such file)\n" in data, "configured parenthetical diagnostic was consumed"
 assert b'quoted-diagnostic="<herdr-worktree>": permission denied\n' in data, "quoted worktree redaction consumed its diagnostic delimiter"
-assert b"generic-diagnostic=<herdr-worktree> failed to compile\n" in data, "generic worktree redaction consumed diagnostic text"
+assert b"generic-status=<herdr-worktree> status=FAILED code=17\n" in data, "generic same-line status diagnostic was consumed"
+assert b"generic-parenthetical=<herdr-worktree> (No such file)\n" in data, "generic parenthetical diagnostic was consumed"
 PY
 unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
 unset CORRAL_TEST_EGUI_MODE
@@ -1578,6 +1750,37 @@ assert_stopped "stuck partial egui" "$CORRAL_TEST_EGUI_PID_FILE"
   || fail "stuck partial PNG was published as evidence"
 unset CORRAL_TEST_EGUI_MODE
 
+export CORRAL_TEST_EXPECTED_ISSUE=222
+export CORRAL_TEST_INVALID_PNG="$WORK/invalid-raster.png"
+export CORRAL_TEST_PNG_VALIDATION_COUNT="$WORK/png-validation-count"
+printf '0\n' >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=invalid-stable
+if PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 222 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 1 \
+  --output-root "$WORK/invalid-stable-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/invalid-stable.log" 2>&1; then
+  fail "stable invalid PNG unexpectedly succeeded"
+fi
+validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+(( validation_count <= 1 )) \
+  || fail "stable invalid PNG was fully reparsed $validation_count times"
+grep -q 'complete PNG' "$WORK/invalid-stable.log" \
+  || fail "stable invalid PNG failure did not name the complete-PNG contract"
+assert_stopped "stable invalid egui" "$CORRAL_TEST_EGUI_PID_FILE"
+[[ ! -e "$WORK/invalid-stable-output/issue-222/comparison.png" ]] \
+  || fail "stable invalid PNG was published as evidence"
+unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_INVALID_PNG CORRAL_TEST_PNG_VALIDATION_COUNT
+
 export CORRAL_TEST_EXPECTED_ISSUE=214
 if PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
   --issue 214 \
@@ -1612,6 +1815,10 @@ fi
 lock_entries=("$WORK"/*/.design-gate.lock)
 if [[ "${#lock_entries[@]}" -ne 0 ]]; then
   fail "publication lock survived a completed or failed run"
+fi
+recovery_entries=("$WORK"/*/.design-gate.lock.recovery)
+if [[ "${#recovery_entries[@]}" -ne 0 ]]; then
+  fail "publication lock recovery path survived a completed or failed run"
 fi
 
 printf 'Real Chrome structural prototype regression: %s\n' "$REAL_CHROME_RESULT"

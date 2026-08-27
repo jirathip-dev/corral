@@ -232,7 +232,11 @@ lock_owner_is_stale() {
   local owner_file="$lock_dir/owner.pid"
   local owner_pid=""
 
-  [[ -f "$owner_file" ]] || return 2
+  # Never follow a lock symlink or a non-directory lock path. In particular,
+  # an attacker-controlled symlink must not turn recovery into deletion of an
+  # unrelated owner.pid.
+  [[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 2
+  [[ -f "$owner_file" && ! -L "$owner_file" ]] || return 2
   IFS= read -r owner_pid <"$owner_file" || return 2
   [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 2
   if kill -0 "$owner_pid" 2>/dev/null; then
@@ -246,20 +250,66 @@ lock_owner_is_stale() {
 
 recover_stale_publication_lock() {
   local lock_dir="$1"
-  local owner_file="$lock_dir/owner.pid"
+  local recovery_dir="${lock_dir}.recovery"
+  local owner_file="$recovery_dir/owner.pid"
+  local owner_pid=""
+  local current_owner_pid=""
 
+  [[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 1
+  [[ -f "$lock_dir/owner.pid" && ! -L "$lock_dir/owner.pid" ]] || return 1
   lock_owner_is_stale "$lock_dir" || return 1
-  if rm -f -- "$owner_file" && rmdir -- "$lock_dir"; then
-    log "recovered stale evidence publication lock: $lock_dir"
-    return 0
+  [[ ! -e "$recovery_dir" && ! -L "$recovery_dir" ]] || return 1
+
+  # A same-parent rename is the atomic recovery claim. It removes the stale
+  # directory from the lock name before any PID-owned state is deleted, so a
+  # concurrent publisher can safely claim a fresh lock without sharing this
+  # directory. A source symlink is moved as a symlink, never followed; the
+  # validation below then restores it or fails closed.
+  mv -f -- "$lock_dir" "$recovery_dir" 2>/dev/null || return 1
+  if [[ -e "$lock_dir" || -L "$lock_dir" ]] \
+    || [[ ! -d "$recovery_dir" || -L "$recovery_dir" ]]; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
   fi
-  return 1
+
+  # Re-read and re-check only after the directory has been claimed. Never
+  # remove the owner file from the live lock pathname or from a symlinked
+  # recovery target.
+  if ! IFS= read -r owner_pid <"$owner_file" \
+    || [[ ! "$owner_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! lock_owner_is_stale "$recovery_dir"; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  if ! [[ -f "$owner_file" && ! -L "$owner_file" ]] \
+    || ! IFS= read -r current_owner_pid <"$owner_file" \
+    || [[ "$current_owner_pid" != "$owner_pid" ]]; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  if ! rm -f -- "$owner_file"; then
+    return 1
+  fi
+  if ! rmdir -- "$recovery_dir"; then
+    return 1
+  fi
+  log "recovered stale evidence publication lock: $lock_dir"
+  return 0
 }
 
 acquire_publication_lock() {
   local lock_dir="$1"
   local owner_tmp="$lock_dir/.owner.$$"
 
+  if [[ -L "$lock_dir" || ( -e "$lock_dir" && ! -d "$lock_dir" ) ]]; then
+    return 1
+  fi
   if ! mkdir "$lock_dir" 2>/dev/null; then
     recover_stale_publication_lock "$lock_dir" || return 1
     mkdir "$lock_dir" 2>/dev/null || return 1
@@ -424,6 +474,13 @@ done
   || die "--surface must be egui or ios"
 [[ "$IOS_MODE" == "live" || "$IOS_MODE" == "demo" ]] \
   || die "--ios-mode must be live or demo"
+validate_live_agent() {
+  local agent_id="$1"
+
+  [[ -z "$agent_id" || "$agent_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] \
+    || die "--live-agent must use a stable agent id (letters, digits, '.', '_', ':', '/', and '-' only)"
+}
+validate_live_agent "$LIVE_AGENT"
 if [[ "$SURFACE" == "egui" ]]; then
   case "$EGUI_TAB" in
     board|issues|registry|settings) ;;
@@ -675,7 +732,7 @@ recorded_invocation() {
       --prototype|--egui-binary|--ios-app)
         value_kind="<external-input>"
         ;;
-      --live-png)
+      --live-png|--daemon-binary|--fixture-registry)
         value_kind="<external-input>"
         ;;
       --output-root)
@@ -684,7 +741,7 @@ recorded_invocation() {
       --egui-wake-command|--ios-command)
         value_kind="opaque"
         ;;
-      --ios-launch-arg)
+      --ios-launch-arg|--ios-before-launch-arg)
         value_kind="launch-arg"
         ;;
       --issue|--surface|--live-agent|--host-url|--delay-ms|\
@@ -1128,6 +1185,23 @@ png_has_terminal_iend() {
   [[ "$trailer" == "0000000049454e44ae426082" ]]
 }
 
+png_validation_signature() {
+  local path="$1"
+  local metadata=""
+  local head_bytes=""
+  local tail_bytes=""
+
+  case "$(uname -s)" in
+    Darwin) metadata="$(stat -f '%z:%m:%i' "$path")" ;;
+    *) metadata="$(stat -c '%s:%Y:%i' "$path")" ;;
+  esac
+  head_bytes="$(head -c 64 "$path" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')" \
+    || return 1
+  tail_bytes="$(tail -c 64 "$path" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')" \
+    || return 1
+  printf '%s:%s:%s\n' "$metadata" "$head_bytes" "$tail_bytes"
+}
+
 wait_for_complete_png() {
   local path="$1"
   local label="$2"
@@ -1138,6 +1212,9 @@ wait_for_complete_png() {
   local previous_size=""
   local writer_running
   local terminal_iend
+  local validation_signature=""
+  local failed_validation_signature=""
+  local failed_validation_reason=""
 
   PNG_WAIT_REASON=""
   deadline=$((SECONDS + 10#$timeout_seconds))
@@ -1159,10 +1236,22 @@ wait_for_complete_png() {
         if [[ "$terminal_iend" -eq 1 ]] \
           && { [[ "$writer_running" -eq 0 ]] \
             || [[ -n "$previous_size" && "$current_size" == "$previous_size" ]]; }; then
-          if dimensions="$(png_dimensions "$path" 2>&1)"; then
-            return 0
+          if validation_signature="$(png_validation_signature "$path" 2>/dev/null)"; then
+            :
+          else
+            validation_signature="size:${current_size}:terminal-iend:${terminal_iend}"
           fi
-          PNG_WAIT_REASON="$dimensions"
+          if [[ "$writer_running" -eq 0 \
+            || ( -n "$validation_signature" \
+              && ( -z "$failed_validation_signature" \
+                || "$validation_signature" != "$failed_validation_signature" ) ) ]]; then
+            if dimensions="$(png_dimensions "$path" 2>&1)"; then
+              return 0
+            fi
+            failed_validation_signature="$validation_signature"
+            failed_validation_reason="$dimensions"
+          fi
+          PNG_WAIT_REASON="${failed_validation_reason:-$label PNG validation could not be completed}"
         elif [[ "$current_size" -lt 20 ]]; then
           PNG_WAIT_REASON="$label has not published enough PNG bytes for a terminal IEND"
         elif [[ "$terminal_iend" -eq 0 ]]; then
@@ -1283,6 +1372,48 @@ def is_whitespace_byte(value):
     return value in (9, 11, 12, 32)
 
 
+def is_assignment_key_byte(value):
+    return is_word_byte(value) or value in (45, 46)
+
+
+def is_ascii_alpha_byte(value):
+    return 65 <= value <= 90 or 97 <= value <= 122
+
+
+def diagnostic_boundary_end(data_value, component_start, line_end):
+    """Find separators that cannot be part of an unquoted path component.
+
+    A whitespace-delimited assignment token (for example ``status=FAILED``)
+    and a balanced parenthetical diagnostic are explicit boundaries. This is
+    intentionally structural rather than a finite English phrase list, so
+    arbitrary same-line diagnostics survive redaction.
+    """
+
+    index = component_start
+    while index < line_end:
+        if not is_whitespace_byte(data_value[index]):
+            index += 1
+            continue
+        cursor = index + 1
+        if cursor < line_end and data_value[cursor] == 40:
+            if data_value.find(b")", cursor + 1, line_end) != -1:
+                return index
+        key_start = cursor
+        if cursor >= line_end or not is_ascii_alpha_byte(data_value[cursor]):
+            index += 1
+            continue
+        while cursor < line_end and is_assignment_key_byte(data_value[cursor]):
+            cursor += 1
+        if (
+            cursor > key_start
+            and cursor < line_end
+            and data_value[cursor] == 61
+        ):
+            return index
+        index += 1
+    return line_end
+
+
 def terminal_path_end(data_value, path_start, component_start, line_end):
     # A quote immediately before the root unambiguously bounds the complete
     # terminal component, including spaces in a quoted worktree name.
@@ -1300,62 +1431,19 @@ def terminal_path_end(data_value, path_start, component_start, line_end):
                     return index
             index += 1
 
-    end = line_end
+    end = diagnostic_boundary_end(data_value, component_start, line_end)
     # Punctuation followed by whitespace (or a closing quote) is a diagnostic
     # separator, while punctuation embedded in an unquoted path is retained.
-    for index in range(component_start, line_end):
+    # Limit this scan to the structural boundary above so a closing
+    # parenthesis in ``path (No such file)`` cannot consume the diagnostic and
+    # leave only its final punctuation visible.
+    for index in range(component_start, end):
         if data_value[index] not in (41, 44, 59, 58, 93, 125):
             continue
         next_value = data_value[index + 1] if index + 1 < line_end else None
         if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
             end = min(end, index)
 
-    # Unquoted terminal paths with spaces are inherently ambiguous. Consume
-    # the full terminal component by default, but preserve a broad set of
-    # diagnostic verbs/status phrases so failure evidence remains readable. A
-    # bare word such as "failed" or "crashed" is intentionally not enough: it
-    # may be part of a legitimate space-containing worktree name.
-    for marker in (
-        b" crashed during",
-        b" crashed while",
-        b" crashed with",
-        b" crashed at",
-        b" exploded during",
-        b" exploded while",
-        b" panicked during",
-        b" panicked while",
-        b" fatal error",
-        b" exception:",
-        b" traceback",
-        b" segmentation fault",
-        b" terminated",
-        b" killed",
-        b" aborted",
-        b" hung",
-        b" timeout",
-        b" timed out",
-        b" failed to",
-        b" failed with",
-        b" failed during",
-        b" became unreadable",
-        b" became unavailable",
-        b" became invalid",
-        b" failure:",
-        b" error:",
-        b" warning:",
-        b" permission denied",
-        b" denied:",
-        b" not found",
-        b" cannot",
-        b" could not",
-        b" unable",
-        b" exited with",
-        b" exit status",
-        b" signal ",
-    ):
-        marker_index = data_value.find(marker, component_start, end)
-        if marker_index != -1:
-            end = min(end, marker_index)
     return end
 
 
@@ -1721,6 +1809,28 @@ data = data.replace(b"&", b"&amp;")
 data = data.replace(b"<", b"&lt;")
 data = data.replace(b">", b"&gt;")
 sys.stdout.buffer.write(data)
+PY
+}
+
+markdown_safe_code_span() {
+  # A code span is safe for arbitrary text only when its delimiter is longer
+  # than every backtick run in that text. HTML-looking bytes remain literal
+  # inside the Markdown code span, while newlines cannot start a new list or
+  # HTML element before the dynamically chosen closing delimiter.
+  "$PYTHON_BIN" - "$1" <<'PY'
+import os
+import sys
+
+data = os.fsencode(sys.argv[1])
+longest = current = 0
+for value in data:
+    if value == 0x60:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+delimiter = b"`" * (longest + 1)
+sys.stdout.buffer.write(delimiter + data + delimiter)
 PY
 }
 
@@ -2197,6 +2307,7 @@ print(candidates[0])
 PY
 )"
     [[ -n "$LIVE_AGENT" ]] || die "could not select a live agent from /snapshot"
+    validate_live_agent "$LIVE_AGENT"
     log "auto-selected first live agent from /snapshot: $LIVE_AGENT"
   fi
 
@@ -2377,10 +2488,18 @@ capture_ios() {
       done
     fi
     if [[ "$before_has_demo_mode" -eq 0 ]]; then
-      before_args=("-demoMode" "${before_args[@]}")
+      if (( ${#before_args[@]} > 0 )); then
+        before_args=("-demoMode" "${before_args[@]}")
+      else
+        before_args=("-demoMode")
+      fi
     fi
     if [[ "$after_has_demo_mode" -eq 0 ]]; then
-      after_args=("-demoMode" "${after_args[@]}")
+      if (( ${#after_args[@]} > 0 )); then
+        after_args=("-demoMode" "${after_args[@]}")
+      else
+        after_args=("-demoMode")
+      fi
     fi
     if (( ${#before_args[@]} > 0 )); then
       for launch_arg in "${before_args[@]}"; do
@@ -2585,9 +2704,10 @@ cleanup() {
       cleanup_status=1
     fi
   fi
-  if [[ "${LOCK_ACQUIRED:-0}" -eq 1 && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+  if [[ "${LOCK_ACQUIRED:-0}" -eq 1 && -n "${LOCK_DIR:-}" ]]; then
     local lock_owner=""
-    if [[ -f "${LOCK_OWNER_FILE:-}" ]] \
+    if [[ -d "$LOCK_DIR" && ! -L "$LOCK_DIR" \
+      && -f "${LOCK_OWNER_FILE:-}" && ! -L "$LOCK_OWNER_FILE" ]] \
       && IFS= read -r lock_owner <"$LOCK_OWNER_FILE" \
       && [[ "$lock_owner" == "$$" ]] \
       && rm -f -- "$LOCK_OWNER_FILE" \
@@ -2705,6 +2825,12 @@ INVOCATION_NORMALIZED="$STAGE/.design-gate.invocation-normalized"
 recorded_invocation "${ORIGINAL_ARGS[@]}" >"$INVOCATION_NORMALIZED"
 INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" \
   || die "could not choose a safe invocation code delimiter"
+IMPLEMENTATION_MANIFEST_SOURCE="$STAGE/.design-gate.implementation-manifest"
+IMPLEMENTATION_MANIFEST_MARKDOWN="$STAGE/.design-gate.implementation-manifest-markdown"
+printf '%s' "$IMPLEMENTATION_MANIFEST" >"$IMPLEMENTATION_MANIFEST_SOURCE"
+render_markdown_note \
+  "$IMPLEMENTATION_MANIFEST_SOURCE" "$IMPLEMENTATION_MANIFEST_MARKDOWN" \
+  || die "could not render the implementation manifest safely"
 {
   printf '# Issue #%s design-gate evidence\n\n' "$ISSUE"
   printf '## Contract\n\n'
@@ -2713,13 +2839,23 @@ INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" 
   printf -- '- Provenance-note contract: arbitrary note bytes are preserved except for targeted substitutions of recognized repository, staging, worktree, and disposable temporary roots; the rendered note is HTML-escaped inside a Markdown-safe preformatted block.\n'
   printf -- '- This contract applies to bundles generated by this version; historical checked-in evidence may be a separately labeled sanitized summary.\n'
   printf '\n## Capture\n\n'
-  printf -- '- Surface: `%s`\n' "$SURFACE"
-  printf -- '- Capture kind: %s\n' "$CAPTURE_KIND"
+  printf -- '- Surface: '
+  markdown_safe_code_span "$SURFACE"
+  printf '\n'
+  printf -- '- Capture kind: '
+  markdown_safe_code_span "$CAPTURE_KIND"
+  printf '\n'
   if [[ "$SURFACE" == "egui" ]]; then
-    printf -- '- Egui tab: `%s` (native and approved prototype were both opened on this tab)\n' "$EGUI_TAB"
+    printf -- '- Egui tab: '
+    markdown_safe_code_span "$EGUI_TAB"
+    printf ' (native and approved prototype were both opened on this tab)\n'
   fi
-  printf -- '- Live description: %s\n' "$LIVE_DESCRIPTION"
-  printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
+  printf -- '- Live description: '
+  markdown_safe_code_span "$LIVE_DESCRIPTION"
+  printf '\n'
+  printf -- '- Command: '
+  markdown_safe_code_span "$CAPTURE_COMMAND"
+  printf '\n'
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
   printf -- '- Chrome renderer contract (prototype/comparison only): Chrome/Chromium uses a private profile and temporary loopback-only DevTools on `127.0.0.1` with an ephemeral port, and receives only `Browser.close`; the supplied live fixture, when present, is not a Chrome capture.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
@@ -2730,13 +2866,17 @@ INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" 
     printf -- '- Host health URL: not checked for this explicit supplied PNG fixture\n'
   fi
   if [[ -n "$LIVE_AGENT" ]]; then
-    printf -- '- Selected live agent: `%s` (validated against `/snapshot`)\n' "$LIVE_AGENT"
+    printf -- '- Selected live agent: '
+    markdown_safe_code_span "$LIVE_AGENT"
+    printf ' (validated against `/snapshot`)\n'
   else
     printf -- '- Selected live agent: none\n'
   fi
   if [[ "$SURFACE" == "ios" ]]; then
     printf -- '- Simulator ownership: `hermes-sim-task`; no simulator deletion command is used.\n'
-    printf -- '- iOS mode: `%s`\n' "$IOS_MODE"
+    printf -- '- iOS mode: '
+    markdown_safe_code_span "$IOS_MODE"
+    printf '\n'
   fi
   if [[ -n "$PROVENANCE_NOTE_MARKDOWN" ]]; then
     printf -- '- Operator/environment note (Markdown-safe):\n\n'
@@ -2745,31 +2885,62 @@ INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" 
     printf '\n</pre>\n'
   fi
   if [[ -n "$RENDERER_GUIDANCE" ]]; then
-    printf -- '- Renderer guidance: %s\n' "$RENDERER_GUIDANCE"
+    printf -- '- Renderer guidance: '
+    markdown_safe_code_span "$RENDERER_GUIDANCE"
+    printf '\n'
   fi
   printf '\n## Sources\n\n'
-  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE_PATH_LABEL"
-  printf -- '- Prototype source SHA-256: `%s`\n' "$PROTOTYPE_SOURCE_SHA"
-  printf -- '- Generator script (canonical `BASH_SOURCE[0]`): `%s`\n' "$GENERATOR_PATH"
-  printf -- '- Generator SHA-256: `%s`\n' "$GENERATOR_SHA"
-  printf -- '- Live input: `%s`\n' "$LIVE_SOURCE_PATH"
-  printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
-  printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
-  printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
+  printf -- '- Prototype source: '
+  markdown_safe_code_span "$PROTOTYPE_PATH_LABEL"
+  printf '\n'
+  printf -- '- Prototype source SHA-256: '
+  markdown_safe_code_span "$PROTOTYPE_SOURCE_SHA"
+  printf '\n'
+  printf -- '- Generator script (canonical `BASH_SOURCE[0]`): '
+  markdown_safe_code_span "$GENERATOR_PATH"
+  printf '\n'
+  printf -- '- Generator SHA-256: '
+  markdown_safe_code_span "$GENERATOR_SHA"
+  printf '\n'
+  printf -- '- Live input: '
+  markdown_safe_code_span "$LIVE_SOURCE_PATH"
+  printf '\n'
+  printf -- '- Live input SHA-256: '
+  markdown_safe_code_span "$LIVE_SOURCE_SHA"
+  printf '\n'
+  printf -- '- Repository HEAD at capture (context only; not the evidence identity): '
+  markdown_safe_code_span "$GIT_SHA"
+  printf '\n'
+  printf -- '- Implementation content digest: '
+  markdown_safe_code_span "$IMPLEMENTATION_CONTENT_DIGEST"
+  printf '\n'
   if [[ "$ISSUE" == "205" ]]; then
     printf -- '- Implementation identity scope: issue #205 iOS transcript implementation and tests, the applicable egui transcript mirror, release wiring/docs, capture generator, approved transcript prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; generated evidence is excluded.\n'
   else
     printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated evidence are excluded.\n'
   fi
-  printf -- '- Renderer executable: `%s` (private profile, loopback-only DevTools, and owned cleanup)\n' "$RENDERER_PATH_LABEL"
-  printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
-  printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
-  printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
-  printf -- '- Repository HEAD: `%s`\n' "$GIT_SHA"
+  printf -- '- Renderer executable: '
+  markdown_safe_code_span "$RENDERER_PATH_LABEL"
+  printf ' (private profile, loopback-only DevTools, and owned cleanup)\n'
+  printf -- '- Native UI binary SHA-256: '
+  markdown_safe_code_span "$LIVE_BINARY_SHA"
+  printf '\n'
+  printf -- '- Daemon binary SHA-256: '
+  markdown_safe_code_span "$DAEMON_BINARY_SHA"
+  printf '\n'
+  printf -- '- Fixture registry SHA-256: '
+  markdown_safe_code_span "$FIXTURE_REGISTRY_SHA"
+  printf '\n'
+  printf -- '- Repository HEAD: '
+  markdown_safe_code_span "$GIT_SHA"
+  printf '\n'
   printf -- '- Normalized invocation (placeholders are descriptive, not necessarily runnable): %s' "$INVOCATION_CODE_DELIMITER"
   cat "$INVOCATION_NORMALIZED"
   printf '%s\n' "$INVOCATION_CODE_DELIMITER"
-  printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
+  printf '\n### Implementation manifest\n\n'
+  printf '<pre class="design-gate-implementation-manifest">\n'
+  cat "$IMPLEMENTATION_MANIFEST_MARKDOWN"
+  printf '\n</pre>\n'
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'
   printf -- '| `prototype.png` | `%s` | `%s` |\n' "$PROTOTYPE_DIMS" "$PROTOTYPE_SHA"

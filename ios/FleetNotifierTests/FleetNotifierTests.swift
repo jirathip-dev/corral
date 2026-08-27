@@ -4562,3 +4562,156 @@ final class AnswerAvailabilityGateTests: XCTestCase {
         XCTAssertNil(item?.disabledReason)
     }
 }
+
+// MARK: - Fleet refresh (#219)
+
+@MainActor
+final class FleetRefreshTests: XCTestCase {
+
+    private func agent(_ id: String, state: AgentState, title: String? = nil) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 1,
+              capabilities: ["read_tail"], displayName: id, title: title)
+    }
+
+    private func snapshot(rev: UInt64, agents: [String: Agent]) -> Snapshot {
+        Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1, agents: agents)
+    }
+
+    /// Acceptance: snapshot/delta revision ordering — a pull refresh
+    /// racing a newer delta must NOT reorder the newer delta behind an
+    /// older snapshot (the stream already delivered rev 11; the refresh
+    /// that was in flight answers rev 10).
+    func testRefreshSnapshotRacingNewerDeltaIsDropped() {
+        let store = FleetStore()
+        store.applyRefresh(snapshot(rev: 10, agents: ["a": agent("a", state: .idle, title: "base")]))
+        store.apply(.delta(Delta(rev: 11, upd: [agent("a", state: .working, title: "newer delta")], del: [])))
+        store.applyRefresh(snapshot(rev: 10, agents: ["a": agent("a", state: .idle, title: "stale refresh snapshot")]))
+
+        XCTAssertEqual(store.lastEventId, 11, "cursor must stay on the newer delta")
+        XCTAssertEqual(store.agents["a"]?.title, "newer delta",
+                       "a stale refresh cannot reorder a newer delta")
+    }
+
+    /// A refresh at an equal or newer revision is authoritative: equal
+    /// replaces safely, newer replaces the board and advances the cursor
+    /// the live stream resumes from.
+    func testRefreshAppliesEqualAndNewerSnapshot() {
+        let store = FleetStore()
+        store.applyRefresh(snapshot(rev: 5, agents: ["a": agent("a", state: .working)]))
+        store.applyRefresh(snapshot(rev: 5, agents: ["a": agent("a", state: .idle, title: "authoritative")]))
+
+        XCTAssertEqual(store.lastEventId, 5)
+        XCTAssertEqual(store.agents["a"]?.state, .idle,
+                       "equal revision is a safe authoritative replacement")
+
+        store.applyRefresh(snapshot(rev: 12, agents: ["b": agent("b", state: .working)]))
+        XCTAssertEqual(store.lastEventId, 12,
+                       "newer snapshot advances the SSE resume cursor")
+        XCTAssertNil(store.agents["a"])
+        XCTAssertEqual(store.agents["b"]?.state, .working)
+    }
+
+    /// Acceptance: success ends the refresh, shows current agents, and
+    /// issues exactly ONE snapshot request.
+    func testRefreshFetchesAppliesAndClearsInFlight() async throws {
+        let script = DeterministicDriveScript(
+            responses: ["/snapshot": try JSONEncoder().encode(
+                snapshot(rev: 9, agents: ["a": agent("a", state: .working, title: "fresh")]))])
+        let fixture = liveModel(script: script)
+        defer { fixture.cleanup() }
+
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+        await fixture.model.refreshFleet()
+
+        XCTAssertFalse(fixture.model.isRefreshingFleet, "success must end the refresh")
+        XCTAssertNil(fixture.model.banner)
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh")
+        XCTAssertEqual(fixture.model.fleet.lastEventId, 9)
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/snapshot" }.count, 1)
+    }
+
+    /// Acceptance: failure ends the indicator and surfaces the existing
+    /// dismissible/retryable banner — never an endless spinner.
+    func testRefreshFailureSurfacesBannerAndClearsInFlight() async {
+        // The script has no /snapshot entry, so the protocol answers the
+        // default response, which is not a Snapshot — the fetch fails.
+        let script = DeterministicDriveScript(response: Data(#"{"ok":true}"#.utf8))
+        let fixture = liveModel(script: script)
+        defer { fixture.cleanup() }
+
+        await fixture.model.refreshFleet()
+
+        XCTAssertFalse(fixture.model.isRefreshingFleet,
+                       "failure must clear the in-flight flag (no endless spinner)")
+        XCTAssertEqual(fixture.model.banner?.kind, "fleet_refresh")
+        XCTAssertNotNil(fixture.model.banner?.message)
+        XCTAssertEqual(fixture.model.fleet.agents.count, 0,
+                       "a failed refresh must not mutate the board")
+    }
+
+    /// Acceptance: repeated pulls are serialized/coalesced — a second
+    /// refresh while one is in flight issues no further request.
+    func testRefreshIsCoalescedWhileOneIsInFlight() async throws {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            responses: ["/snapshot": try JSONEncoder().encode(
+                snapshot(rev: 21, agents: ["a": agent("a", state: .working, title: "coalesced")]))],
+            gates: ["/snapshot": gate])
+        let fixture = liveModel(script: script)
+        defer { gate.cancel(); fixture.cleanup() }
+
+        let first = Task { await fixture.model.refreshFleet() }
+        let reachedNetwork = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(reachedNetwork, "the first refresh must reach the network")
+        XCTAssertTrue(fixture.model.isRefreshingFleet)
+
+        await fixture.model.refreshFleet() // second pull while in flight
+        XCTAssertEqual(script.log.requests.filter { $0.url?.path == "/snapshot" }.count, 1,
+                       "a second pull while refreshing must not issue another request")
+
+        gate.release()
+        await first.value
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "coalesced")
+    }
+
+    // MARK: fixture
+
+    private struct LiveFixture {
+        let model: AppModel
+        let session: URLSession
+        let defaults: UserDefaults
+        let suiteName: String
+
+        @MainActor
+        func cleanup() {
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+    }
+
+    private func liveModel(script: DeterministicDriveScript) -> LiveFixture {
+        let suiteName = "corral.fleet-refresh.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        DeterministicDriveURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                               .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        model.mode = .live
+        // SAFETY: a fixed valid URL literal.
+        model.hostURL = URL(string: "http://daemon")!
+        return LiveFixture(model: model, session: session, defaults: defaults,
+                           suiteName: suiteName)
+    }
+}

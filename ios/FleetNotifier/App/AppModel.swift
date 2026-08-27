@@ -469,6 +469,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Live connection
 
+    /// Issue #219: one pull/toolbar snapshot refresh in flight. Guards
+    /// coalescing (repeated pulls share one request) and drives the
+    /// Refresh button's spinner state; the native `.refreshable` spinner
+    /// is fed by the same await.
+    @Published private(set) var isRefreshingFleet = false
+
     func startLive() {
         guard let hostURL else { return }
         let client = CorraldClient(host: hostURL, session: session)
@@ -542,6 +548,35 @@ final class AppModel: ObservableObject {
     func stopLive() {
         fleet.disconnect()
         fleet.persistCursor()
+    }
+
+    // MARK: - Fleet refresh (#219)
+
+    /// Pull-to-refresh / toolbar refresh: ONE authoritative snapshot,
+    /// serialized and coalesced (a second pull while one is in flight is
+    /// a no-op — no duplicate stream tasks, no reordering). The result
+    /// reconciles through `FleetStore.applyRefresh`, which enforces
+    /// snapshot/delta revision ordering against the live stream and
+    /// resumes the stream from the newest accepted revision via the
+    /// shared cursor. Failure ends the indicator and lands in the
+    /// existing dismissible/retryable banner — never an endless spinner
+    /// (`isRefreshingFleet` is cleared in `defer`).
+    func refreshFleet() async {
+        guard mode == .live, let hostURL else { return }
+        guard !isRefreshingFleet else { return }
+        isRefreshingFleet = true
+        defer { isRefreshingFleet = false }
+        let context = lifecycleContext()
+        let client = CorraldClient(host: hostURL, session: session)
+        do {
+            let snapshot = try await client.fetchSnapshot()
+            guard !Task.isCancelled, isCurrent(context) else { return }
+            fleet.applyRefresh(snapshot)
+        } catch {
+            guard !Task.isCancelled, isCurrent(context) else { return }
+            banner = .error("fleet_refresh",
+                            "Fleet refresh failed — \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Notifications (D16)

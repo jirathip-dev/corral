@@ -74,3 +74,7 @@ fastlane/.env
 # Orchestrator/worker lane notes (never commit)
 .brief.md
 .report.md
+
+# Orchestrator/worker lane notes (never commit)
+.brief.md
+.report.md

@@ -1325,11 +1325,20 @@ private struct RecentOutputRowView: View {
     var body: some View {
         switch row {
         case .block(let block):
-            RecentBlockRow(
-                block: block,
-                showTimestamp: RecentOutputRender.isBoundary(
-                    previous: previousBlock,
-                    current: block))
+            if RecentOutputRender.isDividerRun(block.text) {
+                // #253 fallback: residual TUI furniture renders as a real
+                // divider (a thin rule), not as dash-run text.
+                Divider()
+                    .overlay(RecentOutputPalette.line)
+                    .padding(.vertical, 2)
+                    .accessibilityHidden(true)
+            } else {
+                RecentBlockRow(
+                    block: block,
+                    showTimestamp: RecentOutputRender.isBoundary(
+                        previous: previousBlock,
+                        current: block))
+            }
         case .loadEarlier:
             EmptyView()
         case .error:

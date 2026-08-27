@@ -633,6 +633,30 @@ extension RecentOutputRender {
         }
     }
 
+    /// #253 fallback: a block that is purely a box-drawing / block-element
+    /// run (residual TUI furniture the daemon missed — or the daemon's own
+    /// short `───` divider marker) renders as a real divider instead of
+    /// dash-run text. Every non-empty line must be a run; content lines
+    /// that merely contain a run (e.g. `let sep = "────";`) stay text.
+    static func isDividerRun(_ text: String) -> Bool {
+        var sawRun = false
+        for line in messageLines(text) {
+            let scalars = line.unicodeScalars
+                .filter { !CharacterSet.whitespaces.contains($0) }
+            if scalars.isEmpty { continue }
+            guard scalars.count >= 2,
+                  scalars.allSatisfy({ isDividerScalar($0) }) else {
+                return false
+            }
+            sawRun = true
+        }
+        return sawRun
+    }
+
+    private static func isDividerScalar(_ scalar: UnicodeScalar) -> Bool {
+        (0x2500...0x259F).contains(scalar.value)
+    }
+
     private static let keywords: Set<String> = [
         "actor", "class", "const", "else", "enum", "fn", "for", "func",
         "if", "impl", "import", "in", "let", "match", "mut", "pub",

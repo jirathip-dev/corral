@@ -751,6 +751,27 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_fleet_rename_uses_only_the_current_exact_fleet_target() {
+        let issue = issue("foo", 42, "OPEN", "renamed fleet", &[]);
+        let mut fleet = ready_fleet(&[("alpha", "owner/foo")], &[("foo", issue)]);
+
+        let before_reconnect = display_issue_groups(&fleet);
+        assert_eq!(before_reconnect[0].issues[0].action_targets, ["alpha"]);
+
+        // A reconnect refresh replaces the ready registry. The issue response
+        // still uses the stable repo category, but its action must resolve
+        // against the current exact fleet name rather than the old alias.
+        fleet.set_registry(Ok(registry(&[("foo", "owner/foo")], &[])));
+        let after_reconnect = display_issue_groups(&fleet);
+        assert_eq!(after_reconnect[0].issues[0].action_targets, ["foo"]);
+        assert!(
+            !after_reconnect[0].issues[0]
+                .action_targets
+                .contains(&"alpha".to_string())
+        );
+    }
+
+    #[test]
     fn alias_ambiguity_is_symmetric_and_not_actionable() {
         let shared = issue("foo", 1, "OPEN", "ambiguous", &[]);
         let fleet = ready_fleet(

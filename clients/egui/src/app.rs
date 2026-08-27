@@ -1280,7 +1280,11 @@ impl CorralApp {
                 self.conn_detail = None;
                 // #113/#135: fetch both read-only views on connection.
                 self.refresh_issues(true);
-                self.refresh_registry(false);
+                // A reconnect may observe a changed fleet registry while a
+                // previous snapshot is still marked ready. Always refresh
+                // this identity boundary alongside the issue view so issue
+                // aliases and action targets come from the same connection.
+                self.refresh_registry(true);
             }
             ApplyMsg::Conn(protocol::Live::Disconnected) => {
                 self.conn = ConnState::Connecting;

@@ -15,7 +15,7 @@
 //! `GET /issues` is a deliberate NON-AUTH read surface, like the existing
 //! `/snapshot`, `/events`, and `/history` GETs: it exposes only the public
 //! repo-level issue metadata the gh poller already fetches (number, state,
-//! title, labels, url) and carries no per-agent transcript/tail content. It
+//! title, labels, url) and carries no per-agent tail content. It
 //! is safe to serve only from a loopback or private/tailnet interface — do
 //! NOT expose the daemon on a public interface. The write path
 //! (`POST /drive <start_worktree>`) is separately capability-gated and

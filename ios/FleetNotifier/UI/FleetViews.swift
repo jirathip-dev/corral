@@ -551,8 +551,9 @@ private struct AgentDetailContent: View {
             }
             .frame(maxHeight: .infinity, alignment: .top)
 
-            // The transcript owns its viewport and the composer is a sibling
-            // below it, so scrolling history never moves the prompt controls.
+            // The Recent-output view owns its viewport and the composer is a
+            // sibling below it, so scrolling history never moves the prompt
+            // controls.
 #if DEBUG
             if model.mode == .demo && model.demoPresentation == .before {
                 RecentOutputBeforeView(
@@ -876,7 +877,7 @@ private struct RecentOutputBeforeView: View {
 }
 #endif
 
-/// Exact color literals from the approved transcript-chat prototype. Keeping
+/// Exact color literals from the approved Recent-output prototype. Keeping
 /// this table next to the native palette gives tests a drift guard for every
 /// prototype hex, including literals that are not currently painted by the
 /// native surface.
@@ -973,7 +974,6 @@ private struct RecentOutputView: View {
     }
 
     private var tail: TailPane? { model.fleet.tailPane(for: agent.agentId) }
-    private var transcript: TranscriptPane? { model.fleet.transcript(agent.agentId) }
 
     private var availability: AgentActionAvailability? {
         BoardModel.actionAvailability(agent: agent, grants: model.actionGrants)
@@ -981,7 +981,7 @@ private struct RecentOutputView: View {
     }
 
     var body: some View {
-        let snapshot = RecentOutputModel.snapshot(tail: tail, transcript: transcript)
+        let snapshot = RecentOutputModel.snapshot(tail: tail)
         VStack(alignment: .leading, spacing: 0) {
             header
             if let availability, !availability.isEnabled {
@@ -1000,8 +1000,9 @@ private struct RecentOutputView: View {
             composer
         }
         // The approved #205 prototype supersedes the earlier unbounded
-        // detail-scroll decision: this is the one bounded transcript scroll
-        // cage, with the composer kept outside it. Use the same rounded shape
+        // detail-scroll decision: this is the one bounded Recent-output
+        // scroll cage, with the composer kept outside it. Use the same
+        // rounded shape
         // for the fill, stroke, and clip so the border remains continuous.
         .background(RecentOutputPalette.bg,
                     in: RoundedRectangle(cornerRadius: RecentOutputPalette.panelCornerRadius))
@@ -1114,11 +1115,7 @@ private struct RecentOutputView: View {
                     .foregroundStyle(RecentOutputPalette.diffDel)
                     .accessibilityLabel(TranscriptText.errorText(failure))
                 Button("Retry") {
-                    if tail?.error != nil {
-                        refresh()
-                    } else {
-                        model.retryTranscript(agentId: agent.agentId)
-                    }
+                    refresh()
                 }
                 .buttonStyle(.bordered)
                 .tint(RecentOutputPalette.accent)
@@ -1152,11 +1149,6 @@ private struct RecentOutputView: View {
                 }
                 .onChange(of: snapshot.render.rows) { oldRows, newRows in
                     if let anchor = paginationAnchor {
-                        // `prepareTranscriptFetch` publishes a loading row
-                        // before the page result arrives. Keep the anchor
-                        // armed across that intermediate state; only a
-                        // completed page, failure, or timeout may consume it.
-                        guard !snapshot.render.transcriptLoading else { return }
                         paginationAnchor = nil
                         if RecentOutputModel.shouldPreservePaginationAnchor(
                             anchor,
@@ -1197,15 +1189,9 @@ private struct RecentOutputView: View {
                         Text("Load earlier")
                     }
                     Spacer()
-                    if snapshot.render.transcriptLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(RecentOutputPalette.accent)
-                    } else {
-                        Text("history")
-                            .font(.caption2)
-                            .foregroundStyle(RecentOutputPalette.muted)
-                    }
+                    Text("history")
+                        .font(.caption2)
+                        .foregroundStyle(RecentOutputPalette.muted)
                 }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(RecentOutputPalette.accent)
@@ -1216,7 +1202,6 @@ private struct RecentOutputView: View {
                 .overlay(Rectangle().stroke(RecentOutputPalette.line, lineWidth: 1))
             }
             .buttonStyle(.plain)
-            .disabled(snapshot.render.transcriptLoading)
             .accessibilityLabel(snapshot.render.rows.compactMap { row -> UInt32? in
                 if case .loadEarlier(let count) = row { return count }
                 return nil
@@ -1354,7 +1339,7 @@ private struct RecentOutputRowView: View {
                     .foregroundStyle(RecentOutputPalette.muted)
                 Spacer()
                 Button("Retry") {
-                    model.retryTranscript(agentId: agent.agentId)
+                    model.loadEarlierOutput(agentId: agent.agentId)
                 }
                 .font(.caption)
                 .foregroundStyle(RecentOutputPalette.accent)

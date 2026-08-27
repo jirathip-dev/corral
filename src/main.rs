@@ -392,9 +392,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         replay: Arc::new(ReplayTable::default()),
         issues: issues_cache.clone(),
         fleets: fleet_provider,
-        transcript_roots: corrald::transcript::bind::TranscriptRoots::from_env(),
-        transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
-        role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
     });
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -448,75 +448,6 @@ pub fn sign_step_up(signing: &SigningKey, request: &StepUpRequest) -> String {
     base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
 }
 
-/// #64: the signed `x-corral-drive` header value for a `GET /transcript`
-/// page — the exact `SignedDrive` JSON `/drive` takes as a body, with
-/// capability `read_tail`, `target` = the agent id (the daemon refuses
-/// a target that does not match `?agent`), and a transcript-scoped
-/// payload `{ts, cursor, limit}` (post-#88: the page parameters are
-/// SIGNED into the envelope — the URL refuses `cursor`/`limit` — so one
-/// signature buys exactly one page, only within the daemon's 60s
-/// freshness window). `limit` is always present (the pane's page size);
-/// `cursor` is omitted when `None` (the newest page). A fresh
-/// `request_id` AND a fresh `ts` per page: the daemon audits one
-/// `read_tail:transcript` entry per served page keyed by the request id,
-/// and paging means RE-SIGNING per page with the new cursor.
-pub fn transcript_auth_header(
-    key_id: &str,
-    signing: &SigningKey,
-    target: &str,
-    cursor: Option<&str>,
-    limit: usize,
-) -> String {
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default();
-    // The daemon's TranscriptPayload is deny_unknown_fields with
-    // skip_serializing_if on cursor/limit — match that wire form: no
-    // `"cursor": null`, the field is simply absent for the newest page.
-    let payload = match cursor {
-        Some(cursor) => serde_json::json!({ "ts": now_secs, "cursor": cursor, "limit": limit }),
-        None => serde_json::json!({ "ts": now_secs, "limit": limit }),
-    };
-    let envelope = DriveEnvelope {
-        request_id: new_request_id("transcript"),
-        capability: Capability::ReadTail,
-        target: target.to_string(),
-        payload,
-        rev: None,
-    };
-    let signed = SignedDrive {
-        key_id: key_id.to_string(),
-        signature: sign_envelope(signing, &envelope),
-        envelope,
-    };
-    let json = serde_json::to_string(&signed).expect("signed envelope serializes");
-    // Review F9: HTTP header values must be visible ASCII, but the
-    // target is a herdr-supplied string serde_json emits as raw UTF-8.
-    // \uXXXX-escape anything non-ASCII (valid JSON, byte-identical
-    // meaning daemon-side) so an exotic agent id fails with the
-    // daemon's typed answer instead of a client "builder error".
-    ascii_escape_json(&json)
-}
-
-/// Escape every non-ASCII char of a JSON document as `\uXXXX` (UTF-16
-/// units, surrogate pairs included) — the output parses to the same
-/// value and is legal in an HTTP header.
-fn ascii_escape_json(json: &str) -> String {
-    let mut out = String::with_capacity(json.len());
-    for c in json.chars() {
-        if c.is_ascii() {
-            out.push(c);
-        } else {
-            let mut units = [0u16; 2];
-            for unit in c.encode_utf16(&mut units) {
-                out.push_str(&format!("\\u{unit:04x}"));
-            }
-        }
-    }
-    out
-}
-
 /// Fresh `request_id` for a logical action: stable per action, unique per
 /// tap. Retries reuse it; the daemon dedupes on it.
 pub fn new_request_id(what: &str) -> String {
@@ -1165,42 +1096,6 @@ mod tests {
         assert_eq!(
             parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
             vec!["a", "b"]
-        );
-    }
-
-    /// #64 review F9: the minted header value is pure ASCII even for an
-    /// exotic agent id (herdr session values are not charset-validated),
-    /// and the escaping round-trips to the identical envelope.
-    #[test]
-    fn transcript_header_is_ascii_and_roundtrips_non_ascii_targets() {
-        let signing = SigningKey::from_bytes(&[9u8; 32]);
-        let target = "herdr:sesi\u{f3}n-\u{3c0}-\u{1F40E}";
-        let header = transcript_auth_header(
-            "dev_x",
-            &signing,
-            target,
-            None,
-            crate::transcript::PAGE_LIMIT,
-        );
-        assert!(header.is_ascii(), "header must be legal in HTTP");
-        let parsed: serde_json::Value = serde_json::from_str(&header).expect("still valid JSON");
-        assert_eq!(
-            parsed["envelope"]["target"].as_str().expect("target"),
-            target,
-            "escaping preserves the exact value (surrogate pairs incl.)"
-        );
-        assert_eq!(parsed["envelope"]["capability"], "read_tail");
-        // Post-#88: the page parameters ride the SIGNED payload, not the
-        // URL. A cursor-less newest-page request omits the field.
-        let payload = &parsed["envelope"]["payload"];
-        assert!(
-            payload["ts"].as_u64().expect("ts is unix seconds") > 0,
-            "fresh ts per page"
-        );
-        assert_eq!(payload["limit"], crate::transcript::PAGE_LIMIT);
-        assert!(
-            payload.get("cursor").is_none(),
-            "no cursor on the newest page"
         );
     }
 }

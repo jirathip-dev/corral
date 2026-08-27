@@ -339,7 +339,7 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
                     );
                     ui.checkbox(&mut settings.group_by_repo, "group agents by repo");
                     ui.checkbox(&mut settings.show_idle_collapsed, "show idle / done collapsed");
-                    ui.checkbox(&mut settings.stick_to_bottom, "stick transcript to bottom");
+                    ui.checkbox(&mut settings.stick_to_bottom, "stick output to bottom");
                     ui.label(
                         RichText::new("Cards is the only board view; repo grouping stays on the master bar.")
                             .small()

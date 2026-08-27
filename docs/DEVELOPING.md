@@ -39,9 +39,7 @@ src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
                          audit, tokens), host_identity.rs, registry.rs,
                          authorizer.rs, step_up.rs, audit.rs, http.rs
 src/api/                 mod.rs (router: /healthz /snapshot /events
-                         /history /transcript), drive.rs (POST /drive handler)
-src/transcript/          bounded, redacted session-transcript reads and
-                         agent-to-session binding
+                         /history), drive.rs (POST /drive handler)
 src/history/             mod.rs, ring.rs (D23 persistent event ring),
                          digest.rs (D33 `corrald digest`)
 crates/corrald-client/   shared client layer: model, drive, keypair,
@@ -314,11 +312,9 @@ public probe has no reliable query for that fact.
 
 The iOS path uses only `hermes-sim-task`. `--ios-mode demo` is an explicit
 Debug fixture; live mode requires `--ios-command` to prepare and launch the
-real app inside the temporary simulator. The approved #205 transcript HTML is
-an optional checkout-specific override; when it is available, pass it with
-`--prototype`. Otherwise the script warns and uses the current
-token-compatible prototype. The iOS prototype render uses a 900×900 viewport
-so the phone frame is not clipped:
+real app inside the temporary simulator. Pass the approved current prototype
+with `--prototype`. The iOS prototype render uses a 900×900 viewport so the
+phone frame is not clipped:
 
 ```sh
 scripts/design-gate-evidence.sh --issue 205 --surface ios \
@@ -639,8 +635,8 @@ future findings cannot be silently carried forward as part of this baseline.
   capabilities, never mutate.
 - **Provider-neutral canonical model.** The `Agent` and snapshot shapes carry
   fleet state only; they do not represent provider pricing, quota, or spend.
-  Store-specific transcript parsing belongs in the bounded, redacted
-  `src/transcript/` boundary and must not feed the board model.
+  No session-store parsing exists in the daemon: the bounded redacted
+  `read_tail` tail is the only agent output a client can read.
 - **Same quality bar for every phase.** No phase skips the four gates
   above; the conformance suite grows with each wire change.
 - **Signatures over canonical bytes.** `canonical_envelope_bytes` is the

@@ -21,8 +21,8 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   slot is reserved on narrow panes so identity/repo text drops first. The
   Table keeps its grouped-by-repo default. Empty state buckets never render,
   and a no-match query reports once in the active view. The right pane owns
-  the selected agent's detail, drive controls, full waiting claim, Recent
-  output, and transcript.
+  the selected agent's detail, drive controls, full waiting claim, and
+  Recent output.
 - **Cards | Table** — cards are the default view. The exact nine-column
   conformance table (drop DRIVE, narrow WAITING ON) remains reachable from
   the toolbar; full drive controls stay in the selected detail pane.
@@ -135,9 +135,9 @@ entry, refusing to continue if that identity cannot be reconciled.
 For native live-agent evidence, add `CORRAL_UI_SCREENSHOT_AGENT` with an agent
 id observed in the daemon's `/snapshot` response. The app resolves that real
 agent through the visible Cards selection, then performs the same one-shot,
-capability- and grant-gated signed `read_tail` plus transcript-page hydration
-used by the board; it does not create demo data. Subsequent pages remain
-explicit Load earlier requests:
+capability- and grant-gated signed `read_tail` hydration used by the board; it
+does not create demo data. Subsequent pages remain explicit Load earlier
+requests:
 
 ```sh
 CORRAL_UI_SCREENSHOT=/tmp/board-live.png \

@@ -12,7 +12,7 @@
 |---|---|---|
 | `--bg` | `#0d1117` | window / list background |
 | `--panel` | `#10151c` | frame, left pane |
-| `--panel2` | `#161b22` | card / row selected / transcript block |
+| `--panel2` | `#161b22` | card / row selected / recent-output block |
 | `--panel3` | `#1c2128` | tool tag, question box |
 | `--line` | `#30363d` | borders, dividers, chips |
 | `--ink` | `#e6edf3` | primary text |
@@ -28,7 +28,7 @@
 | working | `#58a6ff` (blue) | dot ring, state text, active filter chip bg `rgba(88,166,255,.12)` |
 | idle | `#8b949e` (gray) | dot empty, state text |
 | unknown | `#6e7681` | fallback |
-| user message | `#12263f` (user-tint) | transcript user block bg `rgba(18,38,63, ...)` |
+| user message | `#12263f` (user-tint) | recent-output user block bg `rgba(18,38,63, ...)` |
 
 ## 2. egui master/detail layout
 
@@ -50,7 +50,7 @@ Two-pane, `42% / 58%` grid, both panes full-height, rounded 12px, border `#2a2f3
 - **Tabs**: `Board` `Issues` `Audit` (11px, weight 600, muted; active = `--ink` + 2px teal underline).
 - **Action buttons**: `Cards` (active: teal border `--accent` + `--ink`), `Table`, `Interrupt`, `Kill` (red `#f85149`).
 - **`Recent output` header** (12px, bold).
-- **Transcript**: `● live` (teal, 10px) + `stick-to-bottom` (muted); blocks:
+- **Recent output**: `● live` (teal, 10px) + `stick-to-bottom` (muted); blocks:
   - tool block: mono, `--muted`, collapsible `▸` toggle (`--working`).
   - agent block: regular text, `--ink`.
   - user block: bg `--user-tint`, right-aligned `margin-left:24px`, who label `#6ea8ff`.
@@ -66,7 +66,7 @@ When there are 0 blocked / needs-you agents, HIDE the entire "Needs you" section
 - [ ] State **color maps to state** (red=needs-you, amber=done, blue=working, gray=idle) — dot, border, text all consistent.
 - [ ] egui is master/detail (42/58), NOT a flat repo-grouped card grid.
 - [ ] Chips `Needs you` + `All` render with correct active treatment.
-- [ ] Right pane has Board/Issues/Audit tabs + Cards/Table/Interrupt/Kill + Recent output transcript, in that treatment.
+- [ ] Right pane has Board/Issues/Audit tabs + Cards/Table/Interrupt/Kill + Recent output, in that treatment.
 - [ ] Zero-state hides "Needs you" at count 0.
 - [ ] No glassmorphism, no feature-tile grid, no extraneous gradients (slop-audit constraint).
 

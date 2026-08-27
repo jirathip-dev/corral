@@ -481,15 +481,6 @@ fn derive_repo(worktree: &Path, repo_root: &Path, worktrees_root: &Path) -> Opti
         .repo_for(worktree)
 }
 
-/// Best-effort canonical form: real paths resolve symlinks (F5), synthetic
-/// test paths fall back to their raw spelling. `pub(crate)`: the transcript
-/// binder (#63 review F8) compares the same herdr-raw cwds against
-/// store-recorded paths and reuses this instead of re-learning the
-/// symlinked-HOME lesson.
-pub(crate) fn canon_best_effort(p: &Path) -> PathBuf {
-    canonicalize_existing_prefix(p)
-}
-
 /// F5 path comparison: raw equality first (cheap, and identity on
 /// non-symlinked installs), then canonical forms of both sides so a
 /// symlinked `HOME` cannot split the plane's canonical event paths from

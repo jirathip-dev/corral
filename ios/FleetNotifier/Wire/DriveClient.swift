@@ -280,64 +280,6 @@ struct DriveClient: Sendable {
         }
     }
 
-    // MARK: - Older transcript pages (#142 / #64, GET /transcript)
-
-    /// Build the signed `x-corral-drive` header for one transcript page.
-    /// Capability is always `read_tail`, target is the agent id, rev is
-    /// omitted, and both request_id and ts are fresh per page.
-    static func transcriptAuthHeader(keyId: String, signer: DeviceSigner,
-                                     target: String, cursor: String?,
-                                     limit: Int = TranscriptLimits.pageLimit,
-                                     ts: UInt64 = UInt64(Date().timeIntervalSince1970),
-                                     requestId: String? = nil) -> String {
-        let rid = requestId ?? newRequestId()
-        let payload = CanonicalJSON.transcriptPayload(ts: ts, cursor: cursor,
-                                                      limit: limit)
-        let bytes = CanonicalJSON.envelopeBytes(requestId: rid,
-                                                capability: Capability.readTail.rawValue,
-                                                target: target, payload: payload,
-                                                rev: nil)
-        let signature = (try? signer.sign(bytes).base64EncodedString()) ?? ""
-        return CanonicalJSON.signedTranscriptHeader(keyId: keyId,
-                                                    signatureB64: signature,
-                                                    envelopeBytes: bytes)
-    }
-
-    /// Fetch exactly one signed newest-first page. Non-200 bodies are parsed
-    /// as the endpoint's typed `{kind, message, candidates?}` contract.
-    func fetchTranscript(agentId: String,
-                         authHeader: String) async -> Result<TranscriptPage, TranscriptFailure> {
-        do {
-            var components = URLComponents(url: host.appendingPathComponent("transcript"),
-                                           resolvingAgainstBaseURL: false)
-            components?.queryItems = [URLQueryItem(name: "agent", value: agentId)]
-            guard let url = components?.url else {
-                return .failure(TranscriptFailure(kind: "transport",
-                                                  message: "invalid transcript URL",
-                                                  candidates: []))
-            }
-            let (status, data) = try await get(url, headers: ["x-corral-drive": authHeader])
-            if status == 200 {
-                guard let page = try? JSONDecoder().decode(TranscriptPage.self,
-                                                           from: data) else {
-                    return .failure(TranscriptFailure(kind: "transport",
-                                                      message: "unparseable transcript response",
-                                                      candidates: []))
-                }
-                return .success(page)
-            }
-            return .failure(TranscriptFailure.from(status: status, data: data))
-        } catch is CancellationError {
-            return .failure(TranscriptFailure(kind: "transport",
-                                              message: "transcript cancelled",
-                                              candidates: []))
-        } catch {
-            return .failure(TranscriptFailure(kind: "transport",
-                                              message: error.localizedDescription,
-                                              candidates: []))
-        }
-    }
-
     /// Fresh idempotency key. UUIDs are fine: request_id is opaque to the
     /// daemon and only needs uniqueness + stability across retries.
     static func newRequestId() -> String {

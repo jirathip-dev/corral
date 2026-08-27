@@ -546,11 +546,8 @@ if [[ -z "$PROTOTYPE" ]]; then
     else
       PROTOTYPE="$REPO_DIR/docs/design/corral-ux-prototype.html"
     fi
-  elif [[ -f "$REPO_DIR/docs/design/corral-ux-transcript-chat-prototype.html" ]]; then
-    PROTOTYPE="$REPO_DIR/docs/design/corral-ux-transcript-chat-prototype.html"
   else
     PROTOTYPE="$REPO_DIR/docs/design/corral-ux-prototype.html"
-    warn "the approved #205 transcript prototype is not present at this base; using the current token-compatible prototype. Pass --prototype to target #205 exactly."
   fi
 fi
 

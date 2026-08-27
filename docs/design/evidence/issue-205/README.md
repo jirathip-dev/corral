@@ -9,7 +9,7 @@ Send button.
 
 ## Approved source
 
-- `docs/design/corral-ux-transcript-chat-prototype.html` is present in this
+- `docs/design/corral-ux-transcript-chat-prototype.html` was present in this
   branch and matches the supplied primary-checkout source byte-for-byte.
 - Source SHA-256:
   `ca6d149e64b773ee53e2c3e5c62b8d9c592bb033152912cd0f9ebb9ffe2733a4`.
@@ -81,7 +81,8 @@ capture does not depend on an untracked navigation hook or copied image.
 
 ## Documentation audit
 
-- `docs/design/corral-ux-transcript-chat-prototype.html`: checked and retained
+- `docs/design/corral-ux-transcript-chat-prototype.html`: checked at the time;
+  retired by #241 (transcript-chat UX superseded by tail-only Recent output)
   byte-for-byte as the approved #205 target.
 - `docs/design/corral-ux-prototype-spec.md`: checked; no change because the
   shared dark tokens and master/detail guidance remain authoritative.

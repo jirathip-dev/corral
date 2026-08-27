@@ -3954,6 +3954,39 @@ final class RecentOutputModelTests: XCTestCase {
                        "Worktree: ~/worktrees/corral/demo")
     }
 
+    // #253: residual box-drawing/block runs (TUI furniture) must render as
+    // dividers, never as dash-run text; content runs survive.
+
+    func testIsDividerRunDetectsPureBoxAndBlockRuns() {
+        XCTAssertTrue(RecentOutputRender.isDividerRun("───"))
+        XCTAssertTrue(RecentOutputRender.isDividerRun("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"))
+        XCTAssertTrue(RecentOutputRender.isDividerRun("\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}"))
+        XCTAssertTrue(RecentOutputRender.isDividerRun("\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}"))
+        XCTAssertTrue(RecentOutputRender.isDividerRun("      ──────"))
+        XCTAssertTrue(RecentOutputRender.isDividerRun("───\n──────"))
+    }
+
+    func testIsDividerRunKeepsContentAndStringRunsAsText() {
+        XCTAssertFalse(RecentOutputRender.isDividerRun("│ model: pilot │"))
+        XCTAssertFalse(RecentOutputRender.isDividerRun("let sep = \"────\";"))
+        XCTAssertFalse(RecentOutputRender.isDividerRun(""))
+        XCTAssertFalse(RecentOutputRender.isDividerRun("─── 40% done ───"))
+        // A tiny frame is still a pure box-drawing run: no box glyphs leak.
+        XCTAssertTrue(RecentOutputRender.isDividerRun("┌──┐"))
+    }
+
+    func testDividerRunBlocksReachTheViewLayerAsIsolatedFlag() {
+        // The model keeps the block row; the view consults isDividerRun and
+        // swaps the text for a Divider. Assert the flag rather than a view.
+        let pane = tail([block(.system, "────────────────")])
+        let render = RecentOutputModel.render(tail: pane)
+        XCTAssertEqual(render.rows.count, 1)
+        guard case .block(let visible) = render.rows[0] else {
+            return XCTFail("divider-run block remains a block row")
+        }
+        XCTAssertTrue(RecentOutputRender.isDividerRun(visible.text))
+    }
+
 #if DEBUG
     func testDebugDemoLaunchIsOptInAndSelectsTheDetailPresentation() {
         XCTAssertNil(CorralDemoLaunch.presentation(arguments: ["FleetNotifier"]))

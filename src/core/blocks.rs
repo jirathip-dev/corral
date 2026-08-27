@@ -205,6 +205,168 @@ fn normalize_whitespace(text: &str) -> String {
     out.join("\n")
 }
 
+/// Minimum furniture glyphs for a line to be treated as TUI decor rather
+/// than content (#253).
+const FURNITURE_MIN_RUN: usize = 8;
+
+/// Short divider marker a collapsed border line becomes (#253).
+const DIVIDER_MARKER: &str = "───";
+
+/// #253: scrub TUI furniture out of pane-tail text (read_tail path).
+///
+/// The hermes/herdr TUI paints panel borders with box-drawing characters
+/// (`─ ═ ╌ ┈ ╭ ╮ ╰ ╯ │ ┼ …`) and progress bars with block glyphs
+/// (`█ ▓ ░`). Phone fonts render long `─` runs as continuous dash junk.
+/// Run per line AFTER the ANSI/redaction passes, so painted borders still
+/// measure as furniture and redaction semantics never change. Rules:
+///
+/// 1. Border-shaped box-drawing lines (start AND end on a box-drawing
+///    char, at least [`FURNITURE_MIN_RUN`] glyphs, >= 60% of the
+///    non-whitespace characters) collapse each long box-drawing run to
+///    [`DIVIDER_MARKER`] — a pure border becomes exactly the marker.
+///    Content lines that merely CONTAIN a `─` run inside real strings
+///    (`let sep = "────";`) are not border-shaped and survive untouched —
+///    the issue's explicit keep-in-str case.
+/// 2. Interior-only vertical lines (`│ … │` with no text and no horizontal
+///    run) are dropped.
+/// 3. Progress-dominant lines: at least [`FURNITURE_MIN_RUN`] block glyphs
+///    at >= 60% of the non-whitespace characters get their block span
+///    replaced with a compact ten-cell bar scaled to the run's dark/light
+///    ratio.
+///
+/// Everything else passes through byte-identical. Deterministic and O(n)
+/// per line (char scan only — no regex, so long lines cannot backtrack).
+pub fn scrub_tui_furniture(line: &str) -> String {
+    // Measure on the escape-stripped view: the TUI paints borders with CSI
+    // color sequences, and a painted border must count as furniture rather
+    // than be diluted by escape bytes.
+    let stripped = strip_escapes(line);
+    let trimmed = stripped.trim();
+
+    let mut nonws = 0usize;
+    let mut box_count = 0usize;
+    let mut block_count = 0usize;
+    for c in stripped.chars() {
+        if !c.is_whitespace() {
+            nonws += 1;
+            if is_box_drawing(c) {
+                box_count += 1;
+            } else if is_block_element(c) {
+                block_count += 1;
+            }
+        }
+    }
+    if nonws == 0 || (box_count == 0 && block_count == 0) {
+        return line.to_string();
+    }
+
+    // Rule 2: interior-only vertical line -> drop.
+    if block_count == 0
+        && box_count >= 2
+        && box_count == nonws
+        && trimmed
+            .chars()
+            .all(|c| c.is_whitespace() || is_vertical_box(c))
+    {
+        return String::new();
+    }
+
+    // The box-drawing glyphs must wrap the line for it to be a TUI border;
+    // a dash run inside real text/strings is content, not furniture.
+    let border_shaped = trimmed.chars().next().is_some_and(is_box_drawing)
+        && trimmed.chars().last().is_some_and(is_box_drawing);
+
+    // Rule 1: border/rule line -> collapse each maximal box-drawing run
+    // to a short divider marker. A pure border collapses to exactly
+    // DIVIDER_MARKER; a rail that happens to carry a label keeps the text
+    // and loses only the long runs.
+    if block_count == 0
+        && box_count >= FURNITURE_MIN_RUN
+        && border_shaped
+        && box_count * 10 >= nonws * 6
+    {
+        return compact_box_runs(&stripped);
+    }
+
+    // Rule 3: progress-dominant line -> compact scaled bar.
+    if block_count >= FURNITURE_MIN_RUN && block_count * 10 >= nonws * 6 {
+        return compact_progress_span(&stripped);
+    }
+
+    line.to_string()
+}
+
+fn is_box_drawing(c: char) -> bool {
+    ('\u{2500}'..='\u{257F}').contains(&c)
+}
+
+fn is_block_element(c: char) -> bool {
+    ('\u{2580}'..='\u{259F}').contains(&c)
+}
+
+/// The vertical-only box-drawing glyphs (interior rails). A line made of
+/// just these (plus whitespace) is an empty pane interior, not content.
+fn is_vertical_box(c: char) -> bool {
+    matches!(c, '│' | '║' | '┃' | '┆' | '┇' | '┊' | '┋' | '╎' | '╏')
+}
+
+/// Replace every maximal run of box-drawing glyphs with the short divider
+/// marker, keeping any interior text (rails, titles) intact.
+fn compact_box_runs(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut run = 0usize;
+    for c in line.chars() {
+        if is_box_drawing(c) {
+            run += 1;
+        } else {
+            if run > 0 {
+                out.push_str(DIVIDER_MARKER);
+                run = 0;
+            }
+            out.push(c);
+        }
+    }
+    if run > 0 {
+        out.push_str(DIVIDER_MARKER);
+    }
+    out
+}
+
+/// Replace the span between the first and last block glyph with a compact
+/// 10-cell bar. Light shade `░` counts as empty; every other block glyph
+/// counts as filled; the bar rounds the dark/light ratio to tenths.
+/// (ponytail: a precise value, when present, rides on the line as `NN%` —
+/// the bar is decor, not data.)
+fn compact_progress_span(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let first = chars.iter().position(|c| is_block_element(*c));
+    let last = chars.iter().rposition(|c| is_block_element(*c));
+    let (Some(first), Some(last)) = (first, last) else {
+        return line.to_string();
+    };
+    let mut total = 0usize;
+    let mut dark = 0usize;
+    for c in &chars[first..=last] {
+        if is_block_element(*c) {
+            total += 1;
+            if *c != '\u{2591}' {
+                dark += 1;
+            }
+        }
+    }
+    // `total >= 1` by construction: the span starts at a block glyph.
+    let filled = (dark * 10 + total / 2) / total;
+    let mut out: String = chars[..first].iter().collect();
+    for _ in 0..filled {
+        out.push('\u{25B0}'); // ▰
+    }
+    for _ in filled..10 {
+        out.push('\u{25B1}'); // ▱
+    }
+    out.extend(chars[last + 1..].iter());
+    out
+}
+
 /// Pass 4: parse a `... +N lines (ctrl+t …)` marker. Returns the N count when
 /// the line is such a marker; nothing else.
 pub fn parse_truncation_marker(line: &str) -> Option<u32> {
@@ -611,6 +773,81 @@ mod tests {
             blocks[0].text,
             "Missing environment variable: OPENROUTER_API_KEY"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // #253 scrubber unit tests (fixture inputs: hermes TUI frame box,
+    // progress bars, code block with `─` in a string that must survive)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn scrubber_collapses_hermes_tui_frame_borders() {
+        // Painted (ANSI-colored) top edge — the real herdr/hermes shape.
+        let top = "\u{1b}[38;5;8m╭──────────────────────────────────────────────┐\u{1b}[0m";
+        assert_eq!(scrub_tui_furniture(top), DIVIDER_MARKER);
+        // Content line inside the frame: only the two `│` rails touch it.
+        let content = "│ model: claude-sonnet-4-5  ·  ready                                   │";
+        assert_eq!(scrub_tui_furniture(content), content);
+        // Heavy/double rules and the bottom edge collapse too.
+        let heavy = "╠══════════════════════════════════════════════════╣";
+        assert_eq!(scrub_tui_furniture(heavy), DIVIDER_MARKER);
+        let bottom = "╰────────────────────────────────────────────────╯";
+        assert_eq!(scrub_tui_furniture(bottom), DIVIDER_MARKER);
+        // A border that carries a title (ratatui-style) still collapses
+        // its runs; the title text stays.
+        let titled = format!("╭{} Hermes Agent {}╮", "─".repeat(30), "─".repeat(30));
+        assert_eq!(scrub_tui_furniture(&titled), "─── Hermes Agent ───");
+        // Interior-only rail line: dropped.
+        let interior = "│                                                                    │";
+        assert_eq!(scrub_tui_furniture(interior), "");
+    }
+
+    #[test]
+    fn scrubber_compacts_progress_block_runs() {
+        // Painter progress line: label + block run + percent. ▓×16 ░×4 →
+        // dark 16/20 → 8 filled cells out of 10.
+        let painter = format!(
+            "painter {}\u{2591}\u{2591}\u{2591}\u{2591} 80%",
+            "\u{2593}".repeat(16)
+        );
+        assert_eq!(
+            scrub_tui_furniture(&painter),
+            "painter \u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B1}\u{25B1} 80%"
+        );
+        // Framed bar line: ▐▓×9░░▌ → dark 11/13 → 8 filled cells.
+        let bar = "\u{2590}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2591}\u{2591}\u{258C} 12%";
+        assert_eq!(
+            scrub_tui_furniture(bar),
+            "\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B0}\u{25B1}\u{25B1} 12%"
+        );
+    }
+
+    #[test]
+    fn scrubber_keeps_dash_runs_inside_code_strings() {
+        // The issue's explicit keep-in-str case: a real string holding a
+        // long `─` run must survive (it is not border-shaped).
+        let code = "let sep = \"───────────────\";";
+        assert_eq!(scrub_tui_furniture(code), code);
+        // Even a quoted, fully-dash string literal survives: quotes make it
+        // content, not a border.
+        let quoted = "\"╭────────────────────╮\"";
+        assert_eq!(scrub_tui_furniture(quoted), quoted);
+        // A short frame corner is not a long run: keep as-is.
+        let corner = "┌──┐";
+        assert_eq!(scrub_tui_furniture(corner), corner);
+    }
+
+    #[test]
+    fn scrubber_keeps_prose_and_short_runs_untouched() {
+        let prose = "  → Waiting on your decision…";
+        assert_eq!(scrub_tui_furniture(prose), prose);
+        let code = "let x = '─';";
+        assert_eq!(scrub_tui_furniture(code), code);
+        // A rail line with long dash runs and a label: the long runs
+        // collapse, the label text survives (not a real border, but the
+        // runs are exactly the dash junk the issue targets).
+        let mixed = "│──────────────── 40% done ────────────────│";
+        assert_eq!(scrub_tui_furniture(mixed), "─── 40% done ───");
     }
 
     // ---------------------------------------------------------------------

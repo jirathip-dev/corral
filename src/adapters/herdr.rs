@@ -70,6 +70,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
+use crate::core::blocks::scrub_tui_furniture;
 use crate::core::model::{
     Agent, AgentState, Attachment, CAPABILITIES, WaitingOn, WaitingOnKind, Workspace,
 };
@@ -2799,16 +2800,17 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Bound + redact the fetched tail at the adapter boundary, BEFORE any byte
-/// leaves the machine (D9/D5): at most `max_lines` lines (clamped to
-/// [`READ_TAIL_MAX_LINES`]), the redacted text bounded to
-/// [`READ_TAIL_MAX_BYTES`], every line through the shared redaction pass.
+/// Bound + redact + scrub the fetched tail at the adapter boundary, BEFORE
+/// any byte leaves the machine (D9/D5/#253): at most `max_lines` lines
+/// (clamped to [`READ_TAIL_MAX_LINES`]), the redacted text bounded to
+/// [`READ_TAIL_MAX_BYTES`], every line through the shared redaction pass
+/// and then the TUI-furniture scrub (box-drawing borders, progress bars).
 fn bounded_redacted_tail(text: &str, max_lines: u32) -> Vec<String> {
     let max_lines = (max_lines as usize).clamp(1, READ_TAIL_MAX_LINES as usize);
     let mut lines: Vec<String> = Vec::new();
     let mut bytes = 0usize;
     for raw in text.lines().take(max_lines) {
-        let line = redact(raw).into_owned();
+        let line = scrub_tui_furniture(&redact(raw));
         // The wire carries one newline per line; count it so the serialized
         // payload stays under the byte bound too.
         bytes += line.len() + 1;
@@ -3692,6 +3694,21 @@ mod tests {
         );
         // No output -> empty lines, never an error.
         assert!(bounded_redacted_tail("", 200).is_empty());
+    }
+
+    #[test]
+    fn tail_scrubs_tui_furniture_after_redaction() {
+        let text = "╭────────────────────────────╮\n│ model: pilot │\n╰────────────────────────────╯\nlet sep = \"───────────────\";\npainter ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 92%\n";
+        let tail = bounded_redacted_tail(text, 200);
+        assert_eq!(tail[0], "───", "top border collapses");
+        assert_eq!(tail[1], "│ model: pilot │", "content line untouched");
+        assert_eq!(tail[2], "───", "bottom border collapses");
+        assert_eq!(
+            tail[3], "let sep = \"───────────────\";",
+            "dash run inside a string survives"
+        );
+        assert!(!tail[4].contains('▓'), "progress run compacted");
+        assert!(tail[4].contains('▰'), "compact bar marker present");
     }
 
     /// One JSON-RPC exchange against a mock herdr socket: accept a

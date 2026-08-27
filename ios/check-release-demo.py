@@ -45,8 +45,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # that phase runs; it is not an authenticity mechanism.
 # #209 Devices & Grants surface (grouping, toggles, host admin) updated the
 # Manifest-listed Swift sources; the pin follows the new source set.
+# #253 read_tail scrub: TUI-furniture divider fallback added to
+# RecentOutputModel (isDividerRun) and the Recent row view (Divider).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "5e824bffacdc55c19f5cf5f55e68b2685599ee33d518f738229f04a696a3bf77"
+    "f5a0aeea709ed08d942959d9d8171f02d58d68f833662b488302f4e56abf5b25"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

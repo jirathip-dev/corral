@@ -41,11 +41,11 @@ pub struct FleetIdentity {
     pub orch: String,
     pub workers: usize,
     pub paused: bool,
-    /// Fleet-ops `add` default checkout (`~/Projects/<name>`). Used ONLY when
-    /// the CLI itself carries a checkout anchor; the `herdr-fleet list` table
-    /// does not, so the daemon resolves the physical anchor from herdr state
-    /// (see [`crate::fleet::worktree::resolve_checkout`]) before falling back
-    /// to this default.
+    /// Fleet-ops `add` default checkout (`~/Projects/<name>`). The
+    /// `herdr-fleet list` table carries no checkout anchor, so every
+    /// CLI-derived identity falls back to this synthesized default; the
+    /// injected provider (tests, tooling) supplies the physical anchor
+    /// explicitly.
     pub local: PathBuf,
     /// Fleet-ops `add` default worktree root component (`<name>`).
     pub worktree_dir: String,
@@ -90,15 +90,28 @@ impl fmt::Display for FleetOpsError {
 impl std::error::Error for FleetOpsError {}
 
 /// Parsed `herdr-fleet list` output.
+///
+/// A well-formed empty table — the CLI's summary line reporting zero fleets
+/// and no fleet rows — is a HEALTHY empty roster (`Ok(vec![])`), distinct
+/// from an unavailable/broken CLI (`Err(FleetOpsError::Unavailable)`).
 pub fn parse_fleet_list(output: &str) -> Result<Vec<FleetIdentity>, FleetOpsError> {
     let mut fleets = Vec::new();
+    let mut registry_size: Option<usize> = None;
     for line in output.lines() {
         let line = line.trim_start();
         if line.is_empty() {
             continue;
         }
-        // Table shape: `{name:12s} ✓  {gh_repo:50s} orch={orch} workers={n} [PAUSED] models=...`
-        // Only the summary line ("N fleets in registry") has no gh_repo.
+        // Table shape: `{name:12s} ✓  {gh_repo:50s} orch=... workers=N [PAUSED] models=...`
+        // The summary line (`N fleets in registry`) is the only line with no
+        // gh_repo token; it gives the healthy empty-roster signal.
+        let summary = line
+            .strip_suffix(" fleets in registry")
+            .and_then(|prefix| prefix.trim().parse::<usize>().ok());
+        if let Some(count) = summary {
+            registry_size = Some(count);
+            continue;
+        }
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(name) = tokens.first() else {
             continue;
@@ -140,12 +153,20 @@ pub fn parse_fleet_list(output: &str) -> Result<Vec<FleetIdentity>, FleetOpsErro
             worktree_dir: (*name).to_string(),
         });
     }
-    if fleets.is_empty() {
-        return Err(FleetOpsError::Unavailable {
-            detail: "no fleets parsed (run `herdr-fleet list` outside the daemon)".to_string(),
-        });
+    match (fleets.is_empty(), registry_size) {
+        // Healthy CLI, zero fleets: an empty catalog is not a status error.
+        (true, Some(0)) => Ok(Vec::new()),
+        (true, _) => Err(FleetOpsError::Unavailable {
+            detail: match registry_size {
+                Some(count) => format!(
+                    "table reports {count} fleets but no fleet rows parsed \
+                     (run `herdr-fleet list` outside the daemon)"
+                ),
+                None => "no fleets parsed (run `herdr-fleet list` outside the daemon)".to_string(),
+            },
+        }),
+        (false, _) => Ok(fleets),
     }
-    Ok(fleets)
 }
 
 /// Shell-out provider: runs `herdr-fleet list` (or `$CORRALD_FLEET_OPS`)
@@ -261,6 +282,26 @@ synergy-website ✓  synergy-services-cooling-tower/synergy-services-website orc
         ));
         assert!(matches!(
             parse_fleet_list("hello world\n"),
+            Err(FleetOpsError::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn zero_fleet_summary_is_a_healthy_empty_roster() {
+        // A CLI that ran and reported zero fleets is NOT a status error: the
+        // empty catalog is represented as Ok(empty), distinct from
+        // Unavailable (CLI down/garbage).
+        let fleets = parse_fleet_list("\n0 fleets in registry\n")
+            .expect("zero-fleet table is a valid empty roster");
+        assert!(fleets.is_empty());
+    }
+
+    #[test]
+    fn positive_summary_with_no_rows_stays_unavailable() {
+        // A summary claiming fleets with zero rows parsed is a broken table
+        // (a parse regression, not an empty catalog): keep the error signal.
+        assert!(matches!(
+            parse_fleet_list("3 fleets in registry\n"),
             Err(FleetOpsError::Unavailable { .. })
         ));
     }

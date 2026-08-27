@@ -22,9 +22,9 @@ use crate::fleet::cli::fleet_ops_command;
 pub enum SwitchError {
     /// The fleet-ops CLI could not be run at all.
     Unavailable { detail: String },
-    /// The fleet-ops CLI reported the fleet is not in its registry.
-    UnknownFleet { name: String },
-    /// The fleet-ops CLI refused or failed the switch (auth, pane, model).
+    /// The fleet-ops CLI refused or failed the switch (auth, pane, model,
+    /// or a registry miss — the CLI is the identity authority, so corrald
+    /// cannot distinguish and maps every non-zero exit to this).
     Refused { detail: String },
 }
 
@@ -33,9 +33,6 @@ impl fmt::Display for SwitchError {
         match self {
             Self::Unavailable { detail } => {
                 write!(f, "fleet-ops CLI switch path unavailable: {detail}")
-            }
-            Self::UnknownFleet { name } => {
-                write!(f, "fleet {name:?} is not in the fleet-ops registry")
             }
             Self::Refused { detail } => f.write_str(detail),
         }
@@ -55,13 +52,12 @@ impl SwitchError {
 
 /// Build the fleet-ops CLI invocation for one switch.
 /// Exposed for tests: `--pane <id>` passes through; otherwise no extra args.
-pub fn switch_command(command: &str, name: &str, pane: Option<&str>) -> Vec<String> {
+pub fn switch_command(name: &str, pane: Option<&str>) -> Vec<String> {
     let mut args = vec!["switch".to_string(), name.to_string()];
     if let Some(pane) = pane {
         args.push("--pane".to_string());
         args.push(pane.to_string());
     }
-    let _ = command;
     args
 }
 
@@ -70,7 +66,7 @@ pub fn switch_command(command: &str, name: &str, pane: Option<&str>) -> Vec<Stri
 /// authority on auth/pane/model diagnostics) and its exit code is mapped.
 pub fn switch_fleet(name: &str, pane: Option<&str>) -> Result<(), SwitchError> {
     let command = fleet_ops_command();
-    let args = switch_command(&command, name, pane);
+    let args = switch_command(name, pane);
     let mut invocation = Command::new(&command);
     invocation
         .args(&args)
@@ -87,8 +83,8 @@ pub fn switch_fleet(name: &str, pane: Option<&str>) -> Result<(), SwitchError> {
     }
     // The fleet-ops CLI is the identity authority: a missing registry entry
     // is its typical non-zero failure. We only know the exit code and the
-    // name here (its diagnostics streamed above), so unknown-fleet keeps the
-    // same wording as the CLI: preserve exit 1 and a concise refusal.
+    // name here (its diagnostics streamed above), so every failure maps to
+    // the same concise refusal: preserve exit 1 and the CLI's own wording.
     Err(SwitchError::Refused {
         detail: format!(
             "{command} switch {name} failed (exit {status}); the fleet is NOT re-armed"
@@ -103,11 +99,11 @@ mod tests {
     #[test]
     fn switch_args_pass_name_and_optional_pane() {
         assert_eq!(
-            switch_command("herdr-fleet", "corral", None),
+            switch_command("corral", None),
             vec!["switch".to_string(), "corral".to_string()]
         );
         assert_eq!(
-            switch_command("herdr-fleet", "corral", Some("wM:p1")),
+            switch_command("corral", Some("wM:p1")),
             vec![
                 "switch".to_string(),
                 "corral".to_string(),
@@ -133,20 +129,5 @@ mod tests {
             .exit_code(),
             1
         );
-        assert_eq!(
-            SwitchError::UnknownFleet {
-                name: "x".to_string()
-            }
-            .exit_code(),
-            1
-        );
-    }
-
-    #[test]
-    fn unknown_fleet_message_names_the_fleet() {
-        let error = SwitchError::UnknownFleet {
-            name: "nope".to_string(),
-        };
-        assert!(error.to_string().contains("nope"));
     }
 }

@@ -952,6 +952,13 @@ pub struct CorralApp {
     tx_transcript: UnboundedSender<crate::transcript::TranscriptMsg>,
     rx_transcript: UnboundedReceiver<crate::transcript::TranscriptMsg>,
     stop_read: Option<tokio::sync::watch::Sender<bool>>,
+    /// Monotonic identity epoch for the issue and registry read models.
+    /// Results from an earlier connection or host are never allowed to fold
+    /// into the current epoch.
+    read_generation: u64,
+    /// Generation of the currently spawned SSE/read loop. This is separate
+    /// from `read_generation`: one loop can establish several connections.
+    read_loop_generation: u64,
 
     // Audit view.
     audit: Option<Result<crate::protocol::AuditView, String>>,
@@ -1073,6 +1080,8 @@ impl CorralApp {
             tx_transcript,
             rx_transcript,
             stop_read: None,
+            read_generation: 0,
+            read_loop_generation: 0,
             audit: None,
             audit_loading: false,
             // Permit the first Issues visit to fetch immediately; every
@@ -1184,6 +1193,8 @@ impl CorralApp {
     }
 
     fn spawn_read_loop(&mut self, host_url: String) {
+        let generation = self.invalidate_read_model();
+        self.read_loop_generation = generation;
         if let Some(stop) = self.stop_read.take() {
             let _ = stop.send(true);
         }
@@ -1194,10 +1205,32 @@ impl CorralApp {
             self.rt.clone(),
             self.client.clone(),
             host_url.clone(),
+            generation,
             tx.clone(),
             stop_rx.clone(),
             self.settings.auto_reconnect,
         );
+    }
+
+    /// Start a new identity epoch for the read-only issue/registry views.
+    ///
+    /// The old cache is deliberately removed before a reconnect or host
+    /// switch starts new requests: a fresh `/issues` response must never be
+    /// actionable through a previous registry, and an old in-flight response
+    /// must not clear the loading flag for the replacement request.
+    fn invalidate_read_model(&mut self) -> u64 {
+        self.read_generation = self
+            .read_generation
+            .checked_add(1)
+            .expect("read model generation exhausted");
+        self.fleet.issues.clear();
+        self.fleet.issues_loaded = false;
+        self.fleet.issues_loading = false;
+        self.fleet.issues_error = None;
+        self.fleet.registry = None;
+        self.fleet.registry_loading = false;
+        self.fleet.registry_loaded = false;
+        self.read_generation
     }
 
     fn tx_apply(&self) -> UnboundedSender<ApplyMsg> {
@@ -1266,42 +1299,104 @@ impl CorralApp {
         match msg {
             ApplyMsg::Fingerprint(fp) => self.apply_fingerprint(fp),
             ApplyMsg::RegisterResult(result) => self.handle_register_result(result),
-            ApplyMsg::Sse(protocol::SseEvent::Snapshot(snap)) => {
-                self.fleet.apply_snapshot(&snap);
+            ApplyMsg::Sse {
+                loop_generation,
+                event,
+            } => {
+                if loop_generation != self.read_loop_generation {
+                    tracing::debug!(
+                        loop_generation,
+                        current = self.read_loop_generation,
+                        "ignored SSE event from an obsolete read loop"
+                    );
+                    return;
+                }
+                match event {
+                    protocol::SseEvent::Snapshot(snap) => {
+                        self.fleet.apply_snapshot(&snap);
+                    }
+                    protocol::SseEvent::Delta(delta) => {
+                        self.fleet.apply_delta(&delta);
+                    }
+                    protocol::SseEvent::Unknown { event, .. } => {
+                        tracing::debug!(event, "ignored SSE event");
+                    }
+                }
             }
-            ApplyMsg::Sse(protocol::SseEvent::Delta(delta)) => {
-                self.fleet.apply_delta(&delta);
+            ApplyMsg::Conn {
+                loop_generation,
+                event,
+            } => {
+                if loop_generation != self.read_loop_generation {
+                    tracing::debug!(
+                        loop_generation,
+                        current = self.read_loop_generation,
+                        "ignored connection event from an obsolete read loop"
+                    );
+                    return;
+                }
+                match event {
+                    protocol::Live::Connected => {
+                        self.invalidate_read_model();
+                        self.conn = ConnState::Connected;
+                        self.conn_detail = None;
+                        // #113/#135: fetch both read-only views on connection.
+                        // The invalidation above makes the current generation
+                        // non-actionable until both read models catch up.
+                        self.refresh_issues(true);
+                        self.refresh_registry(true);
+                    }
+                    protocol::Live::Disconnected => {
+                        self.invalidate_read_model();
+                        self.conn = ConnState::Connecting;
+                        self.conn_detail = Some("disconnected — reconnecting".to_string());
+                    }
+                    protocol::Live::Reconnecting { backoff_ms, rev } => {
+                        self.conn = ConnState::Reconnecting { backoff_ms };
+                        self.conn_detail = Some(format!(
+                            "resuming from rev {} (Last-Event-ID)",
+                            rev.map(|r| r.to_string())
+                                .unwrap_or_else(|| "none".to_string())
+                        ));
+                    }
+                }
             }
-            ApplyMsg::Sse(protocol::SseEvent::Unknown { event, .. }) => {
-                tracing::debug!(event, "ignored SSE event");
-            }
-            ApplyMsg::Conn(protocol::Live::Connected) => {
-                self.conn = ConnState::Connected;
-                self.conn_detail = None;
-                // #113/#135: fetch both read-only views on connection.
-                self.refresh_issues(true);
-                self.refresh_registry(false);
-            }
-            ApplyMsg::Conn(protocol::Live::Disconnected) => {
-                self.conn = ConnState::Connecting;
-                self.conn_detail = Some("disconnected — reconnecting".to_string());
-            }
-            ApplyMsg::Conn(protocol::Live::Reconnecting { backoff_ms, rev }) => {
-                self.conn = ConnState::Reconnecting { backoff_ms };
-                self.conn_detail = Some(format!(
-                    "resuming from rev {} (Last-Event-ID)",
-                    rev.map(|r| r.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                ));
-            }
-            ApplyMsg::ConnError(e) => {
+            ApplyMsg::ConnError {
+                loop_generation,
+                error,
+            } => {
+                if loop_generation != self.read_loop_generation {
+                    tracing::debug!(
+                        loop_generation,
+                        current = self.read_loop_generation,
+                        "ignored connection error from an obsolete read loop"
+                    );
+                    return;
+                }
+                self.invalidate_read_model();
                 self.conn = ConnState::Down;
-                self.conn_detail = Some(e);
+                self.conn_detail = Some(error);
             }
-            ApplyMsg::Issues(result) => {
+            ApplyMsg::Issues { generation, result } => {
+                if generation != self.read_generation {
+                    tracing::debug!(
+                        generation,
+                        current = self.read_generation,
+                        "ignored issue response from an obsolete identity generation"
+                    );
+                    return;
+                }
                 self.fleet.set_issues(result);
             }
-            ApplyMsg::Registry(result) => {
+            ApplyMsg::Registry { generation, result } => {
+                if generation != self.read_generation {
+                    tracing::debug!(
+                        generation,
+                        current = self.read_generation,
+                        "ignored registry response from an obsolete identity generation"
+                    );
+                    return;
+                }
                 let loaded = result.is_ok();
                 self.fleet.set_registry(result);
                 if loaded {
@@ -1348,6 +1443,7 @@ impl CorralApp {
         }
         self.fleet.issues_loading = true;
         self.issues_last_refresh = std::time::Instant::now();
+        let generation = self.read_generation;
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_apply.clone();
@@ -1356,7 +1452,7 @@ impl CorralApp {
             if let Err(error) = &result {
                 tracing::warn!(error, "GET /issues unavailable");
             }
-            let _ = tx.send(ApplyMsg::Issues(result));
+            let _ = tx.send(ApplyMsg::Issues { generation, result });
         });
     }
 
@@ -1394,16 +1490,17 @@ impl CorralApp {
     /// A transport error is stored as `Err` so the tab shows the same
     /// prominent failure path as a daemon `status="error"`.
     fn refresh_registry(&mut self, force: bool) {
-        if !force && self.fleet.registry_loaded {
+        if self.fleet.registry_loading || (!force && self.fleet.registry_ready()) {
             return;
         }
         self.fleet.registry_loading = true;
+        let generation = self.read_generation;
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
             let result = protocol::fetch_fleet_registry(&client, &base_url).await;
-            let _ = tx.send(ApplyMsg::Registry(result));
+            let _ = tx.send(ApplyMsg::Registry { generation, result });
         });
     }
 
@@ -1557,10 +1654,14 @@ impl CorralApp {
     fn refresh_snapshot(&self) {
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
+        let loop_generation = self.read_loop_generation;
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
             if let Ok(snapshot) = protocol::fetch_snapshot(&client, &base_url).await {
-                let _ = tx.send(ApplyMsg::Sse(protocol::SseEvent::Snapshot(snapshot)));
+                let _ = tx.send(ApplyMsg::Sse {
+                    loop_generation,
+                    event: protocol::SseEvent::Snapshot(snapshot),
+                });
             }
         });
     }
@@ -2684,6 +2785,14 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         }
         Tab::Issues => {
             app.refresh_issues(false);
+            if app.fleet.registry.is_none() && app.conn == ConnState::Connected {
+                // The Issues tab can win the first frame after connection
+                // while the registry request is still racing the issue
+                // request. The loading guard in refresh_registry prevents a
+                // second request; a later manual Issues refresh retries a
+                // failed projection as well.
+                app.refresh_registry(false);
+            }
             let ledger = app.ledger.clone();
             let allowed = |cap: &str| ledger.allowed(cap);
             let mut pending: Vec<DriveIntent> = Vec::new();
@@ -2697,6 +2806,13 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             if refresh_requested {
                 app.refresh_issues(true);
+                if !app.fleet.registry_ready() {
+                    // A failed or daemon-error registry must be recoverable
+                    // from the surface that needs it. Force only here, after
+                    // the user explicitly refreshed Issues; an in-flight
+                    // request is still protected by refresh_registry's guard.
+                    app.refresh_registry(true);
+                }
             }
             app.dispatch_drive_intents(pending);
         }
@@ -2815,7 +2931,9 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::model::{Agent, AgentState, Workspace};
+    use crate::model::{
+        Agent, AgentState, FleetModels, FleetRegistry, FleetRegistryEntry, GhIssueRef, Workspace,
+    };
     use crate::ui::board::{self, StateFilter};
 
     fn agent(id: &str, state: AgentState, capabilities: &[&str]) -> Agent {
@@ -2839,11 +2957,326 @@ mod tests {
         }
     }
 
+    fn read_model_test_app() -> (tokio::runtime::Runtime, CorralApp) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let client = reqwest::Client::builder().build().expect("test client");
+        let (tx_apply, rx_apply) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_drive, rx_drive) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_audit, rx_audit) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_transcript, rx_transcript) = tokio::sync::mpsc::unbounded_channel();
+        let (native_probe_tx, native_probe_rx) = std::sync::mpsc::channel();
+        let config = PersistedConfig {
+            host_url: "http://127.0.0.1:1".into(),
+            ..Default::default()
+        };
+        let settings = crate::ui::register::SettingsState {
+            host_url: config.host_url.clone(),
+            ..Default::default()
+        };
+        let app = CorralApp {
+            rt: runtime.handle().clone(),
+            client,
+            fleet: Fleet::default(),
+            conn: ConnState::Connecting,
+            conn_detail: None,
+            toasts: VecDeque::new(),
+            device_key: None,
+            device_key_store_warning: false,
+            ledger: GrantLedger::default(),
+            registration: None,
+            host_fingerprint: None,
+            config,
+            config_path: PathBuf::from("/tmp/corral-ui-read-model-test.json"),
+            settings,
+            registry_drafts: BTreeMap::new(),
+            registry_notice: None,
+            tx_apply: tx_apply.clone(),
+            rx_apply,
+            rx_drive,
+            tx_drive,
+            tx_audit: tx_audit.clone(),
+            rx_audit,
+            tx_transcript,
+            rx_transcript,
+            stop_read: None,
+            read_generation: 100,
+            read_loop_generation: 7,
+            audit: None,
+            audit_loading: false,
+            issues_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
+            tab: Tab::Issues,
+            screenshot_path: None,
+            screenshot_state: ScreenshotCaptureState::initial(
+                false,
+                false,
+                Instant::now(),
+                std::time::Duration::ZERO,
+            ),
+            screenshot_settle: std::time::Duration::ZERO,
+            screenshot_agent_id: None,
+            screenshot_agent_selected: false,
+            screenshot_wake_stop: None,
+            screenshot_wake_command: None,
+            screenshot_last_wake: None,
+            window_diagnostic: false,
+            window_diagnostic_last_sample: None,
+            evidence_visibility_requested: false,
+            native_probe_tx,
+            native_probe_rx,
+            native_probe_in_flight: false,
+        };
+        (runtime, app)
+    }
+
+    fn test_registry(name: &str, gh_repo: &str) -> FleetRegistry {
+        FleetRegistry {
+            status: "ok".into(),
+            reported_path: "/tmp/fleets.json".into(),
+            error: None,
+            repos: vec!["foo".into()],
+            fleets: vec![FleetRegistryEntry {
+                name: name.into(),
+                gh_repo: gh_repo.into(),
+                local: "/tmp/local".into(),
+                worktree_dir: "worktrees".into(),
+                orch: "orch".into(),
+                workers: vec![],
+                paused: false,
+                models: FleetModels {
+                    orch: "orch".into(),
+                    impl_: "impl".into(),
+                    review: "review".into(),
+                    impl_alt: None,
+                    impl_alt2: None,
+                    reasoning_effort: None,
+                },
+            }],
+        }
+    }
+
+    fn test_issue() -> GhIssueRef {
+        GhIssueRef {
+            repo: "foo".into(),
+            number: 42,
+            state: "OPEN".into(),
+            title: "renamed fleet".into(),
+            labels: vec![],
+            url: "https://github.com/example/foo/issues/42".into(),
+        }
+    }
+
     #[test]
     fn workspace_navigation_has_exactly_four_tabs_and_demotes_audit() {
         let labels: Vec<&str> = TAB_LABELS.iter().map(|(label, _)| *label).collect();
         assert_eq!(labels, ["Board", "Issues", "Registry", "Settings"]);
         assert!(!labels.contains(&"Audit"));
+    }
+
+    #[test]
+    fn live_connected_orders_issue_and_registry_refreshes_by_identity_generation() {
+        let (_runtime, mut app) = read_model_test_app();
+        app.fleet
+            .set_issues(Ok(BTreeMap::from([("foo".into(), vec![test_issue()])])));
+        app.fleet
+            .set_registry(Ok(test_registry("alpha", "owner/foo")));
+        assert!(app.fleet.registry_ready());
+        app.fleet.registry_loading = true;
+        app.fleet.issues_loading = true;
+        let stale_generation = app.read_generation;
+        let loop_generation = app.read_loop_generation;
+
+        // Exercise the real application boundary: a live reconnect must
+        // invalidate the old identity before it starts either read request.
+        app.on_apply(ApplyMsg::Conn {
+            loop_generation,
+            event: protocol::Live::Connected,
+        });
+        let current_generation = app.read_generation;
+        assert_ne!(current_generation, stale_generation);
+        assert!(app.fleet.registry.is_none());
+        assert!(app.fleet.issues.is_empty());
+        assert!(app.fleet.registry_loading);
+        assert!(app.fleet.issues_loading);
+
+        // `/issues` can arrive first, but the old alpha registry is no longer
+        // allowed to turn that category into an action.
+        app.on_apply(ApplyMsg::Issues {
+            generation: current_generation,
+            result: Ok(BTreeMap::from([("foo".into(), vec![test_issue()])])),
+        });
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| {
+            memory.data.insert_temp(
+                egui::Id::new("corral-ui-issues-selected"),
+                Some(("foo".to_string(), "unregistered:foo".to_string(), 42_u64)),
+            );
+        });
+        let intents = std::cell::RefCell::new(Vec::new());
+        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
+        let disabled = text_rect(&frame, "start worktree")
+            .expect("the current issue remains visibly disabled during the gap")
+            .center();
+        frame.textures_delta.clear();
+        for pressed in [true, false] {
+            let mut attempted = render_issues(
+                &ctx,
+                &app.fleet,
+                issue_pointer_input(disabled, pressed),
+                &intents,
+            );
+            attempted.textures_delta.clear();
+        }
+        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
+        assert!(text_rect(&frame, "✓ confirm create").is_none());
+        frame.textures_delta.clear();
+        assert!(intents.borrow().is_empty());
+
+        app.on_apply(ApplyMsg::Issues {
+            generation: stale_generation,
+            result: Ok(BTreeMap::from([("alpha".into(), vec![test_issue()])])),
+        });
+        let issue_keys: Vec<String> = app.fleet.issues.keys().cloned().collect();
+        assert_eq!(issue_keys, ["foo"]);
+        assert!(!app.fleet.issues_loading);
+
+        // A response from the pre-reconnect request cannot replace the
+        // current empty/loading registry or clear its loading flag.
+        app.on_apply(ApplyMsg::Registry {
+            generation: stale_generation,
+            result: Ok(test_registry("alpha", "owner/foo")),
+        });
+        assert!(app.fleet.registry.is_none());
+        assert!(app.fleet.registry_loading);
+
+        // The current response restores the exact current fleet action.
+        app.on_apply(ApplyMsg::Registry {
+            generation: current_generation,
+            result: Ok(test_registry("foo", "owner/foo")),
+        });
+        assert_eq!(
+            app.fleet
+                .registry
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .and_then(|registry| registry.fleets.first())
+                .map(|entry| entry.name.as_str()),
+            Some("foo")
+        );
+        ctx.memory_mut(|memory| {
+            memory.data.insert_temp(
+                egui::Id::new("corral-ui-issues-selected"),
+                Some(("foo".to_string(), "owner/foo".to_string(), 42_u64)),
+            );
+        });
+        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
+        let start = text_rect(&frame, "start worktree")
+            .expect("the current exact fleet action is enabled")
+            .center();
+        frame.textures_delta.clear();
+        for pressed in [true, false] {
+            let mut attempted = render_issues(
+                &ctx,
+                &app.fleet,
+                issue_pointer_input(start, pressed),
+                &intents,
+            );
+            attempted.textures_delta.clear();
+        }
+        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
+        let confirm = text_rect(&frame, "✓ confirm create")
+            .expect("the current fleet action asks for confirmation")
+            .center();
+        frame.textures_delta.clear();
+        for pressed in [true, false] {
+            let mut attempted = render_issues(
+                &ctx,
+                &app.fleet,
+                issue_pointer_input(confirm, pressed),
+                &intents,
+            );
+            attempted.textures_delta.clear();
+        }
+        assert_eq!(intents.borrow().len(), 1);
+        assert_eq!(intents.borrow()[0].target, "foo");
+
+        // Even after the current response, a late old response cannot restore
+        // alpha or overwrite the current exact fleet.
+        app.on_apply(ApplyMsg::Registry {
+            generation: stale_generation,
+            result: Ok(test_registry("alpha", "owner/foo")),
+        });
+        assert_eq!(
+            app.fleet
+                .registry
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .and_then(|registry| registry.fleets.first())
+                .map(|entry| entry.name.as_str()),
+            Some("foo")
+        );
+    }
+
+    #[test]
+    fn obsolete_sse_events_cannot_overwrite_state_after_read_loop_replacement() {
+        let (_runtime, mut app) = read_model_test_app();
+
+        app.spawn_read_loop("http://127.0.0.1:1".into());
+        let old_loop_generation = app.read_loop_generation;
+        let old_agent = agent("old-agent", AgentState::Working, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
+                schema_version: 5,
+                rev: 10,
+                generated_at: 10,
+                agents: BTreeMap::from([(old_agent.agent_id.clone(), old_agent)]),
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(10));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+
+        app.spawn_read_loop("http://127.0.0.1:2".into());
+        let current_loop_generation = app.read_loop_generation;
+        assert_ne!(current_loop_generation, old_loop_generation);
+
+        let obsolete_agent = agent("obsolete-agent", AgentState::Blocked, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
+                schema_version: 5,
+                rev: 99,
+                generated_at: 99,
+                agents: BTreeMap::from([(obsolete_agent.agent_id.clone(), obsolete_agent)]),
+            }),
+        });
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Delta(crate::model::Delta {
+                rev: 100,
+                upd: vec![agent("obsolete-delta", AgentState::Working, &[])],
+                del: vec![],
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(10));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+        assert!(!app.fleet.agents.contains_key("obsolete-agent"));
+        assert!(!app.fleet.agents.contains_key("obsolete-delta"));
+
+        let current_agent = agent("current-agent", AgentState::Idle, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: current_loop_generation,
+            event: protocol::SseEvent::Delta(crate::model::Delta {
+                rev: 11,
+                upd: vec![current_agent],
+                del: vec![],
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(11));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+        assert!(app.fleet.agents.contains_key("current-agent"));
     }
 
     #[test]
@@ -3189,6 +3622,42 @@ mod tests {
             .shapes
             .iter()
             .find_map(|clipped| walk(&clipped.shape, needle))
+    }
+
+    fn issue_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn issue_pointer_input(pos: egui::Pos2, pressed: bool) -> egui::RawInput {
+        issue_input(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ])
+    }
+
+    fn render_issues(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        input: egui::RawInput,
+        intents: &std::cell::RefCell<Vec<crate::drive::DriveIntent>>,
+    ) -> egui::FullOutput {
+        ctx.run_ui(input, |ui| {
+            let mut drive = |intent| intents.borrow_mut().push(intent);
+            let mut refresh = || {};
+            crate::ui::issues::show(ui, fleet, &|_| true, &mut drive, &mut refresh);
+        })
     }
 
     fn navigation_pointer_input(pos: egui::Pos2, pressed: bool) -> egui::RawInput {

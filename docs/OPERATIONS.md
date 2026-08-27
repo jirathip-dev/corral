@@ -709,22 +709,25 @@ covers a `git worktree add` that registers just after the first scan. This is
 the intentional freshness tradeoff: topology is reconciled before probing,
 while scans never overlap and the event stream is not reset.
 
-## Issue-linked and issue-free worktrees (#113, slice 1)
+## Issue-linked worktrees (#113, slice 1)
 
 The desktop UI's Issues tab renders the daemon's read-only
-`GET /issues` view (keyed by repo/fleet name) and can start a worktree two
-explicit ways, both gated by confirmation in the UI and the `start_worktree`
-grant on the host:
+`GET /issues` view (keyed by repo/fleet name) and can start an issue-linked
+worktree from a selected open issue. Repository aliases are folded into one
+display category, while each action targets the exact registered fleet name;
+live-only categories and ambiguous aliases remain visible but are not
+startable. An Issues refresh also retries a failed fleet-registry projection.
+The action is gated by confirmation in the UI and the `start_worktree` grant
+on the host:
 
 - **Issue-linked**: from a selected, open issue. The daemon validates the
   issue against the SAME fetched set the browser renders, creates exactly one
   branch/worktree under `<home>/.herdr/worktrees/<fleet.worktree_dir>`, and
   carries the issue number in the branch (`issue-<N>-…`). A closed or missing
   issue is a typed refusal (`issue_closed` / `issue_not_found`) — it never
-  falls through to the free path.
-- **Issue-free**: a separate, clearly-marked control takes a user-chosen
-  label; the branch is prefixed `w2/free-` and never carries an issue number.
-  It is only reachable by explicitly choosing it.
+  falls through to another action. The current top-level Issues surface does
+  not expose an issue-free worktree control; the daemon's separate free-mode
+  protocol remains available to other explicitly authorized callers.
 
 The git step and the herdr handoff are injectable seams
 (`src/fleet/worktree.rs`). Slice-1 keeps the handoff typed but deferred:

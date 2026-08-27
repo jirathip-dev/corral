@@ -259,6 +259,17 @@ impl Fleet {
         self.registry = Some(result);
     }
 
+    /// Whether the registry contains the successful daemon projection needed
+    /// to turn an Issues category into an exact fleet-name drive target.
+    /// Transport failures and daemon `status="error"` responses remain in
+    /// the view model for diagnostics, but neither is actionable.
+    pub fn registry_ready(&self) -> bool {
+        matches!(
+            self.registry.as_ref(),
+            Some(Ok(registry)) if registry.status.trim() == "ok"
+        )
+    }
+
     pub fn toggle_expanded(&mut self, agent_id: &str) {
         if self.is_expanded(agent_id) {
             self.expanded.retain(|e| e != agent_id);
@@ -607,6 +618,17 @@ mod tests {
         fleet.set_registry(Ok(registry));
         assert!(fleet.registry_loaded);
         assert!(!fleet.registry_loading);
+        assert!(fleet.registry_ready());
+
+        fleet.set_registry(Ok(FleetRegistry {
+            status: "error".into(),
+            reported_path: "/tmp/fleets.json".into(),
+            error: Some("cannot parse fleet registry".into()),
+            fleets: vec![],
+            repos: vec!["live-only".into()],
+        }));
+        assert!(fleet.registry_loaded);
+        assert!(!fleet.registry_ready());
     }
 
     fn issue(repo: &str, number: u64, title: &str) -> GhIssueRef {

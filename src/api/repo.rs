@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use crate::core::store::Store;
 use crate::fleet::config::Registry;
 
-/// Collect nonempty repo identities from the current agent records.
+/// Collect nonempty, trimmed repo identities from the current agent records.
 ///
 /// `Store::matching` is intentional: the store owns the live agent map, and
 /// this read must not flush pending deltas or fabricate an SSE revision.
@@ -30,7 +30,12 @@ pub(crate) async fn live_workspace_repos(store: &Store) -> BTreeSet<String> {
         })
         .await
         .into_iter()
-        .filter_map(|agent| agent.workspace.repo)
+        .filter_map(|agent| {
+            agent.workspace.repo.and_then(|repo| {
+                let repo = repo.trim();
+                (!repo.is_empty()).then(|| repo.to_string())
+            })
+        })
         .collect()
 }
 
@@ -39,12 +44,14 @@ pub(crate) async fn live_workspace_repos(store: &Store) -> BTreeSet<String> {
 /// The registry loader validates `gh_repo` as a single `owner/repo` slug. The
 /// defensive shape check here keeps this read model safe for manually-built
 /// test registries too, without widening the registry schema or trusting an
-/// invalid value.
+/// invalid value. Trimming is deliberate: this read model is also fed by
+/// hand-built fixtures and live records from older peers.
 pub(crate) fn add_registry_repos(categories: &mut BTreeSet<String>, registry: &Registry) {
     for fleet in &registry.fleets {
         let Some((owner, repo)) = fleet.gh_repo.split_once('/') else {
             continue;
         };
+        let (owner, repo) = (owner.trim(), repo.trim());
         if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') {
             categories.insert(repo.to_string());
         }
@@ -54,9 +61,16 @@ pub(crate) fn add_registry_repos(categories: &mut BTreeSet<String>, registry: &R
 /// Return the sorted union used by `/fleet-registry` and by the category
 /// placeholders in `/issues`.
 pub(crate) fn union_with_registry(
-    mut live_repos: BTreeSet<String>,
+    live_repos: BTreeSet<String>,
     registry: Option<&Registry>,
 ) -> BTreeSet<String> {
+    let mut live_repos = live_repos
+        .into_iter()
+        .filter_map(|repo| {
+            let repo = repo.trim();
+            (!repo.is_empty()).then(|| repo.to_string())
+        })
+        .collect();
     if let Some(registry) = registry {
         add_registry_repos(&mut live_repos, registry);
     }
@@ -99,6 +113,20 @@ mod tests {
                 "registry-only".to_string(),
                 "shared".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn registry_category_names_are_trimmed() {
+        let mut categories = BTreeSet::from(["  live-only  ".to_string()]);
+        add_registry_repos(
+            &mut categories,
+            &Registry::new(vec![fleet(" owner/ repo ")]),
+        );
+        categories = union_with_registry(categories, None);
+        assert_eq!(
+            categories,
+            BTreeSet::from(["live-only".to_string(), "repo".to_string()])
         );
     }
 

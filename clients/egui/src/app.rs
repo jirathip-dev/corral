@@ -3108,6 +3108,7 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
                 &allowed,
                 &mut crate::ui::board::BoardActions {
                     drive: &mut |intent| pending.push(intent),
+                    read_only: false,
                 },
                 app.settings.stick_to_bottom,
             );
@@ -3505,6 +3506,7 @@ mod tests {
             replay: Default::default(),
             issues: Default::default(),
             fleets: std::sync::Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(vec![])),
+            cors_origins: Vec::new(),
         };
         let _cfg_guard = EnvRestore::set("CORRAL_CONFIG_DIR", daemon_dir.display().to_string());
         let _ui_guard = EnvRestore::set("CORRAL_UI_CONFIG_DIR", ui_dir.display().to_string());

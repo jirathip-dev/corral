@@ -481,6 +481,12 @@ fn urlencode(value: &str) -> String {
 /// trouble — the caller owns reconnect/backoff. Each read carries a
 /// bounded deadline (see [`SSE_CHUNK_READ_TIMEOUT`]); the stream itself
 /// has no total lifetime.
+///
+/// Desktop-only: `reqwest`'s wasm `Response` has no `chunk()` and the
+/// timeout needs a tokio timer, neither of which exists in the read-only
+/// web build — [`crate::web`] owns its own chunk drain against the same
+/// [`SseParser`].
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn stream_events<F: FnMut(SseEvent)>(
     mut response: reqwest::Response,
     mut on_event: F,
@@ -517,7 +523,7 @@ pub struct RawFrame {
     pub data: String,
 }
 
-fn parse_frame(frame: &RawFrame) -> SseEvent {
+pub(crate) fn parse_frame(frame: &RawFrame) -> SseEvent {
     if frame.data.is_empty() {
         return SseEvent::Unknown {
             event: frame.event.clone(),
@@ -635,6 +641,10 @@ impl SseParser {
 /// fallback) on the app's runtime handle. The UI thread is NOT inside the
 /// runtime, so plain `tokio::spawn` would panic — `Handle::spawn` is the
 /// portable entry point.
+///
+/// Desktop-only (#215): the web build has no tokio runtime; [`crate::web`]
+/// runs the same resume/backoff policy on a wasm local executor.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_read_loop(
     rt: tokio::runtime::Handle,
     client: reqwest::Client,

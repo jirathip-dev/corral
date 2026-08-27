@@ -70,13 +70,13 @@ fn main() {
         return;
     }
 
-    let (socket_path, addr) = parse_args(&args);
+    let (socket_path, addr, cors_origins) = parse_args(&args);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
 
-    runtime.block_on(async_main(socket_path, addr));
+    runtime.block_on(async_main(socket_path, addr, cors_origins));
 }
 
 /// D33: `corrald digest` — offline daily digest over the history ring.
@@ -218,10 +218,11 @@ fn run_fleet_switch(args: &[String]) {
     }
 }
 
-fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
+fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>) {
     let mut socket: Option<String> = None;
     let mut port: Option<u16> = None;
     let mut bind = DEFAULT_BIND.to_string();
+    let mut cors_origins: Vec<String> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -237,10 +238,18 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                     .cloned()
                     .unwrap_or_else(|| DEFAULT_BIND.to_string());
             }
+            // #215: exact-origin allowlist for the read plane's CORS
+            // headers (repeatable). Also read from $CORRALD_CORS_ORIGIN
+            // (comma-separated) when no flag is given; the flag and the
+            // env are never merged.
+            "--cors-origin" => {
+                cors_origins.push(iter.next().cloned().unwrap_or_default());
+            }
             "--help" | "-h" => {
                 println!(
                     "corrald — agent-fleet control plane daemon (P1)\n\n\
                      USAGE: corrald [--socket <path>] [--port <n>] [--bind <ip>]\n\
+                     USAGE: corrald [--cors-origin <origin>]…\n\
                      USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\
                      USAGE: corrald fleet switch <name> [--pane <id>]\n\n\
                      --socket  herdr API socket (default ~/.config/herdr/herdr.sock)\n\
@@ -250,7 +259,14 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                      unique-local are permitted — public IPs and 0.0.0.0 are\n\
                      refused. Writes are device-signed on every interface;\n\
                      READS are credential-free, so beyond loopback the bound\n\
-                     network itself is the read boundary (prefer a tailnet)"
+                     network itself is the read boundary (prefer a tailnet)\n\
+                     --cors-origin  exact browser origin allowed to READ the\n\
+                     credential-free read plane (/healthz, /snapshot,\n\
+                     /events, /history, /issues, /fleets) — repeatable, or\n\
+                     set $CORRALD_CORS_ORIGIN (comma-separated). `*` is\n\
+                     refused. The write plane (/drive, auth) never gets\n\
+                     CORS headers; only the read routes above do. Empty\n\
+                     (default) = no CORS headers at all."
                 );
                 std::process::exit(0);
             }
@@ -258,6 +274,32 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                 eprintln!("unknown argument: {other} (see --help)");
                 std::process::exit(2);
             }
+        }
+    }
+    if cors_origins.is_empty()
+        && let Ok(values) = std::env::var("CORRALD_CORS_ORIGIN")
+    {
+        cors_origins = values
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    for origin in &cors_origins {
+        if origin == "*" {
+            eprintln!(
+                "corrald: refusing `*` as --cors-origin — CORS is an exact\n\
+                 allowlist, never a wildcard (see #215)"
+            );
+            std::process::exit(2);
+        }
+        if !origin_valid(origin) {
+            eprintln!(
+                "corrald: --cors-origin {origin:?} is not a valid origin\n\
+                 (expected scheme://host[:port], e.g. https://user.github.io)"
+            );
+            std::process::exit(2);
         }
     }
     let socket_path = socket.map(PathBuf::from).unwrap_or_else(|| {
@@ -284,7 +326,22 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
         );
         std::process::exit(2);
     }
-    (socket_path, addr)
+    (socket_path, addr, cors_origins)
+}
+
+/// #215: an origin is `scheme://host[:port]` with no trailing slash or
+/// path. The daemon compares it byte-for-byte against the request's
+/// `Origin` header (the value comes from the CLI/env, never from a
+/// hostile client), so validation here only needs to keep the list
+/// syntactically sane and `*`-free.
+fn origin_valid(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains('/') && !rest.contains("://")
 }
 
 /// #65: which interfaces `--bind` may use. Loopback (the default), RFC 1918
@@ -309,7 +366,7 @@ fn bind_permitted(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
+async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<String>) {
     let store = Store::with_history_dir(config_dir().join("history"));
     let coalescer = store.clone();
     tokio::spawn(async move { coalescer.run_coalescer().await });
@@ -385,6 +442,11 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     }
 
     let fleet_provider: Arc<dyn FleetOpsProvider> = Arc::new(CliFleetOpsProvider);
+    if cors_origins.is_empty() {
+        tracing::info!("CORS read plane disabled (no --cors-origin / $CORRALD_CORS_ORIGIN)");
+    } else {
+        tracing::info!(origins = ?cors_origins, "CORS read plane enabled for allowlisted origins only");
+    }
     let app = corrald::api::router(AppState {
         store,
         auth,
@@ -392,6 +454,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         replay: Arc::new(ReplayTable::default()),
         issues: issues_cache.clone(),
         fleets: fleet_provider,
+        cors_origins,
     });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -531,7 +594,7 @@ async fn supervise_planes(
 
 #[cfg(test)]
 mod tests {
-    use super::bind_permitted;
+    use super::{bind_permitted, origin_valid};
     use corrald::fleet::cli::FleetIdentity;
     use std::net::IpAddr;
 
@@ -680,5 +743,27 @@ mod tests {
             Some("synergy"),
             "issues still grouped by the fleet name"
         );
+    }
+
+    /// #215: the CORS allowlist accepts exact `scheme://host[:port]`
+    /// origins and nothing wildcard/pathful — `*` is refused upstream.
+    #[test]
+    fn origin_allowlist_accepts_exact_origins_and_refuses_paths() {
+        for allowed in [
+            "https://user.github.io",
+            "https://user.github.io:8443",
+            "http://127.0.0.1:8000",
+        ] {
+            assert!(origin_valid(allowed), "{allowed} should be accepted");
+        }
+        for refused in [
+            "*",
+            "https://github.io/path",
+            "localhost:8000",
+            "ftp://x",
+            "",
+        ] {
+            assert!(!origin_valid(refused), "{refused:?} should be refused");
+        }
     }
 }

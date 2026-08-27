@@ -184,6 +184,11 @@ fn available_state_filters(fleet: &Fleet, query: &str) -> Vec<StateFilter> {
 /// and acts after `show` returns.
 pub struct BoardActions<'a> {
     pub drive: &'a mut dyn FnMut(DriveIntent),
+    /// #215 read-only web build: every drive control is replaced by a
+    /// single disabled "read-only (web)" indicator and `drive` is never
+    /// invoked. Always `false` on desktop — the native board has the full
+    /// grant-gated drive plane.
+    pub read_only: bool,
 }
 
 /// Render the fleet board.
@@ -843,11 +848,21 @@ fn master_column_header(ui: &mut Ui, width: f32) {
     );
 }
 
+/// Epoch millis for relative-age rendering. `std::time::SystemTime` is
+/// unimplemented on wasm32-unknown-unknown (#215), so the web build reads
+/// the JS wall clock (`Date.now()` — true epoch millis, so the age math
+/// stays identical to desktop).
+#[cfg(not(target_arch = "wasm32"))]
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_millis() -> u64 {
+    js_sys::Date::now() as u64
 }
 
 fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count: usize) {
@@ -1040,12 +1055,22 @@ fn right_pane(
 ) {
     sync_kill_confirmation(ui.ctx(), selected);
     let selected_agent = selected.and_then(|id| fleet.agents.get(id));
-    let interrupt_state = selected_agent
-        .map(|agent| drive_control_state(&agent.capabilities, "interrupt", allowed("interrupt")))
-        .unwrap_or(DriveControlState::NotImplemented);
-    let kill_state = selected_agent
-        .map(|agent| drive_control_state(&agent.capabilities, "kill", allowed("kill")))
-        .unwrap_or(DriveControlState::NotImplemented);
+    let interrupt_state = if actions.read_only {
+        DriveControlState::ReadOnly
+    } else {
+        selected_agent
+            .map(|agent| {
+                drive_control_state(&agent.capabilities, "interrupt", allowed("interrupt"))
+            })
+            .unwrap_or(DriveControlState::NotImplemented)
+    };
+    let kill_state = if actions.read_only {
+        DriveControlState::ReadOnly
+    } else {
+        selected_agent
+            .map(|agent| drive_control_state(&agent.capabilities, "kill", allowed("kill")))
+            .unwrap_or(DriveControlState::NotImplemented)
+    };
     let kill_pending =
         kill_state == DriveControlState::Ready && is_kill_confirmation_pending(ui.ctx(), selected);
 
@@ -1275,9 +1300,16 @@ fn recent_output_surface(
         .map(|lines| !recent_visible_indices(lines.iter().map(String::as_str)).is_empty())
         .unwrap_or(false);
     let show_live = recent_should_show_live(read_tail_state, has_visible_output);
-    let read_tail_control =
-        drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"));
-    let prompt_control = drive_control_state(&agent.capabilities, "prompt", allowed("prompt"));
+    let read_tail_control = if actions.read_only {
+        DriveControlState::ReadOnly
+    } else {
+        drive_control_state(&agent.capabilities, "read_tail", allowed("read_tail"))
+    };
+    let prompt_control = if actions.read_only {
+        DriveControlState::ReadOnly
+    } else {
+        drive_control_state(&agent.capabilities, "prompt", allowed("prompt"))
+    };
 
     let mut metadata_texts: Vec<&str> = Vec::new();
     if let Some(lines) = fleet.tails.get(id) {
@@ -2481,6 +2513,9 @@ pub enum DriveControlState {
     Ready,
     MissingGrant,
     NotImplemented,
+    /// #215 read-only web build: the control is deliberately off — the
+    /// board never issues any signed drive from the browser.
+    ReadOnly,
 }
 
 /// Pure classifier shared by the row renderer and tests.
@@ -2506,6 +2541,9 @@ pub fn drive_disabled_reason(capability: &str, state: DriveControlState) -> Opti
             Some(format!("requires the {capability} grant — ask the host"))
         }
         DriveControlState::NotImplemented => Some(format!("{capability}: not implemented yet")),
+        DriveControlState::ReadOnly => Some(format!(
+            "read-only web build — {capability} runs in the desktop client, never the browser"
+        )),
     }
 }
 
@@ -2521,7 +2559,17 @@ fn drive_controls(
     allowed: &dyn Fn(&str) -> bool,
     fleet: &Fleet,
     drive: &mut dyn FnMut(DriveIntent),
+    read_only: bool,
 ) {
+    if read_only {
+        disabled_drive_button(
+            ui,
+            "read-only (web)",
+            "read_only",
+            DriveControlState::ReadOnly,
+        );
+        return;
+    }
     let rev = fleet.rev;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -2743,7 +2791,14 @@ fn detail(
                     .monospace()
                     .color(theme::ui::TEXT_MUTED),
             );
-            drive_controls(ui, agent, allowed, fleet, &mut *actions.drive);
+            drive_controls(
+                ui,
+                agent,
+                allowed,
+                fleet,
+                &mut *actions.drive,
+                actions.read_only,
+            );
             if let Some(w) = &agent.waiting_on {
                 ui.add_space(4.0);
                 ui.label(
@@ -3101,7 +3156,10 @@ mod tests {
         agent.display_name = Some("table agent".into());
         let mut fleet = Fleet::default();
         fleet.agents.insert(agent.agent_id.clone(), agent.clone());
-        let mut actions = BoardActions { drive: &mut |_| {} };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
         let mut toggles = Vec::new();
         let mut selection = None;
         let mut row_rect = None;
@@ -3735,7 +3793,10 @@ mod tests {
         clear_textures(&mut output);
 
         let mut view = BoardView::Cards;
-        let mut actions = BoardActions { drive: &mut |_| {} };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             right_pane(
@@ -3852,7 +3913,10 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions { drive: &mut |_| {} };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
@@ -3874,7 +3938,10 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions { drive: &mut |_| {} };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -3908,7 +3975,10 @@ mod tests {
             agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
             ..Default::default()
         };
-        let mut actions = BoardActions { drive: &mut |_| {} };
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
             show(ui, &mut fleet, &|_| true, &mut actions);
@@ -3942,6 +4012,7 @@ mod tests {
         let intents = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
             drive: &mut |intent| intents.borrow_mut().push(intent),
+            read_only: false,
         };
         let mut view = BoardView::Cards;
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
@@ -4038,6 +4109,7 @@ mod tests {
         let intents = std::cell::RefCell::new(Vec::new());
         let mut actions = BoardActions {
             drive: &mut |intent| intents.borrow_mut().push(intent),
+            read_only: false,
         };
         let mut view = BoardView::Cards;
         let mut output = render(
@@ -4299,6 +4371,7 @@ mod tests {
             let mut blocked_intents = Vec::new();
             let mut blocked_actions = BoardActions {
                 drive: &mut |intent| blocked_intents.push(intent),
+                read_only: false,
             };
             let mut view = BoardView::Cards;
             let mut output = render(
@@ -4881,6 +4954,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
+            read_only: false,
         };
 
         let mut row_rect = None;
@@ -4983,6 +5057,7 @@ mod tests {
         let mut intents = Vec::new();
         let mut actions = BoardActions {
             drive: &mut |intent| intents.push(intent),
+            read_only: false,
         };
 
         let (_, mut output) = board_row_frame_with_allowed(

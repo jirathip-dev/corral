@@ -195,6 +195,7 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
         issues,
         fleets,
+        cors_origins: Vec::new(),
     });
 
     // First dispatch: the real git seam creates the branch/worktree and the

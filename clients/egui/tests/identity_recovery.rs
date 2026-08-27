@@ -133,6 +133,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         replay: Default::default(),
         issues: Default::default(),
         fleets: Arc::new(MemoryFleetOpsProvider::new(vec![])),
+        cors_origins: Vec::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

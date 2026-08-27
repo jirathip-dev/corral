@@ -3,6 +3,7 @@
 pub mod audit;
 pub mod board;
 pub mod issues;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod register;
 pub mod registry;
 

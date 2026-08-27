@@ -1,0 +1,641 @@
+{
+  "snapshot": {
+    "schema_version": 5,
+    "rev": 100,
+    "generated_at": 1787788800000,
+    "agents": {
+      "herdr:pane:p01:impl": {
+        "agent_id": "herdr:pane:p01:impl",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "working",
+        "reason": null,
+        "seq": 7,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "corral",
+          "branch": "g215/egui-wasm-readonly",
+          "worktree_path": "~/.herdr/worktrees/corral/g215-egui-wasm",
+          "pr_number": 215,
+          "ci_status": "success",
+          "dirty": false,
+          "ahead": 1,
+          "behind": 0
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p01:impl" },
+        "display_name": "g215/egui-wasm-readonly",
+        "title": "egui web: read-only board",
+        "issues": [
+          {
+            "repo": "jirathip-dev/corral",
+            "number": 215,
+            "state": "OPEN",
+            "title": "egui web: read-only WASM build of the board + GitHub Pages demo against a local daemon",
+            "labels": [
+              { "name": "enhancement", "color": "a2eeef" },
+              { "name": "ready-to-work", "color": "0e8a16" }
+            ],
+            "url": "https://github.com/jirathip-dev/corral/issues/215"
+          }
+        ]
+      },
+      "herdr:pane:p02:impl": {
+        "agent_id": "herdr:pane:p02:impl",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "blocked",
+        "reason": "waiting for approval",
+        "seq": 12,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "interrupt", "approve", "attach"],
+        "waiting_on": {
+          "kind": "approve_tool",
+          "prompt": "Approve the CORS allowlist change for the Pages demo?",
+          "prompt_hash": "sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
+          "approval_id": "herdr:pane:p02:impl:sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
+          "choices": ["Yes", "No"]
+        },
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "corral",
+          "branch": "w209/cors-allowlist",
+          "worktree_path": "~/.herdr/worktrees/corral/w209",
+          "pr_number": 241,
+          "ci_status": "pending",
+          "dirty": true,
+          "ahead": 2,
+          "behind": 0
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p02:impl" },
+        "display_name": "w209/cors-allowlist",
+        "title": "daemon CORS allowlist",
+        "issues": [
+          {
+            "repo": "jirathip-dev/corral",
+            "number": 209,
+            "state": "OPEN",
+            "title": "Devices/Grants surface — names + grant toggles on board and iOS",
+            "labels": [{ "name": "ready-to-work", "color": "0e8a16" }],
+            "url": "https://github.com/jirathip-dev/corral/issues/209"
+          }
+        ]
+      },
+      "herdr:pane:p03:rev": {
+        "agent_id": "herdr:pane:p03:rev",
+        "source": "herdr",
+        "tool": "opencode",
+        "state": "idle",
+        "reason": null,
+        "seq": 3,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "read_tail"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "synergy-services-website",
+          "branch": "feat/partner-acme",
+          "worktree_path": "~/.herdr/worktrees/synergy/partner-acme",
+          "pr_number": 88,
+          "ci_status": "success",
+          "dirty": false,
+          "ahead": 0,
+          "behind": 0
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p03:rev" },
+        "display_name": "feat/partner-acme",
+        "title": "Partner page: Acme",
+        "issues": [
+          {
+            "repo": "jirathip-dev/synergy-services-website",
+            "number": 88,
+            "state": "OPEN",
+            "title": "Add Acme as a partner",
+            "labels": [{ "name": "content", "color": "d4c5f9" }],
+            "url": "https://github.com/jirathip-dev/synergy-services-website/issues/88"
+          }
+        ]
+      },
+      "herdr:pane:p04:fleet": {
+        "agent_id": "herdr:pane:p04:fleet",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "working",
+        "reason": null,
+        "seq": 9,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "corral",
+          "branch": "g216/fleet-gate",
+          "worktree_path": "~/.herdr/worktrees/corral/g216-fleet-gate",
+          "pr_number": 216,
+          "ci_status": "pending",
+          "dirty": true,
+          "ahead": 3,
+          "behind": 1
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p04:fleet" },
+        "display_name": "g216/fleet-gate",
+        "title": "fleet gate run",
+        "issues": [
+          {
+            "repo": "jirathip-dev/corral",
+            "number": 216,
+            "state": "OPEN",
+            "title": "Fleet gate: wasm build proof",
+            "labels": [{ "name": "enhancement", "color": "a2eeef" }],
+            "url": "https://github.com/jirathip-dev/corral/issues/216"
+          }
+        ]
+      },
+      "herdr:pane:p05:orch": {
+        "agent_id": "herdr:pane:p05:orch",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "done",
+        "reason": null,
+        "seq": 21,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "herdr-board",
+          "branch": "w41/read-loop",
+          "worktree_path": "~/.herdr/worktrees/herdr-board/w41",
+          "pr_number": 42,
+          "ci_status": "success",
+          "dirty": false,
+          "ahead": 0,
+          "behind": 0
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p05:orch" },
+        "display_name": "w41/read-loop",
+        "title": "SSE resume after reconnect",
+        "issues": [
+          {
+            "repo": "jirathip-dev/herdr-board",
+            "number": 41,
+            "state": "OPEN",
+            "title": "Read loop reconnect backoff",
+            "labels": [{ "name": "bug", "color": "d73a4a" }],
+            "url": "https://github.com/jirathip-dev/herdr-board/issues/41"
+          }
+        ]
+      },
+      "herdr:pane:p06:rs": {
+        "agent_id": "herdr:pane:p06:rs",
+        "source": "herdr",
+        "tool": "opencode",
+        "state": "working",
+        "reason": null,
+        "seq": 5,
+        "ts": 1787788800000,
+        "capabilities": ["prompt", "read_tail"],
+        "waiting_on": {
+          "kind": "answer_question",
+          "prompt": "Which pinning policy for the wasm toolchain?",
+          "prompt_hash": "sha256:ade50c620dcf0d29088cfc962f53d9c7b6e87eb320d779cce01f4f6331177f93",
+          "approval_id": "",
+          "choices": []
+        },
+        "parent_id": null,
+        "host": "mac-studio",
+        "workspace": {
+          "repo": "synergy-apps",
+          "branch": "feat/route-slices",
+          "worktree_path": "~/.herdr/worktrees/synergy-apps/route-slices",
+          "pr_number": 722,
+          "ci_status": "pending",
+          "dirty": false,
+          "ahead": 1,
+          "behind": 0
+        },
+        "attachment": { "kind": "pane", "ref": "pane:p06:rs" },
+        "display_name": "feat/route-slices",
+        "title": "router slices S2–S6",
+        "issues": [
+          {
+            "repo": "jirathip-dev/synergy-apps",
+            "number": 722,
+            "state": "OPEN",
+            "title": "Routing slices for the app shell",
+            "labels": [{ "name": "frontend", "color": "0e8a16" }],
+            "url": "https://github.com/jirathip-dev/synergy-apps/issues/722"
+          }
+        ]
+      }
+    }
+  },
+  "deltas": [
+    {
+      "rev": 101,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p02:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "working",
+          "reason": null,
+          "seq": 13,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "approve", "attach"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "w209/cors-allowlist",
+            "worktree_path": "~/.herdr/worktrees/corral/w209",
+            "pr_number": 241,
+            "ci_status": "pending",
+            "dirty": true,
+            "ahead": 2,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p02:impl" },
+          "display_name": "w209/cors-allowlist",
+          "title": "daemon CORS allowlist",
+          "issues": []
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 102,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p06:rs",
+          "source": "herdr",
+          "tool": "opencode",
+          "state": "blocked",
+          "reason": "waiting for an answer",
+          "seq": 6,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "read_tail"],
+          "waiting_on": {
+            "kind": "answer_question",
+            "prompt": "Which pinning policy for the wasm toolchain?",
+            "prompt_hash": "sha256:ade50c620dcf0d29088cfc962f53d9c7b6e87eb320d779cce01f4f6331177f93",
+            "approval_id": "",
+            "choices": []
+          },
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "synergy-apps",
+            "branch": "feat/route-slices",
+            "worktree_path": "~/.herdr/worktrees/synergy-apps/route-slices",
+            "pr_number": 722,
+            "ci_status": "pending",
+            "dirty": false,
+            "ahead": 1,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p06:rs" },
+          "display_name": "feat/route-slices",
+          "title": "router slices S2–S6",
+          "issues": []
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 103,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p03:rev",
+          "source": "herdr",
+          "tool": "opencode",
+          "state": "working",
+          "reason": null,
+          "seq": 4,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "read_tail"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "synergy-services-website",
+            "branch": "feat/partner-acme",
+            "worktree_path": "~/.herdr/worktrees/synergy/partner-acme",
+            "pr_number": 88,
+            "ci_status": "success",
+            "dirty": false,
+            "ahead": 0,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p03:rev" },
+          "display_name": "feat/partner-acme",
+          "title": "Partner page: Acme",
+          "issues": []
+        },
+        {
+          "agent_id": "herdr:pane:p01:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "blocked",
+          "reason": "waiting for approval",
+          "seq": 8,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+          "waiting_on": {
+            "kind": "approve_tool",
+            "prompt": "Approve the demo fixture PR for the board?",
+            "prompt_hash": "sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
+            "approval_id": "herdr:pane:p01:impl:sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
+            "choices": ["Approve", "Reject"]
+          },
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "g215/egui-wasm-readonly",
+            "worktree_path": "~/.herdr/worktrees/corral/g215-egui-wasm",
+            "pr_number": 215,
+            "ci_status": "success",
+            "dirty": false,
+            "ahead": 1,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p01:impl" },
+          "display_name": "g215/egui-wasm-readonly",
+          "title": "egui web: read-only board",
+          "issues": []
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 104,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p05:orch",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "working",
+          "reason": null,
+          "seq": 22,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "herdr-board",
+            "branch": "w41/read-loop",
+            "worktree_path": "~/.herdr/worktrees/herdr-board/w41",
+            "pr_number": 42,
+            "ci_status": "failure",
+            "dirty": true,
+            "ahead": 0,
+            "behind": 2
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p05:orch" },
+          "display_name": "w41/read-loop",
+          "title": "SSE resume after reconnect",
+          "issues": []
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 105,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p01:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "working",
+          "reason": null,
+          "seq": 9,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "g215/egui-wasm-readonly",
+            "worktree_path": "~/.herdr/worktrees/corral/g215-egui-wasm",
+            "pr_number": 215,
+            "ci_status": "success",
+            "dirty": false,
+            "ahead": 1,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p01:impl" },
+          "display_name": "g215/egui-wasm-readonly",
+          "title": "egui web: read-only board",
+          "issues": []
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 106,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p02:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "idle",
+          "reason": null,
+          "seq": 14,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "approve", "attach"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "w209/cors-allowlist",
+            "worktree_path": "~/.herdr/worktrees/corral/w209",
+            "pr_number": 241,
+            "ci_status": "success",
+            "dirty": false,
+            "ahead": 2,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p02:impl" },
+          "display_name": "w209/cors-allowlist",
+          "title": "daemon CORS allowlist",
+          "issues": []
+        }
+      ],
+      "del": ["herdr:pane:p03:rev"]
+    },
+    {
+      "rev": 107,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p07:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "working",
+          "reason": null,
+          "seq": 2,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+          "waiting_on": null,
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "g217/ios-demo",
+            "worktree_path": "~/.herdr/worktrees/corral/g217-ios-demo",
+            "pr_number": 217,
+            "ci_status": "pending",
+            "dirty": false,
+            "ahead": 0,
+            "behind": 0
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p07:impl" },
+          "display_name": "g217/ios-demo",
+          "title": "iOS demo wiring",
+          "issues": [
+            {
+              "repo": "jirathip-dev/corral",
+              "number": 217,
+              "state": "OPEN",
+              "title": "iOS board demo",
+              "labels": [{ "name": "mobile", "color": "5319e7" }],
+              "url": "https://github.com/jirathip-dev/corral/issues/217"
+            }
+          ]
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 108,
+      "upd": [
+        {
+          "agent_id": "herdr:pane:p04:fleet",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "blocked",
+          "reason": "waiting for approval",
+          "seq": 10,
+          "ts": 1787788800000,
+          "capabilities": ["prompt", "interrupt", "read_tail", "attach"],
+          "waiting_on": {
+            "kind": "approve_tool",
+            "prompt": "Approve worktree creation for #216?",
+            "prompt_hash": "sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
+            "approval_id": "herdr:pane:p04:fleet:sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
+            "choices": ["Start worktree", "Cancel"]
+          },
+          "parent_id": null,
+          "host": "mac-studio",
+          "workspace": {
+            "repo": "corral",
+            "branch": "g216/fleet-gate",
+            "worktree_path": "~/.herdr/worktrees/corral/g216-fleet-gate",
+            "pr_number": 216,
+            "ci_status": "pending",
+            "dirty": true,
+            "ahead": 3,
+            "behind": 1
+          },
+          "attachment": { "kind": "pane", "ref": "pane:p04:fleet" },
+          "display_name": "g216/fleet-gate",
+          "title": "fleet gate run",
+          "issues": []
+        }
+      ],
+      "del": []
+    }
+  ],
+  "issues": {
+    "corral": [
+      {
+        "repo": "jirathip-dev/corral",
+        "number": 215,
+        "state": "OPEN",
+        "title": "egui web: read-only WASM build of the board + GitHub Pages demo against a local daemon",
+        "labels": [
+          { "name": "enhancement", "color": "a2eeef" },
+          { "name": "ready-to-work", "color": "0e8a16" }
+        ],
+        "url": "https://github.com/jirathip-dev/corral/issues/215"
+      },
+      {
+        "repo": "jirathip-dev/corral",
+        "number": 209,
+        "state": "OPEN",
+        "title": "Devices/Grants surface — names + grant toggles on board and iOS",
+        "labels": [{ "name": "ready-to-work", "color": "0e8a16" }],
+        "url": "https://github.com/jirathip-dev/corral/issues/209"
+      },
+      {
+        "repo": "jirathip-dev/corral",
+        "number": 216,
+        "state": "OPEN",
+        "title": "Fleet gate: wasm build proof",
+        "labels": [{ "name": "enhancement", "color": "a2eeef" }],
+        "url": "https://github.com/jirathip-dev/corral/issues/216"
+      }
+    ],
+    "synergy-apps": [
+      {
+        "repo": "jirathip-dev/synergy-apps",
+        "number": 722,
+        "state": "OPEN",
+        "title": "Routing slices for the app shell",
+        "labels": [{ "name": "frontend", "color": "0e8a16" }],
+        "url": "https://github.com/jirathip-dev/synergy-apps/issues/722"
+      }
+    ],
+    "synergy-services-website": [
+      {
+        "repo": "jirathip-dev/synergy-services-website",
+        "number": 88,
+        "state": "OPEN",
+        "title": "Add Acme as a partner",
+        "labels": [{ "name": "content", "color": "d4c5f9" }],
+        "url": "https://github.com/jirathip-dev/synergy-services-website/issues/88"
+      }
+    ],
+    "herdr-board": [
+      {
+        "repo": "jirathip-dev/herdr-board",
+        "number": 41,
+        "state": "OPEN",
+        "title": "Read loop reconnect backoff",
+        "labels": [{ "name": "bug", "color": "d73a4a" }],
+        "url": "https://github.com/jirathip-dev/herdr-board/issues/41"
+      }
+    ]
+  },
+  "fleets": {
+    "status": "ok",
+    "error": null,
+    "fleets": [
+      {
+        "name": "corral",
+        "gh_repo": "jirathip-dev/corral",
+        "orch": "orch-corral",
+        "workers": 2,
+        "paused": false
+      },
+      {
+        "name": "synergy",
+        "gh_repo": "jirathip-dev/synergy-apps",
+        "orch": "orch-synergy",
+        "workers": 1,
+        "paused": false
+      }
+    ]
+  }
+}

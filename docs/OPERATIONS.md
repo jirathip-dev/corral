@@ -590,88 +590,51 @@ transcript-reader env overrides (`$CORRAL_OPENCODE_DB`,
 `$CORRAL_CLAUDE_DIR`, `$CORRAL_CODEX_DIR`). All reads are read-only
 (opencode via `sqlite3 -readonly`).
 
-## Fleet registry
+## Fleet operations — configless (#237)
 
-`corrald fleet` reads and edits the control-plane registry describing each
-fleet's repo, local checkout, worktree dir, orchestrator, workers and
-per-role models. `list`/`check`/`watch` are read-only; **`add`/`remove`**
-and **`pause`/`resume`/`models`** rewrite the registry file (atomically,
-validated, with the repo resolved via `gh` before an add). Registry mutation
-never touches a running agent. The destructive #35 surface is also present:
-`switch` re-arms the orchestrator after an auth gate, `reap` clears verified
-finished/paused-idle panes, and `prune` removes only provably-dead worktrees.
-Those commands never rewrite the registry.
+Corral is **configless**: it does not own, read, or write `fleets.json`.
+The fleet registry is fleet-ops' opinionated config (per-role models,
+admit, paused) and lives in `~/.config/fleet-operations/fleets.json`,
+managed with the fleet-ops CLI `herdr-fleet` (`list|add|remove|check|
+pause|resume|models|switch|doctor`). The only `corrald fleet` subcommand is
+`switch`, which delegates the auth-gated orchestrator re-arm to
+`herdr-fleet switch <name>` — the fleet-ops CLI is lanes-aware and
+validates the fleet identity itself (hermes-lane profiles included).
 
 ```sh
-corrald fleet list                    # one greppable line per fleet
-corrald fleet check                   # validate + verify each local checkout
-corrald fleet add <name> --gh <o/r>   # insert a fleet (WRITES the registry)
-corrald fleet remove <name>           # drop a fleet (WRITES the registry)
-corrald fleet watch                   # read-only health pass (cron-able)
-corrald fleet pause <name>            # set paused (WRITES; idempotent)
-corrald fleet resume <name>           # clear paused (WRITES; idempotent)
-corrald fleet models <name> --impl m  # update only the model slots named
-corrald fleet models all --impl m     # ... applied to every fleet
-corrald fleet models <name> --impl-alt ''   # CLEAR the optional alt slot
-corrald fleet switch <name>           # auth-gated orchestrator re-arm
-corrald fleet reap <fleet|all>        # dry-run; --apply kills verified panes
-corrald fleet prune [--apply|--yes]   # dry-run; --apply/--yes removes dead trees
-corrald fleet list --registry <path>  # override the default
+herdr-fleet list                     # one greppable line per fleet
+herdr-fleet check                    # validate fleets + local checkouts
+herdr-fleet add <name> --gh <o/r>    # insert a fleet (fleet-ops owns writes)
+herdr-fleet remove <name>            # drop a fleet (fleet-ops owns writes)
+herdr-fleet pause <name>             # set paused (fleet-ops owns writes)
+herdr-fleet models <name> --impl m   # update per-role models
+corrald fleet switch <name>          # re-arm via the fleet-ops CLI (exit code passthrough)
 ```
 
-The registry path is `$CORRAL_FLEETS_PATH`, else
-`$CORRAL_CONFIG_DIR/fleets.json` (default `~/.config/corral/fleets.json`);
-a pre-existing legacy fleet registry is honoured as a fallback while the
-corral-owned file does not exist, with a stderr note each time the fallback
-is taken (#66). Migrating a legacy machine: stop anything that writes the
-registry first, then move that legacy file to
-`$CORRAL_CONFIG_DIR/fleets.json` — **`mv`, not `cp`**: a copy leaves the
-legacy tooling writing one file while corrald reads the other, and the
-two silently diverge. Every write command loads the registry before
-writing, so a missing parent dir surfaces as the plain
-`cannot read fleet registry <path>` error — bootstrap with
-`mkdir -p ~/.config/corral` followed by
-`echo '{"fleets": []}' > ~/.config/corral/fleets.json`.
-Exit codes: **0** all good, **1** an operation failed — a fleet failed
-`check`, a registry write (`add`/`remove`/`pause`/`resume`/`models`)
-refused or could not write (registry left byte-identical), `watch` found
-problems (for `watch` this INCLUDES an unreadable/invalid registry, reported
-as a `PROBLEM:` line with exit 1 for monitor safety), or `switch`/`reap`/
-`prune` hit an operational refusal/failure (unauthenticated runtime,
-shrink guard, failed identity check, git/gh/herdr failure);
-**2** usage error, or (every subcommand except `watch`) an
-unreadable/unparseable/invalid registry.
-Validation is strict on
-purpose — empty required fields, whitespace inside
-`name`/`gh_repo` and every `models.*` slot, a `gh_repo` that is not
-`owner/repo`, a `local` starting with a bare `~`, and duplicate names all
-fail loudly. Unknown fleet-operations fields (`models.reasoning_effort`,
-top-level `admit`, and future additions) are accepted by the subset reader
-and preserved through corral rewrites; an unknown key that is one edit away
-from a Corral-owned field — including an adjacent transposition (`pausd`,
-`imp1_alt`, `puased`, `imlp_alt`) — is still refused, so a typo never silently
-defaults or drops a gate. Model map: required `orch`/`impl`/`review`, optional
-`impl_alt`/`impl_alt2` fallback slots that `fleet models` can set or clear
-(`--impl-alt ''`; `models all` applies to every fleet — `all` is a
-reserved fleet name). Full schema and the per-command exit-code table:
-`docs/corral/G35-registry.md`.
+`corrald fleet switch` exits 0 when the fleet-ops CLI switch succeeded and
+1 on any refusal/failure; its diagnostics stream through unchanged. The
+legacy #35 registry surface (`list/check/add/remove/pause/resume/models/
+watch/reap/prune` with `--registry`) is superseded — those commands were
+the corral-owned read/write path that configless removes. Pane/worktree
+cleanup uses `herdr` directly (`herdr pane close`, `herdr worktree
+remove`, `git worktree prune`) and `fleet-watch` remains the fleet-ops
+watcher. The board's Fleets tab is read-only and shows the fleet-ops CLI
+validated identities (`GET /fleets`).
 
 ## Workspace/repo attribution
 
 The daemon's board grouping uses canonical workspace facts, not the name of
-an orchestrator pane. `CORRAL_REPO_ROOT` is always a known primary checkout;
-entries in the fleet registry add more known primary roots from their
-`local` paths, with repository identity taken from the corresponding
-`gh_repo` slug. Registry identity wins when a fleet `local` canonicalizes to
-`CORRAL_REPO_ROOT`; the configured directory basename is only the fallback.
-Each fleet's `worktree_dir` is also mapped to its `gh_repo` basename, so a
-linked worktree joins the canonical repo group even when the on-disk
-directory still uses an older repo name. The linked-worktree root is
-`CORRAL_WORKTREES_ROOT` (default `~/.herdr/worktrees`) and keeps the
-established `<worktree_dir>/<label>` layout; the directory component is an
-addressable location, not repo identity. The GitHub facts plane uses the same
-canonical `gh_repo` basename as its PR/CI fold key, so fleet specs never split
-or unbind attribution when a checkout folder name is stale.
+an orchestrator pane. Configless (#237): `CORRAL_REPO_ROOT` is the known
+primary checkout and the git plane additionally discovers immediate
+`~/Projects` checkouts; NO fleet-registry roots or `worktree_dir -> gh_repo`
+aliases feed attribution. Repo categories are the live `workspace.repo`
+values from the Herdr snapshot, period — display repo categories are never
+actionable identities. The linked-worktree root is `CORRAL_WORKTREES_ROOT`
+(default `~/.herdr/worktrees`) and keeps the established
+`<worktree_dir>/<label>` layout; the directory component is an addressable
+location, not repo identity. The GitHub facts plane folds PR/CI facts on the
+same repo basename the agent carries, and issue grouping keys are the
+fleet-ops CLI validated fleet names (`GET /issues` + `GET /fleets`).
 
 The git plane supplies branch facts for each recognized root/worktree. On a
 supervised plane restart, the old branch cache and stored branch fields for
@@ -716,7 +679,7 @@ The desktop UI's Issues tab renders the daemon's read-only
 worktree from a selected open issue. Repository aliases are folded into one
 display category, while each action targets the exact registered fleet name;
 live-only categories and ambiguous aliases remain visible but are not
-startable. An Issues refresh also retries a failed fleet-registry projection.
+startable. An Issues refresh also retries a failed `GET /fleets` identity fetch.
 The action is gated by confirmation in the UI and the `start_worktree` grant
 on the host:
 

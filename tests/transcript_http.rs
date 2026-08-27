@@ -241,6 +241,7 @@ fn harness_with_limiter(limiter: corrald::api::transcript::TranscriptLimiter) ->
         transcript_roots: roots,
         transcript_limiter: limiter.clone(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
+        fleets: Arc::new(corrald::fleet::cli::CliFleetOpsProvider),
     });
     Harness {
         store,

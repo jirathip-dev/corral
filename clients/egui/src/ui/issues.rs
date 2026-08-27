@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use eframe::egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
 
 use crate::drive::DriveIntent;
-use crate::model::{FleetRegistry, FleetRegistryEntry, GhIssueRef};
+use crate::model::{FleetIdentities, FleetIdentityEntry, GhIssueRef};
 use crate::state::Fleet;
 use crate::theme;
 use crate::ui::badge;
@@ -317,7 +317,7 @@ fn issue_row(
                     crate::ui::disabled_button_with_reason(
                         ui,
                         "start worktree",
-                        "no registered fleet owns this repo category — refresh the fleet registry",
+                        "no validated fleet identity owns this repo category — refresh the Fleets tab",
                     );
                 } else if !allowed("start_worktree") {
                     crate::ui::disabled_button_with_reason(
@@ -403,23 +403,24 @@ fn action_label(prefix: &str, target: &str, multiple: bool) -> String {
     }
 }
 
-/// Resolve a valid registry identity for a display or issue-map key.
+/// Resolve a valid fleet-ops CLI validated identity for a display or
+/// issue-map key.
 ///
-/// The API intentionally retains both fleet-name placeholders and canonical
-/// category placeholders for backwards compatibility. The client uses the
-/// registry as the identity boundary: either spelling may select an entry,
-/// and an unambiguous action target is always the exact fleet name. Matching
-/// both spellings together is important: a collision between one fleet name
-/// and another fleet's basename is ambiguous in either direction and must be
-/// disabled symmetrically.
+/// Configless corral (#237): display repo categories are NEVER actionable
+/// identities. The client uses the daemon's fleet-ops CLI validated identity
+/// catalog as the identity boundary: either a fleet NAME or its `gh_repo`
+/// basename may select an entry, and an unambiguous action target is always
+/// the exact fleet name. Matching both spellings together is important: a
+/// collision between one fleet name and another fleet's basename is
+/// ambiguous in either direction and must be disabled symmetrically.
 fn registered_repo_identity(fleet: &Fleet, key: &str) -> Option<RepoIdentity> {
-    let registry = ready_registry(fleet)?;
+    let fleet_identities = ready_fleets(fleet)?;
     let key = key.trim();
     if key.is_empty() {
         return None;
     }
 
-    let matches: Vec<&FleetRegistryEntry> = registry
+    let matches: Vec<&FleetIdentityEntry> = fleet_identities
         .fleets
         .iter()
         .filter(|entry| {
@@ -461,7 +462,7 @@ fn registered_repo_identity(fleet: &Fleet, key: &str) -> Option<RepoIdentity> {
     };
     let action_targets = if unambiguous {
         let canonical_slug = canonical_slugs.iter().next().expect("one canonical repo");
-        registry
+        fleet_identities
             .fleets
             .iter()
             .filter(|entry| {
@@ -482,9 +483,9 @@ fn registered_repo_identity(fleet: &Fleet, key: &str) -> Option<RepoIdentity> {
     })
 }
 
-fn ready_registry(fleet: &Fleet) -> Option<&FleetRegistry> {
-    match fleet.registry.as_ref()? {
-        Ok(registry) if registry.status.trim() == "ok" => Some(registry),
+fn ready_fleets(fleet: &Fleet) -> Option<&FleetIdentities> {
+    match fleet.fleets.as_ref()? {
+        Ok(fleet_identities) if fleet_identities.status.trim() == "ok" => Some(fleet_identities),
         _ => None,
     }
 }
@@ -627,7 +628,7 @@ fn label_color(color: &str) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::FleetModels;
+    use crate::model::FleetIdentityEntry;
 
     fn issue(repo: &str, number: u64, state: &str, title: &str, labels: &[&str]) -> GhIssueRef {
         GhIssueRef {
@@ -646,30 +647,18 @@ mod tests {
         }
     }
 
-    fn registry(fleets: &[(&str, &str)], repos: &[&str]) -> FleetRegistry {
-        FleetRegistry {
+    fn fleet_identities(fleets: &[(&str, &str)]) -> FleetIdentities {
+        FleetIdentities {
             status: "ok".to_string(),
-            reported_path: "/tmp/fleets.json".to_string(),
             error: None,
-            repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
             fleets: fleets
                 .iter()
-                .map(|(name, gh_repo)| FleetRegistryEntry {
+                .map(|(name, gh_repo)| FleetIdentityEntry {
                     name: (*name).to_string(),
                     gh_repo: (*gh_repo).to_string(),
-                    local: "/tmp/local".to_string(),
-                    worktree_dir: "worktrees".to_string(),
                     orch: "orch".to_string(),
-                    workers: Vec::new(),
+                    workers: 0,
                     paused: false,
-                    models: FleetModels {
-                        orch: "orch".to_string(),
-                        impl_: "impl".to_string(),
-                        review: "review".to_string(),
-                        impl_alt: None,
-                        impl_alt2: None,
-                        reasoning_effort: None,
-                    },
                 })
                 .collect(),
         }
@@ -682,7 +671,7 @@ mod tests {
                 .map(|(key, issue)| ((*key).to_string(), vec![issue.clone()]))
                 .collect(),
             issues_loaded: true,
-            registry: Some(Ok(registry(fleets, &[]))),
+            fleets: Some(Ok(fleet_identities(fleets))),
             ..Default::default()
         }
     }
@@ -758,10 +747,11 @@ mod tests {
         let before_reconnect = display_issue_groups(&fleet);
         assert_eq!(before_reconnect[0].issues[0].action_targets, ["alpha"]);
 
-        // A reconnect refresh replaces the ready registry. The issue response
-        // still uses the stable repo category, but its action must resolve
-        // against the current exact fleet name rather than the old alias.
-        fleet.set_registry(Ok(registry(&[("foo", "owner/foo")], &[])));
+        // A reconnect refresh replaces the ready identity catalog. The issue
+        // response still uses the stable repo category, but its action must
+        // resolve against the current exact fleet name rather than the old
+        // alias.
+        fleet.set_fleets(Ok(fleet_identities(&[("foo", "owner/foo")])));
         let after_reconnect = display_issue_groups(&fleet);
         assert_eq!(after_reconnect[0].issues[0].action_targets, ["foo"]);
         assert!(

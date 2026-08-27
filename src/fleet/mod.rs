@@ -1,23 +1,16 @@
-//! #35: corrald's fleet control plane.
+//! #35 + #237: corrald's fleet control plane — CONFIGLESS.
 //!
-//! The fleet registry — `fleets.json`, today the single source of truth for
-//! the separate fleet tooling — is becoming corrald's own config (issue #35
-//! consolidation). This module parses, validates, and WRITES the registry:
-//! `fleet add` / `remove` / `pause` / `resume` / `models` mutate it through
-//! [`ops`], behind atomic-write discipline and a
-//! repo-resolves-before-add check. Reading stays on [`config::load`].
+//! Since #237, Corral does not own, read, or write `fleets.json`. The fleet
+//! registry is fleet-ops' opinionated config (per-role models, admit,
+//! paused); corrald never touches it. Actionable fleet identities come
+//! exclusively from the fleet-ops CLI validated identity path
+//! ([`cli`]) — the same shell-out pattern as the existing `herdr` shell-outs.
 //!
-//! The destructive side of #35 lives beside the registry mutation: [`reap`]
-//! reclaims finished and paused-idle agent panes, [`prune`] removes only
-//! provably-dead worktrees, and [`switch`] re-arms the orchestrator on the
-//! registry's current model map after an auth gate. These CLI operations run
-//! before the tokio runtime, apply verified process/worktree identity checks,
-//! and never rewrite the registry themselves.
+//! The destructively-oriented CLI operations (`switch`) sit beside the
+//! identity provider. `switch` delegates the whole re-arm to the fleet-ops
+//! CLI (`herdr-fleet switch`), which is lanes-aware (hermes profile in the
+//! brief) and validates identities itself.
 
-pub mod config;
-pub mod ops;
-pub mod prune;
-pub mod reap;
+pub mod cli;
 pub mod switch;
-pub mod watch;
 pub mod worktree;

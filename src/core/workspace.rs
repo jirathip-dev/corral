@@ -98,9 +98,10 @@ impl WorkspaceAttribution {
     }
 
     /// Add a known primary checkout. A conflicting duplicate canonical path
-    /// is rejected, leaving the first source's identity in place. The daemon
-    /// orders fleet-registry roots before the configured fallback so the
-    /// registry's canonical `gh_repo` identity wins that collision.
+    /// is rejected, leaving the first source's identity in place. Configless
+    /// (#237): roots are path-derived identities from the configured root and
+    /// live `~/Projects` checkouts only (no fleet-registry names win
+    /// collisions).
     pub fn add_root(&self, root: RepoRoot) -> bool {
         if root.repo.is_empty() {
             return false;

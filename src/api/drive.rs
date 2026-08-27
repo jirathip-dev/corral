@@ -83,7 +83,7 @@ use crate::drive::{
     AuditEntry, AuditLog, AuditOutcome, AuthError, AuthorizedDrive, Capability, DriveEnvelope,
     DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive, UnknownCapability,
 };
-use crate::fleet::config;
+use crate::fleet::cli::FleetIdentity;
 use crate::fleet::worktree::{
     self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
     WorktreeRequest,
@@ -995,25 +995,42 @@ async fn worktree_dispatch(
     ),
     WorktreeError,
 > {
-    let registry = config::load(&config::default_path())
-        .map_err(|error| WorktreeError::InvalidName(format!("fleet registry: {error}")))?;
-    let fleet = registry
+    // #237: the fleet identity is validated by the fleet-ops CLI identity
+    // path — corral never reads fleets.json. Display repo categories are
+    // never actionable identities, so the request's `repo` must be a
+    // CLI-validated fleet name (an UnknownFleet here is a refusal, not an
+    // identity drift: the client only offers CLI-validated names).
+    let fleet = state
         .fleets
-        .iter()
-        .find(|fleet| fleet.name == request.repo())
-        .cloned()
-        .ok_or_else(|| WorktreeError::UnknownFleet(request.repo().to_string()))?;
+        .get(request.repo())
+        .map_err(|error| match error {
+            crate::fleet::cli::FleetOpsError::UnknownFleet { name } => {
+                WorktreeError::UnknownFleet(name)
+            }
+            other => WorktreeError::InvalidName(other.to_string()),
+        })?;
 
     // #113 review 3: the issue URL in the audit/metadata is derived from the
     // daemon's authoritative issue ref, never trusted from the client. A
     // client could sign a bogus URL; the worktree action echoes the SAME
     // fetched set it validates against.
     let issue_snapshot = state.issues.snapshot();
+    let all_identities = match state.fleets.list() {
+        Ok(identities) => identities,
+        Err(error) => {
+            // The identity itself was validated above; only the alias
+            // expansion is reduced. Never fabricate aliases from display
+            // categories.
+            tracing::warn!(error = %error, "fleet-ops CLI identity path unavailable for issue aliases");
+            Vec::new()
+        }
+    };
     let request = match request {
         WorktreeRequest::Issue { repo, number, .. } => {
-            let authoritative_url = authoritative_issue(&registry, &issue_snapshot, &fleet, number)
-                .map(|issue| issue.url)
-                .unwrap_or_default();
+            let authoritative_url =
+                authoritative_issue(&all_identities, &issue_snapshot, &fleet, number)
+                    .map(|issue| issue.url)
+                    .unwrap_or_default();
             WorktreeRequest::Issue {
                 repo,
                 number,
@@ -1025,7 +1042,7 @@ async fn worktree_dispatch(
 
     // The stale/closed-issue guard runs against the SAME repo-level issue set
     // the browser renders (the integrator's cache), never a guess.
-    let issues = issue_summaries(&registry, issue_snapshot);
+    let issues = issue_summaries(&all_identities, issue_snapshot);
     let issue_check = IssueCheck::new(&issues);
 
     let creator = GitCreator;
@@ -1074,17 +1091,17 @@ async fn worktree_dispatch(
 }
 
 /// Return the cached issue for a fleet, including another fleet's cache entry
-/// when both registry entries point at the same full GitHub repository. The
-/// gh plane polls one repository once, so the first fleet's issue key is the
-/// source of truth for every exact fleet-name action in that repository.
+/// when both CLI-validated identities point at the same full GitHub
+/// repository. The gh plane polls one repository once, so the first fleet's
+/// issue key is the source of truth for every exact fleet-name action in
+/// that repository. `identities` is the fleet-ops CLI validated catalog.
 fn authoritative_issue(
-    registry: &config::Registry,
+    identities: &[FleetIdentity],
     snapshot: &BTreeMap<String, Vec<GhIssueRef>>,
-    fleet: &config::Fleet,
+    fleet: &FleetIdentity,
     number: u64,
 ) -> Option<GhIssueRef> {
-    let aliases = registry
-        .fleets
+    let aliases = identities
         .iter()
         .filter(|candidate| same_gh_repo(&candidate.gh_repo, &fleet.gh_repo))
         .map(|candidate| candidate.name.as_str());
@@ -1102,18 +1119,16 @@ fn authoritative_issue(
 /// its full GitHub repository. This keeps the daemon-side issue check aligned
 /// with the client surface without adding duplicate entries to `GET /issues`.
 fn issue_summaries(
-    registry: &config::Registry,
+    identities: &[FleetIdentity],
     snapshot: BTreeMap<String, Vec<GhIssueRef>>,
 ) -> Vec<IssueSummary> {
     let mut summaries = BTreeMap::<(String, u64), IssueSummary>::new();
     for (repo, issues) in snapshot {
-        let aliases: Vec<String> = registry
-            .fleets
+        let aliases: Vec<String> = identities
             .iter()
             .find(|fleet| fleet.name == repo)
             .map(|source| {
-                registry
-                    .fleets
+                identities
                     .iter()
                     .filter(|candidate| same_gh_repo(&candidate.gh_repo, &source.gh_repo))
                     .map(|candidate| candidate.name.clone())
@@ -1199,23 +1214,17 @@ mod tests {
     use super::*;
     use crate::drive::canonical_envelope_bytes;
     use serde_json::json;
+    use std::path::PathBuf;
 
-    fn worktree_fleet(name: &str, gh_repo: &str) -> config::Fleet {
-        config::Fleet {
+    fn worktree_fleet(name: &str, gh_repo: &str) -> FleetIdentity {
+        FleetIdentity {
             name: name.into(),
             gh_repo: gh_repo.into(),
-            local: "/tmp/local".into(),
+            local: PathBuf::from("/tmp/local"),
             worktree_dir: name.into(),
             orch: "orch".into(),
-            workers: Vec::new(),
+            workers: 0,
             paused: false,
-            models: config::Models {
-                orch: "orch".into(),
-                impl_: "impl".into(),
-                review: "review".into(),
-                impl_alt: None,
-                impl_alt2: None,
-            },
         }
     }
 
@@ -1232,17 +1241,17 @@ mod tests {
 
     #[test]
     fn shared_gh_repo_issue_cache_serves_each_fleet_target_without_api_duplicates() {
-        let registry = config::Registry::new(vec![
+        let identities = vec![
             worktree_fleet("alpha", "owner/foo"),
             worktree_fleet("beta", "owner/foo"),
-        ]);
+        ];
         let issue = cached_issue(42);
         let snapshot = BTreeMap::from([
             ("alpha".to_string(), vec![issue.clone()]),
             ("beta".to_string(), vec![issue.clone()]),
         ]);
 
-        let summaries = issue_summaries(&registry, snapshot.clone());
+        let summaries = issue_summaries(&identities, snapshot.clone());
         assert_eq!(
             summaries.len(),
             2,
@@ -1257,7 +1266,7 @@ mod tests {
             "one fetched issue is valid for both exact fleet targets"
         );
         assert_eq!(
-            authoritative_issue(&registry, &snapshot, &registry.fleets[1], 42,),
+            authoritative_issue(&identities, &snapshot, &identities[1], 42,),
             Some(issue),
             "the second fleet gets the same authoritative URL without a second poll"
         );

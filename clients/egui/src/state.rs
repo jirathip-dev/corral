@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::drive::{DriveFailure, DriveOutcome};
-use crate::model::{Agent, FleetRegistry, GhIssueRef};
+use crate::model::{Agent, FleetIdentities, GhIssueRef};
 
 /// Registration record persisted per host fingerprint.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -133,13 +133,14 @@ pub struct Fleet {
     /// Last issue-fetch failure. A previous successful snapshot remains
     /// visible while this is set so a transient refresh cannot blank the tab.
     pub issues_error: Option<String>,
-    /// #135: read-only registry view. `Ok` includes daemon-side
-    /// `status="error"` responses so a broken registry is visible; `Err` is
-    /// a transport/endpoint failure.
-    pub registry: Option<Result<FleetRegistry, String>>,
-    pub registry_loading: bool,
-    /// Whether a registry view has been successfully fetched at least once.
-    pub registry_loaded: bool,
+    /// #237: fleet-ops CLI validated identity catalog (configless). `Ok`
+    /// includes daemon-side `status="error"` responses so an unavailable
+    /// identity path is visible; `Err` is a transport/endpoint failure.
+    pub fleets: Option<Result<FleetIdentities, String>>,
+    pub fleets_loading: bool,
+    /// Whether the identity catalog has been successfully fetched at least
+    /// once.
+    pub fleets_loaded: bool,
 }
 
 impl Fleet {
@@ -250,23 +251,24 @@ impl Fleet {
             .is_some_and(|pane| pane.loading || !pane.entries.is_empty())
     }
 
-    /// #135: fold one registry fetch outcome into the tab's view model.
-    pub fn set_registry(&mut self, result: Result<FleetRegistry, String>) {
-        self.registry_loading = false;
+    /// #237: fold one fleet-identities fetch outcome into the tab's view
+    /// model.
+    pub fn set_fleets(&mut self, result: Result<FleetIdentities, String>) {
+        self.fleets_loading = false;
         if result.is_ok() {
-            self.registry_loaded = true;
+            self.fleets_loaded = true;
         }
-        self.registry = Some(result);
+        self.fleets = Some(result);
     }
 
-    /// Whether the registry contains the successful daemon projection needed
-    /// to turn an Issues category into an exact fleet-name drive target.
-    /// Transport failures and daemon `status="error"` responses remain in
-    /// the view model for diagnostics, but neither is actionable.
-    pub fn registry_ready(&self) -> bool {
+    /// Whether the catalog contains the successful daemon-side identity list
+    /// needed to turn an Issues category into an exact fleet-name drive
+    /// target. Transport failures and daemon `status="error"` responses
+    /// remain in the view model for diagnostics, but neither is actionable.
+    pub fn fleets_ready(&self) -> bool {
         matches!(
-            self.registry.as_ref(),
-            Some(Ok(registry)) if registry.status.trim() == "ok"
+            self.fleets.as_ref(),
+            Some(Ok(fleets)) if fleets.status.trim() == "ok"
         )
     }
 
@@ -595,49 +597,46 @@ mod tests {
     }
 
     #[test]
-    fn registry_fetch_marks_loaded_only_on_success_and_clears_loading() {
+    fn fleets_fetch_marks_loaded_only_on_success_and_clears_loading() {
         let mut fleet = Fleet {
-            registry_loading: true,
+            fleets_loading: true,
             ..Default::default()
         };
-        fleet.set_registry(Err("connect refused".into()));
-        assert!(!fleet.registry_loading);
+        fleet.set_fleets(Err("connect refused".into()));
+        assert!(!fleet.fleets_loading);
         assert!(
-            !fleet.registry_loaded,
-            "transport failure retries on reconnect"
+            !fleet.fleets_loaded,
+            "a failed fetch must not mark the catalog loaded"
         );
-        assert!(matches!(fleet.registry, Some(Err(_))));
+        assert!(matches!(fleet.fleets, Some(Err(_))));
 
-        let registry: FleetRegistry = serde_json::from_value(serde_json::json!({
+        let identities: FleetIdentities = serde_json::from_value(serde_json::json!({
             "status": "ok",
-            "path": "/tmp/fleets.json",
             "error": null,
-            "fleets": []
+            "fleets": [{"name": "corral", "gh_repo": "jirathip-dev/corral", "orch": "orch-corral", "workers": 0, "paused": false}]
         }))
         .unwrap();
-        fleet.set_registry(Ok(registry));
-        assert!(fleet.registry_loaded);
-        assert!(!fleet.registry_loading);
-        assert!(fleet.registry_ready());
+        fleet.set_fleets(Ok(identities));
+        assert!(fleet.fleets_loaded);
+        assert!(!fleet.fleets_loading);
+        assert!(fleet.fleets_ready());
 
-        fleet.set_registry(Ok(FleetRegistry {
+        fleet.set_fleets(Ok(FleetIdentities {
             status: "error".into(),
-            reported_path: "/tmp/fleets.json".into(),
-            error: Some("cannot parse fleet registry".into()),
-            fleets: vec![],
-            repos: vec!["live-only".into()],
+            error: Some("no herdr-fleet".into()),
+            fleets: Vec::new(),
         }));
-        assert!(fleet.registry_loaded);
-        assert!(!fleet.registry_ready());
+        assert!(fleet.fleets_loaded);
+        assert!(!fleet.fleets_ready());
     }
 
     fn issue(repo: &str, number: u64, title: &str) -> GhIssueRef {
         GhIssueRef {
-            repo: repo.into(),
+            repo: repo.to_string(),
             number,
-            state: "OPEN".into(),
-            title: title.into(),
-            labels: vec![],
+            state: "OPEN".to_string(),
+            title: title.to_string(),
+            labels: Vec::new(),
             url: format!("https://github.com/example/{repo}/issues/{number}"),
         }
     }

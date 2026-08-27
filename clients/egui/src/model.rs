@@ -243,58 +243,34 @@ fn shortened_agent_id(agent_id: &str) -> String {
     tail.chars().take(SHORT_ID_MAX_CHARS).collect()
 }
 
-/// #135/#216: read-only `GET /fleet-registry` response mirror. A daemon
-/// parse/IO failure is still a successful HTTP response with `status="error"`
-/// and an empty `fleets` registry, while `repos` retains live board categories
-/// so the failure does not erase the useful read model.
+/// #237: configless `GET /fleets` response mirror — the fleet-ops CLI
+/// validated identity catalog. Corral no longer reads or writes
+/// `fleets.json`, so this carries ONLY validated identities (name, gh_repo,
+/// orch, worker count, paused); the old registry projection fields
+/// (`local`, `worktree_dir`, `models`, `reasoning_effort`) do not exist.
+/// A fleet-ops CLI failure is still a successful HTTP response with
+/// `status="error"` and an empty `fleets` list.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct FleetRegistry {
+pub struct FleetIdentities {
     pub status: String,
-    /// Path reported by the daemon for display/provenance only. The client
-    /// never uses this remote value as a local write target.
-    #[serde(rename = "path")]
-    pub reported_path: String,
     #[serde(default)]
     pub error: Option<String>,
-    pub fleets: Vec<FleetRegistryEntry>,
-    /// Sorted union of live `workspace.repo` values and registry `gh_repo`
-    /// basenames. Empty on older daemons that predate #216.
-    #[serde(default)]
-    pub repos: Vec<String>,
+    pub fleets: Vec<FleetIdentityEntry>,
 }
 
-impl FleetRegistry {
+impl FleetIdentities {
     pub fn failed(&self) -> bool {
         self.status == "error"
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct FleetRegistryEntry {
+pub struct FleetIdentityEntry {
     pub name: String,
     pub gh_repo: String,
-    pub local: String,
-    pub worktree_dir: String,
     pub orch: String,
-    pub workers: Vec<String>,
+    pub workers: usize,
     pub paused: bool,
-    pub models: FleetModels,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct FleetModels {
-    pub orch: String,
-    #[serde(rename = "impl")]
-    pub impl_: String,
-    pub review: String,
-    #[serde(default)]
-    pub impl_alt: Option<String>,
-    #[serde(default)]
-    pub impl_alt2: Option<String>,
-    /// Forward-compatible fleet-operations effort map, preserved by the
-    /// daemon as opaque JSON so a new effort key never breaks decoding.
-    #[serde(default)]
-    pub reasoning_effort: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -554,102 +530,67 @@ mod tests {
     }
 
     #[test]
-    fn fleet_registry_ok_fixture_decodes_models_and_reasoning_effort() {
+    fn fleet_identities_ok_fixture_decodes_the_validated_catalog() {
         let wire = serde_json::json!({
             "status": "ok",
-            "path": "/tmp/fleets.json",
             "error": null,
-            "repos": ["corral"],
-            "fleets": [
-                {
-                    "name": "corral",
-                    "gh_repo": "jirathip-dev/corral",
-                    "local": "~/Projects/corral",
-                    "worktree_dir": "corral",
-                    "orch": "orch-corral",
-                    "workers": ["w1", "w2"],
-                    "paused": true,
-                    "models": {
-                        "orch": "codex/deepseek-v4-flash-vision-exp",
-                        "impl": "codex/deepseek-v4-flash-vision-exp",
-                        "review": "codex/deepseek-v4-flash-vision-exp",
-                        "impl_alt": "opencode-go/deepseek-v4-flash",
-                        "impl_alt2": "codex/deepseek-v4-flash",
-                        "reasoning_effort": {
-                            "orch": "medium",
-                            "impl": "max",
-                            "review": "xhigh",
-                            "future_effort": "high"
-                        }
-                    }
-                }
-            ]
+            "fleets": [{
+                "name": "corral",
+                "gh_repo": "jirathip-dev/corral",
+                "orch": "orch-corral",
+                "workers": 2,
+                "paused": true
+            }]
         });
-        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
-        assert_eq!(registry.status, "ok");
-        assert_eq!(registry.reported_path, "/tmp/fleets.json");
-        assert_eq!(registry.error, None);
-        assert!(!registry.failed());
-        assert_eq!(registry.repos, vec!["corral"]);
-        assert_eq!(registry.fleets.len(), 1);
-
-        let fleet = &registry.fleets[0];
+        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
+        assert_eq!(identities.status, "ok");
+        assert_eq!(identities.error, None);
+        assert!(!identities.failed());
+        assert_eq!(identities.fleets.len(), 1);
+        let fleet = &identities.fleets[0];
         assert_eq!(fleet.name, "corral");
         assert_eq!(fleet.gh_repo, "jirathip-dev/corral");
-        assert_eq!(fleet.workers, vec!["w1", "w2"]);
+        assert_eq!(fleet.orch, "orch-corral");
+        assert_eq!(fleet.workers, 2);
         assert!(fleet.paused);
-        assert_eq!(fleet.models.impl_, "codex/deepseek-v4-flash-vision-exp");
-        assert_eq!(
-            fleet.models.impl_alt.as_deref(),
-            Some("opencode-go/deepseek-v4-flash")
-        );
-        let effort = fleet.models.reasoning_effort.as_ref().unwrap();
-        assert_eq!(effort["orch"], "medium");
-        assert_eq!(effort["future_effort"], "high");
     }
 
     #[test]
-    fn fleet_registry_error_fixture_decodes_with_empty_fleet_list() {
+    fn fleet_identities_error_fixture_decodes_with_empty_list() {
         let wire = serde_json::json!({
             "status": "error",
-            "path": "/tmp/broken.json",
-            "error": "parse: expected value at line 1",
-            "repos": ["live-only"],
+            "error": "fleet-ops CLI identity path unavailable: no herdr-fleet",
             "fleets": []
         });
-        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
-        assert!(registry.failed());
+        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
+        assert!(identities.failed());
         assert_eq!(
-            registry.error.as_deref(),
-            Some("parse: expected value at line 1")
+            identities.error.as_deref(),
+            Some("fleet-ops CLI identity path unavailable: no herdr-fleet")
         );
-        assert!(registry.fleets.is_empty());
-        assert_eq!(registry.repos, vec!["live-only"]);
+        assert!(identities.fleets.is_empty());
     }
 
     #[test]
-    fn fleet_registry_optional_model_slots_default_to_none() {
+    fn fleet_identities_catalog_knows_no_registry_projection_fields() {
+        // Configless: the wire carries ONLY name/gh_repo/orch/workers/paused
+        // — the old registry projection fields (local, worktree_dir, models,
+        // reasoning_effort, path) must not decode.
         let wire = serde_json::json!({
             "status": "ok",
-            "path": "/tmp/fleets.json",
             "error": null,
             "fleets": [{
                 "name": "board",
                 "gh_repo": "jirathip-dev/herdr-board",
-                "local": "/opt/board",
-                "worktree_dir": "board",
                 "orch": "orch-board",
-                "workers": [],
-                "paused": false,
-                "models": {"orch": "a", "impl": "b", "review": "c"}
+                "workers": 0,
+                "paused": false
             }]
         });
-        let registry: FleetRegistry = serde_json::from_value(wire).unwrap();
-        assert!(registry.repos.is_empty());
-        let models = &registry.fleets[0].models;
-        assert_eq!(models.impl_alt, None);
-        assert_eq!(models.impl_alt2, None);
-        assert_eq!(models.reasoning_effort, None);
+        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
+        assert_eq!(identities.fleets[0].orch, "orch-board");
+        assert_eq!(identities.fleets[0].workers, 0);
+        assert!(!identities.fleets[0].paused);
     }
 
     #[test]

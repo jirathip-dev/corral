@@ -1,7 +1,33 @@
-# Corral fleet registry — corrald registry surface (#35)
+# Corral fleet surface — CONFIGLESS (#237)
 
-Issue #35 (fleet control-plane consolidation): corrald reads the fleet
-registry — `fleets.json` — a format corral is taking ownership of from the
+**SUPERSEDED DOCUMENT**: `docs/corral/G35-registry.md` described the #35
+registry-OWNERSHIP surface (corrald reading and writing `fleets.json`).
+Issue #237 made Corral configless: Corral must not own, read, or write
+`fleets.json`. The fleet registry is fleet-ops' opinionated config
+(`herdr-fleet` manages `~/.config/fleet-operations/fleets.json`), and the
+Corral side now has:
+- `GET /issues` — repo categories = live `workspace.repo` union; action
+  keys = fleet-ops CLI validated fleet names.
+- `GET /fleets` — the fleet-ops CLI validated identity catalog (name,
+  gh_repo, orch, workers, paused): NOT a registry projection (no
+  `local`/`worktree_dir`/`models`/`reasoning_effort`/`path`).
+- `corrald fleet switch <name>` — delegates to `herdr-fleet switch`.
+- `src/fleet/cli.rs` — the fleet-ops CLI identity provider (`herdr-fleet
+  list` parse; `$CORRALD_FLEET_OPS` override for tests/tooling).
+- The old registry subcommands (`list|check|add|remove|pause|resume|models|
+  watch|reap|prune` + `--registry`) are removed; docs below document the
+  historical #35 surface and remain for the git history review. The
+  registry schema itself (per-fleet fields, models, `admit`) is unchanged
+  and stays fleet-ops-owned.
+
+## Legacy #35 registry surface (superseded 2026-08-27)
+
+The following sections document the historical #35 registry-ownership
+surface as it existed before #237. Read them as the design record: the
+commands, paths, and endpoints they name no longer exist in corrald.
+
+The historical surface: corrald read the fleet
+registry — `fleets.json` — a format corral was taking ownership of from the
 legacy fleet tooling (which still writes the legacy-path file, hence the
 migration fallback below) — and also WRITES it. `list`, `check`, and
 `watch` are read-only views; **`add` / `remove`** and **`pause` / `resume` /

@@ -6,13 +6,14 @@
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
-//! - `GET /issues` — #113/#216: read-only repo-level issue view for the
-//!   board's issue browser and worktree action (configured fleet groups plus
-//!   live/canonical repo categories).
-//! - `GET /fleet-registry` — #135/#216: read-only projection of the local
-//!   `fleets.json` for the board's Registry tab, with the live/canonical repo
-//!   category union (same loader as `/issues`; parse/IO failures are returned
-//!   as HTTP 200 `status="error"`).
+//! - `GET /issues` — #113/#237: read-only repo-level issue view for the
+//!   board's issue browser and worktree action (live `workspace.repo`
+//!   categories plus fleet-ops CLI validated fleet-name keys; configless —
+//!   no `fleets.json` is read).
+//! - `GET /fleets` — #237: the fleet-ops CLI validated identity catalog
+//!   (name, gh_repo, orch, workers, paused) for the board's read-only Fleets
+//!   tab. NOT a registry projection: no `local`/`worktree_dir`/`models`/path
+//!   fields. A fleet-ops CLI failure is HTTP 200 `status="error"`.
 //! - `GET /transcript` — #63: device-grant-gated (`read_tail`) on-demand
 //!   transcript pages for one agent, newest first, redacted at the module
 //!   boundary (see [`crate::api::transcript`]). The only device-grant-gated
@@ -45,8 +46,8 @@
 //! provisioning inputs (the `.p8` push key is Guy's).
 
 pub mod drive;
+pub mod fleets;
 pub mod issues;
-pub mod registry;
 pub(crate) mod repo;
 pub mod transcript;
 
@@ -96,6 +97,12 @@ pub struct AppState {
     /// served by [`issues::issues`]). The browser and the worktree action
     /// read this; nothing here mutates GitHub.
     pub issues: Arc<issues::IssuesCache>,
+    /// #237: the fleet-ops CLI validated identity path (configless corral).
+    /// The daemon never reads fleets.json; every actionable fleet identity
+    /// (issue-free / issue-linked start targets, `/fleets` catalog) comes
+    /// from this provider. Tests inject a stub; production shells
+    /// `herdr-fleet list`.
+    pub fleets: Arc<dyn crate::fleet::cli::FleetOpsProvider>,
     /// #63: where `/transcript` looks for the three session stores.
     /// `main.rs` passes [`TranscriptRoots::from_env`]; tests point this at
     /// fixtures — the Default is hermetic (a throwaway temp dir, so no
@@ -136,6 +143,10 @@ impl Default for AppState {
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
             issues: Arc::new(issues::IssuesCache::default()),
+            // #237: the production provider shells the fleet-ops CLI; tests
+            // replace it with a stub so the hermetic suite never depends on
+            // a live `herdr-fleet` on PATH.
+            fleets: Arc::new(crate::fleet::cli::CliFleetOpsProvider),
             // Hermetic: nonexistent per-process paths, nothing created —
             // a default-built state can never read this machine's live
             // session stores (mirrors the N6 no-ambient-env discipline).
@@ -161,7 +172,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history))
         .route("/transcript", get(self::transcript::transcript))
         .route("/issues", get(issues::issues))
-        .route("/fleet-registry", get(registry::fleet_registry))
+        .route("/fleets", get(fleets::fleets))
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))

@@ -29,22 +29,10 @@ fn daemon_config_dir() -> PathBuf {
     PathBuf::from(home).join(".config/corral")
 }
 
-/// The registry file owned by this client process. A daemon response may
-/// describe a path on another machine, so registry mutations must never use
-/// that response as a local filesystem target.
-pub fn local_registry_path() -> PathBuf {
-    let path = std::env::var_os("CORRAL_FLEETS_PATH")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| daemon_config_dir().join("fleets.json"));
-    if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    }
-}
+// NOTE: configless #237 — there is deliberately no fleets.json path helper
+// here. Corral never reads or writes the fleet registry file; the daemon's
+// fleet identities come from the fleet-ops CLI via GET /fleets, and the
+// registry itself is fleet-ops' config.
 
 /// Where the device key actually lives.
 #[derive(Debug, Clone, PartialEq, Eq)]

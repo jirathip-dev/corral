@@ -5,14 +5,15 @@
 //! - D33 digest, offline against the history ring:
 //!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
-//! - #35 phase 1: fleet registry views AND writes:
-//!   `corrald fleet list|check` (read-only),
-//!   `corrald fleet add|remove` (registry CRUD, atomic write), and
-//!   `corrald fleet pause|resume|models` (registry mutation, atomic write)
-//!   (see `crate::fleet` for the registry format and validation).
+//! - #237 configless fleet operations: `corrald fleet switch <name>`
+//!   delegates to the fleet-ops CLI (`herdr-fleet switch`) — corral does not
+//!   own, read, or write `fleets.json`. The registry views/mutations
+//!   (`list`/`check`/`add`/`remove`/`pause`/`resume`/`models`/`watch` --
+//!   `reap`/`prune`) were the #35 registry-ownership surface and are
+//!   superseded by `herdr-fleet` (see docs/corral/G35-registry.md).
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,8 +26,8 @@ use corrald::api::drive::ReplayTable;
 use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
-use corrald::core::workspace::{RepoRoot, WorkspaceAttribution, WorktreeAlias};
-use corrald::fleet;
+use corrald::core::workspace::WorkspaceAttribution;
+use corrald::fleet::cli::{CliFleetOpsProvider, FleetIdentity, FleetOpsProvider};
 use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
@@ -132,38 +133,27 @@ fn run_digest(args: &[String]) {
     print!("{}", digest.render());
 }
 
-/// `corrald fleet` — registry and fleet-operation surface (#35). Read side:
-/// `list`, `check`, `watch`. Registry writes: `add`, `remove`, `pause`,
-/// `resume`, `models`, behind atomic-write discipline and validation in
-/// [`crate::fleet::ops`]. Destructive ops: `switch`, `reap`, `prune`. All
-/// accept `--registry <path>` to
-/// override `$CORRAL_FLEETS_PATH` / `$CORRAL_CONFIG_DIR/fleets.json`
-/// (default `~/.config/corral/fleets.json`; legacy
-/// `~/.hermes/scripts/fleets.json` honoured as a fallback — #66).
-/// Everything here runs before the tokio runtime is built; no subcommand
-/// touches a running daemon or the herdr socket.
+/// `corrald fleet` — the configless fleet-operation surface (#237).
+///
+/// `switch` is the only subcommand. It delegates the whole auth-gated
+/// re-arm to the fleet-ops CLI (`herdr-fleet switch <name>`), which is
+/// lanes-aware and validates the fleet identity itself; corral never reads
+/// or writes `fleets.json`. The legacy #35 registry subcommands
+/// (`list`/`check`/`add`/`remove`/`pause`/`resume`/`models`/`watch`/
+/// `reap`/`prune`) are superseded — use `herdr-fleet` for registry
+/// operations.
 fn run_fleet(args: &[String]) {
-    let Some(sub) = args.first().map(String::as_str) else {
-        eprintln!(
-            "corrald fleet: need a subcommand: list | check | add | remove | pause | resume | models | switch | watch | reap | prune (see --help)"
-        );
+    // `corrald fleet` with no subcommand prints the (tiny) help + exit 2.
+    let Some(sub) = args.first() else {
+        eprintln!("corrald fleet: need a subcommand: switch (see --help)");
         std::process::exit(2);
     };
-    if matches!(sub, "--help" | "-h") {
-        print_fleet_help();
-        std::process::exit(0);
-    }
-    match sub {
-        "list" | "check" => run_fleet_read_only(sub, &args[1..]),
-        "add" => run_fleet_add(&args[1..]),
-        "remove" => run_fleet_remove(&args[1..]),
-        "pause" => run_fleet_pause_resume("pause", &args[1..]),
-        "resume" => run_fleet_pause_resume("resume", &args[1..]),
-        "models" => run_fleet_models(&args[1..]),
+    match sub.as_str() {
         "switch" => run_fleet_switch(&args[1..]),
-        "watch" => run_fleet_watch(&args[1..]),
-        "reap" => run_fleet_reap(&args[1..]),
-        "prune" => run_fleet_prune(&args[1..]),
+        "--help" | "-h" => {
+            print_fleet_help();
+            std::process::exit(0);
+        }
         other => {
             eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
             std::process::exit(2);
@@ -173,103 +163,31 @@ fn run_fleet(args: &[String]) {
 
 fn print_fleet_help() {
     println!(
-        "corrald fleet — read/write views over the fleet registry (#35)\n\n\
-         USAGE: corrald fleet list [--registry <path>]\n\
-         USAGE: corrald fleet check [--registry <path>]\n\
-         USAGE: corrald fleet add <name> --gh <owner/repo> [--local <path>]\n\
-         \t[--worktree <path>] [--orch <agent>] [--workers a,b,c]\n\
-         \t[--models orch=..,impl=..,review=..] [--registry <path>]\n\
-         \t(<name> may also be passed as --name; --worktree-dir is an\n\
-         \talias for --worktree — both match the legacy fleet CLI)\n\
-         USAGE: corrald fleet remove <name> [--registry <path>]\n\
-         USAGE: corrald fleet watch [--registry <path>]\n\
-         USAGE: corrald fleet pause <name> [--registry <path>]\n\
-         USAGE: corrald fleet resume <name> [--registry <path>]\n\
-         USAGE: corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]\n\
-         \t[--impl-alt2 M] [--review M] [--registry <path>]\n\
-         USAGE: corrald fleet switch <name> [--pane <id>] [--registry <path>]\n\
-         USAGE: corrald fleet reap <fleet|all> [--apply] [--max-done N]\n\
-         \t[--max-fraction F] --dry-run [--registry <path>]\n\
-         USAGE: corrald fleet prune [--apply|--yes] [--max-prune N]\n\
-         \t[--min-age DAYS] [--worktrees <path>] [--registry <path>]\n\n\
-         list     one line per fleet: name, gh_repo, worker count,\n\
-         \tpaused flag, and the three model ids\n\
-         check    parse + validate, then verify each fleet's local\n\
-         \tdir exists and holds a .git entry; exit 0 when every\n\
-         \tfleet checks out, 1 when any fails, 2 on usage/parse error\n\
-         add      resolve the repo via `gh repo view`, validate the\n\
-         \tcandidate registry, then atomically insert the fleet;\n\
-         \tdefaults: local ~/Projects/<name>, worktree_dir <name>,\n\
-         \torch orch-<name>, workers empty, models inherited from the\n\
-         \tfirst existing fleet (or required via --models on an empty\n\
-         \tregistry). The registry file must exist — bootstrap one\n\
-         \t(a fresh machine lacks the parent dir, #66) with:\n\
-         \t  mkdir -p ~/.config/corral\n\
-         \t  echo '{{\"fleets\": []}}' > <path>\n\
-         remove   atomically drop exactly one fleet by name\n\
-         pause    set paused:true on exactly one fleet; pausing an\n\
-         \talready-paused fleet is a no-op success (exit 0)\n\
-         resume   clear paused on exactly one fleet; resuming an\n\
-         \tunpaused fleet is a no-op success (exit 0)\n\
-         models   update only the model slots named; <name> may be\n\
-         \t`all` to apply to every fleet (models only — pause/resume\n\
-         \ttake a real fleet name; `all` is reserved as a fleet name).\n\
-         \t--impl-alt '' / --impl-alt2 '' CLEAR that optional slot; an\n\
-         \tempty value for the required orch/impl/review slots is a\n\
-         \tusage error\n\
-         switch   auth-gated re-arm: validate every harness the fleet's\n\
-         \tmodel map implies, kill the old registered orchestrator only\n\
-         \tafter verified process identity, then start it on the new\n\
-         \tmodel. A failed switch cannot un-pause the fleet; the fleet\n\
-         \tstays paused until an explicit `fleet resume`\n\
-         reap     destroy finished agent processes and idle processes in\n\
-         \tpaused fleets. Dry-run by default; --apply is the only mode\n\
-         \tthat signals anything. The shrink guard refuses a sweep that\n\
-         \twould kill more than --max-done (default 5) or the\n\
-         \t--max-fraction threshold (default 0.25, floored at 2)\n\
-         \tfinished agents -- everything stays untouched\n\
-         prune    report (default) or remove provably-dead worktrees:\n\
-         \tclean git tree, no agent cwd, no open/unverifiable PR,\n\
-         \tHEAD ancestor of origin/staging (else origin/main), not at\n\
-         \tintegration tip, no protected ignored files. `--apply`/`--yes`\n\
-         \tis required to remove; non-force `git worktree remove` remains\n\
-         \tthe final authority; cap via --max-prune (default 10)\n\
-         watch    one READ-ONLY health pass over unpaused fleets: herdr\n\
-         \tserver reachability, missing orchestrators, stall flavors\n\
-         \t(open PRs / workers still working / plain), missing workers;\n\
-         \tprints PROBLEM lines or ALL HEALTHY; exit 0 healthy /\n\
-         \t1 problems (an unreadable/invalid registry is itself a\n\
-         \tPROBLEM line with exit 1 — NOT check's exit 2, so a cron\n\
-         \tmonitor still alerts) / 2 usage error (cron-able, like\n\
-         \tdigest)\n\n\
-         add/remove/pause/resume/models exit codes: 0 = written (or an\n\
-         \tidempotent no-op — already paused/resumed, models unchanged);\n\
-         \t1 = refused (duplicate/unresolvable repo/unknown name) or the\n\
-         \twrite failed — the registry is left byte-identical;\n\
-         \t2 = usage error or unreadable/unparseable/invalid registry.\n\
-         \tswitch/reap/prune use 0 success, 1 operational refusal or\n\
-         \tcheck failure, 2 usage error\n\n\
-         \t--registry   fleet registry JSON (default $CORRAL_FLEETS_PATH\n\
-         \tor $CORRAL_CONFIG_DIR/fleets.json, default\n\
-         \t~/.config/corral/fleets.json; a pre-existing legacy\n\
-         \t~/.hermes/scripts/fleets.json is used as a fallback,\n\
-         \twith a stderr note)"
+        "corrald fleet — configless fleet operations (#237)\n\n\
+         USAGE: corrald fleet switch <name> [--pane <id>]\n\n\
+         switch   auth-gated orchestrator re-arm, delegated to the fleet-ops CLI\n\
+         (herdr-fleet switch <name>): the fleet identity, harness, auth gates,\n\
+         and continuation brief are fleet-ops' — corral no longer owns, reads,\n\
+         or writes the fleet registry file (the registry stays fleet-ops' config).\n\
+         Registry views/mutations (list/check/add/remove/\n\
+         pause/resume/models/watch/reap/prune) moved to `herdr-fleet`; use\n\
+         `herdr-fleet list|check|add|remove|pause|resume|models|switch|doctor`.\n\n\
+         --pane <id>   pass an explicit pane id through to herdr-fleet switch\n"
     );
 }
 
-/// `list`/`check` share one `--registry` parse; anything else is a usage
-/// error. This is the existing read-only surface — its exit contract is
-/// preserved unchanged (0 ok / 1 fleet failed / 2 usage-or-parse).
-fn run_fleet_read_only(sub: &str, args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
+/// `corrald fleet switch <name>`: delegate to the fleet-ops CLI.
+fn run_fleet_switch(args: &[String]) {
+    let mut name: Option<String> = None;
+    let mut pane: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--registry" => {
+            "--pane" => {
                 i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    eprintln!("corrald fleet {sub}: --registry needs a path");
+                pane = args.get(i).cloned();
+                if pane.is_none() {
+                    eprintln!("corrald fleet switch: --pane needs a value");
                     std::process::exit(2);
                 }
             }
@@ -277,1073 +195,27 @@ fn run_fleet_read_only(sub: &str, args: &[String]) {
                 print_fleet_help();
                 std::process::exit(0);
             }
+            other if !other.starts_with("--") && name.is_none() => {
+                name = Some(other.to_string());
+            }
             other => {
-                eprintln!("corrald fleet {sub}: unknown argument: {other} (see --help)");
+                eprintln!("corrald fleet switch: unknown argument: {other} (see --help)");
                 std::process::exit(2);
             }
         }
         i += 1;
     }
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    match sub {
-        "list" => run_fleet_list(&path),
-        "check" => run_fleet_check(&path),
-        _ => unreachable!(),
-    }
-}
-
-/// `corrald fleet list`: one greppable line per fleet.
-fn run_fleet_list(path: &std::path::Path) {
-    let registry = match fleet::config::load(path) {
-        Ok(registry) => registry,
-        Err(error) => {
-            eprintln!("corrald fleet list: {error}");
-            std::process::exit(2);
-        }
-    };
-    for fleet in &registry.fleets {
-        println!(
-            "{} {} workers={} paused={} orch={} impl={} review={}",
-            fleet.name,
-            fleet.gh_repo,
-            fleet.workers.len(),
-            fleet.paused,
-            fleet.models.orch,
-            fleet.models.impl_,
-            fleet.models.review
-        );
-    }
-}
-
-/// `corrald fleet add`: build the candidate fleet, run the repo-resolves
-/// check, validate the candidate registry, then atomically write. Any refusal
-/// exits non-zero and leaves the registry byte-identical.
-fn run_fleet_add(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut gh_repo: Option<String> = None;
-    let mut local: Option<String> = None;
-    let mut worktree_dir: Option<String> = None;
-    let mut orch: Option<String> = None;
-    let mut workers: Option<String> = None;
-    let mut models: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        let mut value = || {
-            i += 1;
-            args.get(i).cloned()
-        };
-        match arg {
-            "--name" => {
-                name = value();
-                if name.is_none() {
-                    usage("fleet add: --name needs a value");
-                }
-            }
-            "--gh" => {
-                gh_repo = value();
-                if gh_repo.is_none() {
-                    usage("fleet add: --gh needs a value");
-                }
-            }
-            "--local" => {
-                local = value();
-                if local.is_none() {
-                    usage("fleet add: --local needs a value");
-                }
-            }
-            // `--worktree` is the legacy fleet CLI's spelling (#35 design
-            // principle 2: same names and semantics); `--worktree-dir`
-            // matches the registry field name. Both are accepted.
-            "--worktree" | "--worktree-dir" => {
-                worktree_dir = value();
-                if worktree_dir.is_none() {
-                    usage("fleet add: --worktree needs a value");
-                }
-            }
-            "--orch" => {
-                orch = value();
-                if orch.is_none() {
-                    usage("fleet add: --orch needs a value");
-                }
-            }
-            "--workers" => {
-                workers = value();
-                if workers.is_none() {
-                    usage("fleet add: --workers needs a value");
-                }
-            }
-            "--models" => {
-                models = value();
-                if models.is_none() {
-                    usage("fleet add: --models needs a value");
-                }
-            }
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet add: --registry needs a value");
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                // The legacy fleet CLI takes the name as a positional
-                // (`fleet add <name> --gh o/r`); accept that shape too.
-                if other.starts_with('-') {
-                    usage(&format!("fleet add: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage("fleet add: exactly one fleet name");
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
     let Some(name) = name else {
-        usage("fleet add: a fleet name is required (positional or --name)");
+        eprintln!("corrald fleet switch: need a fleet name");
+        std::process::exit(2);
     };
-    let Some(gh_repo) = gh_repo else {
-        usage("fleet add: --gh is required");
-    };
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-
-    let workers = workers
-        .map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|w| !w.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let models = match models {
-        Some(raw) => match parse_models(&raw) {
-            Ok(models) => Some(models),
-            Err(message) => usage(&format!("fleet add: {message}")),
-        },
-        None => None,
-    };
-
-    let opts = fleet::ops::AddOptions {
-        name: name.clone(),
-        gh_repo: gh_repo.clone(),
-        local,
-        worktree_dir,
-        orch,
-        workers,
-        models,
-    };
-    // The resolver is deliberately NOT injectable at the CLI layer (reviewed,
-    // deferred): the refusal paths are covered through `ops::add` with a stub
-    // resolver and the parse-layer refusals are covered e2e; the `fleet add`
-    // SUCCESS path through the real binary (resolve → write → success print)
-    // remains uncovered end-to-end because it would need the real `gh`.
-    // Revisit if the resolver ever becomes injectable here.
-    let fleet = match fleet::ops::add(&path, &opts, &fleet::ops::GhCli) {
-        Ok(fleet) => fleet,
+    match corrald::fleet::switch::switch_fleet(&name, pane.as_deref()) {
+        Ok(()) => std::process::exit(0),
         Err(error) => {
-            // Exit contract: 1 = the operation was refused or the write
-            // failed; 2 = usage/parse/validation (see ConfigError::exit_code).
-            eprintln!("corrald fleet add: {error}");
-            std::process::exit(error.exit_code());
-        }
-    };
-    println!("added fleet {} ({})", fleet.name, fleet.gh_repo);
-    println!(
-        "{} {} workers={} paused={} orch={} impl={} review={}",
-        fleet.name,
-        fleet.gh_repo,
-        fleet.workers.len(),
-        fleet.paused,
-        fleet.models.orch,
-        fleet.models.impl_,
-        fleet.models.review
-    );
-}
-
-/// `corrald fleet remove <name>`: drop exactly one fleet by name, atomically.
-fn run_fleet_remove(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet remove: --registry needs a value");
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                if other.starts_with('-') {
-                    usage(&format!("fleet remove: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage("fleet remove: exactly one fleet name");
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        usage("fleet remove: need a fleet name");
-    };
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    match fleet::ops::remove(&path, &name) {
-        Ok(remaining) => {
-            println!("removed fleet {name}; {remaining} remain");
-        }
-        Err(error) => {
-            eprintln!("corrald fleet remove: {error}");
+            eprintln!("{error}");
             std::process::exit(error.exit_code());
         }
     }
-}
-
-/// `corrald fleet pause|resume <name>`: set/clear the fleet's `paused` flag,
-/// atomically. Idempotent: pausing a paused (or resuming an unpaused) fleet
-/// is a no-op SUCCESS that says so, exit 0. An unknown name is a refusal
-/// (exit 1) that leaves the file byte-identical.
-fn run_fleet_pause_resume(sub: &str, args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage(&format!("fleet {sub}: --registry needs a value"));
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                if other.starts_with('-') {
-                    usage(&format!("fleet {sub}: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage(&format!("fleet {sub}: exactly one fleet name"));
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        usage(&format!("fleet {sub}: need a fleet name"));
-    };
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    let result = match sub {
-        "pause" => fleet::ops::pause(&path, &name),
-        "resume" => fleet::ops::resume(&path, &name),
-        _ => unreachable!(),
-    };
-    match result {
-        Ok(true) => {
-            let verb = if sub == "pause" { "paused" } else { "resumed" };
-            println!("{verb} fleet {name}");
-        }
-        Ok(false) => {
-            let message = if sub == "pause" {
-                format!("fleet {name} already paused")
-            } else {
-                format!("fleet {name} not paused")
-            };
-            println!("{message} — nothing to do");
-        }
-        Err(error) => {
-            eprintln!("corrald fleet {sub}: {error}");
-            std::process::exit(error.exit_code());
-        }
-    }
-}
-
-/// `corrald fleet models <name> [--orch M] [--impl M] [--impl-alt M]
-/// [--impl-alt2 M] [--review M]`: update only the model slots named; `<name>`
-/// may be `all` (every fleet). `--impl-alt ''` / `--impl-alt2 ''` CLEAR that
-/// optional slot; empty values for the required slots are a usage error.
-fn run_fleet_models(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut orch: Option<String> = None;
-    let mut impl_: Option<String> = None;
-    let mut impl_alt: Option<String> = None;
-    let mut impl_alt2: Option<String> = None;
-    let mut review: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        let mut value = || {
-            i += 1;
-            args.get(i).cloned()
-        };
-        match arg {
-            "--orch" => {
-                orch = value();
-                if orch.is_none() {
-                    usage("fleet models: --orch needs a value");
-                }
-            }
-            "--impl" => {
-                impl_ = value();
-                if impl_.is_none() {
-                    usage("fleet models: --impl needs a value");
-                }
-            }
-            "--impl-alt" => {
-                impl_alt = value();
-                if impl_alt.is_none() {
-                    usage("fleet models: --impl-alt needs a value");
-                }
-            }
-            "--impl-alt2" => {
-                impl_alt2 = value();
-                if impl_alt2.is_none() {
-                    usage("fleet models: --impl-alt2 needs a value");
-                }
-            }
-            "--review" => {
-                review = value();
-                if review.is_none() {
-                    usage("fleet models: --review needs a value");
-                }
-            }
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet models: --registry needs a value");
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                if other.starts_with('-') {
-                    usage(&format!("fleet models: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage("fleet models: exactly one fleet name");
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        usage("fleet models: need a fleet name (or `all`)");
-    };
-    if orch.is_none()
-        && impl_.is_none()
-        && impl_alt.is_none()
-        && impl_alt2.is_none()
-        && review.is_none()
-    {
-        usage("fleet models: pass at least one of --orch/--impl/--impl-alt/--impl-alt2/--review");
-    }
-    // Empty values are usage errors for the REQUIRED slots (only the
-    // optional --impl-alt/--impl-alt2 accept '' to clear). Caught here so
-    // the message is a plain usage refusal, not a registry-shaped error.
-    for (flag, value) in [("--orch", &orch), ("--impl", &impl_), ("--review", &review)] {
-        if let Some(value) = value
-            && value.is_empty()
-        {
-            usage(&format!(
-                "fleet models: {flag} must be non-empty (only --impl-alt/--impl-alt2 accept '' to clear)"
-            ));
-        }
-    }
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-
-    let update = fleet::ops::ModelUpdate {
-        orch,
-        impl_,
-        impl_alt,
-        impl_alt2,
-        review,
-    };
-    let changes = match fleet::ops::models(&path, &name, &update) {
-        Ok(changes) => changes,
-        Err(error) => {
-            eprintln!("corrald fleet models: {error}");
-            std::process::exit(error.exit_code());
-        }
-    };
-    // Idempotent no-op (ops wrote nothing): say so instead of printing
-    // misleading `x -> x` lines.
-    if changes.iter().all(|c| c.before == c.after) {
-        let names: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
-        println!("models unchanged for {} — nothing to do", names.join(", "));
-        return;
-    }
-    // Print what changed (old -> new), per fleet, so the operator can see
-    // exactly which slots moved and confirm the untouched ones did not.
-    for change in &changes {
-        println!(
-            "{} models changed: orch {} -> {}; impl {} -> {}; impl_alt {} -> {}; impl_alt2 {} -> {}; review {} -> {}",
-            change.name,
-            change.before.orch,
-            change.after.orch,
-            change.before.impl_,
-            change.after.impl_,
-            change.before.impl_alt.as_deref().unwrap_or("-"),
-            change.after.impl_alt.as_deref().unwrap_or("-"),
-            change.before.impl_alt2.as_deref().unwrap_or("-"),
-            change.after.impl_alt2.as_deref().unwrap_or("-"),
-            change.before.review,
-            change.after.review
-        );
-    }
-}
-
-/// `corrald fleet switch <name>`: auth-gated model re-arm. The registry is
-/// never rewritten by this command, so a failed or successful switch cannot
-/// itself un-pause a fleet.
-fn run_fleet_switch(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut pane: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet switch: --registry needs a value");
-                }
-            }
-            "--pane" => {
-                i += 1;
-                pane = args.get(i).cloned();
-                if pane.is_none() {
-                    usage("fleet switch: --pane needs a value");
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                if other.starts_with('-') {
-                    usage(&format!("fleet switch: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage("fleet switch: exactly one fleet name");
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        usage("fleet switch: need a fleet name");
-    };
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    let result = fleet::switch::switch_fleet(
-        &path,
-        &name,
-        pane.as_deref(),
-        &fleet::switch::CliAuthChecker,
-    );
-    match result {
-        Ok(()) => {
-            println!("switched fleet {name} — auth passed and orchestrator re-armed");
-            println!(
-                "fleet {name} remains in its current registry state; run `fleet resume {name}` to un-pause"
-            );
-        }
-        Err(error) => {
-            eprintln!("corrald fleet switch: {error}");
-            std::process::exit(error.exit_code());
-        }
-    }
-}
-
-/// `corrald fleet reap <fleet|all>`: dry-run by default, `--apply` signals.
-/// The module performs the identity checks and the shrink guard before any
-/// kill; this function only parses arguments and reports the result.
-fn run_fleet_reap(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut name: Option<String> = None;
-    let mut apply = false;
-    let mut max_done = 5usize;
-    let mut max_fraction = 0.25f64;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet reap: --registry needs a value");
-                }
-            }
-            "--apply" => apply = true,
-            "--dry-run" => apply = false,
-            "--max-done" => {
-                i += 1;
-                let Some(value) = args.get(i).and_then(|v| v.parse::<usize>().ok()) else {
-                    usage("fleet reap: --max-done needs a positive integer");
-                };
-                max_done = value;
-            }
-            "--max-fraction" => {
-                i += 1;
-                let Some(value) = args.get(i).and_then(|v| v.parse::<f64>().ok()) else {
-                    usage("fleet reap: --max-fraction needs a number");
-                };
-                max_fraction = value;
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => {
-                if other.starts_with('-') {
-                    usage(&format!("fleet reap: unknown argument: {other}"));
-                }
-                if name.is_some() {
-                    usage("fleet reap: exactly one fleet name (or `all`)");
-                }
-                name = Some(other.to_string());
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        usage("fleet reap: need a fleet name (or `all`)");
-    };
-    if max_done == 0 {
-        usage("fleet reap: --max-done must be >= 1");
-    }
-    if !(0.0 < max_fraction && max_fraction <= 1.0) {
-        usage("fleet reap: --max-fraction must be in (0, 1]");
-    }
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    let registry = match fleet::config::load(&path) {
-        Ok(registry) => registry,
-        Err(error) => {
-            eprintln!("corrald fleet reap: {error}");
-            std::process::exit(error.exit_code());
-        }
-    };
-    let home = std::env::var("HOME").unwrap_or_default();
-    let opts = fleet::reap::ReapOptions {
-        apply,
-        max_done,
-        max_fraction,
-    };
-    let inspector = fleet::reap::HerdrPaneInspector;
-    let killer = fleet::reap::SystemKiller;
-    let report = match fleet::reap::reap(
-        &registry,
-        &name,
-        &opts,
-        &home,
-        fleet::reap::list_agents,
-        &inspector,
-        &killer,
-    ) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("corrald fleet reap: {error}");
-            std::process::exit(1);
-        }
-    };
-    for skip in &report.skipped {
-        println!("{skip}");
-    }
-    if report.killed.is_empty() {
-        println!("fleet {name}: nothing to reap");
-        return;
-    }
-    for killed in &report.killed {
-        println!(
-            "{} reaped {killed}",
-            if apply { "applied" } else { "would reap" }
-        );
-    }
-    if !apply {
-        println!("DRY-RUN — pass --apply to actually kill.");
-    }
-}
-
-/// `corrald fleet prune`: dry-run by default; `--apply`/`--yes` are the only
-/// modes that remove anything. Non-force git remains the final authority.
-fn run_fleet_prune(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut worktrees: Option<PathBuf> = None;
-    let mut apply = false;
-    let mut max_prune = 10usize;
-    let mut min_age = 1u64;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet prune: --registry needs a value");
-                }
-            }
-            "--worktrees" => {
-                i += 1;
-                worktrees = args.get(i).map(PathBuf::from);
-                if worktrees.is_none() {
-                    usage("fleet prune: --worktrees needs a path");
-                }
-            }
-            "--apply" | "--yes" => apply = true,
-            "--dry-run" => apply = false,
-            "--max-prune" => {
-                i += 1;
-                let Some(value) = args.get(i).and_then(|v| v.parse::<usize>().ok()) else {
-                    usage("fleet prune: --max-prune needs a positive integer");
-                };
-                max_prune = value;
-            }
-            "--min-age" => {
-                i += 1;
-                let Some(value) = args.get(i).and_then(|v| v.parse::<u64>().ok()) else {
-                    usage("fleet prune: --min-age needs days");
-                };
-                min_age = value;
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => usage(&format!("fleet prune: unknown argument: {other}")),
-        }
-        i += 1;
-    }
-    if max_prune == 0 {
-        usage("fleet prune: --max-prune must be >= 1");
-    }
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    let registry = match fleet::config::load(&path) {
-        Ok(registry) => registry,
-        Err(error) => {
-            eprintln!("corrald fleet prune: {error}");
-            std::process::exit(error.exit_code());
-        }
-    };
-    let home = std::env::var("HOME").unwrap_or_default();
-    let worktrees = worktrees.unwrap_or_else(|| {
-        std::env::var("CORRAL_WORKTREES_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"))
-    });
-    let opts = fleet::prune::PruneOptions {
-        apply,
-        max_prune,
-        min_age_days: min_age,
-    };
-    let shell = fleet::prune::SystemCommandRunner;
-    let now = fleet::prune::now_unix();
-    if !apply {
-        let agents = fleet::prune::list_agents();
-        match fleet::prune::plan(&registry, &worktrees, &agents, &shell, &opts, now) {
-            Ok(plan) => {
-                for candidate in &plan.candidates {
-                    println!(
-                        "PRUNE {} ({}/{}) — clean, no agent, no open PR, ancestor of {}, {} own commit(s)",
-                        candidate.path.display(),
-                        candidate.fleet,
-                        candidate.branch,
-                        candidate.integration,
-                        candidate.own_commits
-                    );
-                }
-                for kept in &plan.kept {
-                    println!("KEEP {kept}");
-                }
-                println!(
-                    "Evaluated {} worktrees — {} prunable.",
-                    plan.evaluated,
-                    plan.candidates.len()
-                );
-                println!("DRY RUN — nothing deleted. Re-run with --apply/--yes to prune.");
-                return;
-            }
-            Err(error) => {
-                eprintln!("corrald fleet prune: {error}");
-                std::process::exit(1);
-            }
-        }
-    }
-    let report = match fleet::prune::prune(
-        &registry,
-        &worktrees,
-        &opts,
-        fleet::prune::list_agents,
-        &shell,
-        now,
-    ) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("corrald fleet prune: {error}");
-            std::process::exit(1);
-        }
-    };
-    for candidate in &report.candidates {
-        println!(
-            "PRUNE {} ({}/{}) — {} own commit(s), ancestor of {}",
-            candidate.path.display(),
-            candidate.fleet,
-            candidate.branch,
-            candidate.own_commits,
-            candidate.integration
-        );
-    }
-    for removed in &report.removed {
-        println!("REMOVED {}", removed.display());
-    }
-    for skipped in &report.skipped {
-        println!("SKIP {skipped}");
-    }
-    for failure in &report.failures {
-        eprintln!("corrald fleet prune: {failure}");
-    }
-    if !report.failures.is_empty() {
-        std::process::exit(1);
-    }
-    if report.removed.is_empty() {
-        println!("Removed 0 worktrees.");
-    }
-}
-
-/// `corrald fleet watch`: one read-only health pass over the registry's
-/// fleets — herdr reachability, missing orchestrators, stall flavors,
-/// missing workers (see [`fleet::watch`]). Exit 0 healthy / 1 problems —
-/// an unreadable/invalid registry is itself a PROBLEM line with exit 1
-/// (monitor safety; deliberately NOT `check`'s exit-2) / 2 usage errors.
-fn run_fleet_watch(args: &[String]) {
-    let mut registry: Option<PathBuf> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--registry" => {
-                i += 1;
-                registry = args.get(i).map(PathBuf::from);
-                if registry.is_none() {
-                    usage("fleet watch: --registry needs a value");
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other => usage(&format!("fleet watch: unknown argument: {other}")),
-        }
-        i += 1;
-    }
-    let path = registry.unwrap_or_else(fleet::config::default_path);
-    let registry = match fleet::config::load(&path) {
-        Ok(registry) => registry,
-        Err(error) => {
-            // Monitor safety (legacy-hardened behavior, review F1): the
-            // watchdog must ALERT on the failure that stops it watching,
-            // on STDOUT where the cron consumer looks — never die
-            // silently to stderr. Exit 1 = "problems found" (the invalid
-            // registry IS the problem), keeping the 0/1/2 contract
-            // unambiguous (review F2).
-            println!("PROBLEM: fleet registry unreadable or corrupt: {error}");
-            std::process::exit(1);
-        }
-    };
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    let agents = herdr_agents_with_retry();
-    // Fresh-review N7: only fleets whose orchestrator is PRESENT and not
-    // working can reach a stall arm (the exact predicate problems()
-    // applies), and only stall arms read PR counts — so the healthy
-    // steady state makes ZERO gh calls instead of one per repo (up to
-    // 30s each, serial). A fleet that skips the query here can never
-    // have its count read, so the pr_note semantics are unchanged.
-    let mut prs = fleet::watch::PrCounts::new();
-    if let Some(agents) = &agents {
-        let mut repos: Vec<&str> = registry
-            .fleets
-            .iter()
-            .filter(|f| !f.paused)
-            .filter(|f| {
-                agents
-                    .get(&f.orch)
-                    .is_some_and(|orch| orch.status != "working")
-            })
-            .map(|f| f.gh_repo.as_str())
-            .collect();
-        repos.sort_unstable();
-        repos.dedup();
-        for repo in repos {
-            prs.insert(repo.to_string(), open_pr_count(repo));
-        }
-    }
-
-    let problems = fleet::watch::problems(&registry, &agents, &prs, &home);
-    if problems.is_empty() {
-        println!("ALL HEALTHY");
-        return;
-    }
-    for problem in &problems {
-        println!("PROBLEM: {problem}");
-    }
-    std::process::exit(1);
-}
-
-/// `herdr agent list` (JSON) with a 60s timeout and ONE retry after 10s —
-/// a transient socket hiccup must not read as "every agent missing" (a
-/// legacy-proven false-alarm mode). `None` = the CALL failed or was
-/// unparseable after the retry; `Some(empty)` = healthy zero-agent
-/// answer (review F3). An EMPTY first answer also gets the 10s retry
-/// (review R1): legacy grants a just-restarted server that grace before
-/// declaring every agent gone — only a second empty answer is returned
-/// as the healthy `Some(empty)`, never as server-down. Stdout is parsed
-/// regardless of the child's exit status — the parse decides (review F9).
-fn herdr_agents_with_retry() -> fleet::watch::AgentsView {
-    // The invariant: the LAST successful answer wins; server-down (None)
-    // only when no answer was ever obtained (review R1/S1a).
-    let mut last_good: fleet::watch::AgentsView = None;
-    for attempt in 0..2 {
-        if attempt == 1 {
-            std::thread::sleep(Duration::from_secs(10));
-        }
-        let Some(stdout) = run_with_timeout("herdr", &["agent", "list"], Duration::from_secs(60))
-        else {
-            continue;
-        };
-        let Some(map) = fleet::watch::parse_agent_listing(&stdout) else {
-            continue;
-        };
-        if !map.is_empty() || attempt == 1 {
-            return Some(map);
-        }
-        // An empty first answer: hold it (it IS a good answer), but grant
-        // the retry before reporting — the server may just be restarting.
-        last_good = Some(map);
-    }
-    last_good
-}
-
-/// Open-PR count for one repo via `gh`, 30s timeout. `None` = the check
-/// was unavailable (network/auth) — surfaced in the stall wording, never
-/// silently treated as zero.
-fn open_pr_count(repo: &str) -> Option<u64> {
-    let stdout = run_with_timeout(
-        "gh",
-        &[
-            "pr", "list", "--repo", repo, "--state", "open", "--json", "number", "--jq", "length",
-        ],
-        Duration::from_secs(30),
-    )?;
-    stdout.trim().parse().ok()
-}
-
-/// Run a command with a wall-clock timeout (std has none): spawn with a
-/// dedicated reader thread draining stdout (so a child producing more
-/// than the pipe buffer can still exit), poll `try_wait`, kill on expiry.
-///
-/// EVERY wait on the reader is itself deadline-bounded via a channel
-/// (review F4): killing the child does NOT guarantee the pipe closes —
-/// a grandchild that inherited the write end can hold it open — and an
-/// unbounded `join()` would hang the watchdog, the worst failure mode
-/// for a cron monitor. A stuck reader thread is abandoned (detached);
-/// the process exits shortly after anyway.
-///
-/// `None` on spawn failure or timeout. The child's exit STATUS is
-/// deliberately ignored (review F9, matching legacy): a complete stdout
-/// next to a warning exit code is still usable — the caller's parse
-/// decides.
-fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    use std::io::Read as _;
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let Some(mut stdout) = child.stdout.take() else {
-        // No pipe handle (should not happen): don't leak a zombie.
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    // Fresh-review N1: the reader PUBLISHES into shared state as it
-    // reads, instead of sending one String only at EOF. A persistent
-    // grandchild holding the pipe's write end means EOF never comes —
-    // the old shape then threw away a complete, valid listing sitting
-    // in the reader's local buffer and reported a FALSE server-down
-    // (which suppresses every true per-fleet problem). Now the grace
-    // expiry returns whatever has been read and the PARSE decides
-    // (same F9 principle as the exit status): a truncated buffer fails
-    // to parse and retries; a complete one is used. The no-hang
-    // property (round-1 F4) is unchanged — every wait stays bounded.
-    // Round-2 N8: accumulate BYTES and decode once at take time — a
-    // per-chunk from_utf8_lossy silently replaced any multi-byte char
-    // straddling an 8KiB boundary with U+FFFD, which is legal inside a
-    // JSON string, so the corrupted listing PARSED and a live
-    // orchestrator could read as MISSING (reviewer-reproduced with a
-    // one-byte control). Interrupted reads retry instead of truncating.
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let writer = buffer.clone();
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        let mut chunk = [0u8; 8192];
-        loop {
-            match stdout.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if let Ok(mut out) = writer.lock() {
-                        out.extend_from_slice(&chunk[..n]);
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-        }
-        let _ = tx.send(());
-    });
-    let deadline = std::time::Instant::now() + timeout;
-    let take_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
-        buffer
-            .lock()
-            .ok()
-            .map(|out| String::from_utf8_lossy(&out).into_owned())
-    };
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                // Give a well-behaved pipe a moment to reach EOF after
-                // child exit, but never block past a short grace even if
-                // a grandchild holds the write end open — and return the
-                // buffer EITHER WAY (N1).
-                let _ = rx.recv_timeout(Duration::from_secs(5));
-                return take_buffer(&buffer);
-            }
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-}
-
-/// Parse `--models orch=..,impl=..,review=..` into a [`fleet::config::Models`].
-fn parse_models(raw: &str) -> Result<fleet::config::Models, String> {
-    let mut orch = None;
-    let mut impl_ = None;
-    let mut review = None;
-    for pair in raw.split(',') {
-        let Some((key, value)) = pair.split_once('=') else {
-            return Err(format!("--models entries must be key=value, got {pair:?}"));
-        };
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(format!("--models {key}= has an empty value"));
-        }
-        match key.trim() {
-            "orch" => orch = Some(value.to_string()),
-            "impl" => impl_ = Some(value.to_string()),
-            "review" => review = Some(value.to_string()),
-            key @ ("impl_alt" | "impl_alt2") => {
-                // Deliberate (#56): the alt slots are schema fields but not
-                // settable from --models — they inherit or are registry-edited.
-                return Err(format!(
-                    "--models {key:?} is not settable here; alt slots inherit \
-                     from the first fleet — set them after add with \
-                     `corrald fleet models <name> --impl-alt <model>`"
-                ));
-            }
-            other => {
-                return Err(format!(
-                    "--models unknown key {other:?} (want orch, impl, review)"
-                ));
-            }
-        }
-    }
-    Ok(fleet::config::Models {
-        orch: orch.ok_or_else(|| "--models must set orch".to_string())?,
-        impl_: impl_.ok_or_else(|| "--models must set impl".to_string())?,
-        review: review.ok_or_else(|| "--models must set review".to_string())?,
-        impl_alt: None,
-        impl_alt2: None,
-    })
-}
-
-/// Usage error: message, a hint, exit 2.
-fn usage(message: &str) -> ! {
-    eprintln!("corrald fleet: {message}");
-    eprintln!("see `corrald fleet --help` for usage");
-    std::process::exit(2);
-}
-
-/// `corrald fleet check`: validate, then verify each fleet's `local_path()`
-/// exists, is a directory, and holds a `.git` entry ("repo resolves"). Exit
-/// 0 when every fleet checks out, 1 when any fails.
-fn run_fleet_check(path: &std::path::Path) {
-    let registry = match fleet::config::load(path) {
-        Ok(registry) => registry,
-        Err(error) => {
-            eprintln!("corrald fleet check: {error}");
-            std::process::exit(2);
-        }
-    };
-    let mut failed = 0;
-    for fleet in &registry.fleets {
-        let local = fleet.local_path();
-        match check_local(&local) {
-            None => println!("ok {}", fleet.name),
-            Some(reason) => {
-                failed += 1;
-                println!("FAIL {}: {}", fleet.name, reason);
-            }
-        }
-    }
-    if failed > 0 {
-        std::process::exit(1);
-    }
-}
-
-/// Verify a resolved local path is a directory holding a `.git` entry.
-fn check_local(path: &std::path::Path) -> Option<String> {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(error) => return Some(format!("cannot stat {}: {error}", path.display())),
-    };
-    if !meta.is_dir() {
-        return Some(format!("{} is not a directory", path.display()));
-    }
-    if !path.join(".git").exists() {
-        return Some(format!("{} has no .git entry", path.display()));
-    }
-    None
 }
 
 fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
@@ -1369,7 +241,8 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr) {
                 println!(
                     "corrald — agent-fleet control plane daemon (P1)\n\n\
                      USAGE: corrald [--socket <path>] [--port <n>] [--bind <ip>]\n\
-                     USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\n\
+                     USAGE: corrald digest [--since <epoch-millis>] [--config-dir <path>]\n\
+                     USAGE: corrald fleet switch <name> [--pane <id>]\n\n\
                      --socket  herdr API socket (default ~/.config/herdr/herdr.sock)\n\
                      --port    HTTP port (default {DEFAULT_PORT})\n\
                      --bind    bind address (default {DEFAULT_BIND}); loopback,\n\
@@ -1462,7 +335,16 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     let worktrees_root = std::env::var("CORRAL_WORKTREES_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&home).join(".herdr/worktrees"));
-    let attribution = workspace_attribution(&repo_root, &worktrees_root);
+    // #237 configless: no fleet registry roots/aliases feed attribution.
+    // The configured root plus live Herdr worktree paths are the only
+    // attribution sources; repo categories come from the live snapshot.
+    let configured_root = repo_root
+        .file_name()
+        .map(|name| corrald::core::workspace::RepoRoot {
+            path: repo_root.clone(),
+            repo: name.to_string_lossy().into_owned(),
+        });
+    let attribution = WorkspaceAttribution::from_roots(configured_root, worktrees_root.clone());
     let repo_source_discovery =
         Arc::new(LiveRepoSourceDiscovery::from_env().with_attribution(attribution.clone()));
 
@@ -1502,12 +384,14 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
         tracing::info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");
     }
 
+    let fleet_provider: Arc<dyn FleetOpsProvider> = Arc::new(CliFleetOpsProvider);
     let app = corrald::api::router(AppState {
         store,
         auth,
         adapter,
         replay: Arc::new(ReplayTable::default()),
         issues: issues_cache.clone(),
+        fleets: fleet_provider,
         transcript_roots: corrald::transcript::bind::TranscriptRoots::from_env(),
         transcript_limiter: corrald::api::transcript::TranscriptLimiter::default(),
         role_probe_memo: corrald::transcript::RoleProbeMemo::default(),
@@ -1530,113 +414,35 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr) {
     axum::serve(listener, app).await.expect("axum server");
 }
 
-/// Build the explicit repo-root view shared by Herdr and the git/integrator
-/// planes. The configured Corral root is always known; fleet-registry locals
-/// add other primary checkouts when the registry exists. The registry's
-/// `gh_repo` is the canonical repo identity, so agent names and pane labels
-/// never participate in attribution. Registry roots are ordered first and
-/// the configured root is appended as a fallback: when both spellings
-/// canonicalize to one path, the fleet registry's `gh_repo` wins over the
-/// configured directory basename.
-fn workspace_attribution(repo_root: &Path, worktrees_root: &Path) -> WorkspaceAttribution {
-    let registry_path = fleet::config::default_path();
-    let registry = if registry_path.is_file() {
-        match fleet::config::load(&registry_path) {
-            Ok(registry) => Some(registry),
-            Err(error) => {
-                tracing::warn!(
-                    path = %registry_path.display(),
-                    error = %error,
-                    "fleet registry unavailable for workspace attribution"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let (roots, worktree_aliases) = workspace_roots(repo_root, registry.as_ref());
-    WorkspaceAttribution::from_roots_with_aliases(
-        roots,
-        worktree_aliases,
-        worktrees_root.to_path_buf(),
-    )
-}
-
-/// Return roots and worktree aliases in attribution precedence order. Fleet
-/// registry identities are canonical for a local checkout; the configured
-/// root's basename is only a fallback when no registry entry claims the same
-/// canonical path. Registry `worktree_dir -> gh_repo` aliases map Herdr
-/// worktree path components to canonical repo names before directory fallback.
-fn workspace_roots(
-    repo_root: &Path,
-    registry: Option<&fleet::config::Registry>,
-) -> (Vec<RepoRoot>, Vec<WorktreeAlias>) {
-    let mut roots = Vec::new();
-    let mut worktree_aliases = Vec::new();
-    if let Some(registry) = registry {
-        for fleet in &registry.fleets {
-            let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
-                continue;
-            };
-            worktree_aliases.push(WorktreeAlias {
-                worktree_dir: fleet.worktree_dir.clone(),
-                repo: repo.to_string(),
-            });
-            roots.push(RepoRoot {
-                path: fleet.local_path(),
-                repo: repo.to_string(),
-            });
-        }
-    }
-    if let Some(name) = repo_root.file_name() {
-        roots.push(RepoRoot {
-            path: repo_root.to_path_buf(),
-            repo: name.to_string_lossy().into_owned(),
-        });
-    }
-    (roots, worktree_aliases)
-}
-
 /// Build the gh-plane repo-spec set: the compile-time tracked repos (PR read
-/// model) PLUS every configured fleet's `gh_repo` so #113 can issue-start any
-/// fleet, grouped by fleet name. A fleet whose `gh_repo` points at a repo
-/// that shares a workspace-repo name with a tracked repo is authoritative for
-/// that identity (the configured fleet is what the operator is working on).
-fn gh_repo_specs() -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
+/// model) PLUS every fleet-ops CLI validated fleet's `gh_repo` so #113 can
+/// issue-start any validated fleet, grouped by its fleet name. A fleet whose
+/// `gh_repo` points at a repo that shares a workspace-repo name with a
+/// tracked repo is authoritative for that identity (the fleet-ops validated
+/// identity is what the operator is working on).
+fn gh_repo_specs(identities: &[FleetIdentity]) -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
     let mut specs = corrald::adapters::gh_plane::tracked_specs();
-    let registry_path = fleet::config::default_path();
-    match fleet::config::load(&registry_path) {
-        Ok(registry) => {
-            add_fleet_specs(&mut specs, &registry.fleets);
-        }
-        Err(error) => {
-            tracing::warn!(
-                path = %registry_path.display(),
-                error = %error,
-                "fleet registry unavailable for gh issue specs; falling back to tracked repos only"
-            );
-        }
-    }
+    add_fleet_specs(&mut specs, identities);
     specs
 }
 
-/// Fold each fleet's `gh_repo` into the gh spec set, keyed by fleet name.
+/// Fold each CLI-validated fleet's `gh_repo` into the gh spec set, keyed by
+/// fleet name.
 fn add_fleet_specs(
     specs: &mut Vec<corrald::adapters::gh_plane::GhRepoSpec>,
-    fleets: &[fleet::config::Fleet],
+    identities: &[FleetIdentity],
 ) {
-    for fleet in fleets {
+    for fleet in identities {
         let Some((owner, name)) = fleet.gh_repo.split_once('/') else {
             continue;
         };
         let slug = format!("{owner}/{name}");
         // Same GitHub repo: fold the fleet's issue-view key onto the existing
-        // spec AND force the PR attribution key to the registry `gh_repo`
+        // spec AND force the PR attribution key to the fleet-ops `gh_repo`
         // basename. A tracked repo's compile-time folder-derived name may be
-        // stale (e.g. synergy-costing vs synergy-apps); workspace attribution
-        // resolves the canonical registry identity, so the gh fold key must
-        // follow it or PR/CI facts silently stop joining.
+        // stale (e.g. synergy-costing vs synergy-apps) — configless
+        // attribution falls back to the live directory name, so the gh fold
+        // key is the CLI-validated basename.
         if let Some(existing) = specs.iter_mut().find(|s| s.slug() == slug) {
             existing.key = name.to_string();
             if existing.issues_key.is_none() {
@@ -1645,7 +451,7 @@ fn add_fleet_specs(
             continue;
         }
         // A different repo that shares the workspace repo basename: the
-        // configured fleet is authoritative for that workspace identity.
+        // validated fleet is authoritative for that workspace identity.
         if let Some(pos) = specs.iter().position(|s| s.key == name) {
             specs.remove(pos);
         }
@@ -1672,6 +478,18 @@ async fn supervise_planes(
     fallback_repo_root: PathBuf,
     source_discovery: Arc<LiveRepoSourceDiscovery>,
 ) {
+    // Configless identity set for the gh plane: fleet-ops CLI validated
+    // fleets. Unavailable CLI -> tracked specs only; the daemon still runs.
+    let identities = match CliFleetOpsProvider.list() {
+        Ok(identities) => identities,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "fleet-ops CLI identity path unavailable; gh specs fall back to tracked repos"
+            );
+            Vec::new()
+        }
+    };
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
@@ -1688,7 +506,7 @@ async fn supervise_planes(
         ));
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
             Arc::new(store.clone()),
-            gh_repo_specs(),
+            gh_repo_specs(&identities),
         ));
         let (sink, rx) = plane_channel();
         let integrator =
@@ -1717,16 +535,23 @@ async fn supervise_planes(
 #[cfg(test)]
 mod tests {
     use super::bind_permitted;
-    #[cfg(unix)]
-    use super::workspace_roots;
-    #[cfg(unix)]
-    use corrald::core::workspace::WorkspaceAttribution;
-    #[cfg(unix)]
-    use corrald::fleet::config::{Fleet, Models, Registry};
+    use corrald::fleet::cli::FleetIdentity;
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().expect("test ip parses")
+    }
+
+    fn identity(name: &str, gh_repo: &str) -> FleetIdentity {
+        FleetIdentity {
+            name: name.to_string(),
+            gh_repo: gh_repo.to_string(),
+            local: std::path::PathBuf::from(format!("~/Projects/{name}")),
+            worktree_dir: name.to_string(),
+            orch: format!("orch-{name}"),
+            workers: 0,
+            paused: false,
+        }
     }
 
     /// #65: the bind allowlist — loopback, RFC 1918, Tailscale/CGNAT
@@ -1785,185 +610,17 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn fleet_registry_identity_wins_configured_canonical_alias() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let primary = temp.path().join("configured-directory-name");
-        let alias = temp.path().join("fleet-alias");
-        let worktrees = temp.path().join("worktrees");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&worktrees).unwrap();
-        std::os::unix::fs::symlink(&primary, &alias).unwrap();
-        let registry = Registry::new(vec![Fleet {
-            name: "fleet-name".to_string(),
-            gh_repo: "owner/canonical-repo".to_string(),
-            local: alias.to_string_lossy().into_owned(),
-            worktree_dir: "worktrees".to_string(),
-            orch: "orch".to_string(),
-            workers: Vec::new(),
-            paused: false,
-            models: Models {
-                orch: "orch-model".to_string(),
-                impl_: "impl-model".to_string(),
-                review: "review-model".to_string(),
-                impl_alt: None,
-                impl_alt2: None,
-            },
-        }]);
-
-        let (roots, worktree_aliases) = workspace_roots(&primary, Some(&registry));
-        let attribution =
-            WorkspaceAttribution::from_roots_with_aliases(roots, worktree_aliases, worktrees);
-        assert_eq!(
-            attribution
-                .facts_for(&primary)
-                .expect("configured root facts")
-                .repo
-                .as_deref(),
-            Some("canonical-repo")
-        );
-        assert_eq!(
-            attribution
-                .facts_for(&alias)
-                .expect("canonical alias facts")
-                .repo
-                .as_deref(),
-            Some("canonical-repo")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn absent_registry_keeps_primary_and_unknown_paths_separate() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let primary = temp.path().join("primary-repo");
-        let worktrees = temp.path().join("worktrees");
-        let linked = worktrees.join("herdr-only/feature");
-        let unknown = temp.path().join("unknown");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&linked).unwrap();
-        std::fs::create_dir_all(&unknown).unwrap();
-
-        let (roots, aliases) = workspace_roots(&primary, None);
-        let attribution = WorkspaceAttribution::from_roots_with_aliases(roots, aliases, worktrees);
-
-        assert_eq!(
-            attribution.repo_for(&primary).as_deref(),
-            Some("primary-repo"),
-            "the configured primary remains attributable without a registry"
-        );
-        assert_eq!(
-            attribution.repo_for(&linked).as_deref(),
-            Some("herdr-only"),
-            "a live Herdr worktree category remains distinct without a registry"
-        );
-        assert_eq!(
-            attribution.repo_for(&unknown),
-            None,
-            "an unrelated path remains genuinely unattributed"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fleet_registry_aliases_stale_worktree_dir_to_canonical_repo() {
-        // #182: `worktree_dir` is a location, not repo identity. The primary
-        // checkout and linked worktree both use stale folder names, while the
-        // registry's `gh_repo` is canonical.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let primary = temp.path().join("stale-checkout");
-        let worktrees = temp.path().join("worktrees");
-        let linked = worktrees.join("stale-checkout/g182-fix");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&linked).unwrap();
-        let registry = Registry::new(vec![Fleet {
-            name: "stale-fleet".to_string(),
-            gh_repo: "owner/canonical-repo".to_string(),
-            local: primary.to_string_lossy().into_owned(),
-            worktree_dir: "stale-checkout".to_string(),
-            orch: "orch".to_string(),
-            workers: Vec::new(),
-            paused: false,
-            models: Models {
-                orch: "orch-model".to_string(),
-                impl_: "impl-model".to_string(),
-                review: "review-model".to_string(),
-                impl_alt: None,
-                impl_alt2: None,
-            },
-        }]);
-
-        let (roots, worktree_aliases) = workspace_roots(&primary, Some(&registry));
-        let attribution =
-            WorkspaceAttribution::from_roots_with_aliases(roots, worktree_aliases, worktrees);
-        assert_eq!(
-            attribution
-                .facts_for(&primary)
-                .expect("primary facts")
-                .repo
-                .as_deref(),
-            Some("canonical-repo")
-        );
-        assert_eq!(
-            attribution
-                .facts_for(&linked)
-                .expect("linked facts")
-                .repo
-                .as_deref(),
-            Some("canonical-repo"),
-            "linked worktree joins the canonical repo group"
-        );
-        assert_eq!(
-            attribution.repo_for(&linked),
-            Some("canonical-repo".to_string()),
-            "no phantom stale-name group"
-        );
-    }
-
-    #[cfg(unix)]
     #[test]
     fn fleet_specs_make_corral_issue_startable() {
-        // #113 review 1: a configured fleet whose `gh_repo` is NOT in the
-        // compile-time tracked set (e.g. `corral`) must still get its issues
-        // fetched, grouped by the FLEET name so the worktree action can start
-        // an issue against it.
-        let registry = Registry::new(vec![
-            Fleet {
-                name: "corral".to_string(),
-                gh_repo: "jirathip-dev/corral".to_string(),
-                local: "~/Projects/corral".to_string(),
-                worktree_dir: "corral".to_string(),
-                orch: "orch-corral".to_string(),
-                workers: Vec::new(),
-                paused: false,
-                models: Models {
-                    orch: "o".to_string(),
-                    impl_: "i".to_string(),
-                    review: "r".to_string(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            },
-            Fleet {
-                name: "plush".to_string(),
-                gh_repo: "jirathip-dev/plush-meadow".to_string(),
-                local: "~/Projects/plush-meadow".to_string(),
-                worktree_dir: "plush-meadow".to_string(),
-                orch: "orch-plush".to_string(),
-                workers: Vec::new(),
-                paused: false,
-                models: Models {
-                    orch: "o".to_string(),
-                    impl_: "i".to_string(),
-                    review: "r".to_string(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                },
-            },
-        ]);
-        let mut specs = corrald::adapters::gh_plane::tracked_specs();
-        super::add_fleet_specs(&mut specs, &registry.fleets);
+        // #113 review 1 (#237 configless): a CLI-validated fleet whose
+        // `gh_repo` is NOT in the compile-time tracked set (e.g. `corral`)
+        // must still get its issues fetched, grouped by the FLEET name so the
+        // worktree action can start an issue against it.
+        let identities = vec![
+            identity("corral", "jirathip-dev/corral"),
+            identity("plush", "jirathip-dev/plush-meadow"),
+        ];
+        let mut specs = super::gh_repo_specs(&identities);
 
         let corral = specs
             .iter()
@@ -1989,33 +646,20 @@ mod tests {
             Some("plush"),
             "issue view keyed by the fleet name, not the basename"
         );
+        let _ = &mut specs;
     }
 
-    #[cfg(unix)]
     #[test]
     fn tracked_fleet_spec_uses_canonical_gh_repo_basename() {
-        // #182 review F1: when a compile-time tracked repo is ALSO a
-        // configured fleet whose gh_repo differs from the historical folder
-        // name, the PR/CI attribution key must follow the registry's
-        // canonical basename or the integrator silently stops binding PRs.
-        let registry = Registry::new(vec![Fleet {
-            name: "synergy".to_string(),
-            gh_repo: "synergy-services-cooling-tower/synergy-apps".to_string(),
-            local: "~/Projects/synergy-costing".to_string(),
-            worktree_dir: "synergy-costing".to_string(),
-            orch: "orch-synergy".to_string(),
-            workers: Vec::new(),
-            paused: false,
-            models: Models {
-                orch: "o".to_string(),
-                impl_: "i".to_string(),
-                review: "r".to_string(),
-                impl_alt: None,
-                impl_alt2: None,
-            },
-        }]);
-        let mut specs = corrald::adapters::gh_plane::tracked_specs();
-        super::add_fleet_specs(&mut specs, &registry.fleets);
+        // #182 review F1 (#237 configless): when a compile-time tracked repo
+        // is ALSO a validated fleet whose gh_repo differs from the historical
+        // folder name, the PR/CI attribution key follows the CLI-validated
+        // basename.
+        let identities = vec![identity(
+            "synergy",
+            "synergy-services-cooling-tower/synergy-apps",
+        )];
+        let specs = super::gh_repo_specs(&identities);
 
         let baseline = corrald::adapters::gh_plane::tracked_specs()
             .into_iter()

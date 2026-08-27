@@ -8,7 +8,7 @@
 # failures, complete-but-lingering
 # writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
 # UTF-8 and configured worktree roots, a bounded generic-worktree scan,
-# structural prototype rejection through real Chrome, Chrome trust-boundary
+# structural prototype rejection through real Chrome, private-profile one-shot
 # flags, argument validation, locked atomic publication rollback, and the egui
 # wake-command failure path.
 #
@@ -261,13 +261,19 @@ if [[ "${CORRAL_TEST_CHROME_FAIL:-0}" == "1" ]]; then
 fi
 output=""
 url=""
+has_remote_debugging=0
 for argument in "$@"; do
   case "$argument" in
     --screenshot=*) output="${argument#--screenshot=}" ;;
+    --remote-debugging-*) has_remote_debugging=1 ;;
     file://*) url="$argument" ;;
   esac
 done
 [[ -n "$output" && -n "$url" ]]
+if [[ "$has_remote_debugging" -eq 1 ]]; then
+  printf '%s\n' 'incompatible: one-shot --screenshot cannot use remote debugging' >&2
+  exit 97
+fi
 html_path="${url#file://}"
 case "$output" in
   *prototype.png)
@@ -692,10 +698,13 @@ fi
 if grep -q 'could not request loopback-only DevTools shutdown' "$WORK/normal-chrome.log"; then
   fail "successful Chrome exit emitted a spurious DevTools shutdown warning"
 fi
-grep -q -- "--remote-debugging-address=127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
-  || fail "Chrome DevTools endpoint was not explicitly loopback-bound"
-grep -q -- "--remote-allow-origins=http://127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
-  || fail "Chrome DevTools origin was not narrowed to loopback"
+grep -q -- "--screenshot=" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome one-shot screenshot flag was not recorded"
+grep -q -- "--user-data-dir=" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome did not use a private user-data directory"
+if grep -q -- "--remote-debugging-" "$CORRAL_TEST_CHROME_ARGS_FILE"; then
+  fail "Chrome one-shot screenshot combined with incompatible remote debugging"
+fi
 if grep -q ':has(' "$CORRAL_TEST_PROTOTYPE_HTML"; then
   fail "generated prototype view still has a load-bearing :has() selector"
 fi
@@ -848,8 +857,8 @@ grep -q '2400x960' "$WORK/output/issue-211/conformance.md" \
   || fail "composite dimensions are not recorded"
 grep -q 'complete, CRC-checked PNG' "$WORK/output/issue-211/conformance.md" \
   || fail "complete-PNG success contract is not recorded"
-grep -q 'loopback-only' "$WORK/output/issue-211/conformance.md" \
-  || fail "Chrome trust boundary is not recorded"
+grep -q 'one-shot .*without remote debugging' "$WORK/output/issue-211/conformance.md" \
+  || fail "Chrome one-shot renderer contract is not recorded"
 grep -q 'Normalized invocation (placeholders are descriptive, not necessarily runnable)' \
   "$WORK/output/issue-211/conformance.md" \
   || fail "placeholder invocation was not labeled as normalized"

@@ -156,7 +156,7 @@ stop_owned_work_processes() {
   local deadline
   local remaining
 
-  # Browser.close can reparent a helper before the direct Chrome child is
+  # One-shot Chrome can reparent a helper before the direct Chrome child is
   # reaped. The unique scratch path is the ownership boundary for this
   # harness; never match a broad executable name or a shared browser profile.
   for pid in $(work_process_pids); do

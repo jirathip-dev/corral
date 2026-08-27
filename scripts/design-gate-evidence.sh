@@ -63,11 +63,12 @@
 # state from being mislabeled as a live board. The app is built through the
 # same Herdr-routed xcodebuild path when --ios-app is omitted.
 #
-# Chrome's temporary DevTools endpoint is an ephemeral port bound explicitly
-# to 127.0.0.1, with a private profile and a loopback-only allowed origin. Chrome
-# renders only the approved local prototype/comparison pages and receives only
-# the scoped Browser.close request; the local process and approved checkout HTML
-# are the trust boundary. No remote page is loaded.
+# Chrome's one-shot --screenshot command deliberately runs without remote
+# debugging: Chromium rejects headless commands when --remote-debugging-port is
+# also present. It uses a private profile, renders only the approved local
+# prototype/comparison pages, and remains an owned direct child whose bounded
+# TERM/KILL cleanup is the shutdown boundary. No remote page or DevTools
+# endpoint is exposed.
 #
 # --live-png is an explicit fixture seam for tests or a previously captured
 # frame. Its provenance says that the PNG was supplied rather than captured by
@@ -141,8 +142,6 @@ CHROME_TIMEOUT_SECONDS="30"
 CAPTURE_TERM_GRACE_SECONDS="2"
 CAPTURE_KILL_GRACE_SECONDS="2"
 CAPTURE_POLL_INTERVAL_SECONDS="0.1"
-CHROME_DEVTOOLS_ADDRESS="127.0.0.1"
-CHROME_DEVTOOLS_ORIGIN="http://127.0.0.1"
 FORCE=0
 BUILD_EGUI=1
 BUILD_IOS=1
@@ -1869,73 +1868,6 @@ normalize_launch_argument() {
   fi
 }
 
-gracefully_close_chrome() {
-  local profile="$1"
-  [[ -s "$profile/DevToolsActivePort" ]] || return 1
-  "$PYTHON_BIN" - "$profile" <<'PY'
-import base64
-import json
-from pathlib import Path
-import secrets
-import socket
-import sys
-import time
-from urllib.request import urlopen
-from urllib.parse import urlsplit
-
-profile = Path(sys.argv[1])
-active_port = profile / "DevToolsActivePort"
-deadline = time.monotonic() + 5
-while time.monotonic() < deadline and not active_port.is_file():
-    time.sleep(0.05)
-if not active_port.is_file():
-    raise SystemExit("Chrome did not publish DevToolsActivePort")
-lines = active_port.read_text(encoding="utf-8").splitlines()
-if len(lines) < 2:
-    raise SystemExit("Chrome DevToolsActivePort is incomplete")
-port = int(lines[0])
-_browser_path = lines[1]
-with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as response:
-    version = json.load(response)
-parts = urlsplit(version["webSocketDebuggerUrl"])
-if parts.hostname != "127.0.0.1":
-    raise SystemExit(
-        f"Chrome DevTools endpoint escaped the loopback boundary: {parts.hostname!r}"
-    )
-key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-request = (
-    f"GET {parts.path} HTTP/1.1\r\n"
-    f"Host: 127.0.0.1:{port}\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    f"Sec-WebSocket-Key: {key}\r\n"
-    "Sec-WebSocket-Version: 13\r\n"
-    "Origin: http://127.0.0.1\r\n\r\n"
-).encode("ascii")
-payload = json.dumps({"id": 1, "method": "Browser.close"}).encode("utf-8")
-mask = secrets.token_bytes(4)
-masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-length = len(masked)
-if length < 126:
-    header = bytes((0x81, 0x80 | length))
-elif length < 65536:
-    header = bytes((0x81, 0xFE)) + length.to_bytes(2, "big")
-else:
-    raise SystemExit("Chrome close command is unexpectedly large")
-with socket.create_connection((parts.hostname, parts.port), timeout=2) as connection:
-    connection.sendall(request)
-    response = b""
-    while b"\r\n\r\n" not in response:
-        chunk = connection.recv(4096)
-        if not chunk:
-            raise SystemExit("Chrome closed the DevTools handshake")
-        response += chunk
-    if b" 101 " not in response.split(b"\r\n", 1)[0]:
-        raise SystemExit("Chrome rejected the DevTools handshake")
-    connection.sendall(header + mask + masked)
-PY
-}
-
 make_prototype_view() {
   local output="$1"
   "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$EGUI_TAB" "$output" <<'PY'
@@ -2152,12 +2084,12 @@ run_chrome_screenshot() {
   local width="$3"
   local height="$4"
   local label="$5"
-  local profile="$STAGE/chrome-profile-$label"
   local chrome_log="$STAGE/chrome-$label.log"
   local url
   local chrome_pid
   local dimensions
 
+  local profile="$STAGE/chrome-profile-$label"
   mkdir -p "$profile"
   url="$(file_url "$html_path")"
   log "rendering $label with headless Chrome at ${width}x${height}"
@@ -2175,9 +2107,6 @@ run_chrome_screenshot() {
     --force-device-scale-factor=1 \
     --run-all-compositor-stages-before-draw \
     --allow-file-access-from-files \
-    --remote-debugging-address="$CHROME_DEVTOOLS_ADDRESS" \
-    --remote-debugging-port=0 \
-    --remote-allow-origins="$CHROME_DEVTOOLS_ORIGIN" \
     --window-size="$width,$height" \
     --user-data-dir="$profile" \
     --no-first-run \
@@ -2191,13 +2120,9 @@ run_chrome_screenshot() {
     tail -40 "$chrome_log" >&2 || true
     die "headless Chrome did not publish a complete PNG for $label within ${CHROME_TIMEOUT_SECONDS}s: ${PNG_WAIT_REASON}"
   fi
-  if child_is_running "$chrome_pid"; then
-    if gracefully_close_chrome "$profile"; then
-      log "requested loopback-only DevTools Browser.close after $label completed"
-    elif child_is_running "$chrome_pid"; then
-      warn "could not request loopback-only DevTools shutdown for $label; using owned-child cleanup"
-    fi
-  fi
+  # --screenshot is a one-shot headless command. It may exit after publishing
+  # the PNG or linger in a renderer helper; in either case the direct child is
+  # the only shutdown target and cleanup remains bounded and ownership-checked.
   terminate_owned_child "$chrome_pid" "$label" \
     || die "could not clean up the owned headless Chrome child for $label"
   assert_png "$output_path"
@@ -2666,7 +2591,7 @@ cleanup() {
     fi
   fi
   if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
-    # Chrome can finish closing a profile helper just after Browser.close and
+    # Chrome can finish closing a profile helper just after one-shot exit and
     # briefly race the directory removal on macOS. Retry only this owned,
     # stage-local path for a bounded interval; never broaden cleanup to a
     # parent directory or a user's browser profile.
@@ -2857,7 +2782,7 @@ render_markdown_note \
   markdown_safe_code_span "$CAPTURE_COMMAND"
   printf '\n'
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
-  printf -- '- Chrome renderer contract (prototype/comparison only): Chrome/Chromium uses a private profile and temporary loopback-only DevTools on `127.0.0.1` with an ephemeral port, and receives only `Browser.close`; the supplied live fixture, when present, is not a Chrome capture.\n'
+  printf -- '- Chrome renderer contract (prototype/comparison only): Chrome/Chromium uses a private temporary profile and one-shot `--screenshot` without remote debugging because headless commands are incompatible with a remote-debugging port; only the approved local pages are rendered and the owned child receives bounded TERM/KILL cleanup. The supplied live fixture, when present, is not a Chrome capture.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
     printf -- '- Host health URL: `loopback corrald /healthz` (checked before capture)\n'
   elif [[ "$SURFACE" == "ios" ]]; then
@@ -2921,7 +2846,7 @@ render_markdown_note \
   fi
   printf -- '- Renderer executable: '
   markdown_safe_code_span "$RENDERER_PATH_LABEL"
-  printf ' (private profile, loopback-only DevTools, and owned cleanup)\n'
+  printf ' (private profile, one-shot screenshot without remote debugging, and owned cleanup)\n'
   printf -- '- Native UI binary SHA-256: '
   markdown_safe_code_span "$LIVE_BINARY_SHA"
   printf '\n'

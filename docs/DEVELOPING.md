@@ -270,12 +270,12 @@ KILL if needed. Prototype rendering marks the selected `.desk` or `.phone`
 frame with a small compatibility script; the wrapper also rejects a prototype
 unless the target is inside `body > .rack > .frame`. The derived page retains
 a visible failure if the target is absent at runtime instead of silently
-capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
-`127.0.0.1` on an ephemeral port, and allows only the matching loopback origin;
-it renders only the approved prototype and comparison pages and is used for
-the scoped `Browser.close` request against its private temporary profile. A
-caller-supplied `--live-png` remains an explicitly labeled fixture and is not
-represented as a Chrome live capture.
+capturing the wrong surface. Chrome's one-shot `--screenshot` command runs
+without remote debugging because Chromium rejects headless commands combined
+with a remote-debugging port; it uses a private temporary profile, renders only
+the approved prototype and comparison pages, and is shut down through the
+owned-child TERM/KILL lifecycle. A caller-supplied `--live-png` remains an
+explicitly labeled fixture and is not represented as a Chrome live capture.
 Validated artifacts are assembled in a private directory and published with a
 directory-level rename; a failed replacement restores the prior bundle.
 Publication is serialized by an output-root lock; unexpected destination

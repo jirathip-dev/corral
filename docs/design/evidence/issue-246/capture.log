@@ -1,0 +1,39 @@
+design-gate prototype render log — issue-246 (agent sheet controls)
+====================================================================
+
+Sources (design lane, ~/design-output/corral/246-agent-sheet-controls/):
+  variant-1-side-controls.html   sha256 04567fb141763a776c3a5aa92c04e3d3f6647046f51b23d0a058b47941ccb1fc
+  variant-2-bottom-toolbar.html  sha256 890f16748b41562ed3ec826b413bbe2513862a5f7f9fb492d9092e55b9d0b11a
+
+Stage copies (in-repo, wrapped for a 390x844 phone-frame capture):
+  prototype-view-1-side-controls.html   sha256 05e449cd3e9c04a4f3114a7e130347703a2b664e0a9f2f924c6467128a73ca20
+  prototype-view-2-bottom-toolbar.html  sha256 ab171a0045d7ded47d4ee3958a1ff4ab9adc6c0e4ffbb4976356c08f3f947712
+  Wrap: remove the .meta caption block, body margin 0, .phone margin 0 auto,
+  box-shadow removed. Phone frame is exactly 390x844 (the repos' token scale;
+  evidence standard pixel size).
+
+Renderer: machine-cached chrome-headless-shell (playwright cache; pre-existing
+  on host, no browser/driver installed by this lane)
+  $HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  (same engine design-gate-evidence.sh uses for prototype renders)
+
+Commands (per variant; v = 1-side-controls, 2-bottom-toolbar):
+
+  chrome-headless-shell --headless --disable-gpu --no-first-run --hide-scrollbars \
+    --user-data-dir=$(mktemp -d) \
+    --window-size=390,844 --force-device-scale-factor=2 \
+    --screenshot=render-$v-2x.png \
+    file://<repo>/docs/design/evidence/issue-246/prototype-view-$v.html
+
+  sips -z 844 390 render-$v-2x.png --out variant-$v-390x844.png
+
+Results:
+  variant-1-side-controls-390x844.png  PNG 390x844  sha256 ae7e6af061c23be6501a98889db90ffa8f2d3968aa4fe1d87d3437b5146a1fda
+  variant-2-bottom-toolbar-390x844.png PNG 390x844  sha256 8704c5d514f3e4a4a20366908d1182d79caffc86718adb3a90cacf9f0c97ff65
+  Intermediate 2x renders (780x1688) deleted after downscale; source stage
+  copies above reproduce them byte-exactly given the same engine revision.
+
+Visual check: both PNGs inspected (vision) — full 390x844 phone frame, no
+caption/scrollbars/clipping; V1 compact buttons right-aligned under the meta
+row; V2 thin toolbar pinned above the reply field; no full-width pill row; no
+dead black band; Recent output fills the remaining sheet height.

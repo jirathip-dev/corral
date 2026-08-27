@@ -151,21 +151,28 @@ enum DeviceKeyStore {
     /// admin surface. Purely a host-admin bearer — never sent on the
     /// device-signed drive path.
     static func saveAdminToken(_ token: String) {
+        // The existence check + update path use a SEARCH query; the SecItemAdd
+        // path must contain ONLY item attributes — leaking search keys
+        // (kSecReturnData, kSecMatchLimit) into the add dictionary makes
+        // SecItemAdd report success while storing an item SecItemCopyMatching
+        // can never see, so adminToken() stays nil (#256 diag: add=0, read=-25300).
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: adminService,
             kSecAttrAccount as String: adminAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         let data = Data(token.utf8)
         if SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess {
             let update: [String: Any] = [kSecValueData as String: data]
             SecItemUpdate(query as CFDictionary, update as CFDictionary)
         } else {
-            var add = query
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            let add: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: adminService,
+                kSecAttrAccount as String: adminAccount,
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            ]
             SecItemAdd(add as CFDictionary, nil)
         }
     }

@@ -523,7 +523,7 @@ final class AppModel: ObservableObject {
             grantsNotice = "Admin token required — paste it below to manage device grants."
             return
         }
-        guard var device = adminDevices.first(where: { $0.keyId == deviceId }) else { return }
+        guard let device = adminDevices.first(where: { $0.keyId == deviceId }) else { return }
         var grants = Set(device.grants)
         if enabled {
             grants.insert(capability)
@@ -535,16 +535,16 @@ final class AppModel: ObservableObject {
             .filter { grants.contains($0) }
         grantsSaving = true
         grantsNotice = nil
-        defer {
-            grantsSaving = false
-            device.grants = ordered
-            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
-                adminDevices[index] = device
-            }
-        }
+        defer { grantsSaving = false }
         do {
             try await DriveClient(host: hostURL, session: session)
                 .setGrants(adminToken: adminToken, keyId: deviceId, grants: ordered)
+            // #256: apply the optimistic toggle to the local view ONLY once
+            // the daemon accepted it — a failed POST keeps the ledger value
+            // (server is fail-closed) and must not flip the local toggle.
+            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
+                adminDevices[index].grants = ordered
+            }
         } catch {
             grantsNotice = error.localizedDescription
         }

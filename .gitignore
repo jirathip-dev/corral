@@ -46,3 +46,7 @@ fastlane/.env
 /docs/design/evidence/.design-gate.stage.*/
 /docs/design/evidence/.design-gate.final.*/
 /docs/design/evidence/.design-gate.backup.*/
+
+# Orchestrator/worker lane notes (never commit)
+.brief.md
+.report.md

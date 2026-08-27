@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/corrald_ui-37cb06543acb2593)
+
+running 1 test
+test app::tests::identity_auto_recovery_completes_through_the_app_wiring ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 158 filtered out; finished in 0.11s
+

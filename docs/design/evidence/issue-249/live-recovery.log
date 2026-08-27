@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running tests/live.rs (target/debug/deps/live-adbde04e74028efb)
+
+running 3 tests
+test live_register_read_drive_audit ... device key store: fresh ephemeral keypair
+registered key_id=dev_856d8e2d9e11037a6474e1e7ec7ee14f grants=[]
+snapshot rev=4 agents=10
+SSE connect ok (Last-Event-ID: 4)
+read-only refusal verified (audit unchanged at 3)
+granted read_tail
+read_tail executed on herdr:pane:w12E:p1: ok rev 4 (request_id corrald-ui:tail:1787851808633:99bef74e5d24)
+idempotent replay verified (request_id corrald-ui:tail:1787851808633:99bef74e5d24)
+audit: seq=3 key_id=dev_856d8e2d9e11037a6474e1e7ec7ee14f capability=read_tail target=herdr:pane:w12E:p1 outcome=executed
+probe done: key_id=dev_856d8e2d9e11037a6474e1e7ec7ee14f host=http://127.0.0.1:9411 (GUI registration: see README)
+ok
+test live_reregister_failure_preserves_key_and_registration ... registered persistent key key_id=dev_51eef7f7e842d4c1e7963a6343665f6d
+re-register with bad token refused: 401 Unauthorized bad registration token
+persisted seed unchanged after failed re-register
+old key still drives after failed re-register: ok
+refresh grants (same key) re-fetched current grants: ["read_tail"]
+ok
+test live_reregister_success_rotates_the_in_memory_key ... registered old key key_id=dev_51eef7f7e842d4c1e7963a6343665f6d + granted read_tail
+re-registered with new key key_id=dev_0f0f3d95b26fc499824304a0c5a65972 + granted read_tail
+in-memory key reloaded to the new seed
+drive with rotated key: ok (verifies against the daemon)
+old key under new key_id correctly refused: bad_signature
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+

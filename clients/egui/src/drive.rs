@@ -403,11 +403,15 @@ impl DriveFailure {
         matches!(self, Self::NotGranted(_))
     }
 
-    /// Refusals that suggest the device key is no longer valid.
+    /// Refusals that suggest the device key is no longer valid. `BadSignature`
+    /// is the #249 rebuild/reinstall case: the board signs with fresh key
+    /// material while the registered key_id still names the OLD key — the
+    /// daemon's signature check fails, and a re-register (with the current
+    /// key) is the fix.
     pub fn suggests_re_registration(&self) -> bool {
         matches!(
             self,
-            Self::UnknownKey(_) | Self::Expired(_) | Self::Revoked(_)
+            Self::UnknownKey(_) | Self::Expired(_) | Self::Revoked(_) | Self::BadSignature(_)
         )
     }
 }

@@ -16,3 +16,11 @@ pub mod protocol;
 pub mod state;
 pub mod theme;
 pub mod ui;
+
+/// Serializes tests that mutate the process env (CORRAL_CONFIG_DIR /
+/// CORRAL_UI_CONFIG_DIR / CORRAL_UI_DISABLE_KEYRING). Rust test threads
+/// share one env; concurrent env mutation is the #249 identity-test race
+/// (a keyring read from an un-authorized test binary also BLOCKS on the
+/// macOS Keychain prompt — keep the file-store mode in env-bearing tests).
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

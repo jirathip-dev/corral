@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running tests/identity_recovery.rs (target/debug/deps/identity_recovery-a9bd616ef218aab8)
+
+running 1 test
+step 1 ok: registered dev_706b752d1f508ce66fb36926fed2d120 + granted read_tail + signed drive executed
+step 2 ok: wiped key material at /var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral-identity-e2e-ui-7030-1787851624863343000/keys/c44523b7df6ceb58.key
+step 3 ok: pre-fix symptom reproduced (401 bad_signature on dev_706b752d1f508ce66fb36926fed2d120)
+step 4 ok: re-registered dev_706b752d1f508ce66fb36926fed2d120 -> dev_4cbc24025c07f5cd4a01abb94fc4457b + grants restored (admin token)
+step 5 ok: signed read_tail executes after recovery (dev_706b752d1f508ce66fb36926fed2d120 -> dev_4cbc24025c07f5cd4a01abb94fc4457b), no bad_signature
+E2E PASS: reinstall identity recovery verified end to end
+test identity_recovery_restores_the_signed_drive_plane_after_reinstall ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

@@ -28,4 +28,6 @@ wgpu = { version = "30", default-features = false }
 libc = "0.2"
 
 [dev-dependencies]
+axum = "0.8"
 corrald = { path = "../..", features = ["test-utils"] }
+futures = "0.3"

@@ -866,6 +866,23 @@ fn terminate_wake_command_process_group(pid: u32) {
     }
 }
 
+fn cleanup_wake_command_process_group(
+    child: &mut std::process::Child,
+    child_pid: u32,
+    child_reaped: bool,
+) {
+    // A shell can report success after starting `command &`. The direct
+    // child is then already reaped, but its descendants remain in this exact
+    // process group. Always terminate that group on every terminal outcome;
+    // on timeout/wait-error paths also reap the direct child below.
+    #[cfg(unix)]
+    terminate_wake_command_process_group(child_pid);
+    if !child_reaped {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
     let pid = std::process::id().to_string();
     tracing::info!(
@@ -923,6 +940,7 @@ fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                cleanup_wake_command_process_group(&mut child, child_pid, true);
                 if status.success() {
                     tracing::info!(
                         pid = %pid,
@@ -940,10 +958,7 @@ fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
                 return false;
             }
             Ok(None) if std::time::Instant::now() >= deadline => {
-                #[cfg(unix)]
-                terminate_wake_command_process_group(child_pid);
-                let _ = child.kill();
-                let _ = child.wait();
+                cleanup_wake_command_process_group(&mut child, child_pid, false);
                 tracing::warn!(
                     pid = %pid,
                     command = %command,
@@ -954,10 +969,7 @@ fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
             }
             Ok(None) => thread::sleep(SCREENSHOT_WAKE_POLL_INTERVAL),
             Err(error) => {
-                #[cfg(unix)]
-                terminate_wake_command_process_group(child_pid);
-                let _ = child.kill();
-                let _ = child.wait();
+                cleanup_wake_command_process_group(&mut child, child_pid, false);
                 tracing::warn!(
                     pid = %pid,
                     command = %command,
@@ -3789,6 +3801,41 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(4),
             "a hung caller wake must not block the native capture indefinitely"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_window_wake_command_cleans_up_successful_background_descendant() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-native-wake-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let descendant_pid_path = dir.join("descendant.pid");
+
+        assert!(invoke_exact_window_wake(
+            "sleep 20 & printf '%s\\n' \"$!\" > \"$CORRAL_UI_SCREENSHOT_PATH\"",
+            &descendant_pid_path
+        ));
+        let descendant_pid = std::fs::read_to_string(&descendant_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while unsafe { libc::kill(descendant_pid, 0) == 0 } && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant_pid, 0) },
+            0,
+            "a successful wake must not leave its background descendant alive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

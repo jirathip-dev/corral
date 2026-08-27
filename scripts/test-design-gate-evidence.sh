@@ -9,8 +9,8 @@
 # writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
 # UTF-8 and configured worktree roots, a bounded generic-worktree scan,
 # structural prototype rejection through real Chrome, private-profile one-shot
-# flags, argument validation, locked atomic publication rollback, and the egui
-# wake-command failure path.
+# flags, argument validation, locked atomic publication rollback, content-
+# sensitive same-size PNG repair, and bounded egui wake-command ownership.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -344,7 +344,7 @@ if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
     || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
 fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
-if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "invalid-stable" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "invalid-stable" || "$mode" == "invalid-then-same-signature-valid" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
 from pathlib import Path
 import os
@@ -364,6 +364,30 @@ if mode == "invalid-bytes":
 if mode == "invalid-stable":
     destination.write_bytes(Path(os.environ["CORRAL_TEST_INVALID_PNG"]).read_bytes())
     sys.stdout.buffer.write(b"invalid stable PNG fixture published\n")
+    sys.stdout.buffer.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+if mode == "invalid-then-same-signature-valid":
+    invalid = Path(os.environ["CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG"]).read_bytes()
+    valid = Path(os.environ["CORRAL_TEST_VALID_SAME_SIGNATURE_PNG"]).read_bytes()
+    destination.write_bytes(invalid)
+    original_stat = destination.stat()
+    sys.stdout.buffer.write(b"invalid PNG published before in-place repair\n")
+    sys.stdout.buffer.flush()
+    time.sleep(0.5)
+    destination.write_bytes(valid)
+    os.utime(
+        destination,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    assert destination.stat().st_ino == original_stat.st_ino
+    assert destination.stat().st_size == original_stat.st_size
+    assert int(destination.stat().st_mtime) == int(original_stat.st_mtime)
+    assert destination.read_bytes()[:64] == invalid[:64]
+    assert destination.read_bytes()[-64:] == invalid[-64:]
+    Path(os.environ["CORRAL_TEST_EGUI_FINISHED"]).touch()
+    sys.stdout.buffer.write(b"valid PNG repaired in place with the old metadata signature\n")
     sys.stdout.buffer.flush()
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     while True:
@@ -574,6 +598,74 @@ export CORRAL_TEST_EGUI_PID_FILE="$WORK/egui.pid"
 export CORRAL_TEST_PROTOTYPE_HTML="$WORK/prototype-view.html"
 export CORRAL_TEST_EXPECTED_ISSUE=211
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
+
+"$PYTHON_BIN" - "$WORK/invalid-same-signature.png" "$WORK/valid-same-signature.png" <<'PY'
+from pathlib import Path
+import struct
+import sys
+import zlib
+
+width = height = 256
+row_bytes = width * 3 + 1
+raw = bytearray()
+state = 0x12345678
+for _ in range(height):
+    raw.append(0)
+    for _ in range(width):
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        raw.extend((state & 0xFF, (state >> 8) & 0xFF, (state >> 16) & 0xFF))
+raw = bytes(raw)
+compressed = zlib.compress(raw, 9)
+split = len(compressed) // 2
+first = compressed[:split]
+second = compressed[split:]
+assert len(first) > 128 and len(second) > 64
+
+
+def chunk(name, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + name
+        + payload
+        + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+    )
+
+
+def image(first_idat):
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", first_idat)
+        + chunk(b"IDAT", second)
+        + chunk(b"IEND", b"")
+    )
+
+
+valid = image(first)
+invalid = None
+for index in range(64, len(first) - 64):
+    for mask in (1, 2, 4, 8, 16, 32, 64, 128):
+        mutated = bytearray(first)
+        mutated[index] ^= mask
+        try:
+            decoded = zlib.decompress(bytes(mutated) + second)
+        except zlib.error:
+            invalid = image(bytes(mutated))
+            break
+        invalid_filters = any(decoded[row * row_bytes] > 4 for row in range(height))
+        if len(decoded) != len(raw) or invalid_filters:
+            invalid = image(bytes(mutated))
+            break
+    if invalid is not None:
+        break
+
+assert invalid is not None, "could not construct an invalid same-size PNG"
+assert len(invalid) == len(valid)
+assert invalid[:64] == valid[:64]
+assert invalid[-64:] == valid[-64:]
+Path(sys.argv[1]).write_bytes(invalid)
+Path(sys.argv[2]).write_bytes(valid)
+PY
 
 conformance_sha() {
   shasum -a 256 "$1" | awk '{print $1}'
@@ -1814,6 +1906,36 @@ assert_stopped "stable invalid egui" "$CORRAL_TEST_EGUI_PID_FILE"
   || fail "stable invalid PNG was published as evidence"
 unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_INVALID_PNG CORRAL_TEST_PNG_VALIDATION_COUNT
 
+export CORRAL_TEST_EXPECTED_ISSUE=224
+export CORRAL_TEST_EGUI_MODE=invalid-then-same-signature-valid
+export CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG="$WORK/invalid-same-signature.png"
+export CORRAL_TEST_VALID_SAME_SIGNATURE_PNG="$WORK/valid-same-signature.png"
+export CORRAL_TEST_PNG_VALIDATION_COUNT="$WORK/same-signature-validation-count"
+printf '0\n' >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
+rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
+run_bounded 15 env PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 224 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 3 \
+  --output-root "$WORK/same-signature-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/same-signature.log" 2>&1 \
+  || fail "same-signature invalid-to-valid PNG repair was not accepted"
+validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+(( validation_count >= 2 )) \
+  || fail "same-signature PNG repair was not reparsed after its content changed"
+grep -q 'live: .* (256x256)' "$WORK/same-signature.log" \
+  || fail "same-signature PNG repair did not publish the repaired dimensions"
+assert_stopped "same-signature egui" "$CORRAL_TEST_EGUI_PID_FILE"
+unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG \
+  CORRAL_TEST_VALID_SAME_SIGNATURE_PNG CORRAL_TEST_PNG_VALIDATION_COUNT
+
 export CORRAL_TEST_EXPECTED_ISSUE=214
 if PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
   --issue 214 \
@@ -1835,6 +1957,32 @@ grep -q 'egui wake command failed' "$WORK/wake-failure.log" \
   || fail "wake-command failure was not actionable"
 [[ ! -e "$WORK/wake-output/issue-214/comparison.png" ]] \
   || fail "wake-command failure published evidence"
+
+export CORRAL_TEST_EXPECTED_ISSUE=215
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+if run_bounded 12 env PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 215 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --egui-wake-command 'sleep 300' \
+  --output-root "$WORK/wake-timeout-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/wake-timeout.log" 2>&1; then
+  fail "hung egui wake command unexpectedly succeeded"
+fi
+grep -q 'owned wake command timed out after 2s' "$WORK/wake-timeout.log" \
+  || fail "hung egui wake command was not bounded by its owned cleanup path"
+grep -q 'egui wake command failed' "$WORK/wake-timeout.log" \
+  || fail "hung egui wake failure was not actionable"
+assert_stopped "hung egui wake" "$CORRAL_TEST_EGUI_PID_FILE"
+[[ ! -e "$WORK/wake-timeout-output/issue-215/comparison.png" ]] \
+  || fail "hung egui wake command published evidence"
 
 shopt -s nullglob
 staging_entries=(

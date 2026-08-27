@@ -47,7 +47,9 @@
 # CORRAL_EGUI_WAKE_COMMAND) runs an explicit caller-owned command while the
 # process is alive; the command receives CORRAL_UI_SCREENSHOT_PID and
 # CORRAL_UI_SCREENSHOT_PATH and failure is fatal rather than silently claiming
-# a stale frame. A capture succeeds only after the output is a fully validated
+# a stale frame. The initial caller wake runs in its own bounded process group;
+# a capture cannot be extended or leaked by a command such as "sleep 300" or
+# "sleep 20 &". A capture succeeds only after the output is a fully validated
 # PNG; process exit is not part of that success contract. Once a complete PNG
 # exists, the script terminates only its direct child with TERM, waits a short
 # grace period, escalates to KILL, and validates the final file again. This
@@ -142,6 +144,10 @@ CHROME_TIMEOUT_SECONDS="30"
 CAPTURE_TERM_GRACE_SECONDS="2"
 CAPTURE_KILL_GRACE_SECONDS="2"
 CAPTURE_POLL_INTERVAL_SECONDS="0.1"
+# Caller-supplied egui wake commands run in their own process group and have
+# a fixed short bound. A wake helper is input plumbing, not a second capture;
+# it must never extend the capture timeout or leak a background descendant.
+EGUI_WAKE_COMMAND_TIMEOUT_SECONDS="2"
 FORCE=0
 BUILD_EGUI=1
 BUILD_IOS=1
@@ -1167,6 +1173,65 @@ terminate_owned_child() {
   reap_capture_child "$pid"
 }
 
+run_bounded_owned_shell_command() {
+  local command="$1"
+  local timeout_seconds="$2"
+
+  "$PYTHON_BIN" - "$command" "$timeout_seconds" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+command = sys.argv[1]
+timeout = float(sys.argv[2])
+process = subprocess.Popen(["bash", "-c", command], start_new_session=True)
+
+
+def signal_owned_group(signal_number):
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return True
+    except OSError as error:
+        print(
+            f"could not signal owned wake process group: {error}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+try:
+    return_code = process.wait(timeout=timeout)
+except subprocess.TimeoutExpired:
+    if not signal_owned_group(signal.SIGTERM):
+        raise SystemExit(125)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    # The shell can exit after TERM while a descendant remains in the owned
+    # session. Always send the final bounded cleanup signal for that group.
+    if not signal_owned_group(signal.SIGKILL):
+        raise SystemExit(125)
+    if process.poll() is None:
+        process.wait()
+    print(
+        f"owned wake command timed out after {timeout:g}s; process group terminated",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+else:
+    # A successful shell can leave `command &` descendants behind. The
+    # process group is still the exact ownership boundary established by
+    # start_new_session, so clean it on every terminal shell outcome.
+    if not signal_owned_group(signal.SIGKILL):
+        raise SystemExit(125)
+    raise SystemExit(return_code)
+PY
+}
+
 PNG_WAIT_REASON=""
 png_file_size() {
   case "$(uname -s)" in
@@ -1184,11 +1249,26 @@ png_has_terminal_iend() {
   [[ "$trailer" == "0000000049454e44ae426082" ]]
 }
 
+png_content_digest() {
+  local path="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{ print $1 }'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{ print $1 }'
+  else
+    # sha256_file is defined below before any capture path invokes this
+    # function. Keep a Python fallback for minimal POSIX images.
+    sha256_file "$path"
+  fi
+}
+
 png_validation_signature() {
   local path="$1"
   local metadata=""
   local head_bytes=""
   local tail_bytes=""
+  local content_digest=""
 
   case "$(uname -s)" in
     Darwin) metadata="$(stat -f '%z:%m:%i' "$path")" ;;
@@ -1198,7 +1278,9 @@ png_validation_signature() {
     || return 1
   tail_bytes="$(tail -c 64 "$path" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')" \
     || return 1
-  printf '%s:%s:%s\n' "$metadata" "$head_bytes" "$tail_bytes"
+  content_digest="$(png_content_digest "$path" 2>/dev/null)" || return 1
+  [[ "$content_digest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s:%s:%s:%s\n' "$metadata" "$content_digest" "$head_bytes" "$tail_bytes"
 }
 
 wait_for_complete_png() {
@@ -1232,13 +1314,16 @@ wait_for_complete_png() {
         # parser, decompression, and filter reconstruction until the writer's
         # size has remained stable for one poll; an exited writer is already
         # stable by definition and gets the same terminal-IEND check first.
+        # The content digest in the signature is required while a writer is
+        # alive: metadata and edge bytes alone can miss an in-place repair of
+        # the same-sized PNG.
         if [[ "$terminal_iend" -eq 1 ]] \
           && { [[ "$writer_running" -eq 0 ]] \
             || [[ -n "$previous_size" && "$current_size" == "$previous_size" ]]; }; then
           if validation_signature="$(png_validation_signature "$path" 2>/dev/null)"; then
             :
           else
-            validation_signature="size:${current_size}:terminal-iend:${terminal_iend}"
+            validation_signature=""
           fi
           if [[ "$writer_running" -eq 0 \
             || ( -n "$validation_signature" \
@@ -1250,7 +1335,13 @@ wait_for_complete_png() {
             failed_validation_signature="$validation_signature"
             failed_validation_reason="$dimensions"
           fi
-          PNG_WAIT_REASON="${failed_validation_reason:-$label PNG validation could not be completed}"
+          if [[ -n "$failed_validation_reason" ]]; then
+            PNG_WAIT_REASON="$failed_validation_reason"
+          elif [[ -z "$validation_signature" && "$writer_running" -eq 1 ]]; then
+            PNG_WAIT_REASON="$label PNG content signature could not be read while the writer is active"
+          else
+            PNG_WAIT_REASON="$label PNG validation could not be completed"
+          fi
         elif [[ "$current_size" -lt 20 ]]; then
           PNG_WAIT_REASON="$label has not published enough PNG bytes for a terminal IEND"
         elif [[ "$terminal_iend" -eq 0 ]]; then
@@ -2322,11 +2413,13 @@ PY
   ui_pid=$!
   CAPTURE_PID="$ui_pid"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
-    log "running explicit egui wake command"
+    log "running bounded explicit egui wake command (timeout ${EGUI_WAKE_COMMAND_TIMEOUT_SECONDS}s)"
     sleep 1
     if ! CORRAL_UI_SCREENSHOT_PID="$ui_pid" \
       CORRAL_UI_SCREENSHOT_PATH="$STAGE/live-after.png" \
-      bash -c "$EGUI_WAKE_COMMAND" >>"$STAGE/capture.log" 2>&1; then
+      run_bounded_owned_shell_command \
+        "$EGUI_WAKE_COMMAND" "$EGUI_WAKE_COMMAND_TIMEOUT_SECONDS" \
+        >>"$STAGE/capture.log" 2>&1; then
       tail -40 "$STAGE/capture.log" >&2 || true
       terminate_owned_child "$ui_pid" "egui" \
         || die "egui wake command failed and owned-child cleanup failed"

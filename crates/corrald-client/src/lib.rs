@@ -48,7 +48,9 @@ pub mod model;
 pub mod sse;
 pub mod stepup;
 
-pub use client::{CorralClient, DriveClient};
+pub use client::{
+    AdminGrantsView, AuditData, CorralClient, DriveClient, GrantDevice, RegisteredDevice,
+};
 pub use drive::{Capability, DriveEnvelope, DriveResponse, SignedDrive, canonical_envelope_bytes};
 pub use errors::{ApiError, DriveErrorKind};
 pub use keypair::DeviceKeypair;

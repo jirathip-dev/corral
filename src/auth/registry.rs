@@ -48,6 +48,13 @@ pub struct DeviceRecord {
     /// (HTTP 410 `Unregistered`) — that is the push-side revocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_token: Option<String>,
+    /// Human-readable display label supplied at registration (#209,
+    /// additive: `None` on pre-#209 registries). Purely cosmetic — it
+    /// identifies a device in the host-admin Devices/Grants surfaces and
+    /// is NEVER used for authentication or authorization. Set by the
+    /// client (egui hostname, UIDevice name) in `POST /register`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl DeviceRecord {
@@ -112,10 +119,32 @@ pub enum RegisterError {
     /// The public key was not 32 bytes of valid base64, or is not a
     /// canonical Ed25519 point.
     BadPublicKey,
+    /// The display name contained characters that are not allowed in a
+    /// device label (non-whitespace after trimming, ASCII control chars —
+    /// see [`MAX_DEVICE_NAME_CHARS`]).
+    BadName,
     /// The registry could not be persisted (disk full, perms, …). The
     /// in-memory registration is applied; the error propagates instead of
     /// panicking under the registry lock (F8).
     Persist(String),
+}
+
+/// Upper bound for a device display name after trimming (#209). Longer
+/// labels are truncated (never rejected) by [`normalize_display_name`].
+pub const MAX_DEVICE_NAME_CHARS: usize = 64;
+
+/// Trim a client-supplied display name, reject control characters, and
+/// truncate to [`MAX_DEVICE_NAME_CHARS`] chars (in chars, not bytes — the
+/// label is cosmetic and multi-byte safe).
+pub(crate) fn normalize_display_name(raw: &str) -> Result<String, RegisterError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(RegisterError::BadName);
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(RegisterError::BadName);
+    }
+    Ok(trimmed.chars().take(MAX_DEVICE_NAME_CHARS).collect())
 }
 
 impl fmt::Display for RegisterError {
@@ -123,6 +152,7 @@ impl fmt::Display for RegisterError {
         match self {
             Self::BadToken => write!(f, "bad registration token"),
             Self::BadPublicKey => write!(f, "malformed device public key"),
+            Self::BadName => write!(f, "malformed device display name"),
             Self::Persist(e) => write!(f, "registry persist failed: {e}"),
         }
     }
@@ -205,13 +235,34 @@ impl DeviceRegistry {
 
     /// Register a device Ed25519 public key. Returns the (possibly
     /// existing) record — registering the same key twice is idempotent and
-    /// never refreshes expiry or grants.
+    /// never refreshes expiry or grants. A supplied display name is stored
+    /// on new records and backfilled on existing records that still have
+    /// none (never overwrites an existing name).
     pub fn register(
         &self,
         token: &str,
         public_key: [u8; 32],
         ttl: std::time::Duration,
     ) -> Result<DeviceRecord, RegisterError> {
+        self.register_named(token, public_key, ttl, None)
+    }
+
+    /// [`Self::register`] with an optional human-readable display name
+    /// (#209). The name is validated before touching the store: trimmed,
+    /// non-empty, at most [`MAX_DEVICE_NAME_CHARS`] (truncated, never
+    /// rejected for length — a too-long label is a display concern, not a
+    /// reason to block enrollment), and no ASCII control characters.
+    pub fn register_named(
+        &self,
+        token: &str,
+        public_key: [u8; 32],
+        ttl: std::time::Duration,
+        display_name: Option<&str>,
+    ) -> Result<DeviceRecord, RegisterError> {
+        let name = match display_name {
+            Some(raw) => Some(normalize_display_name(raw)?),
+            None => None,
+        };
         if !super::constant_time_eq(token.as_bytes(), self.load_token().as_bytes()) {
             return Err(RegisterError::BadToken);
         }
@@ -226,10 +277,29 @@ impl DeviceRegistry {
         }
 
         let mut inner = self.inner.lock().expect("registry lock poisoned");
-        for rec in inner.devices.values() {
-            if rec.public_key == public_key {
-                return Ok(rec.clone());
+        let existing_key = inner
+            .devices
+            .iter()
+            .find(|(_, rec)| rec.public_key == public_key)
+            .map(|(key, _)| key.clone());
+        if let Some(key) = existing_key {
+            // Idempotent re-registration (same key twice) never refreshes
+            // expiry or grants, but backfills a missing display name so
+            // pre-#209 devices converge when they re-register. A stored
+            // name is never overwritten or cleared by a later
+            // registration.
+            let mut names_changed = false;
+            if let (Some(new_name), Some(rec)) = (name.as_ref(), inner.devices.get_mut(&key))
+                && rec.name.is_none()
+            {
+                rec.name = Some(new_name.clone());
+                names_changed = true;
             }
+            if names_changed {
+                self.persist_locked(&inner)
+                    .map_err(RegisterError::Persist)?;
+            }
+            return Ok(inner.devices.get(&key).expect("key exists").clone());
         }
         let now = now_secs();
         let key_id = key_id_for(&public_key);
@@ -241,6 +311,7 @@ impl DeviceRegistry {
             grants: Vec::new(),
             revoked: false,
             device_token: None,
+            name,
         };
         inner.devices.insert(key_id, rec.clone());
         self.persist_locked(&inner)
@@ -572,6 +643,108 @@ mod tests {
         assert_eq!(reloaded.get(&rec.key_id).unwrap().device_token, None);
         // Unknown token is a no-op, not an error.
         reloaded.set_device_token_by_token("ghost", None).unwrap();
+    }
+
+    /// #209: the display-name column is additive — pre-#209 registry.json
+    /// loads with `None`; a named registration stores the trimmed label;
+    /// a later re-registration only backfills (never overwrites, never
+    /// clears); names survive reload; a bad label is refused.
+    #[test]
+    fn display_name_is_additive_backfills_and_never_overwrites() {
+        let d = dir();
+        // Pre-seed a v1 registry WITHOUT the name field (pre-#209 shape).
+        let content = serde_json::json!({
+            "schema_version": 1,
+            "devices": {},
+        });
+        std::fs::write(
+            d.path().join(REGISTRY_FILE),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+
+        let pk = key();
+        let rec = reg
+            .register_named(
+                &token,
+                pk,
+                std::time::Duration::from_secs(60),
+                Some("  iPhone 15 Pro  "),
+            )
+            .unwrap();
+        assert_eq!(
+            rec.name.as_deref(),
+            Some("iPhone 15 Pro"),
+            "label is trimmed"
+        );
+
+        // Persisted + survives reload.
+        let reloaded = DeviceRegistry::load_or_create(d.path()).unwrap();
+        assert_eq!(
+            reloaded.get(&rec.key_id).unwrap().name.as_deref(),
+            Some("iPhone 15 Pro")
+        );
+
+        // Same-key re-registration: name is kept, never overwritten or cleared.
+        let again = reloaded
+            .register_named(
+                &token,
+                pk,
+                std::time::Duration::from_secs(60),
+                Some("different"),
+            )
+            .unwrap();
+        assert_eq!(again.name.as_deref(), Some("iPhone 15 Pro"));
+        let nameless = reloaded
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(
+            nameless.name.as_deref(),
+            Some("iPhone 15 Pro"),
+            "None never clears"
+        );
+        // Backfill: a pre-#209 record gains its name on the first
+        // re-registration that supplies one.
+        let pk2 = key();
+        let rec2 = reg
+            .register(&token, pk2, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(rec2.name, None, "nameless registration stays nameless");
+        let named = reg
+            .register_named(
+                &token,
+                pk2,
+                std::time::Duration::from_secs(60),
+                Some("MacBook Air · travel"),
+            )
+            .unwrap();
+        assert_eq!(named.name.as_deref(), Some("MacBook Air · travel"));
+
+        // Bad labels are refused (F10-style loud failure).
+        for bad in ["", "   ", "a\nb", "a\u{0001}b"] {
+            let err =
+                reg.register_named(&token, key(), std::time::Duration::from_secs(60), Some(bad));
+            assert!(
+                matches!(err, Err(RegisterError::BadName)),
+                "bad label {bad:?} refused"
+            );
+        }
+        // An over-long label is truncated, never rejected.
+        let long = "x".repeat(200);
+        let rec_long = reg
+            .register_named(
+                &token,
+                key(),
+                std::time::Duration::from_secs(60),
+                Some(&long),
+            )
+            .unwrap();
+        assert_eq!(
+            rec_long.name.as_deref().unwrap().chars().count(),
+            MAX_DEVICE_NAME_CHARS
+        );
     }
 
     /// F4: the same token on MORE THAN ONE record (one install

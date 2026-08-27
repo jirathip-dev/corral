@@ -175,6 +175,18 @@ enum CanonicalJSON {
         return Data(json.utf8)
     }
 
+    /// `POST /register` body with the cosmetic device display name (#209).
+    static func registerBodyNamed(token: String, publicKeyB64: String, name: String) -> Data {
+        var json = "{\"token\":"
+        json += escaped(token)
+        json += ",\"public_key\":"
+        json += escaped(publicKeyB64)
+        json += ",\"name\":"
+        json += escaped(name)
+        json += "}"
+        return Data(json.utf8)
+    }
+
     /// `{key_id, signature, request}` step-up body.
     static func stepUpBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
         var json = "{\"key_id\":"

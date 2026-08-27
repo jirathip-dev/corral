@@ -50,6 +50,19 @@ enum Capability: String, Codable, CaseIterable, Sendable {
         case .attach: return "Attach"
         }
     }
+
+    /// Plain-language description shown beside each grant toggle on the
+    /// Devices & Grants surface (#209) — mirrors the approved mockup.
+    var grantDescription: String {
+        switch self {
+        case .prompt: return "Send prompts / steer the agent"
+        case .interrupt: return "Interrupt a running task"
+        case .approve: return "Approve tool calls & awaiting decisions"
+        case .readTail: return "Read live agent output"
+        case .kill: return "Terminate a task"
+        case .attach: return "Attach to a session & stream events"
+        }
+    }
 }
 
 /// Structured "what is this agent waiting for". `promptHash` lets clients
@@ -326,12 +339,14 @@ struct RegisterResponse: Codable, Equatable, Sendable {
     var revoked: Bool?
     var algorithm: String?
     var note: String?
+    /// Cosmetic device label the daemon stored for this key (#209).
+    var name: String?
 
     enum CodingKeys: String, CodingKey {
         case keyId = "key_id"
         case grants
         case expiryTs = "expiry_ts"
-        case revoked, algorithm, note
+        case revoked, algorithm, note, name
     }
 
     init(from decoder: Decoder) throws {
@@ -342,6 +357,53 @@ struct RegisterResponse: Codable, Equatable, Sendable {
         revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked)
         algorithm = try c.decodeIfPresent(String.self, forKey: .algorithm)
         note = try c.decodeIfPresent(String.self, forKey: .note)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+    }
+}
+
+/// One registered device projected by the host-admin `GET /grants` read
+/// surface (#209). Public keys and push tokens stay host-side; `name` is
+/// the optional cosmetic label the device supplied at registration.
+struct AdminGrantDevice: Codable, Equatable, Identifiable, Sendable {
+    var id: String { keyId }
+    var keyId: String
+    var name: String?
+    var grants: [String]
+    var revoked: Bool
+    var expiryTs: UInt64
+    var createdTs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case keyId = "key_id"
+        case name, grants, revoked
+        case expiryTs = "expiry_ts"
+        case createdTs = "created_ts"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        keyId = try c.decode(String.self, forKey: .keyId)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        grants = try c.decodeIfPresent([String].self, forKey: .grants) ?? []
+        revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
+        expiryTs = try c.decodeIfPresent(UInt64.self, forKey: .expiryTs) ?? 0
+        createdTs = try c.decodeIfPresent(UInt64.self, forKey: .createdTs) ?? 0
+    }
+}
+
+/// The host-admin `GET /grants` envelope (#209).
+struct AdminGrantsView: Codable, Equatable, Sendable {
+    var ok: Bool
+    var devices: [AdminGrantDevice]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, devices
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        devices = try c.decodeIfPresent([AdminGrantDevice].self, forKey: .devices) ?? []
     }
 }
 

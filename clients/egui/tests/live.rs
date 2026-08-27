@@ -69,7 +69,7 @@ async fn live_register_read_drive_audit() {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(device.signing.verifying_key().to_bytes())
     };
-    let (key_id, grants) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+    let (key_id, grants) = protocol::register_device(&client, &base_url, &token, &pubkey_b64, None)
         .await
         .expect("register");
     assert!(grants.is_empty(), "read-only default: {:?}", grants);
@@ -254,7 +254,7 @@ async fn live_reregister_failure_preserves_key_and_registration() {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(key.signing.verifying_key().to_bytes())
     };
-    let (key_id, _) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
+    let (key_id, _) = protocol::register_device(&client, &base_url, &token, &pubkey_b64, None)
         .await
         .expect("register the persistent key");
     println!("registered persistent key key_id={key_id}");
@@ -293,6 +293,7 @@ async fn live_reregister_failure_preserves_key_and_registration() {
         &base_url,
         "definitely-not-the-token",
         &new_pubkey_b64,
+        None,
     )
     .await;
     assert!(failed.is_err(), "bad registration token must be refused");
@@ -339,9 +340,10 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     // F3 primitive: re-registering the SAME key re-fetches the host's
     // CURRENT grant set (the Settings "refresh grants" action) — a grant
     // the host added after registration surfaces without a new key.
-    let (_, refreshed_grants) = protocol::register_device(&client, &base_url, &token, &pubkey_b64)
-        .await
-        .expect("refresh grants (same key)");
+    let (_, refreshed_grants) =
+        protocol::register_device(&client, &base_url, &token, &pubkey_b64, None)
+            .await
+            .expect("refresh grants (same key)");
     assert!(
         refreshed_grants.iter().any(|g| g == "read_tail"),
         "refresh grants must surface the host's current set: {refreshed_grants:?}"
@@ -377,9 +379,10 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(old_key.signing.verifying_key().to_bytes())
     };
-    let (old_key_id, _) = protocol::register_device(&client, &base_url, &token, &old_pubkey_b64)
-        .await
-        .expect("register old key");
+    let (old_key_id, _) =
+        protocol::register_device(&client, &base_url, &token, &old_pubkey_b64, None)
+            .await
+            .expect("register old key");
     let grants_url = format!("{}/grants", base_url.trim_end_matches('/'));
     let response = client
         .post(&grants_url)
@@ -409,9 +412,10 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(new_signing.verifying_key().to_bytes())
     };
-    let (new_key_id, _) = protocol::register_device(&client, &base_url, &token, &new_pubkey_b64)
-        .await
-        .expect("register the rotated key");
+    let (new_key_id, _) =
+        protocol::register_device(&client, &base_url, &token, &new_pubkey_b64, None)
+            .await
+            .expect("register the rotated key");
     assert_ne!(
         new_key_id, old_key_id,
         "rotation must produce a fresh key_id"

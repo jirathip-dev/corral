@@ -54,6 +54,35 @@ pub struct RegisteredDevice {
     pub algorithm: Option<String>,
 }
 
+/// One device projected by the host-admin `GET /grants` read surface
+/// (#209). Public keys and push tokens stay host-side and never cross this
+/// wire shape; `name` is the optional cosmetic label the device supplied
+/// at registration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GrantDevice {
+    pub key_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "capabilities")]
+    pub grants: Vec<Capability>,
+    #[serde(default)]
+    pub revoked: bool,
+    #[serde(default)]
+    pub expiry_ts: u64,
+    #[serde(default)]
+    pub created_ts: u64,
+}
+
+/// The host-admin `GET /grants` envelope (#209): every registered device
+/// with its current grant set + revocation state.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AdminGrantsView {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub devices: Vec<GrantDevice>,
+}
+
 /// The hash-chained audit log as served by `GET /audit` (admin token).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AuditData {
@@ -170,10 +199,29 @@ impl CorralClient {
         registration_token: &str,
         public_key_b64: &str,
     ) -> Result<RegisteredDevice, ApiError> {
+        self.register_named(registration_token, public_key_b64, None)
+            .await
+    }
+
+    /// [`Self::register`] with an optional device display name (#209,
+    /// cosmetic only — the daemon stores it as the device's label in the
+    /// host-admin Devices/Grants surfaces).
+    pub async fn register_named(
+        &self,
+        registration_token: &str,
+        public_key_b64: &str,
+        name: Option<&str>,
+    ) -> Result<RegisteredDevice, ApiError> {
+        let mut body = serde_json::Map::new();
+        body.insert("token".to_string(), serde_json::json!(registration_token));
+        body.insert("public_key".to_string(), serde_json::json!(public_key_b64));
+        if let Some(name) = name {
+            body.insert("name".to_string(), serde_json::json!(name));
+        }
         let response = self
             .http
             .post(self.endpoint("register"))
-            .json(&json!({ "token": registration_token, "public_key": public_key_b64 }))
+            .json(&serde_json::Value::Object(body))
             .send()
             .await?;
         if !response.status().is_success() {
@@ -242,6 +290,23 @@ impl CorralClient {
             }),
         )
         .await
+    }
+
+    /// GET /grants (admin, #209) — every registered device with its
+    /// current grant set, revocation state, and cosmetic display name.
+    /// This is the read surface the Devices/Grants UIs render; it
+    /// deliberately exposes no public keys or push tokens.
+    pub async fn grants_list(&self, admin_token: &str) -> Result<AdminGrantsView, ApiError> {
+        let response = self
+            .http
+            .get(self.endpoint("grants"))
+            .bearer_auth(admin_token)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(self.plain_error(response).await);
+        }
+        Ok(response.json().await?)
     }
 
     async fn grants(&self, admin_token: &str, body: serde_json::Value) -> Result<(), ApiError> {

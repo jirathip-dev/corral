@@ -1659,7 +1659,9 @@ impl CorralApp {
                 if failure.suggests_re_registration() {
                     self.settings.notice = Some((
                         Level::Warn,
-                        format!("{failure} — re-register this device (Settings → re-register)."),
+                        format!(
+                            "{failure} — re-register this device (Settings → Device access → THIS device card → Re-register)."
+                        ),
                     ));
                 }
             }
@@ -1799,8 +1801,14 @@ impl CorralApp {
                             base64::engine::general_purpose::STANDARD
                                 .encode(signing.verifying_key().to_bytes())
                         };
-                        match protocol::register_device(&client, &host_url, &token, &pubkey_b64)
-                            .await
+                        match protocol::register_device(
+                            &client,
+                            &host_url,
+                            &token,
+                            &pubkey_b64,
+                            crate::keys::local_device_name().as_deref(),
+                        )
+                        .await
                         {
                             Ok(reg) => {
                                 // The daemon accepted the new key: only NOW
@@ -1830,13 +1838,23 @@ impl CorralApp {
                     base64::engine::general_purpose::STANDARD
                         .encode(key.signing.verifying_key().to_bytes())
                 };
-                protocol::register_device(&client, &host_url, &token, &pubkey_b64).await
+                protocol::register_device(
+                    &client,
+                    &host_url,
+                    &token,
+                    &pubkey_b64,
+                    crate::keys::local_device_name().as_deref(),
+                )
+                .await
             };
             let _ = tx.send(ApplyMsg::RegisterResult(registration));
         });
     }
 
     fn handle_register_result(&mut self, result: Result<(String, Vec<String>), String>) {
+        // A re-register launched from the Devices/Grants surface captures
+        // the previous key + grant set so the Restore strip can re-apply it.
+        let pending_restore = self.settings.grant_admin.pending_restore.take();
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
@@ -1866,12 +1884,21 @@ impl CorralApp {
                 }
                 self.config.registration = self.registration.clone();
                 self.config.persist(&self.config_path);
-                self.toast(
-                    Level::Info,
-                    format!("registered as {key_id} (grants: {})", grants.join(", ")),
-                );
-                self.settings.token_input.clear();
-                self.tab = Tab::Board;
+                if let Some((previous_key, previous_grants)) = pending_restore {
+                    self.settings.grant_admin.mark_reregistered(
+                        previous_grants,
+                        &previous_key,
+                        &key_id,
+                    );
+                    self.refresh_grant_devices();
+                } else {
+                    self.toast(
+                        Level::Info,
+                        format!("registered as {key_id} (grants: {})", grants.join(", ")),
+                    );
+                    self.settings.token_input.clear();
+                    self.tab = Tab::Board;
+                }
             }
             Err(e) => {
                 self.toast(Level::Error, format!("registration failed: {e}"));
@@ -2034,6 +2061,95 @@ impl CorralApp {
         });
     }
 
+    /// Re-grant a revoked remote device (`revoke: false` — the grant set
+    /// stays; the revocation flag is what flips).
+    fn regrant_grant_device(&mut self) {
+        let key_id = self.settings.grant_admin.draft.selected_key.clone();
+        if key_id.is_empty() {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "select a registered device key before re-granting".into(),
+            ));
+            return;
+        }
+        if self.settings.grant_admin.loading || self.settings.grant_admin.saving {
+            return;
+        }
+        let Some(token) = self.admin_token() else {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "no admin token available — save/paste it above before re-granting".into(),
+            ));
+            return;
+        };
+        let grants = self
+            .settings
+            .grant_admin
+            .selected_device()
+            .map(|d| d.grants.clone())
+            .unwrap_or_default();
+        self.settings.grant_admin.saving = true;
+        self.settings.grant_admin.notice = None;
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        let result_key = key_id.clone();
+        self.rt.spawn(async move {
+            let result =
+                protocol::set_admin_revoked(&client, &host_url, &token, &result_key, false)
+                    .await
+                    .map(|_| ());
+            let _ = tx.send(ApplyMsg::GrantMutation(GrantMutationMsg {
+                key_id: result_key,
+                grants,
+                revoke: false,
+                result,
+            }));
+        });
+    }
+
+    /// Re-apply the previous grant set to the freshly re-registered THIS
+    /// device key (the approved #250/#249 Restore strip). Idempotent: the
+    /// daemon's `set_grants` replaces the set, so a retry is safe.
+    fn restore_grant_set(&mut self) {
+        if self.settings.grant_admin.loading || self.settings.grant_admin.saving {
+            return;
+        }
+        let key_id = self.settings.grant_admin.draft.selected_key.clone();
+        let grants = self.settings.grant_admin.restore_grants.clone();
+        if key_id.is_empty() || grants.is_empty() {
+            self.settings.grant_admin.notice = Some((
+                Level::Warn,
+                "nothing to restore — the previous grant set is empty".into(),
+            ));
+            return;
+        }
+        let Some(token) = self.admin_token() else {
+            self.settings.grant_admin.notice = Some((
+                Level::Error,
+                "no admin token available — restore needs it to grant the fresh key".into(),
+            ));
+            return;
+        };
+        self.settings.grant_admin.saving = true;
+        let client = self.client.clone();
+        let host_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        let result_key = key_id.clone();
+        self.rt.spawn(async move {
+            let result =
+                protocol::set_admin_grants(&client, &host_url, &token, &result_key, &grants)
+                    .await
+                    .map(|_| ());
+            let _ = tx.send(ApplyMsg::GrantMutation(GrantMutationMsg {
+                key_id: result_key,
+                grants,
+                revoke: false,
+                result,
+            }));
+        });
+    }
+
     fn handle_grant_devices(&mut self, result: Result<protocol::AdminGrantsView, String>) {
         match result {
             Ok(view) if view.ok => {
@@ -2065,6 +2181,17 @@ impl CorralApp {
         match msg.result {
             Ok(()) => {
                 self.sync_own_grants(&msg.key_id, &msg.grants, msg.revoke);
+                // A successful grant mutation on the freshly re-registered
+                // own key is the Restore strip completing.
+                if !msg.revoke
+                    && self.settings.grant_admin.reregistered
+                    && self
+                        .registration
+                        .as_ref()
+                        .is_some_and(|reg| reg.key_id == msg.key_id)
+                {
+                    self.settings.grant_admin.mark_restored();
+                }
                 if msg.revoke {
                     self.toast(Level::Info, format!("revoked device {}", msg.key_id));
                 } else {
@@ -2213,8 +2340,38 @@ impl CorralApp {
             crate::ui::register::Request::SelectGrantDevice(key_id) => {
                 self.select_grant_device(key_id);
             }
+            crate::ui::register::Request::ToggleGrantCap(capability) => {
+                // Immediate apply (mockup's switch): flip the draft, then
+                // replace the daemon's set through the admin token.
+                if !self.settings.grant_admin.loading && !self.settings.grant_admin.saving {
+                    self.settings.grant_admin.draft.toggle(&capability);
+                    self.apply_grant_set();
+                }
+            }
             crate::ui::register::Request::ApplyGrantSet => self.apply_grant_set(),
             crate::ui::register::Request::RevokeGrantDevice => self.revoke_grant_device(),
+            crate::ui::register::Request::ReGrantDevice => self.regrant_grant_device(),
+            crate::ui::register::Request::ReRegisterFromGrants => {
+                // Capture the current grant set + key before rotating: the
+                // fresh key runs read-only and the Restore strip re-applies
+                // the previous set (the approved #250/#249 recovery path).
+                let previous = self
+                    .registration
+                    .as_ref()
+                    .map(|reg| (reg.key_id.clone(), reg.grants.clone()));
+                self.settings.grant_admin.pending_restore = previous;
+                match crate::keys::read_daemon_registration_token() {
+                    Ok(token) => self.register(token, true),
+                    Err(e) => {
+                        self.settings.grant_admin.pending_restore = None;
+                        self.settings.notice = Some((
+                            Level::Error,
+                            format!("re-register needs the token: {e} (paste it above)"),
+                        ));
+                    }
+                }
+            }
+            crate::ui::register::Request::RestoreGrantSet => self.restore_grant_set(),
             crate::ui::register::Request::OpenAudit => {
                 self.settings.audit_open = true;
                 self.refresh_audit();

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>corral · Settings · Device access — #209 design-gate prototype</title>
+<style>
+  :root{
+    --bg:#05070a; --app:#0d1117; --panel:#10151c; --panel2:#161b22; --panel3:#1c2128;
+    --line:#30363d; --line2:#3d444d; --ink:#e6edf3; --muted:#8b949e; --faint:#6e7681;
+    --accent:#2dd4bf; --accent-ink:#052420;
+    --blocked:#f85149; --review:#d29922; --working:#58a6ff; --idle:#8b949e; --unknown:#6e7681;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:#05070a; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; padding:26px; display:flex; justify-content:center;}
+  .rack{display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start;}
+  .frame{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 20px 60px rgba(0,0,0,.45);}
+  .framelabel{font-size:11px; color:var(--muted); letter-spacing:.05em; text-transform:uppercase; margin-bottom:10px; text-align:center;}
+  .desk{width:1050px; max-width:100%; height:560px; background:var(--app); border:1px solid var(--line); border-radius:10px; display:flex; flex-direction:column; overflow:hidden;}
+  .tbar{display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); background:var(--panel); flex:none;}
+  .tbar .tl{font-size:11px; font-weight:600;}
+  .tbar .crumb{color:var(--muted); font-size:11px;}
+  .tbar .sp{flex:1;}
+  .tbar .stat{font-size:10px; color:var(--muted); font-family:var(--mono);}
+  .ok{color:var(--accent);}
+  .cols{flex:1; display:grid; grid-template-columns:minmax(330px,40%) 1fr; min-height:0;}
+  /* ---- left list ---- */
+  .left{border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0;}
+  .lhead{font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); padding:11px 14px 5px;}
+  .lhead .c{color:var(--faint); font-weight:600;}
+  .lhead.first{padding-top:14px;}
+  .lrow{display:grid; grid-template-columns:12px 1fr auto; gap:9px; align-items:center; padding:9px 14px; border-left:3px solid transparent; cursor:pointer;}
+  .lrow:hover{background:var(--panel3);}
+  .lrow.sel{background:var(--panel2); border-left-color:var(--accent);}
+  .lrow.revoked{opacity:.6;}
+  .dot{width:10px; height:10px; border-radius:50%; flex:none; background:var(--idle);}
+  .dot.working{background:var(--working);}
+  .dot.idle{background:var(--idle);}
+  .dot.unknown{background:var(--unknown);}
+  .lr-mid{min-width:0;}
+  .lr-nm{font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .lr-nm .tag{font-size:9px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; border:1px solid var(--accent); color:var(--accent); border-radius:4px; padding:1px 6px; margin-left:6px;}
+  .lr-nm .rbadge{color:var(--blocked); border-color:rgba(248,81,73,.5);}
+  .lr-kd{font-family:var(--mono); font-size:10px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .lr-right{font-size:10px; color:var(--faint); font-family:var(--mono); text-align:right; white-space:nowrap;}
+  .lr-right b{color:var(--muted); font-weight:500;}
+  /* ---- right detail ---- */
+  .right{background:var(--bg); display:flex; flex-direction:column; min-height:0; overflow-y:auto;}
+  .dtop{padding:14px 18px 10px; border-bottom:1px solid var(--line);}
+  .r1{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+  .nm{font-size:14px; font-weight:700;}
+  .badge{font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:2px 7px; border-radius:4px; border:1px solid var(--accent); color:var(--accent);}
+  .dot.big{width:11px; height:11px;}
+  .meta{font-size:10px; color:var(--faint); font-family:var(--mono); margin-top:6px;}
+  .meta .sep{color:var(--line2); margin:0 6px;}
+  .capshead{display:flex; align-items:baseline; gap:8px; padding:12px 18px 6px;}
+  .ch{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;}
+  .capcount{font-size:10px; color:var(--muted); font-family:var(--mono);}
+  .caps{margin:0 14px;}
+  .crow{display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; padding:8px 4px; border-bottom:1px solid var(--line);}
+  .crow .cl{min-width:0;}
+  .crow .cn{font-family:var(--mono); font-size:12px; font-weight:600;}
+  .crow .cd{font-size:10px; color:var(--faint); margin-top:1px;}
+  .crow.revoked .cn,.crow.revoked .cd{opacity:.5;}
+  .tg{width:34px; height:18px; border-radius:9px; background:var(--panel3); border:1px solid var(--line); position:relative; cursor:pointer; flex:none;}
+  .tg::after{content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:var(--muted); transition:left .1s,background .1s;}
+  .tg.on{background:var(--accent); border-color:var(--accent);}
+  .tg.on::after{left:18px; background:var(--accent-ink);}
+  .acts{padding:14px 18px; display:flex; gap:9px; align-items:center; flex-wrap:wrap;}
+  .btn{font-size:11px; font-weight:600; padding:6px 13px; border-radius:6px; border:1px solid var(--line); background:var(--panel3); color:var(--ink); cursor:pointer;}
+  .btn:hover{border-color:var(--line2);}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink); font-weight:700;}
+  .btn.danger{color:var(--blocked); border-color:rgba(248,81,73,.4); background:transparent;}
+  .btn:disabled{opacity:.45; cursor:default;}
+  .restore{margin:0 18px 6px; display:flex; gap:10px; align-items:center; background:var(--panel2); border:1px dashed var(--line2); border-radius:6px; padding:8px 11px;}
+  .restore .txt{font-size:11px; color:var(--muted); line-height:1.4;}
+  .restore .txt b{color:var(--ink);}
+  .restore .grow{flex:1;}
+  .restore .btn{font-size:10px; padding:4px 11px;}
+  .restore.lit{border-color:var(--accent); background:rgba(45,212,191,.07);}
+  .restore.lit .txt b{color:var(--accent);}
+  .notice{display:none; margin:0 18px 9px; font-size:11px; border-left:2px solid var(--accent); padding:4px 9px; color:var(--ink); background:rgba(45,212,191,.06); border-radius:0 5px 5px 0;}
+  .notice.show{display:block;}
+  .notice.warn{border-color:var(--review); background:rgba(210,153,34,.07);}
+  .note249{margin:0 18px 14px; border:1px solid rgba(210,153,34,.5); border-left:3px solid var(--review); border-radius:6px; padding:8px 11px; background:rgba(210,153,34,.06); display:flex; gap:8px; align-items:flex-start;}
+  .note249 .ic{color:var(--review); font-size:12px; font-weight:700; flex:none; margin-top:1px;}
+  .note249 .txt{font-size:11px; color:var(--muted); line-height:1.45;}
+  .note249 .txt b{color:var(--ink);}
+</style>
+<base href="file:///Users/jirathip/.herdr/worktrees/corral/g209-device-grant-visibility/docs/design/">
+<meta name="design-gate-render" content="generated without editing the source">
+<style id="design-gate-surface">
+html, body { width: 1160px !important; height: 631px !important; overflow: hidden !important; }
+body { padding: 8px !important; }
+    body > h1, body > .sub { display: none !important; }
+    body > .rack { display: block !important; width: 1080px !important; }
+    body > .rack > .frame { display: none !important; }
+    body > .rack > .frame.design-gate-target {
+      display: block !important;
+      width: 1080px !important;
+      max-width: 1080px !important;
+      margin: 0 !important;
+    }
+    #design-gate-error {
+      display: block !important;
+      margin: 24px !important;
+      padding: 18px !important;
+      border: 2px solid #f85149 !important;
+      background: #3d1618 !important;
+      color: #ffb4ab !important;
+      font: 700 18px system-ui, sans-serif !important;
+    }
+    </style>
+
+<script id="design-gate-surface-script">
+(() => {
+  const targetSelector = ".desk";
+  const requestedTab = "settings";
+  const markSurface = () => {
+    const frames = Array.from(document.querySelectorAll("body > .rack > .frame"));
+    const targets = frames.filter((frame) => frame.querySelector(targetSelector));
+    if (targets.length === 0) {
+      const error = document.createElement("div");
+      error.id = "design-gate-error";
+      error.textContent = "Design-gate render failed: no frame containing .desk was found.";
+      document.body.prepend(error);
+      return;
+    }
+    targets.forEach((frame) => frame.classList.add("design-gate-target"));
+  };
+  const selectRequestedTab = () => {
+    if ("egui" !== "egui") return;
+    const tab = document.querySelector(`[data-tab="${requestedTab}"]`);
+    if (tab) tab.click();
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      markSurface();
+      selectRequestedTab();
+    }, { once: true });
+  } else {
+    markSurface();
+    selectRequestedTab();
+  }
+})();
+</script>
+</head>
+<body>
+<div class="rack">
+  <div class="frame" style="width:100%;max-width:1220px;">
+    <div class="framelabel">egui board · Settings → Device access (#209 approved #250 V2)</div>
+    <div class="desk win">
+      <div class="tbar">
+        <span class="tl">corral</span><span class="crumb">‹ Settings</span>
+        <span class="crumb">Device access</span>
+        <span class="sp"></span>
+        <span class="stat">admin token <span class="ok">✓</span> · host 127.0.0.1:8474</span>
+      </div>
+      <div class="cols">
+        <!-- ================= LEFT ================= -->
+        <div class="left">
+          <div class="lhead first">THIS DEVICE <span class="c">(this computer)</span></div>
+          <div class="lrow sel" data-dev="self" id="row-self">
+            <span class="dot working"></span>
+            <span class="lr-mid">
+              <div class="lr-nm">midnight <span class="tag">this device</span></div>
+              <div class="lr-kd" id="k-self">dev_da55f6b3…9c41</div>
+            </span>
+            <span class="lr-right"><b id="cc-self">6 caps</b><br>board live</span>
+          </div>
+          <div class="lhead">REMOTE DEVICES <span class="c">(other machines)</span></div>
+          <div class="lrow" data-dev="iphone">
+            <span class="dot working"></span>
+            <span class="lr-mid">
+              <div class="lr-nm">iPhone 15 Pro</div>
+              <div class="lr-kd">dev_6afc68bb…2e10</div>
+            </span>
+            <span class="lr-right"><b>4 caps</b><br>granted 3d ago</span>
+          </div>
+          <div class="lrow" data-dev="mba">
+            <span class="dot idle"></span>
+            <span class="lr-mid">
+              <div class="lr-nm">MacBook Air · travel</div>
+              <div class="lr-kd">dev_9c41d7e0…55f2</div>
+            </span>
+            <span class="lr-right"><b>2 caps</b><br>granted 2w ago</span>
+          </div>
+          <div class="lrow revoked" data-dev="studio">
+            <span class="dot unknown"></span>
+            <span class="lr-mid">
+              <div class="lr-nm">devbox-studio <span class="tag rbadge">revoked</span></div>
+              <div class="lr-kd">dev_b8e2d304…77af</div>
+            </span>
+            <span class="lr-right"><b>4 caps</b><br>revoked 5d ago</span>
+          </div>
+        </div>
+
+        <!-- ================= RIGHT ================= -->
+        <div class="right" id="detail">
+          <div class="dtop">
+            <div class="r1">
+              <span class="dot big" id="d-dot"></span>
+              <span class="nm" id="d-nm">midnight</span>
+              <span class="badge" id="d-badge" style="display:none;">This device</span>
+              <span style="font-size:10px;color:var(--faint);font-family:var(--mono)" id="d-flag"></span>
+            </div>
+            <div class="meta" id="d-meta">key <span id="d-key">dev_da55f6b3…9c41</span><span class="sep">·</span>created 2026-04-12<span class="sep">·</span>expires never<span class="sep">·</span>board live</div>
+          </div>
+
+          <div class="capshead"><span class="ch">Capabilities</span><span class="capcount" id="d-count">6 of 6 granted</span></div>
+          <div class="caps" id="d-caps"></div>
+
+          <div class="acts" id="d-acts"></div>
+          <div class="restore" id="d-restore" style="display:none;"></div>
+          <div class="notice" id="d-notice"></div>
+          <div class="note249" id="d-note249" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const CAPS = [
+    ['read_tail','Read live agent output'],
+    ['prompt','Send prompts / steer the agent'],
+    ['interrupt','Interrupt a running task'],
+    ['approve','Approve tool calls & awaiting decisions'],
+    ['kill','Terminate a task'],
+    ['attach','Attach to a session & stream events'],
+  ];
+  const DEV = {
+    self:   { name:'midnight',          badge:true,  dot:'working', key:'dev_da55f6b3…9c41', created:'2026-04-12', last:'board live · working',    grants:['read_tail','prompt','interrupt','approve','kill','attach'] },
+    iphone: { name:'iPhone 15 Pro',     badge:false, dot:'working', key:'dev_6afc68bb…2e10', created:'2026-05-30', last:'granted 3d ago',          grants:['read_tail','prompt','interrupt','approve'] },
+    mba:    { name:'MacBook Air · travel', badge:false, dot:'idle',  key:'dev_9c41d7e0…55f2', created:'2026-02-18', last:'granted 2w ago',          grants:['read_tail','attach'] },
+    studio: { name:'devbox-studio',     badge:false, dot:'unknown', key:'dev_b8e2d304…77af', created:'2026-06-03', last:'revoked 5d ago',          grants:['read_tail','prompt','interrupt','kill'], revoked:true },
+  };
+  const SELF_NEW = 'dev_7b313a6c…d2f4';
+  let cur = 'self', reregistered = false, selfKey = 'dev_da55f6b3…9c41';
+
+  const $ = s => document.querySelector(s);
+  const notice = $('#d-notice');
+  const show = (msg, warn) => { notice.textContent = msg; notice.className = 'notice show' + (warn ? ' warn' : ''); };
+
+  function render() {
+    const d = DEV[cur];
+    $('#d-dot').className = 'dot big ' + d.dot;
+    $('#d-nm').textContent = d.name;
+    $('#d-badge').style.display = d.badge ? '' : 'none';
+    $('#d-flag').textContent = '';
+    $('#d-meta').innerHTML = 'key <span id="d-key">' + $('#d-key').textContent + '</span>' +
+      '<span class="sep">·</span>created ' + d.created +
+      '<span class="sep">·</span>expires never' +
+      '<span class="sep">·</span>' + d.last;
+    const keyEl = $('#d-meta').querySelector('#d-key');
+    keyEl.textContent = (cur === 'self') ? selfKey + (reregistered ? '  (previous dev_da55f6b3…9c41)' : '') : d.key;
+    $('#k-self').textContent = selfKey;
+
+    const capsBox = $('#d-caps');
+    capsBox.innerHTML = '';
+    let on = 0;
+    CAPS.forEach(([cap, desc]) => {
+      const onCap = (cur === 'self' && reregistered) ? false : !!d.grants.includes(cap);
+      if (onCap) on++;
+      const row = document.createElement('div');
+      row.className = 'crow' + (d.revoked && cur !== 'self' ? ' revoked' : '');
+      row.innerHTML = '<div class="cl"><div class="cn">' + cap + '</div><div class="cd">' + desc + '</div></div>';
+      const tg = document.createElement('div');
+      tg.className = 'tg' + (onCap ? ' on' : '');
+      tg.dataset.cap = cap;
+      tg.addEventListener('click', () => {
+        if (d.revoked && cur !== 'self') return;
+        tg.classList.toggle('on');
+        render(); // refresh count
+      });
+      row.appendChild(tg);
+      capsBox.appendChild(row);
+    });
+    $('#d-count').textContent = on + ' of ' + CAPS.length + ' granted';
+
+    const acts = $('#d-acts');
+    acts.innerHTML = '';
+    if (cur === 'self') {
+      const rr = document.createElement('button');
+      rr.className = 'btn primary'; rr.textContent = 'Re-register';
+      rr.addEventListener('click', () => {
+        reregistered = true;
+        selfKey = SELF_NEW;
+        render();
+        show('Re-registered: fresh key ' + SELF_NEW + ' — grants are EMPTY. Use Restore to re-apply the previous set.', true);
+      });
+      acts.appendChild(rr);
+      const rf = document.createElement('button'); rf.className = 'btn'; rf.textContent = 'Refresh grants';
+      rf.addEventListener('click', () => show('Grant set refreshed from the daemon.'));
+      acts.appendChild(rf);
+
+      // restore strip
+      const rs = $('#d-restore');
+      rs.style.display = reregistered ? '' : 'none';
+      rs.className = 'restore' + (reregistered ? ' lit' : '');
+      rs.innerHTML = '<span class="grow"></span>' +
+        '<span class="txt">New key runs with <b>zero grants</b> until restored or re-granted:</span>' +
+        '<button class="btn" id="rsBtn" ' + (reregistered ? '' : 'disabled') + '>Restore grant set</button>';
+      if (reregistered) rs.querySelector('#rsBtn').addEventListener('click', () => {
+        reregistered = false; DEV.self.grants = ['read_tail','prompt','interrupt','approve','kill','attach'];
+        render();
+        show('Restored 6 capabilities to ' + SELF_NEW + '.');
+      });
+
+      // #249 note card — only on THIS DEVICE detail
+      const n = $('#d-note249');
+      n.style.display = '';
+      n.innerHTML = '<span class="ic">⚠</span><span class="txt"><b>Bad-signature trust check (#249).</b> If the daemon rejects this device with a bad-signature error, the stored key is stale — <b>Re-register above</b> to mint a fresh key, then Restore the grants.</span>';
+    } else {
+      const rv = document.createElement('button');
+      if (!d.revoked) {
+        rv.className = 'btn danger'; rv.textContent = 'Revoke device';
+        rv.addEventListener('click', () => {
+          DEV[cur].revoked = true;
+          $('#row-' + cur).classList.add('revoked');
+          render();
+          show('Device revoked. Grants stop applying immediately — re-grant without re-registering to restore.');
+        });
+      } else {
+        rv.className = 'btn primary'; rv.textContent = 'Re-grant device';
+        rv.addEventListener('click', () => {
+          DEV[cur].revoked = false;
+          $('#row-' + cur).classList.remove('revoked');
+          render();
+          show('Device re-granted — its cap set is live again.');
+        });
+      }
+      acts.appendChild(rv);
+      $('#d-restore').style.display = 'none';
+      $('#d-note249').style.display = 'none';
+    }
+    $('#d-notice').className = 'notice'; // notice re-shown by handlers
+  }
+
+  document.querySelectorAll('.lrow').forEach(row => row.addEventListener('click', () => {
+    document.querySelectorAll('.lrow').forEach(r => r.classList.remove('sel'));
+    row.classList.add('sel');
+    cur = row.dataset.dev;
+    notice.className = 'notice';
+    render();
+  }));
+
+  render();
+</script>
+</body>
+</html>

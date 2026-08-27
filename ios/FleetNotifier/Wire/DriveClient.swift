@@ -94,10 +94,17 @@ struct DriveClient: Sendable {
 
     // MARK: - Registration (R1)
 
-    /// `POST /register {token, public_key}` → key_id with EMPTY grants
-    /// (read-only default; the host promotes via /grants).
-    func register(token: String, signer: DeviceSigner) async throws -> RegisterResponse {
-        let body = CanonicalJSON.registerBody(token: token, publicKeyB64: signer.publicKeyB64)
+    /// `POST /register {token, public_key, name?}` → key_id with EMPTY
+    /// grants (read-only default; the host promotes via /grants). `name`
+    /// is the optional cosmetic device label (#209) stored by the daemon.
+    func register(token: String, signer: DeviceSigner, name: String? = nil) async throws -> RegisterResponse {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let body: Data
+        if trimmed.isEmpty {
+            body = CanonicalJSON.registerBody(token: token, publicKeyB64: signer.publicKeyB64)
+        } else {
+            body = CanonicalJSON.registerBodyNamed(token: token, publicKeyB64: signer.publicKeyB64, name: trimmed)
+        }
         let (status, data) = try await post("/register", body: body)
         guard status == 200 else {
             let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
@@ -107,6 +114,63 @@ struct DriveClient: Sendable {
                                     requestId: typed?.requestId)
         }
         return try JSONDecoder().decode(RegisterResponse.self, from: data)
+    }
+
+    // MARK: - Host admin grants (#209)
+
+    /// `GET /grants` with the host admin bearer token — every registered
+    /// device with its current grant set, revocation state, and cosmetic
+    /// display name. Host-admin only; the token is entered by the operator
+    /// and never leaves the client except on this admin surface.
+    func fetchAdminGrants(adminToken: String) async throws -> AdminGrantsView {
+        let url = host.appendingPathComponent("/grants")
+        let (status, data) = try await get(url, headers: ["Authorization": "Bearer \(adminToken)"])
+        guard status == 200 else {
+            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
+            throw DriveError.server(status: status,
+                                    kind: typed?.kind ?? "grants_list_failed",
+                                    message: typed?.message ?? "GET /grants failed",
+                                    requestId: nil)
+        }
+        return try JSONDecoder().decode(AdminGrantsView.self, from: data)
+    }
+
+    /// `POST /grants` `set_grants` — replace a device's full grant set
+    /// (empty = read-only; default deny).
+    func setGrants(adminToken: String, keyId: String, grants: [String]) async throws {
+        let body: [String: Any] = [
+            "action": "set_grants",
+            "key_id": keyId,
+            "grants": grants,
+        ]
+        let (status, data) = try await post("/grants", body: try JSONSerialization.data(withJSONObject: body),
+                                            headers: ["Authorization": "Bearer \(adminToken)"])
+        guard status == 200 else {
+            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
+            throw DriveError.server(status: status,
+                                    kind: typed?.kind ?? "grants_set_failed",
+                                    message: typed?.message ?? "POST /grants failed",
+                                    requestId: nil)
+        }
+    }
+
+    /// `POST /grants` `revoke` — flip a device's revoked flag (`true`
+    /// revokes, `false` re-grants). The grant set is untouched.
+    func setRevoked(adminToken: String, keyId: String, revoked: Bool) async throws {
+        let body: [String: Any] = [
+            "action": "revoke",
+            "key_id": keyId,
+            "revoked": revoked,
+        ]
+        let (status, data) = try await post("/grants", body: try JSONSerialization.data(withJSONObject: body),
+                                            headers: ["Authorization": "Bearer \(adminToken)"])
+        guard status == 200 else {
+            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
+            throw DriveError.server(status: status,
+                                    kind: typed?.kind ?? "grants_revoke_failed",
+                                    message: typed?.message ?? "POST /grants failed",
+                                    requestId: nil)
+        }
     }
 
     // MARK: - Step-up (R9)

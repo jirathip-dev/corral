@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Thread-safe identity boundary shared by the main model and the APNs
 /// delegate. The delegate is not a child of `AppModel`, so reset/demo cannot
@@ -365,7 +366,10 @@ final class AppModel: ObservableObject {
                 do {
                     let client = DriveClient(host: registrationContext.requestedHostURL,
                                              session: self.session)
-                    let response = try await client.register(token: token, signer: candidateSigner)
+                    // #209: the device name rides along as the cosmetic
+                    // host-side label (display only — the key signs).
+                    let response = try await client.register(token: token, signer: candidateSigner,
+                                                            name: UIDevice.current.name)
                     // A late /register response must not resurrect a reset or
                     // demo identity, write metadata, or start the live stream.
                     guard !Task.isCancelled,
@@ -465,6 +469,120 @@ final class AppModel: ObservableObject {
         }
         lifecycleTasks[taskId] = task
         await task.value
+    }
+
+    // MARK: - Device grants (#209, host admin)
+
+    /// Registered devices projected by `GET /grants` (host admin). The
+    /// Devices & Grants surface renders THIS DEVICE vs REMOTE DEVICES from
+    /// this list; matching uses `keyId`.
+    @Published private(set) var adminDevices: [AdminGrantDevice] = []
+    @Published private(set) var grantsLoading = false
+    @Published private(set) var grantsSaving = false
+    @Published private(set) var grantsNotice: String?
+
+    /// The daemon host admin bearer token, Keychain-stored (#209). The
+    /// operator pastes it once; it is only ever sent to the host-admin
+    /// endpoints (`/grants`), never on the signed drive path.
+    var adminToken: String? { DeviceKeyStore.adminToken() }
+
+    var hasAdminToken: Bool { adminToken != nil }
+
+    /// Devices grouped for the #250 surface: THIS DEVICE is the app's own
+    /// registered key, everything else is a remote device.
+    var thisDevice: AdminGrantDevice? {
+        adminDevices.first { $0.keyId == keyId }
+    }
+
+    var remoteDevices: [AdminGrantDevice] {
+        adminDevices.filter { $0.keyId != keyId }
+    }
+
+    /// One-tap load of the Devices & Grants list (the surface's Refresh).
+    func loadAdminDevices() async {
+        guard let hostURL, let adminToken else {
+            grantsNotice = "Admin token required — paste it below to manage device grants."
+            return
+        }
+        grantsLoading = true
+        grantsNotice = nil
+        defer { grantsLoading = false }
+        do {
+            let view = try await DriveClient(host: hostURL, session: session)
+                .fetchAdminGrants(adminToken: adminToken)
+            adminDevices = view.devices.sorted { $0.keyId < $1.keyId }
+        } catch {
+            grantsNotice = error.localizedDescription
+        }
+    }
+
+    /// Apply one capability toggle: replaces the device's full grant set
+    /// through the same admin `POST /grants` path as corrald-grant.sh.
+    func setDeviceCapability(_ capability: String, enabled: Bool, deviceId: String) async {
+        guard let hostURL, let adminToken else {
+            grantsNotice = "Admin token required — paste it below to manage device grants."
+            return
+        }
+        guard var device = adminDevices.first(where: { $0.keyId == deviceId }) else { return }
+        var grants = Set(device.grants)
+        if enabled {
+            grants.insert(capability)
+        } else {
+            grants.remove(capability)
+        }
+        let ordered = Capability.allCases
+            .map(\.rawValue)
+            .filter { grants.contains($0) }
+        grantsSaving = true
+        grantsNotice = nil
+        defer {
+            grantsSaving = false
+            device.grants = ordered
+            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
+                adminDevices[index] = device
+            }
+        }
+        do {
+            try await DriveClient(host: hostURL, session: session)
+                .setGrants(adminToken: adminToken, keyId: deviceId, grants: ordered)
+        } catch {
+            grantsNotice = error.localizedDescription
+        }
+    }
+
+    /// Revoke (or re-grant) a remote device: the grant set is untouched,
+    /// only the revocation flag flips.
+    func setDeviceRevoked(_ deviceId: String, revoked: Bool) async {
+        guard let hostURL, let adminToken else {
+            grantsNotice = "Admin token required — paste it below to manage device grants."
+            return
+        }
+        grantsSaving = true
+        grantsNotice = nil
+        defer { grantsSaving = false }
+        do {
+            try await DriveClient(host: hostURL, session: session)
+                .setRevoked(adminToken: adminToken, keyId: deviceId, revoked: revoked)
+            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
+                adminDevices[index].revoked = revoked
+            }
+            if let own = keyId, own == deviceId {
+                grantsNotice = "This device was revoked — its signed drives are refused."
+            }
+        } catch {
+            grantsNotice = error.localizedDescription
+        }
+    }
+
+    func saveAdminToken(_ token: String) {
+        DeviceKeyStore.saveAdminToken(token)
+        grantsNotice = nil
+    }
+
+    func clearAdminToken() {
+        DeviceKeyStore.clearAdminToken()
+        adminDevices = []
+        grantsNotice = nil
     }
 
     // MARK: - Live connection

@@ -131,6 +131,18 @@ final class FleetStore: ObservableObject {
         apply(withoutDiff: event)
     }
 
+    /// Issue #219: authoritative pull/toolbar refresh application.
+    /// Same revision ordering as stream frames (`accepts` — a stale
+    /// snapshot response cannot reorder a newer delta), plus the
+    /// diff-aware blocked/done tracking stream frames use, so a refresh
+    /// that reveals a newly blocked agent notifies exactly like a frame.
+    /// The SSE stream task is deliberately NOT touched here: it keeps
+    /// running and resumes from the newest accepted revision via the
+    /// shared cursor at the next reconnect — no duplicate stream tasks.
+    func applyRefresh(_ snapshot: Snapshot) {
+        apply(.snapshot(snapshot), previous: &streamSeen)
+    }
+
     /// Diff-aware done detection: fire once per transition INTO done
     /// (staying done re-upserts nothing). Shadowed locally, so a delta
     /// reconnect cannot double-notify. A full snapshot replay (cold start /

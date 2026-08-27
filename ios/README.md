@@ -345,6 +345,15 @@ A pinned filter-chip row (`All · Needs you · repo₁…repoₙ`) plus a
 zero agents are blocked the whole "Needs you" section is hidden — no
 `Needs you (0)` header and no empty-state row.
 
+The chip row is the List's first pinned section header rather than a
+`.safeAreaInset`: during pull-to-refresh (issue #219) chrome, pinned repo
+headers, and rows translate as one scroll surface — no stranded repo header
+or black gap. Pulling down (or the accessible Refresh button in the chip row
+and the toolbar Refresh fleet item) fetches one authoritative
+`GET /snapshot`; refreshes are serialized/coalesced, revision-ordered
+against the SSE stream (`FleetStore.applyRefresh`), never touch the stream
+task, and surface failures in the dismissible banner.
+
 The iOS test target includes coverage for the disclosure transition and the actual
 `NavigationStack` path reconciliation when an agent is deleted, explicit
 lifecycle labels, Recent-output block rendering + 4-state machine, and grant

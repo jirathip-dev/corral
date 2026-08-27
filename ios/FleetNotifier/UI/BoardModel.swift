@@ -411,10 +411,11 @@ enum BoardModel {
     // MARK: - Persistent connection indicator (#166 item review F1)
 
     /// The persistent board connection indicator, modeled as a pure function
-    /// of the fleet's connection state. It lives in the top `.safeAreaInset`
-    /// and is therefore independent of the Needs-you section, the pinned
-    /// chip row, and the active filter/search projection — a stale or
-    /// connecting board is never silently presented as live.
+    /// of the fleet's connection state. It lives in the List's first pinned
+    /// section header — the filter chrome (`fleetChrome`) — and is
+    /// therefore independent of the Needs-you section, the pinned chip row,
+    /// and the active filter/search projection — a stale or connecting board
+    /// is never silently presented as live.
     static func connectionStatus(for state: FleetStore.ConnectionState) -> FleetConnectionStatus {
         switch state {
         case .connected: return .connected

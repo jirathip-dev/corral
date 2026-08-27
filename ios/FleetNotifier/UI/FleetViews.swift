@@ -1796,6 +1796,28 @@ struct FleetView: View {
         let chips = BoardFilter.chips(for: agents)
         return NavigationStack(path: $viewState.navigationPath) {
             List {
+                // Issue #219: the filter chrome is now the FIRST section of
+                // the same physical scroll surface (a pinned header) instead
+                // of a `.safeAreaInset` outside the list. During the pull
+                // gesture the chrome, section headers, and rows therefore
+                // translate as one unit — no stranded repo header and no
+                // black gap. Normal scrolling keeps the chrome pinned under
+                // the navigation bar. The zero-height row keeps the section
+                // non-empty so the plain List renders its pinned header even
+                // on a zero-agent board.
+                if model.mode != .needsSetup {
+                    Section {
+                        Color.clear
+                            .frame(height: 0)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } header: {
+                        pinnedHeader(fillsInteractiveWidth: true) {
+                            fleetChrome(chips: chips)
+                        }
+                    }
+                }
                 if let banner = model.banner {
                     BannerView(banner: banner) {
                         model.banner = nil
@@ -1815,6 +1837,12 @@ struct FleetView: View {
             // D25's "sticky NEEDS YOU": only the plain list style pins
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
+            // Issue #219: native pull-to-refresh on the one physical
+            // scroll surface. `refreshFleet` is coalesced and never
+            // touches the SSE stream task.
+            .refreshable {
+                await model.refreshFleet()
+            }
             .navigationTitle("Fleet")
 #if DEBUG
             .task {
@@ -1828,15 +1856,10 @@ struct FleetView: View {
             }
 #endif
             .modifier(FleetSearchable(mode: model.mode, text: $searchText))
-            // #166 review F1/F3: the connection indicator and the pinned
-            // filter-chip row live in a persistent top inset, so they stay
-            // on screen while scrolling and never depend on the Needs-you
-            // section, filters, or search.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if model.mode != .needsSetup {
-                    fleetTopBar(chips: chips)
-                }
-            }
+            // Issue #219: the chrome now lives INSIDE the list (first
+            // pinned section) — see the List body above. No top
+            // `.safeAreaInset`, so the pull gesture cannot strand the
+            // filter-chip strip against a fixed surface.
             // R2-F: drop drafts for agents that left the snapshot. This
             // body (and the Set below) re-evaluates on fleet
             // snapshot/delta changes — the exact moments a prune can
@@ -1870,6 +1893,9 @@ struct FleetView: View {
                             }
                         }
 #endif
+                        Button("Refresh fleet", systemImage: "arrow.clockwise") {
+                            Task { await model.refreshFleet() }
+                        }
                         Button("Settings", systemImage: "gearshape") {
                             showSettings = true
                         }
@@ -1925,10 +1951,11 @@ struct FleetView: View {
     /// IDLE/DONE. Section headers pin while scrolling via the `.plain`
     /// list style set on the List (inset-grouped headers do not pin).
     /// The filter-chip row is no longer a header here — it lives in the
-    /// persistent `.safeAreaInset` (`fleetTopBar`). The list is a plain
-    /// `Group` of Sections so pinned headers and `.swipeActions` stay direct
-    /// List children; durations tick themselves via `TimeInStateLabel` so the
-    /// board is not re-rendered at 1 Hz (re-review P4).
+    /// List's first pinned section header (`fleetChrome`). The list is a
+    /// plain `Group` of Sections so pinned headers and `.swipeActions`
+    /// stay direct List children; durations tick themselves via
+    /// `TimeInStateLabel` so the board is not re-rendered at 1 Hz
+    /// (re-review P4).
     @ViewBuilder
     private func fleetList(agents: [Agent]) -> some View {
         if queryActive {
@@ -2002,8 +2029,10 @@ struct FleetView: View {
     }
 
     /// The filter-chip row (`All · Needs you · repo₁…repoₙ`). Rendered inside
-    /// the persistent top inset (`fleetTopBar`), so it truly stays on screen
-    /// while scrolling rather than being a section header that scrolls away.
+    /// the List's first pinned section header (`fleetChrome`) — a pinned
+    /// plain-list header, so it truly stays on screen while scrolling yet
+    /// moves with the same scroll surface during the pull gesture (issue
+    /// #219).
     @ViewBuilder
     private func filterChipRow(chips: [BoardFilterChip]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -2049,19 +2078,53 @@ struct FleetView: View {
         PinnedHeader(fillsInteractiveWidth: fillsInteractiveWidth, content: content)
     }
 
-    /// #166 review F1/F3: the persistent top inset. In live mode it always
-    /// shows the connection status (even with zero blocked agents, active
-    /// filters, or search), then the always-visible filter-chip row. Demo
-    /// mode skips the connection line (there is no stream) but keeps chips.
+    /// Issue #219: the persistent filter chrome, now the first pinned
+    /// section header of the List. In live mode it always shows the
+    /// connection status (even with zero blocked agents, active filters,
+    /// or search), then the always-visible filter-chip row plus the
+    /// accessible Refresh button. Demo mode skips the connection line
+    /// (there is no stream) but keeps chips. PinnedHeader supplies the
+    /// `.bar` background, so the strip stays legible over scrolling rows.
     @ViewBuilder
-    private func fleetTopBar(chips: [BoardFilterChip]) -> some View {
+    private func fleetChrome(chips: [BoardFilterChip]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.mode == .live {
                 connectionStatusLine
             }
-            filterChipRow(chips: chips)
+            HStack(alignment: .center, spacing: 8) {
+                filterChipRow(chips: chips)
+                refreshButton
+            }
         }
-        .background(.bar, ignoresSafeAreaEdges: [])
+    }
+
+    /// Issue #219: the explicit, accessible non-gesture refresh affordance
+    /// (variants A/B/C all keep one in/next to the chrome). Mirrors the
+    /// gesture: coalesced through `model.refreshFleet()`, shows progress
+    /// while in flight, and re-enables on completion or failure.
+    @ViewBuilder
+    private var refreshButton: some View {
+        Button {
+            Task { await model.refreshFleet() }
+        } label: {
+            if model.isRefreshingFleet {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isRefreshingFleet)
+        .accessibilityLabel("Refresh fleet")
+        .accessibilityHint("Double tap to fetch the current fleet snapshot")
+        .padding(.trailing, 12)
     }
 
     /// Connection indicator line, modeled by `BoardModel.connectionStatus` so

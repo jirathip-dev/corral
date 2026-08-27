@@ -41,6 +41,7 @@
 //! environment (N6). See [`crate::push`] for the D16 architecture and the
 //! provisioning inputs (the `.p8` push key is Guy's).
 
+pub(crate) mod cors;
 pub mod drive;
 pub mod fleets;
 pub mod issues;
@@ -98,6 +99,11 @@ pub struct AppState {
     /// from this provider. Tests inject a stub; production shells
     /// `herdr-fleet list`.
     pub fleets: Arc<dyn crate::fleet::cli::FleetOpsProvider>,
+    /// #215: exact-origin allowlist for the read plane's CORS headers
+    /// (`--cors-origin` / `CORRALD_CORS_ORIGIN`). Empty (the default) =
+    /// no CORS headers at all — the daemon behaves exactly as before.
+    /// See [`cors`] for the never-widen rules.
+    pub cors_origins: Vec<String>,
 }
 
 impl Default for AppState {
@@ -122,6 +128,7 @@ impl Default for AppState {
             // replace it with a stub so the hermetic suite never depends on
             // a live `herdr-fleet` on PATH.
             fleets: Arc::new(crate::fleet::cli::CliFleetOpsProvider),
+            cors_origins: Vec::new(),
         }
     }
 }
@@ -131,18 +138,29 @@ pub fn router(state: AppState) -> Router {
     // a side effect here: router() is also the test constructor (N6), and
     // reading CORRAL_APNS_* from every test's ambient env would race the
     // config tests and arm a live notifier on machines that export it.
-    Router::new()
+    //
+    // #215: the CORS layer sits on the READ routes only, so a browser page
+    // from an allowlisted origin can read the live board; the write plane
+    // (/drive, device-token, grants-read, auth routes) never emits CORS
+    // headers — a cross-origin signed write is blocked by the browser.
+    let state = Arc::new(state);
+    let read = Router::new()
         .route("/healthz", get(healthz))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/history", get(history))
         .route("/issues", get(issues::issues))
         .route("/fleets", get(fleets::fleets))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            cors::cors,
+        ));
+    let write = Router::new()
         .route("/drive", post(drive))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))
-        .merge(crate::auth::http::auth_routes())
-        .with_state(Arc::new(state))
+        .merge(crate::auth::http::auth_routes());
+    read.merge(write).with_state(state)
 }
 
 async fn healthz() -> &'static str {

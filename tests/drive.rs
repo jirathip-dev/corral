@@ -343,6 +343,7 @@ fn harness() -> Harness {
         replay: Arc::new(ReplayTable::default()),
         issues: Arc::new(corrald::api::issues::IssuesCache::default()),
         fleets: Arc::new(corrald::fleet::cli::CliFleetOpsProvider),
+        cors_origins: Vec::new(),
     });
     Harness {
         store,

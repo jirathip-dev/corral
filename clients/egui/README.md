@@ -1,8 +1,11 @@
-# corrald-ui — Corral P4 desktop client (egui/wgpu)
+# corrald-ui — Corral P4 client (egui, desktop + read-only web)
 
 Dark-dashboard fleet board for corrald (`docs/corral/P4-brief.md` W2). One
-Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
-(`docs/corral/P4-conformance.md` is the normative contract).
+Rust codebase, macOS + Linux, **plus a read-only WebAssembly build** (`#215`):
+the same board rendered in a browser from corrald's credential-free read
+plane (`/snapshot`, `/events` SSE) or from a bundled demo fixture — no
+writes, no signing keys, no keyring, no registration. Speaks corrald's HTTP
+surface directly (`docs/corral/P4-conformance.md` is the normative contract).
 
 ## What it does
 
@@ -192,12 +195,109 @@ itself boot straight to the board, register once (registration screen
 in-app, or the probe flow) so `config.json` carries the matching
 registration for the host fingerprint.
 
+## Web build — read-only board + GitHub Pages demo (#215)
+
+The same egui board compiled to `wasm32-unknown-unknown` (eframe
+glow/WebGL, no tokio runtime, no `keyring`, no `/drive`):
+
+- **Demo data by default.** The wasm bundles `assets/demo-fixture.json`
+  (a representative snapshot + a short canned SSE delta sequence + the
+  issue/fleet projections) and animates through it, so the deployed page
+  shows a believable fleet board with **no corrald anywhere**.
+- **Live daemon optional.** The first-open setup panel offers
+  "Demo data | Live daemon" with the daemon base URL (default
+  `http://127.0.0.1:8474`); both persist to browser storage and survive a
+  refresh. Nothing is compiled into the wasm.
+
+### Read-only boundary (never widened)
+
+| Surface | Web | Desktop |
+|---|---|---|
+| `GET /snapshot`, `GET /events` SSE | yes | yes |
+| `GET /issues`, `GET /fleets` (read projections) | yes | yes |
+| `POST /drive`, `POST /step-up`, `POST /register`, `GET /grants` | **no** | yes |
+| `/host-key`, `keyring`, device signing | **no** | yes |
+
+Every write control is replaced by a disabled **read-only (web)**
+indicator (`BoardActions::read_only`), and the drive callback is a no-op.
+`read_tail` is a signed /drive capability, so the web build does not fetch
+recent-output either — that stays desktop.
+
+### Build (wasm-pack + target)
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+cargo install wasm-pack                       # once (or use trunk)
+cd clients/egui
+wasm-pack build --target web --out-dir pkg --out-name corral-web
+cp web/index.html pkg/                        # static shell + canvas
+```
+
+`pkg/` is the deployable static site: `index.html`, `corral-web.js`,
+`corral-web_bg.wasm`. (A `trunk` setup works identically — `trunk build`
+from `clients/egui` producing the same artifacts; the entrypoint waits for
+`<canvas id="corral">`.)
+
+### Local live check
+
+```sh
+cd clients/egui/pkg && python3 -m http.server 8000   # http://127.0.0.1:8000
+# and, on the machine running corrald (loopback by default):
+corrald --cors-origin http://127.0.0.1:8000
+```
+
+Point the web page at `http://127.0.0.1:8474` (or any host you can reach)
+and switch to "Live daemon". If you serve the page from another machine,
+use that machine's IP in `--cors-origin` and omit `--bind` only on a
+permitted interface (never public — corrald refuses public binds).
+
+### Daemon CORS flag (`--cors-origin` / `$CORRALD_CORS_ORIGIN`)
+
+corrald's read plane is credential-free by design (#65), so the only
+daemon-side change the browser needs is an `Access-Control-Allow-Origin` on
+the read routes. The policy (see `src/api/cors.rs`):
+
+- **Opt-in:** no flag → the daemon emits zero CORS headers, exactly as
+  before.
+- **Exact allowlist:** `--cors-origin https://user.github.io` may be
+  repeated; `$CORRALD_CORS_ORIGIN=https://a,https://b` does the same. `*`
+  is refused at startup. Matching is byte-exact, `scheme://host[:port]`,
+  no trailing slash.
+- **Read plane only.** The middleware sits only on `/healthz`,
+  `/snapshot`, `/events`, `/history`, `/issues`, `/fleets`. The write
+  plane (`/drive`, device-token, grants-read, auth routes) never emits
+  CORS headers — a browser from another origin cannot complete a signed
+  write even if the page tried.
+- **Permitted binds only.** `--bind` is already restricted to loopback /
+  RFC 1918 / Tailscale-CGNAT / ULA by `bind_permitted`, so CORS is only
+  ever reachable where the read plane itself is allowed to be.
+
+### Deploying the GitHub Pages demo
+
+1. Build as above, then copy the **contents** of `pkg/` into a Pages
+   host (a `gh-pages` branch of your Pages repo, or the repo root / docs
+   folder depending on your Pages settings).
+2. Open `https://<user>.github.io/<repo>/` — it renders the demo board
+   instantly (demo fixture is compiled into the wasm; nothing runs on a
+   server).
+3. Deploy again by re-running step 1 on a new build and pushing.
+4. To demo LIVE data, run corrald on the *viewing* machine and put its
+   origin in the allowlist:
+   `corrald --cors-origin https://<user>.github.io` (the full origin of
+   the deployed page, scheme + host, no path).
+
+Pages enablement itself (repo settings / custom domain) is a one-time
+human step outside this repo; it requires no code changes on repeat
+deploys.
+
 ## Layout
 
 ```
 src/
-  main.rs      eframe entry (wgpu renderer) + tokio runtime
-  app.rs       app state, channels, registration, drive dispatch
+  main.rs      entrypoints: eframe native (wgpu) + wasm web (glow)
+  app.rs       app state, channels, registration, drive dispatch (native)
+  web.rs       read-only wasm board: setup panel, demo fixture, live SSE
+  demo.rs      bundled demo fixture loader (assets/demo-fixture.json)
   model.rs     wire mirrors of src/core/model.rs + rendering helpers
   protocol.rs  snapshot/SSE/register/admin-grants/audit client + SSE parser
   drive.rs     signed envelope, typing, idempotent retries, step-up

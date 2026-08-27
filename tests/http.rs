@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use corrald::api::{AppState, router};
 use corrald::core::model::{Agent, AgentState, Change, Resume};
 use corrald::core::store::Store;
@@ -560,5 +560,218 @@ async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
     assert!(
         json["repos"].get("foo").is_none(),
         "no guessed category from gh_repo"
+    );
+}
+
+// --- #215: narrow CORS layer on the credential-free read plane ---
+
+const CORS_ORIGIN: &str = "https://demo.corral.pages.github.io";
+
+#[tokio::test]
+async fn cors_read_plane_reflects_only_allowlisted_origin() {
+    let store = Store::new();
+    let app = router(AppState {
+        store,
+        cors_origins: vec![CORS_ORIGIN.to_string()],
+        ..Default::default()
+    });
+
+    // Matching origin -> reflected on a read route.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/healthz")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&HeaderValue::from_static(CORS_ORIGIN))
+    );
+    assert!(
+        res.headers()
+            .get_all(header::VARY)
+            .iter()
+            .any(|v| v == "Origin"),
+        "Vary: Origin so caches key on the echoed origin"
+    );
+
+    // Non-allowlisted origin -> no CORS headers at all.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/healthz")
+                .header(header::ORIGIN, "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none(),
+        "unlisted origin never gets CORS"
+    );
+
+    // No Origin header (same-origin/curl) -> unchanged response, no CORS.
+    let res = app
+        .clone()
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cors_preflight_answers_read_routes_only_for_allowlisted_origin() {
+    let store = Store::new();
+    let app = router(AppState {
+        store,
+        cors_origins: vec![CORS_ORIGIN.to_string()],
+        ..Default::default()
+    });
+
+    // OPTIONS /snapshot + matching origin -> 204 with the read method set.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/snapshot")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&HeaderValue::from_static(CORS_ORIGIN))
+    );
+    assert_eq!(
+        res.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+        Some(&HeaderValue::from_static("GET, OPTIONS"))
+    );
+
+    // OPTIONS from an unlisted origin -> blocked (no ACAO).
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/snapshot")
+                .header(header::ORIGIN, "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cors_never_emitted_on_the_write_plane() {
+    let store = Store::new();
+    let app = router(AppState {
+        store,
+        cors_origins: vec![CORS_ORIGIN.to_string()],
+        ..Default::default()
+    });
+
+    // POST /drive from the allowlisted origin: the response carries NO
+    // Access-Control-Allow-Origin, so a browser cannot read it (and the
+    // preflight for the JSON POST fails).
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/drive")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none(),
+        "the write plane never emits CORS headers"
+    );
+
+    // The write plane has no OPTIONS route at all: no CORS anywhere.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/drive")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none(),
+        "write plane is never CORS-enabled"
+    );
+
+    // Auth routes (host-key) are write-adjacent and also stay CORS-free.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/host-key")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cors_default_state_never_emits_cors_headers() {
+    let store = Store::new();
+    let app = router(AppState {
+        store,
+        ..Default::default()
+    });
+    let res = app
+        .oneshot(
+            Request::get("/healthz")
+                .header(header::ORIGIN, CORS_ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none(),
+        "no allowlist configured -> the daemon behaves exactly as before"
     );
 }

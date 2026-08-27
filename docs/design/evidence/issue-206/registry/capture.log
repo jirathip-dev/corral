@@ -1,31 +1,30 @@
-2026-08-27T05:44:11.025722Z  INFO corrald_ui::protocol: SSE connected to corrald /events base_url=http://127.0.0.1:52396
-2026-08-27T05:44:11.027800Z  INFO corrald_ui::app: native screenshot evidence selected live agent; Cards hydration remains grant-gated agent_id=herdr:pane:design-gate:p1 read_tail_advertised=true read_tail_granted=false
-2026-08-27T05:44:11.124984Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:11.339290Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:12.344239Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:12.551466Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:13.554424Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:13.766818Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:14.771892Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:14.983914Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:15.988959Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:16.201749Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:17.206327Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:17.418031Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:18.423130Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:18.636607Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:19.637449Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:19.847697Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:20.851058Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:21.057437Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:22.062553Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:22.278598Z  INFO corrald_ui::app: exact-owned native window wake completed pid=92697 command=<external-temp>
-2026-08-27T05:44:23.037151Z  INFO corrald_ui::app: deferring viewport screenshot; exact-owned wake schedule remains active path=<stage>/live-after.png visible=false frontmost=false reason_code="defer_probe_pending"
-2026-08-27T05:44:23.283638Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=92697 command=<external-temp> path=<stage>/live-after.png
-2026-08-27T05:44:23.374134Z  INFO corrald_ui::native_window_probe: native window probe evaluation sample_id=1 timestamp_unix_ms=1787809463374 action="dispatch_evaluation" pid=92697 process_pid=Some(92697) exact_pid_match=true process_visible=Some(true) window_visible=Some(true) frontmost=Some(true) key_window=Some(true) main_window=Some(true) frontmost_application_pid=Some(92697) frontmost_application_matches_target=Some(true) cg_owner_pid_match=Some(true) cg_window_count=1 non_target_window_count=Some(25) cg_windows={"action":"dispatch_evaluation","cg_error":null,"cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":892.0,"width":1320.0,"x":300.0,"y":70.0},"layer":0,"onscreen":true,"placement":14,"window_number":10901}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":92697,"frontmost_gate":true,"key_window":true,"main_window":true,"non_target_window_count":25,"pid":92697,"probe_error":null,"probe_ok":true,"process_pid":92697,"process_visible":true,"reason_code":"dispatch_ready","sample_id":1,"timestamp_unix_ms":1787809463374,"visible_gate":true,"window_visible":true} reason_code="dispatch_ready"
-2026-08-27T05:44:23.386907Z  INFO corrald_ui::app: requesting viewport screenshot path=<stage>/live-after.png attempt=1 visible=true frontmost=true reason_code="dispatch_ready"
-2026-08-27T05:44:23.438111Z  INFO corrald_ui::app: screenshot event received path=<stage>/live-after.png width=1320 height=860 pixels=1135200
-2026-08-27T05:44:23.440995Z  INFO corrald_ui::app: screenshot saved — exiting path=<stage>/live-after.png
+2026-08-27T06:08:22.455500Z  INFO corrald_ui::protocol: SSE connected to corrald /events base_url=http://127.0.0.1:54866
+2026-08-27T06:08:22.482902Z  INFO corrald_ui::app: native screenshot evidence selected live agent; Cards hydration remains grant-gated agent_id=herdr:pane:design-gate:p1 read_tail_advertised=true read_tail_granted=false
+2026-08-27T06:08:22.549474Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:22.990541Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:23.994694Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:24.201007Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:25.204077Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:25.518626Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:26.520054Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:26.725467Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:27.725895Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:28.050677Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:29.055758Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:29.263298Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:30.268392Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:30.477734Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:31.478960Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:31.692113Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:32.697196Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:33.010599Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:34.015682Z  INFO corrald_ui::app: requesting exact-owned native window wake pid=89299 command=<external-temp> path=<stage>/live-after.png
+2026-08-27T06:08:34.223018Z  INFO corrald_ui::app: exact-owned native window wake completed pid=89299 command=<external-temp>
+2026-08-27T06:08:34.489140Z  INFO corrald_ui::app: deferring viewport screenshot; exact-owned wake schedule remains active path=<stage>/live-after.png visible=false frontmost=false reason_code="defer_probe_pending"
+2026-08-27T06:08:34.859150Z  INFO corrald_ui::native_window_probe: native window probe evaluation sample_id=1 timestamp_unix_ms=1787810914859 action="dispatch_evaluation" pid=89299 process_pid=Some(89299) exact_pid_match=true process_visible=Some(true) window_visible=Some(true) frontmost=Some(true) key_window=Some(true) main_window=Some(true) frontmost_application_pid=Some(89299) frontmost_application_matches_target=Some(true) cg_owner_pid_match=Some(true) cg_window_count=1 non_target_window_count=Some(25) cg_windows={"action":"dispatch_evaluation","cg_error":null,"cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":892.0,"width":1320.0,"x":300.0,"y":70.0},"layer":0,"onscreen":true,"placement":14,"window_number":10940}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":89299,"frontmost_gate":true,"key_window":true,"main_window":true,"non_target_window_count":25,"pid":89299,"probe_error":null,"probe_ok":true,"process_pid":89299,"process_visible":true,"reason_code":"dispatch_ready","sample_id":1,"timestamp_unix_ms":1787810914859,"visible_gate":true,"window_visible":true} reason_code="dispatch_ready"
+2026-08-27T06:08:34.872553Z  INFO corrald_ui::app: requesting viewport screenshot path=<stage>/live-after.png attempt=1 visible=true frontmost=true reason_code="dispatch_ready"
+2026-08-27T06:08:34.923666Z  INFO corrald_ui::app: screenshot event received path=<stage>/live-after.png width=1320 height=860 pixels=1135200
+2026-08-27T06:08:34.927516Z  INFO corrald_ui::app: screenshot saved — exiting path=<stage>/live-after.png
 
 --- native window probe records ---
-{"action":"dispatch_evaluation","cg_error":null,"cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":892.0,"width":1320.0,"x":300.0,"y":70.0},"layer":0,"onscreen":true,"placement":14,"window_number":10901}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":92697,"frontmost_gate":true,"key_window":true,"main_window":true,"non_target_window_count":25,"pid":92697,"probe_error":null,"probe_ok":true,"process_pid":92697,"process_visible":true,"reason_code":"dispatch_ready","sample_id":1,"timestamp_unix_ms":1787809463374,"visible_gate":true,"window_visible":true}
+{"action":"dispatch_evaluation","cg_error":null,"cg_owner_pid_match":true,"cg_window_list":[{"bounds":{"height":892.0,"width":1320.0,"x":300.0,"y":70.0},"layer":0,"onscreen":true,"placement":14,"window_number":10940}],"exact_pid_match":true,"frontmost":true,"frontmost_application_matches_target":true,"frontmost_application_pid":89299,"frontmost_gate":true,"key_window":true,"main_window":true,"non_target_window_count":25,"pid":89299,"probe_error":null,"probe_ok":true,"process_pid":89299,"process_visible":true,"reason_code":"dispatch_ready","sample_id":1,"timestamp_unix_ms":1787810914859,"visible_gate":true,"window_visible":true}

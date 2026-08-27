@@ -3247,6 +3247,7 @@ mod tests {
             screenshot_agent_id: None,
             screenshot_agent_selected: false,
             screenshot_wake_stop: None,
+            screenshot_wake_active: None,
             screenshot_wake_command: None,
             screenshot_last_wake: None,
             window_diagnostic: false,

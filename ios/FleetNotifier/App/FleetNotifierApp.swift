@@ -14,6 +14,10 @@ struct FleetNotifierApp: App {
 #if DEBUG
                     if CommandLine.arguments.contains("-liveVerify") {
                         LiveVerifyRunner(model: model).run()
+                    } else if let presentation = CorralDemoLaunch.presentation(
+                        arguments: CommandLine.arguments) {
+                        model.enterDemo(presentation: presentation,
+                                        detailAgentId: DemoFleet.featuredAgentID)
                     } else if CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -40,6 +44,23 @@ struct FleetNotifierApp: App {
         }
     }
 }
+
+#if DEBUG
+/// Launch arguments for the permanent, local-only design-gate fixture. The
+/// route is opt-in and has no effect on normal Debug launches or any Release
+/// build. `-corralDemoBefore` implies the same detail route in the app task.
+enum CorralDemoLaunch {
+    static let detailArgument = "-corralDemoDetail"
+    static let beforeArgument = "-corralDemoBefore"
+
+    static func presentation(arguments: [String]) -> AppModel.DemoPresentation? {
+        guard arguments.contains(detailArgument) || arguments.contains(beforeArgument) else {
+            return nil
+        }
+        return arguments.contains(beforeArgument) ? .before : .after
+    }
+}
+#endif
 
 struct RootView: View {
     @ObservedObject var model: AppModel

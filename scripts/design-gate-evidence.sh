@@ -10,6 +10,7 @@
 #
 # Output:
 #   docs/design/evidence/issue-<N>/prototype.png
+#   docs/design/evidence/issue-<N>/ios-before-detail.png (iOS demo only)
 #   docs/design/evidence/issue-<N>/live-after.png
 #   docs/design/evidence/issue-<N>/comparison.png
 #   docs/design/evidence/issue-<N>/conformance.md
@@ -106,6 +107,7 @@ IOS_MODE="live"
 IOS_DELAY_SECONDS="4"
 IOS_COMMAND=""
 IOS_LAUNCH_ARGS=()
+IOS_BEFORE_LAUNCH_ARGS=()
 PROVENANCE_NOTE=""
 OUTPUT_ROOT="$REPO_DIR/docs/design/evidence"
 DRY_RUN=0
@@ -139,6 +141,7 @@ Options:
   --ios-mode live|demo        Live requires --ios-command; demo is explicit.
   --ios-command SHELL         Prepare/launch live app inside hermes-sim-task.
   --ios-launch-arg ARG        Repeatable simulator launch argument.
+  --ios-before-launch-arg ARG Repeatable before-frame launch argument (iOS).
   --ios-delay-seconds N       Wait before simulator screenshot (default: 4).
   --provenance-note TEXT      Extra operator/environment note in provenance.
   --output-root PATH          Evidence root override (test seam).
@@ -267,6 +270,11 @@ while [[ $# -gt 0 ]]; do
       IOS_LAUNCH_ARGS+=("$2")
       shift 2
       ;;
+    --ios-before-launch-arg)
+      require_value "$1" "${2:-}"
+      IOS_BEFORE_LAUNCH_ARGS+=("$2")
+      shift 2
+      ;;
     --ios-delay-seconds)
       require_value "$1" "${2:-}"
       IOS_DELAY_SECONDS="$2"
@@ -316,6 +324,32 @@ if [[ "$SURFACE" == "egui" ]]; then
     board|issues|registry|settings) ;;
     *) die "--egui-tab must be board, issues, registry, or settings" ;;
   esac
+fi
+
+# Issue #205's approved evidence bundle contains both reproducible frames. A
+# caller can override the arguments explicitly, but the safe Debug route is
+# the default for the issue so a future capture cannot silently fall back to a
+# fleet list or a copied fixture.
+if [[ "$ISSUE" == "205" && "$SURFACE" == "ios" && "$IOS_MODE" == "demo" ]]; then
+  has_detail_argument=0
+  if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
+    for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
+      if [[ "$launch_arg" == "-corralDemoDetail" ]]; then
+        has_detail_argument=1
+        break
+      fi
+    done
+  fi
+  if [[ "$has_detail_argument" -eq 0 ]]; then
+    if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
+      IOS_LAUNCH_ARGS=("-corralDemoDetail" "${IOS_LAUNCH_ARGS[@]}")
+    else
+      IOS_LAUNCH_ARGS=("-corralDemoDetail")
+    fi
+  fi
+  if [[ "${#IOS_BEFORE_LAUNCH_ARGS[@]}" -eq 0 ]]; then
+    IOS_BEFORE_LAUNCH_ARGS=("-corralDemoDetail" "-corralDemoBefore")
+  fi
 fi
 
 is_decimal() {
@@ -441,7 +475,13 @@ CONTENT_IDENTITY_HELPER="$SCRIPT_DIR/design-gate-content-identity.py"
   || die "implementation identity helper is missing: $CONTENT_IDENTITY_HELPER"
 
 implementation_identity() {
-  "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR"
+  if [[ "$ISSUE" == "205" ]]; then
+    "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR" --issue 205
+  else
+    # Preserve the historical #206 identity for the generic/test seams and
+    # other design-gate issue bundles.
+    "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR"
+  fi
 }
 
 absolute_path() {
@@ -1320,10 +1360,15 @@ capture_ios() {
   local project_q
   local derived_q
   local output_q
+  local before_output_q
   local command_text
   local launch_arg
-  local launch_args_q=""
-  local has_demo_mode=0
+  local before_launch_args_q=""
+  local after_launch_args_q=""
+  local before_has_demo_mode=0
+  local after_has_demo_mode=0
+  local -a before_args=()
+  local -a after_args=()
 
   command -v hermes-sim-task >/dev/null 2>&1 \
     || die "hermes-sim-task is required for iOS capture; do not run simctl directly"
@@ -1337,24 +1382,43 @@ capture_ios() {
     die "--ios-app is required with --no-build"
   fi
 
-  if [[ -n "${IOS_LAUNCH_ARGS[*]-}" ]]; then
-    for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
-      if [[ "$launch_arg" == "-demoMode" ]]; then
-        has_demo_mode=1
-      fi
-    done
-  fi
-  if [[ "$IOS_MODE" == "demo" && "$has_demo_mode" -eq 0 ]]; then
-    if [[ -n "${IOS_LAUNCH_ARGS[*]-}" ]]; then
-      IOS_LAUNCH_ARGS=("-demoMode" "${IOS_LAUNCH_ARGS[@]}")
-    else
-      IOS_LAUNCH_ARGS=("-demoMode")
+  if [[ "$IOS_MODE" == "demo" ]]; then
+    if (( ${#IOS_BEFORE_LAUNCH_ARGS[@]} > 0 )); then
+      before_args=("${IOS_BEFORE_LAUNCH_ARGS[@]}")
     fi
-  fi
-  if [[ -n "${IOS_LAUNCH_ARGS[*]-}" ]]; then
-    for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
-      launch_args_q+=" $(shell_quote "$launch_arg")"
-    done
+    if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
+      after_args=("${IOS_LAUNCH_ARGS[@]}")
+    fi
+    if (( ${#before_args[@]} > 0 )); then
+      for launch_arg in "${before_args[@]}"; do
+        if [[ "$launch_arg" == "-demoMode" ]]; then
+          before_has_demo_mode=1
+        fi
+      done
+    fi
+    if (( ${#after_args[@]} > 0 )); then
+      for launch_arg in "${after_args[@]}"; do
+        if [[ "$launch_arg" == "-demoMode" ]]; then
+          after_has_demo_mode=1
+        fi
+      done
+    fi
+    if [[ "$before_has_demo_mode" -eq 0 ]]; then
+      before_args=("-demoMode" "${before_args[@]}")
+    fi
+    if [[ "$after_has_demo_mode" -eq 0 ]]; then
+      after_args=("-demoMode" "${after_args[@]}")
+    fi
+    if (( ${#before_args[@]} > 0 )); then
+      for launch_arg in "${before_args[@]}"; do
+        before_launch_args_q+=" $(shell_quote "$launch_arg")"
+      done
+    fi
+    if (( ${#after_args[@]} > 0 )); then
+      for launch_arg in "${after_args[@]}"; do
+        after_launch_args_q+=" $(shell_quote "$launch_arg")"
+      done
+    fi
   fi
 
   app_q="$(shell_quote "$app_path")"
@@ -1362,6 +1426,7 @@ capture_ios() {
   project_q="$(shell_quote "$REPO_DIR/ios/FleetNotifier.xcodeproj")"
   derived_q="$(shell_quote "$STAGE/ios-derived-data")"
   output_q="$(shell_quote "$STAGE/live-after.png")"
+  before_output_q="$(shell_quote "$STAGE/ios-before-detail.png")"
   command_text=$'set -euo pipefail\n'
   if [[ -n "$app_path" ]]; then
     command_text+="xcrun simctl install \"\$SIMULATOR_UDID\" $app_q"$'\n'
@@ -1371,7 +1436,13 @@ capture_ios() {
     command_text+="xcrun simctl install \"\$SIMULATOR_UDID\" \"\$app_path\""$'\n'
   fi
   if [[ "$IOS_MODE" == "demo" ]]; then
-    command_text+="xcrun simctl launch \"\$SIMULATOR_UDID\" $bundle_q$launch_args_q"$'\n'
+    command_text+="printf '%s\\n' 'capture: before frame via DEBUG demo route'"$'\n'
+    command_text+="xcrun simctl launch \"\$SIMULATOR_UDID\" $bundle_q$before_launch_args_q"$'\n'
+    command_text+="sleep $(shell_quote "$IOS_DELAY_SECONDS")"$'\n'
+    command_text+="xcrun simctl io \"\$SIMULATOR_UDID\" screenshot $before_output_q"$'\n'
+    command_text+="xcrun simctl terminate \"\$SIMULATOR_UDID\" $bundle_q || true"$'\n'
+    command_text+="printf '%s\\n' 'capture: after frame via DEBUG transcript-chat route'"$'\n'
+    command_text+="xcrun simctl launch \"\$SIMULATOR_UDID\" $bundle_q$after_launch_args_q"$'\n'
   else
     command_text+="$IOS_COMMAND"$'\n'
   fi
@@ -1379,19 +1450,25 @@ capture_ios() {
   command_text+="xcrun simctl io \"\$SIMULATOR_UDID\" screenshot $output_q"$'\n'
 
   if [[ "$IOS_MODE" == "demo" ]]; then
-    CAPTURE_KIND="iOS simulator screenshot via hermes-sim-task (Debug demo fixture)"
-    LIVE_DESCRIPTION="explicit Debug -demoMode simulator fixture; not live-daemon evidence"
+    CAPTURE_KIND="iOS simulator before/after screenshots via hermes-sim-task (Debug demo fixture)"
+    LIVE_DESCRIPTION="after frame uses the permanent Debug detail route; before frame uses its opt-in legacy presentation; neither is live-daemon evidence"
   else
     CAPTURE_KIND="iOS simulator screenshot via hermes-sim-task (caller-prepared live app)"
     LIVE_DESCRIPTION="caller-prepared iOS live app in a private Herdr-owned simulator"
   fi
-  CAPTURE_COMMAND="hermes-sim-task --shell <install/build, prepare, launch, and screenshot command>"
+  CAPTURE_COMMAND="hermes-sim-task --shell <install/build, before/after launch, and screenshot command>"
+  if [[ "$IOS_MODE" == "demo" ]]; then
+    CAPTURE_COMMAND+="; before launch args:${before_launch_args_q}; after launch args:${after_launch_args_q}"
+  fi
   log "capturing iOS surface through hermes-sim-task ($IOS_MODE mode)"
   if ! hermes-sim-task --shell "$command_text" >"$STAGE/capture.log" 2>&1; then
     tail -120 "$STAGE/capture.log" >&2 || true
     die "hermes-sim-task iOS capture failed; the private simulator was owned by the wrapper"
   fi
   assert_png "$STAGE/live-after.png"
+  if [[ "$IOS_MODE" == "demo" && "${#IOS_BEFORE_LAUNCH_ARGS[@]}" -gt 0 ]]; then
+    assert_png "$STAGE/ios-before-detail.png"
+  fi
 }
 
 print_dry_run() {
@@ -1399,7 +1476,7 @@ print_dry_run() {
   log "dry run"
   log "surface: $SURFACE"
   log "prototype: $PROTOTYPE"
-  log "output: $output_dir/{prototype.png,live-after.png,comparison.png,conformance.md,capture.log}"
+  log "output: $output_dir/{prototype.png,ios-before-detail.png,live-after.png,comparison.png,conformance.md,capture.log}"
   log "Chrome: $CHROME_BIN"
   if [[ -n "$LIVE_PNG" ]]; then
     log "live source: explicit supplied PNG fixture $LIVE_PNG"
@@ -1408,6 +1485,9 @@ print_dry_run() {
     log "egui tab: $EGUI_TAB"
   else
     log "live source: hermes-sim-task iOS capture in $IOS_MODE mode"
+    if [[ "${#IOS_BEFORE_LAUNCH_ARGS[@]}" -gt 0 ]]; then
+      log "before source: permanent Debug launch route with ${#IOS_BEFORE_LAUNCH_ARGS[@]} launch arguments"
+    fi
   fi
   if [[ "$SURFACE" == "ios" && "$IOS_MODE" == "live" ]]; then
     [[ -n "$IOS_COMMAND" ]] \
@@ -1448,13 +1528,28 @@ STAGE="$(mktemp -d "$OUTPUT_DIR/.design-gate.stage.XXXXXX")"
 CAPTURE_PID=""
 cleanup() {
   local cleanup_status=0
+  local remove_attempt
   if [[ -n "${CAPTURE_PID:-}" ]]; then
     if ! terminate_owned_child "$CAPTURE_PID" "capture"; then
       cleanup_status=1
     fi
   fi
   if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
-    rm -rf -- "$STAGE"
+    # Chrome can finish closing a profile helper just after Browser.close and
+    # briefly race the directory removal on macOS. Retry only this owned,
+    # stage-local path for a bounded interval; never broaden cleanup to a
+    # parent directory or a user's browser profile.
+    for remove_attempt in {1..20}; do
+      rm -rf -- "$STAGE" || true
+      if [[ ! -e "$STAGE" ]]; then
+        break
+      fi
+      sleep 0.25
+    done
+    if [[ -e "$STAGE" ]]; then
+      printf 'error: private design-gate stage survived bounded cleanup: %s\n' "$STAGE" >&2
+      cleanup_status=1
+    fi
   fi
   return "$cleanup_status"
 }
@@ -1504,6 +1599,12 @@ COMPARISON_SHA="$(sha256_file "$STAGE/comparison.png")"
 PROTOTYPE_DIMS="$(png_dimensions "$STAGE/prototype.png")"
 LIVE_DIMS="$(png_dimensions "$STAGE/live-after.png")"
 COMPARISON_DIMS="$(png_dimensions "$STAGE/comparison.png")"
+IOS_BEFORE_SHA="not applicable"
+IOS_BEFORE_DIMS="not applicable"
+if [[ -s "$STAGE/ios-before-detail.png" ]]; then
+  IOS_BEFORE_SHA="$(sha256_file "$STAGE/ios-before-detail.png")"
+  IOS_BEFORE_DIMS="$(png_dimensions "$STAGE/ios-before-detail.png")"
+fi
 GIT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 IDENTITY_AFTER="$(implementation_identity)" \
   || die "could not re-check the implementation content identity"
@@ -1526,28 +1627,45 @@ else
 fi
 CAPTURE_LOG_SHA="$(sha256_file "$STAGE/capture.log")"
 GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-if [[ "$SURFACE" == "egui" && "$ISSUE" == "206" && -z "$LIVE_PNG" ]]; then
-  COMMAND_LINE="scripts/test-design-gate-egui-integration.sh --publish"
-else
-  COMMAND_LINE="scripts/design-gate-evidence.sh --issue $ISSUE --surface $SURFACE"
-  if [[ "$SURFACE" == "egui" ]]; then
-    COMMAND_LINE+=" --egui-tab $EGUI_TAB"
-  fi
-  if [[ -n "$LIVE_PNG" ]]; then
-    COMMAND_LINE+=" --live-png <supplied-png>"
-  fi
-fi
-if [[ "$CHROME_BIN_EXPLICIT" -eq 1 && "$SURFACE" == "egui" ]]; then
-  RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
-else
-  RENDERER_GUIDANCE=""
-fi
 if [[ "$PROTOTYPE" == "$REPO_DIR/"* ]]; then
   PROTOTYPE_DISPLAY="${PROTOTYPE#"$REPO_DIR/"}"
 else
   PROTOTYPE_DISPLAY="$PROTOTYPE"
 fi
-
+if [[ "$SURFACE" == "egui" && "$ISSUE" == "206" && -z "$LIVE_PNG" ]]; then
+  COMMAND_LINE="scripts/test-design-gate-egui-integration.sh --publish"
+else
+  COMMAND_LINE="scripts/design-gate-evidence.sh --issue $ISSUE --surface $SURFACE"
+  if [[ -n "$PROTOTYPE_DISPLAY" ]]; then
+    COMMAND_LINE+=" --prototype $PROTOTYPE_DISPLAY"
+  fi
+  if [[ "$SURFACE" == "egui" ]]; then
+    COMMAND_LINE+=" --egui-tab $EGUI_TAB"
+  else
+    COMMAND_LINE+=" --ios-mode $IOS_MODE"
+    if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
+      for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
+        COMMAND_LINE+=" --ios-launch-arg $(shell_quote "$launch_arg")"
+      done
+    fi
+    if (( ${#IOS_BEFORE_LAUNCH_ARGS[@]} > 0 )); then
+      for launch_arg in "${IOS_BEFORE_LAUNCH_ARGS[@]}"; do
+        COMMAND_LINE+=" --ios-before-launch-arg $(shell_quote "$launch_arg")"
+      done
+    fi
+  fi
+  if [[ -n "$LIVE_PNG" ]]; then
+    COMMAND_LINE+=" --live-png <supplied-png>"
+  fi
+fi
+if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
+  COMMAND_LINE="CHROME_BIN=$(shell_quote "$CHROME_BIN") $COMMAND_LINE"
+fi
+if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
+  RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
+else
+  RENDERER_GUIDANCE=""
+fi
 # Markdown backticks are literal printf text, not shell command substitutions.
 # shellcheck disable=SC2016
 {
@@ -1593,7 +1711,12 @@ fi
   printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
   printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
   printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
-  printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated `docs/design/evidence/issue-206/` are excluded.\n'
+  if [[ "$ISSUE" == "205" ]]; then
+    printf -- '- Implementation identity scope: issue #205 iOS transcript implementation and tests, the applicable egui transcript mirror, release wiring/docs, capture generator, approved transcript prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; generated evidence is excluded.\n'
+  else
+    printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated evidence are excluded.\n'
+  fi
+  printf -- '- Renderer executable: `%s` (private profile, loopback-only DevTools, and owned cleanup)\n' "$CHROME_BIN"
   printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
   printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
   printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
@@ -1602,17 +1725,25 @@ fi
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'
   printf -- '| `prototype.png` | `%s` | `%s` |\n' "$PROTOTYPE_DIMS" "$PROTOTYPE_SHA"
+  if [[ "$IOS_BEFORE_DIMS" != "not applicable" ]]; then
+    printf -- '| `ios-before-detail.png` | `%s` | `%s` |\n' "$IOS_BEFORE_DIMS" "$IOS_BEFORE_SHA"
+  fi
   printf -- '| `live-after.png` | `%s` | `%s` |\n' "$LIVE_DIMS" "$LIVE_SHA"
   printf -- '| `comparison.png` | `%s` | `%s` |\n' "$COMPARISON_DIMS" "$COMPARISON_SHA"
   printf -- '| `capture.log` | `n/a` | `%s` |\n' "$CAPTURE_LOG_SHA"
   printf '\nThe comparison header is stamped with the target issue number. A supplied PNG or iOS Debug demo is explicitly labeled above and must not be read as proof of a live daemon session.\n'
 } >"$STAGE/conformance.md"
 
-for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
+PUBLISHED_ARTIFACTS=(prototype.png live-after.png comparison.png conformance.md capture.log)
+if [[ "$IOS_BEFORE_DIMS" != "not applicable" ]]; then
+  PUBLISHED_ARTIFACTS=(prototype.png ios-before-detail.png live-after.png comparison.png conformance.md capture.log)
+fi
+
+for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
   [[ -s "$STAGE/$artifact" ]] || die "validated artifact is missing or empty: $artifact"
 done
 
-for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
+for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
   mv -f -- "$STAGE/$artifact" "$OUTPUT_DIR/$artifact"
 done
 rm -rf -- "$STAGE"
@@ -1620,5 +1751,8 @@ STAGE=""
 
 log "wrote $OUTPUT_DIR"
 log "prototype: $OUTPUT_DIR/prototype.png ($PROTOTYPE_DIMS)"
+if [[ "$IOS_BEFORE_DIMS" != "not applicable" ]]; then
+  log "before: $OUTPUT_DIR/ios-before-detail.png ($IOS_BEFORE_DIMS)"
+fi
 log "live: $OUTPUT_DIR/live-after.png ($LIVE_DIMS)"
 log "comparison: $OUTPUT_DIR/comparison.png ($COMPARISON_DIMS)"

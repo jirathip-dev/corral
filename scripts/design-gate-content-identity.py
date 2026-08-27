@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
-"""Compute the non-circular implementation identity for #206 evidence.
+"""Compute non-circular implementation identities for design-gate evidence.
 
-The manifest is intentionally explicit and excludes every generated evidence
-path and unrelated workspace code. It covers only the egui client, the native
-capture/probe/verifier tooling, and the approved prototype. Runtime inputs
-such as the daemon, fixture repositories, and the built binary are recorded
-separately in each conformance file, so an unrelated merge cannot invalidate
-an otherwise identical capture. A narrow fingerprint of the renderer's
-selected Cargo.lock package records catches eframe/wgpu resolution changes
-without hashing the merge-fragile lockfile or workspace wholesale.
+Each issue has an explicit scope and excludes generated evidence paths and
+unrelated workspace code. Runtime inputs such as the daemon, fixture
+repositories, and built binaries are recorded separately in conformance, so
+an unrelated merge cannot invalidate an otherwise identical capture. The
+renderer lock fingerprint remains part of the #206 identity because eframe/
+wgpu resolution affects that native surface; #205 records the same narrow
+fingerprint for the shared workspace environment.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 from pathlib import Path
 import re
-import sys
 
 
-FILES = (
+ISSUE_206_FILES = (
     "clients/egui/Cargo.toml",
     "clients/egui/src",
     "docs/design/corral-ux-egui-redesign-prototype.html",
@@ -28,6 +27,30 @@ FILES = (
     "scripts/native-window-probe.swift",
     "scripts/test-design-gate-egui-integration.sh",
     "scripts/verify-design-gate-egui-evidence.py",
+)
+
+# The #205 identity is intentionally source-facing: every changed iOS/egui
+# implementation input, its regression coverage and release wiring, the
+# native capture generator, and the exact approved transcript prototype are
+# listed with individual hashes in conformance. Generated PNGs/logs and the
+# issue-205 evidence directory are never inputs to their own identity.
+ISSUE_205_FILES = (
+    "clients/egui/src/theme.rs",
+    "clients/egui/src/ui/board.rs",
+    "ios/FleetNotifier/App/AppModel.swift",
+    "ios/FleetNotifier/App/FleetNotifierApp.swift",
+    "ios/FleetNotifier/Demo/DemoFleet.swift",
+    "ios/FleetNotifier/UI/FleetViews.swift",
+    "ios/FleetNotifier/UI/RecentOutputModel.swift",
+    "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "ios/FleetNotifier.xcodeproj/project.pbxproj",
+    "ios/project.yml",
+    "ios/README.md",
+    "ios/check-release-demo.py",
+    "ios/release_source_manifest.py",
+    "scripts/design-gate-content-identity.py",
+    "scripts/design-gate-evidence.sh",
+    "docs/design/corral-ux-transcript-chat-prototype.html",
 )
 
 # These are the packages whose resolved versions/checksums or dependency
@@ -72,9 +95,9 @@ RENDERER_LOCK_PACKAGES = (
 )
 
 
-def files_for(root: Path) -> list[Path]:
+def files_for(root: Path, entries: tuple[str, ...]) -> list[Path]:
     paths: set[Path] = set()
-    for entry in FILES:
+    for entry in entries:
         path = root / entry
         if path.is_dir():
             paths.update(candidate for candidate in path.rglob("*") if candidate.is_file())
@@ -112,12 +135,22 @@ def renderer_dependency_fingerprint(lock_text: str) -> str:
     return hashlib.sha256(records.encode("utf-8")).hexdigest()
 
 
+def files_for_issue(root: Path, issue: str) -> list[Path]:
+    if issue == "205":
+        return files_for(root, ISSUE_205_FILES)
+    if issue == "206":
+        return files_for(root, ISSUE_206_FILES)
+    raise SystemExit(f"unsupported design-gate identity issue: {issue}")
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit(f"usage: {Path(sys.argv[0]).name} REPOSITORY")
-    root = Path(sys.argv[1]).resolve()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("repository")
+    parser.add_argument("--issue", choices=("205", "206"), default="206")
+    args = parser.parse_args()
+    root = Path(args.repository).resolve()
     entries: list[tuple[str, str]] = []
-    for path in files_for(root):
+    for path in files_for_issue(root, args.issue):
         relative = path.relative_to(root).as_posix()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         entries.append((relative, digest))
@@ -134,6 +167,7 @@ def main() -> int:
     manifest = "".join(f"{relative}\0{digest}\n" for relative, digest in entries)
     content_digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()
     print(f"sha256:{content_digest}")
+    print(f"- Identity issue: `#{args.issue}`")
     for relative, digest in entries:
         print(f"- `{relative}` — `{digest}`")
     print(

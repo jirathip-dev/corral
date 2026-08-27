@@ -1,18 +1,12 @@
 import Foundation
 
-// MARK: - Recent output surface (#167, D7/D8/D9/D10)
+// MARK: - Recent output surface (#205)
 //
-// PURE, UI-free view-model. It takes the daemon's already-segmented blocks
-// (live tail + older transcript pages) and produces the rows a SwiftUI
-// `ScrollView(.vertical)` renders, PLUS the four-state machine
-// (loading / empty / error / loaded) and the pagination cursor handling.
-//
-// The renderer stays dumb: this type owns "which divider sits where" and
-// "what state am I in", so it is unit-testable without a UI host.
+// This file deliberately contains the display contract rather than SwiftUI.
+// The daemon already knows the semantic block boundaries; the model keeps
+// those boundaries intact, removes only metadata lines, and exposes a
+// bounded, testable line/token representation for the view.
 
-/// The four async states for the whole Recent-output surface (D8). A stalled
-/// or nil older page shows what IS loaded plus the error row + Retry — never
-/// an infinite spinner (#160).
 enum RecentOutputPhase: Equatable, Sendable {
     case loading
     case empty
@@ -20,73 +14,383 @@ enum RecentOutputPhase: Equatable, Sendable {
     case loaded
 }
 
-/// One renderable row. `loadEarlier` is the full-width truncated divider row
-/// (tappable), carrying the `truncated_before` count when the daemon lifted a
-/// `... +N lines` marker, else nil (the generic "Load earlier" divider).
 enum RecentOutputRow: Equatable, Sendable {
     case block(TranscriptBlock)
     case loadEarlier(UInt32?)
     case error(TranscriptFailure)
     case loading
+
+    /// The content portion of a row identity. The view adds an occurrence
+    /// ordinal so equal lines/blocks never collide in a `ForEach`.
+    fileprivate var contentID: String {
+        switch self {
+        case .block(let block):
+            return "block|\(block.kind.rawValue)|\(block.at ?? 0)|\(block.text)"
+        case .loadEarlier(let count):
+            return "load-earlier|\(count.map(String.init) ?? "none")"
+        case .error(let failure):
+            return "error|\(failure.kind)|\(failure.message)"
+        case .loading:
+            return "loading"
+        }
+    }
 }
 
-/// Immutable render plan: phase + ordered rows (oldest→newest, newest at the
-/// bottom of the live tail) + the pagination affordances.
+struct RecentOutputIdentifiedRow: Equatable, Sendable, Identifiable {
+    let id: String
+    let row: RecentOutputRow
+}
+
+struct RecentOutputMetadata: Equatable, Sendable {
+    let model: String?
+    let effort: String?
+    let worktree: String?
+
+    init(model: String? = nil, effort: String? = nil, worktree: String? = nil) {
+        self.model = model
+        self.effort = effort
+        self.worktree = worktree
+    }
+
+    var isEmpty: Bool {
+        model == nil && effort == nil && worktree == nil
+    }
+
+    /// Extract metadata from both structured blocks and legacy tail lines.
+    /// The wire format's only display metadata marker is the canonical
+    /// `model effort · path` line. Key-looking prose such as `path: ...` is
+    /// still transcript content and must not be consumed as a badge.
+    static func extract(from blocks: [TranscriptBlock],
+                        fallbackLines: [String] = []) -> RecentOutputMetadata {
+        var found = RecentOutputMetadata()
+        for block in blocks {
+            for line in RecentOutputRender.messageLines(block.text) {
+                found = found.merged(with: parse(line))
+            }
+        }
+        for line in fallbackLines {
+            found = found.merged(with: parse(line))
+        }
+        return found
+    }
+
+    private func merged(with other: RecentOutputMetadata?) -> RecentOutputMetadata {
+        guard let other else { return self }
+        return RecentOutputMetadata(
+            model: model ?? other.model,
+            effort: effort ?? other.effort,
+            worktree: worktree ?? other.worktree)
+    }
+
+    fileprivate static func isMetadataLine(_ line: String) -> Bool {
+        parse(line) != nil
+    }
+
+    fileprivate static func parse(_ line: String) -> RecentOutputMetadata? {
+        let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+
+        let pieces = value.components(separatedBy: "·")
+        guard pieces.count >= 2,
+              let path = pieces.last?.trimmingCharacters(in: .whitespaces),
+              isWorktreePath(path) else {
+            return nil
+        }
+        let left = pieces.dropLast()
+            .joined(separator: " · ")
+            .trimmingCharacters(in: .whitespaces)
+        let words = left.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard !words.isEmpty else { return nil }
+        let last = String(words.last!).lowercased()
+        let effort = effortValues.contains(last) ? last : nil
+        let modelWords = effort == nil ? words : words.dropLast()
+        let model = modelWords.joined(separator: " ")
+        guard !model.isEmpty, isModelName(model) else { return nil }
+        return RecentOutputMetadata(model: model, effort: effort, worktree: path)
+    }
+
+    private static let effortValues: Set<String> = [
+        "minimal", "low", "medium", "high", "max"
+    ]
+
+    private static func isWorktreePath(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return value.hasPrefix("~")
+            || value.hasPrefix("/")
+            || lower.contains("worktree")
+            || value.contains("/")
+    }
+
+    private static func isModelName(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return lower.contains("gpt")
+            || lower.contains("claude")
+            || lower.contains("gemini")
+            || lower.contains("sonnet")
+            || lower.contains("opus")
+            || lower.contains("luna")
+            || lower.hasPrefix("o1")
+            || lower.hasPrefix("o3")
+            || lower.hasPrefix("o4")
+    }
+}
+
+enum RecentCodeSegmentKind: Equatable, Sendable {
+    case plain
+    case keyword
+    case string
+    case addition
+    case deletion
+    case comment
+}
+
+struct RecentCodeSegment: Equatable, Sendable {
+    let text: String
+    let kind: RecentCodeSegmentKind
+}
+
+struct RecentCodeLine: Equatable, Sendable {
+    let number: Int?
+    let text: String
+    let segments: [RecentCodeSegment]
+    let isHighlighted: Bool
+}
+
 struct RecentOutputRender: Equatable, Sendable {
     let phase: RecentOutputPhase
     let rows: [RecentOutputRow]
-    /// Transcript has another (older) page to load.
     let canLoadOlder: Bool
-    /// The transcript walk is in flight (show a progress row, not a spin).
     let transcriptLoading: Bool
-    /// Retry-able tail error (the live tail failed and has no blocks yet).
     let canRetryTail: Bool
-    /// Retry-able transcript cursor error.
     let canRetryTranscript: Bool
-    /// The wire cursor for the next (older) transcript page, if any.
     let nextCursor: String?
+    let metadata: RecentOutputMetadata
 }
 
-/// The pure transform. `tail` and `transcript` are the two panes from the
-/// store; `at` is `nil` because the view-model does not know time.
 enum RecentOutputModel {
-    /// Build the render plan from the raw panes.
+    static let liveTailFreshness: TimeInterval = 15
+
+    static func hasFreshNonErrorTail(_ tail: TailPane?,
+                                     now: Date = Date()) -> Bool {
+        guard let tail,
+              !tail.isEmpty,
+              tail.error == nil,
+              let updatedAt = tail.updatedAt else {
+            return false
+        }
+        let age = now.timeIntervalSince(updatedAt)
+        return age >= 0 && age <= liveTailFreshness
+    }
+
+    static func shouldShowLiveIndicator(isLiveMode: Bool,
+                                        hasFreshNonErrorTail: Bool) -> Bool {
+        isLiveMode && hasFreshNonErrorTail
+    }
+
+    /// A single render/pairing snapshot for one SwiftUI body pass. Keeping
+    /// this pure makes it possible to test the expensive work independently
+    /// of SwiftUI and prevents each child section from rebuilding it.
+    static func snapshot(tail: TailPane?,
+                         transcript: TranscriptPane?) -> RecentOutputSnapshot {
+        let render = render(tail: tail, transcript: transcript)
+        let visibleRows = render.rows.filter { row in
+            if case .loadEarlier = row { return false }
+            return true
+        }
+        return RecentOutputSnapshot(
+            render: render,
+            visibleRows: visibleRows,
+            identifiedRows: identifiedRows(for: visibleRows))
+    }
+
+    static func identifiedRows(for rows: [RecentOutputRow]) -> [RecentOutputIdentifiedRow] {
+        var occurrences: [String: Int] = [:]
+        return rows.map { row in
+            let contentID = row.contentID
+            let occurrence = occurrences[contentID, default: 0]
+            occurrences[contentID] = occurrence + 1
+            return RecentOutputIdentifiedRow(
+                id: "\(contentID)|occurrence:\(occurrence)",
+                row: row)
+        }
+    }
+
+    /// Follow the newest block when the surface is first populated or when
+    /// blocks were appended at the tail. A page inserted at the top is
+    /// history loading and must preserve the reader's anchor instead.
+    static func shouldFollowLatest(from oldRows: [RecentOutputRow],
+                                   to newRows: [RecentOutputRow]) -> Bool {
+        let oldIDs = oldRows.compactMap { row -> String? in
+            if case .block = row { return row.contentID }
+            return nil
+        }
+        let newIDs = newRows.compactMap { row -> String? in
+            if case .block = row { return row.contentID }
+            return nil
+        }
+        guard !newIDs.isEmpty else { return false }
+        guard !oldIDs.isEmpty else { return true }
+        guard oldIDs != newIDs else { return false }
+
+        // A real history prepend leaves every previously rendered block as a
+        // suffix. This is the one mutation that must preserve the reader's
+        // position rather than follow the newest tail.
+        if newIDs.count > oldIDs.count,
+           hasSuffix(newIDs, matching: oldIDs) {
+            return false
+        }
+
+        // Normal append and a bounded tail slide both expose the old tail at
+        // the front of the new sequence (the latter only partially).
+        if newIDs.count >= oldIDs.count,
+           hasPrefix(newIDs, matching: oldIDs) {
+            return true
+        }
+
+        // A bounded tail can slide while the previous last block is still
+        // being completed. Compare the old sequence without its last block
+        // with the new sequence without its last block; an exact suffix /
+        // prefix overlap proves that the change is at the tail even when the
+        // overlapping last block itself changed. The scan is linear and uses
+        // one prefix table rather than allocating arrays for each candidate.
+        let oldBeforeLast = max(oldIDs.count - 1, 0)
+        let newBeforeLast = max(newIDs.count - 1, 0)
+        if suffixPrefixOverlapLength(
+            old: oldIDs,
+            oldCount: oldBeforeLast,
+            new: newIDs,
+            newCount: newBeforeLast) > 0 {
+            return true
+        }
+
+        // A one-block stream has no unchanged prefix to overlap, but a
+        // changed sole block is still tail growth rather than a replacement.
+        if oldIDs.count == newIDs.count,
+           oldIDs.count == 1 {
+            return true
+        }
+        return false
+    }
+
+    private static func hasPrefix(_ values: [String], matching prefix: [String]) -> Bool {
+        guard prefix.count <= values.count else { return false }
+        for index in prefix.indices where values[index] != prefix[index] {
+            return false
+        }
+        return true
+    }
+
+    private static func hasSuffix(_ values: [String], matching suffix: [String]) -> Bool {
+        guard suffix.count <= values.count else { return false }
+        let start = values.count - suffix.count
+        for index in suffix.indices where values[start + index] != suffix[index] {
+            return false
+        }
+        return true
+    }
+
+    /// Return the longest suffix of `old[0..<oldCount]` that is also a
+    /// prefix of `new[0..<newCount]` in O(oldCount + newCount) time.
+    private static func suffixPrefixOverlapLength(old: [String],
+                                                  oldCount: Int,
+                                                  new: [String],
+                                                  newCount: Int) -> Int {
+        guard oldCount > 0, newCount > 0 else { return 0 }
+
+        var failure = Array(repeating: 0, count: newCount)
+        var prefixLength = 0
+        var patternIndex = 1
+        while patternIndex < newCount {
+            if new[patternIndex] == new[prefixLength] {
+                prefixLength += 1
+                failure[patternIndex] = prefixLength
+                patternIndex += 1
+            } else if prefixLength > 0 {
+                prefixLength = failure[prefixLength - 1]
+            } else {
+                patternIndex += 1
+            }
+        }
+
+        var matched = 0
+        var textIndex = 0
+        while textIndex < oldCount {
+            while matched > 0 && old[textIndex] != new[matched] {
+                matched = failure[matched - 1]
+            }
+            if old[textIndex] == new[matched] {
+                matched += 1
+            }
+            if matched == newCount, textIndex < oldCount - 1 {
+                matched = failure[matched - 1]
+            }
+            textIndex += 1
+        }
+        return matched
+    }
+
+    /// Keep the top reader anchor only when a successful page really inserted
+    /// older blocks before the existing sequence. A failed/no-op request must
+    /// clear the pending anchor so the next live append can follow the tail.
+    static func shouldPreservePaginationAnchor(_ anchorID: String,
+                                                from oldRows: [RecentOutputRow],
+                                                to newRows: [RecentOutputRow]) -> Bool {
+        let oldBlocks = oldRows.compactMap { row -> String? in
+            if case .block = row { return row.contentID }
+            return nil
+        }
+        let newBlocks = newRows.compactMap { row -> String? in
+            if case .block = row { return row.contentID }
+            return nil
+        }
+        guard newBlocks.count > oldBlocks.count,
+              Array(newBlocks.suffix(oldBlocks.count)) == oldBlocks else {
+            return false
+        }
+        return identifiedRows(for: newRows).contains { $0.id == anchorID }
+    }
+
     static func render(tail: TailPane?, transcript: TranscriptPane?) -> RecentOutputRender {
         let tail = tail ?? TailPane()
         var rows: [RecentOutputRow] = []
 
-        // ---- older transcript (top) ----
-        let transcriptRows = transcript.map { rowsForTranscript($0) } ?? []
+        let transcriptRaw = transcriptBlocks(from: transcript)
+        let transcriptBlocks = visibleBlocks(transcriptRaw)
+        let tailRaw = tailBlocks(from: tail)
+        let tailBlocks = visibleBlocks(tailRaw)
+
+        let transcriptRows = rowsForTranscript(
+            transcript,
+            rawBlocks: transcriptRaw,
+            visibleBlocks: transcriptBlocks)
         rows.append(contentsOf: transcriptRows)
 
-        let allBlocks = (transcript?.blocks ?? []) + tail.blocks
+        let allBlocks = transcriptBlocks + tailBlocks
         let hasContent = !allBlocks.isEmpty
+        let oldestTruncated = transcriptRaw.last?.truncatedBefore
+            ?? tailRaw.first?.truncatedBefore
+        let transcriptHasContent = !transcriptBlocks.isEmpty
 
-        // The oldest block on the surface carries the daemon-lifted
-        // `... +N lines` truncation count. Live-tail blocks are oldest→newest
-        // (`first` = oldest); transcript blocks are newest-first (`last` =
-        // the oldest block of the oldest page loaded so far).
-        let oldestTruncated = transcript?.blocks.last?.truncatedBefore
-            ?? tail.blocks.first?.truncatedBefore
-
-        // If there is no transcript page yet but the live tail says something
-        // was cut off, put the tappable full-width divider at the very top.
-        let transcriptHasBlocks = transcript?.blocks.isEmpty == false
-        if !transcriptHasBlocks, let oldestTruncated {
+        // A live tail can advertise older content before the first transcript
+        // page has been opened. Keep this one compact affordance at the top.
+        if transcriptHasContent == false, let oldestTruncated,
+           !rows.contains(where: { row in
+               if case .loadEarlier = row { return true }
+               return false
+           }) {
             rows.append(.loadEarlier(oldestTruncated))
         }
 
-        // ---- live tail (bottom) ----
         if tail.loading && tail.isEmpty {
             rows.append(.loading)
         }
         if let tailError = tail.error, tail.isEmpty {
             rows.append(.error(tailError))
         }
-        rows.append(contentsOf: tail.blocks.map(RecentOutputRow.block))
+        rows.append(contentsOf: tailBlocks.map(RecentOutputRow.block))
 
         let phase: RecentOutputPhase
-        if let tailError = tail.error, allBlocks.isEmpty {
+        if let tailError = tail.error, !hasContent {
             phase = .error(tailError)
         } else if hasContent {
             phase = .loaded
@@ -98,73 +402,149 @@ enum RecentOutputModel {
             phase = .empty
         }
 
-        let transcriptLoading = transcript?.loading ?? false
-        let canLoadOlder = (transcript?.canLoadOlder ?? false)
-            || (oldestTruncated != nil && !transcriptHasBlocks)
-        let canRetryTail = !tail.loading && tail.error != nil
-        let canRetryTranscript = transcript?.canRetry ?? false
+        let metadata = RecentOutputMetadata.extract(
+            from: transcriptRaw + tailRaw,
+            fallbackLines: (transcript?.entries ?? []).map(\.text) + tail.lines)
         return RecentOutputRender(
             phase: phase,
             rows: rows,
-            canLoadOlder: canLoadOlder,
-            transcriptLoading: transcriptLoading,
-            canRetryTail: canRetryTail,
-            canRetryTranscript: canRetryTranscript,
-            nextCursor: transcript?.nextCursor
-        )
+            canLoadOlder: (transcript?.canLoadOlder ?? false)
+                || (oldestTruncated != nil && !transcriptHasContent),
+            transcriptLoading: transcript?.loading ?? false,
+            canRetryTail: !tail.loading && tail.error != nil,
+            canRetryTranscript: transcript?.canRetry ?? false,
+            nextCursor: transcript?.nextCursor,
+            metadata: metadata)
     }
 
-    /// The older-transcript rows, oldest→newest (so the newest transcript
-    /// block sits directly above the live tail). A `loadEarlier` divider tops
-    /// the list when the walk is not exhausted or the oldest block carries a
-    /// lifted truncation count. An error row is inserted when the page fetch
-    /// failed but held blocks remain.
-    private static func rowsForTranscript(_ pane: TranscriptPane) -> [RecentOutputRow] {
-        var rows: [RecentOutputRow] = []
-        if pane.canLoadOlder || pane.blocks.last?.truncatedBefore != nil {
-            rows.append(.loadEarlier(pane.blocks.last?.truncatedBefore))
+    private static func transcriptBlocks(from pane: TranscriptPane?) -> [TranscriptBlock] {
+        guard let pane else { return [] }
+        if !pane.blocks.isEmpty {
+            return pane.blocks
         }
-        if pane.loading && pane.blocks.isEmpty {
+        return pane.entries.map { entry in
+            TranscriptBlock(kind: kind(for: entry.role), text: entry.text, at: entry.ts)
+        }
+    }
+
+    private static func tailBlocks(from pane: TailPane) -> [TranscriptBlock] {
+        if !pane.blocks.isEmpty {
+            return pane.blocks
+        }
+        return pane.lines.map { line in
+            TranscriptBlock(kind: kind(for: line), text: line)
+        }
+    }
+
+    private static func kind(for role: String) -> TranscriptBlockKind {
+        switch role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "user", "you", "prompt":
+            return .user
+        case "tool", "system", "command":
+            return .tool
+        default:
+            return .agent
+        }
+    }
+
+    private static func visibleBlocks(_ blocks: [TranscriptBlock]) -> [TranscriptBlock] {
+        blocks.compactMap { block in
+            let lines = visibleMessageLines(block.text)
+            guard lines.contains(where: {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }) else {
+                return nil
+            }
+            var visible = block
+            visible.text = lines.joined(separator: "\n")
+            return visible
+        }
+    }
+
+    private static func rowsForTranscript(_ pane: TranscriptPane?,
+                                          rawBlocks: [TranscriptBlock],
+                                          visibleBlocks: [TranscriptBlock]) -> [RecentOutputRow] {
+        guard let pane else { return [] }
+        var rows: [RecentOutputRow] = []
+        if pane.canLoadOlder || rawBlocks.last?.truncatedBefore != nil {
+            rows.append(.loadEarlier(rawBlocks.last?.truncatedBefore))
+        }
+        if pane.loading && rawBlocks.isEmpty {
             rows.append(.loading)
         }
         if let error = pane.error {
-            // Show what is loaded + the failure row + Retry (#160). Even when
-            // no older blocks are held, a failed "Load earlier" page must be
-            // visible (the live tail remains below).
             rows.append(.error(error))
         }
-        // The store holds newest-first; reverse to oldest→newest for the
-        // top-of-surface layout. A single page reverses cleanly; multiple
-        // pages append in load order, so the oldest page ends up at the top.
-        let reversed = pane.blocks.reversed()
-        rows.append(contentsOf: reversed.map(RecentOutputRow.block))
+        rows.append(contentsOf: visibleBlocks.reversed().map(RecentOutputRow.block))
         return rows
+    }
+
+    private static func visibleMessageLines(_ text: String) -> [String] {
+        let lines = RecentOutputRender.messageLines(text)
+        guard let firstContentIndex = lines.firstIndex(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            return lines
+        }
+        guard let lastContentIndex = lines.lastIndex(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }), firstContentIndex != lastContentIndex,
+                  RecentOutputMetadata.isMetadataLine(lines[lastContentIndex]) else {
+            return lines
+        }
+        return lines.enumerated().compactMap { index, line in
+            index == lastContentIndex ? nil : line
+        }
     }
 }
 
-// MARK: - Block render helpers (pure, testable)
+struct RecentOutputSnapshot: Equatable, Sendable {
+    let render: RecentOutputRender
+    let visibleRows: [RecentOutputRow]
+    let identifiedRows: [RecentOutputIdentifiedRow]
+}
+
+// MARK: - Pure block and code helpers
 
 extension RecentOutputRender {
-    /// The one-line collapsed summary for a tool block (`▸ ran cargo test`).
-    static func toolSummary(_ text: String) -> String {
-        let first = text.split(separator: "\n").first.map(String.init) ?? text
-        let cleaned = first
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "$ ", with: "")
-        let prefix = cleaned.hasPrefix("cargo ") || cleaned.hasPrefix("npm ")
-            ? String(cleaned.split(separator: " ").dropFirst().joined(separator: " ").prefix(48))
-            : cleaned
-        // Prefer a compact `<command> (exit <code>)`-style label when a
-        // `test result:` line follows, otherwise the command line.
-        let lines = text.split(separator: "\n").map(String.init)
-        if let result = lines.first(where: { $0.hasPrefix("test result:") }) {
-            let tail = result.replacingOccurrences(of: "test result: ", with: "")
-            return String(tail.prefix(60))
-        }
-        return String(prefix.prefix(48))
+    private static func makeTimestampFormatter(timeZone: TimeZone) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
     }
 
-    /// A short block-kind accessibility label.
+    private static let localTimestampFormatter = makeTimestampFormatter(
+        timeZone: .autoupdatingCurrent)
+
+    static func timestamp(_ ms: UInt64, timeZone: TimeZone? = nil) -> String {
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        if let timeZone {
+            let formatter = localTimestampFormatter.copy() as! DateFormatter
+            formatter.timeZone = timeZone
+            return formatter.string(from: date)
+        }
+        return localTimestampFormatter.string(from: date)
+    }
+
+    static func messageLines(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+    }
+
+    static func toolSummary(_ text: String) -> String {
+        let first = messageLines(text).first(where: {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) ?? text
+        let cleaned = first
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = cleaned.hasPrefix("$ ")
+            ? String(cleaned.dropFirst(2))
+            : cleaned
+        return String(command.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
+    }
+
     static func accessibilityLabel(_ block: TranscriptBlock) -> String {
         switch block.kind {
         case .user: return "You: \(block.text)"
@@ -174,10 +554,137 @@ extension RecentOutputRender {
         }
     }
 
-    /// Group consecutive same-kind blocks into render sections (the SwiftUI
-    /// view uses one row per block, but timestamps render only at a kind
-    /// boundary).
+    static func disclosureAccessibilityLabel(_ block: TranscriptBlock) -> String {
+        let role = block.kind == .system ? "System" : "Tool"
+        return "\(role): \(toolSummary(block.text))"
+    }
+
+    static let disclosureAccessibilityHint = "Double tap to expand or collapse"
+
     static func isBoundary(previous: TranscriptBlock?, current: TranscriptBlock) -> Bool {
         previous?.kind != current.kind
     }
+
+    /// Highlight only a tool block that clearly contains source or diff
+    /// syntax. Prose and ordinary command output stay plain monospace text.
+    static func codeLines(for block: TranscriptBlock) -> [RecentCodeLine] {
+        let lines = messageLines(block.text)
+        let highlighted = block.kind == .tool && isCodeOrDiff(block.text)
+        return lines.enumerated().map { index, line in
+            RecentCodeLine(
+                number: highlighted ? index + 1 : nil,
+                text: line,
+                segments: highlighted ? highlight(line) : [
+                    RecentCodeSegment(text: line, kind: .plain)
+                ],
+                isHighlighted: highlighted)
+        }
+    }
+
+    static func isCodeOrDiff(_ text: String) -> Bool {
+        let lines = messageLines(text)
+        var hasGitHeader = false
+        var hasFileHeader = false
+        var hasHunk = false
+        var hasChange = false
+        var hasFence = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let lower = trimmed.lowercased()
+            hasGitHeader = hasGitHeader
+                || lower.hasPrefix("git diff")
+                || lower.hasPrefix("diff --git")
+            hasFileHeader = hasFileHeader
+                || lower.hasPrefix("+++ ")
+                || lower.hasPrefix("--- ")
+            hasHunk = hasHunk || lower.hasPrefix("@@")
+            hasChange = hasChange
+                || (trimmed.hasPrefix("+") && !trimmed.hasPrefix("+++"))
+                || (trimmed.hasPrefix("-") && !trimmed.hasPrefix("---"))
+            hasFence = hasFence || trimmed.hasPrefix("\u{60}\u{60}\u{60}")
+        }
+        let hasDiffEvidence = (hasGitHeader && (hasHunk || (hasFileHeader && hasChange)))
+            || (hasHunk && hasChange)
+            || (hasFileHeader && hasHunk)
+        return hasFence || hasDiffEvidence
+    }
+
+    private static func highlight(_ line: String) -> [RecentCodeSegment] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("+") && !trimmed.hasPrefix("+++") {
+            return [RecentCodeSegment(text: line, kind: .addition)]
+        }
+        if trimmed.hasPrefix("-") && !trimmed.hasPrefix("---") {
+            return [RecentCodeSegment(text: line, kind: .deletion)]
+        }
+        if trimmed.hasPrefix("@@") {
+            return [RecentCodeSegment(text: line, kind: .keyword)]
+        }
+
+        let characters = Array(line)
+        let firstNonWhitespace = characters.firstIndex(where: { !$0.isWhitespace })
+        var segments: [RecentCodeSegment] = []
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\"" || character == "'" {
+                let quote = character
+                var end = index + 1
+                var escaped = false
+                while end < characters.count {
+                    let candidate = characters[end]
+                    if escaped {
+                        escaped = false
+                    } else if candidate == "\\" {
+                        escaped = true
+                    } else if candidate == quote {
+                        end += 1
+                        break
+                    }
+                    end += 1
+                }
+                append(&segments, String(characters[index..<end]), .string)
+                index = end
+            } else if (character == "#" && firstNonWhitespace == index)
+                        || (character == "/" && index + 1 < characters.count
+                            && characters[index + 1] == "/") {
+                append(&segments, String(characters[index...]), .comment)
+                break
+            } else if character.isLetter || character == "_" {
+                var end = index + 1
+                while end < characters.count
+                        && (characters[end].isLetter
+                            || characters[end].isNumber
+                            || characters[end] == "_") {
+                    end += 1
+                }
+                let word = String(characters[index..<end])
+                append(&segments, word, keywords.contains(word) ? .keyword : .plain)
+                index = end
+            } else {
+                append(&segments, String(character), .plain)
+                index += 1
+            }
+        }
+        return segments
+    }
+
+    private static func append(_ segments: inout [RecentCodeSegment],
+                               _ text: String,
+                               _ kind: RecentCodeSegmentKind) {
+        guard !text.isEmpty else { return }
+        if let last = segments.last, last.kind == kind {
+            segments[segments.count - 1] = RecentCodeSegment(
+                text: last.text + text,
+                kind: kind)
+        } else {
+            segments.append(RecentCodeSegment(text: text, kind: kind))
+        }
+    }
+
+    private static let keywords: Set<String> = [
+        "actor", "class", "const", "else", "enum", "fn", "for", "func",
+        "if", "impl", "import", "in", "let", "match", "mut", "pub",
+        "return", "struct", "switch", "var", "where", "while"
+    ]
 }

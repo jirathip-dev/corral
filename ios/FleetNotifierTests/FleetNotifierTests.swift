@@ -3933,7 +3933,16 @@ final class RecentOutputModelTests: XCTestCase {
         guard case .block(let b) = render.rows[1] else {
             return XCTFail("expected a block row")
         }
-        XCTAssertEqual(RecentOutputRender.toolSummary(b.text), "ok. 4 passed")
+        XCTAssertEqual(RecentOutputRender.toolSummary(b.text), "cargo test")
+    }
+
+    func testToolSummaryPreservesTheFullTrimmedCommand() {
+        XCTAssertEqual(
+            RecentOutputRender.toolSummary("  $ cargo test --workspace  \ntest result: ok"),
+            "cargo test --workspace")
+        XCTAssertEqual(
+            RecentOutputRender.toolSummary("\n  npm run lint -- --strict  \noutput"),
+            "npm run lint -- --strict")
     }
 
     func testTimeoutHeldBlocksStillRenderAsLoaded() {
@@ -3983,6 +3992,361 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertTrue(render.canRetryTranscript)
         XCTAssertFalse(render.canLoadOlder, "an in-flight/error walk cannot page further")
     }
+
+    func testMetadataLineBecomesBadgeAndLeavesSemanticMessageText() {
+        let text = """
+        Snapshot read model is consistent.
+        The next block is still plain assistant prose.
+        gpt-5.6-luna max · ~/.herdr/worktrees/project-hearthwild/gauntlet-54
+        """
+        let render = RecentOutputModel.render(
+            tail: tail([block(.agent, text)]),
+            transcript: nil)
+
+        XCTAssertEqual(render.metadata.model, "gpt-5.6-luna")
+        XCTAssertEqual(render.metadata.effort, "max")
+        XCTAssertEqual(render.metadata.worktree,
+                       "~/.herdr/worktrees/project-hearthwild/gauntlet-54")
+        guard case .block(let visible) = render.rows.first else {
+            return XCTFail("metadata-bearing block should remain visible")
+        }
+        XCTAssertEqual(visible.text,
+                       "Snapshot read model is consistent.\nThe next block is still plain assistant prose.")
+        XCTAssertFalse(visible.text.contains("gpt-5.6-luna"))
+    }
+
+    func testMetadataOnlyStripsTrailingCanonicalLineWithoutDeletingContent() {
+        let prose = "path: src/main.rs\nmodel: a tool printed this"
+        let proseRender = RecentOutputModel.render(
+            tail: tail([block(.tool, prose)]),
+            transcript: nil)
+        XCTAssertTrue(proseRender.metadata.isEmpty)
+        XCTAssertEqual(proseRender.rows, [.block(block(.tool, prose))])
+
+        let canonical = "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session"
+        let canonicalRender = RecentOutputModel.render(
+            tail: tail([block(.agent, "use the current checkout\n\(canonical)")]),
+            transcript: nil)
+        XCTAssertEqual(canonicalRender.metadata,
+                       RecentOutputMetadata(
+                           model: "gpt-5.6-luna",
+                           effort: "max",
+                           worktree: "~/.herdr/worktrees/corral/session"))
+        XCTAssertEqual(canonicalRender.rows,
+                       [.block(block(.agent, "use the current checkout"))])
+
+        let soleCanonicalRender = RecentOutputModel.render(
+            tail: tail([block(.agent, canonical)]),
+            transcript: nil)
+        XCTAssertEqual(soleCanonicalRender.rows, [.block(block(.agent, canonical))])
+    }
+
+    func testLegacyTailLinesBecomeSeparateSemanticRows() {
+        var pane = TailPane()
+        pane.lines = ["first line", "second line", "third line"]
+        let render = RecentOutputModel.render(tail: pane, transcript: nil)
+
+        XCTAssertEqual(render.rows, [
+            .block(block(.agent, "first line")),
+            .block(block(.agent, "second line")),
+            .block(block(.agent, "third line")),
+        ])
+    }
+
+    func testSyntaxHighlightingIsRestrictedToCodeAndDiffToolBlocks() {
+        let diff = block(.tool, """
+        git diff -- src/catalog.rs
+        @@ -1,1 +1,2 @@
+         let unchanged = "context"
+        +let answer = "ok"
+        """)
+        let prose = block(.tool, "The tool reports a model mismatch.\nPlease read the result.")
+        let agent = block(.agent, "git diff -- src/catalog.rs\n+not code here")
+
+        let diffLines = RecentOutputRender.codeLines(for: diff)
+        XCTAssertTrue(diffLines.allSatisfy(\.isHighlighted))
+        XCTAssertTrue(diffLines.contains { line in
+            line.segments.contains { $0.kind == .addition }
+        })
+        XCTAssertTrue(diffLines.contains { line in
+            line.segments.contains { $0.kind == .string }
+        })
+        XCTAssertTrue(RecentOutputRender.codeLines(for: prose)
+            .allSatisfy { !$0.isHighlighted && $0.number == nil
+                && $0.segments.allSatisfy { $0.kind == .plain } })
+        XCTAssertTrue(RecentOutputRender.codeLines(for: agent)
+            .allSatisfy { !$0.isHighlighted })
+        let tick = String(UnicodeScalar(0x60)!)
+        XCTAssertFalse(RecentOutputRender.isCodeOrDiff(
+            "\(tick)let answer = \"plain\"\(tick)"))
+        XCTAssertTrue(RecentOutputRender.isCodeOrDiff(
+            "\(tick)\(tick)\(tick)\nlet answer = \"highlighted\"\n\(tick)\(tick)\(tick)"))
+        XCTAssertFalse(RecentOutputRender.isCodeOrDiff("index out of bounds"))
+        XCTAssertFalse(RecentOutputRender.isCodeOrDiff("---"))
+        XCTAssertFalse(RecentOutputRender.isCodeOrDiff("git diff -- src/catalog.rs"))
+
+        let hashDiff = block(.tool, "git diff -- src/catalog.rs\n@@ -1 +1 @@\n value#hash")
+        let hashLine = RecentOutputRender.codeLines(for: hashDiff)
+            .first { $0.text == " value#hash" }
+        XCTAssertNotNil(hashLine)
+        XCTAssertFalse(hashLine?.segments.contains { $0.kind == .comment } == true,
+                       "a mid-line hash is not a comment marker")
+        let leadingHash = block(.tool, "\(tick)\(tick)\(tick)\n# comment\nlet value = 1\n\(tick)\(tick)\(tick)")
+        let commentLine = RecentOutputRender.codeLines(for: leadingHash)
+            .first { $0.text == "# comment" }
+        XCTAssertTrue(commentLine?.segments.contains { $0.kind == .comment } == true)
+    }
+
+    func testAutoscrollDecisionFollowsInitialAndTailAppendButNotHistoryPrepend() {
+        let first = RecentOutputRow.block(block(.agent, "first"))
+        let second = RecentOutputRow.block(block(.agent, "second"))
+        let older = RecentOutputRow.block(block(.agent, "older"))
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: [], to: [first]))
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: [first],
+                                                           to: [first, second]))
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(from: [first, second],
+                                                            to: [older, first, second]))
+    }
+
+    func testAutoscrollFollowsStreamingLastBlockMutation() {
+        let first = RecentOutputRow.block(block(.agent, "first"))
+        let partial = RecentOutputRow.block(block(.agent, "streaming"))
+        let extended = RecentOutputRow.block(block(.agent, "streaming output"))
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: [first, partial],
+                                                           to: [first, extended]))
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: [partial],
+                                                           to: [extended]))
+    }
+
+    func testAutoscrollFollowsLastBlockMutationAndAppend() {
+        let oldRows = [
+            RecentOutputRow.block(block(.agent, "A")),
+            .block(block(.agent, "B (partial)")),
+        ]
+        let newRows = [
+            RecentOutputRow.block(block(.agent, "A")),
+            .block(block(.agent, "B (complete)")),
+            .block(block(.agent, "C")),
+        ]
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: oldRows,
+                                                           to: newRows))
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(
+            from: oldRows,
+            to: [.block(block(.agent, "history"))] + oldRows),
+            "a true history prepend must preserve the reader position")
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(
+            from: oldRows,
+            to: [.block(block(.agent, "replacement A")),
+                 .block(block(.agent, "replacement B")),
+                 .block(block(.agent, "replacement C"))]),
+            "a full replacement without tail overlap must not autoscroll")
+    }
+
+    func testAutoscrollFollowsLastBlockMutationAfterBoundedWindowSlide() {
+        let oldRows = [
+            RecentOutputRow.block(block(.agent, "l1")),
+            .block(block(.agent, "l2")),
+            .block(block(.agent, "Hi")),
+        ]
+        let newRows = [
+            RecentOutputRow.block(block(.agent, "l2")),
+            .block(block(.agent, "Hi there")),
+            .block(block(.agent, "C")),
+        ]
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: oldRows,
+                                                           to: newRows))
+    }
+
+    func testAutoscrollFollowsSlidingTwoHundredItemTailButNotPrepend() {
+        let oldTail = (0..<200).map {
+            RecentOutputRow.block(block(.agent, "line-\($0)"))
+        }
+        let slidTail = (1...200).map {
+            RecentOutputRow.block(block(.agent, "line-\($0)"))
+        }
+        let prepended = (-20..<0).map {
+            RecentOutputRow.block(block(.agent, "history-\($0)"))
+        } + oldTail
+
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(from: oldTail, to: slidTail))
+        XCTAssertFalse(RecentOutputModel.shouldFollowLatest(from: oldTail, to: prepended))
+    }
+
+    func testIdentifiedRowsUseUniqueOrdinalsForDuplicateBlocksAndLines() {
+        let duplicate = RecentOutputRow.block(block(.agent, "same"))
+        let rows = [duplicate, duplicate, .block(block(.tool, "same")), duplicate]
+        let identified = RecentOutputModel.identifiedRows(for: rows)
+
+        XCTAssertEqual(identified.count, Set(identified.map(\.id)).count)
+        XCTAssertEqual(identified.map(\.row), rows)
+        XCTAssertNotEqual(identified[0].id, identified[1].id)
+        XCTAssertNotEqual(identified[1].id, identified[3].id)
+    }
+
+    func testSnapshotPairsRenderAndVisibleRowsOnceForTheView() {
+        let snapshot = RecentOutputModel.snapshot(
+            tail: tail([block(.agent, "message"), block(.tool, "tool output")]),
+            transcript: nil)
+
+        XCTAssertEqual(snapshot.visibleRows, snapshot.identifiedRows.map(\.row))
+        XCTAssertEqual(snapshot.visibleRows, snapshot.render.rows)
+        XCTAssertEqual(snapshot.identifiedRows.count, snapshot.visibleRows.count)
+    }
+
+    func testAccessibilityUsesCombinedMessageLabelsAndDistinctDisclosureToggle() {
+        let user = block(.user, "user message")
+        let agent = block(.agent, "agent message")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(user),
+                       "You: user message")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(agent),
+                       "Agent: agent message")
+
+        let tool = block(.tool, "$ cargo test")
+        XCTAssertEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
+                       "Tool: \(RecentOutputRender.toolSummary(tool.text))")
+        XCTAssertNotEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
+                          RecentOutputRender.accessibilityLabel(tool))
+        XCTAssertEqual(RecentOutputRender.disclosureAccessibilityHint,
+                       "Double tap to expand or collapse")
+    }
+
+    func testLiveChipRequiresLiveFreshNonErrorTail() {
+        let now = Date(timeIntervalSince1970: 100)
+        var fresh = tail([block(.agent, "fresh")])
+        fresh.updatedAt = now
+        XCTAssertTrue(RecentOutputModel.hasFreshNonErrorTail(fresh, now: now))
+        XCTAssertTrue(RecentOutputModel.shouldShowLiveIndicator(
+            isLiveMode: true,
+            hasFreshNonErrorTail: true))
+        XCTAssertFalse(RecentOutputModel.shouldShowLiveIndicator(
+            isLiveMode: false,
+            hasFreshNonErrorTail: true), "demo mode never presents a live chip")
+        XCTAssertFalse(RecentOutputModel.hasFreshNonErrorTail(
+            fresh,
+            now: now.addingTimeInterval(RecentOutputModel.liveTailFreshness + 1)))
+
+        var failed = fresh
+        failed.error = TranscriptFailure(kind: "timeout", message: "stale", candidates: [])
+        XCTAssertFalse(RecentOutputModel.hasFreshNonErrorTail(failed, now: now))
+        XCTAssertFalse(RecentOutputModel.hasFreshNonErrorTail(nil, now: now))
+    }
+
+    func testTruncatedMetadataPaneAddsOnlyOneLoadEarlierRow() {
+        let canonical = "gpt-5.6-luna max · ~/.herdr/worktrees/corral/session"
+        let pane = transcript(blocks: [block(.agent, canonical, truncated: 12)])
+        let render = RecentOutputModel.render(tail: tail([]), transcript: pane)
+        let loadEarlierCount = render.rows.reduce(into: 0) { count, row in
+            if case .loadEarlier = row { count += 1 }
+        }
+        XCTAssertEqual(loadEarlierCount, 1)
+    }
+
+    func testPaginationNoOpClearsAnchorBeforeTheNextTailAppend() throws {
+        let current = RecentOutputRow.block(block(.agent, "current"))
+        let appended = RecentOutputRow.block(block(.agent, "new tail"))
+        let oldRows = [current]
+        let anchor = try XCTUnwrap(RecentOutputModel.identifiedRows(for: oldRows).first?.id)
+
+        XCTAssertFalse(RecentOutputModel.shouldPreservePaginationAnchor(
+            anchor,
+            from: oldRows,
+            to: oldRows), "a no-op page must not keep an armed anchor")
+        XCTAssertTrue(RecentOutputModel.shouldFollowLatest(
+            from: oldRows,
+            to: oldRows + [appended]),
+            "the next tail append follows the latest output after a no-op")
+    }
+
+    func testTimestampUsesInjectedTimezoneAndFixedLocale() {
+        let utc = try! XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let bangkok = try! XCTUnwrap(TimeZone(secondsFromGMT: 7 * 60 * 60))
+        XCTAssertEqual(RecentOutputRender.timestamp(0, timeZone: utc), "00:00:00")
+        XCTAssertEqual(RecentOutputRender.timestamp(12 * 60 * 60 * 1000,
+                                                     timeZone: utc), "12:00:00")
+        XCTAssertEqual(RecentOutputRender.timestamp(0, timeZone: bangkok), "07:00:00")
+        XCTAssertEqual(RecentOutputPalette.sendInkHex, "#052420")
+        XCTAssertEqual(RecentOutputPalette.panelCornerRadius, 8)
+    }
+
+    func testRecentOutputPinsEveryApprovedPrototypeHexAndDarkPolicy() {
+        XCTAssertEqual(RecentOutputPrototypeTokens.hexes, [
+            "body": "#05070a",
+            "bg": "#0d1117",
+            "panel": "#10151c",
+            "panel2": "#161b22",
+            "panel3": "#1c2128",
+            "line": "#30363d",
+            "ink": "#e6edf3",
+            "muted": "#8b949e",
+            "accent": "#2dd4bf",
+            "blocked": "#f85149",
+            "done": "#d29922",
+            "working": "#58a6ff",
+            "idle": "#8b949e",
+            "unknown": "#6e7681",
+            "user-tint": "#12263f",
+            "code-bg": "#0d1117",
+            "code-line": "#21262d",
+            "code-ink": "#e6edf3",
+            "syn-diff-add": "#3fb950",
+            "syn-diff-del": "#f85149",
+            "syn-str": "#a5d6ff",
+            "syn-kw": "#ff7b72",
+            "syn-com": "#8b949e",
+            "phone-border": "#2a2f37",
+            "notch": "#000",
+            "send-ink": "#052420",
+            "user-blue": "#6ea8ff"
+        ])
+        XCTAssertEqual(RecentOutputPalette.userBlueHex, "#6ea8ff")
+        XCTAssertEqual(RecentOutputPalette.colorSchemePolicy, "forced-dark")
+        XCTAssertTrue(RecentOutputPalette.forcesDarkSurface)
+    }
+
+    func testRecentOutputMetadataAccessibilityLabelsKeepRolesDistinct() {
+        XCTAssertEqual(RecentOutputAccessibility.modelLabel("gpt-5.6-demo"),
+                       "Model: gpt-5.6-demo")
+        XCTAssertEqual(RecentOutputAccessibility.effortLabel("high"),
+                       "Effort: high")
+        XCTAssertEqual(RecentOutputAccessibility.worktreeLabel("~/worktrees/corral/demo"),
+                       "Worktree: ~/worktrees/corral/demo")
+    }
+
+#if DEBUG
+    func testDebugDemoLaunchIsOptInAndSelectsTheDetailPresentation() {
+        XCTAssertNil(CorralDemoLaunch.presentation(arguments: ["FleetNotifier"]))
+        XCTAssertEqual(
+            CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoDetail"]),
+            .after)
+        XCTAssertEqual(
+            CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoBefore"]),
+            .before)
+        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-transcript")
+    }
+
+    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {
+        let agents = DemoFleet.seed()
+        let first = try XCTUnwrap(agents[DemoFleet.featuredAgentID])
+        let second = try XCTUnwrap(agents["herdr:demo-working"])
+        let response = DemoFleet.respond(to: .readTail, payload: .null, agent: first, rev: 1)
+        guard case .dispatched(let dispatched) = response,
+              let result = dispatched.result,
+              let storedBlocks = result.tailBlocks,
+              let storedLines = result.tailLines else {
+            return XCTFail("the demo read_tail response must carry both lines and blocks")
+        }
+        XCTAssertEqual(storedLines,
+                       storedBlocks.flatMap { $0.text.components(separatedBy: .newlines) },
+                       "stored legacy lines must be the exact flattening of stored semantic blocks")
+        XCTAssertNotEqual(DemoFleet.model(for: first), DemoFleet.model(for: second))
+        XCTAssertNotEqual(DemoFleet.worktree(for: first), DemoFleet.worktree(for: second))
+        XCTAssertTrue(DemoFleet.monotoneOutput(for: first).contains("Please verify the diff too."))
+    }
+#endif
 }
 
 // MARK: - Answer-loop prominence + zero-state (#166 items 3, 7)

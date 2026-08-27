@@ -49,8 +49,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # RecentOutputModel (isDividerRun) and the Recent row view (Divider).
 # #245 Fleet compact spacing: FleetViews.swift updated (manual refresh
 # removed, lowercase section headers, tightened spacing); the pin follows.
+# #246 Agent sheet redesign (Variant 2): compact bottom toolbar in
+# AgentDetailContent + toolbar slot in RecentOutputView/BeforeView.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "f2f84ac056cd74580b7e72c4e15c5325e7bddd17f62b15935da6dbc8bb888b0b"
+    "6d21f6e1fbb4a970b02c06bbb2c8553d25b65b3e9552a35ed322a970c7c7ab65"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

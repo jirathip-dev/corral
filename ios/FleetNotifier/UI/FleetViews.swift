@@ -504,52 +504,40 @@ private struct AgentDetailContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    AgentStateSummary(agent: agent,
-                                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
-                    if let reason = agent.reason, !reason.isEmpty {
-                        Text(reason)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-
-                    if let waiting = agent.waitingOn, agent.isBlocked,
-                       let approval = availability.first(where: { $0.action == .approveDeny }) {
-                        let approvalInFlight = model.isActionInFlight(agentId: agent.agentId,
-                                                                      capability: .approve)
-                        ClaimCard(
-                            agent: agent,
-                            waiting: waiting,
-                            approvalEnabled: approval.isEnabled && !approvalInFlight,
-                            approvalDisabledReason: approval.disabledReason
-                                ?? (approvalInFlight ? "An approval action is already in progress." : nil),
-                            onChoice: { choice in
-                                dispatchApproval(choice, expectedPromptHash: waiting.promptHash)
-                            },
-                            onCanned: { action in
-                                dispatchCanned(action, expectedPromptHash: waiting.promptHash)
-                            })
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Controls")
-                            .font(.headline)
-                        primaryActionControl
-                        overflowMenu
-                        if let killItem = availability.first(where: { $0.action == .kill }),
-                           !killItem.isEnabled {
-                            Text(killItem.disabledReason ?? "Kill unavailable")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .accessibilityLabel(killItem.disabledReason ?? "Kill unavailable")
-                        }
-                    }
+            // #246 Variant 2: the summary hugs its content — no ScrollView
+            // wrapper, so the dead black gap between the summary and the
+            // Recent-output panel is gone and the panel (which owns its own
+            // scroll cage) fills the remaining sheet height down to the
+            // pinned toolbar + composer.
+            VStack(alignment: .leading, spacing: 16) {
+                AgentStateSummary(agent: agent,
+                                  stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
+                if let reason = agent.reason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
-                .padding()
+
+                if let waiting = agent.waitingOn, agent.isBlocked,
+                   let approval = availability.first(where: { $0.action == .approveDeny }) {
+                    let approvalInFlight = model.isActionInFlight(agentId: agent.agentId,
+                                                                  capability: .approve)
+                    ClaimCard(
+                        agent: agent,
+                        waiting: waiting,
+                        approvalEnabled: approval.isEnabled && !approvalInFlight,
+                        approvalDisabledReason: approval.disabledReason
+                            ?? (approvalInFlight ? "An approval action is already in progress." : nil),
+                        onChoice: { choice in
+                            dispatchApproval(choice, expectedPromptHash: waiting.promptHash)
+                        },
+                        onCanned: { action in
+                            dispatchCanned(action, expectedPromptHash: waiting.promptHash)
+                        })
+                }
             }
-            .frame(maxHeight: .infinity, alignment: .top)
+            .padding()
 
             // The Recent-output view owns its viewport and the composer is a
             // sibling below it, so scrolling history never moves the prompt
@@ -561,7 +549,8 @@ private struct AgentDetailContent: View {
                     model: model,
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
-                    onSend: dispatchPrompt)
+                    onSend: dispatchPrompt,
+                    toolbar: AnyView(actionToolbar))
                     .frame(minHeight: 260, maxHeight: .infinity)
             } else {
                 RecentOutputView(
@@ -569,7 +558,8 @@ private struct AgentDetailContent: View {
                     model: model,
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
-                    onSend: dispatchPrompt)
+                    onSend: dispatchPrompt,
+                    toolbar: AnyView(actionToolbar))
                     .frame(minHeight: 260, maxHeight: .infinity)
             }
 #else
@@ -578,7 +568,8 @@ private struct AgentDetailContent: View {
                 model: model,
                 drafts: drafts,
                 focusPrompt: $focusPrompt,
-                onSend: dispatchPrompt)
+                onSend: dispatchPrompt,
+                toolbar: AnyView(actionToolbar))
                 .frame(minHeight: 260, maxHeight: .infinity)
 #endif
         }
@@ -595,30 +586,56 @@ private struct AgentDetailContent: View {
         }
     }
 
+    /// #246 Variant 2 (approved): compact thin toolbar pinned directly
+    /// above the reply field — state-dependent primary (■ Interrupt /
+    /// Answer / Attach), ± Diff (#232 placeholder), ⋯ More overflow, and the
+    /// kill-grant note demoted to one tiny ⓘ line (full sentence in More).
+    private var actionToolbar: some View {
+        HStack(spacing: 8) {
+            toolbarPrimaryControl
+            toolbarDiffButton
+            overflowMenu
+            Spacer(minLength: 8)
+            if let killItem = availability.first(where: { $0.action == .kill }),
+               !killItem.isEnabled {
+                Label("no kill grant", systemImage: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Why Kill is disabled: \(killItem.disabledReason ?? "no kill grant")")
+            }
+        }
+        .frame(minHeight: 28)
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Agent actions")
+    }
+
     /// Issue #166 item 3: ONE primary action chosen by state — blocked →
     /// answer, working → interrupt, done → attach/PR, idle/unknown → none.
     /// The remaining actions live in `overflowMenu`.
     @ViewBuilder
-    private var primaryActionControl: some View {
+    private var toolbarPrimaryControl: some View {
         let primary = BoardModel.primaryAction(for: agent)
         switch primary {
         case .answer:
-            let promptItem = availability.first(where: { $0.action == .prompt })
-            Button {
+            toolbarButton("Answer", systemImage: "bubble.left.and.bubble.right.fill",
+                          item: availability.first(where: { $0.action == .prompt }),
+                          inFlight: false) {
                 focusPrompt = true
-            } label: {
-                Label(primary.label, systemImage: "bubble.left.and.bubble.right.fill")
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!(promptItem?.isEnabled ?? false))
-            .accessibilityLabel("Answer the pending question")
         case .interrupt:
-            primaryButton(.interrupt, systemImage: "stop.circle.fill", title: primary.label) {
+            toolbarButton("Interrupt", systemImage: "stop.circle.fill",
+                          item: availability.first(where: { $0.action == .interrupt }),
+                          inFlight: model.isActionInFlight(agentId: agent.agentId,
+                                                           capability: .interrupt)) {
                 dispatchInterrupt()
             }
         case .attach:
-            primaryButton(.attach, systemImage: "paperclip.fill", title: primary.label) {
+            toolbarButton("Attach", systemImage: "paperclip.fill",
+                          item: availability.first(where: { $0.action == .attach }),
+                          inFlight: model.isActionInFlight(agentId: agent.agentId,
+                                                           capability: .attach)) {
                 dispatchAttach()
             }
         case .none:
@@ -626,38 +643,51 @@ private struct AgentDetailContent: View {
         }
     }
 
+    /// Compact toolbar button for the state primary. The disabled-reason
+    /// caption that used to sit under the full-width pill is now carried by
+    /// the VoiceOver label (and the More overflow), so no dead space remains.
     @ViewBuilder
-    private func primaryButton(_ action: RowAction, systemImage: String,
-                               title: String, perform: @escaping () -> Void) -> some View {
-        if let item = availability.first(where: { $0.action == action }) {
-            let inFlight = model.isActionInFlight(agentId: agent.agentId,
-                                                  capability: action.capability)
-            Button {
-                perform()
-            } label: {
-                Label(title, systemImage: systemImage)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!item.isEnabled || inFlight)
-            .accessibilityLabel(item.isEnabled ? title : "\(title) unavailable")
-            VStack(alignment: .leading, spacing: 4) {
-                if let reason = item.disabledReason {
-                    Text(reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("Why \(title) is disabled: \(reason)")
-                } else if inFlight {
-                    Text("Action in progress")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+    private func toolbarButton(_ title: String, systemImage: String,
+                               item: AgentActionAvailability?, inFlight: Bool,
+                               perform: @escaping () -> Void) -> some View {
+        let disabled = !(item?.isEnabled ?? false) || inFlight
+        Button {
+            perform()
+        } label: {
+            Label(title, systemImage: systemImage)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(disabled)
+        .accessibilityLabel(disabled
+                            ? "\(title) unavailable — \(item?.disabledReason ?? "action in progress")"
+                            : title)
+    }
+
+    /// ± Diff is one of the diff access points for #232. read_diff is not
+    /// wired yet, so this is a disabled placeholder that names its future
+    /// issue; #232 is NOT implemented here.
+    private var toolbarDiffButton: some View {
+        Button {
+            // No-op placeholder: diff access lands with #232.
+        } label: {
+            Text("± Diff")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(true)
+        .help("Available with #232")
+        .accessibilityLabel("Diff, coming with #232")
     }
 
     /// Issue #166 item 4: Kill leaves the peer button stack and lives in the
     /// overflow menu as `.destructive`, guarded by a confirmation dialog.
+    /// #246: the full kill-grant sentence (demoted from the Controls
+    /// caption) lives here as a read-only hint when Kill is disabled.
     @ViewBuilder
     private var overflowMenu: some View {
         let primary = BoardModel.primaryAction(for: agent)
@@ -697,11 +727,20 @@ private struct AgentDetailContent: View {
                 }
                 .disabled(!item.isEnabled)
             }
+            if let killItem = availability.first(where: { $0.action == .kill }),
+               !killItem.isEnabled, let reason = killItem.disabledReason {
+                Button {
+                    // Read-only hint, not an action.
+                } label: {
+                    Text(reason)
+                }
+                .disabled(true)
+            }
         } label: {
             Label("More", systemImage: "ellipsis.circle")
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
         .accessibilityLabel("More actions")
     }
 
@@ -832,6 +871,9 @@ private struct RecentOutputBeforeView: View {
     let drafts: PromptDrafts
     let focusPrompt: FocusState<Bool>.Binding
     let onSend: () -> Void
+    /// #246 Variant 2: compact action toolbar pinned above the composer
+    /// (built by AgentDetailContent, which owns availability + dispatch).
+    let toolbar: AnyView?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -857,6 +899,10 @@ private struct RecentOutputBeforeView: View {
                     .padding(12)
             }
             .frame(maxHeight: .infinity)
+
+            if let toolbar {
+                toolbar
+            }
 
             RecentPromptComposer(
                 agent: agent,
@@ -967,6 +1013,9 @@ private struct RecentOutputView: View {
     let drafts: PromptDrafts
     let focusPrompt: FocusState<Bool>.Binding
     let onSend: () -> Void
+    /// #246 Variant 2: compact action toolbar pinned above the composer
+    /// (built by AgentDetailContent, which owns availability + dispatch).
+    let toolbar: AnyView?
     @State private var paginationAnchor: String?
 
     private var driveClient: DriveClient {
@@ -996,6 +1045,9 @@ private struct RecentOutputView: View {
                 metadataBar(snapshot: snapshot)
                 historyBar(snapshot: snapshot)
                 content(snapshot: snapshot)
+            }
+            if let toolbar {
+                toolbar
             }
             composer
         }

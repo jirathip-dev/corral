@@ -2,20 +2,22 @@
 # update-corral.sh — pull main, rebuild, restart daemon, relaunch egui client.
 #
 # Run by the com.corral.corrald-update launchd agent (installed by
-# setup-corrald.sh) on a schedule. Idempotent and cheap: exits immediately
-# when there is nothing new.
+# setup-corrald.sh) on a schedule. Idempotent and cheap: exits quickly when
+# there is nothing new, but ALWAYS compares the freshly built daemon binary
+# against the binary launchd actually executes before deciding "up to date" —
+# a binary-only change deploys even when the git history did not move.
 #
 # Safety rules (do not weaken):
 #   - Only touches the MAIN checkout when it is clean and on `main`. A dirty
 #     tree or a feature branch means someone is working there: skip this
 #     cycle silently and retry next interval.
 #   - Fast-forward pulls only; never --force, never merge.
-#   - The daemon restarts ONLY when its binary changed.
+#   - The daemon restarts ONLY when the binary it executes changed.
 #   - The egui client is relaunched ONLY when it is running AND its binary
 #     changed (killing a running editor window is a deliberate act — logged).
 set -euo pipefail
 
-REPO_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_DIR="${CORRAL_REPO_DIR:-$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # launchd runs this job with a minimal PATH (no /opt/homebrew/bin), so `gh`
 # (git's HTTPS credential helper) is not found and `git fetch` fails. Derive a
@@ -46,6 +48,19 @@ file_mtime() {  # epoch mtime; 0 when missing/unreadable
   fi
 }
 
+file_hash() {  # sha256 of a file; empty when missing/unreadable
+  [[ -f "$1" ]] || { echo ""; return 0; }
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1; exit}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1; exit}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF; exit}'
+  else
+    echo ""
+  fi
+}
+
 cd "$REPO_DIR"
 
 # --- Guards: skip when this is not the actual source checkout ----------------
@@ -72,23 +87,30 @@ before="$(git rev-parse HEAD)"
 git fetch origin main -q 2>>"$LOG" || { log "skip: git fetch failed"; exit 0; }
 after="$(git rev-parse origin/main)"
 if [[ "$before" == "$after" ]]; then
-  log "up to date ($(git log -1 --format='%h' HEAD))"
-  exit 0
+  # No new upstream commits, but do NOT exit here: a binary-only change (a
+  # rebuild with a different compiler/feature, or a manual cargo build) still
+  # has to deploy when the built binary differs from the binary launchd
+  # executes. The cheap hash-compare below decides "up to date".
+  log "no new upstream commits — checking binary drift"
+else
+  log "pulling origin/main: $(git log --oneline "$before..$after" | wc -l | tr -d ' ') new commit(s)"
+  git pull --ff-only origin main 2>>"$LOG" || { log "pull failed — retry next cycle"; exit 0; }
 fi
-log "pulling origin/main: $(git log --oneline "$before..$after" | wc -l | tr -d ' ') new commit(s)"
 
-# --- Pull + rebuild ---------------------------------------------------------
-git pull --ff-only origin main 2>>"$LOG" || { log "pull failed — retry next cycle"; exit 0; }
-
+# --- Rebuild ---------------------------------------------------------------
+# Build on every cycle: with nothing to build cargo is a fast no-op, and
+# building is what makes a binary-only change (new toolchain, changed feature
+# set) deployable even when the git history did not move.
 BIN_DIR="$REPO_DIR/target/release"
 DAEMON_BIN="$BIN_DIR/corrald"
 UI_BIN="$BIN_DIR/corrald-ui"
-daemon_before_mtime="$(file_mtime "$DAEMON_BIN")"
+daemon_before_hash="$(file_hash "$DAEMON_BIN")"
 ui_before_mtime="$(file_mtime "$UI_BIN")"
 
 log "building (workspace release)..."
 cargo build --release 2>>"$LOG" || { log "build FAILED — keeping old binaries"; exit 0; }
 log "build ok"
+daemon_after_hash="$(file_hash "$DAEMON_BIN")"
 
 # --- Desktop client: reinstall + relaunch if running -------------------------
 # Mirrors install_desktop_client() in setup-corrald.sh: macOS -> Corral.app
@@ -136,13 +158,59 @@ reinstall_ui() {
   fi
 }
 
-# --- Restart the daemon if its binary changed ------------------------------
-if [[ "$(file_mtime "$DAEMON_BIN")" != "$daemon_before_mtime" ]]; then
-  if launchctl print "gui/$(id -u)/com.corral.corrald" >/dev/null 2>&1; then
-    launchctl kickstart -k "gui/$(id -u)/com.corral.corrald" && log "daemon restarted (new binary)"
-  else
-    log "daemon job not loaded — skipped restart (run setup-corrald.sh)"
+# --- Deploy to the path launchd actually executes --------------------------
+# source-mode installs point com.corral.corrald at the build output; on
+# release-mode installs it points at the release bundle (e.g.
+# ~/.local/share/corral/release/corrald), so a fresh build alone never
+# reaches the running daemon. Resolution order: the loaded launchd job
+# (ground truth of what launchd re-execs), then the plist file on disk,
+# then the in-repo build output (source mode).
+daemon_changed=0
+job_loaded=0
+job_line=""
+if job_line="$(launchctl print "gui/$(id -u)/com.corral.corrald" 2>/dev/null)"; then
+  job_loaded=1
+fi
+deploy_path=""
+if [[ -n "$job_line" ]]; then
+  deploy_path="$(awk '/^[[:space:]]*program = /{sub(/^[[:space:]]*program = /, ""); print; exit}' <<<"$job_line")"
+fi
+if [[ -z "$deploy_path" ]]; then
+  deploy_path="$(plutil -extract ProgramArguments.0 raw "$HOME/Library/LaunchAgents/com.corral.corrald.plist" 2>/dev/null || true)"
+fi
+[[ -n "$deploy_path" ]] || deploy_path="$DAEMON_BIN"
+
+if [[ "$deploy_path" == "$DAEMON_BIN" ]]; then
+  # Source mode: launchd executes the build output directly, so the restart
+  # decision is whether the rebuild changed that file in place.
+  if [[ "$daemon_before_hash" != "$daemon_after_hash" ]]; then
+    log "daemon binary changed: $deploy_path"
+    daemon_changed=1
   fi
+elif [[ "$daemon_after_hash" != "$(file_hash "$deploy_path")" ]]; then
+  # Release mode: deterministic ship of the freshly built binary into the
+  # path the plist names, before any kickstart.
+  if install -m 755 "$DAEMON_BIN" "$deploy_path"; then
+    log "deployed $DAEMON_BIN -> $deploy_path"
+    daemon_changed=1
+  else
+    log "deploy FAILED: $DAEMON_BIN -> $deploy_path — keeping old binaries"
+  fi
+fi
+
+# --- Restart the daemon only when the binary it executes changed ------------
+if [[ "$daemon_changed" == "1" ]]; then
+  if [[ "$job_loaded" == "1" ]]; then
+    if launchctl kickstart -k "gui/$(id -u)/com.corral.corrald"; then
+      log "restarted=yes"
+    else
+      log "restarted=no (kickstart failed)"
+    fi
+  else
+    log "daemon job not loaded — skipped restart (run setup-corrald.sh); restarted=no"
+  fi
+else
+  log "up to date ($(git log -1 --format='%h' HEAD)); deploy path $deploy_path; restarted=no"
 fi
 
 # --- Relaunch the egui client if it is running and changed -----------------

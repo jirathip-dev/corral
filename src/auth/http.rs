@@ -106,6 +106,7 @@ async fn admin_grants(
 fn admin_device_view(rec: &super::registry::DeviceRecord) -> serde_json::Value {
     serde_json::json!({
         "key_id": rec.key_id,
+        "name": rec.name,
         "grants": rec.grants,
         "revoked": rec.revoked,
         "expiry_ts": rec.expiry_ts,
@@ -113,7 +114,13 @@ fn admin_device_view(rec: &super::registry::DeviceRecord) -> serde_json::Value {
     })
 }
 
-/// POST /register {token, public_key} -> {key_id, grants, expiry_ts}.
+/// POST /register {token, public_key, name?} -> {key_id, grants, expiry_ts}.
+///
+/// `name` is an optional human-readable device label (#209, purely
+/// cosmetic — never used for auth): trimmed, control characters rejected,
+/// truncated to 64 chars. Clients send their own device name (egui: local
+/// hostname; iOS: UIDevice name) so the host-admin Devices/Grants surface
+/// can show which machine/phone holds which key.
 async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -132,10 +139,18 @@ async fn register(
             "public_key must be base64 of 32 bytes",
         );
     };
+    let name = match body.get("name").and_then(|v| v.as_str()) {
+        Some(raw) => Some(raw),
+        // A non-string name is a malformed request, never silently dropped.
+        None if body.get("name").is_some() => {
+            return json_err(StatusCode::BAD_REQUEST, "name must be a string");
+        }
+        None => None,
+    };
     match state
         .auth
         .registry
-        .register(token, public_key, super::REGISTRATION_TTL)
+        .register_named(token, public_key, super::REGISTRATION_TTL, name)
     {
         Ok(rec) => (
             StatusCode::OK,
@@ -155,6 +170,10 @@ async fn register(
             super::RegisterError::BadPublicKey => json_err(
                 StatusCode::BAD_REQUEST,
                 "public_key is not a valid Ed25519 point",
+            ),
+            super::RegisterError::BadName => json_err(
+                StatusCode::BAD_REQUEST,
+                "name must be a non-empty string without control characters",
             ),
             super::RegisterError::Persist(err) => json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,

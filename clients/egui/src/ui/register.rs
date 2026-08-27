@@ -5,7 +5,9 @@
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, RichText, TextEdit, Ui};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui,
+};
 
 use crate::keys::KeyStore;
 use crate::protocol::{GRANT_CAPABILITIES, GrantDevice};
@@ -43,8 +45,21 @@ pub enum Request {
     ClearAdminToken,
     LoadGrantDevices,
     SelectGrantDevice(String),
+    /// Toggle a capability on the selected device — applies immediately
+    /// (the mockup's switch flips; no separate Apply button).
+    ToggleGrantCap(String),
     ApplyGrantSet,
     RevokeGrantDevice,
+    /// Re-grant a revoked remote device (revoke=false), per the mockup's
+    /// switched "Re-grant device" action.
+    ReGrantDevice,
+    /// Re-register this device with a fresh key, keeping the previous
+    /// grant set available for the one-tap Restore (mockup's THIS-device
+    /// primary action; #249 recovery path).
+    ReRegisterFromGrants,
+    /// Re-apply the recorded previous grant set to the freshly
+    /// re-registered key (mockup's Restore strip).
+    RestoreGrantSet,
     OpenAudit,
     CloseAudit,
     RefreshAudit,
@@ -126,6 +141,19 @@ pub struct GrantAdminState {
     pub saving: bool,
     pub draft: GrantDraft,
     pub notice: Option<(Level, String)>,
+    /// #250/#209: after a THIS-device re-register (fresh key) the previous
+    /// grant set is kept for the one-tap Restore strip. `reregistered` is
+    /// true from the moment the fresh key registers until Restore applies
+    /// (or the user leaves the screen).
+    pub reregistered: bool,
+    pub restore_grants: Vec<String>,
+    /// Previous key id shown in the detail meta while `reregistered`.
+    pub previous_key: Option<String>,
+    /// Captured before a THIS-device re-register: `(key_id, grants)` of the
+    /// registration being replaced, consumed by the RegisterResult path.
+    /// Kept here because the request and its async result are separate
+    /// events.
+    pub pending_restore: Option<(String, Vec<String>)>,
 }
 
 impl GrantAdminState {
@@ -163,6 +191,44 @@ impl GrantAdminState {
         self.view = Some(Err(error));
         self.loading = false;
         self.draft = GrantDraft::default();
+    }
+
+    /// Record a fresh this-device registration: keep `previous_grants`
+    /// for the Restore strip; the new key's grants are empty (read-only).
+    /// `previous_key` is shown in the detail meta (the old record stays in
+    /// the ledger until it expires).
+    pub fn mark_reregistered(
+        &mut self,
+        previous_grants: Vec<String>,
+        previous_key: &str,
+        new_key: &str,
+    ) {
+        self.reregistered = true;
+        self.restore_grants = previous_grants;
+        self.previous_key = if previous_key.is_empty() {
+            None
+        } else {
+            Some(previous_key.to_string())
+        };
+        self.draft = GrantDraft {
+            selected_key: new_key.to_string(),
+            caps: BTreeSet::new(),
+        };
+        self.notice = Some((
+            Level::Warn,
+            format!(
+                "Re-registered: fresh key {new_key} — grants are EMPTY. Use Restore to re-apply the previous set."
+            ),
+        ));
+    }
+
+    pub fn mark_restored(&mut self) {
+        self.reregistered = false;
+        self.restore_grants.clear();
+        self.notice = Some((
+            Level::Info,
+            "Restored the previous grant set to this device.".to_string(),
+        ));
     }
 }
 
@@ -522,6 +588,499 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
     }
 }
 
+/// Plain-language capability descriptions for the Devices & Grants
+/// master/detail surface (#209/#250).
+fn capability_description(capability: &str) -> &'static str {
+    match capability {
+        "read_tail" => "Read live agent output",
+        "prompt" => "Send prompts / steer the agent",
+        "interrupt" => "Interrupt a running task",
+        "approve" => "Approve tool calls & awaiting decisions",
+        "kill" => "Terminate a task",
+        "attach" => "Attach to a session & stream events",
+        "start_worktree" => "Start a worktree from a bound issue",
+        _ => "Drive capability",
+    }
+}
+
+/// Compact device label: the registered display name when present,
+/// otherwise the short key fingerprint (pre-#209 devices have no name).
+fn device_title(device: &GrantDevice) -> String {
+    match device.name.as_deref().filter(|n| !n.is_empty()) {
+        Some(name) => name.to_string(),
+        None => short_key(&device.key_id),
+    }
+}
+
+/// `dev_1a2b3c4d…9c41`-style short fingerprint for list rows.
+fn short_key(key_id: &str) -> String {
+    let bare = key_id.strip_prefix("dev_").unwrap_or(key_id);
+    if bare.len() > 12 {
+        let (head, tail) = bare.split_at(8);
+        format!("dev_{head}…{}", &tail[tail.len() - 4..])
+    } else {
+        format!("dev_{bare}")
+    }
+}
+
+/// "granted/registered N ago" subline for device list rows.
+fn age_label(seconds: u64, now_secs: u64) -> String {
+    if seconds == 0 {
+        return "—".to_string();
+    }
+    let days = now_secs.saturating_sub(seconds) / 86_400;
+    match days {
+        0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        d if d < 7 => format!("{d}d ago"),
+        d if d < 30 => format!("{}w ago", d / 7),
+        d if d < 365 => format!("{}mo ago", d / 30),
+        d => format!("{}y ago", d / 365),
+    }
+}
+
+/// Split registered devices into THIS device (the board's own key) and
+/// REMOTE DEVICES (other machines) — the #250 grouping rule.
+fn split_devices<'a>(
+    devices: &'a [GrantDevice],
+    own_key_id: &str,
+) -> (Vec<&'a GrantDevice>, Vec<&'a GrantDevice>) {
+    let (mut self_devices, mut remote_devices) = (Vec::new(), Vec::new());
+    for device in devices {
+        if device.key_id == own_key_id {
+            self_devices.push(device);
+        } else {
+            remote_devices.push(device);
+        }
+    }
+    (self_devices, remote_devices)
+}
+
+fn group_header(ui: &mut Ui, label: &str, note: &str) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(label)
+                .size(10.0)
+                .strong()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        ui.label(
+            RichText::new(note)
+                .size(10.0)
+                .color(theme::ui::TEXT_MUTED.gamma_multiply(0.65)),
+        );
+    });
+}
+
+fn small_chip(ui: &mut Ui, text: &str, color: Color32) {
+    let font = FontId::monospace(9.0);
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_string(), font, color));
+    let size = galley.size() + egui::vec2(8.0, 3.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(3),
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 26),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, color),
+        StrokeKind::Outside,
+    );
+    painter.galley(rect.min + egui::vec2(4.0, 1.0), galley, color);
+}
+
+/// One master-list device row (the left column of the #250 master/detail).
+fn device_row(ui: &mut Ui, device: &GrantDevice, is_self: bool, selected: bool) -> egui::Response {
+    let width = ui.available_width().max(120.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 44.0), Sense::click());
+    let painter = ui.painter();
+    let bg = if selected {
+        theme::ui::PANEL2
+    } else {
+        theme::ui::PANEL
+    };
+    painter.rect_filled(rect, CornerRadius::same(6), bg);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(6),
+            Stroke::new(1.0, theme::ui::ACCENT),
+            egui::StrokeKind::Outside,
+        );
+    }
+    painter.rect_filled(
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom())),
+        CornerRadius::ZERO,
+        if device.revoked {
+            theme::ui::BAD
+        } else if is_self {
+            theme::ui::ACCENT
+        } else {
+            theme::ui::MUTED
+        },
+    );
+    // Right rail: "N caps" + subline (fixed width).
+    let right_width = 92.0;
+    let text_rect = rect.shrink2(egui::vec2(12.0, 4.0));
+    let right_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            (text_rect.right() - right_width).max(text_rect.left()),
+            text_rect.top(),
+        ),
+        text_rect.right_bottom(),
+    );
+    let left_rect = egui::Rect::from_min_max(
+        text_rect.min,
+        egui::pos2(right_rect.left() - 6.0, text_rect.bottom()),
+    );
+    let mut left_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .id(egui::Id::new(("corral-ui-grant-row-left", &device.key_id)))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    left_ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(device_title(device))
+                    .size(12.5)
+                    .strong()
+                    .color(if device.revoked {
+                        theme::ui::TEXT_MUTED
+                    } else {
+                        theme::ui::INK
+                    }),
+            )
+            .truncate(),
+        );
+        if is_self {
+            small_chip(ui, "THIS DEVICE", theme::ui::ACCENT);
+        }
+        if device.revoked {
+            small_chip(ui, "REVOKED", theme::ui::BAD);
+        }
+    });
+    left_ui.add(
+        egui::Label::new(
+            RichText::new(short_key(&device.key_id))
+                .monospace()
+                .size(10.0)
+                .color(theme::ui::TEXT_MUTED),
+        )
+        .truncate(),
+    );
+    let mut right_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(right_rect)
+            .id(egui::Id::new(("corral-ui-grant-row-right", &device.key_id)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    right_ui.vertical(|ui| {
+        let caps = device.grants.len();
+        ui.label(
+            RichText::new(format!("{caps} {}", if caps == 1 { "cap" } else { "caps" }))
+                .size(10.5)
+                .strong()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        let subline = if device.revoked {
+            format!("revoked {}", age_label(device.created_ts, now_secs()))
+        } else if is_self {
+            "this computer".to_string()
+        } else {
+            format!("registered {}", age_label(device.created_ts, now_secs()))
+        };
+        ui.label(
+            RichText::new(subline)
+                .size(9.5)
+                .color(theme::ui::TEXT_MUTED),
+        );
+    });
+    response
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// A mockup-style pill switch (egui has no built-in Switch in 0.36).
+fn toggle_switch(ui: &mut Ui, on: bool, enabled: bool) -> egui::Response {
+    let size = egui::vec2(34.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(9),
+        if enabled && on {
+            theme::ui::ACCENT
+        } else {
+            theme::ui::PANEL3
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(9),
+        Stroke::new(1.0, theme::ui::LINE),
+        egui::StrokeKind::Outside,
+    );
+    let center = egui::pos2(
+        if on {
+            rect.right() - 11.0
+        } else {
+            rect.left() + 11.0
+        },
+        rect.center().y,
+    );
+    painter.circle_filled(
+        center,
+        6.0,
+        if enabled && on {
+            theme::ui::SEND_INK
+        } else {
+            theme::ui::MUTED
+        },
+    );
+    response
+}
+
+/// Capability rows of the detail pane: name + description left, toggle
+/// right. A flip applies immediately (Request::ToggleGrantCap).
+fn capability_row(
+    ui: &mut Ui,
+    capability: &str,
+    on: bool,
+    enabled: bool,
+    requested: &mut Option<Request>,
+) {
+    let width = ui.available_width().max(200.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 34.0), Sense::hover());
+    let painter = ui.painter();
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), rect.bottom()),
+            egui::pos2(rect.right(), rect.bottom()),
+        ],
+        Stroke::new(1.0, theme::ui::LINE),
+    );
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(4.0, 3.0)))
+            .id(egui::Id::new(("corral-ui-grant-cap-row", capability)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    row_ui.vertical(|ui| {
+        ui.label(
+            RichText::new(capability)
+                .monospace()
+                .size(12.0)
+                .strong()
+                .color(theme::ui::INK),
+        );
+        ui.label(
+            RichText::new(capability_description(capability))
+                .size(10.0)
+                .color(theme::ui::TEXT_MUTED),
+        );
+    });
+    row_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let resp = toggle_switch(ui, on, enabled);
+        if resp.changed() && enabled {
+            *requested = Some(Request::ToggleGrantCap(capability.to_string()));
+        }
+    });
+}
+
+/// The right detail pane of the Devices & Grants surface.
+fn device_detail(
+    ui: &mut Ui,
+    state: &mut GrantAdminState,
+    own_key_id: &str,
+    admin_token_configured: bool,
+    requested: &mut Option<Request>,
+) {
+    let Some(device) = state.selected_device().cloned() else {
+        ui.label(RichText::new("select a registered device.").color(theme::ui::TEXT_MUTED));
+        return;
+    };
+    let is_self = device.key_id == own_key_id;
+    let busy = state.loading || state.saving;
+
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(device_title(&device))
+                .size(15.0)
+                .strong()
+                .color(theme::ui::INK),
+        );
+        if is_self {
+            small_chip(ui, "THIS DEVICE", theme::ui::ACCENT);
+        }
+        if device.revoked {
+            small_chip(ui, "REVOKED", theme::ui::BAD);
+        }
+    });
+    let mut meta = format!(
+        "key {} · created {} · {} · {}",
+        short_key(&device.key_id),
+        crate::model::relative_age(
+            device.created_ts.saturating_mul(1000),
+            now_secs().saturating_mul(1000)
+        ),
+        if device.expiry_ts == 0 || now_secs() >= device.expiry_ts {
+            "expired".to_string()
+        } else {
+            format!(
+                "expires in {}",
+                age_label(device.expiry_ts, now_secs()).replace("ago", "")
+            )
+        },
+        if device.revoked {
+            "revoked".to_string()
+        } else {
+            "active".to_string()
+        },
+    );
+    if is_self && let Some(previous) = &state.previous_key {
+        meta = format!(
+            "key {} (previous {}) ·{}",
+            short_key(&device.key_id),
+            short_key(previous),
+            meta.split_once('·')
+                .map(|(_, rest)| format!("·{rest}"))
+                .unwrap_or_default()
+        );
+    }
+    ui.label(
+        RichText::new(meta)
+            .monospace()
+            .size(10.0)
+            .color(theme::ui::TEXT_MUTED),
+    );
+    ui.add_space(6.0);
+
+    let granted = state.draft.caps.len();
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("CAPABILITIES")
+                .size(10.5)
+                .strong()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        ui.label(
+            RichText::new(format!("{granted} of {} granted", GRANT_CAPABILITIES.len()))
+                .size(10.0)
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        );
+    });
+    let caps_enabled = admin_token_configured && !busy && !device.revoked && !state.reregistered;
+    if !admin_token_configured {
+        ui.label(
+            RichText::new("admin token required to edit grants (save/paste it above).")
+                .size(10.0)
+                .color(theme::ui::WARN),
+        );
+    }
+    for capability in GRANT_CAPABILITIES {
+        let on = state.draft.caps.contains(capability);
+        capability_row(ui, capability, on, caps_enabled, requested);
+    }
+    ui.add_space(6.0);
+
+    if is_self {
+        let rebutton =
+            egui::Button::new(RichText::new("Re-register").strong()).fill(theme::ui::ACCENT);
+        if ui.add_enabled(!busy, rebutton).clicked() {
+            *requested = Some(Request::ReRegisterFromGrants);
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Refresh grants"))
+            .clicked()
+        {
+            *requested = Some(Request::RefreshGrants);
+        }
+        if state.reregistered {
+            // Restore strip: the previous grant set is one tap away.
+            egui::Frame::group(ui.style())
+                .fill(theme::ui::PANEL2)
+                .stroke(Stroke::new(1.0, theme::ui::ACCENT))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "New key runs with zero grants until restored or re-granted:",
+                                )
+                                .size(11.0)
+                                .color(theme::ui::TEXT_MUTED),
+                            )
+                            .wrap(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !busy
+                                        && admin_token_configured
+                                        && !state.restore_grants.is_empty(),
+                                    egui::Button::new("Restore grant set"),
+                                )
+                                .clicked()
+                            {
+                                *requested = Some(Request::RestoreGrantSet);
+                            }
+                        });
+                    });
+                });
+        }
+        // #249 trust-check note — only on the THIS-device card.
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
+            .stroke(Stroke::new(1.0, theme::ui::WARN))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Bad-signature trust check (#249). If the daemon rejects this device with a bad-signature error, the stored key is stale — Re-register above to mint a fresh key, then Restore the grants.",
+                    )
+                    .size(10.5)
+                    .color(theme::ui::WARN),
+                );
+            });
+    } else {
+        if !device.revoked {
+            let revoke = egui::Button::new(RichText::new("Revoke device").color(theme::ui::BAD))
+                .fill(Color32::TRANSPARENT);
+            if ui
+                .add_enabled(!busy && admin_token_configured, revoke)
+                .clicked()
+            {
+                *requested = Some(Request::RevokeGrantDevice);
+            }
+        } else if ui
+            .add_enabled(
+                !busy && admin_token_configured,
+                egui::Button::new(RichText::new("Re-grant device").strong())
+                    .fill(theme::ui::ACCENT),
+            )
+            .clicked()
+        {
+            *requested = Some(Request::ReGrantDevice);
+        }
+    }
+}
+
+/// The #250 V2 master/detail Device access surface: THIS DEVICE vs REMOTE
+/// DEVICES groups on the left, capabilities + actions on the right. Every
+/// grant change goes through the same admin-token `POST /grants` path as
+/// `scripts/corrald-grant.sh`.
 fn grant_management_block(
     ui: &mut Ui,
     settings: &mut SettingsState,
@@ -532,18 +1091,10 @@ fn grant_management_block(
     ui.add_space(10.0);
     let state = &mut settings.grant_admin;
     ui.label(
-        RichText::new("device grants (host admin)")
+        RichText::new("DEVICE ACCESS")
+            .size(10.0)
             .strong()
-            .color(theme::ui::TEXT_STRONG),
-    );
-    ui.label(
-        RichText::new(
-            "Select a registered device key and edit capabilities. Applying replaces its \
-             full grant set through the same admin-token POST /grants path as \
-             scripts/corrald-grant.sh; unchecking every capability is read-only.",
-        )
-        .small()
-        .color(theme::ui::TEXT_MUTED),
+            .color(theme::ui::TEXT_MUTED),
     );
     ui.horizontal(|ui| {
         if state.loading {
@@ -557,7 +1108,7 @@ fn grant_management_block(
         if state.saving {
             ui.spinner();
             ui.label(
-                RichText::new("applying grants…")
+                RichText::new("applying…")
                     .small()
                     .color(theme::ui::TEXT_MUTED),
             );
@@ -571,6 +1122,20 @@ fn grant_management_block(
         {
             *requested = Some(Request::LoadGrantDevices);
         }
+        ui.label(
+            RichText::new(if admin_token_configured {
+                "admin token ✓"
+            } else {
+                "admin token ✗"
+            })
+            .monospace()
+            .size(10.0)
+            .color(if admin_token_configured {
+                theme::ui::GOOD
+            } else {
+                theme::ui::WARN
+            }),
+        );
     });
 
     let devices = match state.view.clone() {
@@ -604,145 +1169,59 @@ fn grant_management_block(
                 )
                 .color(theme::ui::TEXT_MUTED),
             );
-        } else {
-            let selected_text = devices
-                .iter()
-                .find(|d| d.key_id == state.draft.selected_key)
-                .map(|d| device_option_label(d, own_key_id))
-                .unwrap_or_else(|| "select device".to_string());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("device key")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-                egui::ComboBox::from_id_salt("corral-ui-grant-device")
-                    .selected_text(selected_text)
-                    .show_ui(ui, |ui| {
-                        for device in &devices {
-                            let label = device_option_label(device, own_key_id);
-                            let selected = device.key_id == state.draft.selected_key;
-                            if ui.selectable_label(selected, label).clicked() {
-                                *requested =
-                                    Some(Request::SelectGrantDevice(device.key_id.clone()));
-                            }
+            return;
+        }
+        let (self_devices, remote_devices) = split_devices(&devices, own_key_id);
+        let selected = state.draft.selected_key.clone();
+        let notice = state.notice.clone();
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(300.0, ui.available_height().max(1.0)),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(300.0);
+                    group_header(ui, "THIS DEVICE", "(this computer)");
+                    if self_devices.is_empty() {
+                        ui.label(RichText::new("—").color(theme::ui::TEXT_MUTED));
+                    }
+                    for device in &self_devices {
+                        let is_selected = device.key_id == selected;
+                        if device_row(ui, device, true, is_selected).clicked() && !is_selected {
+                            *requested = Some(Request::SelectGrantDevice(device.key_id.clone()));
                         }
-                    });
-            });
-
-            let selected_device = state.selected_device().cloned();
-            match selected_device {
-                None => {
-                    ui.label(
-                        RichText::new("select a registered key above.")
-                            .color(theme::ui::TEXT_MUTED),
-                    );
-                }
-                Some(device) => {
-                    let current_grants = device.grants.clone();
-                    let revoked = device.revoked;
-                    let busy = state.loading || state.saving;
-                    ui.horizontal_wrapped(|ui| {
-                        detail_kv(ui, "selected", &device.key_id);
-                        detail_kv(
-                            ui,
-                            "host grants",
-                            &if current_grants.is_empty() {
-                                "read-only".to_string()
-                            } else {
-                                current_grants.join(", ")
-                            },
-                        );
-                        detail_kv(ui, "revoked", &revoked.to_string());
-                    });
-                    if revoked {
+                    }
+                    group_header(ui, "REMOTE DEVICES", "(other machines)");
+                    if remote_devices.is_empty() {
                         ui.label(
-                            RichText::new(
-                                "DEVICE REVOKED — it cannot drive until re-enabled by the host.",
-                            )
-                            .color(theme::ui::BAD),
+                            RichText::new("no other registered devices.")
+                                .color(theme::ui::TEXT_MUTED),
                         );
                     }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(!busy && !revoked, |ui| {
-                            for capability in GRANT_CAPABILITIES {
-                                let mut checked = state.draft.caps.contains(capability);
-                                if ui
-                                    .checkbox(&mut checked, capability_label(capability))
-                                    .changed()
-                                {
-                                    state.draft.toggle(capability);
-                                }
-                            }
-                        });
-                    });
-                    let dirty = !grant_set_matches(&current_grants, &state.draft.caps);
-                    let can_apply = admin_token_configured && !busy && !revoked && dirty;
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(can_apply, egui::Button::new("apply grants (replace set)"))
-                            .clicked()
-                        {
-                            *requested = Some(Request::ApplyGrantSet);
+                    for device in &remote_devices {
+                        let is_selected = device.key_id == selected;
+                        if device_row(ui, device, false, is_selected).clicked() && !is_selected {
+                            *requested = Some(Request::SelectGrantDevice(device.key_id.clone()));
                         }
-                        if ui
-                            .add_enabled(
-                                admin_token_configured && !busy && !revoked,
-                                egui::Button::new("revoke device key (--revoke)"),
-                            )
-                            .clicked()
-                        {
-                            *requested = Some(Request::RevokeGrantDevice);
-                        }
-                    });
-                    let hint = if revoked {
-                        "revoked device: no drive capability is usable until unrevoked."
-                    } else if !admin_token_configured {
-                        "admin token required (save/paste above)."
-                    } else if !dirty {
-                        "grant set unchanged."
-                    } else {
-                        "apply replaces the full set: unchecking all grants returns the device to read-only."
+                    }
+                },
+            );
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.set_max_width(ui.available_width());
+                device_detail(ui, state, own_key_id, admin_token_configured, requested);
+                if let Some((level, text)) = &notice {
+                    let color = match level {
+                        Level::Info => theme::ui::GOOD,
+                        Level::Warn => theme::ui::WARN,
+                        Level::Error => theme::ui::BAD,
                     };
-                    ui.label(RichText::new(hint).small().color(theme::ui::TEXT_MUTED));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(text).color(color));
                 }
-            }
-        }
-    }
-
-    if let Some((level, text)) = &state.notice {
-        let color = match level {
-            Level::Info => theme::ui::GOOD,
-            Level::Warn => theme::ui::WARN,
-            Level::Error => theme::ui::BAD,
-        };
-        ui.label(RichText::new(text).color(color));
-    }
-}
-
-fn grant_set_matches(grants: &[String], caps: &BTreeSet<String>) -> bool {
-    grants.len() == caps.len() && grants.iter().all(|g| caps.contains(g))
-}
-
-fn device_option_label(device: &GrantDevice, own_key_id: &str) -> String {
-    let own = if device.key_id == own_key_id {
-        " (this device)"
-    } else {
-        ""
-    };
-    let grants = if device.grants.is_empty() {
-        "read-only".to_string()
-    } else {
-        device.grants.join(",")
-    };
-    format!("{}{own} — {grants}", device.key_id)
-}
-
-fn capability_label(capability: &str) -> String {
-    if capability == "start_worktree" {
-        "start_worktree (fleet-level)".to_string()
-    } else {
-        capability.to_string()
+            });
+        });
     }
 }
 
@@ -768,6 +1247,7 @@ mod tests {
     fn device(key_id: &str, grants: &[&str]) -> GrantDevice {
         GrantDevice {
             key_id: key_id.to_string(),
+            name: None,
             grants: grants.iter().map(|g| g.to_string()).collect(),
             revoked: false,
             expiry_ts: 1_000,
@@ -785,20 +1265,6 @@ mod tests {
         assert_eq!(draft.granted(), ["prompt", "kill", "attach"]);
         draft.toggle("prompt");
         assert_eq!(draft.granted(), ["kill", "attach"]);
-    }
-
-    #[test]
-    fn grant_dirty_check_ignores_server_grant_order() {
-        let caps = ["prompt", "read_tail"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        assert!(grant_set_matches(
-            &["read_tail".to_string(), "prompt".to_string()],
-            &caps
-        ));
-        assert!(!grant_set_matches(&["read_tail".to_string()], &caps));
-        assert!(grant_set_matches(&[], &BTreeSet::new()));
     }
 
     #[test]
@@ -838,9 +1304,72 @@ mod tests {
     }
 
     #[test]
-    fn start_worktree_gets_a_distinct_fleet_level_label() {
-        assert!(capability_label("start_worktree").contains("fleet-level"));
-        assert_eq!(capability_label("read_tail"), "read_tail");
+    fn devgrants_group_self_before_renote_and_label_with_name_or_fingerprint() {
+        let mut self_device = device("dev_5b6e0e...", &["read_tail"]);
+        self_device.name = Some("midnight".to_string());
+        let mut iphone = device("dev_6afc68bb...", &["prompt"]);
+        iphone.name = Some("iPhone 15 Pro".to_string());
+        let unnamed = device("dev_9c41d7e0...", &[]);
+        let devices = vec![self_device.clone(), iphone.clone(), unnamed.clone()];
+
+        let (self_devices, remote_devices) = split_devices(&devices, "dev_5b6e0e...");
+        assert_eq!(self_devices.len(), 1);
+        assert_eq!(self_devices[0].key_id, "dev_5b6e0e...");
+        assert_eq!(remote_devices.len(), 2);
+        assert!(
+            remote_devices.iter().all(|d| d.key_id != "dev_5b6e0e..."),
+            "the own key must never land in REMOTE DEVICES"
+        );
+
+        // Named devices show the name; un-named ones fall back to the
+        // short fingerprint.
+        assert_eq!(device_title(&self_device), "midnight");
+        assert_eq!(device_title(&iphone), "iPhone 15 Pro");
+        assert_eq!(device_title(&unnamed), short_key(&unnamed.key_id));
+        assert!(short_key("dev_0123456789abcdef").starts_with("dev_01234567"));
+        assert!(short_key("dev_0123456789abcdef").ends_with("…cdef"));
+        assert_eq!(age_label(0, 100), "—");
+        assert_eq!(age_label(1_000_000, 1_000_000 + 86_400 * 3), "3d ago");
+        assert_eq!(age_label(1_000_000, 1_000_000 + 86_400 * 14), "2w ago");
+    }
+
+    #[test]
+    fn devgrants_reregister_keeps_restore_set_and_restored_clears_it() {
+        let mut state = GrantAdminState::default();
+        state.mark_reregistered(
+            vec!["read_tail".to_string(), "prompt".to_string()],
+            "dev_old",
+            "dev_new",
+        );
+        assert!(state.reregistered);
+        assert_eq!(state.restore_grants.len(), 2);
+        assert_eq!(state.draft.selected_key, "dev_new");
+        assert!(state.draft.caps.is_empty(), "fresh key starts read-only");
+        assert!(
+            state
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("grants are EMPTY")
+        );
+
+        state.mark_restored();
+        assert!(!state.reregistered);
+        assert!(state.restore_grants.is_empty());
+        assert!(state.notice.as_ref().unwrap().1.contains("Restored"));
+    }
+
+    #[test]
+    fn devgrants_every_capability_has_a_description() {
+        for capability in GRANT_CAPABILITIES {
+            let description = capability_description(capability);
+            assert!(!description.is_empty());
+            assert_ne!(
+                description, "Drive capability",
+                "explicit text for {capability}"
+            );
+        }
     }
 
     fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {

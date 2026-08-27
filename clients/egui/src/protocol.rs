@@ -191,21 +191,26 @@ pub async fn fetch_fleet_identities(
 }
 
 /// `POST /register` with the routing-only registration token and the
-/// device's base64 Ed25519 public key. Returns `(key_id, grants)`.
+/// device's base64 Ed25519 public key. `name` is the optional cosmetic
+/// device label (#209) — the daemon stores it so every Devices/Grants
+/// surface can name this machine/phone. Returns `(key_id, grants)`.
 pub async fn register_device(
     client: &reqwest::Client,
     base_url: &str,
     token: &str,
     public_key_b64: &str,
+    name: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
     let url = format!("{}/register", base_url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "token": token,
-        "public_key": public_key_b64,
-    });
+    let mut body = serde_json::Map::new();
+    body.insert("token".to_string(), serde_json::json!(token));
+    body.insert("public_key".to_string(), serde_json::json!(public_key_b64));
+    if let Some(name) = name {
+        body.insert("name".to_string(), serde_json::json!(name));
+    }
     let response = client
         .post(&url)
-        .json(&body)
+        .json(&serde_json::Value::Object(body))
         .timeout(Duration::from_secs(10))
         .send()
         .await
@@ -281,10 +286,13 @@ pub async fn fetch_audit(
 
 /// A registered device as projected by the host-admin `GET /grants` read
 /// surface. Public keys and push tokens stay host-side and never cross
-/// this wire shape.
+/// this wire shape. `name` is the optional cosmetic label the device
+/// supplied at registration (#209).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct GrantDevice {
     pub key_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
     pub grants: Vec<String>,
     pub revoked: bool,
     pub expiry_ts: u64,
@@ -339,10 +347,16 @@ pub fn grant_set_body(key_id: &str, grants: &[String]) -> serde_json::Value {
 /// The exact `POST /grants` `revoke` body used by
 /// `scripts/corrald-grant.sh`.
 pub fn grant_revoke_body(key_id: &str) -> serde_json::Value {
+    grant_revoke_body_with(key_id, true)
+}
+
+/// `POST /grants` `revoke` body with an explicit flag: `true` revokes the
+/// device (#209's Revoke action), `false` re-grants it (Re-grant action).
+pub fn grant_revoke_body_with(key_id: &str, revoked: bool) -> serde_json::Value {
     serde_json::json!({
         "action": "revoke",
         "key_id": key_id,
-        "revoked": true,
+        "revoked": revoked,
     })
 }
 
@@ -371,7 +385,25 @@ pub async fn revoke_admin_device(
     admin_token: &str,
     key_id: &str,
 ) -> Result<String, String> {
-    post_grant_body(client, base_url, admin_token, grant_revoke_body(key_id)).await
+    set_admin_revoked(client, base_url, admin_token, key_id, true).await
+}
+
+/// Set a device's revoked flag via the host admin token (`true` revokes,
+/// `false` re-grants — #209's Revoke/Re-grant actions).
+pub async fn set_admin_revoked(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin_token: &str,
+    key_id: &str,
+    revoked: bool,
+) -> Result<String, String> {
+    post_grant_body(
+        client,
+        base_url,
+        admin_token,
+        grant_revoke_body_with(key_id, revoked),
+    )
+    .await
 }
 
 async fn post_grant_body(

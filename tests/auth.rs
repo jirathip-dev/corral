@@ -407,6 +407,100 @@ async fn register_endpoint_gates_on_token_and_returns_grants() {
 }
 
 #[tokio::test]
+async fn register_endpoint_accepts_display_name_and_grants_projects_it() {
+    let (auth, _dir, app) = http_app().await;
+    let admin = corrald::auth::admin_token_for_test(&auth);
+    let token = auth.registry.registration_token();
+    let (_, pubkey) = keypair();
+    let pubkey_b64 = corrald::auth::test_support::public_b64(&pubkey);
+
+    // Register with a display name -> accepted, stored, projected.
+    let res = app
+        .clone()
+        .oneshot(post(
+            "/register",
+            serde_json::json!({
+                "token": token,
+                "public_key": pubkey_b64,
+                "name": "  iPhone 15 Pro  ",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = read_json(res).await;
+    let key_id = v["key_id"].as_str().unwrap().to_string();
+    assert_eq!(v["grants"].as_array().unwrap().len(), 0);
+
+    let res = app
+        .clone()
+        .oneshot(get_admin(&format!("/grants?key_id={key_id}"), &admin))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = read_json(res).await;
+    // Trimmed at the registry boundary (#209 display labels are cosmetic).
+    assert_eq!(v["devices"][0]["name"], "iPhone 15 Pro");
+
+    // Name is cosmetic only: never projected in place of the key id, and
+    // untouched by grant mutations.
+    assert_eq!(v["devices"][0]["key_id"], key_id);
+    let res = app
+        .clone()
+        .oneshot(post_admin(
+            "/grants",
+            serde_json::json!({
+                "action": "set_grants",
+                "key_id": key_id,
+                "grants": ["read_tail"],
+            }),
+            &admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Malformed names fail loudly (F10): non-string, empty, control chars.
+    for bad in [
+        serde_json::json!({ "name": 7 }),
+        serde_json::json!({ "token": token, "public_key": pubkey_b64, "name": "   " }),
+        serde_json::json!({ "token": token, "public_key": pubkey_b64, "name": "a\nb" }),
+    ] {
+        let res = app.clone().oneshot(post("/register", bad)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // An over-long name is truncated, never blocks enrollment.
+    let (_, long_pubkey) = keypair();
+    let res = app
+        .clone()
+        .oneshot(post(
+            "/register",
+            serde_json::json!({
+                "token": token,
+                "public_key": corrald::auth::test_support::public_b64(&long_pubkey),
+                "name": "x".repeat(100),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let long_key = read_json(res).await["key_id"].as_str().unwrap().to_string();
+    let res = app
+        .clone()
+        .oneshot(get_admin(&format!("/grants?key_id={long_key}"), &admin))
+        .await
+        .unwrap();
+    let v = read_json(res).await;
+    let name = v["devices"][0]["name"].as_str().unwrap();
+    assert_eq!(name.len(), corrald::auth::registry::MAX_DEVICE_NAME_CHARS);
+    assert_eq!(
+        name,
+        "x".repeat(corrald::auth::registry::MAX_DEVICE_NAME_CHARS)
+    );
+}
+
+#[tokio::test]
 async fn step_up_endpoint_mints_after_proof_of_possession() {
     let (auth, _dir, app) = http_app().await;
     let (signing, pubkey) = keypair();

@@ -2430,12 +2430,17 @@ struct SettingsView: View {
                     LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
                     LabeledContent("Key storage", value: DeviceKeyStore.storageLocation == .keychain ? "Keychain" : "in-app store (⚠️ insecure)")
                     LabeledContent("Grants", value: model.grants.isEmpty ? "none (read-only)" : model.grants.joined(separator: ", "))
+                    LabeledContent("Name", value: UIDevice.current.name)
                     if let host = model.hostURL {
                         LabeledContent("Host", value: host.absoluteString)
                     }
                 }
+                DeviceAccessSection(model: model)
                 Section("Security") {
                     Text("Writes are Ed25519-signed by the device key. Destructive payloads require Face ID step-up (X-Step-Up-Token).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("The host admin token below authorizes the Devices & Grants read/write surface only. It is never sent on the signed drive path.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -2448,5 +2453,165 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+}
+
+/// The #209 Devices / Grants surface on iOS: groups THIS DEVICE vs REMOTE
+/// DEVICES (other machines), per-capability toggles that apply immediately,
+/// and Revoke/Re-grant for remote devices — mirroring the approved #250
+/// mockup's grouping and labels. Same host ledger as the board.
+struct DeviceAccessSection: View {
+    @ObservedObject var model: AppModel
+    @State private var adminTokenInput = ""
+
+    var body: some View {
+        Section {
+            adminTokenRow
+            if model.hasAdminToken {
+                Button {
+                    Task { await model.loadAdminDevices() }
+                } label: {
+                    Label("Refresh device list", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.grantsLoading || model.grantsSaving)
+                if model.grantsLoading || model.grantsSaving {
+                    ProgressView().controlSize(.small)
+                }
+                if let notice = model.grantsNotice {
+                    Text(notice).font(.caption).foregroundStyle(.red)
+                }
+                if let own = model.thisDevice {
+                    DisclosureGroup {
+                        deviceDetail(own, isSelf: true)
+                    } label: {
+                        deviceLabel(own, isSelf: true)
+                    }
+                }
+                if !model.remoteDevices.isEmpty {
+                    DisclosureGroup {
+                        ForEach(model.remoteDevices) { device in
+                            deviceDetail(device, isSelf: false)
+                            Divider()
+                        }
+                    } label: {
+                        Text("REMOTE DEVICES (other machines)")
+                            .font(.caption.bold())
+                    }
+                } else {
+                    Text("No remote devices registered.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            PinnedHeader { Text("Device access") }
+        }
+    }
+
+    @ViewBuilder
+    private var adminTokenRow: some View {
+        if model.hasAdminToken {
+            LabeledContent("Admin token", value: "✓ (Keychain)")
+            Button("Clear admin token", role: .destructive) {
+                model.clearAdminToken()
+            }
+            .font(.subheadline)
+        } else {
+            SecureField("Host admin token", text: $adminTokenInput)
+                .textContentType(.password)
+                .autocorrectionDisabled()
+            Button {
+                model.saveAdminToken(adminTokenInput)
+                adminTokenInput = ""
+                Task { await model.loadAdminDevices() }
+            } label: {
+                Text("Save token (Keychain)")
+            }
+            .disabled(adminTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Text("Lists every registered device and lets you grant/revoke capabilities (host admin — same path as corrald-grant.sh).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func deviceLabel(_ device: AdminGrantDevice, isSelf: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(deviceTitle(device)).font(.subheadline.bold())
+                    if isSelf {
+                        Text("THIS DEVICE").font(.caption2.bold()).foregroundStyle(.teal)
+                    }
+                    if device.revoked {
+                        Text("REVOKED").font(.caption2.bold()).foregroundStyle(.red)
+                    }
+                }
+                Text(shortKey(device.keyId)).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("\(device.grants.count) caps").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func deviceDetail(_ device: AdminGrantDevice, isSelf: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("CAPABILITIES · \(device.grants.count) of \(Capability.allCases.count) granted")
+                .font(.caption.bold())
+            ForEach(Capability.allCases, id: \.self) { capability in
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(capability.rawValue).font(.caption.monospaced().bold())
+                        Text(capability.grantDescription).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: grantBinding(device, capability))
+                        .labelsHidden()
+                        .disabled(device.revoked || model.grantsSaving)
+                }
+            }
+            if isSelf {
+                Button("Refresh grants") {
+                    Task { await model.refreshGrants() }
+                }
+                .font(.subheadline)
+            } else if device.revoked {
+                Button("Re-grant device") {
+                    Task { await model.setDeviceRevoked(device.keyId, revoked: false) }
+                }
+                .font(.subheadline)
+            } else {
+                Button("Revoke device", role: .destructive) {
+                    Task { await model.setDeviceRevoked(device.keyId, revoked: true) }
+                }
+                .font(.subheadline)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func grantBinding(_ device: AdminGrantDevice, _ capability: Capability) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.adminDevices.first(where: { $0.keyId == device.keyId })?
+                    .grants.contains(capability.rawValue) ?? false
+            },
+            set: { on in
+                Task { await model.setDeviceCapability(capability.rawValue, enabled: on, deviceId: device.keyId) }
+            }
+        )
+    }
+
+    private func deviceTitle(_ device: AdminGrantDevice) -> String {
+        if let name = device.name, !name.isEmpty { return name }
+        return shortKey(device.keyId)
+    }
+
+    private func shortKey(_ keyId: String) -> String {
+        let bare = keyId.hasPrefix("dev_") ? String(keyId.dropFirst(4)) : keyId
+        if bare.count > 12 {
+            return "dev_\(bare.prefix(8))…\(bare.suffix(4))"
+        }
+        return "dev_\(bare)"
     }
 }

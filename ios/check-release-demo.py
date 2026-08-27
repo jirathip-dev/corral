@@ -43,8 +43,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # its actual inputs; this pinned hash is the expected source set for this
 # checkout.  It catches ordinary source drift or a mismatched artifact when
 # that phase runs; it is not an authenticity mechanism.
+# #209 Devices & Grants surface (grouping, toggles, host admin) updated the
+# Manifest-listed Swift sources; the pin follows the new source set.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "4e5e510d5bceb8a7f30f961688f3778af331ba2972e9b7e6e89bed84cafaf333"
+    "5e824bffacdc55c19f5cf5f55e68b2685599ee33d518f738229f04a696a3bf77"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -118,8 +120,11 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
         "func startLive()",
         "func driveKill(",
         "func driveAttach(",
-        "func openTranscript(",
-        "func retryTranscript(",
+        # #241 removed the transcript surface; #209 added the host-admin
+        # grants surface. These markers pin the Release app to the real
+        # client paths below.
+        "func refreshGrants(",
+        "func loadAdminDevices(",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",
@@ -128,7 +133,7 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
         "model.driveAttach(",
         "model.drivePrompt(",
         "model.loadEarlierOutput(",
-        "model.retryTranscript(",
+        "model.loadAdminDevices(",
         "model.driveApprove(",
         "model.handleCannedAction(",
     ),

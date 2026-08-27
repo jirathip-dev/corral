@@ -36,6 +36,8 @@ enum DeviceKeyStore {
 
     private static let keychainService = "com.corral.fleetnotifier.keys"
     private static let keychainAccount = "device-ed25519"
+    private static let adminService = "com.corral.fleetnotifier.admin"
+    private static let adminAccount = "host-admin-token"
     private static let fallbackKey = "fleetnotifier.deviceKeyRaw"
     private static let metaKey = "fleetnotifier.deviceMeta"
 
@@ -140,5 +142,54 @@ enum DeviceKeyStore {
     static func loadMeta() -> DeviceMeta? {
         guard let data = defaults.data(forKey: metaKey) else { return nil }
         return try? JSONDecoder().decode(DeviceMeta.self, from: data)
+    }
+
+    // MARK: - Host admin token (#209)
+
+    /// The daemon's host admin token, stored in the Keychain (never in the
+    /// plaintext fallback): the credential behind the Devices & Grants
+    /// admin surface. Purely a host-admin bearer — never sent on the
+    /// device-signed drive path.
+    static func saveAdminToken(_ token: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: adminService,
+            kSecAttrAccount as String: adminAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        let data = Data(token.utf8)
+        if SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess {
+            let update: [String: Any] = [kSecValueData as String: data]
+            SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        } else {
+            var add = query
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    static func adminToken() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: adminService,
+            kSecAttrAccount as String: adminAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func clearAdminToken() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: adminService,
+            kSecAttrAccount as String: adminAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }

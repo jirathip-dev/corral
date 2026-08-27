@@ -377,6 +377,21 @@ pub fn read_daemon_registration_token() -> Result<String, String> {
         .map_err(|e| format!("read {}: {e}", path.display()))
 }
 
+/// The local machine's display name for registration (#209): the `hostname`
+/// binary (macOS/Linux), falling back to the HOSTNAME env var. The daemon
+/// stores it as the device's cosmetic label; the private key material is
+/// what authenticates, never this name.
+pub fn local_device_name() -> Option<String> {
+    let from_hostname = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok());
+    let name = from_hostname.or_else(|| std::env::var("HOSTNAME").ok())?;
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Try to read the daemon's host admin token (audit + grant management on
 /// localhost). Host-admin credential — same-machine, same-user file access
 /// only; sent only to loopback host-admin endpoints, never to a device.

@@ -52,6 +52,11 @@ exceptions = [
     # Ubuntu-font-1.0. Those font-specific terms are accepted only for the
     # bundled asset crate.
     { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # webpki-root-certs is rustls-platform-verifier's wasm32-only trust-anchor
+    # fallback. cargo-deny's all-features graph evaluates every target triple;
+    # its metadata and bundled LICENSE identify CDLA-Permissive-2.0. Pinning
+    # the exact version makes any bump require re-review.
+    { crate = "webpki-root-certs@1.0.9", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]

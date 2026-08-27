@@ -71,19 +71,14 @@ Rust codebase, macOS + Linux. Speaks corrald's HTTP surface directly
   the grant editor lists registered devices via `GET /grants`, replaces a
   selected device's full capability set via `POST /grants`, and exposes the
   same revoke action as `corrald-grant.sh --revoke`.
-- **Registry view** — `GET /fleet-registry` (non-auth read-only): a
-  `Registry` tab fetches the same `fleets.json` source `/issues` uses and
-  lists every fleet's repo, local path, orchestrator, workers, pause state,
-  and model map including `reasoning_effort`; parse/transport failures render
-  prominently with a manual refresh. Save & apply validates the complete
-  candidate with `corrald fleet check` before an atomic replacement and
-  refuses stale drafts; pause/resume uses the same candidate validation.
-  Send to fleet is labeled validation-only because no daemon distribution
-  endpoint exists in this layout-only scope. Mutations are restricted to a
-  loopback daemon and the client-local `CORRAL_FLEETS_PATH` (or local config
-  default), never a path reported by a remote daemon. `corrald` resolution is
-  `CORRALD_BIN`, executable sibling, installed release root, then `PATH`; a
-  missing binary reports the `CORRALD_BIN` remedy.
+- **Fleets tab** — `GET /fleets` (non-auth read-only): the fleet-ops CLI
+  validated identity catalog (configless #237 — corral never reads or
+  writes the fleet registry file). It lists every validated fleet's name,
+  gh_repo, orchestrator, worker count, and pause state; fleet-ops CLI
+  failures render prominently with a manual refresh. The tab is READ-ONLY:
+  mutations (add/remove/pause/resume/models) run through `herdr-fleet` on
+  the host, and `corrald fleet switch <name>` delegates the re-arm to the
+  fleet-ops CLI. There is no fleets.json editing anywhere in the client.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
   into its own top-level tab, keeping the issue-linked worktree action
   alongside the board's other tabs. Issue-free worktree creation is not

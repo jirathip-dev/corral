@@ -107,7 +107,7 @@ use tracing::{debug, info, warn};
 
 use crate::core::events::{GitEvent, GitStatus, Plane, PlaneEvent, PlaneSink};
 use crate::core::util::{canonicalize_existing_prefix, now_millis};
-use crate::core::workspace::{RepoRoot, WorkspaceAttribution, WorktreeAlias};
+use crate::core::workspace::{RepoRoot, WorkspaceAttribution};
 
 /// Per-worktree debounce window (the brief's 300ms).
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -151,21 +151,19 @@ pub trait RepoSourceDiscovery: std::fmt::Debug + Send + Sync {
     fn discover(&self, fallback_roots: &[PathBuf]) -> Vec<PathBuf>;
 }
 
-/// Production source discovery: the live fleet registry plus immediate Git
-/// checkouts under `~/Projects`. The registry is authoritative for fleet
-/// roots; the Projects scan supplies the intended local-checkout safety net
-/// for repositories that are present before a fleet entry is registered.
+/// Production source discovery: immediate Git checkouts under `~/Projects`
+/// plus the caller's fallback roots (#237: configless — the fleet registry
+/// is NOT consulted; the Projects scan supplies the intended local-checkout
+/// safety net for repositories corral does not own).
 #[derive(Debug, Clone)]
 pub struct LiveRepoSourceDiscovery {
-    registry_path: PathBuf,
     projects_root: PathBuf,
     attribution: Option<WorkspaceAttribution>,
 }
 
 impl LiveRepoSourceDiscovery {
-    pub fn new(registry_path: PathBuf, projects_root: PathBuf) -> Self {
+    pub fn new(projects_root: PathBuf) -> Self {
         Self {
-            registry_path,
             projects_root,
             attribution: None,
         }
@@ -173,10 +171,7 @@ impl LiveRepoSourceDiscovery {
 
     pub fn from_env() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        Self::new(
-            crate::fleet::config::default_path(),
-            PathBuf::from(home).join("Projects"),
-        )
+        Self::new(PathBuf::from(home).join("Projects"))
     }
 
     pub fn with_attribution(mut self, attribution: WorkspaceAttribution) -> Self {
@@ -188,21 +183,9 @@ impl LiveRepoSourceDiscovery {
 impl RepoSourceDiscovery for LiveRepoSourceDiscovery {
     fn discover(&self, fallback_roots: &[PathBuf]) -> Vec<PathBuf> {
         let mut roots = fallback_roots.to_vec();
-        let registry = if self.registry_path.is_file() {
-            match crate::fleet::config::load(&self.registry_path) {
-                Ok(registry) => Some(registry),
-                Err(error) => {
-                    debug!(
-                        path = %self.registry_path.display(),
-                        error = %error,
-                        "git plane: live fleet source discovery skipped invalid registry"
-                    );
-                    None
-                }
-            }
-        } else {
-            Some(crate::fleet::config::Registry::new(Vec::new()))
-        };
+        // #237 configless: no fleet-registry roots/aliases. Only immediate
+        // live checkouts under ~/Projects join the fallback set, exactly as
+        // the attribution map derives repo names: path-derived defaults only.
         let project_roots: Vec<PathBuf> = fs::read_dir(&self.projects_root)
             .into_iter()
             .flatten()
@@ -210,43 +193,29 @@ impl RepoSourceDiscovery for LiveRepoSourceDiscovery {
             .map(|entry| entry.path())
             .filter(|path| path.is_dir() && path.join(".git").exists())
             .collect();
-        if let Some(registry) = &registry {
-            roots.extend(registry.fleets.iter().map(|fleet| fleet.local_path()));
-        }
         roots.extend(project_roots.iter().cloned());
         if let Some(attribution) = &self.attribution
-            && let Some(registry) = &registry
+            && !project_roots.is_empty()
         {
-            // Keep the same precedence as the boot-time attribution map:
-            // registry identities are authoritative when a fleet local path
-            // collides with the configured fallback; Projects and fallback
-            // names are only path-derived defaults.
-            let mut attribution_roots = Vec::new();
-            let mut aliases = Vec::new();
-            for fleet in &registry.fleets {
-                let Some(repo) = fleet.gh_repo.rsplit('/').next() else {
-                    continue;
-                };
-                aliases.push(WorktreeAlias {
-                    worktree_dir: fleet.worktree_dir.clone(),
-                    repo: repo.to_string(),
-                });
-                attribution_roots.push(RepoRoot {
-                    path: fleet.local_path(),
-                    repo: repo.to_string(),
-                });
-            }
-            attribution_roots.extend(fallback_roots.iter().filter_map(|path| {
-                path.file_name().map(|name| RepoRoot {
+            // Same precedence as boot time: the configured fallback root and
+            // every Projects checkout keep their path-derived identities.
+            let mut attribution_roots: Vec<RepoRoot> = fallback_roots
+                .iter()
+                .filter_map(|path| {
+                    path.file_name().map(|name| RepoRoot {
+                        path: path.clone(),
+                        repo: name.to_string_lossy().into_owned(),
+                    })
+                })
+                .collect();
+            attribution_roots.extend(project_roots.iter().filter_map(|path| {
+                let repo = path.file_name()?.to_string_lossy().into_owned();
+                Some(RepoRoot {
                     path: path.clone(),
-                    repo: name.to_string_lossy().into_owned(),
+                    repo,
                 })
             }));
-            attribution_roots.extend(project_roots.into_iter().filter_map(|path| {
-                let repo = path.file_name()?.to_string_lossy().into_owned();
-                Some(RepoRoot { path, repo })
-            }));
-            attribution.replace_roots_with_aliases(attribution_roots, aliases);
+            attribution.replace_roots_with_aliases(attribution_roots, Vec::new());
         }
         roots
     }
@@ -3149,56 +3118,29 @@ mod tests {
         );
     }
 
-    fn write_live_registry(path: &Path, fleets: &[(&str, &Path)]) {
-        let fleets: Vec<_> = fleets
-            .iter()
-            .map(|(name, local)| {
-                serde_json::json!({
-                    "name": name,
-                    "gh_repo": format!("owner/{name}"),
-                    "local": local.to_string_lossy(),
-                    "worktree_dir": name,
-                    "orch": "orch",
-                    "workers": [],
-                    "models": {
-                        "orch": "orch-model",
-                        "impl": "impl-model",
-                        "review": "review-model"
-                    }
-                })
-            })
-            .collect();
-        fs::write(
-            path,
-            serde_json::to_vec(&serde_json::json!({ "fleets": fleets })).unwrap(),
-        )
-        .unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rediscovery_timer_refreshes_live_fleets_and_projects() {
+    async fn rediscovery_timer_refreshes_projects_and_ignores_unnamed_git_roots() {
+        // #237 configless: the live discovery sources are the configured
+        // fallback root and immediate `~/Projects` checkouts only. A git
+        // checkout that is neither (an old fleet-registry local) is NOT
+        // consumed even when a fleets.json exists next to it.
         let _guard = PROBE_LOCK.lock().await;
         let _load = TestGitDelayReset::new(0);
         let temp = tempfile::tempdir().unwrap();
         let projects = temp.path().join("Projects");
         fs::create_dir_all(&projects).unwrap();
         let fallback = temp.path().join("fallback");
-        let old_fleet = temp.path().join("fleet-old");
-        let new_fleet = temp.path().join("fleet-new");
+        let fleet_only = temp.path().join("fleet-old");
         let old_project = projects.join("project-old");
         let new_project = projects.join("project-new");
         init_repo_at(&fallback);
-        init_repo_at(&old_fleet);
+        init_repo_at(&fleet_only);
         init_repo_at(&old_project);
-        let registry = temp.path().join("fleets.json");
-        write_live_registry(&registry, &[("fleet-old", &old_fleet)]);
 
         let worktrees = temp.path().join("worktrees");
         let attribution = WorkspaceAttribution::new(fallback.clone(), worktrees.clone());
-        let discovery = Arc::new(
-            LiveRepoSourceDiscovery::new(registry.clone(), projects)
-                .with_attribution(attribution.clone()),
-        );
+        let discovery =
+            Arc::new(LiveRepoSourceDiscovery::new(projects).with_attribution(attribution.clone()));
         let intervals = SweepIntervals {
             startup_delay: Duration::ZERO,
             topology: Duration::from_secs(3600),
@@ -3217,10 +3159,10 @@ mod tests {
         });
 
         let fallback = fs::canonicalize(fallback).unwrap();
-        let old_fleet = fs::canonicalize(old_fleet).unwrap();
+        let fleet_only = fs::canonicalize(fleet_only).unwrap();
         let old_project = fs::canonicalize(old_project).unwrap();
         let mut initial = HashSet::new();
-        while initial.len() < 3 {
+        while initial.len() < 2 {
             match tokio::time::timeout(Duration::from_secs(2), rx.recv())
                 .await
                 .expect("initial source scan emits promptly")
@@ -3233,24 +3175,21 @@ mod tests {
             }
         }
         assert!(initial.contains(&fallback));
-        assert!(initial.contains(&old_fleet));
         assert!(initial.contains(&old_project));
+        assert!(
+            !initial.contains(&fleet_only),
+            "a git checkout outside the fallback root and ~/Projects is never auto-discovered (#237 configless)"
+        );
 
-        init_repo_at(&new_fleet);
         init_repo_at(&new_project);
-        write_live_registry(&registry, &[("fleet-new", &new_fleet)]);
         fs::remove_dir_all(&old_project).unwrap();
 
-        let new_fleet = fs::canonicalize(new_fleet).unwrap();
         let new_project = fs::canonicalize(new_project).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut added = HashSet::new();
         let mut removed = HashSet::new();
         while Instant::now() < deadline
-            && (!added.contains(&new_fleet)
-                || !added.contains(&new_project)
-                || !removed.contains(&old_fleet)
-                || !removed.contains(&old_project))
+            && (!added.contains(&new_project) || !removed.contains(&old_project))
         {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match tokio::time::timeout(remaining, rx.recv()).await {
@@ -3267,25 +3206,12 @@ mod tests {
         sweep.abort();
         let _ = sweep.await;
         assert!(
-            added.contains(&new_fleet),
-            "new fleet root was rediscovered"
-        );
-        assert!(
             added.contains(&new_project),
             "new Projects checkout was rediscovered"
         );
         assert!(
-            removed.contains(&old_fleet),
-            "removed fleet root was reconciled"
-        );
-        assert!(
             removed.contains(&old_project),
             "removed Projects checkout was reconciled"
-        );
-        assert_eq!(
-            attribution.repo_for(&new_fleet).as_deref(),
-            Some("fleet-new"),
-            "new fleet root is attributed after the same live refresh"
         );
         assert_eq!(
             attribution.repo_for(&new_project).as_deref(),
@@ -3293,8 +3219,8 @@ mod tests {
             "new Projects checkout is attributed after the same live refresh"
         );
         assert!(
-            attribution.repo_for(&old_fleet).is_none(),
-            "removed fleet root is no longer a primary attribution"
+            attribution.repo_for(&fleet_only).is_none(),
+            "an unnamed git root is never a primary attribution"
         );
     }
 

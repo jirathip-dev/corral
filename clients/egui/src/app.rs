@@ -2,8 +2,8 @@
 //! loop (SSE), the signed-drive dispatch, registration, and the four
 //! workspace tabs (Board / Issues / Registry / Settings).
 
-use std::collections::{BTreeMap, VecDeque};
-use std::path::{Component, Path, PathBuf};
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -21,81 +21,6 @@ use crate::state::{
 };
 use crate::theme;
 
-fn local_registry_path_for_edit(host_url: &str) -> Result<PathBuf, String> {
-    local_registry_path_for_host(host_url, crate::keys::local_registry_path())
-}
-
-fn local_registry_path_for_host(host_url: &str, local_path: PathBuf) -> Result<PathBuf, String> {
-    let parsed = reqwest::Url::parse(host_url)
-        .map_err(|error| format!("cannot edit registry: invalid host URL: {error}"))?;
-    let is_loopback = parsed.host_str().is_some_and(|host| {
-        let host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    });
-    if !is_loopback {
-        return Err(
-            "registry editing is disabled for non-loopback hosts; connect to a local corrald before changing fleets.json"
-                .into(),
-        );
-    }
-    Ok(local_path)
-}
-
-fn comparable_registry_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| normalized_registry_path(path))
-}
-
-fn normalized_registry_path(path: &Path) -> PathBuf {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-    normalized
-}
-
-fn validate_registry_edit_path(local_path: &Path, reported_path: &str) -> Result<(), String> {
-    if reported_path.trim().is_empty() {
-        return Err(format!(
-            "cannot edit registry: daemon reported an empty registry path while the client-local path is {}; refusing mutation",
-            local_path.display()
-        ));
-    }
-    let reported = Path::new(reported_path);
-    let local_comparable = comparable_registry_path(local_path);
-    let reported_comparable = comparable_registry_path(reported);
-    if local_comparable != reported_comparable {
-        return Err(format!(
-            "cannot edit registry: daemon reported path {} (normalized {}) differs from client-local path {} (normalized {}); refusing mutation. Set CORRAL_FLEETS_PATH to the client-local registry used by this daemon or connect to the matching local daemon",
-            reported.display(),
-            reported_comparable.display(),
-            local_path.display(),
-            local_comparable.display()
-        ));
-    }
-    Ok(())
-}
-
 /// The four top-level views in the persistent right-hand tab strip. Audit is
 /// intentionally not a top-level destination; it is rendered below Settings
 /// → Advanced device access when explicitly opened.
@@ -110,7 +35,7 @@ enum Tab {
 const TAB_LABELS: [(&str, Tab); 4] = [
     ("Board", Tab::Board),
     ("Issues", Tab::Issues),
-    ("Registry", Tab::Registry),
+    ("Fleets", Tab::Registry),
     ("Settings", Tab::Settings),
 ];
 const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -1086,8 +1011,6 @@ pub struct CorralApp {
     config: PersistedConfig,
     config_path: PathBuf,
     settings: crate::ui::register::SettingsState,
-    registry_drafts: BTreeMap<String, crate::ui::registry::FleetDraft>,
-    registry_notice: Option<(Level, String)>,
 
     // Channels.
     tx_apply: UnboundedSender<ApplyMsg>,
@@ -1111,6 +1034,7 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     issues_last_refresh: std::time::Instant,
+    fleets_last_refresh: std::time::Instant,
 
     // Tabs.
     tab: Tab,
@@ -1220,8 +1144,6 @@ impl CorralApp {
                 theme: config.theme.clone(),
                 ..Default::default()
             },
-            registry_drafts: BTreeMap::new(),
-            registry_notice: None,
             tx_apply: tx_apply.clone(),
             rx_apply,
             rx_drive,
@@ -1238,6 +1160,7 @@ impl CorralApp {
             // Permit the first Issues visit to fetch immediately; every
             // subsequent attempt records its start time, including errors.
             issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
+            fleets_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
             tab: tab_from_env(),
             screenshot_path,
             screenshot_state,
@@ -1404,11 +1327,11 @@ impl CorralApp {
         );
     }
 
-    /// Start a new identity epoch for the read-only issue/registry views.
+    /// Start a new identity epoch for the read-only issue/fleets views.
     ///
     /// The old cache is deliberately removed before a reconnect or host
     /// switch starts new requests: a fresh `/issues` response must never be
-    /// actionable through a previous registry, and an old in-flight response
+    /// actionable through a previous catalog, and an old in-flight response
     /// must not clear the loading flag for the replacement request.
     fn invalidate_read_model(&mut self) -> u64 {
         self.read_generation = self
@@ -1419,9 +1342,9 @@ impl CorralApp {
         self.fleet.issues_loaded = false;
         self.fleet.issues_loading = false;
         self.fleet.issues_error = None;
-        self.fleet.registry = None;
-        self.fleet.registry_loading = false;
-        self.fleet.registry_loaded = false;
+        self.fleet.fleets = None;
+        self.fleet.fleets_loading = false;
+        self.fleet.fleets_loaded = false;
         self.read_generation
     }
 
@@ -1536,7 +1459,7 @@ impl CorralApp {
                         // The invalidation above makes the current generation
                         // non-actionable until both read models catch up.
                         self.refresh_issues(true);
-                        self.refresh_registry(true);
+                        self.refresh_fleets(true);
                     }
                     protocol::Live::Disconnected => {
                         self.invalidate_read_model();
@@ -1580,40 +1503,16 @@ impl CorralApp {
                 }
                 self.fleet.set_issues(result);
             }
-            ApplyMsg::Registry { generation, result } => {
+            ApplyMsg::FleetIdentities { generation, result } => {
                 if generation != self.read_generation {
                     tracing::debug!(
                         generation,
                         current = self.read_generation,
-                        "ignored registry response from an obsolete identity generation"
+                        "ignored fleet-identities response from an obsolete identity generation"
                     );
                     return;
                 }
-                let loaded = result.is_ok();
-                self.fleet.set_registry(result);
-                if loaded {
-                    // Keep drafts visible across a refresh so an operator's
-                    // unsaved edit is not silently lost. Their source
-                    // fingerprints still make Save & apply reject a stale
-                    // write; surface that condition instead of discarding it.
-                    if let Some(Ok(registry)) = self.fleet.registry.as_ref() {
-                        let stale = self.registry_drafts.values().any(|draft| {
-                            registry
-                                .fleets
-                                .iter()
-                                .find(|entry| entry.name == draft.original_name)
-                                .is_none_or(|entry| {
-                                    !crate::ui::registry::draft_source_matches_entry(draft, entry)
-                                })
-                        });
-                        if stale {
-                            self.registry_notice = Some((
-                                Level::Warn,
-                                "registry refreshed while an edit was in progress; draft kept, and Save & apply will revalidate against the latest file".into(),
-                            ));
-                        }
-                    }
-                }
+                self.fleet.set_fleets(result);
             }
             ApplyMsg::GrantDevices(result) => self.handle_grant_devices(result),
             ApplyMsg::GrantMutation(msg) => self.handle_grant_mutation(msg),
@@ -1677,106 +1576,40 @@ impl CorralApp {
         self.dispatch_drive_intents(vec![DriveIntent::read_tail(&agent_id, self.fleet.rev)]);
     }
 
-    /// #135: fetch the daemon's read-only fleet registry view once per
-    /// successful connection (mirroring `/issues`) and on manual refresh.
-    /// A transport error is stored as `Err` so the tab shows the same
-    /// prominent failure path as a daemon `status="error"`.
-    fn refresh_registry(&mut self, force: bool) {
-        if self.fleet.registry_loading || (!force && self.fleet.registry_ready()) {
+    /// #237: fetch the daemon's fleet-ops CLI validated identity catalog
+    /// once per connection, on manual refresh, and while the Fleets tab is
+    /// visible. A previous successful catalog remains rendered while a retry
+    /// is in flight; a transient failure is never converted into "no fleets".
+    fn refresh_fleets(&mut self, force: bool) {
+        if !issues_refresh_due(
+            force,
+            self.conn,
+            self.fleet.fleets_loading,
+            self.fleets_last_refresh,
+        ) {
             return;
         }
-        self.fleet.registry_loading = true;
+        self.fleet.fleets_loading = true;
+        self.fleets_last_refresh = std::time::Instant::now();
         let generation = self.read_generation;
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
-            let result = protocol::fetch_fleet_registry(&client, &base_url).await;
-            let _ = tx.send(ApplyMsg::Registry { generation, result });
+            let result = protocol::fetch_fleet_identities(&client, &base_url).await;
+            if let Err(error) = &result {
+                tracing::warn!(error, "GET /fleets unavailable");
+            }
+            let _ = tx.send(ApplyMsg::FleetIdentities { generation, result });
         });
     }
 
-    fn registry_action(&mut self, action: crate::ui::registry::Action) {
-        if matches!(action, crate::ui::registry::Action::Refresh) {
-            self.refresh_registry(true);
-            return;
-        }
-        let reported_path = match self
-            .fleet
-            .registry
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .map(|registry| registry.reported_path.clone())
-        {
-            Some(path) => path,
-            None => {
-                self.registry_notice = Some((
-                    Level::Error,
-                    "registry has not loaded; refresh before editing".into(),
-                ));
-                return;
-            }
-        };
-        let path = match local_registry_path_for_edit(&self.config.host_url) {
-            Ok(path) => path,
-            Err(error) => {
-                self.registry_notice = Some((Level::Error, error));
-                return;
-            }
-        };
-        if let Err(error) = validate_registry_edit_path(&path, &reported_path) {
-            self.registry_notice = Some((Level::Error, error));
-            return;
-        }
-        let Some(path) = path.to_str() else {
-            self.registry_notice = Some((
-                Level::Error,
-                "cannot edit registry: local registry path is not valid UTF-8".into(),
-            ));
-            return;
-        };
-        let result = match action {
-            crate::ui::registry::Action::Save(draft) => {
-                let draft = *draft;
-                let old_name = draft.original_name.clone();
-                let result = crate::ui::registry::apply_draft(path, &draft);
-                if result.is_ok() {
-                    self.registry_drafts.remove(&old_name);
-                }
-                result.map(|_| format!("{} saved and applied", draft.name))
-            }
-            crate::ui::registry::Action::Send(name) => {
-                crate::ui::registry::send_to_fleet(path).map(|message| format!("{name}: {message}"))
-            }
-            crate::ui::registry::Action::Pause { fleet_name, paused } => {
-                let result = crate::ui::registry::set_paused(path, &fleet_name, paused);
-                match result {
-                    Ok(()) => {
-                        self.registry_drafts.remove(&fleet_name);
-                        Ok(format!(
-                            "{} {}",
-                            fleet_name,
-                            if paused { "paused" } else { "resumed" }
-                        ))
-                    }
-                    Err(error) => {
-                        if let Some(draft) = self.registry_drafts.get_mut(&fleet_name) {
-                            draft.paused = !paused;
-                        }
-                        Err(error)
-                    }
-                }
-            }
-            crate::ui::registry::Action::Refresh => unreachable!(),
-        };
-        match result {
-            Ok(message) => {
-                self.registry_notice = Some((Level::Info, message));
-                self.refresh_registry(true);
-            }
-            Err(error) => {
-                self.registry_notice = Some((Level::Error, error));
-            }
+    /// #237: the Fleets tab is READ-ONLY — the only deferred action is a
+    /// refresh. Mutations run through `herdr-fleet` on the host (corrald is
+    /// configless; no fleets.json write path exists in the client).
+    fn fleets_action(&mut self, action: crate::ui::registry::Action) {
+        match action {
+            crate::ui::registry::Action::Refresh => self.refresh_fleets(true),
         }
     }
 
@@ -3013,13 +2846,13 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         }
         Tab::Issues => {
             app.refresh_issues(false);
-            if app.fleet.registry.is_none() && app.conn == ConnState::Connected {
+            if app.fleet.fleets.is_none() && app.conn == ConnState::Connected {
                 // The Issues tab can win the first frame after connection
-                // while the registry request is still racing the issue
+                // while the fleet-identities request is still racing the issue
                 // request. The loading guard in refresh_registry prevents a
                 // second request; a later manual Issues refresh retries a
                 // failed projection as well.
-                app.refresh_registry(false);
+                app.refresh_fleets(false);
             }
             let ledger = app.ledger.clone();
             let allowed = |cap: &str| ledger.allowed(cap);
@@ -3034,31 +2867,29 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             if refresh_requested {
                 app.refresh_issues(true);
-                if !app.fleet.registry_ready() {
-                    // A failed or daemon-error registry must be recoverable
+                if !app.fleet.fleets_ready() {
+                    // A failed catalog must be recoverable
                     // from the surface that needs it. Force only here, after
                     // the user explicitly refreshed Issues; an in-flight
                     // request is still protected by refresh_registry's guard.
-                    app.refresh_registry(true);
+                    app.refresh_fleets(true);
                 }
             }
             app.dispatch_drive_intents(pending);
         }
         Tab::Registry => {
-            if app.fleet.registry.is_none() && app.conn == ConnState::Connected {
-                app.refresh_registry(false);
+            if app.fleet.fleets.is_none() && app.conn == ConnState::Connected {
+                app.refresh_fleets(false);
             }
             let mut pending = None;
             crate::ui::registry::show(
                 &mut right_ui,
-                &app.fleet.registry,
-                app.fleet.registry_loading,
-                &mut app.registry_drafts,
-                &mut app.registry_notice,
+                &app.fleet.fleets,
+                app.fleet.fleets_loading,
                 &mut |action| pending = Some(action),
             );
             if let Some(action) = pending {
-                app.registry_action(action);
+                app.fleets_action(action);
             }
         }
         Tab::Settings => {
@@ -3156,11 +2987,12 @@ fn hydration_target(fleet: &Fleet, resolved_selection: Option<&str>) -> Option<S
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::Instant;
 
     use super::*;
     use crate::model::{
-        Agent, AgentState, FleetModels, FleetRegistry, FleetRegistryEntry, GhIssueRef, Workspace,
+        Agent, AgentState, FleetIdentities, FleetIdentityEntry, GhIssueRef, Workspace,
     };
     use crate::ui::board::{self, StateFilter};
 
@@ -3219,8 +3051,6 @@ mod tests {
             config,
             config_path: PathBuf::from("/tmp/corral-ui-read-model-test.json"),
             settings,
-            registry_drafts: BTreeMap::new(),
-            registry_notice: None,
             tx_apply: tx_apply.clone(),
             rx_apply,
             rx_drive,
@@ -3235,6 +3065,7 @@ mod tests {
             audit: None,
             audit_loading: false,
             issues_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
+            fleets_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
             tab: Tab::Issues,
             screenshot_path: None,
             screenshot_state: ScreenshotCaptureState::initial(
@@ -3260,28 +3091,16 @@ mod tests {
         (runtime, app)
     }
 
-    fn test_registry(name: &str, gh_repo: &str) -> FleetRegistry {
-        FleetRegistry {
+    fn test_fleet_identities(name: &str, gh_repo: &str) -> FleetIdentities {
+        FleetIdentities {
             status: "ok".into(),
-            reported_path: "/tmp/fleets.json".into(),
             error: None,
-            repos: vec!["foo".into()],
-            fleets: vec![FleetRegistryEntry {
+            fleets: vec![FleetIdentityEntry {
                 name: name.into(),
                 gh_repo: gh_repo.into(),
-                local: "/tmp/local".into(),
-                worktree_dir: "worktrees".into(),
                 orch: "orch".into(),
-                workers: vec![],
+                workers: 0,
                 paused: false,
-                models: FleetModels {
-                    orch: "orch".into(),
-                    impl_: "impl".into(),
-                    review: "review".into(),
-                    impl_alt: None,
-                    impl_alt2: None,
-                    reasoning_effort: None,
-                },
             }],
         }
     }
@@ -3300,7 +3119,7 @@ mod tests {
     #[test]
     fn workspace_navigation_has_exactly_four_tabs_and_demotes_audit() {
         let labels: Vec<&str> = TAB_LABELS.iter().map(|(label, _)| *label).collect();
-        assert_eq!(labels, ["Board", "Issues", "Registry", "Settings"]);
+        assert_eq!(labels, ["Board", "Issues", "Fleets", "Settings"]);
         assert!(!labels.contains(&"Audit"));
     }
 
@@ -3310,9 +3129,9 @@ mod tests {
         app.fleet
             .set_issues(Ok(BTreeMap::from([("foo".into(), vec![test_issue()])])));
         app.fleet
-            .set_registry(Ok(test_registry("alpha", "owner/foo")));
-        assert!(app.fleet.registry_ready());
-        app.fleet.registry_loading = true;
+            .set_fleets(Ok(test_fleet_identities("alpha", "owner/foo")));
+        assert!(app.fleet.fleets_ready());
+        app.fleet.fleets_loading = true;
         app.fleet.issues_loading = true;
         let stale_generation = app.read_generation;
         let loop_generation = app.read_loop_generation;
@@ -3325,9 +3144,9 @@ mod tests {
         });
         let current_generation = app.read_generation;
         assert_ne!(current_generation, stale_generation);
-        assert!(app.fleet.registry.is_none());
+        assert!(app.fleet.fleets.is_none());
         assert!(app.fleet.issues.is_empty());
-        assert!(app.fleet.registry_loading);
+        assert!(app.fleet.fleets_loading);
         assert!(app.fleet.issues_loading);
 
         // `/issues` can arrive first, but the old alpha registry is no longer
@@ -3373,24 +3192,24 @@ mod tests {
 
         // A response from the pre-reconnect request cannot replace the
         // current empty/loading registry or clear its loading flag.
-        app.on_apply(ApplyMsg::Registry {
+        app.on_apply(ApplyMsg::FleetIdentities {
             generation: stale_generation,
-            result: Ok(test_registry("alpha", "owner/foo")),
+            result: Ok(test_fleet_identities("alpha", "owner/foo")),
         });
-        assert!(app.fleet.registry.is_none());
-        assert!(app.fleet.registry_loading);
+        assert!(app.fleet.fleets.is_none());
+        assert!(app.fleet.fleets_loading);
 
         // The current response restores the exact current fleet action.
-        app.on_apply(ApplyMsg::Registry {
+        app.on_apply(ApplyMsg::FleetIdentities {
             generation: current_generation,
-            result: Ok(test_registry("foo", "owner/foo")),
+            result: Ok(test_fleet_identities("foo", "owner/foo")),
         });
         assert_eq!(
             app.fleet
-                .registry
+                .fleets
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
-                .and_then(|registry| registry.fleets.first())
+                .and_then(|fleets| fleets.fleets.first())
                 .map(|entry| entry.name.as_str()),
             Some("foo")
         );
@@ -3433,16 +3252,16 @@ mod tests {
 
         // Even after the current response, a late old response cannot restore
         // alpha or overwrite the current exact fleet.
-        app.on_apply(ApplyMsg::Registry {
+        app.on_apply(ApplyMsg::FleetIdentities {
             generation: stale_generation,
-            result: Ok(test_registry("alpha", "owner/foo")),
+            result: Ok(test_fleet_identities("alpha", "owner/foo")),
         });
         assert_eq!(
             app.fleet
-                .registry
+                .fleets
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
-                .and_then(|registry| registry.fleets.first())
+                .and_then(|fleets| fleets.fleets.first())
                 .map(|entry| entry.name.as_str()),
             Some("foo")
         );
@@ -3506,52 +3325,6 @@ mod tests {
         assert_eq!(app.fleet.rev, Some(11));
         assert!(app.fleet.agents.contains_key("old-agent"));
         assert!(app.fleet.agents.contains_key("current-agent"));
-    }
-
-    #[test]
-    fn registry_edits_refuse_a_remote_daemon_path_before_file_lookup() {
-        let error =
-            local_registry_path_for_edit("https://remote.example.invalid:8474").unwrap_err();
-        assert!(error.contains("non-loopback"));
-        assert!(!error.contains("Unknown target"));
-        assert!(!error.contains("remote.example.invalid"));
-    }
-
-    #[test]
-    fn registry_edits_use_the_client_path_for_a_loopback_daemon() {
-        let client_path = PathBuf::from("/client-local/fleets.json");
-        assert_eq!(
-            local_registry_path_for_host("http://127.0.0.1:8474", client_path.clone()).unwrap(),
-            client_path
-        );
-    }
-
-    #[test]
-    fn registry_edits_accept_bracketed_ipv6_loopback() {
-        let client_path = PathBuf::from("/client-local/fleets.json");
-        assert_eq!(
-            local_registry_path_for_host("http://[::1]:8474", client_path.clone()).unwrap(),
-            client_path
-        );
-    }
-
-    #[test]
-    fn registry_edits_refuse_a_daemon_path_that_differs_from_the_client_path() {
-        let local_path = Path::new("/client-local/fleets.json");
-        let error = validate_registry_edit_path(local_path, "/daemon-local/fleets.json")
-            .expect_err("different registry paths must fail closed");
-        assert!(error.contains("/daemon-local/fleets.json"));
-        assert!(error.contains("/client-local/fleets.json"));
-        assert!(error.contains("refusing mutation"));
-    }
-
-    #[test]
-    fn registry_path_comparison_normalizes_dot_segments() {
-        validate_registry_edit_path(
-            Path::new("/client-local/./nested/../fleets.json"),
-            "/client-local/fleets.json",
-        )
-        .expect("equivalent normalized registry paths should be editable");
     }
 
     #[test]

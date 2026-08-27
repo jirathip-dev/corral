@@ -2,8 +2,6 @@
 //! Last-Event-ID (fresh cursor -> deltas; stale cursor -> full snapshot).
 
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::path::Path;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -14,41 +12,6 @@ use corrald::core::store::Store;
 use futures::stream::StreamExt;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
-
-/// Serializes tests that mutate `CORRAL_FLEETS_PATH`: env mutation is
-/// process-wide, while the daemon resolves it synchronously from the request
-/// handler. Kept as a tokio mutex so the async tests can hold the guard
-/// across the in-flight request.
-static REGISTRY_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-struct EnvRestore {
-    name: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvRestore {
-    fn set(name: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(name);
-        unsafe { std::env::set_var(name, value) };
-        Self { name, previous }
-    }
-}
-
-impl Drop for EnvRestore {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(previous) => unsafe { std::env::set_var(self.name, previous) },
-            None => unsafe { std::env::remove_var(self.name) },
-        }
-    }
-}
-
-fn write_registry(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().expect("temp registry dir");
-    let path = dir.path().join("fleets.json");
-    std::fs::write(&path, body).expect("write registry fixture");
-    (dir, path)
-}
 
 fn agent(id: &str, state: AgentState) -> Agent {
     Agent {
@@ -91,39 +54,12 @@ async fn app_with_repos(repos: &[Option<&str>]) -> (Store, axum::Router) {
     (store, app)
 }
 
-fn registry_body(fleets: &[(&str, &str)]) -> String {
-    let fleets = fleets
-        .iter()
-        .map(|(name, gh_repo)| {
-            serde_json::json!({
-                "name": name,
-                "gh_repo": gh_repo,
-                "local": format!("/tmp/{name}"),
-                "worktree_dir": format!("wt-{name}"),
-                "orch": "orch",
-                "workers": [],
-                "models": {"orch": "o", "impl": "i", "review": "r"}
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({ "fleets": fleets }).to_string()
-}
-
 fn object_keys(value: &serde_json::Value) -> BTreeSet<String> {
     value
         .as_object()
         .expect("repo category map")
         .keys()
         .cloned()
-        .collect()
-}
-
-fn array_values(value: &serde_json::Value) -> BTreeSet<String> {
-    value
-        .as_array()
-        .expect("repo category list")
-        .iter()
-        .map(|repo| repo.as_str().expect("repo category string").to_string())
         .collect()
 }
 
@@ -207,316 +143,203 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }
 
-#[tokio::test]
-async fn fleet_registry_projects_status_path_and_all_fleet_fields() {
-    let (_dir, path) = write_registry(
-        r#"{
-            "fleets": [
-                {
-                    "name": "corral",
-                    "gh_repo": "jirathip-dev/corral",
-                    "local": "~/Projects/corral",
-                    "worktree_dir": "corral",
-                    "orch": "orch-corral",
-                    "workers": ["w1", "w2"],
-                    "paused": true,
-                    "models": {
-                        "orch": "codex/deepseek-v4-flash-vision-exp",
-                        "impl": "codex/deepseek-v4-flash-vision-exp",
-                        "review": "codex/deepseek-v4-flash-vision-exp",
-                        "impl_alt": "opencode-go/deepseek-v4-flash",
-                        "impl_alt2": "codex/deepseek-v4-flash",
-                        "reasoning_effort": {
-                            "orch": "medium",
-                            "impl": "max",
-                            "review": "xhigh",
-                            "future_effort": "high"
-                        }
-                    }
-                },
-                {
-                    "name": "board",
-                    "gh_repo": "jirathip-dev/herdr-board",
-                    "local": "/opt/board",
-                    "worktree_dir": "board",
-                    "orch": "orch-board",
-                    "workers": [],
-                    "models": {"orch": "fable", "impl": "sonnet", "review": "opus"}
-                }
-            ]
-        }"#,
-    );
-    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-    let (_store, app) = app().await;
+use std::sync::Arc;
 
-    let response = app
-        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+fn fleet_identity(name: &str, gh_repo: &str) -> corrald::fleet::cli::FleetIdentity {
+    corrald::fleet::cli::FleetIdentity {
+        name: name.to_string(),
+        gh_repo: gh_repo.to_string(),
+        local: std::path::PathBuf::from(format!("/tmp/{name}")),
+        worktree_dir: format!("wt-{name}"),
+        orch: format!("orch-{name}"),
+        workers: 0,
+        paused: false,
+    }
+}
+
+/// #237 configless app: live agents with these repos AND an injected
+/// fleet-ops CLI validated identity catalog (production shells herdr-fleet).
+async fn app_with_repos_and_fleets(
+    repos: &[Option<&str>],
+    identities: Vec<corrald::fleet::cli::FleetIdentity>,
+) -> (Store, axum::Router) {
+    let (store, _app) = app_with_repos(repos).await;
+    let mut state = AppState {
+        fleets: Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(identities)),
+        ..Default::default()
+    };
+    let store2 = store.clone();
+    let coalescer = store2.clone();
+    std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
+    state.store = store2;
+    let app = router(state);
+    (store, app)
+}
+
+/// #237: the daemon starts and the board renders with NO fleets.json
+/// anywhere — /issues returns the live workspace.repo union (and, with an
+/// unavailable fleet-ops CLI, nothing else).
+#[tokio::test]
+async fn configless_startup_issues_use_live_repos_only() {
+    let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
+    let (store, app) = app_with_repos_and_fleets(&live, Vec::new()).await;
+    let issues = get_json(&app, "/issues").await;
+
+    assert_eq!(
+        object_keys(&issues["repos"]),
+        BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()]),
+        "categories are the trimmed live workspace.repo union; no registry keys, \
+         no basenames, no fleets.json anywhere"
+    );
+    assert!(
+        store
+            .get("agent-2")
+            .await
+            .expect("orphan agent")
+            .workspace
+            .repo
+            .is_none(),
+        "a missing repo identity stays in the orphan bucket"
+    );
+}
+
+/// #237: category source is the live snapshot ONLY. A CLI-validated fleet
+/// identity contributes its NAME as the action key, never a registry-derived
+/// gh_repo basename category.
+#[tokio::test]
+async fn category_source_never_derives_from_gh_repo_basenames() {
+    let identities = vec![
+        fleet_identity("fleet-canonical", "owner/canonical-repo"),
+        fleet_identity("fleet-primary", "owner/primary-repo"),
+        fleet_identity("fleet-orphan", "owner/orphan-repo"),
+    ];
+    let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
+    let (store, app) = app_with_repos_and_fleets(&live, identities).await;
+    let issues = get_json(&app, "/issues").await;
+
+    // Live repo categories are the trimmed live values; fleet identity keys
+    // are the CLI-validated fleet NAMES. NO registry-derived basenames
+    // ("canonical-repo", "orphan-repo") may appear as categories.
+    let keys = object_keys(&issues["repos"]);
+    assert!(keys.contains("fleet-canonical"));
+    assert!(keys.contains("fleet-primary"));
+    assert!(keys.contains("fleet-orphan"));
+    assert!(keys.contains("herdr-only"));
+    assert!(keys.contains("primary-repo"));
+    assert!(
+        !keys.contains("canonical-repo") && !keys.contains("orphan-repo"),
+        "gh_repo basenames are never categories: {keys:?}"
+    );
+    let _ = store;
+}
+
+/// #237: GET /fleets serves the fleet-ops CLI validated identity catalog and
+/// nothing else — no local/worktree_dir/models/reasoning_effort/path fields.
+#[tokio::test]
+async fn fleets_endpoint_is_the_validated_identity_catalog() {
+    let identities = vec![
+        fleet_identity("corral", "jirathip-dev/corral"),
+        fleet_identity("board", "jirathip-dev/herdr-board"),
+    ];
+    let (_store, app) = app_with_repos_and_fleets(&[], identities).await;
+    let body = get_json(&app, "/fleets").await;
 
     assert_eq!(body["status"], "ok");
     assert!(body["error"].is_null());
-    assert_eq!(body["path"], path.to_string_lossy().as_ref());
     assert_eq!(body["fleets"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        array_values(&body["repos"]),
-        BTreeSet::from(["corral".to_string(), "herdr-board".to_string()])
+    assert_eq!(body["fleets"][0]["name"], "corral");
+    assert_eq!(body["fleets"][0]["gh_repo"], "jirathip-dev/corral");
+    assert_eq!(body["fleets"][0]["orch"], "orch-corral");
+    assert!(
+        body["fleets"][0].get("local").is_none()
+            && body["fleets"][0].get("worktree_dir").is_none()
+            && body["fleets"][0].get("models").is_none()
+            && body.get("path").is_none(),
+        "no registry projection fields remain on the identity catalog"
     );
-
-    let corral = &body["fleets"][0];
-    assert_eq!(corral["name"], "corral");
-    assert_eq!(corral["gh_repo"], "jirathip-dev/corral");
-    assert_eq!(corral["local"], "~/Projects/corral");
-    assert_eq!(corral["worktree_dir"], "corral");
-    assert_eq!(corral["orch"], "orch-corral");
-    assert_eq!(corral["workers"], serde_json::json!(["w1", "w2"]));
-    assert_eq!(corral["paused"], true);
-    assert_eq!(
-        corral["models"]["impl"],
-        "codex/deepseek-v4-flash-vision-exp"
-    );
-    assert_eq!(
-        corral["models"]["impl_alt"],
-        "opencode-go/deepseek-v4-flash"
-    );
-    assert_eq!(corral["models"]["impl_alt2"], "codex/deepseek-v4-flash");
-    assert_eq!(corral["models"]["reasoning_effort"]["orch"], "medium");
-    assert_eq!(corral["models"]["reasoning_effort"]["impl"], "max");
-    assert_eq!(corral["models"]["reasoning_effort"]["review"], "xhigh");
-    assert_eq!(
-        corral["models"]["reasoning_effort"]["future_effort"],
-        "high"
-    );
-
-    let board = &body["fleets"][1];
-    assert_eq!(board["name"], "board");
-    assert_eq!(board["paused"], false);
-    assert!(board["workers"].as_array().unwrap().is_empty());
-    assert_eq!(board["models"]["reasoning_effort"], serde_json::Value::Null);
 }
 
+/// #237: an explicitly unavailable fleet-ops CLI is an explicit status, and
+/// the board still renders live categories (configless-safe daemon).
 #[tokio::test]
-async fn fleet_registry_malformed_file_returns_http_200_error_shape() {
-    let (_dir, path) = write_registry(r#"{ "fleets": [ oops"#);
-    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-    let (_store, app) = app().await;
-
-    let response = app
-        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("still JSON");
-    assert_eq!(body["status"], "error");
-    assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
-    assert!(body["fleets"].as_array().unwrap().is_empty());
-    assert_eq!(body["path"], path.to_string_lossy().as_ref());
-}
-
-/// #216: all registry states must retain the live category source. The
-/// fixtures deliberately use a fleet name that differs from its canonical
-/// `gh_repo` basename: fleet names remain the start-worktree issue keys, but
-/// the separate registry category list is canonical and the `/issues` map
-/// contains both compatible keys and live-only placeholders.
-#[tokio::test]
-async fn union_read_model_handles_absent_unloadable_partial_and_full_registry() {
-    let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
-    let expected_live = BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()]);
-
-    // Absent registry: status remains an explicit error, while both read
-    // surfaces still expose the live categories and the orphan contributes
-    // no guessed category.
-    {
-        let dir = tempfile::tempdir().expect("absent registry dir");
-        let path = dir.path().join("missing-fleets.json");
-        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-        let (store, app) = app_with_repos(&live).await;
-        let issues = get_json(&app, "/issues").await;
-        let registry = get_json(&app, "/fleet-registry").await;
-
-        assert_eq!(
-            issues["repos"],
-            serde_json::json!({
-                "herdr-only": [],
-                "primary-repo": []
+async fn unavailable_provider_reports_error_but_keeps_live_categories() {
+    struct Down;
+    impl corrald::fleet::cli::FleetOpsProvider for Down {
+        fn list(
+            &self,
+        ) -> Result<Vec<corrald::fleet::cli::FleetIdentity>, corrald::fleet::cli::FleetOpsError>
+        {
+            Err(corrald::fleet::cli::FleetOpsError::Unavailable {
+                detail: "no herdr-fleet".to_string(),
             })
-        );
-        assert_eq!(registry["status"], "error");
-        assert!(registry["fleets"].as_array().unwrap().is_empty());
-        assert_eq!(array_values(&registry["repos"]), expected_live);
-        assert!(
-            store
-                .get("agent-2")
-                .await
-                .expect("orphan agent")
-                .workspace
-                .repo
-                .is_none(),
-            "a missing repo identity stays in the orphan bucket"
-        );
+        }
     }
-
-    // Unloadable registry: malformed content has the same live fallback but
-    // must remain visibly distinct from a successful empty registry.
-    {
-        let (_dir, path) = write_registry(r#"{ "fleets": [ oops"#);
-        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-        let (_store, app) = app_with_repos(&live).await;
-        let issues = get_json(&app, "/issues").await;
-        let registry = get_json(&app, "/fleet-registry").await;
-
-        assert_eq!(object_keys(&issues["repos"]), expected_live);
-        assert_eq!(registry["status"], "error");
-        assert!(
-            registry["error"]
-                .as_str()
-                .is_some_and(|error| { error.contains("cannot parse fleet registry") })
-        );
-        assert_eq!(array_values(&registry["repos"]), expected_live);
-    }
-
-    // Partial registry: canonical registry identity and a live-only Herdr
-    // identity are both present; no registry entry is fabricated for the
-    // live-only repo.
-    {
-        let (_dir, path) = write_registry(&registry_body(&[(
-            "fleet-canonical",
-            "owner/canonical-repo",
-        )]));
-        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-        let (_store, app) = app_with_repos(&live).await;
-        let issues = get_json(&app, "/issues").await;
-        let registry = get_json(&app, "/fleet-registry").await;
-
-        assert_eq!(
-            object_keys(&issues["repos"]),
-            BTreeSet::from([
-                "canonical-repo".to_string(),
-                "fleet-canonical".to_string(),
-                "herdr-only".to_string(),
-                "primary-repo".to_string(),
-            ])
-        );
-        assert_eq!(
-            array_values(&registry["repos"]),
-            BTreeSet::from([
-                "canonical-repo".to_string(),
-                "herdr-only".to_string(),
-                "primary-repo".to_string(),
-            ])
-        );
-        assert_eq!(registry["fleets"].as_array().unwrap().len(), 1);
-    }
-
-    // Full registry: the union includes every canonical registry basename and
-    // every live workspace repo, with the shared identity deduplicated.
-    {
-        let (_dir, path) = write_registry(&registry_body(&[
-            ("primary-fleet", "owner/primary-repo"),
-            ("registry-fleet", "owner/registry-only"),
-        ]));
-        let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-        let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-        let (_store, app) = app_with_repos(&live).await;
-        let issues = get_json(&app, "/issues").await;
-        let registry = get_json(&app, "/fleet-registry").await;
-
-        assert_eq!(
-            object_keys(&issues["repos"]),
-            BTreeSet::from([
-                "herdr-only".to_string(),
-                "primary-fleet".to_string(),
-                "primary-repo".to_string(),
-                "registry-fleet".to_string(),
-                "registry-only".to_string(),
-            ])
-        );
-        assert_eq!(
-            array_values(&registry["repos"]),
-            BTreeSet::from([
-                "herdr-only".to_string(),
-                "primary-repo".to_string(),
-                "registry-only".to_string(),
-            ])
-        );
-        assert_eq!(registry["fleets"].as_array().unwrap().len(), 2);
-    }
+    let live = [Some("  primary-repo  "), None];
+    let (store, _app) = app_with_repos(&live).await;
+    let mut state = AppState {
+        fleets: Arc::new(Down),
+        ..Default::default()
+    };
+    let store2 = store.clone();
+    let coalescer = store2.clone();
+    std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
+    state.store = store2;
+    let app = router(state);
+    let body = get_json(&app, "/fleets").await;
+    assert_eq!(body["status"], "error");
+    assert!(body["fleets"].as_array().unwrap().is_empty());
+    let issues = get_json(&app, "/issues").await;
+    assert_eq!(
+        object_keys(&issues["repos"]),
+        BTreeSet::from(["primary-repo".to_string()]),
+        "live categories still render when the identity path is down"
+    );
 }
 
-#[tokio::test]
-async fn fleet_registry_and_issues_read_the_same_registry_source() {
-    let (_dir, path) = write_registry(
-        r#"{
-            "fleets": [
+#[test]
+fn no_fleets_json_reference_anywhere_in_src() {
+    // The no-write/no-read guarantee (#237): configless corral never owns
+    // fleets.json, so no non-comment source line may reference it at all
+    // (prose that explains the guarantee is permitted and ignored).
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders = Vec::new();
+    let mut stack = vec![root.join("src"), root.join("crates"), root.join("clients")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().map(|n| n == "target").unwrap_or(false)
+                    || path.file_name().map(|n| n == ".git").unwrap_or(false)
                 {
-                    "name": "corral",
-                    "gh_repo": "jirathip-dev/corral",
-                    "local": "~/Projects/corral",
-                    "worktree_dir": "corral",
-                    "orch": "orch-corral",
-                    "workers": [],
-                    "models": {"orch": "a", "impl": "b", "review": "c"}
-                },
-                {
-                    "name": "board",
-                    "gh_repo": "jirathip-dev/herdr-board",
-                    "local": "/opt/board",
-                    "worktree_dir": "board",
-                    "orch": "orch-board",
-                    "workers": [],
-                    "models": {"orch": "a", "impl": "b", "review": "c"}
+                    continue;
                 }
-            ]
-        }"#,
-    );
-    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-    let (_store, app) = app().await;
-
-    let issues_response = app
-        .clone()
-        .oneshot(Request::get("/issues").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(issues_response.status(), StatusCode::OK);
-    let issues_bytes = issues_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let issues: serde_json::Value = serde_json::from_slice(&issues_bytes).unwrap();
-    assert_eq!(issues["repos"]["corral"], serde_json::json!([]));
-    assert_eq!(issues["repos"]["board"], serde_json::json!([]));
-
-    let registry_response = app
-        .oneshot(Request::get("/fleet-registry").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(registry_response.status(), StatusCode::OK);
-    let bytes = registry_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let registry: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(registry["fleets"][0]["name"], "corral");
-    assert_eq!(registry["fleets"][0]["gh_repo"], "jirathip-dev/corral");
-    assert_eq!(registry["fleets"][1]["name"], "board");
-    assert_eq!(registry["fleets"][1]["gh_repo"], "jirathip-dev/herdr-board");
-    assert_eq!(
-        array_values(&registry["repos"]),
-        BTreeSet::from(["corral".to_string(), "herdr-board".to_string()])
+                stack.push(path);
+            } else if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let in_block_comment = text.matches("/*").count() - text.matches("*/").count();
+                for (index, line) in text.lines().enumerate() {
+                    if !line.contains("fleets.json") {
+                        continue;
+                    }
+                    let trimmed = line.trim_start();
+                    let comment = trimmed.starts_with("//");
+                    let mut seen_block = false;
+                    if in_block_comment > 0 {
+                        let prior =
+                            &text[..text.lines().take(index).map(|l| l.len() + 1).sum::<usize>()];
+                        let opens_diff = prior.matches("/*").count() - prior.matches("*/").count();
+                        seen_block = opens_diff > 0;
+                    }
+                    if !comment && !seen_block {
+                        offenders.push(format!("{}:{}: {}", path.display(), index + 1, trimmed));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "fleets.json must not be referenced in executable src code (configless #237): {offenders:?}"
     );
 }
 
@@ -709,13 +532,14 @@ async fn issues_endpoint_serves_last_known_repo_issues() {
 
 #[tokio::test]
 async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
-    let (_dir, path) = write_registry(&registry_body(&[
-        ("alpha", "owner/foo"),
-        ("beta", "owner/foo"),
-    ]));
-    let _env_guard = REGISTRY_ENV_LOCK.lock().await;
-    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &path);
-    let state = AppState::default();
+    let identities = vec![
+        fleet_identity("alpha", "owner/foo"),
+        fleet_identity("beta", "owner/foo"),
+    ];
+    let state = AppState {
+        fleets: Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(identities)),
+        ..Default::default()
+    };
     state.issues.update(
         "alpha",
         vec![corrald::core::events::GhIssueRef {
@@ -731,5 +555,10 @@ async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
     let json = get_json(&app, "/issues").await;
     assert_eq!(json["repos"]["alpha"].as_array().unwrap().len(), 1);
     assert!(json["repos"]["beta"].as_array().unwrap().is_empty());
-    assert!(json["repos"]["foo"].as_array().unwrap().is_empty());
+    // The live category union has no repo keys here; only validated fleet
+    // identity keys exist (no registry-derived basenames like "foo").
+    assert!(
+        json["repos"].get("foo").is_none(),
+        "no guessed category from gh_repo"
+    );
 }

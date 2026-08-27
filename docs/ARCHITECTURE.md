@@ -116,10 +116,11 @@ actually missing worktree directory is still removed. A source being
 recreated re-arms immediately, and a successful scan emits a recovery log and
 clears the failure period, so a later outage gets one new warning.
 
-The cold rediscovery pass rereads the live `fleets.json` registry and scans
-immediate Git checkouts under `~/Projects` in addition to the fixed fallback
-root. It replaces the primary-source set before reconciling, so removed fleet
-roots disappear and new fleet or Projects checkouts produce
+The cold rediscovery pass scans immediate Git checkouts under `~/Projects`
+in addition to the fixed fallback root (configless #237: no `fleets.json`
+registry read — the fleet registry stays fleet-ops' config and its physical
+checkouts are discovered live). It replaces the primary-source set before
+reconciling, so removed roots disappear and new Project checkouts produce
 `WorktreeAdded` without a daemon restart. Healthy FSEvents, topology, and
 status behavior remains unchanged; only unavailable-source handling and the
 slow source-discovery safety net are special-cased.
@@ -168,25 +169,23 @@ inputs are files on disk rather than plane events:
   and redacts entries before they cross the module boundary. It is an
   on-demand, grant-gated read path; it does not compute provider usage or
   alter the fleet snapshot.
-- **Fleet registry** (`src/fleet/`,
-  `corrald fleet list|check|watch|add|remove|pause|resume|models|switch|reap|prune`)
-  — parses, validates and atomically rewrites the `fleets.json`
-  control-plane registry, and owns the CLI-only destructive ops half:
-  auth-gated orchestrator switch, verified-agent reaping, and provably-dead
-  worktree pruning. The daemon read path may consult the validated registry
-  for primary-checkout attribution, but never mutates it; the registry
-  subcommands dispatch before the tokio runtime is built and never talk to a
-  running daemon.
+- **Fleet identities** (`src/fleet/`, `corrald fleet switch <name>`,
+  `GET /fleets`) — CONFIGLESS (#237): corral does not own, read, or write
+  `fleets.json`. The fleet registry is fleet-ops' opinionated config
+  (`herdr-fleet list|add|remove|pause|resume|models|switch` on
+  `~/.config/fleet-operations/fleets.json`). `src/fleet/cli.rs` is the
+  fleet-ops CLI validated identity path the daemon and `fleet switch`
+  shell out to; the workspace `worktree`/`switch` modules build on it.
+  The old registry subcommands (`list|check|watch|add|remove|pause|resume|
+  models|reap|prune` with `--registry`) are superseded and removed.
 
 ### Workspace attribution
 
-Repo/branch grouping is one shared read-side fact flow. The daemon seeds
-explicit primary checkout roots from `CORRAL_REPO_ROOT` and, when present,
-the fleet registry's `local` + `gh_repo` pairs. Registry roots have
-precedence: if a registry `local` canonicalizes to `CORRAL_REPO_ROOT`, its
-`gh_repo` basename wins over the configured directory basename. The registry's
-`worktree_dir` also supplies an alias to that same `gh_repo` basename, so the
-on-disk worktree directory is an addressable location, never repo identity.
+Repo/branch grouping is one shared read-side fact flow. Configless (#237):
+the daemon seeds explicit primary checkout roots from `CORRAL_REPO_ROOT` and
+the git plane discovers immediate `~/Projects` checkouts — NO registry
+roots or aliases exist. Repo names are path-derived identities of those
+live checkouts; the board categories are the live `workspace.repo` values.
 The git plane probes those roots and the Herdr linked-worktree root; the
 integrator records branch facts by canonical worktree path, and the Herdr
 adapter reads the same facts while building a fresh agent record.
@@ -194,22 +193,21 @@ adapter reads the same facts while building a fresh agent record.
 Path identity is raw-then-canonical, including symlinked `$HOME` and missing
 path tails. A primary checkout must match a known root exactly. A linked
 worktree uses the established `<worktrees_root>/<worktree_dir>/<label>`
-layout. The first path component is mapped through the registry alias before
-the directory-name fallback, and the `<label>` is only a path component—never
-branch identity. The GitHub facts plane folds PR and CI facts on the same
-canonical `gh_repo` basename, so a stale checkout folder cannot split a fleet
-into a second event group. Branches come from git HEAD facts; display names,
-pane labels, and terminal titles never participate. A supervised git-plane restart
-clears the previous generation's branch cache and the branch field on
-already-stored recognized agents, then repopulates present paths from fresh
-probes. Repo identity and the other workspace/GitHub fields survive that
-boundary; this prevents a missed removal event from reviving a vanished
-worktree's old branch. Paths that match neither source are not reconciled and
-remain `workspace.repo: null`, therefore staying in the `(no repo)` orphan
-bucket. The `/fleet-registry` read view separately exposes `repos`, the same
-sorted union of live nonempty `workspace.repo` values and validated registry
-`gh_repo` basenames. Its `fleets` projection and error/status boundary do not
-change when that category source is missing or unloadable.
+layout. The first path component stays a directory-name fallback (no
+registry alias), and the `<label>` is only a path component—never branch
+identity. The GitHub facts plane folds PR and CI facts on the same repo
+basename the fleet-ops validated list carries, and issue grouping keys are
+the fleet-ops CLI validated fleet names. Branches come from git HEAD facts;
+display names, pane labels, and terminal titles never participate. A
+supervised git-plane restart clears the previous generation's branch cache
+and the branch field on already-stored recognized agents, then repopulates
+present paths from fresh probes. Repo identity and the other
+workspace/GitHub fields survive that boundary; this prevents a missed
+removal event from reviving a vanished worktree's old branch. Paths that
+match neither source are not reconciled and remain `workspace.repo: null`,
+therefore staying in the `(no repo)` orphan bucket. The `GET /fleets` view
+serves the validated identity catalog only — no `fleets.json` projection
+exists.
 
 ## Write side: the signed drive plane
 
@@ -370,7 +368,7 @@ src/transcript/      D35: per-store paged transcript readers (opencode
                      agent→session binding by worktree; redaction inside
                      the module boundary
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
-src/fleet/           fleets.json registry: parse + validate + atomic CRUD + CLI ops
+src/fleet/           configless: fleet-ops CLI identity path + worktree/switch ops
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite

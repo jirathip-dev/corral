@@ -292,13 +292,39 @@ cat >"$WORK/daemon-config/fleets.json" <<JSON
 }
 JSON
 
-CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json" \
-  "$DAEMON_BIN" fleet check --registry "$WORK/daemon-config/fleets.json" \
-  >"$WORK/fleet-check.log" 2>&1 \
+# #237 configless: the daemon never reads fleets.json; the identity source is
+# a fake fleet-ops CLI ($CORRALD_FLEET_OPS) that prints `herdr-fleet list`-
+# shaped output for these three fixture fleets. The scratch fleets.json above
+# remains the provenance artifact describing that identity source.
+mkdir -p "$WORK/fleet-ops"
+cat >"$WORK/fleet-ops/fake-fleet-ops" <<SH
+#!/bin/sh
+# Fake fleet-ops CLI for the design gate: `list` emits the fixture roster in
+# `herdr-fleet list` format; `switch` exits 0 (re-arm is fleet-ops' job).
+case "\$1" in
+  list)
+    printf '%-12s %s  %-50s %s\n' 'corral' '✓' 'jirathip-dev/corral' 'orch=orch-corral workers=1 models=orch:codex/gpt-5.6-sol'
+    printf '%-12s %s  %-50s %s\n' 'plush-meadow' '✓' 'jirathip-dev/plush-meadow' 'orch=orch-plush-meadow workers=1 models=orch:codex/gpt-5.6-sol'
+    printf '%-12s %s  %-50s %s\n' 'sendmeter' '✓' 'jirathip-dev/sendmeter' 'orch=orch-sendmeter workers=1 models=orch:codex/gpt-5.6-sol'
+    printf '\n3 fleets in registry\n'
+    ;;
+  switch)
+    echo "fake fleet-ops switch \$2: arm on hermes profile (identity validated)"
+    exit 0
+    ;;
+  *) exit 1;;
+esac
+SH
+chmod +x "$WORK/fleet-ops/fake-fleet-ops"
+export CORRALD_FLEET_OPS="$WORK/fleet-ops/fake-fleet-ops"
+
+"$DAEMON_BIN" fleet switch corral >"$WORK/fleet-switch.log" 2>&1 \
   || {
-    cat "$WORK/fleet-check.log" >&2
-    die "real corrald fleet check rejected the scratch registry"
+    cat "$WORK/fleet-switch.log" >&2
+    die "real corrald fleet switch delegation to the fleet-ops CLI failed"
   }
+grep -q "fake fleet-ops switch corral" "$WORK/fleet-switch.log" \
+  || die "corrald fleet switch did not delegate to the fleet-ops CLI"
 
 SOCKET="$WORK/herdr.sock"
 PORT="$($PYTHON_BIN - <<'PY'
@@ -396,7 +422,7 @@ done
 
 HOME="$WORK/home" \
 CORRAL_CONFIG_DIR="$WORK/daemon-config" \
-CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json" \
+CORRALD_FLEET_OPS="$WORK/fleet-ops/fake-fleet-ops" \
 CORRAL_REPO_ROOT="$WORK/repo" \
 CORRAL_WORKTREES_ROOT="$WORK/worktrees" \
   "$DAEMON_BIN" --port "$PORT" --socket "$SOCKET" \
@@ -590,7 +616,7 @@ openssl pkey -in "$WORK/device-key.pem" -outform DER -out "$WORK/device-private.
 openssl pkey -in "$WORK/device-key.pem" -pubout -outform DER -out "$WORK/device-public.der" 2>>"$WORK/openssl.log"
 HOME="$WORK/home" \
 CORRAL_CONFIG_DIR="$WORK/daemon-config" \
-CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json" \
+CORRALD_FLEET_OPS="$WORK/fleet-ops/fake-fleet-ops" \
   "$PYTHON_BIN" - "$BASE_URL" "$WORK/daemon-config" "$WORK/ui-config" \
   "$WORK/device-private.der" "$WORK/device-public.der" <<'PY'
 import base64
@@ -675,7 +701,7 @@ chmod +x "$WORK/wake-window.sh"
 
 export HOME="$WORK/home"
 export CORRAL_CONFIG_DIR="$WORK/daemon-config"
-export CORRAL_FLEETS_PATH="$WORK/daemon-config/fleets.json"
+export CORRALD_FLEET_OPS="$WORK/fleet-ops/fake-fleet-ops"
 export CORRALD_BIN="$DAEMON_BIN"
 export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config"
 export CORRAL_UI_DISABLE_KEYRING=1
@@ -750,7 +776,7 @@ for tab in board issues registry settings; do
     --timeout-seconds 45 \
     --chrome-timeout-seconds 30 \
     --egui-wake-command "$WORK/wake-window.sh" \
-    --provenance-note "real scratch corrald, fake Herdr, three scratch repos, and loopback /issues-only proxy; registry check passed" \
+    --provenance-note "real scratch corrald, fake Herdr, three scratch repos, loopback /issues-only proxy; configless identity path via fake fleet-ops CLI (fleet switch delegation passed)" \
     --output-root "$WORK/evidence/$tab"
 
   OUTPUT_DIR="$WORK/evidence/$tab/issue-206"

@@ -19,7 +19,6 @@ use corrald::api::{AppState, router};
 use corrald::auth::test_support;
 use corrald::core::events::GhIssueRef;
 use corrald::drive::{Capability, DriveEnvelope, SignedDrive};
-use corrald::fleet::config::{Fleet, Models, Registry};
 use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -137,30 +136,9 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
         "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
     });
 
-    // Point the production registry and worktree-root resolution at temp
-    // fixtures: a real fleet checkout plus a throwaway home.
-    let registry_path = home_dir.path().join("fleets.json");
-    let fleet = Fleet {
-        name: FLEET_NAME.to_string(),
-        gh_repo: "jirathip-dev/corral".to_string(),
-        local: checkout.path().to_string_lossy().into_owned(),
-        worktree_dir: "corral".to_string(),
-        orch: "orch-corral".to_string(),
-        workers: Vec::new(),
-        paused: false,
-        models: Models {
-            orch: "m".to_string(),
-            impl_: "i".to_string(),
-            review: "r".to_string(),
-            impl_alt: None,
-            impl_alt2: None,
-        },
-    };
-    corrald::fleet::config::write_atomic(&registry_path, &Registry::new(vec![fleet]))
-        .expect("write fleet registry");
-
+    // A throwaway home for the worktree root; configless means NO fleets.json
+    // anywhere — the identity comes from the injected provider below.
     let _home_guard = EnvRestore::set("HOME", home_dir.path());
-    let _registry_guard = EnvRestore::set("CORRAL_FLEETS_PATH", &registry_path);
 
     // Build the daemon state with the issue cache seeded as authoritative,
     // then register a device granted only the worktree capability.
@@ -179,6 +157,21 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
     );
     state.issues = issues;
 
+    // Configless: the fleet identity is injected through the provider (the
+    // production daemon shells `herdr-fleet list`; a ficure here is the
+    // CLI-validated identity of the temp checkout).
+    state.fleets = Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(vec![
+        corrald::fleet::cli::FleetIdentity {
+            name: FLEET_NAME.to_string(),
+            gh_repo: "jirathip-dev/corral".to_string(),
+            local: checkout.path().to_path_buf(),
+            worktree_dir: "corral".to_string(),
+            orch: "orch-corral".to_string(),
+            workers: 0,
+            paused: false,
+        },
+    ]));
+
     let (signing, pubkey) = test_support::keypair();
     let bootstrap = test_support::envelope("bootstrap", Capability::Prompt, "bootstrap");
     let token = state.auth.registry.registration_token();
@@ -196,6 +189,7 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
     let transcript_roots = state.transcript_roots.clone();
     let transcript_limiter = state.transcript_limiter.clone();
     let role_probe_memo = state.role_probe_memo.clone();
+    let fleets = state.fleets.clone();
     let app = router(state);
     let restarted_app = router(AppState {
         store,
@@ -203,6 +197,7 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
         adapter,
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
         issues,
+        fleets,
         transcript_roots,
         transcript_limiter,
         role_probe_memo,

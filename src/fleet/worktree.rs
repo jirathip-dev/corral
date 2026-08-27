@@ -27,7 +27,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fleet::config::Fleet;
+use crate::fleet::cli::FleetIdentity;
 
 /// The client-confirmed, authorized worktree request.
 ///
@@ -220,7 +220,7 @@ fn free_slug(name: &str) -> Result<String, WorktreeError> {
 /// Resolve the worktree root for a fleet: `<home>/.herdr/worktrees/<dir>`.
 /// This matches the fleet watchdog's `cwd_in_fleet` anchor so the created
 /// worktree is recognized by the same fleet.
-fn worktrees_root(fleet: &Fleet, home: &str) -> PathBuf {
+fn worktrees_root(fleet: &FleetIdentity, home: &str) -> PathBuf {
     let dir = fleet.worktree_dir.trim_matches('/');
     if dir.is_empty() {
         return PathBuf::from(home).join(".herdr/worktrees");
@@ -233,7 +233,12 @@ fn worktrees_root(fleet: &Fleet, home: &str) -> PathBuf {
 /// `base` is the git base ref/commit for the new branch — callers pass
 /// `"HEAD"` by default; the daemon may pass the repo's default branch when
 /// it has one from the gh plane. `home` is only used for the worktree root.
-pub fn plan(fleet: &Fleet, request: &WorktreeRequest, base: &str, home: &str) -> WorktreePlan {
+pub fn plan(
+    fleet: &FleetIdentity,
+    request: &WorktreeRequest,
+    base: &str,
+    home: &str,
+) -> WorktreePlan {
     let free = match request {
         WorktreeRequest::Free { name, .. } => {
             // Unresolvable names are validated in `start` (which returns
@@ -271,11 +276,11 @@ pub fn plan(fleet: &Fleet, request: &WorktreeRequest, base: &str, home: &str) ->
 pub trait WorktreeCreator: Send + Sync {
     /// True when the worktree path or branch already exists (idempotency
     /// check — the operation must be exact-once).
-    fn exists(&self, fleet: &Fleet, plan: &WorktreePlan) -> bool;
+    fn exists(&self, fleet: &FleetIdentity, plan: &WorktreePlan) -> bool;
 
     /// Create the worktree + branch. Must fail loudly (Err) on any nonzero
     /// git exit; the worktree is then considered failed, not started.
-    fn create(&self, fleet: &Fleet, plan: &WorktreePlan) -> Result<(), String>;
+    fn create(&self, fleet: &FleetIdentity, plan: &WorktreePlan) -> Result<(), String>;
 }
 
 /// Production git seam: shells out to `git -C <local> worktree add`.
@@ -283,7 +288,7 @@ pub trait WorktreeCreator: Send + Sync {
 pub struct GitCreator;
 
 impl WorktreeCreator for GitCreator {
-    fn exists(&self, fleet: &Fleet, plan: &WorktreePlan) -> bool {
+    fn exists(&self, fleet: &FleetIdentity, plan: &WorktreePlan) -> bool {
         if plan.path.exists() {
             return true;
         }
@@ -298,7 +303,7 @@ impl WorktreeCreator for GitCreator {
         matches!(out, Ok(o) if !o.stdout.is_empty())
     }
 
-    fn create(&self, fleet: &Fleet, plan: &WorktreePlan) -> Result<(), String> {
+    fn create(&self, fleet: &FleetIdentity, plan: &WorktreePlan) -> Result<(), String> {
         let local = fleet.local_path();
         let output = Command::new("git")
             .args(["-C"])
@@ -323,7 +328,7 @@ pub trait WorktreeLauncher: Send + Sync {
     /// Hand the created worktree off to the fleet's orchestrator. Returns
     /// the [`Handoff`] state; a `Failed` here does NOT undo the worktree
     /// (the operation keeps the worktree and reports the partial state).
-    fn launch(&self, fleet: &Fleet, plan: &WorktreePlan) -> Handoff;
+    fn launch(&self, fleet: &FleetIdentity, plan: &WorktreePlan) -> Handoff;
 }
 
 /// Production herdr launcher.
@@ -341,7 +346,7 @@ pub trait WorktreeLauncher: Send + Sync {
 pub struct HerdrLauncher;
 
 impl WorktreeLauncher for HerdrLauncher {
-    fn launch(&self, _fleet: &Fleet, _plan: &WorktreePlan) -> Handoff {
+    fn launch(&self, _fleet: &FleetIdentity, _plan: &WorktreePlan) -> Handoff {
         // The orchestrator is the configured `orch` agent. A live spawn call
         // is out of slice-1 scope; defer so the caller can render the
         // distinct "worktree created, agent handoff pending" state.
@@ -352,7 +357,7 @@ impl WorktreeLauncher for HerdrLauncher {
 /// Start a worktree: validate -> plan -> idempotency check -> create ->
 /// hand off. Exactly one worktree per logical request.
 pub fn start(
-    fleet: &Fleet,
+    fleet: &FleetIdentity,
     request: &WorktreeRequest,
     base: &str,
     home: &str,
@@ -448,25 +453,18 @@ impl<'a> IssueCheck<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::config::Fleet;
+    use crate::fleet::cli::FleetIdentity;
     use std::sync::Mutex;
 
-    fn fleet() -> Fleet {
-        Fleet {
+    fn fleet() -> FleetIdentity {
+        FleetIdentity {
             name: "corral".into(),
             gh_repo: "jirathip-dev/corral".into(),
-            local: "~/Projects/corral".into(),
+            local: PathBuf::from("/tmp/corral"),
             worktree_dir: "corral".into(),
             orch: "orch-corral".into(),
-            workers: vec![],
+            workers: 0,
             paused: false,
-            models: crate::fleet::config::Models {
-                orch: "m".into(),
-                impl_: "i".into(),
-                review: "r".into(),
-                impl_alt: None,
-                impl_alt2: None,
-            },
         }
     }
 
@@ -485,13 +483,13 @@ mod tests {
         }
     }
     impl WorktreeCreator for RecordingCreator {
-        fn exists(&self, _fleet: &Fleet, plan: &WorktreePlan) -> bool {
+        fn exists(&self, _fleet: &FleetIdentity, plan: &WorktreePlan) -> bool {
             let existing = self.existing.lock().unwrap();
             existing
                 .iter()
                 .any(|p| p == &plan.path.to_string_lossy().to_string())
         }
-        fn create(&self, _fleet: &Fleet, plan: &WorktreePlan) -> Result<(), String> {
+        fn create(&self, _fleet: &FleetIdentity, plan: &WorktreePlan) -> Result<(), String> {
             self.created.lock().unwrap().push(plan.branch.clone());
             Ok(())
         }
@@ -502,7 +500,7 @@ mod tests {
         launched: Mutex<Vec<String>>,
     }
     impl WorktreeLauncher for RecordingLauncher {
-        fn launch(&self, _fleet: &Fleet, plan: &WorktreePlan) -> Handoff {
+        fn launch(&self, _fleet: &FleetIdentity, plan: &WorktreePlan) -> Handoff {
             self.launched.lock().unwrap().push(plan.branch.clone());
             Handoff::Launched
         }
@@ -703,10 +701,10 @@ mod tests {
     fn unauthored_or_duplicate_creator_failure_is_typed_failed() {
         struct FailCreator;
         impl WorktreeCreator for FailCreator {
-            fn exists(&self, _fleet: &Fleet, _plan: &WorktreePlan) -> bool {
+            fn exists(&self, _fleet: &FleetIdentity, _plan: &WorktreePlan) -> bool {
                 false
             }
-            fn create(&self, _fleet: &Fleet, _plan: &WorktreePlan) -> Result<(), String> {
+            fn create(&self, _fleet: &FleetIdentity, _plan: &WorktreePlan) -> Result<(), String> {
                 Err("boom".into())
             }
         }

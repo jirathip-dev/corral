@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, FleetRegistry, GhIssueRef, Snapshot};
+use crate::model::{Delta, FleetIdentities, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
@@ -168,16 +168,16 @@ fn decode_issues(body: serde_json::Value) -> Result<BTreeMap<String, Vec<GhIssue
         .map_err(|e| format!("body: {e}"))
 }
 
-/// #135: `GET /fleet-registry` — the same local registry source the daemon
-/// uses for `/issues`, projected for the board's read-only Registry tab.
-/// Transport, non-2xx, and body decode failures are strict `Err(String)`s;
-/// a daemon-level parse/IO failure is a successful HTTP 200
-/// `FleetRegistry { status: "error", .. }` and is rendered prominently.
-pub async fn fetch_fleet_registry(
+/// #237: `GET /fleets` — the fleet-ops CLI validated identity catalog
+/// (configless: corral never reads fleets.json). Transport, non-2xx, and
+/// body decode failures are strict `Err(String)`s; a daemon-level fleet-ops
+/// CLI failure is a successful HTTP 200 `FleetIdentities { status: "error",
+/// .. }` and is rendered prominently.
+pub async fn fetch_fleet_identities(
     client: &reqwest::Client,
     base_url: &str,
-) -> Result<FleetRegistry, String> {
-    let url = format!("{}/fleet-registry", base_url.trim_end_matches('/'));
+) -> Result<FleetIdentities, String> {
+    let url = format!("{}/fleets", base_url.trim_end_matches('/'));
     let response = client
         .get(&url)
         .timeout(Duration::from_secs(10))
@@ -185,7 +185,7 @@ pub async fn fetch_fleet_registry(
         .await
         .map_err(|e| format!("connect: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("GET /fleet-registry -> {}", response.status()));
+        return Err(format!("GET /fleets -> {}", response.status()));
     }
     response.json().await.map_err(|e| format!("body: {e}"))
 }
@@ -768,14 +768,14 @@ pub enum ApplyMsg {
         generation: u64,
         result: Result<BTreeMap<String, Vec<GhIssueRef>>, String>,
     },
-    /// #135: read-only registry view arrived from `GET /fleet-registry`.
-    /// The generation is stamped when the request starts so a response from
-    /// a prior connection/host cannot make stale fleet names actionable.
-    /// `Err` is a transport/endpoint failure; daemon parse failures ride an
-    /// `Ok(FleetRegistry)` with `status="error"`.
-    Registry {
+    /// #237: the fleet-ops CLI validated identity catalog arrived from
+    /// `GET /fleets`. The generation is stamped when the request starts so
+    /// a response from a prior connection/host cannot make stale fleet names
+    /// actionable. `Err` is a transport/endpoint failure; daemon fleet-ops
+    /// failures ride an `Ok(FleetIdentities)` with `status="error"`.
+    FleetIdentities {
         generation: u64,
-        result: Result<FleetRegistry, String>,
+        result: Result<FleetIdentities, String>,
     },
     /// #137: host-admin device/grants view arrived from `GET /grants`.
     GrantDevices(Result<AdminGrantsView, String>),

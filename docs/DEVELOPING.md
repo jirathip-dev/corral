@@ -622,7 +622,8 @@ future findings cannot be silently carried forward as part of this baseline.
   poll-by-design (one GraphQL round-trip per poll, SWR); the git plane is
   fsevents push with one immutable watcher per commondir, a 10s topology / 60s
   status safety net, and a 15-minute live source rediscovery pass. That pass
-  rereads `fleets.json` and scans immediate Git checkouts under `~/Projects`,
+  scans immediate Git checkouts under `~/Projects` (configless #237: the
+  `fleets.json` registry is fleet-ops' config, never corral's),
   so new and removed primary roots converge without a daemon restart. Failed
   repo/container sources use a 10s → 60s → 5m backoff, then stay out of the
   hot path until rediscovery; a present source retains its last-known

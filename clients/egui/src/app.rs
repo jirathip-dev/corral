@@ -1299,14 +1299,29 @@ impl CorralApp {
         match msg {
             ApplyMsg::Fingerprint(fp) => self.apply_fingerprint(fp),
             ApplyMsg::RegisterResult(result) => self.handle_register_result(result),
-            ApplyMsg::Sse(protocol::SseEvent::Snapshot(snap)) => {
-                self.fleet.apply_snapshot(&snap);
-            }
-            ApplyMsg::Sse(protocol::SseEvent::Delta(delta)) => {
-                self.fleet.apply_delta(&delta);
-            }
-            ApplyMsg::Sse(protocol::SseEvent::Unknown { event, .. }) => {
-                tracing::debug!(event, "ignored SSE event");
+            ApplyMsg::Sse {
+                loop_generation,
+                event,
+            } => {
+                if loop_generation != self.read_loop_generation {
+                    tracing::debug!(
+                        loop_generation,
+                        current = self.read_loop_generation,
+                        "ignored SSE event from an obsolete read loop"
+                    );
+                    return;
+                }
+                match event {
+                    protocol::SseEvent::Snapshot(snap) => {
+                        self.fleet.apply_snapshot(&snap);
+                    }
+                    protocol::SseEvent::Delta(delta) => {
+                        self.fleet.apply_delta(&delta);
+                    }
+                    protocol::SseEvent::Unknown { event, .. } => {
+                        tracing::debug!(event, "ignored SSE event");
+                    }
+                }
             }
             ApplyMsg::Conn {
                 loop_generation,
@@ -1639,10 +1654,14 @@ impl CorralApp {
     fn refresh_snapshot(&self) {
         let client = self.client.clone();
         let base_url = self.config.host_url.clone();
+        let loop_generation = self.read_loop_generation;
         let tx = self.tx_apply.clone();
         self.rt.spawn(async move {
             if let Ok(snapshot) = protocol::fetch_snapshot(&client, &base_url).await {
-                let _ = tx.send(ApplyMsg::Sse(protocol::SseEvent::Snapshot(snapshot)));
+                let _ = tx.send(ApplyMsg::Sse {
+                    loop_generation,
+                    event: protocol::SseEvent::Snapshot(snapshot),
+                });
             }
         });
     }
@@ -3198,6 +3217,66 @@ mod tests {
                 .map(|entry| entry.name.as_str()),
             Some("foo")
         );
+    }
+
+    #[test]
+    fn obsolete_sse_events_cannot_overwrite_state_after_read_loop_replacement() {
+        let (_runtime, mut app) = read_model_test_app();
+
+        app.spawn_read_loop("http://127.0.0.1:1".into());
+        let old_loop_generation = app.read_loop_generation;
+        let old_agent = agent("old-agent", AgentState::Working, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
+                schema_version: 5,
+                rev: 10,
+                generated_at: 10,
+                agents: BTreeMap::from([(old_agent.agent_id.clone(), old_agent)]),
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(10));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+
+        app.spawn_read_loop("http://127.0.0.1:2".into());
+        let current_loop_generation = app.read_loop_generation;
+        assert_ne!(current_loop_generation, old_loop_generation);
+
+        let obsolete_agent = agent("obsolete-agent", AgentState::Blocked, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
+                schema_version: 5,
+                rev: 99,
+                generated_at: 99,
+                agents: BTreeMap::from([(obsolete_agent.agent_id.clone(), obsolete_agent)]),
+            }),
+        });
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: old_loop_generation,
+            event: protocol::SseEvent::Delta(crate::model::Delta {
+                rev: 100,
+                upd: vec![agent("obsolete-delta", AgentState::Working, &[])],
+                del: vec![],
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(10));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+        assert!(!app.fleet.agents.contains_key("obsolete-agent"));
+        assert!(!app.fleet.agents.contains_key("obsolete-delta"));
+
+        let current_agent = agent("current-agent", AgentState::Idle, &[]);
+        app.on_apply(ApplyMsg::Sse {
+            loop_generation: current_loop_generation,
+            event: protocol::SseEvent::Delta(crate::model::Delta {
+                rev: 11,
+                upd: vec![current_agent],
+                del: vec![],
+            }),
+        });
+        assert_eq!(app.fleet.rev, Some(11));
+        assert!(app.fleet.agents.contains_key("old-agent"));
+        assert!(app.fleet.agents.contains_key("current-agent"));
     }
 
     #[test]

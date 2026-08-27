@@ -672,7 +672,10 @@ pub fn spawn_read_loop(
                         } else if let SseEvent::Delta(delta) = &event {
                             stream_rev = Some(delta.rev);
                         }
-                        let _ = tx_apply.send(ApplyMsg::Sse(event));
+                        let _ = tx_apply.send(ApplyMsg::Sse {
+                            loop_generation,
+                            event,
+                        });
                     })
                     .await;
                     last_rev = stream_rev;
@@ -701,7 +704,10 @@ pub fn spawn_read_loop(
                     if consecutive_errors >= 3
                         && let Ok(snap) = fetch_snapshot(&client, &base_url).await
                     {
-                        let _ = tx_apply.send(ApplyMsg::Sse(SseEvent::Snapshot(snap)));
+                        let _ = tx_apply.send(ApplyMsg::Sse {
+                            loop_generation,
+                            event: SseEvent::Snapshot(snap),
+                        });
                     }
                 }
             }
@@ -732,7 +738,13 @@ pub fn spawn_read_loop(
 /// Messages from background tasks to the UI state.
 #[derive(Debug, Clone)]
 pub enum ApplyMsg {
-    Sse(SseEvent),
+    /// Snapshot/delta data from a particular spawned read loop. The app
+    /// drops events from loops that were stopped by a host switch, including
+    /// events a stream had already decoded before cancellation.
+    Sse {
+        loop_generation: u64,
+        event: SseEvent,
+    },
     /// A lifecycle event from a particular spawned read loop. The app drops
     /// events from loops that were stopped by a host switch.
     Conn {

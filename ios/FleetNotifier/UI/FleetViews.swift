@@ -257,7 +257,7 @@ struct AgentRow: View {
     @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             if isAccessibilitySize {
                 // Dynamic Type: stack the trailing chips (issue/CI/tool)
                 // under the title instead of clipping them at the edge.
@@ -1723,7 +1723,9 @@ struct PinnedHeader<Content: View>: View {
             content()
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 20)
-                .padding(.vertical, 6)
+                // #245 (approved Variant 1): header→first-row padding cut
+                // roughly in half.
+                .padding(.vertical, 3)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.bar, ignoresSafeAreaEdges: [])
                 .listRowInsets(EdgeInsets())
@@ -1739,7 +1741,9 @@ struct PinnedHeader<Content: View>: View {
 /// or color.
 enum IdleDoneHeaderLayout {
     static let horizontalPadding: CGFloat = 20
-    static let verticalPadding: CGFloat = 6
+    /// #245 (approved Variant 1): tightened vertical spacing; the 44 pt
+    /// minimum hit height below still keeps the disclosure tappable.
+    static let verticalPadding: CGFloat = 4
     static let minimumHitHeight: CGFloat = 44
 }
 
@@ -1753,7 +1757,8 @@ struct IdleDoneHeader: View {
             withAnimation { onToggle() }
         } label: {
             HStack(spacing: 8) {
-                Text("Idle / done (\(count))")
+                // #245: lowercase section headers (approved Variant 1).
+                Text("idle / done (\(count))")
                 Text(isExpanded ? "Expanded" : "Collapsed")
                     .font(.caption.weight(.regular))
                     .foregroundStyle(.secondary)
@@ -1796,16 +1801,21 @@ struct FleetView: View {
                 // gesture the chrome, section headers, and rows therefore
                 // translate as one unit — no stranded repo header and no
                 // black gap. Normal scrolling keeps the chrome pinned under
-                // the navigation bar. The zero-height row keeps the section
-                // non-empty so the plain List renders its pinned header even
-                // on a zero-agent board.
+                // the navigation bar.
+                // #245 (approved Variant 1): the zero-height row is needed
+                // only on a zero-agent board (the plain List would drop the
+                // empty section's pinned header there). With agents present
+                // the row is omitted — iOS 26 gives even a 0-height row its
+                // minimum row height (a ~57 pt phantom band).
                 if model.mode != .needsSetup {
                     Section {
-                        Color.clear
-                            .frame(height: 0)
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
+                        if model.fleet.agents.isEmpty {
+                            Color.clear
+                                .frame(height: 0)
+                                .listRowInsets(EdgeInsets())
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                        }
                     } header: {
                         pinnedHeader(fillsInteractiveWidth: true) {
                             fleetChrome(chips: chips)
@@ -1831,6 +1841,9 @@ struct FleetView: View {
             // D25's "sticky NEEDS YOU": only the plain list style pins
             // section headers while scrolling (inset-grouped does not).
             .listStyle(.plain)
+            // #245 (approved Variant 1): inter-section gaps tightened from
+            // the iOS-26 default spacing to the compact 12 pt rhythm.
+            .listSectionSpacing(.compact)
             // Issue #219: native pull-to-refresh on the one physical
             // scroll surface. `refreshFleet` is coalesced and never
             // touches the SSE stream task.
@@ -1887,9 +1900,9 @@ struct FleetView: View {
                             }
                         }
 #endif
-                        Button("Refresh fleet", systemImage: "arrow.clockwise") {
-                            Task { await model.refreshFleet() }
-                        }
+                        // #245 (approved Variant 1): manual refresh is
+                        // removed — SSE + pull-to-refresh only. See the
+                        // refresh hint in the chrome.
                         Button("Settings", systemImage: "gearshape") {
                             showSettings = true
                         }
@@ -1990,7 +2003,8 @@ struct FleetView: View {
                 }
             } header: {
                 pinnedHeader {
-                    Text("Needs you (\(sections.needsYou.count))")
+                    // #245: lowercase section headers (approved Variant 1).
+                    Text("needs you (\(sections.needsYou.count))")
                 }
             }
         }
@@ -2059,11 +2073,16 @@ struct FleetView: View {
         filterChip != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// #166 item 5: flat results while a chip is active or a search is typed.
+    /// #245: the section header follows the approved lowercase style.
     private var filterHeaderLabel: String {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Results"
+            return "results"
         }
-        return filterChip.label
+        // The chip label stays Title Case on the chip; its section header is
+        // lowercase per the approved Variant 1. Repo names are data — never
+        // transformed.
+        return filterChip == .needsYou ? "needs you" : filterChip.label
     }
 
     @ViewBuilder
@@ -2076,49 +2095,42 @@ struct FleetView: View {
     /// section header of the List. In live mode it always shows the
     /// connection status (even with zero blocked agents, active filters,
     /// or search), then the always-visible filter-chip row plus the
-    /// accessible Refresh button. Demo mode skips the connection line
-    /// (there is no stream) but keeps chips. PinnedHeader supplies the
-    /// `.bar` background, so the strip stays legible over scrolling rows.
+    /// #245 pull-to-refresh hint (the manual refresh button was removed —
+    /// SSE + pull-to-refresh only). Demo mode skips the connection line
+    /// (there is no stream) but keeps chips and the hint. PinnedHeader
+    /// supplies the `.bar` background, so the strip stays legible over
+    /// scrolling rows.
     @ViewBuilder
     private func fleetChrome(chips: [BoardFilterChip]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.mode == .live {
                 connectionStatusLine
             }
-            HStack(alignment: .center, spacing: 8) {
-                filterChipRow(chips: chips)
-                refreshButton
-            }
+            filterChipRow(chips: chips)
+            refreshHintLine
         }
     }
 
-    /// Issue #219: the explicit, accessible non-gesture refresh affordance
-    /// (variants A/B/C all keep one in/next to the chrome). Mirrors the
-    /// gesture: coalesced through `model.refreshFleet()`, shows progress
-    /// while in flight, and re-enables on completion or failure.
+    /// #245 (approved Variant 1): the manual refresh button (chrome ⟳ and
+    /// toolbar menu item) is removed. The pull gesture is the only refresh
+    /// affordance; this hint line replaces the button and explains it.
     @ViewBuilder
-    private var refreshButton: some View {
-        Button {
-            Task { await model.refreshFleet() }
-        } label: {
-            if model.isRefreshingFleet {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            } else {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
+    private var refreshHintLine: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
+            Text("pull to refresh · updates stream in automatically")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .disabled(model.isRefreshingFleet)
-        .accessibilityLabel("Refresh fleet")
-        .accessibilityHint("Double tap to fetch the current fleet snapshot")
-        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 2)
+        .padding(.bottom, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Pull to refresh. Updates stream in automatically.")
     }
 
     /// Connection indicator line, modeled by `BoardModel.connectionStatus` so

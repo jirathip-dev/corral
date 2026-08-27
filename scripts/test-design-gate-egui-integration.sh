@@ -12,8 +12,9 @@
 # creates a real scratch git repo for the fake agent, prepares a registered UI
 # config, and asks the design-gate script to capture that target. The wake
 # helper brings only the exact corrald-ui pid's process frontmost and sends one
-# Escape key event to wake its native event loop; it does not broadcast input
-# or click arbitrary windows. The EXIT trap
+# Escape key event to wake its native event loop; the app repeats that exact-PID
+# activation throughout the bounded screenshot settle window. It does not
+# broadcast input or click arbitrary windows. The EXIT trap
 # uses TERM, a short grace period, then KILL for the direct children it owns.
 
 set -euo pipefail
@@ -651,6 +652,7 @@ cat >"$WORK/wake-window.sh" <<'WAKE'
 set -euo pipefail
 : "${CORRAL_UI_SCREENSHOT_PID:?missing screenshot pid}"
 : "${CORRAL_TEST_WAKE_LOG:?missing wake log path}"
+: "${CORRAL_TEST_WAKE_COUNT:?missing wake count path}"
 set +e
 osascript >"$CORRAL_TEST_WAKE_LOG" 2>&1 <<APPLESCRIPT
 tell application "System Events"
@@ -667,6 +669,7 @@ if [[ "$status" -ne 0 ]]; then
   sed -n '1,80p' "$CORRAL_TEST_WAKE_LOG" >&2 || true
   exit "$status"
 fi
+printf '%s\n' "$CORRAL_UI_SCREENSHOT_PID" >>"$CORRAL_TEST_WAKE_COUNT"
 WAKE
 chmod +x "$WORK/wake-window.sh"
 
@@ -677,6 +680,7 @@ export CORRALD_BIN="$DAEMON_BIN"
 export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config"
 export CORRAL_UI_DISABLE_KEYRING=1
 export CORRAL_TEST_WAKE_LOG="$WORK/wake-osascript.log"
+export CORRAL_TEST_WAKE_COUNT="$WORK/wake-count-initial.log"
 
 "$PYTHON_BIN" - "$SCRIPT_DIR/verify-design-gate-egui-evidence.py" <<'PY'
 import importlib.util
@@ -728,6 +732,9 @@ PY
 printf 'egui integration: capturing all four native #206 tabs\n'
 for tab in board issues registry settings; do
   printf 'egui integration: capturing tab %s\n' "$tab"
+  wake_count_file="$WORK/wake-count-$tab.log"
+  : >"$wake_count_file"
+  export CORRAL_TEST_WAKE_COUNT="$wake_count_file"
   bash "$SCRIPT" \
     --issue 206 \
     --surface egui \
@@ -757,6 +764,9 @@ for tab in board issues registry settings; do
     || die "$tab native app log did not prove target selection"
   grep -F -- "$AGENT_ID" "$OUTPUT_DIR/capture.log" \
     || die "$tab native app log did not contain the selected target id"
+  wake_count="$(awk 'END { print NR + 0 }' "$wake_count_file")"
+  [[ "$wake_count" -ge 3 ]] \
+    || die "$tab native wake schedule invoked the exact-PID helper only $wake_count times; expected repeated activation through settle"
   if [[ "$MODE" == "publish" ]]; then
     mkdir -p "$PUBLISH_DIR"
     for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do

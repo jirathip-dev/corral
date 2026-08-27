@@ -231,8 +231,12 @@ the selected surface, and writes a stamped prototype/live comparison under
 uses the app's existing `CORRAL_UI_SCREENSHOT` capture hook; it never invents
 board data. If a host window server needs an input event to wake eframe,
 `--egui-wake-command` supplies that explicit caller-owned wake step and a
-failure aborts the capture. Supply an agent id from `/snapshot` when the detail
-selection must be deterministic:
+failure aborts the capture. For a targeted native screenshot, corrald-ui also
+repeats that command at a one-second cadence from the exact process PID after
+target selection, through the configured settle interval, until dispatch or a
+bounded 45-second lifetime. It never broadcasts input or targets another
+process. Supply an agent id from `/snapshot` when the detail selection must be
+deterministic:
 
 ```sh
 scripts/design-gate-evidence.sh --issue 206 --surface egui \

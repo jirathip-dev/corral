@@ -37,3 +37,11 @@ fastlane/.env
 # docs/OPERATIONS.md remote-access section: run it OUTSIDE the repo).
 *.key
 *.crt
+
+# Private design-gate publication state; only the validated issue bundle is
+# eligible for evidence review. Locks and sibling staging/rollback directories
+# must never become tracked evidence or block a later safe recovery.
+/docs/design/evidence/.design-gate.lock/
+/docs/design/evidence/.design-gate.stage.*/
+/docs/design/evidence/.design-gate.final.*/
+/docs/design/evidence/.design-gate.backup.*/

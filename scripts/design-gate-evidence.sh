@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 # design-gate-evidence.sh — render a design target, capture the live surface,
 # and write a stamped side-by-side evidence bundle.
 #
@@ -63,9 +64,10 @@
 # same Herdr-routed xcodebuild path when --ios-app is omitted.
 #
 # Chrome's temporary DevTools endpoint is an ephemeral port bound explicitly
-# to 127.0.0.1, with a private profile and a loopback-only allowed origin. It
-# is used only for the scoped Browser.close request; the local process and the
-# approved checkout HTML are the trust boundary. No remote page is loaded.
+# to 127.0.0.1, with a private profile and a loopback-only allowed origin. Chrome
+# renders only the approved local prototype/comparison pages and receives only
+# the scoped Browser.close request; the local process and approved checkout HTML
+# are the trust boundary. No remote page is loaded.
 #
 # --live-png is an explicit fixture seam for tests or a previously captured
 # frame. Its provenance says that the PNG was supplied rather than captured by
@@ -223,6 +225,53 @@ log() {
 
 warn() {
   printf 'design-gate: warning: %s\n' "$*" >&2
+}
+
+lock_owner_is_stale() {
+  local lock_dir="$1"
+  local owner_file="$lock_dir/owner.pid"
+  local owner_pid=""
+
+  [[ -f "$owner_file" ]] || return 2
+  IFS= read -r owner_pid <"$owner_file" || return 2
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 2
+  if kill -0 "$owner_pid" 2>/dev/null; then
+    return 1
+  fi
+  if ps -p "$owner_pid" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+recover_stale_publication_lock() {
+  local lock_dir="$1"
+  local owner_file="$lock_dir/owner.pid"
+
+  lock_owner_is_stale "$lock_dir" || return 1
+  if rm -f -- "$owner_file" && rmdir -- "$lock_dir"; then
+    log "recovered stale evidence publication lock: $lock_dir"
+    return 0
+  fi
+  return 1
+}
+
+acquire_publication_lock() {
+  local lock_dir="$1"
+  local owner_tmp="$lock_dir/.owner.$$"
+
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    recover_stale_publication_lock "$lock_dir" || return 1
+    mkdir "$lock_dir" 2>/dev/null || return 1
+  fi
+  if ! printf '%s\n' "$$" >"$owner_tmp" \
+    || ! mv -f -- "$owner_tmp" "$lock_dir/owner.pid"; then
+    rm -f -- "$owner_tmp" "$lock_dir/owner.pid"
+    rmdir -- "$lock_dir" 2>/dev/null || true
+    return 1
+  fi
+  LOCK_OWNER_FILE="$lock_dir/owner.pid"
+  LOCK_ACQUIRED=1
 }
 
 require_value() {
@@ -981,6 +1030,14 @@ child_is_owned() {
   local parent_pid
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   parent_pid="$(ps -p "$pid" -o ppid= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ -z "$parent_pid" ]]; then
+    # Some restricted runners deny process-table reads even for a direct
+    # child. The only PID accepted on this fallback is the one this script
+    # recorded from its own background launch; never broaden it to an
+    # arbitrary caller-supplied PID.
+    [[ "${CAPTURE_PID:-}" == "$pid" ]]
+    return
+  fi
   [[ "$parent_pid" == "$$" ]]
 }
 
@@ -992,6 +1049,13 @@ child_is_running() {
   # A direct child remains waitable as a zombie until reaped. Treating Z as
   # stopped keeps the TERM/KILL deadline honest and lets wait reap it below.
   process_state="$(ps -p "$pid" -o stat= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ -z "$process_state" ]]; then
+    # kill -0 is the only portable liveness primitive available when a
+    # restricted runner denies ps. Treat an extant direct child as running;
+    # once it exits, kill -0 becomes false and the normal bounded reap path
+    # applies.
+    return 0
+  fi
   [[ -n "$process_state" && "$process_state" != Z* ]]
 }
 
@@ -1048,40 +1112,83 @@ terminate_owned_child() {
 }
 
 PNG_WAIT_REASON=""
+png_file_size() {
+  case "$(uname -s)" in
+    Darwin) stat -f '%z' "$1" ;;
+    *) stat -c '%s' "$1" ;;
+  esac
+}
+
+png_has_terminal_iend() {
+  local trailer
+
+  if ! trailer="$(tail -c 12 "$1" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')"; then
+    return 1
+  fi
+  [[ "$trailer" == "0000000049454e44ae426082" ]]
+}
+
 wait_for_complete_png() {
   local path="$1"
   local label="$2"
   local timeout_seconds="$3"
   local deadline
   local dimensions
+  local current_size=""
+  local previous_size=""
+  local writer_running
+  local terminal_iend
 
   PNG_WAIT_REASON=""
   deadline=$((SECONDS + 10#$timeout_seconds))
   while :; do
+    writer_running=0
+    if [[ -n "${CAPTURE_PID:-}" ]] && child_is_running "$CAPTURE_PID"; then
+      writer_running=1
+    fi
     if [[ -s "$path" ]]; then
-      if dimensions="$(png_dimensions "$path" 2>&1)"; then
-        return 0
+      if current_size="$(png_file_size "$path" 2>/dev/null)"; then
+        terminal_iend=0
+        if [[ "$current_size" -ge 20 ]] && png_has_terminal_iend "$path"; then
+          terminal_iend=1
+        fi
+        # stat and the fixed IEND trailer are cheap checks. Defer the full
+        # parser, decompression, and filter reconstruction until the writer's
+        # size has remained stable for one poll; an exited writer is already
+        # stable by definition and gets the same terminal-IEND check first.
+        if [[ "$terminal_iend" -eq 1 ]] \
+          && { [[ "$writer_running" -eq 0 ]] \
+            || [[ -n "$previous_size" && "$current_size" == "$previous_size" ]]; }; then
+          if dimensions="$(png_dimensions "$path" 2>&1)"; then
+            return 0
+          fi
+          PNG_WAIT_REASON="$dimensions"
+        elif [[ "$current_size" -lt 20 ]]; then
+          PNG_WAIT_REASON="$label has not published enough PNG bytes for a terminal IEND"
+        elif [[ "$terminal_iend" -eq 0 ]]; then
+          PNG_WAIT_REASON="$label has not published a terminal IEND (size ${current_size} bytes)"
+        else
+          PNG_WAIT_REASON="$label PNG size is still changing (size ${current_size} bytes; awaiting stable size)"
+        fi
+      else
+        current_size=""
+        PNG_WAIT_REASON="$label PNG size could not be read"
       fi
-      PNG_WAIT_REASON="$dimensions"
     else
+      current_size=""
       PNG_WAIT_REASON="$label has not written a non-empty PNG"
     fi
 
-    # A writer that exits before publishing a complete PNG is normally a hard
-    # failure; revalidate once because the writer may have completed between
-    # the first validator call and this liveness check.
-    if [[ -z "${CAPTURE_PID:-}" ]] || ! child_is_running "$CAPTURE_PID"; then
-      if [[ -s "$path" ]]; then
-        if dimensions="$(png_dimensions "$path" 2>&1)"; then
-          return 0
-        fi
-        PNG_WAIT_REASON="$dimensions"
-      fi
+    # A writer that exits before publishing a complete PNG is a hard failure;
+    # the terminal-IEND/full-validation path above is the one bounded final
+    # recheck allowed after it has stopped.
+    if [[ "$writer_running" -eq 0 ]]; then
       return 1
     fi
     if [[ $SECONDS -ge $deadline ]]; then
       return 1
     fi
+    previous_size="$current_size"
     sleep "$CAPTURE_POLL_INTERVAL_SECONDS"
   done
 }
@@ -1172,7 +1279,11 @@ def is_word_byte(value):
     )
 
 
-def terminal_path_end(data_value, path_start, line_end):
+def is_whitespace_byte(value):
+    return value in (9, 11, 12, 32)
+
+
+def terminal_path_end(data_value, path_start, component_start, line_end):
     # A quote immediately before the root unambiguously bounds the complete
     # terminal component, including spaces in a quoted worktree name.
     if path_start > 0 and data_value[path_start - 1] in (34, 39):
@@ -1189,10 +1300,63 @@ def terminal_path_end(data_value, path_start, line_end):
                     return index
             index += 1
 
+    end = line_end
+    # Punctuation followed by whitespace (or a closing quote) is a diagnostic
+    # separator, while punctuation embedded in an unquoted path is retained.
+    for index in range(component_start, line_end):
+        if data_value[index] not in (41, 44, 59, 58, 93, 125):
+            continue
+        next_value = data_value[index + 1] if index + 1 < line_end else None
+        if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
+            end = min(end, index)
+
     # Unquoted terminal paths with spaces are inherently ambiguous. Consume
-    # the full terminal component; callers that need arbitrary diagnostic text
-    # to follow a path must quote it.
-    return line_end
+    # the full terminal component by default, but preserve a broad set of
+    # diagnostic verbs/status phrases so failure evidence remains readable. A
+    # bare word such as "failed" or "crashed" is intentionally not enough: it
+    # may be part of a legitimate space-containing worktree name.
+    for marker in (
+        b" crashed during",
+        b" crashed while",
+        b" crashed with",
+        b" crashed at",
+        b" exploded during",
+        b" exploded while",
+        b" panicked during",
+        b" panicked while",
+        b" fatal error",
+        b" exception:",
+        b" traceback",
+        b" segmentation fault",
+        b" terminated",
+        b" killed",
+        b" aborted",
+        b" hung",
+        b" timeout",
+        b" timed out",
+        b" failed to",
+        b" failed with",
+        b" failed during",
+        b" became unreadable",
+        b" became unavailable",
+        b" became invalid",
+        b" failure:",
+        b" error:",
+        b" warning:",
+        b" permission denied",
+        b" denied:",
+        b" not found",
+        b" cannot",
+        b" could not",
+        b" unable",
+        b" exited with",
+        b" exit status",
+        b" signal ",
+    ):
+        marker_index = data_value.find(marker, component_start, end)
+        if marker_index != -1:
+            end = min(end, marker_index)
+    return end
 
 
 def redact_configured_worktree(data_value):
@@ -1226,7 +1390,7 @@ def redact_configured_worktree(data_value):
                     )
                     if second_slash == -1:
                         second_slash = terminal_path_end(
-                            data_value, start, line_end
+                            data_value, start, first_slash + 1, line_end
                         )
                     if second_slash > first_slash + 1:
                         replacements.append((start, second_slash))
@@ -1297,7 +1461,7 @@ def replace_generic_worktrees(data_value, protected_paths=()):
                     )
                     if second_slash == -1:
                         second_slash = terminal_path_end(
-                            data_value, eligible_start, line_end
+                            data_value, eligible_start, first_slash + 1, line_end
                         )
                     if second_slash > first_slash + 1 and valid_path_component(
                         data_value[first_slash + 1 : second_slash]
@@ -1330,9 +1494,15 @@ def replace_generic_worktrees(data_value, protected_paths=()):
     return bytes(output)
 
 
-def redact_ephemeral_paths(data_value):
-    if mode not in ("note", "opaque"):
+def redact_ephemeral_paths(data_value, protected_paths=()):
+    if mode not in ("capture", "note", "opaque"):
         return data_value
+    protected_variants = [
+        os.fsencode(variant)
+        for path_value in protected_paths
+        for variant in path_variants(path_value)
+        if variant != os.path.sep
+    ]
     roots = [
         "/tmp",
         "/private/tmp",
@@ -1346,7 +1516,16 @@ def redact_ephemeral_paths(data_value):
             + re.escape(os.fsencode(root))
             + rb"/[^\x00\r\n\t \"'`:,;&|()<>]+"
         )
-        data_value = re.sub(pattern, b"<external-temp>", data_value)
+        replacements = []
+        for match in re.finditer(pattern, data_value):
+            if any(
+                data_value.startswith(variant, match.start())
+                for variant in protected_variants
+            ):
+                continue
+            replacements.append((match.start(), match.end()))
+        for start, end in reversed(replacements):
+            data_value = data_value[:start] + b"<external-temp>" + data_value[end:]
     return data_value
 
 
@@ -1375,7 +1554,11 @@ data = replace_path(data, worktrees_root, worktrees_label, True)
 data = replace_generic_worktrees(
     data, [path_value for path_value, _, _ in known_paths]
 )
-data = redact_ephemeral_paths(data)
+data = redact_ephemeral_paths(
+    data,
+    [worktrees_root]
+    + [path_value for path_value, _, _ in known_paths],
+)
 
 if mode == "capture":
     max_bytes = int(sys.argv[17])
@@ -1523,6 +1706,41 @@ normalize_provenance_note() {
   normalize_argument_bytes note "$1" \
     "$STAGE/.design-gate.note-normalized" "provenance note"
   NORMALIZED_NOTE="$NORMALIZED_ARGUMENT"
+}
+
+render_markdown_note() {
+  local source="$1"
+  local destination="$2"
+
+  "$PYTHON_BIN" - "$source" <<'PY' >"$destination"
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+data = data.replace(b"&", b"&amp;")
+data = data.replace(b"<", b"&lt;")
+data = data.replace(b">", b"&gt;")
+sys.stdout.buffer.write(data)
+PY
+}
+
+markdown_code_delimiter() {
+  local source="$1"
+
+  "$PYTHON_BIN" - "$source" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+longest = current = 0
+for value in data:
+    if value == 0x60:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+sys.stdout.write("`" * (longest + 1))
+PY
 }
 
 normalize_opaque_argument() {
@@ -1863,10 +2081,12 @@ run_chrome_screenshot() {
     tail -40 "$chrome_log" >&2 || true
     die "headless Chrome did not publish a complete PNG for $label within ${CHROME_TIMEOUT_SECONDS}s: ${PNG_WAIT_REASON}"
   fi
-  if gracefully_close_chrome "$profile"; then
-    log "requested loopback-only DevTools Browser.close after $label completed"
-  else
-    warn "could not request loopback-only DevTools shutdown for $label; using owned-child cleanup"
+  if child_is_running "$chrome_pid"; then
+    if gracefully_close_chrome "$profile"; then
+      log "requested loopback-only DevTools Browser.close after $label completed"
+    elif child_is_running "$chrome_pid"; then
+      warn "could not request loopback-only DevTools shutdown for $label; using owned-child cleanup"
+    fi
   fi
   terminate_owned_child "$chrome_pid" "$label" \
     || die "could not clean up the owned headless Chrome child for $label"
@@ -2308,7 +2528,9 @@ OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
 mkdir -p "$OUTPUT_ROOT" \
   || die "could not create output root: $OUTPUT_ROOT"
 LOCK_DIR="$OUTPUT_ROOT/.design-gate.lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+LOCK_OWNER_FILE="$LOCK_DIR/owner.pid"
+LOCK_ACQUIRED=0
+if ! acquire_publication_lock "$LOCK_DIR"; then
   die "could not acquire evidence publication lock: $LOCK_DIR (another run may be active)"
 fi
 STAGE=""
@@ -2318,7 +2540,7 @@ BACKUP_DIR=""
 PUBLISHED=0
 cleanup() {
   local cleanup_status=0
-  local remove_attempt
+  local remove_attempt=0
   if [[ -n "${CAPTURE_PID:-}" ]]; then
     if ! terminate_owned_child "$CAPTURE_PID" "capture"; then
       cleanup_status=1
@@ -2329,7 +2551,8 @@ cleanup() {
     # briefly race the directory removal on macOS. Retry only this owned,
     # stage-local path for a bounded interval; never broaden cleanup to a
     # parent directory or a user's browser profile.
-    for remove_attempt in {1..20}; do
+    while [[ -e "$STAGE" && "$remove_attempt" -lt 20 ]]; do
+      remove_attempt=$((remove_attempt + 1))
       rm -rf -- "$STAGE" || true
       if [[ ! -e "$STAGE" ]]; then
         break
@@ -2362,11 +2585,18 @@ cleanup() {
       cleanup_status=1
     fi
   fi
-  if [[ -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
-    if ! rmdir -- "$LOCK_DIR"; then
-      cleanup_status=1
-    else
+  if [[ "${LOCK_ACQUIRED:-0}" -eq 1 && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+    local lock_owner=""
+    if [[ -f "${LOCK_OWNER_FILE:-}" ]] \
+      && IFS= read -r lock_owner <"$LOCK_OWNER_FILE" \
+      && [[ "$lock_owner" == "$$" ]] \
+      && rm -f -- "$LOCK_OWNER_FILE" \
+      && rmdir -- "$LOCK_DIR"; then
+      LOCK_ACQUIRED=0
+      LOCK_OWNER_FILE=""
       LOCK_DIR=""
+    else
+      cleanup_status=1
     fi
   fi
   return "$cleanup_status"
@@ -2454,23 +2684,33 @@ else
 fi
 CAPTURE_LOG_SHA="$(sha256_file "$STAGE/capture.log")"
 if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
-  RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
+  RENDERER_GUIDANCE='CHROME_BIN was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
 else
   RENDERER_GUIDANCE=""
 fi
-PROVENANCE_NOTE_DISPLAY=""
+RENDERER_PATH_LABEL="$(repo_relative_path "$CHROME_BIN" "<external-input>")" \
+  || die "could not normalize the renderer executable path"
+PROVENANCE_NOTE_MARKDOWN=""
 if [[ -n "$PROVENANCE_NOTE" ]]; then
   normalize_provenance_note "$PROVENANCE_NOTE"
-  PROVENANCE_NOTE_DISPLAY="$NORMALIZED_NOTE"
+  PROVENANCE_NOTE_MARKDOWN="$STAGE/.design-gate.note-markdown"
+  render_markdown_note \
+    "$STAGE/.design-gate.note-normalized" "$PROVENANCE_NOTE_MARKDOWN" \
+    || die "could not render the provenance note safely"
 fi
 # Markdown backticks are literal printf text, not shell command substitutions.
-# shellcheck disable=SC2016
+# Bash `%q` may retain runs of backticks inside ANSI-C quoting, so choose a code
+# span delimiter longer than every run in the complete normalized invocation.
+INVOCATION_NORMALIZED="$STAGE/.design-gate.invocation-normalized"
+recorded_invocation "${ORIGINAL_ARGS[@]}" >"$INVOCATION_NORMALIZED"
+INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" \
+  || die "could not choose a safe invocation code delimiter"
 {
   printf '# Issue #%s design-gate evidence\n\n' "$ISSUE"
   printf '## Contract\n\n'
   printf -- '- Newly generated bundle contract: this manifest is byte-stable for identical semantic inputs; wall-clock generation time is intentionally omitted.\n'
   printf -- '- Newly generated capture-log contract: `capture.log` is byte-bounded to %s bytes, retains exact head/tail bytes after documented path substitutions, and never decodes invalid UTF-8.\n' "$CAPTURE_LOG_MAX_BYTES"
-  printf -- '- Provenance-note contract: arbitrary note bytes are preserved except for targeted substitutions of recognized repository, staging, and worktree roots.\n'
+  printf -- '- Provenance-note contract: arbitrary note bytes are preserved except for targeted substitutions of recognized repository, staging, worktree, and disposable temporary roots; the rendered note is HTML-escaped inside a Markdown-safe preformatted block.\n'
   printf -- '- This contract applies to bundles generated by this version; historical checked-in evidence may be a separately labeled sanitized summary.\n'
   printf '\n## Capture\n\n'
   printf -- '- Surface: `%s`\n' "$SURFACE"
@@ -2481,7 +2721,7 @@ fi
   printf -- '- Live description: %s\n' "$LIVE_DESCRIPTION"
   printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
-  printf -- '- Chrome trust boundary: temporary DevTools is loopback-only on `127.0.0.1`, uses an ephemeral port/private profile, and receives only `Browser.close`; local approved HTML and the owned process are trusted inputs.\n'
+  printf -- '- Chrome renderer contract (prototype/comparison only): Chrome/Chromium uses a private profile and temporary loopback-only DevTools on `127.0.0.1` with an ephemeral port, and receives only `Browser.close`; the supplied live fixture, when present, is not a Chrome capture.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
     printf -- '- Host health URL: `loopback corrald /healthz` (checked before capture)\n'
   elif [[ "$SURFACE" == "ios" ]]; then
@@ -2498,8 +2738,11 @@ fi
     printf -- '- Simulator ownership: `hermes-sim-task`; no simulator deletion command is used.\n'
     printf -- '- iOS mode: `%s`\n' "$IOS_MODE"
   fi
-  if [[ -n "$PROVENANCE_NOTE_DISPLAY" ]]; then
-    printf -- '- Operator/environment note: %s\n' "$PROVENANCE_NOTE_DISPLAY"
+  if [[ -n "$PROVENANCE_NOTE_MARKDOWN" ]]; then
+    printf -- '- Operator/environment note (Markdown-safe):\n\n'
+    printf '<pre class="design-gate-provenance-note">\n'
+    cat "$PROVENANCE_NOTE_MARKDOWN"
+    printf '\n</pre>\n'
   fi
   if [[ -n "$RENDERER_GUIDANCE" ]]; then
     printf -- '- Renderer guidance: %s\n' "$RENDERER_GUIDANCE"
@@ -2518,14 +2761,14 @@ fi
   else
     printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated evidence are excluded.\n'
   fi
-  printf -- '- Renderer executable: `%s` (private profile, loopback-only DevTools, and owned cleanup)\n' "$CHROME_BIN"
+  printf -- '- Renderer executable: `%s` (private profile, loopback-only DevTools, and owned cleanup)\n' "$RENDERER_PATH_LABEL"
   printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
   printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
   printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
   printf -- '- Repository HEAD: `%s`\n' "$GIT_SHA"
-  printf -- '- Reproducible invocation: `'
-  recorded_invocation "${ORIGINAL_ARGS[@]}"
-  printf '`\n'
+  printf -- '- Normalized invocation (placeholders are descriptive, not necessarily runnable): %s' "$INVOCATION_CODE_DELIMITER"
+  cat "$INVOCATION_NORMALIZED"
+  printf '%s\n' "$INVOCATION_CODE_DELIMITER"
   printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'

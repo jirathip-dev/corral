@@ -247,13 +247,17 @@ arguments are shell-quoted from their original bytes, except that provenance
 notes, opaque command values, and path-like launch arguments receive targeted
 known-root/disposable-path substitutions. The generated `capture.log` is a
 byte-oriented view capped at 64 KiB; it preserves exact head/tail bytes except
-for documented path substitutions and the explicit middle omission marker, and
-never decodes invalid UTF-8 with replacement.
+for documented checkout/worktree/staging/disposable-temporary substitutions and
+the explicit middle omission marker, and never decodes invalid UTF-8 with
+replacement.
 Recognized checkout, staging, configured Herdr, generic `.herdr/worktrees`, and
-disposable temporary paths are normalized so evidence is checkout-independent.
-Quoted terminal paths retain their delimiters; ambiguous unquoted terminal names
-are fully redacted. Capture producers should quote paths when arbitrary
-diagnostic text must follow a space-containing name.
+unambiguous disposable temporary paths are normalized so evidence is
+checkout-independent. Quoted terminal paths retain their delimiters; ambiguous
+unquoted terminal names are redacted conservatively, while documented diagnostic
+suffixes remain visible. Capture producers should quote paths when arbitrary
+diagnostic text must follow a space-containing name. The generated invocation is
+labeled normalized because external placeholders describe the operation but are
+not necessarily runnable.
 Historical evidence may instead be an explicitly labeled sanitized summary of
 an older capture.
 
@@ -267,8 +271,10 @@ unless the target is inside `body > .rack > .frame`. The derived page retains
 a visible failure if the target is absent at runtime instead of silently
 capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
 `127.0.0.1`, and
-allows only the matching loopback origin; it is used solely for the scoped
-`Browser.close` request against the private profile.
+allows only the matching loopback origin; it renders the approved prototype and
+comparison pages and is used for the scoped `Browser.close` request against the
+private profile. A caller-supplied `--live-png` remains an explicitly labeled
+fixture and is not represented as a Chrome live capture.
 Validated artifacts are assembled in a private directory and published with a
 directory-level rename; a failed replacement restores the prior bundle.
 Publication is serialized by an output-root lock; unexpected destination

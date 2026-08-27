@@ -4,7 +4,8 @@
 # provenance labels, canonical symlink/wrapper identity (including spaces),
 # stable repo-relative paths across cwd spellings, byte-stable conformance,
 # lossless slash-prefixed argv, opaque command-path redaction, targeted note
-# redaction, load-bearing path normalization failures, complete-but-lingering
+# redaction, Markdown-safe note rendering, load-bearing path normalization
+# failures, complete-but-lingering
 # writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
 # UTF-8 and configured worktree roots, a bounded generic-worktree scan,
 # structural prototype rejection through real Chrome, Chrome trust-boundary
@@ -411,12 +412,10 @@ if mode == "generic-path-chaff":
 split = max(1, len(source) // 2)
 destination.write_bytes(source[:split])
 if mode == "race-during-validation":
-    marker = Path(os.environ["CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"])
-    deadline = time.monotonic() + 5
-    while not marker.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not marker.exists():
-        raise SystemExit("PNG race validator did not start")
+    # The production gate must wait for the writer to finish before invoking
+    # the expensive full validator. A short delay leaves a partial file in
+    # place for several polls, then publishes the rest and records completion.
+    time.sleep(0.25)
     with destination.open("ab") as stream:
         stream.write(source[split:])
     Path(os.environ["CORRAL_TEST_PNG_RACE_WRITER_FINISHED"]).touch()
@@ -449,6 +448,15 @@ fi
 STUB
 chmod +x "$WORK/bin/egui"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  cat > "$WORK/bin/native-window-probe" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$WORK/bin/native-window-probe"
+  export CORRAL_UI_WINDOW_PROBE_HELPER="$WORK/bin/native-window-probe"
+fi
+
 cat > "$WORK/bin/python-race" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -457,21 +465,11 @@ if [[ "${CORRAL_TEST_PNG_RACE:-0}" == "1" \
   && "${2:-}" == *"live-after.png" \
   && ! -e "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]]; then
   touch "$CORRAL_TEST_PNG_RACE_INTERCEPTED"
-  # Run the real validator against the partial file first. Its rejection is
-  # part of this seam; then let the writer finish and exit while reporting the
-  # first validation as failed so the production recheck is exercised.
-  if "$CORRAL_TEST_REAL_PYTHON" "$@" >/dev/null 2>&1; then
-    echo "race validator unexpectedly accepted the partial PNG" >&2
-    exit 1
+  # If this runs before the writer finishes, the stable-size/IEND gate failed
+  # and full PNG reconstruction was attempted against a partial file.
+  if [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]]; then
+    touch "$CORRAL_TEST_PNG_RACE_PREMATURE"
   fi
-  touch "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"
-  deadline=$((SECONDS + 5))
-  while [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" \
-    && $SECONDS -lt $deadline ]]; do
-    sleep 0.01
-  done
-  [[ -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]]
-  exit 1
 fi
 exec "$CORRAL_TEST_REAL_PYTHON" "$@"
 STUB
@@ -641,6 +639,13 @@ unset CORRAL_TEST_CHROME_LINGER
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "Chrome writer was not allowed to exit cleanly"
 assert_stopped "lingering Chrome" "$CORRAL_TEST_CHROME_PID_FILE"
+rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE"
+if ! run_capture --force >"$WORK/normal-chrome.log" 2>&1; then
+  fail "normal Chrome capture unexpectedly failed"
+fi
+if grep -q 'could not request loopback-only DevTools shutdown' "$WORK/normal-chrome.log"; then
+  fail "successful Chrome exit emitted a spurious DevTools shutdown warning"
+fi
 grep -q -- "--remote-debugging-address=127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
   || fail "Chrome DevTools endpoint was not explicitly loopback-bound"
 grep -q -- "--remote-allow-origins=http://127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
@@ -711,6 +716,27 @@ fi
 grep -q 'could not acquire evidence publication lock' "$WORK/lock-failure.log" \
   || fail "publication lock failure was not actionable"
 rmdir "$WORK/output/.design-gate.lock"
+
+( : ) &
+stale_lock_pid=$!
+wait "$stale_lock_pid"
+mkdir "$WORK/output/.design-gate.lock"
+printf '%s\n' "$stale_lock_pid" >"$WORK/output/.design-gate.lock/owner.pid"
+if ! run_capture --force >"$WORK/stale-lock-recovery.log" 2>&1; then
+  fail "stale publication lock was not recovered"
+fi
+grep -q 'recovered stale evidence publication lock' "$WORK/stale-lock-recovery.log" \
+  || fail "stale publication lock recovery was not recorded"
+[[ ! -e "$WORK/output/.design-gate.lock" ]] \
+  || fail "recovered publication lock survived the run"
+for ignored_path in \
+  docs/design/evidence/.design-gate.lock/owner.pid \
+  docs/design/evidence/.design-gate.stage.example/manifest \
+  docs/design/evidence/.design-gate.final.example/manifest \
+  docs/design/evidence/.design-gate.backup.example/manifest; do
+  git -C "$REPO_DIR" check-ignore --no-index -q -- "$ignored_path" \
+    || fail "private publication path is not gitignored: $ignored_path"
+done
 "$PYTHON_BIN" - "$WORK/output/issue-211" <<'PY'
 from pathlib import Path
 import sys
@@ -739,9 +765,12 @@ grep -q 'complete, CRC-checked PNG' "$WORK/output/issue-211/conformance.md" \
   || fail "complete-PNG success contract is not recorded"
 grep -q 'loopback-only' "$WORK/output/issue-211/conformance.md" \
   || fail "Chrome trust boundary is not recorded"
-grep -F -q '| `capture.log` | `n/a` |' "$WORK/output/issue-211/conformance.md" \
+grep -q 'Normalized invocation (placeholders are descriptive, not necessarily runnable)' \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "placeholder invocation was not labeled as normalized"
+grep -F -q "| \`capture.log\` | \`n/a\` |" "$WORK/output/issue-211/conformance.md" \
   || fail "capture.log row is not recorded in the artifact table"
-grep -E -q '\| `capture\.log` \| `n/a` \| `[0-9a-f]{64}` \|' \
+grep -E -q "\\| \`capture\\.log\` \\| \`n/a\` \\| \`[0-9a-f]{64}\` \\|" \
   "$WORK/output/issue-211/conformance.md" \
   || fail "capture.log SHA-256 is not recorded in the artifact table"
 grep -q 'scripts/design-gate-evidence.sh --issue 211 --surface egui' \
@@ -1018,6 +1047,47 @@ assert worktrees_root not in data, "provenance note leaked the configured worktr
 assert b"docs/design/corral-ux-prototype.html" in data
 assert b"<herdr-worktree>/ios" in data
 assert b"\xff\n" in data, "invalid provenance-note bytes were replaced"
+PY
+
+markdown_note=$'# heading\n- [injected](https://example.invalid)\n```html\n</pre><script>alert(1)</script>&\n```\n'
+run_capture --force \
+  --provenance-note "$markdown_note" \
+  --output-root "$WORK/markdown-note-output"
+"$PYTHON_BIN" - "$WORK/markdown-note-output/issue-211/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+start_marker = b'<pre class="design-gate-provenance-note">\n'
+start = data.index(start_marker) + len(start_marker)
+end = data.index(b"</pre>", start)
+rendered = data[start:end]
+assert b"# heading" in rendered
+assert b"[injected]" in rendered
+assert b"```html" in rendered
+assert b"&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;" in rendered
+assert b"<script" not in rendered.lower()
+assert b"</pre>" not in rendered, "provenance note injected a second pre close"
+invocation = next(
+    line
+    for line in data.splitlines()
+    if line.startswith(b"- Normalized invocation")
+)
+prefix = b"- Normalized invocation (placeholders are descriptive, not necessarily runnable): "
+assert invocation.startswith(prefix)
+payload = invocation[len(prefix):]
+delimiter = payload[: len(payload) - len(payload.lstrip(b"`") )]
+assert delimiter and payload.endswith(delimiter), "invocation code span is not closed"
+content = payload[len(delimiter) : -len(delimiter)]
+assert b"```html" in content, "note bytes were lost from the invocation"
+longest = current = 0
+for value in content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert len(delimiter) > longest, "invocation delimiter can be closed by note content"
 PY
 
 boundary_note="boundary=${REPO_DIR}. ${REPO_DIR}> ${REPO_DIR}! ${REPO_DIR}? ${REPO_DIR}, ${REPO_DIR}: ${REPO_DIR}; quote=\"${REPO_DIR}\""
@@ -1300,7 +1370,7 @@ export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
 mkdir -p "$WORK/ui-config-seed"
 printf '%s\n' '{"host_url":"http://fixture"}' >"$WORK/ui-config-seed/config.json"
 export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config-seed"
-export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output/issue-213"
+export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output"
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
 export CORRAL_TEST_EGUI_MODE=partial-then-linger
 egui_partial_start_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
@@ -1331,13 +1401,13 @@ unset CORRAL_UI_CONFIG_SEED_DIR CORRAL_TEST_UI_CONFIG_ROOT
 export CORRAL_TEST_EXPECTED_ISSUE=217
 export CORRAL_TEST_PNG_RACE=1
 export CORRAL_TEST_PNG_RACE_INTERCEPTED="$WORK/png-race-intercepted"
-export CORRAL_TEST_PNG_RACE_VALIDATE_STARTED="$WORK/png-race-validate-started"
+export CORRAL_TEST_PNG_RACE_PREMATURE="$WORK/png-race-premature"
 export CORRAL_TEST_PNG_RACE_WRITER_FINISHED="$WORK/png-race-writer-finished"
 rm -f \
   "$CORRAL_TEST_EGUI_FINISHED" \
   "$CORRAL_TEST_EGUI_PID_FILE" \
   "$CORRAL_TEST_PNG_RACE_INTERCEPTED" \
-  "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" \
+  "$CORRAL_TEST_PNG_RACE_PREMATURE" \
   "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED"
 export CORRAL_TEST_EGUI_MODE=race-during-validation
 PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
@@ -1354,10 +1424,10 @@ PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT
   --chrome-timeout-seconds 5
 [[ -f "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]] \
   || fail "PNG race validator seam was not exercised"
-[[ -f "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" ]] \
-  || fail "PNG race did not validate the partial file before writer completion"
+[[ ! -e "$CORRAL_TEST_PNG_RACE_PREMATURE" ]] \
+  || fail "PNG race invoked full validation before writer completion"
 [[ -f "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]] \
-  || fail "PNG race writer did not finish during validation"
+  || fail "PNG race writer did not finish before full validation"
 [[ -s "$WORK/png-race-output/issue-217/comparison.png" ]] \
   || fail "exit-during-validation recheck did not publish complete evidence"
 unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_PNG_RACE
@@ -1445,15 +1515,15 @@ assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree roo
 assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
 assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
 assert b"generic-crash-name=<herdr-worktree>\n" in data, "crash marker inside a worktree name was leaked"
-assert b"generic-unfamiliar=<herdr-worktree>\n" in data, "unquoted path suffix was leaked"
-assert b"generic-crash-diagnostic=<herdr-worktree>\n" in data, "unquoted diagnostic suffix was leaked"
-assert b"same-line-two-paths=cp /tmp/x <herdr-worktree>/f\n" in data, "same-line source path was over-redacted"
+assert b"generic-unfamiliar=<herdr-worktree> became unreadable\n" in data, "unfamiliar diagnostic suffix was lost"
+assert b"generic-crash-diagnostic=<herdr-worktree> crashed during capture\n" in data, "crash diagnostic suffix was lost"
+assert b"same-line-two-paths=cp <external-temp> <herdr-worktree>/f\n" in data, "same-line source path was not normalized"
 assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
 assert b"output-sibling=" + output_root + b"-backup/file" in data
 assert b"output-dot-sibling=" + output_root + b".bak/file" in data
-assert b"configured-diagnostic=<herdr-worktree>\n" in data, "unquoted configured path suffix was leaked"
+assert b"configured-diagnostic=<herdr-worktree> failed to compile\n" in data, "configured worktree redaction consumed diagnostic text"
 assert b'quoted-diagnostic="<herdr-worktree>": permission denied\n' in data, "quoted worktree redaction consumed its diagnostic delimiter"
-assert b"generic-diagnostic=<herdr-worktree>\n" in data, "unquoted generic path suffix was leaked"
+assert b"generic-diagnostic=<herdr-worktree> failed to compile\n" in data, "generic worktree redaction consumed diagnostic text"
 PY
 unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
 unset CORRAL_TEST_EGUI_MODE

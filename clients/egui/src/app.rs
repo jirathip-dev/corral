@@ -4550,6 +4550,7 @@ mod tests {
             name: None,
             grants: vec!["read_tail".to_string(), "prompt".to_string()],
             revoked: false,
+            revoked_ts: None,
             expiry_ts: 1_000,
             created_ts: 500,
         };

@@ -3,7 +3,11 @@
 //! workspace tabs (Board / Issues / Registry / Settings).
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+// macos-only native probe helpers are the only non-test users of `Path`
+// (#242 hosted CI red on Linux: an unconditional import is unused there).
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -3569,7 +3573,7 @@ mod tests {
         let started = Instant::now();
         assert!(!invoke_exact_window_wake(
             "sleep 5",
-            Path::new("/tmp/wake-test")
+            std::path::Path::new("/tmp/wake-test")
         ));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(4),

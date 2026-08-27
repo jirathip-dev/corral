@@ -2399,6 +2399,14 @@ impl CorralApp {
                 self.mark_recovery_failed();
                 self.settings.grant_admin.notice =
                     Some((Level::Error, format!("grant update failed: {error}")));
+                // #256: a failed POST left the optimistic draft flipped while
+                // the daemon kept the old grants (fail-closed). Rebuild the
+                // draft from the last known admin view so the toggle matches
+                // the ledger again instead of diverging until the next refresh.
+                if let Some(device) = self.settings.grant_admin.selected_device().cloned() {
+                    self.settings.grant_admin.draft =
+                        crate::ui::register::GrantDraft::for_device(&device);
+                }
             }
         }
     }
@@ -4529,5 +4537,54 @@ mod tests {
             fleet.tails["herdr:load-earlier"],
             ["older line one", "older line two"]
         );
+    }
+
+    /// #256: a failed POST /grants must restore the optimistic draft to the
+    /// ledger value — the daemon kept the old grants (fail-closed), so the
+    /// toggle must not stay flipped until the next manual refresh.
+    #[test]
+    fn failed_grant_mutation_reverts_optimistic_draft_to_ledger() {
+        let (_runtime, mut app) = read_model_test_app();
+        let ledger = crate::protocol::GrantDevice {
+            key_id: "dev_abc".to_string(),
+            name: None,
+            grants: vec!["read_tail".to_string(), "prompt".to_string()],
+            revoked: false,
+            expiry_ts: 1_000,
+            created_ts: 500,
+        };
+        app.settings
+            .grant_admin
+            .set_view(vec![ledger.clone()], "dev_abc");
+        let ledger_caps: std::collections::BTreeSet<String> =
+            ledger.grants.clone().into_iter().collect();
+
+        // Optimistic flip (the Request::ToggleGrantCap path).
+        app.settings.grant_admin.draft.toggle("kill");
+        assert_eq!(
+            app.settings.grant_admin.draft.caps.len(),
+            ledger_caps.len() + 1
+        );
+
+        // POST /grants failed — the daemon kept the old grants (fail-closed).
+        app.handle_grant_mutation(GrantMutationMsg {
+            key_id: "dev_abc".to_string(),
+            grants: app.settings.grant_admin.draft.granted(),
+            revoke: false,
+            result: Err("connect: boom".to_string()),
+        });
+
+        assert_eq!(
+            app.settings.grant_admin.draft.caps, ledger_caps,
+            "#256: failed POST must restore the toggle to the ledger value"
+        );
+        let (level, notice) = app
+            .settings
+            .grant_admin
+            .notice
+            .as_ref()
+            .expect("error notice");
+        assert!(matches!(level, Level::Error));
+        assert!(notice.starts_with("grant update failed"));
     }
 }

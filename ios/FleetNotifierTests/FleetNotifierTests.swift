@@ -4386,3 +4386,126 @@ final class FleetRefreshTests: XCTestCase {
                            suiteName: suiteName)
     }
 }
+
+// MARK: - #256: admin grant toggle must revert on a failed POST /grants
+
+/// Method+path-scoped URLProtocol stub for the host-admin grant surface.
+/// GET and POST share the /grants path, so responses key on "GET /grants"
+/// and "POST /grants" respectively.
+private final class GrantAdminStubURLProtocol: URLProtocol {
+    static let lock = NSLock()
+    static var responses: [String: (status: Int, body: Data)] = [:]
+    static var requests: [URLRequest] = []
+
+    static func reset() {
+        lock.lock()
+        requests = []
+        lock.unlock()
+    }
+
+    static func recordedRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        let key = "\(request.httpMethod ?? "GET") \(request.url?.path ?? "")"
+        let match = Self.responses[key]
+        Self.lock.unlock()
+        guard let url = request.url, let match else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        guard let response = HTTPURLResponse(url: url, statusCode: match.status,
+                                             httpVersion: nil, headerFields: nil) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: match.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+@MainActor
+final class GrantAdminToggleRevertTests: XCTestCase {
+
+    private static let grantsView = Data(#"{"ok":true,"devices":[{"key_id":"dev-1","name":"test-device","grants":["read_tail","prompt"],"revoked":false,"expiry_ts":1800000000,"created_ts":1700000000}]}"#.utf8)
+
+    override func setUp() {
+        super.setUp()
+        DeviceKeyStore.saveAdminToken("admin-tok-256")
+        GrantAdminStubURLProtocol.reset()
+    }
+
+    override func tearDown() {
+        DeviceKeyStore.clearAdminToken()
+        GrantAdminStubURLProtocol.responses = [:]
+        super.tearDown()
+    }
+
+    private func makeSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [GrantAdminStubURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func makeModel(session: URLSession) -> AppModel {
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.hostURL = URL(string: "http://grant-daemon")!
+        return model
+    }
+
+    /// The daemon refused (fail-closed, old grants kept): the local toggle
+    /// must stay at the ledger value instead of staying flipped (#256).
+    func testFailedGrantSetKeepsToggleAtLedgerValue() async {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        GrantAdminStubURLProtocol.responses = [
+            "GET /grants": (200, Self.grantsView),
+            "POST /grants": (403, Data(#"{"kind":"not_allowed","message":"denied"}"#.utf8)),
+        ]
+        let model = makeModel(session: session)
+
+        await model.loadAdminDevices()
+        XCTAssertEqual(model.adminDevices.count, 1)
+        XCTAssertEqual(model.adminDevices.first?.grants, ["read_tail", "prompt"])
+
+        await model.setDeviceCapability("kill", enabled: true, deviceId: "dev-1")
+
+        XCTAssertEqual(model.adminDevices.first?.grants, ["read_tail", "prompt"],
+                       "#256: failed POST must not flip the local toggle")
+        XCTAssertNotNil(model.grantsNotice,
+                        "#256: the failure must surface in the grants notice")
+        XCTAssertEqual(GrantAdminStubURLProtocol.recordedRequests().filter { $0.httpMethod == "POST" }.count, 1,
+                       "exactly one POST /grants must be attempted")
+    }
+
+    /// Guard: the success path still applies the optimistic toggle (the
+    /// write-back moved from `defer` into the success branch).
+    func testSuccessfulGrantSetAppliesToggleToView() async {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        GrantAdminStubURLProtocol.responses = [
+            "GET /grants": (200, Self.grantsView),
+            "POST /grants": (200, Data(#"{"ok":true}"#.utf8)),
+        ]
+        let model = makeModel(session: session)
+
+        await model.loadAdminDevices()
+        await model.setDeviceCapability("kill", enabled: true, deviceId: "dev-1")
+
+        XCTAssertEqual(model.adminDevices.first?.grants, ["prompt", "read_tail", "kill"],
+                       "successful POST applies the freshly granted capability (canonical enum order)")
+        XCTAssertNil(model.grantsNotice)
+    }
+}

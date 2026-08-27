@@ -707,9 +707,11 @@ capability (read-only default denies it):
 scripts/corrald-grant.sh --key <key_id> --caps start_worktree
 ```
 
-See `docs/corral/G35-registry.md` for the registry fields the worktree
-creation reads (`name`, `worktree_dir`); READ-ONLY GitHub access is
-unchanged — this slice never issues a GitHub write.
+The start-worktree slice consumes the fleet-ops CLI validated identity
+(`GET /fleets` / `herdr-fleet list`; no corral-owned registry fields — the
+superseded #35 registry surface is documented in
+`docs/corral/G35-registry.md`); READ-ONLY GitHub access is unchanged —
+this slice never issues a GitHub write.
 
 ## Security model summary
 
@@ -753,4 +755,4 @@ unchanged — this slice never issues a GitHub write.
 | `403 step_up_required` | destructive payload needs a fresh `POST /step-up` token (single-use, 5 min) in `X-Step-Up-Token` |
 | macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
 | repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |
-| `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots); the first failure is WARNed once, retries back off (10s → 60s → 5m), present sources retain their last-known worktrees/topology during a transient Git failure, and the live fleet registry plus immediate `~/Projects` checkouts are refreshed by the 15-minute rediscovery pass |
+| `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots); the first failure is WARNed once, retries back off (10s → 60s → 5m), present sources retain their last-known worktrees/topology during a transient Git failure, and immediate `~/Projects` checkouts are refreshed by the 15-minute rediscovery pass |

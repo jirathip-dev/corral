@@ -29,9 +29,9 @@ const FLEET_NAME: &str = "corral";
 const BRANCH: &str = "issue-113-work";
 
 /// Restore a single process-level environment variable when the test ends,
-/// even on panic. The dispatcher reads `HOME`/`CORRAL_FLEETS_PATH` directly,
-/// so this integration test must point both at temp fixtures while the
-/// request is in flight.
+/// even on panic. The dispatcher reads `HOME` directly (configless #237:
+/// no `CORRAL_FLEETS_PATH` fallback exists), so this integration test
+/// points it at a temp fixture while the request is in flight.
 struct EnvRestore {
     name: &'static str,
     previous: Option<OsString>,
@@ -158,7 +158,7 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
     state.issues = issues;
 
     // Configless: the fleet identity is injected through the provider (the
-    // production daemon shells `herdr-fleet list`; a ficure here is the
+    // production daemon shells `herdr-fleet list`; a fixture here is the
     // CLI-validated identity of the temp checkout).
     state.fleets = Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(vec![
         corrald::fleet::cli::FleetIdentity {
@@ -267,5 +267,76 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
     assert!(
         listing.contains(&worktree_path.to_string_lossy().to_string()),
         "git worktree list records the created path"
+    );
+}
+
+/// #243: a healthy fleet-ops CLI catalog that does NOT contain the
+/// requested repo must refuse with the typed `unknown_fleet` error kind —
+/// the daemon never synthesizes an identity from display categories, and a
+/// catalog miss is a refusal (client-side gating covers the happy path
+/// only). The provider is injected with a VALID but non-matching catalog,
+/// proving the miss, not a CLI-unavailable condition.
+#[tokio::test]
+async fn unknown_fleet_catalog_miss_refuses_with_typed_error_kind() {
+    let state = AppState {
+        fleets: Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(vec![
+            corrald::fleet::cli::FleetIdentity {
+                name: "plush".to_string(),
+                gh_repo: "jirathip-dev/plush-meadow".to_string(),
+                local: PathBuf::from("/tmp/plush"),
+                worktree_dir: "plush".to_string(),
+                orch: "orch-plush".to_string(),
+                workers: 0,
+                paused: false,
+            },
+        ])),
+        ..Default::default()
+    };
+
+    let (signing, pubkey) = test_support::keypair();
+    let bootstrap = test_support::envelope("bootstrap", Capability::Prompt, "bootstrap");
+    let token = state.auth.registry.registration_token();
+    let registered =
+        test_support::signed(&state.auth.registry, &token, &signing, pubkey, &bootstrap);
+    state
+        .auth
+        .registry
+        .set_grants(&registered.key_id, vec![Capability::StartWorktree])
+        .expect("grant start_worktree");
+    let app = router(state);
+
+    let issue_payload = json!({
+        "kind": "start_worktree",
+        "mode": "issue",
+        "repo": FLEET_NAME,
+        "number": ISSUE_NUMBER,
+        "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
+    });
+
+    let (status, body) = post(
+        &app,
+        signed_body(
+            &signing,
+            &registered.key_id,
+            "wt-unknown-fleet",
+            issue_payload,
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dispatch-level refusal carries a 200 body"
+    );
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error_kind"], "unknown_fleet");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(FLEET_NAME),
+        "error names the missing fleet: {}",
+        body["error"]
     );
 }

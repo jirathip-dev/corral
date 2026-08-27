@@ -21,7 +21,7 @@ src/drive/mod.rs and src/api/* on main.
 | `/audit` | GET | admin Bearer token | `{entries[], valid}` — hash-chained log, grows only on writes |
 | `/drive` | POST | device signature | signed command envelope |
 | `/issues` | GET | none (read-only) | `{repos: {repo: [GhIssueRef…]}}` — repo-level issue view; empty arrays also retain live workspace and canonical registry categories |
-| `/fleet-registry` | GET | none (read-only) | `{status, path, error, fleets[], repos[]}` — local fleet registry plus the live workspace/registry category union |
+| `/fleets` | GET | none (read-only) | `{status, error, fleets[]}` — fleet-ops CLI validated identity catalog (`name`, `gh_repo`, `orch`, `workers`, `paused`); `status:"ok"` for a live catalog (possibly empty), `"error"` when the CLI identity path is unavailable (#237 configless; supersedes the removed `GET /fleet-registry`) |
 
 ## Drive wire shapes (normative)
 

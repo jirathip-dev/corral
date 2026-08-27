@@ -35,6 +35,16 @@ use serde::{Deserialize, Serialize};
 pub const READ_TAIL_MAX_LINES: u32 = 200;
 pub const READ_TAIL_MAX_BYTES: usize = 32 * 1024;
 
+/// Bounds for `read_diff` (#232): the changed-files list is capped, and one
+/// diff page is bounded by BOTH a line budget and a byte budget so a
+/// multi-thousand-line worktree diff can never be materialized in full.
+/// `READ_DIFF_DEFAULT_LINES` matches the approved design's "Load next 200
+/// lines" paging; `READ_DIFF_MAX_LINES` is the hard per-page clamp.
+pub const READ_DIFF_MAX_FILES: u32 = 128;
+pub const READ_DIFF_DEFAULT_LINES: u32 = 200;
+pub const READ_DIFF_MAX_LINES: u32 = 400;
+pub const READ_DIFF_MAX_BYTES: usize = 64 * 1024;
+
 /// The canonical drive capabilities (D7). Server refuses anything not
 /// in this set with a typed error, before dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,6 +59,10 @@ pub enum Capability {
     /// #113: start an issue-linked or issue-free worktree. A fleet-level
     /// operation (not an agent drive); the `target` carries the fleet name.
     StartWorktree,
+    /// #232: read an agent's worktree diff (changed-files list + unified
+    /// diff + diffstat). Read-only; mirrored from `read_tail` (auth, audit,
+    /// refusal kinds) with the same per-device default-deny grant.
+    ReadDiff,
 }
 
 impl fmt::Display for Capability {
@@ -61,6 +75,7 @@ impl fmt::Display for Capability {
             Self::Kill => "kill",
             Self::Attach => "attach",
             Self::StartWorktree => "start_worktree",
+            Self::ReadDiff => "read_diff",
         })
     }
 }
@@ -77,6 +92,7 @@ impl FromStr for Capability {
             "kill" => Ok(Self::Kill),
             "attach" => Ok(Self::Attach),
             "start_worktree" => Ok(Self::StartWorktree),
+            "read_diff" => Ok(Self::ReadDiff),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -105,6 +121,17 @@ pub enum DrivePayload {
         text: String,
     },
     ReadTail {
+        lines: Option<u32>,
+    },
+    /// #232: read the agent's worktree diff. `files` caps the changed-files
+    /// list; `offset`/`lines` page the unified diff (aggregate line offset +
+    /// page size). All bounds are clamped daemon-side.
+    ReadDiff {
+        #[serde(default)]
+        files: Option<u32>,
+        #[serde(default)]
+        offset: Option<u32>,
+        #[serde(default)]
         lines: Option<u32>,
     },
     /// Claim-based approval reply (D8): the client echoes the exact
@@ -161,6 +188,7 @@ impl DrivePayload {
         match (&typed, capability) {
             (Self::Prompt { .. }, Capability::Prompt)
             | (Self::ReadTail { .. }, Capability::ReadTail)
+            | (Self::ReadDiff { .. }, Capability::ReadDiff)
             | (Self::Approve { .. }, Capability::Approve)
             | (Self::StartWorktree { .. }, Capability::StartWorktree) => Ok(typed),
             _ => Err(PayloadError {
@@ -313,6 +341,92 @@ pub struct DriveResponse {
     pub result: Option<serde_json::Value>,
 }
 
+// ---------------------------------------------------------------------------
+// read_diff (#232) — request/response contract
+// ---------------------------------------------------------------------------
+
+/// Clamped paging/bound request for `read_diff` (translate a parsed
+/// [`DrivePayload::ReadDiff`] into the computation query).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadDiffQuery {
+    /// Max changed files served in the list (clamped to
+    /// `1..=READ_DIFF_MAX_FILES`).
+    pub files: u32,
+    /// Aggregate unified-diff line offset for the page (0 = first line).
+    pub offset: u32,
+    /// Page size (clamped to `1..=READ_DIFF_MAX_LINES`; default
+    /// `READ_DIFF_DEFAULT_LINES`).
+    pub lines: u32,
+}
+
+impl ReadDiffQuery {
+    /// Clamp the optional wire bounds into a strict query. The default page
+    /// size matches the approved "Load next 200 lines" paging.
+    pub fn clamped(files: Option<u32>, offset: Option<u32>, lines: Option<u32>) -> Self {
+        let files = files
+            .unwrap_or(READ_DIFF_MAX_FILES)
+            .clamp(1, READ_DIFF_MAX_FILES);
+        let lines = lines
+            .unwrap_or(READ_DIFF_DEFAULT_LINES)
+            .clamp(1, READ_DIFF_MAX_LINES);
+        Self {
+            files,
+            offset: offset.unwrap_or(0),
+            lines,
+        }
+    }
+}
+
+/// Whole-diff diffstat (adds/dels count every tracked change vs HEAD —
+/// including staged and unstaged; untracked files are not part of it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffStats {
+    pub files: u32,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+/// Per-file line counts for the changed-files list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffFileStat {
+    pub path: String,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+/// The `read_diff` response payload (`DriveResponse.result`).
+///
+/// `stats` covers the whole diff; `files` is the changed-files list capped by
+/// the query (`files_truncated` says when the cap cut it); `lines` is one
+/// PAGE of the unified diff (`offset`/`next_offset` mark the window into the
+/// `total`-line stream). Paging never materializes more than one page +
+/// one file's patch at a time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadDiffResult {
+    /// Repo identity from the worktree's git facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Current branch (None for a detached HEAD).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// HEAD commit short id (None for an unborn checkout).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    pub stats: DiffStats,
+    pub files: Vec<DiffFileStat>,
+    pub files_truncated: bool,
+    /// Aggregate line offset this page starts at.
+    pub offset: u32,
+    /// Unified diff lines for this page (redacted at the adapter boundary;
+    /// each line a single string — file/hunk headers included).
+    pub lines: Vec<String>,
+    /// Total lines in the paged stream (the first `files` files).
+    pub total: u32,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +441,7 @@ mod tests {
             Capability::Kill,
             Capability::Attach,
             Capability::StartWorktree,
+            Capability::ReadDiff,
         ] {
             let s = cap.to_string();
             assert_eq!(s.parse::<Capability>().unwrap(), cap);
@@ -364,6 +479,29 @@ mod tests {
         assert!(
             DrivePayload::parse(Capability::ReadTail, &wrong).is_err(),
             "prompt payload for read_tail must be refused"
+        );
+        let diff =
+            serde_json::json!({ "kind": "read_diff", "files": 10, "offset": 40, "lines": 50 });
+        assert_eq!(
+            DrivePayload::parse(Capability::ReadDiff, &diff).unwrap(),
+            DrivePayload::ReadDiff {
+                files: Some(10),
+                offset: Some(40),
+                lines: Some(50)
+            }
+        );
+        let diff_bare = serde_json::json!({ "kind": "read_diff" });
+        assert_eq!(
+            DrivePayload::parse(Capability::ReadDiff, &diff_bare).unwrap(),
+            DrivePayload::ReadDiff {
+                files: None,
+                offset: None,
+                lines: None
+            }
+        );
+        assert!(
+            DrivePayload::parse(Capability::Prompt, &diff_bare).is_err(),
+            "read_diff payload for prompt must be refused"
         );
         let approve = serde_json::json!({
             "kind": "approve",

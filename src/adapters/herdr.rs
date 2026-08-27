@@ -76,7 +76,7 @@ use crate::core::model::{
 };
 use crate::core::redact::redact;
 use crate::core::store::Store;
-use crate::core::util::now_millis;
+use crate::core::util::{canonicalize_existing_prefix, now_millis};
 use crate::core::workspace::{WorkspaceAttribution, paths_match};
 use crate::drive::{READ_TAIL_MAX_BYTES, READ_TAIL_MAX_LINES};
 
@@ -2579,6 +2579,12 @@ impl Adapter for HerdrAdapter {
             DriveCommand::Attach => {
                 return Box::pin(async { Err(DriveError::NotImplemented("attach")) });
             }
+            // read_diff is likewise response-bearing: never dispatched
+            // through the command path (the API routes it via
+            // Adapter::read_diff).
+            DriveCommand::ReadDiff { .. } => {
+                return Box::pin(async { Err(DriveError::NotImplemented("read_diff")) });
+            }
         };
         let agent_id = agent_id.to_string();
         let socket = self.socket_path.clone();
@@ -2648,6 +2654,50 @@ impl Adapter for HerdrAdapter {
         })
     }
 
+    fn read_diff<'a>(
+        &'a self,
+        agent_id: &'a str,
+        query: crate::drive::ReadDiffQuery,
+    ) -> futures::future::BoxFuture<'a, Result<crate::drive::ReadDiffResult, DriveError>> {
+        // #232: the worktree path comes from the SNAPSHOT state the herdr
+        // adapter itself produced (agent.workspace.worktree_path) — the
+        // client only ever supplies the agent_id; the path is NEVER
+        // client-chosen. Diff is computed via libgit2; the page lines are
+        // redacted (D9) before they leave the machine, like read_tail.
+        let store = self.store.lock().unwrap().as_ref().cloned();
+        let agent_id = agent_id.to_string();
+        Box::pin(async move {
+            let Some(store) = store else {
+                return Err(DriveError::NotImplemented("read_diff"));
+            };
+            let Some(agent) = store.get(&agent_id).await else {
+                return Err(if self.is_stale_agent(&agent_id) {
+                    DriveError::StaleAgent(agent_id)
+                } else {
+                    DriveError::UnknownAgent(agent_id)
+                });
+            };
+            let Some(worktree) = agent.workspace.worktree_path.as_deref() else {
+                return Err(DriveError::NoWorktree(format!(
+                    "agent {agent_id} has no herdr worktree path; only herdr-owned worktrees are readable"
+                )));
+            };
+            let path = self.herdr_owned_worktree(worktree).ok_or_else(|| {
+                DriveError::NoWorktree(format!(
+                    "agent {agent_id} worktree {worktree} is not under the herdr worktrees root"
+                ))
+            })?;
+            let result = crate::core::diff::read_worktree_diff(&path, &query)
+                .map_err(|e| DriveError::NoWorktree(format!("agent {agent_id}: {e}")))?;
+            let lines = result
+                .lines
+                .iter()
+                .map(|line| redact(line).into_owned())
+                .collect();
+            Ok(crate::drive::ReadDiffResult { lines, ..result })
+        })
+    }
+
     fn attach<'a>(
         &'a self,
         agent_id: &'a str,
@@ -2685,6 +2735,21 @@ impl Adapter for HerdrAdapter {
 /// current pane mapping is classified as stale when it was previously known,
 /// otherwise it is the typed [`DriveError::UnknownAgent`].
 impl HerdrAdapter {
+    /// #232: canonicalize the agent-record worktree path and return it ONLY
+    /// Resolve a herdr-attributed path to a diffable repo root. Herdr owns
+    /// BOTH its linked worktrees (paths under the configured worktrees
+    /// root) and the primary checkouts its agents run in (paths attributed
+    /// by `repo_for` — configured/live primary roots). Anything else
+    /// (arbitrary host paths, other repos) is refused: the path comes from
+    /// snapshot state only, never from the client.
+    fn herdr_owned_worktree(&self, path: &str) -> Option<PathBuf> {
+        let canonical = canonicalize_existing_prefix(Path::new(path));
+        if self.workspace_attribution.repo_for(&canonical).is_some() {
+            return Some(canonical);
+        }
+        None
+    }
+
     fn drive_mapping_with_generation(
         &self,
         agent_id: &str,
@@ -6682,6 +6747,218 @@ mod review_tests {
         assert_eq!(
             reason_from_labels(&a).as_deref(),
             Some("focus_lost: user switched pane")
+        );
+    }
+
+    // -- #232 read_diff (adapter boundary) --------------------------------
+
+    fn diff_init_repo(path: &Path) {
+        let repo = git2::Repository::init(path).expect("init");
+        let mut cfg = repo.config().expect("config");
+        cfg.set_str("user.name", "corral-test").expect("name");
+        cfg.set_str("user.email", "t@corral.test").expect("email");
+        std::fs::write(path.join("a.txt"), "one\ntwo\nthree\n").expect("file");
+        let mut index = repo.index().expect("index");
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .expect("add all");
+        index.write().expect("index write");
+        let tree = repo.index().expect("index").write_tree().expect("tree");
+        let tree = repo.find_tree(tree).expect("tree");
+        let sig = repo.signature().expect("sig");
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+    }
+
+    /// Fixture: a repo with one committed file and one local modification on
+    /// disk (unstaged, dirty worktree) + worktrees-root attribution.
+    struct DiffFixture {
+        _dir: tempfile::TempDir,
+        worktree: PathBuf,
+        worktrees_root: PathBuf,
+        adapter: HerdrAdapter,
+        store: Store,
+    }
+
+    fn diff_fixture() -> DiffFixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let worktrees_root = dir.path().join("worktrees");
+        let worktree = worktrees_root.join("corral/feature-x");
+        std::fs::create_dir_all(&worktree).expect("worktree dir");
+        diff_init_repo(&worktree);
+        std::fs::write(
+            worktree.join("a.txt"),
+            "one\ntwo!!\nthree\nwith-ghp_abcdefghijklmnopqrstuvwxyz0123456789abcd\n",
+        )
+        .expect("dirty");
+
+        let attribution = WorkspaceAttribution::from_roots(
+            std::iter::empty::<crate::core::workspace::RepoRoot>(),
+            worktrees_root.clone(),
+        );
+        let adapter =
+            HerdrAdapter::new_with_attribution(PathBuf::from("/nonexistent.sock"), attribution);
+        let store = Store::new();
+        adapter.attach_store(store.clone());
+        DiffFixture {
+            _dir: dir,
+            worktree,
+            worktrees_root,
+            adapter,
+            store,
+        }
+    }
+
+    async fn seed_diff_agent(fix: &DiffFixture) {
+        let agent = Agent {
+            agent_id: "herdr:feature".to_string(),
+            source: "herdr".to_string(),
+            tool: "claude".to_string(),
+            state: AgentState::Working,
+            reason: None,
+            seq: 1,
+            ts: 1,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: Workspace {
+                worktree_path: Some(fix.worktree.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            attachment: None,
+            display_name: None,
+            title: None,
+        };
+        fix.store
+            .apply(crate::core::model::Change::upsert(agent))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn read_diff_serves_real_worktree_diff_and_redacts() {
+        let fix = diff_fixture();
+        seed_diff_agent(&fix).await;
+        let query = crate::drive::ReadDiffQuery::clamped(Some(10), Some(0), Some(50));
+
+        let result = fix
+            .adapter
+            .read_diff("herdr:feature", query)
+            .await
+            .expect("diff");
+
+        assert_eq!(result.stats.files, 1);
+        assert_eq!(result.stats.adds, 2);
+        assert_eq!(result.stats.dels, 1);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].path, "a.txt");
+        assert_eq!(result.files[0].adds, 2);
+        assert_eq!(result.files[0].dels, 1);
+        assert!(
+            result.lines.iter().any(|l| l.contains("+two!!")),
+            "staged+unstaged change must appear: {:?}",
+            result.lines
+        );
+        assert!(
+            result.branch.as_deref() == Some("master") || result.branch.as_deref() == Some("main"),
+            "branch: {:?}",
+            result.branch
+        );
+        // D9 redaction at the adapter boundary: the gh PAT body is scrubbed
+        // before any line leaves the machine.
+        for line in &result.lines {
+            assert!(
+                !line.contains("ghp_abcdefghijklmnopqrstuvwxyz"),
+                "secret must be redacted: {line}"
+            );
+        }
+        assert!(
+            result.lines.iter().any(|l| l.contains("[REDACTED]")),
+            "redacted marker must appear: {:?}",
+            result.lines
+        );
+    }
+
+    #[tokio::test]
+    async fn read_diff_refuses_paths_outside_the_worktrees_root() {
+        let fix = diff_fixture();
+        let outside = fix.worktrees_root.join("..").join("elsewhere");
+        let mut agent = fixture_agent("herdr:outside");
+        agent.workspace = Workspace {
+            worktree_path: Some(outside.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let store = fix.store.clone();
+        store.apply(crate::core::model::Change::upsert(agent)).await;
+
+        let err = fix
+            .adapter
+            .read_diff(
+                "herdr:outside",
+                crate::drive::ReadDiffQuery::clamped(None, None, None),
+            )
+            .await
+            .expect_err("non-herdr path must be refused");
+        assert!(
+            matches!(err, DriveError::NoWorktree(_)),
+            "typed refusal expected: {err:?}"
+        );
+    }
+
+    fn fixture_agent(id: &str) -> Agent {
+        Agent {
+            agent_id: id.to_string(),
+            source: "herdr".to_string(),
+            tool: "claude".to_string(),
+            state: AgentState::Working,
+            reason: None,
+            seq: 1,
+            ts: 1,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: Workspace::default(),
+            attachment: None,
+            display_name: None,
+            title: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_diff_agent_without_worktree_path_is_no_worktree() {
+        let fix = diff_fixture();
+        let store = fix.store.clone();
+        store
+            .apply(crate::core::model::Change::upsert(fixture_agent(
+                "herdr:nopath",
+            )))
+            .await;
+        let err = fix
+            .adapter
+            .read_diff(
+                "herdr:nopath",
+                crate::drive::ReadDiffQuery::clamped(None, None, None),
+            )
+            .await
+            .expect_err("no path -> refusal");
+        assert!(matches!(err, DriveError::NoWorktree(_)));
+    }
+
+    #[tokio::test]
+    async fn read_diff_unknown_agent_is_typed() {
+        let fix = diff_fixture();
+        let err = fix
+            .adapter
+            .read_diff(
+                "herdr:ghost",
+                crate::drive::ReadDiffQuery::clamped(None, None, None),
+            )
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(err, DriveError::UnknownAgent(_) | DriveError::StaleAgent(_)),
+            "{err:?}"
         );
     }
 }

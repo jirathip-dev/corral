@@ -17,7 +17,7 @@ use corrald::auth::AuthPlane;
 use corrald::auth::audit::ChainEntry;
 use corrald::auth::test_support;
 use corrald::core::store::Store;
-use corrald::drive::{AuditOutcome, Capability};
+use corrald::drive::{AuditOutcome, Capability, ReadDiffQuery, ReadDiffResult};
 use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -56,6 +56,11 @@ struct RecordingAdapter {
     tail_requests: Mutex<Vec<u32>>,
     /// attach handle served back on success (used when `known`).
     attach_results: Mutex<Option<Value>>,
+    /// #232: read_diff result served back (None = NoWorktree refusal), and
+    /// the queries each read_diff call received.
+    diff_results: Mutex<Option<Value>>,
+    diff_requests: Mutex<Vec<ReadDiffQuery>>,
+    diff_refusal: Mutex<Option<DriveError>>,
 }
 
 impl Default for RecordingAdapter {
@@ -72,6 +77,9 @@ impl Default for RecordingAdapter {
             tail: Mutex::new(None),
             tail_requests: Mutex::new(Vec::new()),
             attach_results: Mutex::new(None),
+            diff_results: Mutex::new(None),
+            diff_requests: Mutex::new(Vec::new()),
+            diff_refusal: Mutex::new(None),
         }
     }
 }
@@ -108,6 +116,18 @@ impl RecordingAdapter {
 
     fn attach_result(&self, handle: Value) -> &Self {
         *self.attach_results.lock().unwrap() = Some(handle);
+        self
+    }
+
+    /// #232: serve a pre-baked read_diff result (used when `known`).
+    fn diff_result(&self, result: Value) -> &Self {
+        *self.diff_results.lock().unwrap() = Some(result);
+        self
+    }
+
+    /// #232: force read_diff to flatline with a typed dispatch refusal.
+    fn diff_refusal(&self, error: DriveError) -> &Self {
+        *self.diff_refusal.lock().unwrap() = Some(error);
         self
     }
 
@@ -192,6 +212,35 @@ impl Adapter for RecordingAdapter {
         Box::pin(future)
     }
 
+    fn read_diff<'a>(
+        &'a self,
+        agent_id: &'a str,
+        query: ReadDiffQuery,
+    ) -> futures::future::BoxFuture<'a, Result<ReadDiffResult, DriveError>> {
+        let future = async move {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            self.diff_requests.lock().unwrap().push(query);
+            if let Some(error) = self.diff_refusal.lock().unwrap().take() {
+                return Err(error);
+            }
+            match *self.mode.lock().unwrap() {
+                Mode::Ok => {
+                    if self.known.lock().unwrap().contains(agent_id) {
+                        Ok(serde_json::from_value(
+                            self.diff_results.lock().unwrap().clone().unwrap(),
+                        )
+                        .expect("test diff result must decode"))
+                    } else {
+                        Err(DriveError::UnknownAgent(agent_id.to_string()))
+                    }
+                }
+                Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
+                Mode::Transport => Err(DriveError::Transport("boom".to_string())),
+            }
+        };
+        Box::pin(future)
+    }
+
     fn attach<'a>(
         &'a self,
         agent_id: &'a str,
@@ -231,7 +280,7 @@ impl Adapter for RecordingAdapter {
 }
 
 /// Every capability the drive tests exercise, granted to the harness device.
-const ALL_CAPABILITIES: [Capability; 7] = [
+const ALL_CAPABILITIES: [Capability; 8] = [
     Capability::Prompt,
     Capability::Interrupt,
     Capability::Approve,
@@ -239,6 +288,7 @@ const ALL_CAPABILITIES: [Capability; 7] = [
     Capability::Kill,
     Capability::Attach,
     Capability::StartWorktree,
+    Capability::ReadDiff,
 ];
 
 /// Real W3 auth plane over a temp dir + a registered, fully-granted device.
@@ -1690,4 +1740,192 @@ async fn start_worktree_refuses_target_payload_repo_mismatch() {
         h.audit_entries().is_empty(),
         "payload refusals are not audited"
     );
+}
+
+// ---------------------------------------------------------------------------
+// read_diff (#232): the response-bearing diff seam — DriveResponse.result
+// carries the paged ReadDiffResult, query bounds are clamped daemon-side,
+// the grant gate is the same 403 `not_granted` as read_tail, and dispatched
+// reads are audited `executed` / `refused`.
+// ---------------------------------------------------------------------------
+
+fn diff_fixture_result() -> Value {
+    serde_json::to_value(ReadDiffResult {
+        repo: Some("corral".to_string()),
+        branch: Some("g232/read-diff".to_string()),
+        head: Some("abcdef1".to_string()),
+        stats: corrald::drive::DiffStats {
+            files: 2,
+            adds: 12,
+            dels: 3,
+        },
+        files: vec![
+            corrald::drive::DiffFileStat {
+                path: "src/a.rs".to_string(),
+                adds: 10,
+                dels: 1,
+            },
+            corrald::drive::DiffFileStat {
+                path: "src/b.rs".to_string(),
+                adds: 2,
+                dels: 2,
+            },
+        ],
+        files_truncated: false,
+        offset: 0,
+        lines: vec![
+            "diff --git a/src/a.rs b/src/a.rs".to_string(),
+            "+fn main() {}".to_string(),
+            "-let x = 1;".to_string(),
+        ],
+        total: 3,
+        has_more: false,
+        next_offset: None,
+    })
+    .expect("result serializes")
+}
+
+#[tokio::test]
+async fn read_diff_result_carries_page_and_audits_executed() {
+    let h = harness();
+    h.adapter
+        .knows("herdr:abc")
+        .diff_result(diff_fixture_result());
+
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-diff",
+            Capability::ReadDiff,
+            "herdr:abc",
+            json!({ "kind": "read_diff", "files": 5, "offset": 0, "lines": 200 }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["result"]["stats"]["files"], 2);
+    assert_eq!(value["result"]["stats"]["adds"], 12);
+    assert_eq!(value["result"]["files"][0]["path"], "src/a.rs");
+    assert_eq!(
+        value["result"]["lines"][0],
+        "diff --git a/src/a.rs b/src/a.rs"
+    );
+    assert_eq!(value["result"]["head"], "abcdef1");
+
+    // Routed through Adapter::read_diff, never drive().
+    assert_eq!(h.adapter.dispatch_count(), 1);
+    assert!(h.adapter.commands().is_empty());
+    let queries = h.adapter.diff_requests.lock().unwrap();
+    assert_eq!(
+        *queries,
+        vec![ReadDiffQuery {
+            files: 5,
+            offset: 0,
+            lines: 200
+        }]
+    );
+
+    // Audit mirrors read_tail: one Executed entry.
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].capability, "read_diff");
+    assert_eq!(entries[0].target, "herdr:abc");
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+}
+
+#[tokio::test]
+async fn read_diff_bounds_are_clamped_daemon_side() {
+    let h = harness();
+    h.adapter
+        .knows("herdr:abc")
+        .diff_result(diff_fixture_result());
+
+    // 0 files / 0 lines / huge offset clamp; defaults fill absent fields.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-clamp",
+            Capability::ReadDiff,
+            "herdr:abc",
+            json!({ "kind": "read_diff", "files": 0, "lines": 0 }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    let queries = h.adapter.diff_requests.lock().unwrap();
+    assert_eq!(
+        *queries,
+        vec![ReadDiffQuery {
+            files: 1,
+            offset: 0,
+            lines: 1
+        }],
+        "files/lines clamp to [1, cap]; offset defaults to 0"
+    );
+}
+
+#[tokio::test]
+async fn read_diff_without_grant_is_403_not_granted_and_not_audited() {
+    let h = harness();
+    h.adapter
+        .knows("herdr:abc")
+        .diff_result(diff_fixture_result());
+    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body_from(
+            &other_signing,
+            other_pubkey,
+            "req-diff-nogrant",
+            Capability::ReadDiff,
+            "herdr:abc",
+            json!({ "kind": "read_diff" }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "not_granted");
+    // The read is default-empty (no dispatch): not audited, like read_tail.
+    assert!(h.audit_entries().is_empty());
+    assert_eq!(h.adapter.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn read_diff_dispatch_refusal_is_typed_and_audited_refused() {
+    let h = harness();
+    h.adapter
+        .knows("herdr:abc")
+        .diff_refusal(DriveError::NoWorktree("no worktree path".to_string()));
+
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-diff-refused",
+            Capability::ReadDiff,
+            "herdr:abc",
+            json!({ "kind": "read_diff" }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dispatch outcomes ride the DriveResponse"
+    );
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error_kind"], "no_worktree");
+    assert!(value.get("result").is_none());
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
 }

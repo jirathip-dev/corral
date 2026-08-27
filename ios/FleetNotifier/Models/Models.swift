@@ -38,7 +38,8 @@ enum CiStatus: String, Codable, CaseIterable, Sendable {
 /// The six canonical drive capabilities (D7). UI buttons are rendered from
 /// grants + agent capabilities — never hardcoded per tool.
 enum Capability: String, Codable, CaseIterable, Sendable {
-    case prompt, interrupt, approve, readTail = "read_tail", kill, attach
+    case prompt, interrupt, approve, readTail = "read_tail",
+         readDiff = "read_diff", kill, attach
 
     var displayName: String {
         switch self {
@@ -46,6 +47,7 @@ enum Capability: String, Codable, CaseIterable, Sendable {
         case .interrupt: return "Interrupt"
         case .approve: return "Approve"
         case .readTail: return "Tail"
+        case .readDiff: return "Diff"
         case .kill: return "Kill"
         case .attach: return "Attach"
         }
@@ -59,6 +61,7 @@ enum Capability: String, Codable, CaseIterable, Sendable {
         case .interrupt: return "Interrupt a running task"
         case .approve: return "Approve tool calls & awaiting decisions"
         case .readTail: return "Read live agent output"
+        case .readDiff: return "Read the agent's worktree diff"
         case .kill: return "Terminate a task"
         case .attach: return "Attach to a session & stream events"
         }
@@ -498,6 +501,14 @@ enum CodableValue: Codable, Equatable, Sendable {
         return try? JSONDecoder().decode([TranscriptBlock].self, from: data)
     }
 
+    /// #232: the daemon's bounded ReadDiffResult — one paged page
+    /// (diffstat + changed-files list + unified diff lines).
+    var diffPage: DiffPageWire? {
+        guard case .object = self else { return nil }
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return try? JSONDecoder().decode(DiffPageWire.self, from: data)
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
@@ -624,6 +635,67 @@ struct TailPane: Equatable, Sendable {
     }
 }
 
+/// Per-agent worktree-diff state (#232): one bounded page at a time,
+/// accumulated lazily so a large diff never materializes fully in memory.
+/// The sheet presents exactly what the daemon served (paged, redacted,
+/// clamped) — this client never re-bounds.
+struct DiffPane: Equatable, Sendable {
+    var repo: String?
+    var branch: String?
+    var head: String?
+    var stats: DiffStatsWire = DiffStatsWire(files: 0, adds: 0, dels: 0)
+    var files: [DiffFileWire] = []
+    var filesTruncated = false
+    var lines: [String] = []
+    var total = 0
+    var hasMore = false
+    var nextOffset: Int?
+    var isLoading = false
+    var error: String?
+
+    var isEmpty: Bool { lines.isEmpty && files.isEmpty && !isLoading && error == nil }
+
+    mutating func beginFetch() {
+        isLoading = true
+        error = nil
+    }
+
+    /// Fold one daemon page. Offset 0 seeds the pane; later pages append at
+    /// the page's aggregate offset (a worktree change renumbers offsets, so
+    /// a gap reseeds from the new page instead of interleaving stale lines).
+    mutating func apply(_ page: DiffPageWire) {
+        isLoading = false
+        error = nil
+        repo = page.repo ?? repo
+        branch = page.branch ?? branch
+        head = page.head ?? head
+        stats = page.stats
+        files = page.files
+        filesTruncated = page.filesTruncated
+        total = page.total
+        hasMore = page.hasMore
+        nextOffset = page.nextOffset
+        if page.offset == 0 && lines.isEmpty {
+            lines = page.lines
+        } else if page.offset <= lines.count {
+            // Page window may overlap already-known lines (a re-fetch of the
+            // same window is idempotent) — append only the not-yet-known
+            // suffix beyond the accumulated count.
+            let overlap = lines.count - page.offset
+            if overlap < page.lines.count {
+                lines.append(contentsOf: page.lines[overlap...])
+            }
+        } else {
+            lines = page.lines
+        }
+    }
+
+    mutating func apply(_ failure: String) {
+        isLoading = false
+        error = failure
+    }
+}
+
 enum TranscriptText {
     static func errorText(_ error: TranscriptFailure) -> String {
         switch error.kind {
@@ -632,5 +704,42 @@ enum TranscriptText {
         default:
             return "\(error.kind): \(error.message)"
         }
+    }
+}
+
+// MARK: - #232 read_diff wire shapes (mirror corrald::drive::ReadDiffResult)
+
+/// Whole-diff diffstat (all tracked changes vs HEAD).
+struct DiffStatsWire: Codable, Equatable, Sendable {
+    var files: Int
+    var adds: Int
+    var dels: Int
+}
+
+struct DiffFileWire: Codable, Equatable, Sendable {
+    var path: String
+    var adds: Int
+    var dels: Int
+}
+
+/// One bounded read_diff page (daemon-clamped; the client never re-bounds).
+struct DiffPageWire: Codable, Equatable, Sendable {
+    var repo: String?
+    var branch: String?
+    var head: String?
+    var stats: DiffStatsWire
+    var files: [DiffFileWire]
+    var filesTruncated: Bool
+    var offset: Int
+    var lines: [String]
+    var total: Int
+    var hasMore: Bool
+    var nextOffset: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case repo, branch, head, stats, files, offset, lines, total
+        case filesTruncated = "files_truncated"
+        case hasMore = "has_more"
+        case nextOffset = "next_offset"
     }
 }

@@ -36,6 +36,82 @@ final class CanonicalBytesTests: XCTestCase {
                        #"{"kind":"read_tail","lines":200}"#)
     }
 
+    /// #232: the read_diff query payload is canonical (sorted object keys:
+    /// files < kind < lines < offset) and the daemon's page result decodes.
+    func testReadDiffPayloadAndPageShape() throws {
+        let payload = CanonicalJSON.readDiffPayload(files: 128, offset: 200, lines: 400)
+        XCTAssertEqual(CanonicalJSON.encode(payload),
+                       #"{"files":128,"kind":"read_diff","lines":400,"offset":200}"#)
+
+        let page = DiffPageWire(repo: "corral", branch: "g232/read-diff", head: "abc1234",
+                                stats: DiffStatsWire(files: 2, adds: 12, dels: 5),
+                                files: [DiffFileWire(path: "src/drive/mod.rs", adds: 10, dels: 4)],
+                                filesTruncated: true, offset: 0,
+                                lines: ["diff --git a/src/drive/mod.rs b/src/drive/mod.rs",
+                                        "+one", "-two"],
+                                total: 8, hasMore: true, nextOffset: 3)
+        let data = try JSONEncoder().encode(page)
+        let value = try JSONDecoder().decode(CodableValue.self, from: data)
+        let decoded = try XCTUnwrap(value.diffPage)
+        XCTAssertEqual(decoded.repo, "corral")
+        XCTAssertEqual(decoded.stats.adds, 12)
+        XCTAssertEqual(decoded.files.first?.path, "src/drive/mod.rs")
+        XCTAssertTrue(decoded.filesTruncated)
+        XCTAssertEqual(decoded.lines.count, 3)
+        XCTAssertEqual(decoded.nextOffset, 3)
+        XCTAssertNil(CodableValue.null.diffPage)
+    }
+
+    /// #232: the agent's capabilities expose read_diff and the diff action
+    /// is grant-gated exactly like the other read capabilities.
+    func testReadDiffCapabilityIsParsedAndGrantGated() {
+        let agent = Agent(agentId: "a",
+                          capabilities: ["read_diff", "read_tail", "approve"])
+        XCTAssertTrue(agent.capabilities.contains("read_diff"))
+        // Grant missing: disabled with the canonical reason.
+        let noGrant = BoardModel.actionAvailability(agent: agent, grants: [])
+            .first { $0.action == .diff }
+        XCTAssertEqual(noGrant?.isEnabled, false)
+        XCTAssertEqual(noGrant?.disabledReason,
+                       "requires the read_diff grant — ask the host.")
+        // Capability missing on an agent that otherwise has the grant.
+        let noCap = BoardModel.actionAvailability(
+            agent: Agent(agentId: "b", capabilities: ["read_tail"]),
+            grants: [.readDiff]).first { $0.action == .diff }
+        XCTAssertEqual(noCap?.isEnabled, false)
+        XCTAssertEqual(noCap?.disabledReason,
+                       "read_diff: not available for this agent.")
+        // Both present: enabled.
+        let ready = BoardModel.actionAvailability(agent: agent, grants: [.readDiff])
+            .first { $0.action == .diff }
+        XCTAssertEqual(ready?.isEnabled, true)
+    }
+
+    /// #232: the pane accumulates paged lines and reseeds on a gap.
+    func testDiffPaneAccumulatesPagesAndReseedsOnGap() {
+        var pane = DiffPane()
+        pane.apply(DiffPageWire(repo: nil, branch: nil, head: nil,
+                                stats: DiffStatsWire(files: 1, adds: 2, dels: 1),
+                                files: [], filesTruncated: false, offset: 0,
+                                lines: ["+a", "+b"], total: 4, hasMore: true, nextOffset: 2))
+        XCTAssertEqual(pane.lines, ["+a", "+b"])
+        XCTAssertEqual(pane.nextOffset, 2)
+        XCTAssertTrue(pane.hasMore)
+        pane.apply(DiffPageWire(repo: nil, branch: nil, head: nil,
+                                stats: DiffStatsWire(files: 1, adds: 2, dels: 1),
+                                files: [], filesTruncated: false, offset: 2,
+                                lines: ["-c"], total: 4, hasMore: false, nextOffset: nil))
+        XCTAssertEqual(pane.lines, ["+a", "+b", "-c"])
+        XCTAssertFalse(pane.hasMore)
+        XCTAssertNil(pane.nextOffset)
+        // Offset gap (worktree changed → renumbered stream): reseed.
+        pane.apply(DiffPageWire(repo: nil, branch: nil, head: nil,
+                                stats: DiffStatsWire(files: 1, adds: 1, dels: 1),
+                                files: [], filesTruncated: false, offset: 10,
+                                lines: ["+z"], total: 11, hasMore: false, nextOffset: nil))
+        XCTAssertEqual(pane.lines, ["+z"])
+    }
+
     func testInterruptControlUsesNullPayload() {
         XCTAssertEqual(CanonicalJSON.encode(CanonicalJSON.interruptPayload()), "null")
         let bytes = CanonicalJSON.envelopeBytes(requestId: "interrupt-1", capability: "interrupt",
@@ -2320,7 +2396,7 @@ final class RowActionTests: XCTestCase {
             agent: agent("herdr:x", state: .blocked,
                          capabilities: Capability.allCases.map(\.rawValue)),
             grants: Set(Capability.allCases))
-        XCTAssertEqual(actions, [.tail, .prompt, .interrupt, .kill, .attach, .approveDeny])
+        XCTAssertEqual(actions, [.tail, .diff, .prompt, .interrupt, .kill, .attach, .approveDeny])
     }
 
     /// Both the agent capability and the device grant must hold. The detail

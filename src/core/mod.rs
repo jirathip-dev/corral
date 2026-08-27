@@ -1,6 +1,7 @@
 //! Canonical agent model + revisioned store. No adapter or transport concerns.
 
 pub mod blocks;
+pub mod diff;
 pub mod events;
 pub mod model;
 pub mod redact;

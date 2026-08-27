@@ -95,6 +95,30 @@ pub enum Level {
     Error,
 }
 
+/// #232: one agent's cached read_diff surface (paged accumulation of the
+/// daemon's bounded pages — the cache itself is never re-bounded, only
+/// presented; full-diff content never lives here, only fetched pages).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DiffCache {
+    /// Repo identity from the daemon's snapshot-driven attribution (never
+    /// client-supplied).
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    /// Whole-diffstat (all tracked changes vs HEAD).
+    pub stats: crate::drive::DiffStats,
+    /// Changed-files list (first N files, daemon-capped at 128).
+    pub files: Vec<crate::drive::DiffFileStat>,
+    pub files_truncated: bool,
+    /// Accumulated unified diff lines (each fetched page appended).
+    pub lines: Vec<String>,
+    /// Full stream size in lines (aggregate offset space).
+    pub total: u32,
+    pub has_more: bool,
+    /// Next page cursor; `None` when fully loaded.
+    pub next_offset: Option<u32>,
+}
+
 /// The fleet view model.
 #[derive(Debug, Default)]
 pub struct Fleet {
@@ -107,6 +131,9 @@ pub struct Fleet {
     /// visible Cards selection when capability/grant-gated, and still
     /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
+    /// #232: per-agent read_diff cache (changed-files list + paged unified
+    /// diff + diffstat). Paged: each fetch appends at `next_offset`.
+    pub diffs: HashMap<String, DiffCache>,
     /// Expanded agent ids (row detail open).
     pub expanded: Vec<String>,
     /// Master/detail selection. Kept in the view model so a frame can
@@ -181,6 +208,7 @@ impl Fleet {
     pub fn remove_agent(&mut self, agent_id: &str) {
         self.agents.remove(agent_id);
         self.tails.remove(agent_id);
+        self.diffs.remove(agent_id);
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);
         if self.selected_agent.as_deref() == Some(agent_id) {
@@ -279,6 +307,41 @@ impl Fleet {
             self.tails.remove(&oldest);
         }
         self.tails.insert(agent_id.to_string(), tail);
+    }
+
+    /// #232: fold one read_diff page into the per-agent cache. The first
+    /// page (offset 0) seeds the cache; later pages append at the page's
+    /// offset (the daemon's offsets are aggregate-line offsets, so
+    /// out-of-order/missing pages never silently garble the stream).
+    pub fn remember_diff_page(&mut self, agent_id: &str, page: crate::drive::DiffPage) {
+        let cache = self.diffs.entry(agent_id.to_string()).or_default();
+        cache.repo = page.repo;
+        cache.branch = page.branch;
+        cache.head = page.head;
+        cache.stats = page.stats;
+        cache.files = page.files;
+        cache.files_truncated = page.files_truncated;
+        cache.total = page.total;
+        cache.has_more = page.has_more;
+        cache.next_offset = page.next_offset;
+        if page.offset == 0 && cache.lines.is_empty() {
+            cache.lines = page.lines;
+        } else if page.offset as usize <= cache.lines.len() {
+            // Append the new page's lines; pages are served in order by the
+            // UI, and a re-fetch of an already-present window only replaces
+            // that window (idempotent append).
+            let start = page.offset as usize;
+            let end = start + page.lines.len();
+            if end > cache.lines.len() {
+                cache
+                    .lines
+                    .extend(page.lines[cache.lines.len().saturating_sub(start)..].to_vec());
+            }
+        } else {
+            // Gap: drop the stale accumulated lines and reseed from this
+            // page (a worktree change implicitly renumbers offsets).
+            cache.lines = page.lines;
+        }
     }
 
     pub fn remember_drive(&mut self, agent_id: &str, state: DriveState) {
@@ -680,5 +743,68 @@ mod tests {
             );
         }
         assert_eq!(fleet.recent_drives["a"].len(), 8);
+    }
+
+    /// #232 test helper: build a daemon-shaped DiffPage.
+    fn page(
+        offset: u32,
+        lines: Vec<&str>,
+        total: u32,
+        has_more: bool,
+        next: Option<u32>,
+    ) -> crate::drive::DiffPage {
+        crate::drive::DiffPage {
+            repo: Some("corral".into()),
+            branch: Some("g232/read-diff".into()),
+            head: Some("abc".into()),
+            stats: crate::drive::DiffStats {
+                files: 2,
+                adds: 4,
+                dels: 1,
+            },
+            files: vec![crate::drive::DiffFileStat {
+                path: "src/core/diff.rs".into(),
+                adds: 4,
+                dels: 1,
+            }],
+            files_truncated: false,
+            offset,
+            lines: lines.into_iter().map(str::to_string).collect(),
+            total,
+            has_more,
+            next_offset: next,
+        }
+    }
+
+    #[test]
+    fn diff_pages_append_and_remove_agent_discards_cache() {
+        let mut fleet = Fleet::default();
+
+        // First page (offset 0) seeds the cache with metadata + lines.
+        fleet.remember_diff_page("a", page(0, vec!["+one", "+two"], 6, true, Some(2)));
+        let cache = fleet.diffs.get("a").expect("cached");
+        assert_eq!(cache.lines, vec!["+one", "+two"]);
+        assert_eq!(cache.total, 6);
+        assert!(cache.has_more);
+        assert_eq!(cache.next_offset, Some(2));
+        assert_eq!(cache.stats.adds, 4);
+
+        // Next page (offset 2) appends; the row diffstat reads real numbers.
+        fleet.remember_diff_page("a", page(2, vec!["+three", "-four"], 6, false, None));
+        let cache = fleet.diffs.get("a").expect("cached");
+        assert_eq!(cache.lines, vec!["+one", "+two", "+three", "-four"]);
+        assert!(!cache.has_more);
+        assert_eq!(cache.next_offset, None);
+
+        // A re-fetch of the same window is idempotent (no duplicates).
+        fleet.remember_diff_page("a", page(0, vec!["+one", "+two"], 6, true, Some(2)));
+        assert_eq!(
+            fleet.diffs["a"].lines,
+            vec!["+one", "+two", "+three", "-four"]
+        );
+
+        // Cache dies with the agent (stale-drive removal path).
+        fleet.remove_agent("a");
+        assert!(!fleet.diffs.contains_key("a"));
     }
 }

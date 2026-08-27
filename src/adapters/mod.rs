@@ -32,6 +32,12 @@ pub enum DriveCommand {
     ReadTail {
         lines: Option<u32>,
     },
+    /// #232: read the agent's worktree diff (changed-files list + unified
+    /// diff page + diffstat). Routed through [`Adapter::read_diff`] like
+    /// read_tail so the response can carry the paged result.
+    ReadDiff {
+        query: crate::drive::ReadDiffQuery,
+    },
     Kill,
     Attach,
 }
@@ -49,6 +55,9 @@ pub enum DriveError {
     StaleAgent(String),
     /// Transport-level failure reaching the source.
     Transport(String),
+    /// #232: the target agent has no diff the daemon may serve (no herdr
+    /// worktree path, path not herdr-owned, or the git read itself failed).
+    NoWorktree(String),
 }
 
 impl std::fmt::Display for DriveError {
@@ -58,6 +67,7 @@ impl std::fmt::Display for DriveError {
             Self::UnknownAgent(id) => write!(f, "unknown agent: {id}"),
             Self::StaleAgent(id) => write!(f, "stale agent: {id}"),
             Self::Transport(msg) => write!(f, "transport error: {msg}"),
+            Self::NoWorktree(msg) => write!(f, "worktree diff unavailable: {msg}"),
         }
     }
 }
@@ -73,6 +83,7 @@ impl DriveError {
             Self::UnknownAgent(_) => "unknown_agent",
             Self::StaleAgent(_) => "stale_agent",
             Self::Transport(_) => "transport",
+            Self::NoWorktree(_) => "no_worktree",
         }
     }
 }
@@ -118,6 +129,23 @@ pub trait Adapter: Debug + Send + Sync {
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
         let _ = (agent_id, lines);
         Box::pin(async move { Err(DriveError::NotImplemented("read_tail")) })
+    }
+
+    /// #232: `read_diff`: fetch `agent_id`'s worktree diff (changed-files
+    /// list + unified diff page + diffstat). The adapter resolves the
+    /// worktree path from SNAPSHOT/HERDR STATE (the agent record's
+    /// `workspace.worktree_path`), never from the client, verifies it is a
+    /// herdr-owned worktree path, and computes the bounded diff via git2.
+    /// Redaction (D9) happens here before any line leaves the machine, the
+    /// same as [`Adapter::read_tail`]. Default: this adapter does not
+    /// implement the command.
+    fn read_diff<'a>(
+        &'a self,
+        agent_id: &'a str,
+        query: crate::drive::ReadDiffQuery,
+    ) -> futures::future::BoxFuture<'a, Result<crate::drive::ReadDiffResult, DriveError>> {
+        let _ = (agent_id, query);
+        Box::pin(async move { Err(DriveError::NotImplemented("read_diff")) })
     }
 
     /// `attach`: resolve `agent_id` to a stable, documented handle the caller

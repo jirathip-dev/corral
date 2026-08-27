@@ -26,6 +26,9 @@ const COL_WAITING: f32 = 220.0;
 const COL_REPO: f32 = 130.0;
 const COL_BRANCH: f32 = 160.0;
 const COL_DIRTY: f32 = 46.0;
+/// #232: lazy diffstat on the agent row (`+N/−M`, filled from the per-agent
+/// diff cache after the first read_diff — never prefetched fleet-wide).
+const COL_DIFF: f32 = 72.0;
 const COL_AB: f32 = 64.0;
 const COL_PR: f32 = 56.0;
 const COL_CI: f32 = 76.0;
@@ -34,13 +37,14 @@ const COL_CI: f32 = 76.0;
 /// from this one width source so labels and values start at identical x
 /// positions.
 #[allow(dead_code)]
-const BOARD_COLUMNS: [(&str, f32); 9] = [
+const BOARD_COLUMNS: [(&str, f32); 10] = [
     ("AGENT", COL_AGENT),
     ("STATE", COL_STATE),
     ("WAITING ON", COL_WAITING),
     ("REPO", COL_REPO),
     ("BRANCH", COL_BRANCH),
     ("DIRTY", COL_DIRTY),
+    ("DIFF", COL_DIFF),
     ("A/B", COL_AB),
     ("PR", COL_PR),
     ("CI", COL_CI),
@@ -2207,7 +2211,7 @@ fn header(ui: &mut Ui) {
     let _ = header_cells(ui);
 }
 
-fn header_cells(ui: &mut Ui) -> [egui::Response; 9] {
+fn header_cells(ui: &mut Ui) -> [egui::Response; 10] {
     ui.horizontal(|ui| BOARD_COLUMNS.map(|(label, width)| header_cell(ui, width, label)))
         .inner
 }
@@ -2262,7 +2266,7 @@ fn agent_row(
                     // shift row cells against the header, which has none.
                     .inner_margin(egui::Margin::symmetric(0, 4))
                     .show(ui, |ui| {
-                        agent_row_cells(ui, agent);
+                        agent_row_cells(ui, agent, fleet);
                     })
                     .inner
             },
@@ -2277,7 +2281,7 @@ fn agent_row(
     (expanded, response)
 }
 
-fn agent_row_cells(ui: &mut Ui, agent: &Agent) -> [egui::Response; 9] {
+fn agent_row_cells(ui: &mut Ui, agent: &Agent, fleet: &Fleet) -> [egui::Response; 10] {
     let ws = &agent.workspace;
     let ab = if ws.ahead == 0 && ws.behind == 0 {
         "".to_string()
@@ -2307,6 +2311,7 @@ fn agent_row_cells(ui: &mut Ui, agent: &Agent) -> [egui::Response; 9] {
                 if ws.dirty { "●".into() } else { "".into() },
                 theme::ui::DIRTY,
             ),
+            diff_cell(ui, agent, fleet),
             topology_cell(ui, COL_AB, ab, ab_color),
             topology_cell(
                 ui,
@@ -2389,6 +2394,45 @@ fn waiting_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
 
 fn topology_cell(ui: &mut Ui, width: f32, text: String, color: Color32) -> egui::Response {
     fixed_cell(ui, width, |ui| topology_content(ui, width, text, color))
+}
+
+/// #232: lazy diffstat cell. Filled only from the per-agent diff cache
+/// (after the first read_diff); the board never prefetches diffs
+/// fleet-wide — one agent at a time, explicit tap.
+fn diff_cell(ui: &mut Ui, agent: &Agent, fleet: &Fleet) -> egui::Response {
+    fixed_cell(ui, COL_DIFF, |ui| {
+        let text = match fleet.diffs.get(&agent.agent_id) {
+            Some(diff) if diff.stats.adds > 0 || diff.stats.dels > 0 => {
+                format!("+{}/−{}", diff.stats.adds, diff.stats.dels)
+            }
+            _ => String::new(),
+        };
+        let color = if text.is_empty() {
+            theme::ui::TEXT_MUTED
+        } else {
+            theme::ui::ACCENT_DIM
+        };
+        ui.add_sized(
+            [COL_DIFF - 8.0, 18.0],
+            egui::Label::new(RichText::new(text).monospace().small().color(color)),
+        )
+        .on_hover_text("lazy diffstat — expand the row or tap the read_diff control to load the agent worktree diff");
+    })
+}
+
+/// #232: render one unified-diff stream entry with its origin-derived color.
+fn diff_line(ui: &mut Ui, line: &str) {
+    let color = if line.starts_with('+') {
+        theme::ui::GOOD
+    } else if line.starts_with('-') {
+        theme::ui::BAD
+    } else if line.starts_with('@') || line.starts_with("diff --git") || line.starts_with("index ")
+    {
+        theme::ui::ACCENT_DIM
+    } else {
+        theme::ui::TEXT_MUTED
+    };
+    ui.add(egui::Label::new(RichText::new(line).monospace().small().color(color)).wrap());
 }
 
 fn ci_cell(ui: &mut Ui, status: Option<crate::model::CiStatus>) -> egui::Response {
@@ -2597,6 +2641,9 @@ fn drive_controls(
                             let intent = match cap {
                                 "interrupt" => DriveIntent::interrupt(&agent.agent_id, rev),
                                 "read_tail" => DriveIntent::read_tail(&agent.agent_id, rev),
+                                "read_diff" => {
+                                    DriveIntent::read_diff(&agent.agent_id, 128, 0, 200, rev)
+                                }
                                 "kill" => DriveIntent::kill(&agent.agent_id, rev),
                                 _ => DriveIntent::attach(&agent.agent_id, rev),
                             };
@@ -2878,6 +2925,7 @@ fn detail(
                     );
                 }
             }
+            detail_diff(ui, agent, fleet, allowed, actions);
             if let Some(recent) = fleet.recent_drives.get(&agent.agent_id) {
                 ui.add_space(4.0);
                 ui.label(
@@ -2910,6 +2958,136 @@ fn detail_kv(ui: &mut Ui, key: &str, value: &str) {
             .color(theme::ui::TEXT_STRONG),
     );
     ui.add_space(8.0);
+}
+
+/// #232: the worktree-diff section of the agent detail. Shows the daemon
+/// attribution header (repo · branch), the one-line diffstat, the
+/// changed-files list, and the paged unified diff with a "Load next"
+/// control. The first page is never prefetched — the section offers an
+/// explicit "load diff" button (grant/capability-gated like read_tail).
+fn detail_diff(
+    ui: &mut Ui,
+    agent: &Agent,
+    fleet: &Fleet,
+    allowed: &dyn Fn(&str) -> bool,
+    actions: &mut BoardActions,
+) {
+    let diff_state = drive_control_state(&agent.capabilities, "read_diff", allowed("read_diff"));
+    ui.add_space(8.0);
+    if !fleet.diffs.contains_key(&agent.agent_id) {
+        if !actions.read_only {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("Worktree diff")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                match diff_state {
+                    DriveControlState::Ready => {
+                        if ui.small_button("± load diff").clicked() {
+                            (actions.drive)(crate::drive::DriveIntent::read_diff(
+                                &agent.agent_id,
+                                128,
+                                0,
+                                200,
+                                fleet.rev,
+                            ));
+                        }
+                    }
+                    _ => disabled_drive_button(ui, "± load diff", "read_diff", diff_state),
+                }
+            });
+        }
+        return;
+    }
+    let Some(diff) = fleet.diffs.get(&agent.agent_id) else {
+        return;
+    };
+    let header = match (&diff.repo, &diff.branch) {
+        (Some(repo), Some(branch)) => format!("{repo} · {branch}"),
+        (Some(repo), None) => repo.clone(),
+        (None, Some(branch)) => branch.clone(),
+        (None, None) => "worktree diff".to_string(),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(header).strong().color(theme::ui::TEXT_STRONG));
+        ui.label(
+            RichText::new(format!(
+                "+{}/−{} · {} files",
+                diff.stats.adds, diff.stats.dels, diff.stats.files
+            ))
+            .monospace()
+            .small()
+            .color(theme::ui::TEXT_MUTED),
+        );
+    });
+    if diff.files.is_empty() {
+        ui.label(
+            RichText::new("no changed files — the worktree is clean")
+                .small()
+                .color(theme::ui::TEXT_MUTED),
+        );
+        return;
+    }
+    egui::Frame::NONE
+        .fill(theme::ui::PANEL2)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Changed-files list (left column, bounded).
+                ui.vertical(|ui| {
+                    ui.set_width(230.0);
+                    ui.label(RichText::new("files").small().color(theme::ui::TEXT_MUTED));
+                    for f in diff.files.iter().take(128) {
+                        let color = if f.adds == 0 && f.dels == 0 {
+                            theme::ui::TEXT_MUTED
+                        } else {
+                            theme::ui::ACCENT_DIM
+                        };
+                        ui.label(
+                            RichText::new(format!("{} (+{}/−{})", f.path, f.adds, f.dels))
+                                .monospace()
+                                .small()
+                                .color(color),
+                        )
+                        .on_hover_text(&f.path);
+                    }
+                    if diff.files_truncated {
+                        ui.label(
+                            RichText::new("… more files")
+                                .small()
+                                .color(theme::ui::TEXT_MUTED),
+                        );
+                    }
+                });
+                ui.separator();
+                // Paged unified diff (right column, lazy pages).
+                ScrollArea::vertical()
+                    .id_salt(("corral-ui-diff", &agent.agent_id))
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for line in &diff.lines {
+                            diff_line(ui, line);
+                        }
+                        if diff.has_more
+                            && !actions.read_only
+                            && diff_state == DriveControlState::Ready
+                            && let Some(next) = diff.next_offset
+                            && ui
+                                .small_button(format!("Load next 200 lines (offset {next})"))
+                                .clicked()
+                        {
+                            (actions.drive)(crate::drive::DriveIntent::read_diff(
+                                &agent.agent_id,
+                                128,
+                                next,
+                                200,
+                                fleet.rev,
+                            ));
+                        }
+                    });
+            });
+        });
 }
 
 /// Outcome display for a drive state (shared with tests).
@@ -2996,14 +3174,14 @@ mod tests {
     }
 
     #[test]
-    fn board_columns_are_the_nine_conformance_columns_within_limit() {
-        assert_eq!(BOARD_COLUMNS.len(), 9);
+    fn board_columns_are_the_ten_conformance_columns_within_limit() {
+        assert_eq!(BOARD_COLUMNS.len(), 10);
         assert!(
             BOARD_COLUMNS.iter().all(|(label, _)| *label != "DRIVE"),
             "drive is no longer a table column"
         );
         let width: f32 = BOARD_COLUMNS.iter().map(|(_, width)| *width).sum();
-        assert_eq!(width, 1032.0);
+        assert_eq!(width, 1104.0);
     }
 
     #[test]
@@ -4671,7 +4849,7 @@ mod tests {
             let row = egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(0, 4))
                 .show(ui, |ui| {
-                    agent_row_cells(ui, &agent)
+                    agent_row_cells(ui, &agent, &Fleet::default())
                         .into_iter()
                         .map(|cell| cell.rect)
                         .collect::<Vec<_>>()
@@ -5090,6 +5268,139 @@ mod tests {
         );
         assert_eq!(intents[0].capability, crate::drive::Capability::ReadTail);
         assert_eq!(intents[0].target, "herdr:read-tail");
+    }
+
+    #[test]
+    fn detail_diff_load_dispatches_and_cached_page_renders() {
+        let ctx = row_test_context();
+        let mut agent = agent_with_caps(&["read_diff", "read_tail"]);
+        agent.agent_id = "herdr:diff".into();
+        agent.workspace.dirty = true;
+        let mut fleet = Fleet::default();
+        fleet.agents.insert(agent.agent_id.clone(), agent.clone());
+        fleet.expanded.push(agent.agent_id.clone());
+
+        let diff_intent = |fleet: &Fleet,
+                           output: &mut egui::FullOutput,
+                           label: &str,
+                           intents: &mut Vec<DriveIntent>|
+         -> Vec<String> {
+            let rect = text_rect(output, label).expect("diff control rendered");
+            clear_textures(output);
+            let mut actions = BoardActions {
+                drive: &mut |intent| intents.push(intent),
+                read_only: false,
+            };
+            board_row_click_with_allowed(
+                &ctx,
+                fleet,
+                &agent.agent_id,
+                rect.center(),
+                &|_| true,
+                &mut actions,
+            )
+        };
+
+        // Phase 1 — no cache yet: the section offers the explicit load
+        // control and clicking it dispatches page 0 (bounded query).
+        let mut intents = Vec::new();
+        let (_, mut output) = {
+            let mut actions = BoardActions {
+                drive: &mut |intent| intents.push(intent),
+                read_only: false,
+            };
+            board_row_frame_with_allowed(
+                &ctx,
+                &fleet,
+                &agent.agent_id,
+                row_test_input(vec![]),
+                &|_| true,
+                &mut actions,
+            )
+        };
+        let header_rect = text_rect(&output, "Worktree diff").expect("section header rendered");
+        let toggles = diff_intent(&fleet, &mut output, "± load diff", &mut intents);
+        assert!(toggles.is_empty(), "load button must not toggle the row");
+        assert_eq!(intents.len(), 1, "load diff must dispatch exactly once");
+        assert_eq!(intents[0].capability, crate::drive::Capability::ReadDiff);
+        assert_eq!(intents[0].target, "herdr:diff");
+        assert_eq!(intents[0].payload["files"], 128);
+        assert_eq!(intents[0].payload["offset"], 0);
+        assert_eq!(intents[0].payload["lines"], 200);
+
+        // Phase 2 — cached page: header (repo · branch), diffstat, files,
+        // paging control; "Load next" dispatches the next offset.
+        fleet.remember_diff_page(
+            &agent.agent_id,
+            crate::drive::DiffPage {
+                repo: Some("corral".into()),
+                branch: Some("g232/read-diff".into()),
+                head: Some("abc1234".into()),
+                stats: crate::drive::DiffStats {
+                    files: 1,
+                    adds: 12,
+                    dels: 5,
+                },
+                files: vec![crate::drive::DiffFileStat {
+                    path: "src/core/diff.rs".into(),
+                    adds: 12,
+                    dels: 5,
+                }],
+                files_truncated: false,
+                offset: 0,
+                lines: vec![
+                    "diff --git a/src/core/diff.rs b/src/core/diff.rs".into(),
+                    " one".into(),
+                    "+two".into(),
+                    "-three".into(),
+                ],
+                total: 9,
+                has_more: true,
+                next_offset: Some(4),
+            },
+        );
+        let (_, mut output) = {
+            let mut actions = BoardActions {
+                drive: &mut |intent| intents.push(intent),
+                read_only: false,
+            };
+            board_row_frame_with_allowed(
+                &ctx,
+                &fleet,
+                &agent.agent_id,
+                row_test_input(vec![]),
+                &|_| true,
+                &mut actions,
+            )
+        };
+        assert!(
+            rendered_text(&output, "corral · g232/read-diff").is_some(),
+            "diff section must render the daemon attribution header"
+        );
+        assert!(
+            rendered_text(&output, "+12/−5 · 1 files").is_some(),
+            "diff section must render the one-line diffstat"
+        );
+        assert!(
+            rendered_text(&output, "src/core/diff.rs (+12/−5)").is_some(),
+            "diff section must render the changed-files list"
+        );
+        assert!(
+            rendered_text(&output, "Load next 200 lines (offset 4)").is_some(),
+            "diff section must offer the next lazy page"
+        );
+        let toggles = diff_intent(
+            &fleet,
+            &mut output,
+            "Load next 200 lines (offset 4)",
+            &mut intents,
+        );
+        assert!(toggles.is_empty());
+        assert_eq!(intents.len(), 2, "load next must dispatch a page fetch");
+        assert_eq!(intents[1].capability, crate::drive::Capability::ReadDiff);
+        assert_eq!(intents[1].payload["offset"], 4);
+        assert_eq!(intents[1].payload["lines"], 200);
+        let _ = header_rect;
     }
 
     #[test]

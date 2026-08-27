@@ -48,3 +48,34 @@ store:
 
 The paged older-history UX shipped by #205 is superseded by this removal
 (#205 remains closed; the removal was recorded in #241).
+
+## D36 (2026-08-28) — read_diff: worktree diff on the board (#232)
+
+Guy (2026-08-26 → 2026-08-27): Approve is blind today — the approver sees
+branch/PR/CI and the live tail, but never what the agent changed in its
+herdr worktree, and approvals happen BEFORE push. Diff is evidence for a
+steer decision, so Corral gets a surface for it; file browsing/editing
+stays in the IDE/terminal lane (explicit non-goal).
+
+- **One shared endpoint.** new `read_diff` capability → bounded
+  `/drive` response: diffstat + changed-files list + paged unified diff
+  (client walks `next_offset`; files capped 1..=128, lines 1..=400,
+  default 200, per-line 4096-char truncation, 64 KiB page budget).
+  Computed via libgit2 (vendored) — never a git subprocess — via
+  `diff_tree_to_workdir_with_index` (tracked changes vs HEAD, staged +
+  unstaged; untracked excluded).
+- **Herdr-owned paths only.** the adapter resolves the path from
+  snapshot state (`workspace.worktree_path`), verifies it is under the
+  configured worktrees root, and refuses anything else with
+  `no_worktree` (`ok:false`). Client-supplied paths are never accepted.
+- **Granted like read_tail.** new readonly capability, default-empty,
+  per-device, audited (one audit entry per served page), redacted at the
+  adapter boundary; 403 `not_granted` without the grant.
+- **Lazy client surfaces.** egui: `DIFF` column (+N/−M), row-expand diff
+  section (files | paged diff, "Load next"); iOS: ± Diff button (V2
+  toolbar) → diff sheet (header, diffstat, files, paged diff). Never
+  prefetched fleet-wide (same D5 stance as read_tail).
+- **git2 chosen over shelling out.** the git_plane shells out to `git`
+  for status under a four-command admission budget; an on-demand diff
+  does not fit that budget, and libgit2 gives a subprocess-free, vetted
+  diff engine for exactly the worktree-vs-HEAD view this feature needs.

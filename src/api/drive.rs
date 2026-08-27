@@ -306,7 +306,7 @@ fn command_for(
     target: &str,
 ) -> Result<PendingCommand, PayloadError> {
     match capability {
-        Capability::Prompt | Capability::ReadTail | Capability::Approve => {
+        Capability::Prompt | Capability::ReadTail | Capability::ReadDiff | Capability::Approve => {
             let parsed = DrivePayload::parse(capability, payload)?;
             Ok(match parsed {
                 DrivePayload::Prompt { text } => {
@@ -317,6 +317,13 @@ fn command_for(
                         lines: Some(bound_tail_lines(lines)),
                     })
                 }
+                DrivePayload::ReadDiff {
+                    files,
+                    offset,
+                    lines,
+                } => PendingCommand::Command(DriveCommand::ReadDiff {
+                    query: crate::drive::ReadDiffQuery::clamped(files, offset, lines),
+                }),
                 DrivePayload::Approve {
                     approval_id,
                     prompt_hash,
@@ -344,6 +351,7 @@ fn command_for(
                 Capability::Attach => PendingCommand::Command(DriveCommand::Attach),
                 Capability::Prompt
                 | Capability::ReadTail
+                | Capability::ReadDiff
                 | Capability::Approve
                 | Capability::StartWorktree => unreachable!(),
             })
@@ -875,6 +883,22 @@ pub async fn drive(
             Ok(handle) => (true, None, None, AuditOutcome::Executed, Some(handle)),
             Err(e) => drive_refusal(e),
         },
+        // #232: read_diff is response-bearing like read_tail — the adapter
+        // computes the bounded page (changed-files list + diffstat + unified
+        // diff), redacts the lines, and we carry it back in `result`.
+        DriveCommand::ReadDiff { query } => match state.adapter.read_diff(&agent_id, query).await {
+            Ok(result) => (
+                true,
+                None,
+                None,
+                AuditOutcome::Executed,
+                Some(
+                    serde_json::to_value(result)
+                        .unwrap_or_else(|_| serde_json::json!({ "error": "encode" })),
+                ),
+            ),
+            Err(e) => drive_refusal(e),
+        },
         other => match state.adapter.drive(&agent_id, other).await {
             Ok(()) => (true, None, None, AuditOutcome::Executed, None),
             Err(e) => drive_refusal(e),
@@ -914,9 +938,10 @@ fn drive_refusal(
     let error_kind = Some(e.wire_kind().to_string());
     let outcome = match &e {
         DriveError::Transport(_) => AuditOutcome::Failed(text.clone()),
-        DriveError::NotImplemented(_) | DriveError::UnknownAgent(_) | DriveError::StaleAgent(_) => {
-            AuditOutcome::Refused(text.clone())
-        }
+        DriveError::NotImplemented(_)
+        | DriveError::UnknownAgent(_)
+        | DriveError::StaleAgent(_)
+        | DriveError::NoWorktree(_) => AuditOutcome::Refused(text.clone()),
     };
     (false, Some(text), error_kind, outcome, None)
 }

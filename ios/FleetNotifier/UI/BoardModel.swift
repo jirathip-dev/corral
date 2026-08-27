@@ -190,6 +190,7 @@ enum RowAction: Equatable, Sendable {
     case prompt
     case interrupt
     case tail
+    case diff
     case kill
     case attach
 
@@ -199,6 +200,7 @@ enum RowAction: Equatable, Sendable {
         case .prompt: return "Prompt"
         case .interrupt: return "Interrupt"
         case .tail: return "Recent output"
+        case .diff: return "Diff"
         case .kill: return "Kill"
         case .attach: return "Attach"
         }
@@ -210,6 +212,7 @@ enum RowAction: Equatable, Sendable {
         case .prompt: return .prompt
         case .interrupt: return .interrupt
         case .tail: return .readTail
+        case .diff: return .readDiff
         case .kill: return .kill
         case .attach: return .attach
         }
@@ -329,6 +332,7 @@ enum BoardModel {
                                    grants: Set<Capability>) -> [AgentActionAvailability] {
         [
             availability(.tail, agent: agent, grants: grants),
+            availability(.diff, agent: agent, grants: grants),
             availability(.prompt, agent: agent, grants: grants),
             availability(.interrupt, agent: agent, grants: grants),
             availability(.kill, agent: agent, grants: grants),

@@ -219,6 +219,13 @@ Capabilities, grant-gated per device (see "Grants model" below):
 - **Recent output** (`read_tail`): bounded live tail served via signed
   `/drive`, segmented in `corrald` into blocks (user / agent / tool / system);
   clients render the blocks without re-segmenting.
+- **Worktree diff** (`read_diff`, #232): bounded diff page — diffstat,
+  changed-files list, and a paged unified diff — computed via libgit2 from
+  the agent's herdr-owned worktree (paths come from snapshot state, never
+  from the client; untracked files, non-herdr paths, and repo history are
+  all out of scope). 403 without the grant; every served page is audited
+  and redacted like `read_tail`, and the phone app presents it lazily
+  (200-line pages).
 - **Interrupt** (`interrupt`): signed `/drive` stop for a live agent.
 - **Kill** (`kill`) and **Attach** (`attach`): signed `/drive` controls.
   Kill is destructive by capability and takes the same Face ID step-up
@@ -290,9 +297,11 @@ before expiry.
   device may see fleet state — a plain LAN offers no device auth, prefer
   a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
-  (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `kill`,
-  `attach`, plus the fleet-level `start_worktree`. Default deny; no
-  auto-approve.
+  (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `read_diff`
+  (#232: in a device's grant editor it is the "Read the agent's worktree
+  diff" toggle — read-only, audited, default empty like every other
+  grant), `kill`, `attach`, plus the fleet-level `start_worktree`. Default
+  deny; no auto-approve.
 - `GET /issues` (#113) is part of the credential-free read plane: it
   exposes only the public repo-level issue metadata the gh poller already
   fetches (number, state, title, labels, url) and no per-agent
@@ -486,6 +495,25 @@ surface consumes `lines`.
 ```sh
 # signed POST /drive with capability read_tail (see the drive plane)
 # → {"ok":true,"rev":42,"result":{"lines":["..."],"blocks":[{"kind":"tool",...}]}}
+```
+
+## Worktree diff read path (#232)
+
+`read_diff` returns a bounded diff page for one agent's herdr-owned
+worktree: `{repo, branch, head, stats:{files,adds,dels},
+files:[{path,adds,dels}], files_truncated, offset, lines:[...], total,
+has_more, next_offset}`. The daemon computes it via libgit2 (never a git
+subprocess), clamps `files` to 1..=128 and `lines` to 1..=400 (default
+200), redacts every line at the adapter boundary, and pages by aggregate
+line offset — a client walks `next_offset` until `has_more` is false.
+Only herdr-owned worktree paths from snapshot state are readable; untracked
+files, other repos, and non-worktree paths are refused with
+`no_worktree` (`ok:false`).
+
+```sh
+# signed POST /drive with capability read_diff files/offset/lines
+# → {"ok":true,"rev":43,"result":{"repo":"corral","branch":"g232/read-diff",
+#    "stats":{"files":2,"adds":12,"dels":5},"files":[...],"has_more":true,...}}
 ```
 
 Errors are the drive plane's typed refusals (auth, grant, unknown agent,

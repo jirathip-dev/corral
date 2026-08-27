@@ -637,6 +637,7 @@ pub fn spawn_read_loop(
     rt: tokio::runtime::Handle,
     client: reqwest::Client,
     base_url: String,
+    loop_generation: u64,
     tx_apply: tokio::sync::mpsc::UnboundedSender<ApplyMsg>,
     stop_rx: tokio::sync::watch::Receiver<bool>,
     auto_reconnect: bool,
@@ -658,7 +659,10 @@ pub fn spawn_read_loop(
                         last_event_id = last_rev,
                         "SSE connected to corrald /events"
                     );
-                    let _ = tx_apply.send(ApplyMsg::Conn(Live::Connected));
+                    let _ = tx_apply.send(ApplyMsg::Conn {
+                        loop_generation,
+                        event: Live::Connected,
+                    });
                     // Track the newest rev seen so the reconnect resumes
                     // from exactly where we stopped (Last-Event-ID).
                     let mut stream_rev = last_rev;
@@ -672,7 +676,10 @@ pub fn spawn_read_loop(
                     })
                     .await;
                     last_rev = stream_rev;
-                    let _ = tx_apply.send(ApplyMsg::Conn(Live::Disconnected));
+                    let _ = tx_apply.send(ApplyMsg::Conn {
+                        loop_generation,
+                        event: Live::Disconnected,
+                    });
                     match outcome {
                         StreamOutcome::Closed => {
                             // Clean close: reconnect per policy.
@@ -684,7 +691,10 @@ pub fn spawn_read_loop(
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let _ = tx_apply.send(ApplyMsg::ConnError(e));
+                    let _ = tx_apply.send(ApplyMsg::ConnError {
+                        loop_generation,
+                        error: e,
+                    });
                     // Fall back to a one-shot snapshot so the board still
                     // renders while SSE is unavailable (client-side poll
                     // on reconnect only).
@@ -696,19 +706,23 @@ pub fn spawn_read_loop(
                 }
             }
             if !auto_reconnect {
-                let _ = tx_apply.send(ApplyMsg::ConnError(
-                    "connection stopped (auto-reconnect is disabled)".to_string(),
-                ));
+                let _ = tx_apply.send(ApplyMsg::ConnError {
+                    loop_generation,
+                    error: "connection stopped (auto-reconnect is disabled)".to_string(),
+                });
                 return;
             }
             // Stop if requested (settings changed host or app is quitting).
             if *stop_rx.borrow() {
                 return;
             }
-            let _ = tx_apply.send(ApplyMsg::Conn(Live::Reconnecting {
-                backoff_ms,
-                rev: last_rev,
-            }));
+            let _ = tx_apply.send(ApplyMsg::Conn {
+                loop_generation,
+                event: Live::Reconnecting {
+                    backoff_ms,
+                    rev: last_rev,
+                },
+            });
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             backoff_ms = (backoff_ms * 2).min(SSE_BACKOFF_MAX_MS);
         }
@@ -719,20 +733,38 @@ pub fn spawn_read_loop(
 #[derive(Debug, Clone)]
 pub enum ApplyMsg {
     Sse(SseEvent),
-    Conn(Live),
-    ConnError(String),
+    /// A lifecycle event from a particular spawned read loop. The app drops
+    /// events from loops that were stopped by a host switch.
+    Conn {
+        loop_generation: u64,
+        event: Live,
+    },
+    ConnError {
+        loop_generation: u64,
+        error: String,
+    },
     /// Host identity resolved (drives device-key scoping + registration).
     Fingerprint(String),
     /// Registration round-trip result: `(key_id, grants)`.
     RegisterResult(Result<(String, Vec<String>), String>),
     /// #113: repo-level issue view arrived from the read-only `GET /issues`
-    /// endpoint (keyed by repo/fleet name). Keep failures in the message so
+    /// endpoint (keyed by repo/fleet name). The generation is stamped when
+    /// the request starts so a response from a prior connection/host cannot
+    /// populate the current identity model. Keep failures in the message so
     /// the UI can retry instead of treating a dropped response as "empty".
-    Issues(Result<BTreeMap<String, Vec<GhIssueRef>>, String>),
+    Issues {
+        generation: u64,
+        result: Result<BTreeMap<String, Vec<GhIssueRef>>, String>,
+    },
     /// #135: read-only registry view arrived from `GET /fleet-registry`.
+    /// The generation is stamped when the request starts so a response from
+    /// a prior connection/host cannot make stale fleet names actionable.
     /// `Err` is a transport/endpoint failure; daemon parse failures ride an
     /// `Ok(FleetRegistry)` with `status="error"`.
-    Registry(Result<FleetRegistry, String>),
+    Registry {
+        generation: u64,
+        result: Result<FleetRegistry, String>,
+    },
     /// #137: host-admin device/grants view arrived from `GET /grants`.
     GrantDevices(Result<AdminGrantsView, String>),
     /// #137: a host-admin grant set replacement or device revocation

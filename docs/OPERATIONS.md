@@ -312,7 +312,8 @@ curl -s -X POST http://127.0.0.1:8474/grants \
 
 - Inspect registered devices/grants for the board's selector (host admin
   only). The projection contains `key_id`, `grants`, `revoked`,
-  `expiry_ts`, and `created_ts`; it deliberately omits public keys and APNs
+  `revoked_ts` (#257, `null` for devices revoked before #257), `expiry_ts`,
+  and `created_ts`; it deliberately omits public keys and APNs
   push tokens. With no `key_id` it lists every registered device; with
   `?key_id=<id>` it narrows to one:
 

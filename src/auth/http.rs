@@ -109,6 +109,7 @@ fn admin_device_view(rec: &super::registry::DeviceRecord) -> serde_json::Value {
         "name": rec.name,
         "grants": rec.grants,
         "revoked": rec.revoked,
+        "revoked_ts": rec.revoked_ts,
         "expiry_ts": rec.expiry_ts,
         "created_ts": rec.created_ts,
     })

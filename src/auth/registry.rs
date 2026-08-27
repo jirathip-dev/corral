@@ -42,6 +42,14 @@ pub struct DeviceRecord {
     pub expiry_ts: u64,
     pub grants: Vec<Capability>,
     pub revoked: bool,
+    /// Time the device was revoked (#257, additive: `None` on pre-#257
+    /// registries — and on any record revoked before this change). Set by
+    /// [`Self::set_revoked`] on every revoke; cleared by a re-grant
+    /// (`revoked=false`) so a later revoke re-stamps the CURRENT
+    /// revocation. Cosmetic — drives the client's "revoked N ago" subline;
+    /// never used for authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_ts: Option<u64>,
     /// APNs device token (D16, additive: `None` on pre-push registries).
     /// Set via the signed `POST /device-token`; cleared by the device (send
     /// an empty token) or by the notifier when Apple says the token died
@@ -310,6 +318,7 @@ impl DeviceRegistry {
             expiry_ts: now.saturating_add(ttl.as_secs()),
             grants: Vec::new(),
             revoked: false,
+            revoked_ts: None,
             device_token: None,
             name,
         };
@@ -357,6 +366,10 @@ impl DeviceRegistry {
             .get_mut(key_id)
             .ok_or_else(|| RegistryMutationError::UnknownKey(key_id.to_string()))?;
         rec.revoked = revoked;
+        // #257: stamp revocation time; a re-grant clears it so the next
+        // revoke re-stamps (the label shows time-since-LAST revocation,
+        // never the first one).
+        rec.revoked_ts = if revoked { Some(now_secs()) } else { None };
         self.persist_locked(&inner)
             .map_err(RegistryMutationError::Persist)?;
         Ok(())
@@ -588,6 +601,92 @@ mod tests {
         let meta = std::fs::metadata(d.path().join(REGISTRY_FILE)).unwrap();
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    /// #257: the revocation-time column is stamped on revoke, survives
+    /// reload, and is cleared by a re-grant so the next revoke re-stamps
+    /// (the client label shows time-since-LAST revocation).
+    #[test]
+    fn revoked_ts_stamped_on_revoke_survives_reload_and_re_stamps() {
+        let d = dir();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let token = reg.registration_token();
+        let pk = key();
+        let rec = reg
+            .register(&token, pk, std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(
+            rec.revoked_ts, None,
+            "a fresh registration is never revoked"
+        );
+
+        reg.set_revoked(&rec.key_id, true).unwrap();
+        let stamped = reg
+            .get(&rec.key_id)
+            .unwrap()
+            .revoked_ts
+            .expect("revoke stamps the revocation time");
+        let now = now_secs();
+        assert!(
+            stamped >= rec.created_ts && stamped <= now,
+            "stamp is the revocation moment"
+        );
+
+        let reloaded = DeviceRegistry::load_or_create(d.path()).unwrap();
+        assert_eq!(
+            reloaded.get(&rec.key_id).unwrap().revoked_ts,
+            Some(stamped),
+            "revoked_ts survives reload"
+        );
+
+        // Re-grant clears the stamp; the next revoke re-stamps fresh.
+        reloaded.set_revoked(&rec.key_id, false).unwrap();
+        assert_eq!(reloaded.get(&rec.key_id).unwrap().revoked_ts, None);
+        reloaded.set_revoked(&rec.key_id, true).unwrap();
+        assert!(
+            reloaded.get(&rec.key_id).unwrap().revoked_ts.is_some(),
+            "re-revoked device is re-stamped"
+        );
+    }
+
+    /// #257: a pre-#257 registry.json whose device was ALREADY revoked
+    /// (no `revoked_ts` field) loads unchanged with `revoked_ts: None`;
+    /// re-revoking the device backfills the stamp.
+    #[test]
+    fn pre_257_revoked_device_loads_without_revoked_ts() {
+        let d = dir();
+        let content = serde_json::json!({
+            "schema_version": 1,
+            "devices": {
+                "dev_p257": {
+                    "key_id": "dev_p257",
+                    "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "created_ts": 1000,
+                    "expiry_ts": 2000,
+                    "grants": [],
+                    "revoked": true,
+                }
+            },
+        });
+        std::fs::write(
+            d.path().join(REGISTRY_FILE),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+        let reg = DeviceRegistry::load_or_create(d.path()).unwrap();
+        let got = reg.get("dev_p257").unwrap();
+        assert!(got.revoked, "pre-#257 state kept the revoked flag");
+        assert_eq!(
+            got.revoked_ts, None,
+            "devices revoked before #257 have no revocation stamp"
+        );
+
+        // Touching the device (re-revoke) backfills the stamp.
+        reg.set_revoked("dev_p257", true).unwrap();
+        assert!(
+            reg.get("dev_p257").unwrap().revoked_ts.is_some(),
+            "re-revoked pre-#257 device gains a stamp"
+        );
     }
 
     #[test]

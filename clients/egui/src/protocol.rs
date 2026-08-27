@@ -310,6 +310,12 @@ pub struct GrantDevice {
     pub name: Option<String>,
     pub grants: Vec<String>,
     pub revoked: bool,
+    /// When the host revoked this device (#257, additive: `None` on
+    /// pre-#257 ledgers and on old daemons that do not project it). The
+    /// row then shows the true revocation age; `None` falls back to a
+    /// plain "revoked" subline (never the creation age).
+    #[serde(default)]
+    pub revoked_ts: Option<u64>,
     pub expiry_ts: u64,
     pub created_ts: u64,
 }

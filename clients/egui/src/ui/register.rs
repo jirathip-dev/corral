@@ -639,6 +639,16 @@ fn age_label(seconds: u64, now_secs: u64) -> String {
     }
 }
 
+/// Subline for a revoked device. With a `revoked_ts` (#257) the true
+/// revocation age is shown; without one (devices revoked before #257)
+/// just "revoked" — never the creation age, which is the reported bug.
+fn revoked_subline(revoked_ts: Option<u64>, now_secs: u64) -> String {
+    match revoked_ts {
+        Some(ts) => format!("revoked {}", age_label(ts, now_secs)),
+        None => "revoked".to_string(),
+    }
+}
+
 /// Split registered devices into THIS device (the board's own key) and
 /// REMOTE DEVICES (other machines) — the #250 grouping rule.
 fn split_devices<'a>(
@@ -788,7 +798,7 @@ fn device_row(ui: &mut Ui, device: &GrantDevice, is_self: bool, selected: bool) 
                 .color(theme::ui::TEXT_MUTED),
         );
         let subline = if device.revoked {
-            format!("revoked {}", age_label(device.created_ts, now_secs()))
+            revoked_subline(device.revoked_ts, now_secs())
         } else if is_self {
             "this computer".to_string()
         } else {
@@ -1250,6 +1260,7 @@ mod tests {
             name: None,
             grants: grants.iter().map(|g| g.to_string()).collect(),
             revoked: false,
+            revoked_ts: None,
             expiry_ts: 1_000,
             created_ts: 500,
         }
@@ -1331,6 +1342,34 @@ mod tests {
         assert_eq!(age_label(0, 100), "—");
         assert_eq!(age_label(1_000_000, 1_000_000 + 86_400 * 3), "3d ago");
         assert_eq!(age_label(1_000_000, 1_000_000 + 86_400 * 14), "2w ago");
+    }
+
+    /// #257: the revoked subline shows the TRUE revocation age when the
+    /// ledger has one — never the creation age (the reported bug).
+    #[test]
+    fn revoked_subline_shows_true_revocation_age_when_known() {
+        assert_eq!(
+            revoked_subline(Some(1_000_000), 1_000_000 + 86_400 * 3),
+            "revoked 3d ago"
+        );
+        assert_eq!(
+            revoked_subline(Some(1_000_000), 1_000_000 + 86_400 * 14),
+            "revoked 2w ago"
+        );
+        assert_eq!(
+            revoked_subline(Some(1_000_000), 1_000_000 + 86_400 * 100),
+            "revoked 3mo ago"
+        );
+        assert_eq!(revoked_subline(Some(1_000_000), 1_000_000), "revoked today");
+    }
+
+    /// #257: pre-#257 devices (no `revoked_ts`) fall back to a plain
+    /// "revoked" — the creation age must never masquerade as the
+    /// revocation age.
+    #[test]
+    fn revoked_subline_falls_back_without_age_when_unknown() {
+        assert_eq!(revoked_subline(None, 1_000_000 + 86_400 * 3), "revoked");
+        assert_eq!(revoked_subline(None, 1_000_000), "revoked");
     }
 
     #[test]

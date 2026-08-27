@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 # design-gate-evidence.sh — render a design target, capture the live surface,
 # and write a stamped side-by-side evidence bundle.
 #
@@ -15,6 +16,17 @@
 #   docs/design/evidence/issue-<N>/comparison.png
 #   docs/design/evidence/issue-<N>/conformance.md
 #   docs/design/evidence/issue-<N>/capture.log
+#
+# Newly generated conformance.md files are the stable manifest contract: they
+# omit wall-clock metadata, record the canonical generator path/hash and a
+# typed invocation, and use repo-relative paths or stable external
+# placeholders. Ordinary non-path arguments remain byte-for-byte; provenance
+# notes and opaque command/path values receive only targeted known-root and
+# disposable-path substitutions. Newly generated capture.log files are
+# byte-oriented bounded views (64 KiB by default); exact head/tail bytes survive
+# documented path substitution, and invalid UTF-8 is never decoded or replaced.
+# Historical checked-in evidence may predate this contract and is labeled
+# accordingly.
 #
 # The default egui prototype is the approved HTML design source at
 # docs/design/corral-ux-prototype.html. Its desktop .desk surface is rendered
@@ -35,7 +47,9 @@
 # CORRAL_EGUI_WAKE_COMMAND) runs an explicit caller-owned command while the
 # process is alive; the command receives CORRAL_UI_SCREENSHOT_PID and
 # CORRAL_UI_SCREENSHOT_PATH and failure is fatal rather than silently claiming
-# a stale frame. A capture succeeds only after the output is a fully validated
+# a stale frame. The initial caller wake runs in its own bounded process group;
+# a capture cannot be extended or leaked by a command such as "sleep 300" or
+# "sleep 20 &". A capture succeeds only after the output is a fully validated
 # PNG; process exit is not part of that success contract. Once a complete PNG
 # exists, the script terminates only its direct child with TERM, waits a short
 # grace period, escalates to KILL, and validates the final file again. This
@@ -51,19 +65,21 @@
 # state from being mislabeled as a live board. The app is built through the
 # same Herdr-routed xcodebuild path when --ios-app is omitted.
 #
-# Chrome's temporary DevTools endpoint is an ephemeral port bound explicitly
-# to 127.0.0.1, with a private profile and a loopback-only allowed origin. It
-# is used only for the scoped Browser.close request; the local process and the
-# approved checkout HTML are the trust boundary. No remote page is loaded.
+# Chrome's one-shot --screenshot command deliberately runs without remote
+# debugging: Chromium rejects headless commands when --remote-debugging-port is
+# also present. It uses a private profile, renders only the approved local
+# prototype/comparison pages, and remains an owned direct child whose bounded
+# TERM/KILL cleanup is the shutdown boundary. No remote page or DevTools
+# endpoint is exposed.
 #
 # --live-png is an explicit fixture seam for tests or a previously captured
 # frame. Its provenance says that the PNG was supplied rather than captured by
 # this run; it never silently becomes live evidence. --dry-run validates the
 # interface and prints the planned capture without writing an evidence bundle.
 # Existing evidence is never overwritten unless --force is explicit. Re-runs
-# with --force are safe: all work is staged in a private temporary directory
-# below the target issue directory, existing evidence is untouched on failure,
-# and the validated files are replaced at the end using atomic file renames.
+# with --force are safe: all work is staged in private sibling directories,
+# existing evidence is untouched on failure, and the validated artifact set is
+# published with a directory-level rename plus rollback of the old bundle.
 #
 # Dependencies: Bash 3+, Python 3, headless-capable Chrome/Chromium, and (for
 # native captures) curl/cargo or hermes-sim-task as described above. Set
@@ -72,9 +88,41 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCRIPT_NAME="$(basename "$0")"
+canonical_script_path() {
+  local candidate="$1"
+  local directory
+  local target
+  local link_hops=0
+
+  if [[ "$candidate" != /* ]]; then
+    candidate="$PWD/$candidate"
+  fi
+  while [[ -L "$candidate" ]]; do
+    link_hops=$((link_hops + 1))
+    [[ "$link_hops" -le 40 ]] || return 1
+    directory="$(cd -P "$(dirname "$candidate")" 2>/dev/null && pwd)" \
+      || return 1
+    target="$(readlink "$candidate")" || return 1
+    if [[ "$target" == /* ]]; then
+      candidate="$target"
+    else
+      candidate="$directory/$target"
+    fi
+  done
+  directory="$(cd -P "$(dirname "$candidate")" 2>/dev/null && pwd)" \
+    || return 1
+  printf '%s/%s\n' "$directory" "$(basename "$candidate")"
+}
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_PATH="$(canonical_script_path "$SCRIPT_SOURCE")" \
+  || {
+    printf 'error: could not resolve canonical BASH_SOURCE path: %s\n' "$SCRIPT_SOURCE" >&2
+    exit 1
+  }
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+ORIGINAL_ARGS=("$@")
 
 ISSUE=""
 SURFACE=""
@@ -96,8 +144,10 @@ CHROME_TIMEOUT_SECONDS="30"
 CAPTURE_TERM_GRACE_SECONDS="2"
 CAPTURE_KILL_GRACE_SECONDS="2"
 CAPTURE_POLL_INTERVAL_SECONDS="0.1"
-CHROME_DEVTOOLS_ADDRESS="127.0.0.1"
-CHROME_DEVTOOLS_ORIGIN="http://127.0.0.1"
+# Caller-supplied egui wake commands run in their own process group and have
+# a fixed short bound. A wake helper is input plumbing, not a second capture;
+# it must never extend the capture timeout or leak a background descendant.
+EGUI_WAKE_COMMAND_TIMEOUT_SECONDS="2"
 FORCE=0
 BUILD_EGUI=1
 BUILD_IOS=1
@@ -110,7 +160,19 @@ IOS_LAUNCH_ARGS=()
 IOS_BEFORE_LAUNCH_ARGS=()
 PROVENANCE_NOTE=""
 OUTPUT_ROOT="$REPO_DIR/docs/design/evidence"
+WORKTREES_ROOT="${CORRAL_WORKTREES_ROOT:-}"
 DRY_RUN=0
+STAGE=""
+
+# Published capture.log is a byte-oriented, bounded view. The exact first and
+# last bytes survive normalization; only known checkout/staging roots, generic
+# disposable Herdr worktree roots/descendants, and an explicitly documented middle
+# omission marker are changed. In particular, this must never decode with
+# replacement characters. CORRAL_WORKTREES_ROOT, when set, identifies the
+# configured root even when it contains spaces or does not use .herdr.
+CAPTURE_LOG_MAX_BYTES=65536
+CAPTURE_LOG_HEAD_BYTES=8192
+CAPTURE_LOG_TAIL_BYTES=57344
 
 usage() {
   cat <<'USAGE'
@@ -153,6 +215,7 @@ Options:
 Environment:
   CHROME_BIN                  Chrome/Chromium executable override.
   PYTHON_BIN                  Python 3 executable override.
+  CORRAL_WORKTREES_ROOT       Worktree root to redact from generated logs.
 USAGE
 }
 
@@ -167,6 +230,103 @@ log() {
 
 warn() {
   printf 'design-gate: warning: %s\n' "$*" >&2
+}
+
+lock_owner_is_stale() {
+  local lock_dir="$1"
+  local owner_file="$lock_dir/owner.pid"
+  local owner_pid=""
+
+  # Never follow a lock symlink or a non-directory lock path. In particular,
+  # an attacker-controlled symlink must not turn recovery into deletion of an
+  # unrelated owner.pid.
+  [[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 2
+  [[ -f "$owner_file" && ! -L "$owner_file" ]] || return 2
+  IFS= read -r owner_pid <"$owner_file" || return 2
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 2
+  if kill -0 "$owner_pid" 2>/dev/null; then
+    return 1
+  fi
+  if ps -p "$owner_pid" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+recover_stale_publication_lock() {
+  local lock_dir="$1"
+  local recovery_dir="${lock_dir}.recovery"
+  local owner_file="$recovery_dir/owner.pid"
+  local owner_pid=""
+  local current_owner_pid=""
+
+  [[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 1
+  [[ -f "$lock_dir/owner.pid" && ! -L "$lock_dir/owner.pid" ]] || return 1
+  lock_owner_is_stale "$lock_dir" || return 1
+  [[ ! -e "$recovery_dir" && ! -L "$recovery_dir" ]] || return 1
+
+  # A same-parent rename is the atomic recovery claim. It removes the stale
+  # directory from the lock name before any PID-owned state is deleted, so a
+  # concurrent publisher can safely claim a fresh lock without sharing this
+  # directory. A source symlink is moved as a symlink, never followed; the
+  # validation below then restores it or fails closed.
+  mv -f -- "$lock_dir" "$recovery_dir" 2>/dev/null || return 1
+  if [[ -e "$lock_dir" || -L "$lock_dir" ]] \
+    || [[ ! -d "$recovery_dir" || -L "$recovery_dir" ]]; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
+  fi
+
+  # Re-read and re-check only after the directory has been claimed. Never
+  # remove the owner file from the live lock pathname or from a symlinked
+  # recovery target.
+  if ! IFS= read -r owner_pid <"$owner_file" \
+    || [[ ! "$owner_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! lock_owner_is_stale "$recovery_dir"; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  if ! [[ -f "$owner_file" && ! -L "$owner_file" ]] \
+    || ! IFS= read -r current_owner_pid <"$owner_file" \
+    || [[ "$current_owner_pid" != "$owner_pid" ]]; then
+    if [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]]; then
+      mv -f -- "$recovery_dir" "$lock_dir" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  if ! rm -f -- "$owner_file"; then
+    return 1
+  fi
+  if ! rmdir -- "$recovery_dir"; then
+    return 1
+  fi
+  log "recovered stale evidence publication lock: $lock_dir"
+  return 0
+}
+
+acquire_publication_lock() {
+  local lock_dir="$1"
+  local owner_tmp="$lock_dir/.owner.$$"
+
+  if [[ -L "$lock_dir" || ( -e "$lock_dir" && ! -d "$lock_dir" ) ]]; then
+    return 1
+  fi
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    recover_stale_publication_lock "$lock_dir" || return 1
+    mkdir "$lock_dir" 2>/dev/null || return 1
+  fi
+  if ! printf '%s\n' "$$" >"$owner_tmp" \
+    || ! mv -f -- "$owner_tmp" "$lock_dir/owner.pid"; then
+    rm -f -- "$owner_tmp" "$lock_dir/owner.pid"
+    rmdir -- "$lock_dir" 2>/dev/null || true
+    return 1
+  fi
+  LOCK_OWNER_FILE="$lock_dir/owner.pid"
+  LOCK_ACQUIRED=1
 }
 
 require_value() {
@@ -319,6 +479,13 @@ done
   || die "--surface must be egui or ios"
 [[ "$IOS_MODE" == "live" || "$IOS_MODE" == "demo" ]] \
   || die "--ios-mode must be live or demo"
+validate_live_agent() {
+  local agent_id="$1"
+
+  [[ -z "$agent_id" || "$agent_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] \
+    || die "--live-agent must use a stable agent id (letters, digits, '.', '_', ':', '/', and '-' only)"
+}
+validate_live_agent "$LIVE_AGENT"
 if [[ "$SURFACE" == "egui" ]]; then
   case "$EGUI_TAB" in
     board|issues|registry|settings) ;;
@@ -408,6 +575,9 @@ fi
 if [[ -n "$LIVE_PNG" && "$LIVE_PNG" != /* ]]; then
   LIVE_PNG="$PWD/$LIVE_PNG"
 fi
+if [[ -n "$WORKTREES_ROOT" && "$WORKTREES_ROOT" != /* ]]; then
+  WORKTREES_ROOT="$PWD/$WORKTREES_ROOT"
+fi
 
 [[ -f "$PROTOTYPE" ]] || die "prototype does not exist: $PROTOTYPE"
 if [[ "$SURFACE" == "egui" ]]; then
@@ -493,6 +663,104 @@ absolute_path() {
   fi
 }
 
+repo_relative_path() {
+  "$PYTHON_BIN" - "$1" "$REPO_DIR" "${2:-<external-path>}" <<'PY'
+import os
+import sys
+
+candidate = os.path.realpath(sys.argv[1])
+root = os.path.realpath(sys.argv[2])
+external_label = sys.argv[3]
+try:
+    relative = os.path.relpath(candidate, root)
+except ValueError:
+    label = external_label
+else:
+    if relative == ".":
+        label = "."
+    elif relative == ".." or relative.startswith(".." + os.sep):
+        label = external_label
+    else:
+        label = relative.replace(os.sep, "/")
+sys.stdout.buffer.write(os.fsencode(label))
+PY
+}
+
+SCRIPT_RELATIVE_PATH="$(repo_relative_path "$SCRIPT_PATH")"
+PROTOTYPE_PATH_LABEL="$(repo_relative_path "$PROTOTYPE" "<external-input>")"
+LIVE_INPUT_PATH_LABEL=""
+if [[ -n "$LIVE_PNG" ]]; then
+  LIVE_INPUT_PATH_LABEL="$(repo_relative_path "$LIVE_PNG" "<external-input>")"
+fi
+OUTPUT_PATH_LABEL="$(repo_relative_path "$OUTPUT_ROOT" "<external-output>")"
+
+normalize_path_argument() {
+  local value="$1"
+  local external_label="${2:-<external-path>}"
+
+  if ! NORMALIZED_PATH="$(repo_relative_path "$value" "$external_label")"; then
+    die "could not normalize path argument"
+  fi
+}
+
+recorded_invocation() {
+  local argument
+  local value_kind=""
+
+  printf '%q' "$SCRIPT_RELATIVE_PATH"
+  for argument in "$@"; do
+    if [[ -n "$value_kind" ]]; then
+      if [[ "$value_kind" == "provenance-note" ]]; then
+        normalize_provenance_note "$argument"
+        printf ' %q' "$NORMALIZED_NOTE"
+      elif [[ "$value_kind" == "opaque" ]]; then
+        normalize_opaque_argument "$argument"
+        printf ' %q' "$NORMALIZED_ARGUMENT"
+      elif [[ "$value_kind" == "launch-arg" ]]; then
+        normalize_launch_argument "$argument"
+        printf ' %q' "$NORMALIZED_ARGUMENT"
+      elif [[ "$value_kind" == "raw" ]]; then
+        printf ' %q' "$argument"
+      else
+        normalize_path_argument "$argument" "$value_kind"
+        printf ' %q' "$NORMALIZED_PATH"
+      fi
+      value_kind=""
+      continue
+    fi
+    # Non-path argv is emitted directly unless it is an opaque command or
+    # launch argument. Those values are normalized as bytes below so a
+    # disposable checkout/temp path inside a command cannot destabilize the
+    # manifest; shell syntax and all other bytes remain intact.
+    printf ' %q' "$argument"
+    case "$argument" in
+      --prototype|--egui-binary|--ios-app)
+        value_kind="<external-input>"
+        ;;
+      --live-png|--daemon-binary|--fixture-registry)
+        value_kind="<external-input>"
+        ;;
+      --output-root)
+        value_kind="<external-output>"
+        ;;
+      --egui-wake-command|--ios-command)
+        value_kind="opaque"
+        ;;
+      --ios-launch-arg|--ios-before-launch-arg)
+        value_kind="launch-arg"
+        ;;
+      --issue|--surface|--live-agent|--host-url|--delay-ms|\
+      --timeout-seconds|--chrome-timeout-seconds|--ios-bundle-id|\
+      --ios-mode|--ios-delay-seconds)
+        value_kind="raw"
+        ;;
+      --provenance-note)
+        value_kind="provenance-note"
+        ;;
+    esac
+  done
+}
+
 shell_quote() {
   printf '%q' "$1"
 }
@@ -518,9 +786,35 @@ if data[:8] != b"\x89PNG\r\n\x1a\n":
     raise SystemExit(f"{path} is not a PNG")
 offset = 8
 width = height = None
+bit_depth = color_type = None
+interlace_method = None
 idat = []
 seen_ihdr = False
 seen_iend = False
+seen_plte = False
+seen_idat = False
+idat_closed = False
+seen_singletons = set()
+known_critical = {b"IHDR", b"PLTE", b"IDAT", b"IEND"}
+singleton_ancillary = {
+    b"cHRM",
+    b"gAMA",
+    b"iCCP",
+    b"sRGB",
+    b"sBIT",
+    b"tRNS",
+    b"bKGD",
+    b"hIST",
+    b"pHYs",
+    b"eXIf",
+    b"oFFs",
+    b"pCAL",
+    b"sCAL",
+    b"sTER",
+    b"tIME",
+}
+before_plte = {b"cHRM", b"gAMA", b"iCCP", b"sRGB", b"sBIT"}
+before_idat = before_plte | {b"pHYs", b"eXIf", b"oFFs", b"pCAL", b"sCAL", b"sTER"}
 while offset < len(data):
     if len(data) - offset < 12:
         raise SystemExit(f"{path} has a truncated PNG chunk")
@@ -536,17 +830,109 @@ while offset < len(data):
     actual_crc = zlib.crc32(chunk_type + payload) & 0xFFFFFFFF
     if actual_crc != expected_crc:
         raise SystemExit(f"{path} has an invalid {chunk_type.decode('ascii', 'replace')} CRC")
+    if len(chunk_type) != 4 or any(
+        not (65 <= value <= 90 or 97 <= value <= 122) for value in chunk_type
+    ):
+        raise SystemExit(f"{path} has an invalid PNG chunk type")
+    if not 65 <= chunk_type[2] <= 90:
+        raise SystemExit(f"{path} has an invalid PNG chunk reserved bit")
+    if chunk_type[0] <= 90 and chunk_type not in known_critical:
+        raise SystemExit(f"{path} has an unknown critical chunk: {chunk_type.decode('ascii')}")
     if not seen_ihdr and chunk_type != b"IHDR":
         raise SystemExit(f"{path} does not start with IHDR")
+    if chunk_type in singleton_ancillary:
+        if chunk_type in seen_singletons:
+            raise SystemExit(f"{path} has a duplicate {chunk_type.decode('ascii')} chunk")
+        seen_singletons.add(chunk_type)
+    if chunk_type in before_plte and (seen_plte or seen_idat):
+        raise SystemExit(f"{path} has {chunk_type.decode('ascii')} after PLTE or IDAT")
+    if chunk_type in before_idat and seen_idat:
+        raise SystemExit(f"{path} has {chunk_type.decode('ascii')} after IDAT")
+    if chunk_type == b"IDAT" and idat_closed:
+        raise SystemExit(f"{path} has non-consecutive IDAT chunks")
+    if chunk_type != b"IDAT" and seen_idat:
+        idat_closed = True
     if chunk_type == b"IHDR":
         if seen_ihdr or length != 13:
             raise SystemExit(f"{path} has an invalid IHDR")
-        width, height = struct.unpack(">II", payload[:8])
+        (
+            width,
+            height,
+            bit_depth,
+            color_type,
+            compression_method,
+            filter_method,
+            interlace_method,
+        ) = struct.unpack(">IIBBBBB", payload)
         if width == 0 or height == 0:
             raise SystemExit(f"{path} has an empty dimension")
+        channel_counts = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+        valid_depths = {
+            0: {1, 2, 4, 8, 16},
+            2: {8, 16},
+            3: {1, 2, 4, 8},
+            4: {8, 16},
+            6: {8, 16},
+        }
+        if color_type not in channel_counts or bit_depth not in valid_depths.get(
+            color_type, set()
+        ):
+            raise SystemExit(f"{path} has an invalid bit-depth/color-type pair")
+        if compression_method != 0 or filter_method != 0:
+            raise SystemExit(f"{path} has unsupported PNG compression or filter method")
+        if interlace_method not in (0, 1):
+            raise SystemExit(f"{path} has an invalid interlace method")
         seen_ihdr = True
     elif chunk_type == b"IDAT":
+        if color_type == 3 and not seen_plte:
+            raise SystemExit(f"{path} has indexed raster data before its PLTE chunk")
         idat.append(payload)
+        seen_idat = True
+    elif chunk_type == b"PLTE":
+        if (
+            seen_plte
+            or seen_idat
+            or color_type in (0, 4)
+            or b"tRNS" in seen_singletons
+            or b"bKGD" in seen_singletons
+            or b"hIST" in seen_singletons
+            or length == 0
+            or length % 3 != 0
+            or length > 768
+        ):
+            raise SystemExit(f"{path} has an invalid PLTE chunk")
+        palette_entries = length // 3
+        if color_type == 3 and palette_entries > (1 << bit_depth):
+            raise SystemExit(f"{path} has too many PLTE entries for its bit depth")
+        seen_plte = True
+    elif chunk_type == b"tRNS":
+        if color_type in (4, 6) or seen_idat:
+            raise SystemExit(f"{path} has an invalid tRNS chunk order or color type")
+        if color_type == 0 and length != 2:
+            raise SystemExit(f"{path} has an invalid grayscale tRNS chunk")
+        if color_type == 2 and length != 6:
+            raise SystemExit(f"{path} has an invalid truecolor tRNS chunk")
+        if color_type == 3:
+            if not seen_plte:
+                raise SystemExit(f"{path} has indexed tRNS data before its PLTE chunk")
+            if length == 0 or length > palette_entries:
+                raise SystemExit(f"{path} has an invalid indexed tRNS chunk")
+    elif chunk_type == b"bKGD":
+        if seen_idat or (color_type == 3 and not seen_plte):
+            raise SystemExit(f"{path} has bKGD before PLTE or after IDAT")
+        if color_type in (0, 4):
+            if length != 2:
+                raise SystemExit(f"{path} has an invalid grayscale bKGD chunk")
+        elif color_type in (2, 6):
+            if length != 6:
+                raise SystemExit(f"{path} has an invalid truecolor bKGD chunk")
+        elif length != 1 or payload[0] >= palette_entries:
+            raise SystemExit(f"{path} has an invalid indexed bKGD chunk")
+    elif chunk_type == b"hIST":
+        if color_type not in (2, 3, 6) or not seen_plte or seen_idat:
+            raise SystemExit(f"{path} has hIST without a preceding suggested PLTE")
+        if length != 2 * palette_entries:
+            raise SystemExit(f"{path} has an invalid hIST chunk length")
     elif chunk_type == b"IEND":
         if length != 0:
             raise SystemExit(f"{path} has a non-empty IEND")
@@ -555,7 +941,14 @@ while offset < len(data):
         break
     offset = crc_end
 
-if not seen_ihdr or width is None or height is None:
+if (
+    not seen_ihdr
+    or width is None
+    or height is None
+    or bit_depth is None
+    or color_type is None
+    or interlace_method is None
+):
     raise SystemExit(f"{path} has no IHDR")
 if not seen_iend:
     raise SystemExit(f"{path} is missing IEND")
@@ -563,14 +956,126 @@ if offset != len(data):
     raise SystemExit(f"{path} has data after IEND")
 if not idat:
     raise SystemExit(f"{path} has no IDAT data")
+if color_type == 3 and not seen_plte:
+    raise SystemExit(f"{path} has indexed raster data without a PLTE chunk")
 decoder = zlib.decompressobj()
 try:
-    decoder.decompress(b"".join(idat))
-    decoder.flush()
+    raw = decoder.decompress(b"".join(idat))
+    raw += decoder.flush()
 except zlib.error as error:
     raise SystemExit(f"{path} has incomplete IDAT data: {error}")
 if not decoder.eof or decoder.unused_data:
     raise SystemExit(f"{path} has incomplete or trailing compressed IDAT data")
+
+bits_per_pixel = channel_counts[color_type] * bit_depth
+
+
+def pass_size(pass_width, pass_height):
+    if pass_width == 0 or pass_height == 0:
+        return 0
+    row_bytes = (pass_width * bits_per_pixel + 7) // 8
+    return (row_bytes + 1) * pass_height
+
+
+if interlace_method == 0:
+    expected_raw_bytes = pass_size(width, height)
+else:
+    expected_raw_bytes = 0
+    for start_x, start_y, step_x, step_y in (
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ):
+        pass_width = max(0, (width - start_x + step_x - 1) // step_x)
+        pass_height = max(0, (height - start_y + step_y - 1) // step_y)
+        expected_raw_bytes += pass_size(pass_width, pass_height)
+if len(raw) != expected_raw_bytes:
+    raise SystemExit(
+        f"{path} has {len(raw)} decompressed raster bytes; "
+        f"expected {expected_raw_bytes} for {width}x{height}"
+    )
+
+
+def paeth(left, above, upper_left):
+    estimate = left + above - upper_left
+    left_distance = abs(estimate - left)
+    above_distance = abs(estimate - above)
+    upper_left_distance = abs(estimate - upper_left)
+    if left_distance <= above_distance and left_distance <= upper_left_distance:
+        return left
+    if above_distance <= upper_left_distance:
+        return above
+    return upper_left
+
+
+def validate_filters(pass_width, pass_height, offset):
+    if pass_width == 0 or pass_height == 0:
+        return offset
+    row_bytes = (pass_width * bits_per_pixel + 7) // 8
+    filter_bytes_per_pixel = max(1, (bits_per_pixel + 7) // 8)
+    previous = bytearray(row_bytes)
+    for _ in range(pass_height):
+        filter_type = raw[offset]
+        if filter_type > 4:
+            raise SystemExit(f"{path} has an invalid scanline filter: {filter_type}")
+        source = raw[offset + 1 : offset + 1 + row_bytes]
+        reconstructed = bytearray(row_bytes)
+        for index, value in enumerate(source):
+            left = reconstructed[index - filter_bytes_per_pixel] if index >= filter_bytes_per_pixel else 0
+            above = previous[index]
+            upper_left = (
+                previous[index - filter_bytes_per_pixel]
+                if index >= filter_bytes_per_pixel
+                else 0
+            )
+            if filter_type == 0:
+                reconstructed[index] = value
+            elif filter_type == 1:
+                reconstructed[index] = (value + left) & 0xFF
+            elif filter_type == 2:
+                reconstructed[index] = (value + above) & 0xFF
+            elif filter_type == 3:
+                reconstructed[index] = (value + ((left + above) // 2)) & 0xFF
+            else:
+                reconstructed[index] = (value + paeth(left, above, upper_left)) & 0xFF
+        if color_type == 3:
+            if bit_depth == 8:
+                palette_indices = reconstructed
+            else:
+                palette_indices = (
+                    (reconstructed[index // 8] >> (8 - bit_depth - (index % 8)))
+                    & ((1 << bit_depth) - 1)
+                    for index in range(0, pass_width * bit_depth, bit_depth)
+                )
+            if any(index >= palette_entries for index in palette_indices):
+                raise SystemExit(f"{path} has a pixel outside its PLTE entries")
+        previous = reconstructed
+        offset += row_bytes + 1
+    return offset
+
+
+if interlace_method == 0:
+    validated_bytes = validate_filters(width, height, 0)
+else:
+    validated_bytes = 0
+    for start_x, start_y, step_x, step_y in (
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ):
+        pass_width = max(0, (width - start_x + step_x - 1) // step_x)
+        pass_height = max(0, (height - start_y + step_y - 1) // step_y)
+        validated_bytes = validate_filters(pass_width, pass_height, validated_bytes)
+if validated_bytes != len(raw):
+    raise SystemExit(f"{path} has an invalid scanline layout")
 print(f"{width}x{height}")
 PY
 }
@@ -587,6 +1092,14 @@ child_is_owned() {
   local parent_pid
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   parent_pid="$(ps -p "$pid" -o ppid= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ -z "$parent_pid" ]]; then
+    # Some restricted runners deny process-table reads even for a direct
+    # child. The only PID accepted on this fallback is the one this script
+    # recorded from its own background launch; never broaden it to an
+    # arbitrary caller-supplied PID.
+    [[ "${CAPTURE_PID:-}" == "$pid" ]]
+    return
+  fi
   [[ "$parent_pid" == "$$" ]]
 }
 
@@ -598,6 +1111,13 @@ child_is_running() {
   # A direct child remains waitable as a zombie until reaped. Treating Z as
   # stopped keeps the TERM/KILL deadline honest and lets wait reap it below.
   process_state="$(ps -p "$pid" -o stat= 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ -z "$process_state" ]]; then
+    # kill -0 is the only portable liveness primitive available when a
+    # restricted runner denies ps. Treat an extant direct child as running;
+    # once it exits, kill -0 becomes false and the normal bounded reap path
+    # applies.
+    return 0
+  fi
   [[ -n "$process_state" && "$process_state" != Z* ]]
 }
 
@@ -653,41 +1173,201 @@ terminate_owned_child() {
   reap_capture_child "$pid"
 }
 
+run_bounded_owned_shell_command() {
+  local command="$1"
+  local timeout_seconds="$2"
+
+  "$PYTHON_BIN" - "$command" "$timeout_seconds" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+command = sys.argv[1]
+timeout = float(sys.argv[2])
+process = subprocess.Popen(["bash", "-c", command], start_new_session=True)
+
+
+def signal_owned_group(signal_number):
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return True
+    except OSError as error:
+        print(
+            f"could not signal owned wake process group: {error}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+try:
+    return_code = process.wait(timeout=timeout)
+except subprocess.TimeoutExpired:
+    if not signal_owned_group(signal.SIGTERM):
+        raise SystemExit(125)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    # The shell can exit after TERM while a descendant remains in the owned
+    # session. Always send the final bounded cleanup signal for that group.
+    if not signal_owned_group(signal.SIGKILL):
+        raise SystemExit(125)
+    if process.poll() is None:
+        process.wait()
+    print(
+        f"owned wake command timed out after {timeout:g}s; process group terminated",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+else:
+    # A successful shell can leave `command &` descendants behind. The
+    # process group is still the exact ownership boundary established by
+    # start_new_session, so clean it on every terminal shell outcome.
+    if not signal_owned_group(signal.SIGKILL):
+        raise SystemExit(125)
+    raise SystemExit(return_code)
+PY
+}
+
 PNG_WAIT_REASON=""
+png_file_size() {
+  case "$(uname -s)" in
+    Darwin) stat -f '%z' "$1" ;;
+    *) stat -c '%s' "$1" ;;
+  esac
+}
+
+png_has_terminal_iend() {
+  local trailer
+
+  if ! trailer="$(tail -c 12 "$1" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')"; then
+    return 1
+  fi
+  [[ "$trailer" == "0000000049454e44ae426082" ]]
+}
+
+png_content_digest() {
+  local path="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{ print $1 }'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{ print $1 }'
+  else
+    # sha256_file is defined below before any capture path invokes this
+    # function. Keep a Python fallback for minimal POSIX images.
+    sha256_file "$path"
+  fi
+}
+
+png_validation_signature() {
+  local path="$1"
+  local metadata=""
+  local head_bytes=""
+  local tail_bytes=""
+  local content_digest=""
+
+  case "$(uname -s)" in
+    Darwin) metadata="$(stat -f '%z:%m:%i' "$path")" ;;
+    *) metadata="$(stat -c '%s:%Y:%i' "$path")" ;;
+  esac
+  head_bytes="$(head -c 64 "$path" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')" \
+    || return 1
+  tail_bytes="$(tail -c 64 "$path" 2>/dev/null | od -An -tx1 | tr -d '[:space:]')" \
+    || return 1
+  content_digest="$(png_content_digest "$path" 2>/dev/null)" || return 1
+  [[ "$content_digest" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s:%s:%s:%s\n' "$metadata" "$content_digest" "$head_bytes" "$tail_bytes"
+}
+
 wait_for_complete_png() {
   local path="$1"
   local label="$2"
   local timeout_seconds="$3"
   local deadline
   local dimensions
+  local current_size=""
+  local previous_size=""
+  local writer_running
+  local terminal_iend
+  local validation_signature=""
+  local failed_validation_signature=""
+  local failed_validation_reason=""
 
   PNG_WAIT_REASON=""
   deadline=$((SECONDS + 10#$timeout_seconds))
   while :; do
+    writer_running=0
+    if [[ -n "${CAPTURE_PID:-}" ]] && child_is_running "$CAPTURE_PID"; then
+      writer_running=1
+    fi
     if [[ -s "$path" ]]; then
-      if dimensions="$(png_dimensions "$path" 2>&1)"; then
-        return 0
+      if current_size="$(png_file_size "$path" 2>/dev/null)"; then
+        terminal_iend=0
+        if [[ "$current_size" -ge 20 ]] && png_has_terminal_iend "$path"; then
+          terminal_iend=1
+        fi
+        # stat and the fixed IEND trailer are cheap checks. Defer the full
+        # parser, decompression, and filter reconstruction until the writer's
+        # size has remained stable for one poll; an exited writer is already
+        # stable by definition and gets the same terminal-IEND check first.
+        # The content digest in the signature is required while a writer is
+        # alive: metadata and edge bytes alone can miss an in-place repair of
+        # the same-sized PNG.
+        if [[ "$terminal_iend" -eq 1 ]] \
+          && { [[ "$writer_running" -eq 0 ]] \
+            || [[ -n "$previous_size" && "$current_size" == "$previous_size" ]]; }; then
+          if validation_signature="$(png_validation_signature "$path" 2>/dev/null)"; then
+            :
+          else
+            validation_signature=""
+          fi
+          if [[ "$writer_running" -eq 0 \
+            || ( -n "$validation_signature" \
+              && ( -z "$failed_validation_signature" \
+                || "$validation_signature" != "$failed_validation_signature" ) ) ]]; then
+            if dimensions="$(png_dimensions "$path" 2>&1)"; then
+              return 0
+            fi
+            failed_validation_signature="$validation_signature"
+            failed_validation_reason="$dimensions"
+          fi
+          if [[ -n "$failed_validation_reason" ]]; then
+            PNG_WAIT_REASON="$failed_validation_reason"
+          elif [[ -z "$validation_signature" && "$writer_running" -eq 1 ]]; then
+            PNG_WAIT_REASON="$label PNG content signature could not be read while the writer is active"
+          else
+            PNG_WAIT_REASON="$label PNG validation could not be completed"
+          fi
+        elif [[ "$current_size" -lt 20 ]]; then
+          PNG_WAIT_REASON="$label has not published enough PNG bytes for a terminal IEND"
+        elif [[ "$terminal_iend" -eq 0 ]]; then
+          PNG_WAIT_REASON="$label has not published a terminal IEND (size ${current_size} bytes)"
+        else
+          PNG_WAIT_REASON="$label PNG size is still changing (size ${current_size} bytes; awaiting stable size)"
+        fi
+      else
+        current_size=""
+        PNG_WAIT_REASON="$label PNG size could not be read"
       fi
-      PNG_WAIT_REASON="$dimensions"
     else
+      current_size=""
       PNG_WAIT_REASON="$label has not written a non-empty PNG"
     fi
 
-    # A writer that exits before publishing a complete PNG is normally a hard
-    # failure; revalidate once because the writer may have completed between
-    # the first validator call and this liveness check.
-    if [[ -z "${CAPTURE_PID:-}" ]] || ! child_is_running "$CAPTURE_PID"; then
-      if [[ -s "$path" ]]; then
-        if dimensions="$(png_dimensions "$path" 2>&1)"; then
-          return 0
-        fi
-        PNG_WAIT_REASON="$dimensions"
-      fi
+    # A writer that exits before publishing a complete PNG is a hard failure;
+    # the terminal-IEND/full-validation path above is the one bounded final
+    # recheck allowed after it has stopped.
+    if [[ "$writer_running" -eq 0 ]]; then
       return 1
     fi
     if [[ $SECONDS -ge $deadline ]]; then
       return 1
     fi
+    previous_size="$current_size"
     sleep "$CAPTURE_POLL_INTERVAL_SECONDS"
   done
 }
@@ -706,18 +1386,386 @@ print(digest.hexdigest())
 PY
 }
 
-normalize_capture_log() {
-  "$PYTHON_BIN" - "$1" <<'PY'
+GENERATOR_PATH="$SCRIPT_RELATIVE_PATH"
+GENERATOR_SHA="$(sha256_file "$SCRIPT_PATH")"
+
+run_byte_normalizer() {
+  "$PYTHON_BIN" - "$@" <<'PY'
+import os
 from pathlib import Path
+import re
 import sys
 
-path = Path(sys.argv[1])
-raw = path.read_text(encoding="utf-8", errors="replace")
-lines = [line.rstrip(" \t") for line in raw.splitlines()]
-normalized = "\n".join(lines)
-if raw.endswith(("\n", "\r")):
-    normalized += "\n"
-path.write_text(normalized, encoding="utf-8")
+mode = sys.argv[1]
+source = sys.argv[2]
+if mode == "capture":
+    path = Path(source)
+    data = path.read_bytes()
+elif mode in ("note", "opaque"):
+    data = os.fsencode(source)
+else:
+    raise SystemExit(f"unknown byte normalizer mode: {mode}")
+
+repo = sys.argv[3]
+repo_label = sys.argv[4]
+worktrees_root = sys.argv[5]
+worktrees_label = sys.argv[6]
+
+
+def path_boundary(prefix):
+    if prefix:
+        # A known root may be followed by any non-path punctuation, but a
+        # dotted/dashed component followed by a path boundary is a sibling
+        # lookalike rather than the root itself.
+        return (
+            rb"(?=$|/|"
+            rb"(?!(?:[.-][A-Za-z0-9_.-]+)(?=$|/|[^A-Za-z0-9_/]))"
+            rb"[^A-Za-z0-9_/])"
+        )
+    # Do not treat a .bak sibling or a suffixed name as the path itself.
+    return rb"(?=$|[/\x00\r\n\t \"'`:,;)\]}])"
+
+
+def path_variants(path_value):
+    variants = []
+    for candidate in (path_value, os.path.abspath(path_value), os.path.realpath(path_value)):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def replace_path(data_value, path_value, label, prefix=False):
+    if not path_value:
+        return data_value
+    for variant in sorted(path_variants(path_value), key=len, reverse=True):
+        if variant == os.path.sep:
+            continue
+        pattern = (
+            rb"(?<![A-Za-z0-9_])"
+            + re.escape(os.fsencode(variant))
+            + path_boundary(prefix)
+        )
+        data_value = re.sub(pattern, os.fsencode(label), data_value)
+    return data_value
+
+
+def is_word_byte(value):
+    return (
+        48 <= value <= 57
+        or 65 <= value <= 90
+        or 97 <= value <= 122
+        or value == 95
+    )
+
+
+def is_whitespace_byte(value):
+    return value in (9, 11, 12, 32)
+
+
+def is_assignment_key_byte(value):
+    return is_word_byte(value) or value in (45, 46)
+
+
+def is_ascii_alpha_byte(value):
+    return 65 <= value <= 90 or 97 <= value <= 122
+
+
+def diagnostic_boundary_end(data_value, component_start, line_end):
+    """Find separators that cannot be part of an unquoted path component.
+
+    A whitespace-delimited assignment token (for example ``status=FAILED``)
+    and a balanced parenthetical diagnostic are explicit boundaries. This is
+    intentionally structural rather than a finite English phrase list, so
+    arbitrary same-line diagnostics survive redaction.
+    """
+
+    index = component_start
+    while index < line_end:
+        if not is_whitespace_byte(data_value[index]):
+            index += 1
+            continue
+        cursor = index + 1
+        if cursor < line_end and data_value[cursor] == 40:
+            if data_value.find(b")", cursor + 1, line_end) != -1:
+                return index
+        key_start = cursor
+        if cursor >= line_end or not is_ascii_alpha_byte(data_value[cursor]):
+            index += 1
+            continue
+        while cursor < line_end and is_assignment_key_byte(data_value[cursor]):
+            cursor += 1
+        if (
+            cursor > key_start
+            and cursor < line_end
+            and data_value[cursor] == 61
+        ):
+            return index
+        index += 1
+    return line_end
+
+
+def terminal_path_end(data_value, path_start, component_start, line_end):
+    # A quote immediately before the root unambiguously bounds the complete
+    # terminal component, including spaces in a quoted worktree name.
+    if path_start > 0 and data_value[path_start - 1] in (34, 39):
+        quote = data_value[path_start - 1]
+        index = path_start
+        while index < line_end:
+            if data_value[index] == quote:
+                backslashes = 0
+                cursor = index - 1
+                while cursor >= path_start and data_value[cursor] == 92:
+                    backslashes += 1
+                    cursor -= 1
+                if backslashes % 2 == 0:
+                    return index
+            index += 1
+
+    end = diagnostic_boundary_end(data_value, component_start, line_end)
+    # Punctuation followed by whitespace (or a closing quote) is a diagnostic
+    # separator, while punctuation embedded in an unquoted path is retained.
+    # Limit this scan to the structural boundary above so a closing
+    # parenthesis in ``path (No such file)`` cannot consume the diagnostic and
+    # leave only its final punctuation visible.
+    for index in range(component_start, end):
+        if data_value[index] not in (41, 44, 59, 58, 93, 125):
+            continue
+        next_value = data_value[index + 1] if index + 1 < line_end else None
+        if next_value is None or is_whitespace_byte(next_value) or next_value in (34, 39):
+            end = min(end, index)
+
+    return end
+
+
+def redact_configured_worktree(data_value):
+    if not worktrees_root:
+        return data_value
+    replacements = []
+    for root in path_variants(worktrees_root):
+        root_bytes = os.fsencode(root)
+        if root == os.path.sep:
+            continue
+        search = 0
+        while True:
+            start = data_value.find(root_bytes, search)
+            if start == -1:
+                break
+            root_end = start + len(root_bytes)
+            if (
+                (start == 0 or not is_word_byte(data_value[start - 1]))
+                and root_end < len(data_value)
+                and data_value[root_end] == 47
+            ):
+                line_end = len(data_value)
+                for delimiter in (b"\x00", b"\r", b"\n"):
+                    delimiter_end = data_value.find(delimiter, root_end)
+                    if delimiter_end != -1 and delimiter_end < line_end:
+                        line_end = delimiter_end
+                first_slash = data_value.find(b"/", root_end + 1, line_end)
+                if first_slash > root_end + 1:
+                    second_slash = data_value.find(
+                        b"/", first_slash + 1, line_end
+                    )
+                    if second_slash == -1:
+                        second_slash = terminal_path_end(
+                            data_value, start, first_slash + 1, line_end
+                        )
+                    if second_slash > first_slash + 1:
+                        replacements.append((start, second_slash))
+            search = root_end
+    if not replacements:
+        return data_value
+    output = bytearray()
+    cursor = 0
+    for start, end in sorted(replacements):
+        if start < cursor:
+            continue
+        output.extend(data_value[cursor:start])
+        output.extend(b"<herdr-worktree>")
+        cursor = end
+    output.extend(data_value[cursor:])
+    return bytes(output)
+
+
+def is_token_boundary_byte(value):
+    # Whitespace and assignment separators start a new diagnostic token. A
+    # slash preceded by a component character remains part of that path,
+    # including components whose names contain spaces.
+    return value in (9, 32, 61)
+
+
+def valid_path_component(component):
+    return not any(delimiter in component for delimiter in (b"\x00", b"\r", b"\n"))
+
+
+def replace_generic_worktrees(data_value, protected_paths=()):
+    # Search for the fixed marker and find the eligible path start in the same
+    # forward pass. A slash after a token separator starts a new candidate,
+    # while a slash inside a space-containing path keeps its current candidate.
+    # This avoids a backtracking expression over every slash in a long line.
+    marker = b"/.herdr/worktrees/"
+    protected_variants = [
+        os.fsencode(variant)
+        for path_value in protected_paths
+        for variant in path_variants(path_value)
+        if variant != os.path.sep
+    ]
+    replacements = []
+    eligible_start = None
+    index = 0
+    while index < len(data_value):
+        value = data_value[index]
+        if value in (0, 10, 13):
+            eligible_start = None
+        elif value == 47:
+            if index == 0 or not is_word_byte(data_value[index - 1]):
+                if eligible_start is None or is_token_boundary_byte(
+                    data_value[index - 1]
+                ):
+                    eligible_start = index
+            if eligible_start is not None and data_value.startswith(marker, index):
+                cursor = index + len(marker)
+                line_end = len(data_value)
+                for delimiter in (b"\x00", b"\r", b"\n"):
+                    delimiter_end = data_value.find(delimiter, cursor)
+                    if delimiter_end != -1 and delimiter_end < line_end:
+                        line_end = delimiter_end
+                first_slash = data_value.find(b"/", cursor, line_end)
+                if first_slash > cursor and valid_path_component(
+                    data_value[cursor:first_slash]
+                ):
+                    second_slash = data_value.find(
+                        b"/", first_slash + 1, line_end
+                    )
+                    if second_slash == -1:
+                        second_slash = terminal_path_end(
+                            data_value, eligible_start, first_slash + 1, line_end
+                        )
+                    if second_slash > first_slash + 1 and valid_path_component(
+                        data_value[first_slash + 1 : second_slash]
+                    ):
+                        start = eligible_start
+                        end = second_slash
+                        candidate = data_value[start:end]
+                        is_known_sibling = any(
+                            candidate.startswith(variant)
+                            and candidate[len(variant) :].startswith((b".", b"-"))
+                            for variant in protected_variants
+                        )
+                        if is_known_sibling:
+                            eligible_start = None
+                        elif not replacements or start >= replacements[-1][1]:
+                            replacements.append((start, end))
+                            eligible_start = None
+                            index = end
+        index += 1
+
+    if not replacements:
+        return data_value
+    output = bytearray()
+    cursor = 0
+    for start, end in replacements:
+        output.extend(data_value[cursor:start])
+        output.extend(b"<herdr-worktree>")
+        cursor = end
+    output.extend(data_value[cursor:])
+    return bytes(output)
+
+
+def redact_ephemeral_paths(data_value, protected_paths=()):
+    if mode not in ("capture", "note", "opaque"):
+        return data_value
+    protected_variants = [
+        os.fsencode(variant)
+        for path_value in protected_paths
+        for variant in path_variants(path_value)
+        if variant != os.path.sep
+    ]
+    roots = [
+        "/tmp",
+        "/private/tmp",
+        "/var/folders",
+        "/private/var/folders",
+        os.environ.get("TMPDIR", "").rstrip("/")
+    ]
+    for root in sorted({value for value in roots if value}, key=len, reverse=True):
+        pattern = (
+            rb"(?<![A-Za-z0-9_])"
+            + re.escape(os.fsencode(root))
+            + rb"/[^\x00\r\n\t \"'`:,;&|()<>]+"
+        )
+        replacements = []
+        for match in re.finditer(pattern, data_value):
+            if any(
+                data_value.startswith(variant, match.start())
+                for variant in protected_variants
+            ):
+                continue
+            replacements.append((match.start(), match.end()))
+        for start, end in reversed(replacements):
+            data_value = data_value[:start] + b"<external-temp>" + data_value[end:]
+    return data_value
+
+
+# Longest specific paths go first so a concrete file/path wins before its
+# repository root and before generic Herdr redaction. This keeps a checkout
+# inside a Herdr worktree repo-relative instead of turning it into a generic
+# placeholder.
+known_paths = [
+    (sys.argv[7], sys.argv[8], False),
+    (sys.argv[9], sys.argv[10], False),
+    (sys.argv[11], sys.argv[12], False),
+    (sys.argv[13], sys.argv[14], True),
+    (sys.argv[15], sys.argv[16], True),
+    (repo, repo_label, True),
+]
+for path_value, label, prefix in sorted(
+    known_paths, key=lambda item: len(os.fsencode(item[0])), reverse=True
+):
+    data = replace_path(data, path_value, label, prefix)
+
+# Redact configured and generic Herdr paths only after known checkout/staging
+# paths have had the opportunity to establish stable identities. A capture or
+# note may mention only the configured root, without a repo/worktree suffix.
+data = redact_configured_worktree(data)
+data = replace_path(data, worktrees_root, worktrees_label, True)
+data = replace_generic_worktrees(
+    data, [path_value for path_value, _, _ in known_paths]
+)
+data = redact_ephemeral_paths(
+    data,
+    [worktrees_root]
+    + [path_value for path_value, _, _ in known_paths],
+)
+
+if mode == "capture":
+    max_bytes = int(sys.argv[17])
+    head_bytes = int(sys.argv[18])
+    tail_bytes = int(sys.argv[19])
+if mode == "capture" and len(data) > max_bytes:
+    head_size = min(head_bytes, len(data))
+    tail_size = min(tail_bytes, len(data) - head_size)
+    while True:
+        omitted = len(data) - head_size - tail_size
+        marker = (
+            f"\n[... capture log truncated: omitted {omitted} bytes; "
+            "exact head and tail bytes retained ...]\n"
+        ).encode("ascii")
+        available_tail = max_bytes - head_size - len(marker)
+        if available_tail < 0:
+            raise SystemExit("capture log bound is too small for its marker")
+        if tail_size <= available_tail:
+            break
+        tail_size = available_tail
+    tail = data[-tail_size:] if tail_size else b""
+    data = data[:head_size] + marker + tail
+    if len(data) > max_bytes:
+        raise SystemExit("capture log exceeded its configured byte bound")
+
+if mode == "capture":
+    path.write_bytes(data)
+else:
+    sys.stdout.buffer.write(data)
 PY
 }
 
@@ -792,71 +1840,123 @@ print(f"verified native window readiness observations: {len(records)}")
 PY
 }
 
-gracefully_close_chrome() {
-  local profile="$1"
-  [[ -s "$profile/DevToolsActivePort" ]] || return 1
-  "$PYTHON_BIN" - "$profile" <<'PY'
-import base64
-import json
-from pathlib import Path
-import secrets
-import socket
-import sys
-import time
-from urllib.request import urlopen
-from urllib.parse import urlsplit
+normalize_capture_log() {
+  run_byte_normalizer capture "$1" \
+    "$REPO_DIR" "." \
+    "$WORKTREES_ROOT" "<herdr-worktree>" \
+    "$SCRIPT_PATH" "$SCRIPT_RELATIVE_PATH" \
+    "$PROTOTYPE" "$PROTOTYPE_PATH_LABEL" \
+    "$LIVE_PNG" "$LIVE_INPUT_PATH_LABEL" \
+    "$OUTPUT_ROOT" "$OUTPUT_PATH_LABEL" \
+    "$STAGE" "<stage>" \
+    "$CAPTURE_LOG_MAX_BYTES" "$CAPTURE_LOG_HEAD_BYTES" \
+    "$CAPTURE_LOG_TAIL_BYTES"
+}
 
-profile = Path(sys.argv[1])
-active_port = profile / "DevToolsActivePort"
-deadline = time.monotonic() + 5
-while time.monotonic() < deadline and not active_port.is_file():
-    time.sleep(0.05)
-if not active_port.is_file():
-    raise SystemExit("Chrome did not publish DevToolsActivePort")
-lines = active_port.read_text(encoding="utf-8").splitlines()
-if len(lines) < 2:
-    raise SystemExit("Chrome DevToolsActivePort is incomplete")
-port = int(lines[0])
-_browser_path = lines[1]
-with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as response:
-    version = json.load(response)
-parts = urlsplit(version["webSocketDebuggerUrl"])
-if parts.hostname != "127.0.0.1":
-    raise SystemExit(
-        f"Chrome DevTools endpoint escaped the loopback boundary: {parts.hostname!r}"
-    )
-key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-request = (
-    f"GET {parts.path} HTTP/1.1\r\n"
-    f"Host: 127.0.0.1:{port}\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    f"Sec-WebSocket-Key: {key}\r\n"
-    "Sec-WebSocket-Version: 13\r\n"
-    "Origin: http://127.0.0.1\r\n\r\n"
-).encode("ascii")
-payload = json.dumps({"id": 1, "method": "Browser.close"}).encode("utf-8")
-mask = secrets.token_bytes(4)
-masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-length = len(masked)
-if length < 126:
-    header = bytes((0x81, 0x80 | length))
-elif length < 65536:
-    header = bytes((0x81, 0xFE)) + length.to_bytes(2, "big")
-else:
-    raise SystemExit("Chrome close command is unexpectedly large")
-with socket.create_connection((parts.hostname, parts.port), timeout=2) as connection:
-    connection.sendall(request)
-    response = b""
-    while b"\r\n\r\n" not in response:
-        chunk = connection.recv(4096)
-        if not chunk:
-            raise SystemExit("Chrome closed the DevTools handshake")
-        response += chunk
-    if b" 101 " not in response.split(b"\r\n", 1)[0]:
-        raise SystemExit("Chrome rejected the DevTools handshake")
-    connection.sendall(header + mask + masked)
+NORMALIZED_ARGUMENT=""
+normalize_argument_bytes() {
+  local mode="$1"
+  local argument="$2"
+  local normalized_file="$3"
+  local label="$4"
+
+  NORMALIZED_ARGUMENT=""
+  if ! run_byte_normalizer "$mode" "$argument" \
+    "$REPO_DIR" "." \
+    "$WORKTREES_ROOT" "<herdr-worktree>" \
+    "$SCRIPT_PATH" "$SCRIPT_RELATIVE_PATH" \
+    "$PROTOTYPE" "$PROTOTYPE_PATH_LABEL" \
+    "$LIVE_PNG" "$LIVE_INPUT_PATH_LABEL" \
+    "$OUTPUT_ROOT" "$OUTPUT_PATH_LABEL" \
+    "$STAGE" "<stage>" \
+    0 0 0 >"$normalized_file"; then
+    die "could not normalize $label"
+  fi
+  if ! IFS= read -r -d '' NORMALIZED_ARGUMENT < <(
+    cat "$normalized_file"
+    printf '\0'
+  ); then
+    die "could not read normalized $label"
+  fi
+}
+
+normalize_provenance_note() {
+  normalize_argument_bytes note "$1" \
+    "$STAGE/.design-gate.note-normalized" "provenance note"
+  NORMALIZED_NOTE="$NORMALIZED_ARGUMENT"
+}
+
+render_markdown_note() {
+  local source="$1"
+  local destination="$2"
+
+  "$PYTHON_BIN" - "$source" <<'PY' >"$destination"
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+data = data.replace(b"&", b"&amp;")
+data = data.replace(b"<", b"&lt;")
+data = data.replace(b">", b"&gt;")
+sys.stdout.buffer.write(data)
 PY
+}
+
+markdown_safe_code_span() {
+  # A code span is safe for arbitrary text only when its delimiter is longer
+  # than every backtick run in that text. HTML-looking bytes remain literal
+  # inside the Markdown code span, while newlines cannot start a new list or
+  # HTML element before the dynamically chosen closing delimiter.
+  "$PYTHON_BIN" - "$1" <<'PY'
+import os
+import sys
+
+data = os.fsencode(sys.argv[1])
+longest = current = 0
+for value in data:
+    if value == 0x60:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+delimiter = b"`" * (longest + 1)
+sys.stdout.buffer.write(delimiter + data + delimiter)
+PY
+}
+
+markdown_code_delimiter() {
+  local source="$1"
+
+  "$PYTHON_BIN" - "$source" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+longest = current = 0
+for value in data:
+    if value == 0x60:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+sys.stdout.write("`" * (longest + 1))
+PY
+}
+
+normalize_opaque_argument() {
+  normalize_argument_bytes opaque "$1" \
+    "$STAGE/.design-gate.opaque-normalized" "opaque invocation argument"
+}
+
+normalize_launch_argument() {
+  local argument="$1"
+  if [[ "$argument" == /* || "$argument" == ./* || "$argument" == ../* ]]; then
+    if ! NORMALIZED_ARGUMENT="$(repo_relative_path "$argument" "<external-input>")"; then
+      die "could not normalize launch argument"
+    fi
+  else
+    normalize_opaque_argument "$argument"
+  fi
 }
 
 make_prototype_view() {
@@ -864,6 +1964,7 @@ make_prototype_view() {
   "$PYTHON_BIN" - "$PROTOTYPE" "$SURFACE" "$EGUI_TAB" "$output" <<'PY'
 from html import escape
 from html.parser import HTMLParser
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -872,7 +1973,8 @@ source_path = Path(sys.argv[1]).resolve()
 surface = sys.argv[2]
 egui_tab = sys.argv[3]
 output_path = Path(sys.argv[4])
-source = source_path.read_text(encoding="utf-8")
+source_bytes = source_path.read_bytes()
+source = source_bytes.decode("utf-8")
 
 if "</head>" not in source.lower():
     raise SystemExit(f"prototype has no </head> element: {source_path}")
@@ -1063,7 +2165,7 @@ injection = (
 head_end = source.lower().index("</head>")
 derived = source[:head_end] + injection + source[head_end:]
 output_path.write_text(derived, encoding="utf-8")
-print(f"{width} {height}")
+print(f"{width} {height} {hashlib.sha256(source_bytes).hexdigest()}")
 PY
 }
 
@@ -1073,12 +2175,12 @@ run_chrome_screenshot() {
   local width="$3"
   local height="$4"
   local label="$5"
-  local profile="$STAGE/chrome-profile-$label"
   local chrome_log="$STAGE/chrome-$label.log"
   local url
   local chrome_pid
   local dimensions
 
+  local profile="$STAGE/chrome-profile-$label"
   mkdir -p "$profile"
   url="$(file_url "$html_path")"
   log "rendering $label with headless Chrome at ${width}x${height}"
@@ -1096,9 +2198,6 @@ run_chrome_screenshot() {
     --force-device-scale-factor=1 \
     --run-all-compositor-stages-before-draw \
     --allow-file-access-from-files \
-    --remote-debugging-address="$CHROME_DEVTOOLS_ADDRESS" \
-    --remote-debugging-port=0 \
-    --remote-allow-origins="$CHROME_DEVTOOLS_ORIGIN" \
     --window-size="$width,$height" \
     --user-data-dir="$profile" \
     --no-first-run \
@@ -1112,11 +2211,9 @@ run_chrome_screenshot() {
     tail -40 "$chrome_log" >&2 || true
     die "headless Chrome did not publish a complete PNG for $label within ${CHROME_TIMEOUT_SECONDS}s: ${PNG_WAIT_REASON}"
   fi
-  if gracefully_close_chrome "$profile"; then
-    log "requested loopback-only DevTools Browser.close after $label completed"
-  else
-    warn "could not request loopback-only DevTools shutdown for $label; using owned-child cleanup"
-  fi
+  # --screenshot is a one-shot headless command. It may exit after publishing
+  # the PNG or linger in a renderer helper; in either case the direct child is
+  # the only shutdown target and cleanup remains bounded and ownership-checked.
   terminate_owned_child "$chrome_pid" "$label" \
     || die "could not clean up the owned headless Chrome child for $label"
   assert_png "$output_path"
@@ -1198,6 +2295,7 @@ capture_egui() {
   local native_probe_helper="${CORRAL_UI_WINDOW_PROBE_HELPER:-}"
   local native_probe_log="$STAGE/native-window-probe.jsonl"
   local ui_config_seed_dir="${CORRAL_UI_CONFIG_SEED_DIR:-}"
+  local binary_path
 
   require_egui_dependencies
   health="$(curl --fail --silent --show-error --max-time 5 "$HOST_URL/healthz")" \
@@ -1225,6 +2323,7 @@ print(candidates[0])
 PY
 )"
     [[ -n "$LIVE_AGENT" ]] || die "could not select a live agent from /snapshot"
+    validate_live_agent "$LIVE_AGENT"
     log "auto-selected first live agent from /snapshot: $LIVE_AGENT"
   fi
 
@@ -1271,8 +2370,9 @@ PY
       || die "native window probe helper is not executable: $native_probe_helper"
   fi
 
+  binary_path="$(repo_relative_path "$binary" "<external-input>")"
   CAPTURE_KIND="native egui viewport screenshot"
-  LIVE_DESCRIPTION="real egui process launched against a loopback corrald; selected live agent $LIVE_AGENT from /snapshot"
+  LIVE_DESCRIPTION="real egui process launched from $binary_path against a loopback corrald; selected live agent $LIVE_AGENT from /snapshot"
   CAPTURE_COMMAND="CORRAL_UI_SCREENSHOT=<issue-dir>/live-after.png CORRAL_UI_SCREENSHOT_DELAY_MS=$EGUI_DELAY_MS CORRAL_UI_SCREENSHOT_TAB=$EGUI_TAB"
   CAPTURE_COMMAND+=" CORRAL_UI_SCREENSHOT_AGENT=$LIVE_AGENT"
   CAPTURE_COMMAND+=" CORRAL_UI_DISABLE_KEYRING=1"
@@ -1313,11 +2413,13 @@ PY
   ui_pid=$!
   CAPTURE_PID="$ui_pid"
   if [[ -n "$EGUI_WAKE_COMMAND" ]]; then
-    log "running explicit egui wake command"
+    log "running bounded explicit egui wake command (timeout ${EGUI_WAKE_COMMAND_TIMEOUT_SECONDS}s)"
     sleep 1
     if ! CORRAL_UI_SCREENSHOT_PID="$ui_pid" \
       CORRAL_UI_SCREENSHOT_PATH="$STAGE/live-after.png" \
-      bash -c "$EGUI_WAKE_COMMAND" >>"$STAGE/capture.log" 2>&1; then
+      run_bounded_owned_shell_command \
+        "$EGUI_WAKE_COMMAND" "$EGUI_WAKE_COMMAND_TIMEOUT_SECONDS" \
+        >>"$STAGE/capture.log" 2>&1; then
       tail -40 "$STAGE/capture.log" >&2 || true
       terminate_owned_child "$ui_pid" "egui" \
         || die "egui wake command failed and owned-child cleanup failed"
@@ -1404,10 +2506,18 @@ capture_ios() {
       done
     fi
     if [[ "$before_has_demo_mode" -eq 0 ]]; then
-      before_args=("-demoMode" "${before_args[@]}")
+      if (( ${#before_args[@]} > 0 )); then
+        before_args=("-demoMode" "${before_args[@]}")
+      else
+        before_args=("-demoMode")
+      fi
     fi
     if [[ "$after_has_demo_mode" -eq 0 ]]; then
-      after_args=("-demoMode" "${after_args[@]}")
+      if (( ${#after_args[@]} > 0 )); then
+        after_args=("-demoMode" "${after_args[@]}")
+      else
+        after_args=("-demoMode")
+      fi
     fi
     if (( ${#before_args[@]} > 0 )); then
       for launch_arg in "${before_args[@]}"; do
@@ -1504,6 +2614,41 @@ print_dry_run() {
   fi
 }
 
+publish_bundle() {
+  local final_dir="$1"
+
+  if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+    BACKUP_DIR="$(mktemp -d "$OUTPUT_ROOT/.design-gate.backup.XXXXXX")"
+    rmdir -- "$BACKUP_DIR"
+    if ! mv -f -- "$OUTPUT_DIR" "$BACKUP_DIR"; then
+      rmdir -- "$BACKUP_DIR" 2>/dev/null || true
+      BACKUP_DIR=""
+      die "could not stage the existing evidence bundle for replacement"
+    fi
+  fi
+
+  if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+    die "output path appeared during publication; the old evidence backup is retained"
+  fi
+  if ! mv -f -- "$final_dir" "$OUTPUT_DIR"; then
+    die "could not publish the validated evidence bundle"
+  fi
+  for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
+    [[ -s "$OUTPUT_DIR/$artifact" ]] \
+      || die "output path changed during publication; the old evidence backup is retained"
+  done
+  FINAL_DIR=""
+  PUBLISHED=1
+
+  if [[ -n "$BACKUP_DIR" ]]; then
+    if rm -rf -- "$BACKUP_DIR"; then
+      BACKUP_DIR=""
+    else
+      warn "old evidence backup could not be removed: $BACKUP_DIR"
+    fi
+  fi
+}
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
   print_dry_run
   exit 0
@@ -1517,29 +2662,34 @@ IMPLEMENTATION_MANIFEST="${IMPLEMENTATION_IDENTITY#*$'\n'}"
   || die "implementation identity did not return a sha256 digest"
 
 OUTPUT_DIR="$OUTPUT_ROOT/issue-$ISSUE"
-if [[ -e "$OUTPUT_DIR" ]]; then
-  [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
-  [[ "$FORCE" -eq 1 ]] \
-    || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
+mkdir -p "$OUTPUT_ROOT" \
+  || die "could not create output root: $OUTPUT_ROOT"
+LOCK_DIR="$OUTPUT_ROOT/.design-gate.lock"
+LOCK_OWNER_FILE="$LOCK_DIR/owner.pid"
+LOCK_ACQUIRED=0
+if ! acquire_publication_lock "$LOCK_DIR"; then
+  die "could not acquire evidence publication lock: $LOCK_DIR (another run may be active)"
 fi
-mkdir -p "$OUTPUT_ROOT"
-mkdir -p "$OUTPUT_DIR"
-STAGE="$(mktemp -d "$OUTPUT_DIR/.design-gate.stage.XXXXXX")"
+STAGE=""
 CAPTURE_PID=""
+FINAL_DIR=""
+BACKUP_DIR=""
+PUBLISHED=0
 cleanup() {
   local cleanup_status=0
-  local remove_attempt
+  local remove_attempt=0
   if [[ -n "${CAPTURE_PID:-}" ]]; then
     if ! terminate_owned_child "$CAPTURE_PID" "capture"; then
       cleanup_status=1
     fi
   fi
   if [[ -n "${STAGE:-}" && -d "$STAGE" ]]; then
-    # Chrome can finish closing a profile helper just after Browser.close and
+    # Chrome can finish closing a profile helper just after one-shot exit and
     # briefly race the directory removal on macOS. Retry only this owned,
     # stage-local path for a bounded interval; never broaden cleanup to a
     # parent directory or a user's browser profile.
-    for remove_attempt in {1..20}; do
+    while [[ -e "$STAGE" && "$remove_attempt" -lt 20 ]]; do
+      remove_attempt=$((remove_attempt + 1))
       rm -rf -- "$STAGE" || true
       if [[ ! -e "$STAGE" ]]; then
         break
@@ -1551,15 +2701,62 @@ cleanup() {
       cleanup_status=1
     fi
   fi
+  if [[ -n "${FINAL_DIR:-}" && -d "$FINAL_DIR" ]]; then
+    rm -rf -- "$FINAL_DIR"
+  fi
+  if [[ -n "${BACKUP_DIR:-}" && -d "$BACKUP_DIR" ]]; then
+    if [[ "$PUBLISHED" -eq 1 ]]; then
+      if ! rm -rf -- "$BACKUP_DIR"; then
+        cleanup_status=1
+      else
+        BACKUP_DIR=""
+      fi
+    elif [[ ! -e "$OUTPUT_DIR" && ! -L "$OUTPUT_DIR" ]]; then
+      if ! mv -f -- "$BACKUP_DIR" "$OUTPUT_DIR"; then
+        cleanup_status=1
+      else
+        BACKUP_DIR=""
+      fi
+    else
+      warn "old evidence backup retained at $BACKUP_DIR because output path is occupied"
+      cleanup_status=1
+    fi
+  fi
+  if [[ "${LOCK_ACQUIRED:-0}" -eq 1 && -n "${LOCK_DIR:-}" ]]; then
+    local lock_owner=""
+    if [[ -d "$LOCK_DIR" && ! -L "$LOCK_DIR" \
+      && -f "${LOCK_OWNER_FILE:-}" && ! -L "$LOCK_OWNER_FILE" ]] \
+      && IFS= read -r lock_owner <"$LOCK_OWNER_FILE" \
+      && [[ "$lock_owner" == "$$" ]] \
+      && rm -f -- "$LOCK_OWNER_FILE" \
+      && rmdir -- "$LOCK_DIR"; then
+      LOCK_ACQUIRED=0
+      LOCK_OWNER_FILE=""
+      LOCK_DIR=""
+    else
+      cleanup_status=1
+    fi
+  fi
   return "$cleanup_status"
 }
 trap cleanup EXIT
+
+if [[ -e "$OUTPUT_DIR" || -L "$OUTPUT_DIR" ]]; then
+  [[ -d "$OUTPUT_DIR" ]] || die "output path exists but is not a directory: $OUTPUT_DIR"
+  [[ "$FORCE" -eq 1 ]] \
+    || die "evidence bundle already exists: $OUTPUT_DIR (pass --force to replace it)"
+fi
+STAGE="$(mktemp -d "$OUTPUT_ROOT/.design-gate.stage.XXXXXX")" \
+  || die "could not create staging directory below $OUTPUT_ROOT"
 
 PROTOTYPE_VIEW="$STAGE/prototype-view.html"
 if ! prototype_size="$(make_prototype_view "$PROTOTYPE_VIEW")"; then
   die "could not prepare the prototype render; check the --prototype surface"
 fi
-IFS=' ' read -r PROTOTYPE_WIDTH PROTOTYPE_HEIGHT <<<"$prototype_size"
+IFS=' ' read -r PROTOTYPE_WIDTH PROTOTYPE_HEIGHT PROTOTYPE_SOURCE_SHA <<<"$prototype_size"
+PROTOTYPE_SOURCE_SHA_CHECK="$(sha256_file "$PROTOTYPE")"
+[[ "$PROTOTYPE_SOURCE_SHA" == "$PROTOTYPE_SOURCE_SHA_CHECK" ]] \
+  || die "prototype changed while it was being prepared; refusing mismatched evidence"
 run_chrome_screenshot "$PROTOTYPE_VIEW" "$STAGE/prototype.png" \
   "$PROTOTYPE_WIDTH" "$PROTOTYPE_HEIGHT" prototype
 
@@ -1569,9 +2766,10 @@ CAPTURE_COMMAND=""
 if [[ -n "$LIVE_PNG" ]]; then
   CAPTURE_KIND="explicit supplied PNG fixture"
   LIVE_DESCRIPTION="caller-supplied file; this run did not capture a live surface"
-  CAPTURE_COMMAND="cp $LIVE_PNG <issue-dir>/live-after.png"
+  CAPTURE_COMMAND="cp $LIVE_INPUT_PATH_LABEL <issue-dir>/live-after.png"
   cp -- "$LIVE_PNG" "$STAGE/live-after.png"
-  printf 'supplied fixture: %s\n' "$LIVE_PNG" >"$STAGE/capture.log"
+  LIVE_SOURCE_SHA="$(sha256_file "$STAGE/live-after.png")"
+  printf 'supplied fixture: %s\n' "$LIVE_INPUT_PATH_LABEL" >"$STAGE/capture.log"
   assert_png "$STAGE/live-after.png"
 elif [[ "$SURFACE" == "egui" ]]; then
   capture_egui
@@ -1584,13 +2782,10 @@ COMPOSITE_HTML="$STAGE/comparison.html"
 make_composite_html "$COMPOSITE_HTML" "$CAPTURE_KIND"
 run_chrome_screenshot "$COMPOSITE_HTML" "$STAGE/comparison.png" 2400 960 comparison
 
-PROTOTYPE_SOURCE_SHA="$(sha256_file "$PROTOTYPE")"
-GENERATOR_SHA="$(sha256_file "$SCRIPT_DIR/$SCRIPT_NAME")"
 PROTOTYPE_SHA="$(sha256_file "$STAGE/prototype.png")"
 LIVE_SHA="$(sha256_file "$STAGE/live-after.png")"
 if [[ -n "$LIVE_PNG" ]]; then
-  LIVE_SOURCE_PATH="$LIVE_PNG"
-  LIVE_SOURCE_SHA="$(sha256_file "$LIVE_PNG")"
+  LIVE_SOURCE_PATH="$LIVE_INPUT_PATH_LABEL"
 else
   LIVE_SOURCE_PATH="generated by the capture command above"
   LIVE_SOURCE_SHA="not applicable (generated capture)"
@@ -1626,61 +2821,61 @@ else
   FIXTURE_REGISTRY_SHA="not applicable (not supplied)"
 fi
 CAPTURE_LOG_SHA="$(sha256_file "$STAGE/capture.log")"
-GENERATED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-if [[ "$PROTOTYPE" == "$REPO_DIR/"* ]]; then
-  PROTOTYPE_DISPLAY="${PROTOTYPE#"$REPO_DIR/"}"
-else
-  PROTOTYPE_DISPLAY="$PROTOTYPE"
-fi
-if [[ "$SURFACE" == "egui" && "$ISSUE" == "206" && -z "$LIVE_PNG" ]]; then
-  COMMAND_LINE="scripts/test-design-gate-egui-integration.sh --publish"
-else
-  COMMAND_LINE="scripts/design-gate-evidence.sh --issue $ISSUE --surface $SURFACE"
-  if [[ -n "$PROTOTYPE_DISPLAY" ]]; then
-    COMMAND_LINE+=" --prototype $PROTOTYPE_DISPLAY"
-  fi
-  if [[ "$SURFACE" == "egui" ]]; then
-    COMMAND_LINE+=" --egui-tab $EGUI_TAB"
-  else
-    COMMAND_LINE+=" --ios-mode $IOS_MODE"
-    if (( ${#IOS_LAUNCH_ARGS[@]} > 0 )); then
-      for launch_arg in "${IOS_LAUNCH_ARGS[@]}"; do
-        COMMAND_LINE+=" --ios-launch-arg $(shell_quote "$launch_arg")"
-      done
-    fi
-    if (( ${#IOS_BEFORE_LAUNCH_ARGS[@]} > 0 )); then
-      for launch_arg in "${IOS_BEFORE_LAUNCH_ARGS[@]}"; do
-        COMMAND_LINE+=" --ios-before-launch-arg $(shell_quote "$launch_arg")"
-      done
-    fi
-  fi
-  if [[ -n "$LIVE_PNG" ]]; then
-    COMMAND_LINE+=" --live-png <supplied-png>"
-  fi
-fi
 if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
-  COMMAND_LINE="CHROME_BIN=$(shell_quote "$CHROME_BIN") $COMMAND_LINE"
-fi
-if [[ "$CHROME_BIN_EXPLICIT" -eq 1 ]]; then
-  RENDERER_GUIDANCE='`CHROME_BIN` was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
+  RENDERER_GUIDANCE='CHROME_BIN was explicitly set for this capture; use a complete GUI-capable Chrome/Chromium when the default renderer cannot complete.'
 else
   RENDERER_GUIDANCE=""
 fi
+RENDERER_PATH_LABEL="$(repo_relative_path "$CHROME_BIN" "<external-input>")" \
+  || die "could not normalize the renderer executable path"
+PROVENANCE_NOTE_MARKDOWN=""
+if [[ -n "$PROVENANCE_NOTE" ]]; then
+  normalize_provenance_note "$PROVENANCE_NOTE"
+  PROVENANCE_NOTE_MARKDOWN="$STAGE/.design-gate.note-markdown"
+  render_markdown_note \
+    "$STAGE/.design-gate.note-normalized" "$PROVENANCE_NOTE_MARKDOWN" \
+    || die "could not render the provenance note safely"
+fi
 # Markdown backticks are literal printf text, not shell command substitutions.
-# shellcheck disable=SC2016
+# Bash `%q` may retain runs of backticks inside ANSI-C quoting, so choose a code
+# span delimiter longer than every run in the complete normalized invocation.
+INVOCATION_NORMALIZED="$STAGE/.design-gate.invocation-normalized"
+recorded_invocation "${ORIGINAL_ARGS[@]}" >"$INVOCATION_NORMALIZED"
+INVOCATION_CODE_DELIMITER="$(markdown_code_delimiter "$INVOCATION_NORMALIZED")" \
+  || die "could not choose a safe invocation code delimiter"
+IMPLEMENTATION_MANIFEST_SOURCE="$STAGE/.design-gate.implementation-manifest"
+IMPLEMENTATION_MANIFEST_MARKDOWN="$STAGE/.design-gate.implementation-manifest-markdown"
+printf '%s' "$IMPLEMENTATION_MANIFEST" >"$IMPLEMENTATION_MANIFEST_SOURCE"
+render_markdown_note \
+  "$IMPLEMENTATION_MANIFEST_SOURCE" "$IMPLEMENTATION_MANIFEST_MARKDOWN" \
+  || die "could not render the implementation manifest safely"
 {
   printf '# Issue #%s design-gate evidence\n\n' "$ISSUE"
-  printf 'Generated: `%s`\n\n' "$GENERATED_AT"
-  printf '## Capture\n\n'
-  printf -- '- Surface: `%s`\n' "$SURFACE"
-  printf -- '- Capture kind: %s\n' "$CAPTURE_KIND"
+  printf '## Contract\n\n'
+  printf -- '- Newly generated bundle contract: this manifest is byte-stable for identical semantic inputs; wall-clock generation time is intentionally omitted.\n'
+  printf -- '- Newly generated capture-log contract: `capture.log` is byte-bounded to %s bytes, retains exact head/tail bytes after documented path substitutions, and never decodes invalid UTF-8.\n' "$CAPTURE_LOG_MAX_BYTES"
+  printf -- '- Provenance-note contract: arbitrary note bytes are preserved except for targeted substitutions of recognized repository, staging, worktree, and disposable temporary roots; the rendered note is HTML-escaped inside a Markdown-safe preformatted block.\n'
+  printf -- '- This contract applies to bundles generated by this version; historical checked-in evidence may be a separately labeled sanitized summary.\n'
+  printf '\n## Capture\n\n'
+  printf -- '- Surface: '
+  markdown_safe_code_span "$SURFACE"
+  printf '\n'
+  printf -- '- Capture kind: '
+  markdown_safe_code_span "$CAPTURE_KIND"
+  printf '\n'
   if [[ "$SURFACE" == "egui" ]]; then
-    printf -- '- Egui tab: `%s` (native and approved prototype were both opened on this tab)\n' "$EGUI_TAB"
+    printf -- '- Egui tab: '
+    markdown_safe_code_span "$EGUI_TAB"
+    printf ' (native and approved prototype were both opened on this tab)\n'
   fi
-  printf -- '- Live description: %s\n' "$LIVE_DESCRIPTION"
-  printf -- '- Command: `%s`\n' "$CAPTURE_COMMAND"
+  printf -- '- Live description: '
+  markdown_safe_code_span "$LIVE_DESCRIPTION"
+  printf '\n'
+  printf -- '- Command: '
+  markdown_safe_code_span "$CAPTURE_COMMAND"
+  printf '\n'
   printf -- '- Completion contract: the writer had to publish a complete, CRC-checked PNG before owned-child cleanup; a lingering writer is terminated with TERM then bounded KILL, and the final PNG is validated again.\n'
-  printf -- '- Chrome trust boundary: temporary DevTools is loopback-only on `127.0.0.1`, uses an ephemeral port/private profile, and receives only `Browser.close`; local approved HTML and the owned process are trusted inputs.\n'
+  printf -- '- Chrome renderer contract (prototype/comparison only): Chrome/Chromium uses a private temporary profile and one-shot `--screenshot` without remote debugging because headless commands are incompatible with a remote-debugging port; only the approved local pages are rendered and the owned child receives bounded TERM/KILL cleanup. The supplied live fixture, when present, is not a Chrome capture.\n'
   if [[ "$SURFACE" == "egui" && -z "$LIVE_PNG" ]]; then
     printf -- '- Host health URL: `loopback corrald /healthz` (checked before capture)\n'
   elif [[ "$SURFACE" == "ios" ]]; then
@@ -1689,39 +2884,81 @@ fi
     printf -- '- Host health URL: not checked for this explicit supplied PNG fixture\n'
   fi
   if [[ -n "$LIVE_AGENT" ]]; then
-    printf -- '- Selected live agent: `%s` (validated against `/snapshot`)\n' "$LIVE_AGENT"
+    printf -- '- Selected live agent: '
+    markdown_safe_code_span "$LIVE_AGENT"
+    printf ' (validated against `/snapshot`)\n'
   else
     printf -- '- Selected live agent: none\n'
   fi
   if [[ "$SURFACE" == "ios" ]]; then
     printf -- '- Simulator ownership: `hermes-sim-task`; no simulator deletion command is used.\n'
-    printf -- '- iOS mode: `%s`\n' "$IOS_MODE"
+    printf -- '- iOS mode: '
+    markdown_safe_code_span "$IOS_MODE"
+    printf '\n'
   fi
-  if [[ -n "$PROVENANCE_NOTE" ]]; then
-    printf -- '- Operator/environment note: %s\n' "$PROVENANCE_NOTE"
+  if [[ -n "$PROVENANCE_NOTE_MARKDOWN" ]]; then
+    printf -- '- Operator/environment note (Markdown-safe):\n\n'
+    printf '<pre class="design-gate-provenance-note">\n'
+    cat "$PROVENANCE_NOTE_MARKDOWN"
+    printf '\n</pre>\n'
   fi
   if [[ -n "$RENDERER_GUIDANCE" ]]; then
-    printf -- '- Renderer guidance: %s\n' "$RENDERER_GUIDANCE"
+    printf -- '- Renderer guidance: '
+    markdown_safe_code_span "$RENDERER_GUIDANCE"
+    printf '\n'
   fi
   printf '\n## Sources\n\n'
-  printf -- '- Prototype source: `%s`\n' "$PROTOTYPE_DISPLAY"
-  printf -- '- Prototype source SHA-256: `%s`\n' "$PROTOTYPE_SOURCE_SHA"
-  printf -- '- Generator SHA-256: `%s`\n' "$GENERATOR_SHA"
-  printf -- '- Live input: `%s`\n' "$LIVE_SOURCE_PATH"
-  printf -- '- Live input SHA-256: `%s`\n' "$LIVE_SOURCE_SHA"
-  printf -- '- Repository HEAD at capture (context only; not the evidence identity): `%s`\n' "$GIT_SHA"
-  printf -- '- Implementation content digest: `%s`\n' "$IMPLEMENTATION_CONTENT_DIGEST"
+  printf -- '- Prototype source: '
+  markdown_safe_code_span "$PROTOTYPE_PATH_LABEL"
+  printf '\n'
+  printf -- '- Prototype source SHA-256: '
+  markdown_safe_code_span "$PROTOTYPE_SOURCE_SHA"
+  printf '\n'
+  printf -- '- Generator script (canonical `BASH_SOURCE[0]`): '
+  markdown_safe_code_span "$GENERATOR_PATH"
+  printf '\n'
+  printf -- '- Generator SHA-256: '
+  markdown_safe_code_span "$GENERATOR_SHA"
+  printf '\n'
+  printf -- '- Live input: '
+  markdown_safe_code_span "$LIVE_SOURCE_PATH"
+  printf '\n'
+  printf -- '- Live input SHA-256: '
+  markdown_safe_code_span "$LIVE_SOURCE_SHA"
+  printf '\n'
+  printf -- '- Repository HEAD at capture (context only; not the evidence identity): '
+  markdown_safe_code_span "$GIT_SHA"
+  printf '\n'
+  printf -- '- Implementation content digest: '
+  markdown_safe_code_span "$IMPLEMENTATION_CONTENT_DIGEST"
+  printf '\n'
   if [[ "$ISSUE" == "205" ]]; then
     printf -- '- Implementation identity scope: issue #205 iOS transcript implementation and tests, the applicable egui transcript mirror, release wiring/docs, capture generator, approved transcript prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; generated evidence is excluded.\n'
   else
     printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated evidence are excluded.\n'
   fi
-  printf -- '- Renderer executable: `%s` (private profile, loopback-only DevTools, and owned cleanup)\n' "$CHROME_BIN"
-  printf -- '- Native UI binary SHA-256: `%s`\n' "$LIVE_BINARY_SHA"
-  printf -- '- Daemon binary SHA-256: `%s`\n' "$DAEMON_BINARY_SHA"
-  printf -- '- Fixture registry SHA-256: `%s`\n' "$FIXTURE_REGISTRY_SHA"
-  printf -- '- Reproducible invocation: `%s`\n' "$COMMAND_LINE"
-  printf '\n### Implementation manifest\n\n%s\n' "$IMPLEMENTATION_MANIFEST"
+  printf -- '- Renderer executable: '
+  markdown_safe_code_span "$RENDERER_PATH_LABEL"
+  printf ' (private profile, one-shot screenshot without remote debugging, and owned cleanup)\n'
+  printf -- '- Native UI binary SHA-256: '
+  markdown_safe_code_span "$LIVE_BINARY_SHA"
+  printf '\n'
+  printf -- '- Daemon binary SHA-256: '
+  markdown_safe_code_span "$DAEMON_BINARY_SHA"
+  printf '\n'
+  printf -- '- Fixture registry SHA-256: '
+  markdown_safe_code_span "$FIXTURE_REGISTRY_SHA"
+  printf '\n'
+  printf -- '- Repository HEAD: '
+  markdown_safe_code_span "$GIT_SHA"
+  printf '\n'
+  printf -- '- Normalized invocation (placeholders are descriptive, not necessarily runnable): %s' "$INVOCATION_CODE_DELIMITER"
+  cat "$INVOCATION_NORMALIZED"
+  printf '%s\n' "$INVOCATION_CODE_DELIMITER"
+  printf '\n### Implementation manifest\n\n'
+  printf '<pre class="design-gate-implementation-manifest">\n'
+  cat "$IMPLEMENTATION_MANIFEST_MARKDOWN"
+  printf '\n</pre>\n'
   printf '\n## Artifacts\n\n'
   printf -- '| File | Dimensions | SHA-256 |\n| --- | --- | --- |\n'
   printf -- '| `prototype.png` | `%s` | `%s` |\n' "$PROTOTYPE_DIMS" "$PROTOTYPE_SHA"
@@ -1743,11 +2980,13 @@ for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
   [[ -s "$STAGE/$artifact" ]] || die "validated artifact is missing or empty: $artifact"
 done
 
+FINAL_DIR="$(mktemp -d "$OUTPUT_ROOT/.design-gate.final.XXXXXX")"
 for artifact in "${PUBLISHED_ARTIFACTS[@]}"; do
-  mv -f -- "$STAGE/$artifact" "$OUTPUT_DIR/$artifact"
+  mv -f -- "$STAGE/$artifact" "$FINAL_DIR/$artifact"
 done
 rm -rf -- "$STAGE"
 STAGE=""
+publish_bundle "$FINAL_DIR"
 
 log "wrote $OUTPUT_DIR"
 log "prototype: $OUTPUT_DIR/prototype.png ($PROTOTYPE_DIMS)"

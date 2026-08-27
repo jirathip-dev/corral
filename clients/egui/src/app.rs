@@ -118,6 +118,71 @@ const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 const SCREENSHOT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
 const SCREENSHOT_MAX_ATTEMPTS: u8 = 3;
 const SCREENSHOT_WAKE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const SCREENSHOT_WAKE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const SCREENSHOT_WAKE_MAX_DURATION: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Schedule exact-PID activation independently of eframe's `ui()` cadence.
+///
+/// macOS can stop delivering `ui()` frames while an eframe window is hidden or
+/// occluded. The native evidence command therefore activates the window from
+/// a bounded helper thread after target selection, rather than relying on the
+/// first deferred probe to run the caller-supplied wake command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeWindowWakeSchedule {
+    active_since: Option<std::time::Instant>,
+    next_wake: Option<std::time::Instant>,
+    expired: bool,
+}
+
+impl NativeWindowWakeSchedule {
+    fn activate(&mut self, now: std::time::Instant) {
+        if self.active_since.is_none() && !self.expired {
+            self.active_since = Some(now);
+            self.next_wake = Some(now);
+        }
+    }
+
+    fn deactivate(&mut self) {
+        self.active_since = None;
+        self.next_wake = None;
+        self.expired = false;
+    }
+
+    fn expire(&mut self) {
+        self.active_since = None;
+        self.next_wake = None;
+        self.expired = true;
+    }
+
+    fn due(&mut self, now: std::time::Instant) -> bool {
+        let Some(active_since) = self.active_since else {
+            return false;
+        };
+        if now.saturating_duration_since(active_since) >= SCREENSHOT_WAKE_MAX_DURATION {
+            self.expire();
+            return false;
+        }
+        self.next_wake.is_some_and(|next_wake| now >= next_wake)
+    }
+
+    fn record_wake(&mut self, now: std::time::Instant) {
+        let Some(active_since) = self.active_since else {
+            return;
+        };
+        if now.saturating_duration_since(active_since) >= SCREENSHOT_WAKE_MAX_DURATION {
+            self.expire();
+        } else {
+            self.next_wake = Some(now + SCREENSHOT_WAKE_RETRY_INTERVAL);
+        }
+    }
+
+    fn sleep_for(self, now: std::time::Instant) -> std::time::Duration {
+        self.next_wake
+            .map(|next_wake| next_wake.saturating_duration_since(now))
+            .unwrap_or(SCREENSHOT_WAKE_POLL_INTERVAL)
+            .min(SCREENSHOT_WAKE_POLL_INTERVAL)
+    }
+}
 
 /// The opt-in native evidence capture has an explicit readiness/settle state.
 /// Target selection is immediately dispatchable, but every dispatch is
@@ -788,6 +853,36 @@ fn macos_cg_window_probe(pid: u32) -> Result<MacosCgWindowProbe, String> {
     Ok(probe)
 }
 
+const SCREENSHOT_WAKE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(unix)]
+fn terminate_wake_command_process_group(pid: u32) {
+    let process_group = -(pid as libc::pid_t);
+    // SAFETY: the wake command's pre-exec hook puts only that command in a
+    // process group named by its own PID. Killing the group cannot target the
+    // egui process group or an unrelated caller process.
+    unsafe {
+        libc::kill(process_group, libc::SIGKILL);
+    }
+}
+
+fn cleanup_wake_command_process_group(
+    child: &mut std::process::Child,
+    child_pid: u32,
+    child_reaped: bool,
+) {
+    // A shell can report success after starting `command &`. The direct
+    // child is then already reaped, but its descendants remain in this exact
+    // process group. Always terminate that group on every terminal outcome;
+    // on timeout/wait-error paths also reap the direct child below.
+    #[cfg(unix)]
+    terminate_wake_command_process_group(child_pid);
+    if !child_reaped {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
     let pid = std::process::id().to_string();
     tracing::info!(
@@ -796,33 +891,40 @@ fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
         path = %path.display(),
         "requesting exact-owned native window wake"
     );
-    match std::process::Command::new("bash")
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::thread;
+
+    let mut wake_command = Command::new("bash");
+    wake_command
         .args(["-c", command])
         .env("CORRAL_UI_SCREENSHOT_PID", &pid)
         .env("CORRAL_UI_SCREENSHOT_PATH", path)
-        .output()
+        .stdin(Stdio::null())
+        // A caller-owned wake helper has no trusted output channel. Discard
+        // it so a noisy or descendant-holding command cannot block the
+        // bounded scheduler on a pipe.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
     {
-        Ok(output) if output.status.success() => {
-            tracing::info!(
-                pid = %pid,
-                command = %command,
-                stdout = %String::from_utf8_lossy(&output.stdout),
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "exact-owned native window wake completed"
-            );
-            true
+        // SAFETY: this pre-exec hook performs only async-signal-safe
+        // process-group setup. The group gives timeout cleanup an exact
+        // ownership boundary for the shell and any helper it launches.
+        unsafe {
+            wake_command.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
         }
-        Ok(output) => {
-            tracing::warn!(
-                pid = %pid,
-                command = %command,
-                status = %output.status,
-                stdout = %String::from_utf8_lossy(&output.stdout),
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "exact-owned native window wake failed"
-            );
-            false
-        }
+    }
+
+    let mut child = match wake_command.spawn() {
+        Ok(child) => child,
         Err(error) => {
             tracing::warn!(
                 pid = %pid,
@@ -830,7 +932,52 @@ fn invoke_exact_window_wake(command: &str, path: &std::path::Path) -> bool {
                 error = %error,
                 "could not run exact-owned native window wake"
             );
-            false
+            return false;
+        }
+    };
+    let child_pid = child.id();
+    let deadline = std::time::Instant::now() + SCREENSHOT_WAKE_COMMAND_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                cleanup_wake_command_process_group(&mut child, child_pid, true);
+                if status.success() {
+                    tracing::info!(
+                        pid = %pid,
+                        command = %command,
+                        "exact-owned native window wake completed"
+                    );
+                    return true;
+                }
+                tracing::warn!(
+                    pid = %pid,
+                    command = %command,
+                    status = %status,
+                    "exact-owned native window wake failed"
+                );
+                return false;
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                cleanup_wake_command_process_group(&mut child, child_pid, false);
+                tracing::warn!(
+                    pid = %pid,
+                    command = %command,
+                    timeout_ms = SCREENSHOT_WAKE_COMMAND_TIMEOUT.as_millis(),
+                    "exact-owned native window wake timed out"
+                );
+                return false;
+            }
+            Ok(None) => thread::sleep(SCREENSHOT_WAKE_POLL_INTERVAL),
+            Err(error) => {
+                cleanup_wake_command_process_group(&mut child, child_pid, false);
+                tracing::warn!(
+                    pid = %pid,
+                    command = %command,
+                    error = %error,
+                    "could not wait for exact-owned native window wake"
+                );
+                return false;
+            }
         }
     }
 }
@@ -980,6 +1127,7 @@ pub struct CorralApp {
     screenshot_agent_id: Option<String>,
     screenshot_agent_selected: bool,
     screenshot_wake_stop: Option<Arc<AtomicBool>>,
+    screenshot_wake_active: Option<Arc<AtomicBool>>,
     screenshot_wake_command: Option<String>,
     screenshot_last_wake: Option<std::time::Instant>,
     /// Diagnostic-only native window sampling. This is independent of the
@@ -1033,6 +1181,9 @@ impl CorralApp {
             .ok()
             .filter(|command| !command.trim().is_empty())
             .filter(|_| screenshot_path.is_some());
+        let screenshot_wake_active = (screenshot_path.is_some()
+            && screenshot_wake_command.is_some())
+        .then(|| Arc::new(AtomicBool::new(false)));
         let window_diagnostic = std::env::var_os("CORRAL_UI_WINDOW_DIAGNOSTIC").is_some();
         let screenshot_settle = std::env::var("CORRAL_UI_SCREENSHOT_DELAY_MS")
             .ok()
@@ -1094,6 +1245,7 @@ impl CorralApp {
             screenshot_agent_id,
             screenshot_agent_selected: false,
             screenshot_wake_stop: None,
+            screenshot_wake_active: screenshot_wake_active.clone(),
             screenshot_wake_command,
             screenshot_last_wake: None,
             window_diagnostic,
@@ -1104,23 +1256,63 @@ impl CorralApp {
             native_probe_in_flight: false,
         };
 
+        // An un-targeted screenshot has no selection transition to arm the
+        // exact-PID activation schedule. Targeted captures arm it only after
+        // the requested live agent has been selected below.
+        if app.screenshot_agent_id.is_none()
+            && let Some(active) = &app.screenshot_wake_active
+        {
+            active.store(true, Ordering::Release);
+        }
+
         // A native window can be quiet while an external wake command only
-        // changes focus. Keep the env-gated evidence loop repainting until
-        // the screenshot event arrives; normal app instances never create
-        // this helper thread.
+        // changes focus. Keep the env-gated evidence loop repainting until the
+        // screenshot event arrives. For a screenshot capture with a caller
+        // wake command, the same thread also performs repeated exact-PID
+        // activation until dispatch or a bounded lifetime expires; normal app
+        // instances never create this helper thread.
         if app.screenshot_path.is_some() || app.window_diagnostic {
             let stop = Arc::new(AtomicBool::new(false));
             let thread_stop = Arc::clone(&stop);
             let repaint_ctx = cc.egui_ctx.clone();
-            let _ = std::thread::Builder::new()
+            let wake_active = app.screenshot_wake_active.clone();
+            let wake_command = app.screenshot_wake_command.clone();
+            let wake_path = app.screenshot_path.clone();
+            let spawn_result = std::thread::Builder::new()
                 .name("corral-screenshot-waker".into())
                 .spawn(move || {
+                    let mut wake_schedule = NativeWindowWakeSchedule::default();
                     while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        // Request a repaint on every loop before any
+                        // activation command. Either signal can be the event
+                        // that gets a quiet eframe viewport back into `ui()`.
                         repaint_ctx.request_repaint();
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let now = std::time::Instant::now();
+                        if wake_active
+                            .as_ref()
+                            .is_some_and(|active| active.load(std::sync::atomic::Ordering::Acquire))
+                        {
+                            wake_schedule.activate(now);
+                        } else {
+                            wake_schedule.deactivate();
+                        }
+                        if let (Some(command), Some(path)) =
+                            (wake_command.as_deref(), wake_path.as_deref())
+                            && wake_schedule.due(now)
+                        {
+                            let _ = invoke_exact_window_wake(command, path);
+                            wake_schedule.record_wake(std::time::Instant::now());
+                        }
+                        std::thread::sleep(wake_schedule.sleep_for(std::time::Instant::now()));
                     }
                 });
-            app.screenshot_wake_stop = Some(stop);
+            match spawn_result {
+                Ok(_) => app.screenshot_wake_stop = Some(stop),
+                Err(error) => {
+                    app.screenshot_wake_active = None;
+                    tracing::warn!(%error, "could not start screenshot wake helper");
+                }
+            }
         }
 
         // Resolve the host identity so the device key can be scoped to it.
@@ -1846,6 +2038,9 @@ impl CorralApp {
             read_tail_granted = self.ledger.allowed("read_tail"),
             "native screenshot evidence selected live agent; Cards hydration remains grant-gated"
         );
+        if let Some(active) = &self.screenshot_wake_active {
+            active.store(true, Ordering::Release);
+        }
         target_ready
     }
 
@@ -2580,6 +2775,9 @@ impl eframe::App for CorralApp {
                 let valid_png = save_png(&path, &image);
                 self.screenshot_state = self.screenshot_state.record_screenshot_event(valid_png);
                 if valid_png {
+                    if let Some(active) = &self.screenshot_wake_active {
+                        active.store(false, Ordering::Release);
+                    }
                     if let Some(stop) = &self.screenshot_wake_stop {
                         stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -2612,6 +2810,13 @@ impl eframe::App for CorralApp {
                     ScreenshotDispatch::Dispatched { attempt } => {
                         let window =
                             window.expect("a dispatched screenshot requires a probe result");
+                        // Exact-PID activation is needed to get us to this
+                        // frame. Once the probe has authorized dispatch, stop
+                        // sending input; the repaint helper remains alive
+                        // until the Screenshot event is saved.
+                        if let Some(active) = &self.screenshot_wake_active {
+                            active.store(false, Ordering::Release);
+                        }
                         tracing::info!(
                             path = %path.display(),
                             attempt,
@@ -2640,14 +2845,20 @@ impl eframe::App for CorralApp {
                         });
                         if should_wake {
                             if let Some(command) = self.screenshot_wake_command.as_deref() {
-                                let _ = invoke_exact_window_wake(command, &path);
+                                // The helper thread owns the repeated wake
+                                // schedule. Keep the old direct call only as
+                                // a bounded fallback if that thread could not
+                                // be started.
+                                if self.screenshot_wake_active.is_none() {
+                                    let _ = invoke_exact_window_wake(command, &path);
+                                }
                                 self.screenshot_last_wake = Some(now);
                                 tracing::info!(
                                     path = %path.display(),
                                     visible,
                                     frontmost,
                                     reason_code,
-                                    "deferring viewport screenshot after exact-owned wake"
+                                    "deferring viewport screenshot; exact-owned wake schedule remains active"
                                 );
                             } else {
                                 tracing::warn!(
@@ -2663,6 +2874,9 @@ impl eframe::App for CorralApp {
                         ctx.request_repaint_after(std::time::Duration::from_millis(100));
                     }
                     ScreenshotDispatch::Exhausted => {
+                        if let Some(active) = &self.screenshot_wake_active {
+                            active.store(false, Ordering::Release);
+                        }
                         if let Some(stop) = &self.screenshot_wake_stop {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -2703,6 +2917,20 @@ impl eframe::App for CorralApp {
 
         crate::ui::toast_area(&ctx, &mut self.toasts);
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+    }
+}
+
+impl Drop for CorralApp {
+    fn drop(&mut self) {
+        // The helper carries this process's exact PID in every wake command.
+        // Stop it before the app can disappear so a late retry cannot act on
+        // a reused PID after the capture process exits.
+        if let Some(active) = &self.screenshot_wake_active {
+            active.store(false, Ordering::Release);
+        }
+        if let Some(stop) = &self.screenshot_wake_stop {
+            stop.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -3019,6 +3247,7 @@ mod tests {
             screenshot_agent_id: None,
             screenshot_agent_selected: false,
             screenshot_wake_stop: None,
+            screenshot_wake_active: None,
             screenshot_wake_command: None,
             screenshot_last_wake: None,
             window_diagnostic: false,
@@ -3526,6 +3755,88 @@ mod tests {
         assert!(armed);
         assert!(!settling.dispatch_due(start));
         assert!(settling.dispatch_due(start + settle));
+    }
+
+    #[test]
+    fn native_window_wake_schedule_repeats_through_the_settle_interval() {
+        let start = Instant::now();
+        let mut schedule = NativeWindowWakeSchedule::default();
+        assert!(!schedule.due(start));
+
+        schedule.activate(start);
+        let mut wake_count = 0;
+        for second in 0..=12 {
+            let now = start + std::time::Duration::from_secs(second);
+            if schedule.due(now) {
+                wake_count += 1;
+                schedule.record_wake(now);
+            }
+        }
+
+        assert_eq!(
+            wake_count, 13,
+            "activation must continue during the 12s settle"
+        );
+        assert!(
+            !schedule.due(start + SCREENSHOT_WAKE_MAX_DURATION),
+            "wake activation must have a hard lifetime bound"
+        );
+        schedule.activate(start + SCREENSHOT_WAKE_MAX_DURATION);
+        assert!(
+            !schedule.due(start + SCREENSHOT_WAKE_MAX_DURATION),
+            "an expired schedule must not silently restart while activation remains requested"
+        );
+        schedule.deactivate();
+        assert!(!schedule.due(start + SCREENSHOT_WAKE_MAX_DURATION));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_window_wake_command_has_a_bounded_owned_timeout() {
+        let started = Instant::now();
+        assert!(!invoke_exact_window_wake(
+            "sleep 5",
+            Path::new("/tmp/wake-test")
+        ));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "a hung caller wake must not block the native capture indefinitely"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_window_wake_command_cleans_up_successful_background_descendant() {
+        let dir = std::env::temp_dir().join(format!(
+            "corrald-ui-native-wake-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let descendant_pid_path = dir.join("descendant.pid");
+
+        assert!(invoke_exact_window_wake(
+            "sleep 20 & printf '%s\\n' \"$!\" > \"$CORRAL_UI_SCREENSHOT_PATH\"",
+            &descendant_pid_path
+        ));
+        let descendant_pid = std::fs::read_to_string(&descendant_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while unsafe { libc::kill(descendant_pid, 0) == 0 } && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant_pid, 0) },
+            0,
+            "a successful wake must not leave its background descendant alive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

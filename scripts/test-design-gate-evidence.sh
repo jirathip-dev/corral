@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Hermetic tests for scripts/design-gate-evidence.sh. They cover the supplied
 # PNG seam, complete-PNG rejection, exit-during-validation rechecking, visible
-# provenance labels, explicit force overwrites, normalized conformance
-# stability, complete-but-lingering writers, TERM-ignoring child escalation,
-# structural prototype rejection through real Chrome, Chrome trust-boundary
-# flags, argument validation, and the egui wake-command failure path.
+# provenance labels, canonical symlink/wrapper identity (including spaces),
+# stable repo-relative paths across cwd spellings, byte-stable conformance,
+# lossless slash-prefixed argv, opaque command-path redaction, targeted note
+# redaction, Markdown-safe note rendering, load-bearing path normalization
+# failures, complete-but-lingering
+# writers, TERM-ignoring child escalation, bounded raw-byte logs with invalid
+# UTF-8 and configured worktree roots, a bounded generic-worktree scan,
+# structural prototype rejection through real Chrome, private-profile one-shot
+# flags, argument validation, locked atomic publication rollback, content-
+# sensitive same-size PNG repair, and bounded egui wake-command ownership.
 #
 # Run with one command:
 #   bash scripts/test-design-gate-evidence.sh
@@ -25,24 +31,44 @@ fail() {
 
 mkdir -p "$WORK/bin" "$WORK/output"
 
+ln -s "$SCRIPT" "$WORK/design-gate-link.sh"
+ln -s "$SCRIPT" "$WORK/design gate.sh"
+cat >"$WORK/design-gate-wrapper.sh" <<WRAPPER
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$WORK/design-gate-link.sh" "\$@"
+WRAPPER
+chmod +x "$WORK/design-gate-wrapper.sh"
+
 "$PYTHON_BIN" - "$WORK/prototype.png" "$WORK/ios-prototype.png" \
-  "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" <<'PY'
+  "$WORK/live.png" "$WORK/composite.png" "$WORK/truncated.png" \
+  "$WORK/invalid-raster.png" "$WORK/invalid-filter.png" \
+  "$WORK/interlaced.png" "$WORK/invalid-palette.png" \
+  "$WORK/invalid-palette-size.png" "$WORK/invalid-palette-index.png" \
+  "$WORK/invalid-grayscale-palette.png" "$WORK/nonconsecutive-idat.png" \
+  "$WORK/valid-palette.png" "$WORK/unknown-critical.png" \
+  "$WORK/indexed-trns-before-plte.png" "$WORK/trns-after-idat.png" \
+  "$WORK/duplicate-trns.png" "$WORK/truecolor-trns-before-plte.png" \
+  "$WORK/truecolor-bkgd-before-plte.png" "$WORK/invalid-reserved-chunk.png" \
+  "$WORK/masked-samples.png" "$WORK/truecolor-hist.png" \
+  "$WORK/truecolor-alpha-hist.png" <<'PY'
 from pathlib import Path
 import struct
 import sys
 import zlib
 
 
+def chunk(name, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + name
+        + payload
+        + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+    )
+
+
 def write_png(path, width, height, rgb):
     rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
-
-    def chunk(name, payload):
-        return (
-            struct.pack(">I", len(payload))
-            + name
-            + payload
-            + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
-        )
 
     data = b"\x89PNG\r\n\x1a\n"
     data += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
@@ -56,6 +82,172 @@ write_png(Path(sys.argv[2]), 900, 900, (45, 212, 191))
 write_png(Path(sys.argv[3]), 32, 24, (88, 166, 255))
 write_png(Path(sys.argv[4]), 2400, 960, (13, 17, 23))
 Path(sys.argv[5]).write_bytes(Path(sys.argv[3]).read_bytes()[:-12])
+invalid_raster = b"\x89PNG\r\n\x1a\n"
+invalid_raster += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 10, 10, 8, 2, 0, 0, 0)
+)
+invalid_raster += chunk(b"IDAT", zlib.compress(b""))
+invalid_raster += chunk(b"IEND", b"")
+Path(sys.argv[6]).write_bytes(invalid_raster)
+invalid_filter = b"\x89PNG\r\n\x1a\n"
+invalid_filter += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+invalid_filter += chunk(b"IDAT", zlib.compress(b"\x05\x00\x00\x00"))
+invalid_filter += chunk(b"IEND", b"")
+Path(sys.argv[7]).write_bytes(invalid_filter)
+interlaced = b"\x89PNG\r\n\x1a\n"
+interlaced += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 1)
+)
+interlaced += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+interlaced += chunk(b"IEND", b"")
+Path(sys.argv[8]).write_bytes(interlaced)
+invalid_palette = b"\x89PNG\r\n\x1a\n"
+invalid_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+invalid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_palette += chunk(b"IEND", b"")
+Path(sys.argv[9]).write_bytes(invalid_palette)
+invalid_palette_size = b"\x89PNG\r\n\x1a\n"
+invalid_palette_size += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 3, 0, 0, 0)
+)
+invalid_palette_size += chunk(b"PLTE", b"\x00\x00\x00\xff\xff\xff\x80\x80\x80")
+invalid_palette_size += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_palette_size += chunk(b"IEND", b"")
+Path(sys.argv[10]).write_bytes(invalid_palette_size)
+invalid_palette_index = b"\x89PNG\r\n\x1a\n"
+invalid_palette_index += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+invalid_palette_index += chunk(b"PLTE", b"\x00\x00\x00")
+invalid_palette_index += chunk(b"IDAT", zlib.compress(b"\x00\x01"))
+invalid_palette_index += chunk(b"IEND", b"")
+Path(sys.argv[11]).write_bytes(invalid_palette_index)
+invalid_grayscale_palette = b"\x89PNG\r\n\x1a\n"
+invalid_grayscale_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+)
+invalid_grayscale_palette += chunk(b"PLTE", b"\x00\x00\x00")
+invalid_grayscale_palette += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+invalid_grayscale_palette += chunk(b"IEND", b"")
+Path(sys.argv[12]).write_bytes(invalid_grayscale_palette)
+nonconsecutive_idat = b"\x89PNG\r\n\x1a\n"
+nonconsecutive_idat += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+compressed = zlib.compress(b"\x00\x00\x00\x00")
+split = max(1, len(compressed) // 2)
+nonconsecutive_idat += chunk(b"IDAT", compressed[:split])
+nonconsecutive_idat += chunk(b"tEXt", b"comment\x00between IDAT chunks")
+nonconsecutive_idat += chunk(b"IDAT", compressed[split:])
+nonconsecutive_idat += chunk(b"IEND", b"")
+Path(sys.argv[13]).write_bytes(nonconsecutive_idat)
+valid_palette = b"\x89PNG\r\n\x1a\n"
+valid_palette += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 3, 0, 0, 0)
+)
+valid_palette += chunk(b"PLTE", b"\x00\x00\x00\xff\xff\xff")
+valid_palette += chunk(b"IDAT", zlib.compress(b"\x00\x01"))
+valid_palette += chunk(b"IEND", b"")
+Path(sys.argv[14]).write_bytes(valid_palette)
+unknown_critical = b"\x89PNG\r\n\x1a\n"
+unknown_critical += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+unknown_critical += chunk(b"ABCD", b"")
+unknown_critical += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+unknown_critical += chunk(b"IEND", b"")
+Path(sys.argv[15]).write_bytes(unknown_critical)
+indexed_trns_before_plte = b"\x89PNG\r\n\x1a\n"
+indexed_trns_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+)
+indexed_trns_before_plte += chunk(b"tRNS", b"\x00")
+indexed_trns_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+indexed_trns_before_plte += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+indexed_trns_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[16]).write_bytes(indexed_trns_before_plte)
+trns_after_idat = b"\x89PNG\r\n\x1a\n"
+trns_after_idat += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+trns_after_idat += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+trns_after_idat += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+trns_after_idat += chunk(b"IEND", b"")
+Path(sys.argv[17]).write_bytes(trns_after_idat)
+duplicate_trns = b"\x89PNG\r\n\x1a\n"
+duplicate_trns += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+duplicate_trns += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+duplicate_trns += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+duplicate_trns += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+duplicate_trns += chunk(b"IEND", b"")
+Path(sys.argv[18]).write_bytes(duplicate_trns)
+truecolor_trns_before_plte = b"\x89PNG\r\n\x1a\n"
+truecolor_trns_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_trns_before_plte += chunk(b"tRNS", b"\x00\x00\x00\x00\x00\x00")
+truecolor_trns_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_trns_before_plte += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+truecolor_trns_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[19]).write_bytes(truecolor_trns_before_plte)
+truecolor_bkgd_before_plte = b"\x89PNG\r\n\x1a\n"
+truecolor_bkgd_before_plte += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_bkgd_before_plte += chunk(b"bKGD", b"\x00\x00\x00\x00\x00\x00")
+truecolor_bkgd_before_plte += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_bkgd_before_plte += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+truecolor_bkgd_before_plte += chunk(b"IEND", b"")
+Path(sys.argv[20]).write_bytes(truecolor_bkgd_before_plte)
+invalid_reserved_chunk = b"\x89PNG\r\n\x1a\n"
+invalid_reserved_chunk += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+invalid_reserved_chunk += chunk(b"abcd", b"")
+invalid_reserved_chunk += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00")
+)
+invalid_reserved_chunk += chunk(b"IEND", b"")
+Path(sys.argv[21]).write_bytes(invalid_reserved_chunk)
+masked_samples = b"\x89PNG\r\n\x1a\n"
+masked_samples += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 1, 0, 0, 0, 0)
+)
+masked_samples += chunk(b"tRNS", b"\x00\x02")
+masked_samples += chunk(b"bKGD", b"\x00\x02")
+masked_samples += chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+masked_samples += chunk(b"IEND", b"")
+Path(sys.argv[22]).write_bytes(masked_samples)
+truecolor_hist = b"\x89PNG\r\n\x1a\n"
+truecolor_hist += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+truecolor_hist += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_hist += chunk(b"hIST", b"\x00\x01")
+truecolor_hist += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+truecolor_hist += chunk(b"IEND", b"")
+Path(sys.argv[23]).write_bytes(truecolor_hist)
+truecolor_alpha_hist = b"\x89PNG\r\n\x1a\n"
+truecolor_alpha_hist += chunk(
+    b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+)
+truecolor_alpha_hist += chunk(b"PLTE", b"\x00\x00\x00")
+truecolor_alpha_hist += chunk(b"hIST", b"\x00\x01")
+truecolor_alpha_hist += chunk(
+    b"IDAT", zlib.compress(b"\x00\x00\x00\x00\x00")
+)
+truecolor_alpha_hist += chunk(b"IEND", b"")
+Path(sys.argv[24]).write_bytes(truecolor_alpha_hist)
 PY
 
 cat > "$WORK/bin/chrome" <<'STUB'
@@ -69,13 +261,19 @@ if [[ "${CORRAL_TEST_CHROME_FAIL:-0}" == "1" ]]; then
 fi
 output=""
 url=""
+has_remote_debugging=0
 for argument in "$@"; do
   case "$argument" in
     --screenshot=*) output="${argument#--screenshot=}" ;;
+    --remote-debugging-*) has_remote_debugging=1 ;;
     file://*) url="$argument" ;;
   esac
 done
 [[ -n "$output" && -n "$url" ]]
+if [[ "$has_remote_debugging" -eq 1 ]]; then
+  printf '%s\n' 'incompatible: one-shot --screenshot cannot use remote debugging' >&2
+  exit 97
+fi
 html_path="${url#file://}"
 case "$output" in
   *prototype.png)
@@ -146,7 +344,7 @@ if [[ -n "${CORRAL_TEST_UI_CONFIG_ROOT:-}" ]]; then
     || { printf '%s\n' 'egui staged config is missing the seeded config.json' >&2; exit 1; }
 fi
 mode="${CORRAL_TEST_EGUI_MODE:-normal}"
-if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" ]]; then
+if [[ "$mode" == "partial-then-linger" || "$mode" == "partial-stuck" || "$mode" == "race-during-validation" || "$mode" == "invalid-bytes" || "$mode" == "invalid-stable" || "$mode" == "invalid-then-same-signature-valid" || "$mode" == "large-log" || "$mode" == "generic-path-chaff" ]]; then
   exec "$PYTHON_BIN" - "$CORRAL_TEST_LIVE_PNG" "$CORRAL_UI_SCREENSHOT" "$mode" <<'PY'
 from pathlib import Path
 import os
@@ -157,15 +355,108 @@ import time
 source = Path(sys.argv[1]).read_bytes()
 destination = Path(sys.argv[2])
 mode = sys.argv[3]
+if mode == "invalid-bytes":
+    sys.stdout.buffer.write(b"raw diagnostic with invalid byte: \xff\n")
+    sys.stdout.buffer.write(b"FAILURE: exact invalid-byte diagnostic\n")
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
+if mode == "invalid-stable":
+    destination.write_bytes(Path(os.environ["CORRAL_TEST_INVALID_PNG"]).read_bytes())
+    sys.stdout.buffer.write(b"invalid stable PNG fixture published\n")
+    sys.stdout.buffer.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+if mode == "invalid-then-same-signature-valid":
+    invalid = Path(os.environ["CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG"]).read_bytes()
+    valid = Path(os.environ["CORRAL_TEST_VALID_SAME_SIGNATURE_PNG"]).read_bytes()
+    destination.write_bytes(invalid)
+    original_stat = destination.stat()
+    sys.stdout.buffer.write(b"invalid PNG published before in-place repair\n")
+    sys.stdout.buffer.flush()
+    time.sleep(0.5)
+    destination.write_bytes(valid)
+    os.utime(
+        destination,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    assert destination.stat().st_ino == original_stat.st_ino
+    assert destination.stat().st_size == original_stat.st_size
+    assert int(destination.stat().st_mtime) == int(original_stat.st_mtime)
+    assert destination.read_bytes()[:64] == invalid[:64]
+    assert destination.read_bytes()[-64:] == invalid[-64:]
+    Path(os.environ["CORRAL_TEST_EGUI_FINISHED"]).touch()
+    sys.stdout.buffer.write(b"valid PNG repaired in place with the old metadata signature\n")
+    sys.stdout.buffer.flush()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+if mode == "large-log":
+    configured_root = os.environ.get(
+        "CORRAL_TEST_WORKTREES_ROOT", "/tmp/Configured Herdr Root"
+    ).encode()
+    repo_root = os.environ.get("CORRAL_TEST_REPO_ROOT", "/tmp/corral-repo").encode()
+    output_root = os.environ.get("CORRAL_TEST_OUTPUT_ROOT", "/tmp/corral-output").encode()
+    sys.stdout.buffer.write(b"capture header\n")
+    sys.stdout.buffer.write(b"x" * 100000)
+    sys.stdout.buffer.write(
+        b"\nconfigured-worktree="
+        + configured_root
+        + b"/repo name/worktree name/ios\n"
+        + b"configured-root="
+        + configured_root
+        + b"\n"
+        + b"configured-sibling="
+        + configured_root
+        + b".bak/repo name/worktree name/ios\n"
+        + b"generic-worktree=/prefix with spaces/.herdr/worktrees/repo name/worktree name/ios\n"
+        + b"generic-bare=/h/.herdr/worktrees/a/b\n"
+        + b"generic-bare-real=/Users/jirathip/.herdr/worktrees/corral/other-branch\n"
+        + b"generic-bare-spaces=/prefix with spaces/.herdr/worktrees/repo name/worktree name\n"
+        + b"generic-space-marker=/prefix with spaces/.herdr/worktrees/repo/my failed experiment\n"
+        + b"generic-crash-name=/prefix with spaces/.herdr/worktrees/repo/my crashed experiment\n"
+        + b"generic-unfamiliar=/prefix with spaces/.herdr/worktrees/repo/my feature branch became unreadable\n"
+        + b"generic-crash-diagnostic=/prefix with spaces/.herdr/worktrees/repo/my feature branch crashed during capture\n"
+        + b"same-line-two-paths=cp /tmp/x /prefix with spaces/.herdr/worktrees/r n/w n/f\n"
+        + b"known-repo-child="
+        + repo_root
+        + b"/scripts\n"
+        + b"output-sibling="
+        + output_root
+        + b"-backup/file\n"
+        + b"output-dot-sibling="
+        + output_root
+        + b".bak/file\n"
+        + b'quoted-diagnostic="'
+        + configured_root
+        + b'/repo/branch": permission denied\n'
+        + b"configured-status="
+        + configured_root
+        + b"/repo/branch status=FAILED code=17\n"
+        + b"configured-parenthetical="
+        + configured_root
+        + b"/repo/branch (No such file)\n"
+        + b"generic-status=/h/.herdr/worktrees/a/b status=FAILED code=17\n"
+        + b"generic-parenthetical=/h/.herdr/worktrees/a/b (No such file)\n"
+        b"FAILURE: exact bounded-log diagnostic \xff\n"
+    )
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
+if mode == "generic-path-chaff":
+    sys.stdout.buffer.write(b" /seg name/sub dir/file.o" * 32000)
+    sys.stdout.buffer.write(b"\nFAILURE: generic path scan completed\n")
+    sys.stdout.buffer.flush()
+    destination.write_bytes(source)
+    raise SystemExit(0)
 split = max(1, len(source) // 2)
 destination.write_bytes(source[:split])
 if mode == "race-during-validation":
-    marker = Path(os.environ["CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"])
-    deadline = time.monotonic() + 5
-    while not marker.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not marker.exists():
-        raise SystemExit("PNG race validator did not start")
+    # The production gate must wait for the writer to finish before invoking
+    # the expensive full validator. A short delay leaves a partial file in
+    # place for several polls, then publishes the rest and records completion.
+    time.sleep(0.25)
     with destination.open("ab") as stream:
         stream.write(source[split:])
     Path(os.environ["CORRAL_TEST_PNG_RACE_WRITER_FINISHED"]).touch()
@@ -198,6 +489,15 @@ fi
 STUB
 chmod +x "$WORK/bin/egui"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  cat > "$WORK/bin/native-window-probe" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$WORK/bin/native-window-probe"
+  export CORRAL_UI_WINDOW_PROBE_HELPER="$WORK/bin/native-window-probe"
+fi
+
 cat > "$WORK/bin/python-race" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -206,25 +506,55 @@ if [[ "${CORRAL_TEST_PNG_RACE:-0}" == "1" \
   && "${2:-}" == *"live-after.png" \
   && ! -e "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]]; then
   touch "$CORRAL_TEST_PNG_RACE_INTERCEPTED"
-  # Run the real validator against the partial file first. Its rejection is
-  # part of this seam; then let the writer finish and exit while reporting the
-  # first validation as failed so the production recheck is exercised.
-  if "$CORRAL_TEST_REAL_PYTHON" "$@" >/dev/null 2>&1; then
-    echo "race validator unexpectedly accepted the partial PNG" >&2
-    exit 1
+  # If this runs before the writer finishes, the stable-size/IEND gate failed
+  # and full PNG reconstruction was attempted against a partial file.
+  if [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]]; then
+    touch "$CORRAL_TEST_PNG_RACE_PREMATURE"
   fi
-  touch "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED"
-  deadline=$((SECONDS + 5))
-  while [[ ! -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" \
-    && $SECONDS -lt $deadline ]]; do
-    sleep 0.01
-  done
-  [[ -e "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]]
-  exit 1
+fi
+if [[ -n "${CORRAL_TEST_PNG_VALIDATION_COUNT:-}" \
+  && "${1:-}" == "-" \
+  && "${2:-}" == *"live-after.png" ]]; then
+  validation_count=0
+  if [[ -f "$CORRAL_TEST_PNG_VALIDATION_COUNT" ]]; then
+    validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+  fi
+  printf '%s\n' "$((validation_count + 1))" >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
 fi
 exec "$CORRAL_TEST_REAL_PYTHON" "$@"
 STUB
 chmod +x "$WORK/bin/python-race"
+
+cat > "$WORK/bin/python-fail-path" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${2:-}" == *fail-normalization-app* ]]; then
+  exit 77
+fi
+if [[ "${3:-}" == *fail-note-normalization* ]]; then
+  exit 78
+fi
+exec "$CORRAL_TEST_REAL_PYTHON" "$@"
+STUB
+chmod +x "$WORK/bin/python-fail-path"
+
+mkdir -p "$WORK/Fake.app"
+cat > "$WORK/bin/xcrun" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${4:-}" == "screenshot" ]]; then
+  cp -- "$CORRAL_TEST_LIVE_PNG" "${5:?}"
+fi
+STUB
+chmod +x "$WORK/bin/xcrun"
+
+cat > "$WORK/bin/hermes-sim-task" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "--shell" && -n "${2:-}" ]]
+SIMULATOR_UDID=fixture bash -c "$2"
+STUB
+chmod +x "$WORK/bin/hermes-sim-task"
 
 cat > "$WORK/malformed-prototype.html" <<'HTML'
 <!doctype html>
@@ -269,29 +599,144 @@ export CORRAL_TEST_PROTOTYPE_HTML="$WORK/prototype-view.html"
 export CORRAL_TEST_EXPECTED_ISSUE=211
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
 
-normalized_conformance_sha() {
-  "$PYTHON_BIN" - "$1" <<'PY'
+"$PYTHON_BIN" - "$WORK/invalid-same-signature.png" "$WORK/valid-same-signature.png" <<'PY'
 from pathlib import Path
-import hashlib
-import re
+import struct
 import sys
+import zlib
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-normalized = re.sub(r"Generated: `[^`]+`", "Generated: `TIMESTAMP`", text)
-normalized = normalized.replace(" --force", "")
-print(hashlib.sha256(normalized.encode()).hexdigest())
+width = height = 256
+row_bytes = width * 3 + 1
+raw = bytearray()
+state = 0x12345678
+for _ in range(height):
+    raw.append(0)
+    for _ in range(width):
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        raw.extend((state & 0xFF, (state >> 8) & 0xFF, (state >> 16) & 0xFF))
+raw = bytes(raw)
+compressed = zlib.compress(raw, 9)
+split = len(compressed) // 2
+first = compressed[:split]
+second = compressed[split:]
+assert len(first) > 128 and len(second) > 64
+
+
+def chunk(name, payload):
+    return (
+        struct.pack(">I", len(payload))
+        + name
+        + payload
+        + struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF)
+    )
+
+
+def image(first_idat):
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", first_idat)
+        + chunk(b"IDAT", second)
+        + chunk(b"IEND", b"")
+    )
+
+
+valid = image(first)
+invalid = None
+for index in range(64, len(first) - 64):
+    for mask in (1, 2, 4, 8, 16, 32, 64, 128):
+        mutated = bytearray(first)
+        mutated[index] ^= mask
+        try:
+            decoded = zlib.decompress(bytes(mutated) + second)
+        except zlib.error:
+            invalid = image(bytes(mutated))
+            break
+        invalid_filters = any(decoded[row * row_bytes] > 4 for row in range(height))
+        if len(decoded) != len(raw) or invalid_filters:
+            invalid = image(bytes(mutated))
+            break
+    if invalid is not None:
+        break
+
+assert invalid is not None, "could not construct an invalid same-size PNG"
+assert len(invalid) == len(valid)
+assert invalid[:64] == valid[:64]
+assert invalid[-64:] == valid[-64:]
+Path(sys.argv[1]).write_bytes(invalid)
+Path(sys.argv[2]).write_bytes(valid)
 PY
+
+conformance_sha() {
+  shasum -a 256 "$1" | awk '{print $1}'
 }
 
-run_capture() {
-  bash "$SCRIPT" \
+run_capture_with() {
+  local invocation="$1"
+  local output_root="$2"
+  shift 2
+  bash "$invocation" \
     --issue 211 \
     --surface egui \
     --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
     --live-png "$WORK/live.png" \
-    --output-root "$WORK/output" \
+    --output-root "$output_root" \
     --chrome-timeout-seconds 5 \
     "$@"
+}
+
+run_capture() {
+  run_capture_with "$SCRIPT" "$WORK/output" "$@"
+}
+
+run_bounded() {
+  local timeout_seconds="$1"
+  shift
+  "$PYTHON_BIN" - "$timeout_seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+command = sys.argv[2:]
+process = subprocess.Popen(command, start_new_session=True)
+try:
+    return_code = process.wait(timeout=timeout)
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    print(
+        f"command exceeded {timeout:g}-second bound: {' '.join(command)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+raise SystemExit(return_code)
+PY
+}
+
+run_capture_from() {
+  local cwd="$1"
+  local invocation="$2"
+  local output_root="$3"
+  local prototype="$4"
+  local live_png="$5"
+  shift 5
+  (
+    cd "$cwd"
+    bash "$invocation" \
+      --issue 211 \
+      --surface egui \
+      --prototype "$prototype" \
+      --live-png "$live_png" \
+      --output-root "$output_root" \
+      --chrome-timeout-seconds 5 \
+      "$@"
+  )
 }
 
 assert_stopped() {
@@ -323,17 +768,35 @@ fi
 grep -q -- "--ios-command" "$WORK/missing-ios-command.log" \
   || fail "missing iOS live command error was not actionable"
 
+invalid_agent=$'agent-1\n`<script>alert(1)</script>'
+if bash "$SCRIPT" --issue 211 --surface egui --live-agent "$invalid_agent" \
+  --dry-run >"$WORK/invalid-agent.log" 2>&1; then
+  fail "invalid live-agent syntax unexpectedly succeeded"
+fi
+grep -q -- '--live-agent must use a stable agent id' "$WORK/invalid-agent.log" \
+  || fail "invalid live-agent syntax was not rejected before rendering"
+
 rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE" "$CORRAL_TEST_CHROME_ARGS_FILE"
 export CORRAL_TEST_CHROME_LINGER=1
-run_capture
+run_capture --force
 unset CORRAL_TEST_CHROME_LINGER
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "Chrome writer was not allowed to exit cleanly"
 assert_stopped "lingering Chrome" "$CORRAL_TEST_CHROME_PID_FILE"
-grep -q -- "--remote-debugging-address=127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
-  || fail "Chrome DevTools endpoint was not explicitly loopback-bound"
-grep -q -- "--remote-allow-origins=http://127.0.0.1" "$CORRAL_TEST_CHROME_ARGS_FILE" \
-  || fail "Chrome DevTools origin was not narrowed to loopback"
+rm -f "$CORRAL_TEST_CHROME_FINISHED" "$CORRAL_TEST_CHROME_PID_FILE"
+if ! run_capture --force >"$WORK/normal-chrome.log" 2>&1; then
+  fail "normal Chrome capture unexpectedly failed"
+fi
+if grep -q 'could not request loopback-only DevTools shutdown' "$WORK/normal-chrome.log"; then
+  fail "successful Chrome exit emitted a spurious DevTools shutdown warning"
+fi
+grep -q -- "--screenshot=" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome one-shot screenshot flag was not recorded"
+grep -q -- "--user-data-dir=" "$CORRAL_TEST_CHROME_ARGS_FILE" \
+  || fail "Chrome did not use a private user-data directory"
+if grep -q -- "--remote-debugging-" "$CORRAL_TEST_CHROME_ARGS_FILE"; then
+  fail "Chrome one-shot screenshot combined with incompatible remote debugging"
+fi
 if grep -q ':has(' "$CORRAL_TEST_PROTOTYPE_HTML"; then
   fail "generated prototype view still has a load-bearing :has() selector"
 fi
@@ -343,6 +806,7 @@ grep -q 'design-gate-target' "$CORRAL_TEST_PROTOTYPE_HTML" \
   || fail "generated prototype view has no explicit target marker"
 
 REAL_CHROME_BIN=""
+REAL_CHROME_RESULT="SKIP: real Chrome unavailable for structural prototype regression"
 for candidate in \
   "$(command -v google-chrome 2>/dev/null || true)" \
   "$(command -v google-chrome-stable 2>/dev/null || true)" \
@@ -384,13 +848,98 @@ if [[ -n "$REAL_CHROME_BIN" ]]; then
 
   assert_rejected_prototype malformed 217 "$WORK/malformed-prototype.html"
   assert_rejected_prototype template 218 "$WORK/template-prototype.html"
+  REAL_CHROME_RESULT="PASS: real Chrome structural prototype regressions"
 else
-  echo "SKIP: real Chrome unavailable for structural prototype regression" >&2
+  echo "$REAL_CHROME_RESULT" >&2
 fi
 
 for artifact in prototype.png live-after.png comparison.png conformance.md capture.log; do
   [[ -s "$WORK/output/issue-211/$artifact" ]] || fail "missing artifact after first run: $artifact"
 done
+mkdir "$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/lock-failure.log" 2>&1; then
+  fail "publication lock contention unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/lock-failure.log" \
+  || fail "publication lock failure was not actionable"
+rmdir "$WORK/output/.design-gate.lock"
+
+( : ) &
+stale_lock_pid=$!
+wait "$stale_lock_pid"
+mkdir "$WORK/output/.design-gate.lock"
+printf '%s\n' "$stale_lock_pid" >"$WORK/output/.design-gate.lock/owner.pid"
+if ! run_capture --force >"$WORK/stale-lock-recovery.log" 2>&1; then
+  fail "stale publication lock was not recovered"
+fi
+grep -q 'recovered stale evidence publication lock' "$WORK/stale-lock-recovery.log" \
+  || fail "stale publication lock recovery was not recorded"
+[[ ! -e "$WORK/output/.design-gate.lock" ]] \
+  || fail "recovered publication lock survived the run"
+
+external_lock="$WORK/external-lock"
+mkdir "$external_lock"
+printf '%s\n' external-owner >"$external_lock/owner.pid"
+ln -s "$external_lock" "$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/symlink-lock-failure.log" 2>&1; then
+  fail "symlinked publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/symlink-lock-failure.log" \
+  || fail "symlinked publication lock failure was not actionable"
+[[ -L "$WORK/output/.design-gate.lock" ]] \
+  || fail "symlinked publication lock was replaced"
+[[ "$(<"$external_lock/owner.pid")" == external-owner ]] \
+  || fail "symlinked publication lock recovery touched the external owner"
+rm "$WORK/output/.design-gate.lock"
+
+printf '%s\n' regular-owner >"$WORK/output/.design-gate.lock"
+if run_capture --force >"$WORK/non-directory-lock-failure.log" 2>&1; then
+  fail "non-directory publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/non-directory-lock-failure.log" \
+  || fail "non-directory publication lock failure was not actionable"
+[[ "$(<"$WORK/output/.design-gate.lock")" == regular-owner ]] \
+  || fail "non-directory publication lock was modified"
+rm "$WORK/output/.design-gate.lock"
+
+mkdir "$WORK/output/.design-gate.lock"
+printf '%s\n' "$stale_lock_pid" >"$WORK/output/.design-gate.lock/owner.pid"
+mkdir "$WORK/output/.design-gate.lock.recovery"
+if run_capture --force >"$WORK/recovery-claim-failure.log" 2>&1; then
+  fail "pre-claimed stale publication lock unexpectedly succeeded"
+fi
+grep -q 'could not acquire evidence publication lock' "$WORK/recovery-claim-failure.log" \
+  || fail "pre-claimed stale publication lock failure was not actionable"
+[[ -f "$WORK/output/.design-gate.lock/owner.pid" ]] \
+  || fail "failed recovery claim deleted the stale owner state"
+rm -rf -- "$WORK/output/.design-gate.lock" "$WORK/output/.design-gate.lock.recovery"
+
+for ignored_path in \
+  docs/design/evidence/.design-gate.lock/owner.pid \
+  docs/design/evidence/.design-gate.lock.recovery/owner.pid \
+  docs/design/evidence/.design-gate.stage.example/manifest \
+  docs/design/evidence/.design-gate.final.example/manifest \
+  docs/design/evidence/.design-gate.backup.example/manifest; do
+  git -C "$REPO_DIR" check-ignore --no-index -q -- "$ignored_path" \
+    || fail "private publication path is not gitignored: $ignored_path"
+done
+"$PYTHON_BIN" - "$WORK/output/issue-211" <<'PY'
+from pathlib import Path
+import sys
+
+entries = sorted(
+    path.name
+    for path in Path(sys.argv[1]).iterdir()
+    if not path.name.startswith(".")
+)
+assert entries == [
+    "capture.log",
+    "comparison.png",
+    "conformance.md",
+    "live-after.png",
+    "prototype.png",
+], f"published bundle contains unexpected entries: {entries!r}"
+PY
 
 grep -q 'Issue #211' "$WORK/output/issue-211/conformance.md" \
   || fail "provenance does not identify issue #211"
@@ -400,11 +949,14 @@ grep -q '2400x960' "$WORK/output/issue-211/conformance.md" \
   || fail "composite dimensions are not recorded"
 grep -q 'complete, CRC-checked PNG' "$WORK/output/issue-211/conformance.md" \
   || fail "complete-PNG success contract is not recorded"
-grep -q 'loopback-only' "$WORK/output/issue-211/conformance.md" \
-  || fail "Chrome trust boundary is not recorded"
-grep -F -q '| `capture.log` | `n/a` |' "$WORK/output/issue-211/conformance.md" \
+grep -q 'one-shot .*without remote debugging' "$WORK/output/issue-211/conformance.md" \
+  || fail "Chrome one-shot renderer contract is not recorded"
+grep -q 'Normalized invocation (placeholders are descriptive, not necessarily runnable)' \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "placeholder invocation was not labeled as normalized"
+grep -F -q "| \`capture.log\` | \`n/a\` |" "$WORK/output/issue-211/conformance.md" \
   || fail "capture.log row is not recorded in the artifact table"
-grep -E -q '\| `capture\.log` \| `n/a` \| `[0-9a-f]{64}` \|' \
+grep -E -q "\\| \`capture\\.log\` \\| \`n/a\` \\| \`[0-9a-f]{64}\` \\|" \
   "$WORK/output/issue-211/conformance.md" \
   || fail "capture.log SHA-256 is not recorded in the artifact table"
 grep -q 'scripts/design-gate-evidence.sh --issue 211 --surface egui' \
@@ -458,18 +1010,18 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def table():
+def table(live_dimensions="2640x1720"):
     return "\n".join(
         [
             f"| `prototype.png` | `1160x631` | `{digest(bundle / 'prototype.png')}` |",
-            f"| `live-after.png` | `2640x1720` | `{digest(bundle / 'live-after.png')}` |",
+            f"| `live-after.png` | `{live_dimensions}` | `{digest(bundle / 'live-after.png')}` |",
             f"| `comparison.png` | `2400x960` | `{digest(bundle / 'comparison.png')}` |",
             f"| `capture.log` | `n/a` | `{digest(bundle / 'capture.log')}` |",
         ]
     )
 
 
-module.verify_artifact_manifest(bundle, table(), "manifest regression")
+assert module.verify_artifact_manifest(bundle, table(), "manifest regression") == "2x"
 
 
 def expect_failure(label, callback):
@@ -486,6 +1038,30 @@ expect_failure(
         bundle,
         table().replace("| `prototype.png` | `1160x631` |", "| `prototype.png` | `2640x1720` |"),
         "swapped dimensions",
+    ),
+)
+write_png(bundle / "live-after.png", 1320, 860)
+assert (
+    module.verify_artifact_manifest(bundle, table("1320x860"), "1x live regression")
+    == "1x"
+)
+expect_failure(
+    "live conformance dimensions",
+    lambda: module.verify_artifact_manifest(
+        bundle, table(), "live conformance dimensions"
+    ),
+)
+expect_failure(
+    "mixed native scales",
+    lambda: module.verify_consistent_native_scale(
+        {"board": "1x", "issues": "1x", "registry": "2x", "settings": "1x"}
+    ),
+)
+write_png(bundle / "live-after.png", 1920, 1080)
+expect_failure(
+    "arbitrary live PNG",
+    lambda: module.verify_artifact_manifest(
+        bundle, table("1920x1080"), "arbitrary live PNG"
     ),
 )
 write_png(bundle / "live-after.png", 32, 24)
@@ -535,9 +1111,247 @@ assert unrelated_change != lock
 assert module.renderer_dependency_fingerprint(unrelated_change) == original
 print("verified narrow eframe/wgpu lockfile fingerprint")
 PY
+grep -q 'byte-stable for identical semantic inputs' "$WORK/output/issue-211/conformance.md" \
+  || fail "manifest stability contract is not documented"
+grep -q 'Generator script (canonical .*BASH_SOURCE' "$WORK/output/issue-211/conformance.md" \
+  || fail "canonical generator identity is not recorded"
+grep -F 'scripts/design-gate-evidence.sh' "$WORK/output/issue-211/conformance.md" \
+  || fail "generator path was not made repo-relative"
+prototype_source_sha="$(conformance_sha "$REPO_DIR/docs/design/corral-ux-prototype.html")"
+grep -F -- "- Prototype source SHA-256: \`$prototype_source_sha\`" \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "prototype source hash did not describe the bytes used to render"
+live_source_sha="$(conformance_sha "$WORK/live.png")"
+grep -F -- "- Live input SHA-256: \`$live_source_sha\`" \
+  "$WORK/output/issue-211/conformance.md" \
+  || fail "live source hash did not describe the copied fixture bytes"
+"$PYTHON_BIN" - "$WORK/output/issue-211/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"sanitized summary.\n\n## Capture\n" in data
+assert b"\\<external-input\\>" in data
+assert b"\\<external-output\\>" in data
+PY
+for artifact in conformance.md capture.log; do
+  if grep -F "$REPO_DIR" "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained the disposable checkout path"
+  fi
+  if grep -F "$WORK" "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained the disposable test path"
+  fi
+  if grep -F '.herdr/worktrees' "$WORK/output/issue-211/$artifact"; then
+    fail "$artifact retained a Herdr worktree path"
+  fi
+done
+
+run_capture_with "$WORK/design-gate-wrapper.sh" "$WORK/wrapper-output" --force
+cmp "$WORK/output/issue-211/conformance.md" \
+  "$WORK/wrapper-output/issue-211/conformance.md" \
+  || fail "symlink/wrapper invocation changed the manifest"
+cmp "$WORK/output/issue-211/capture.log" \
+  "$WORK/wrapper-output/issue-211/capture.log" \
+  || fail "symlink/wrapper invocation changed the normalized capture log"
+
+run_capture_with "$WORK/design gate.sh" "$WORK/space-output" --force
+cmp "$WORK/output/issue-211/conformance.md" \
+  "$WORK/space-output/issue-211/conformance.md" \
+  || fail "script path containing spaces changed the manifest"
+cmp "$WORK/output/issue-211/capture.log" \
+  "$WORK/space-output/issue-211/capture.log" \
+  || fail "script path containing spaces changed the capture log"
+
+relative_live_from_scripts="$($PYTHON_BIN - "$WORK/live.png" "$REPO_DIR/scripts" <<'PY'
+import os
+import sys
+print(os.path.relpath(sys.argv[1], sys.argv[2]))
+PY
+)"
+run_capture_from "$REPO_DIR" "scripts/design-gate-evidence.sh" \
+  "$WORK/equivalent-output-a" \
+  "./docs/design/corral-ux-prototype.html" "$WORK/live.png" --force
+run_capture_from "$REPO_DIR/scripts" "../scripts/design-gate-evidence.sh" \
+  "$WORK/equivalent-output-b" \
+  "../docs/design/corral-ux-prototype.html" \
+  "$relative_live_from_scripts" --force
+cmp "$WORK/equivalent-output-a/issue-211/conformance.md" \
+  "$WORK/equivalent-output-b/issue-211/conformance.md" \
+  || fail "equivalent path spellings changed the manifest"
+cmp "$WORK/equivalent-output-a/issue-211/capture.log" \
+  "$WORK/equivalent-output-b/issue-211/capture.log" \
+  || fail "equivalent path spellings changed the capture log"
+
+slash_note=$'/operator/path is plain text\n'
+wake_command=$'/usr/bin/osascript -e wake\n'
+launch_arg='/literal/launch-argument'
+literal_option_value='--prototype'
+run_capture --force \
+  --provenance-note "$slash_note" \
+  --egui-wake-command "$wake_command" \
+  --ios-launch-arg "$launch_arg" \
+  --ios-launch-arg "$literal_option_value" \
+  --output-root "$WORK/nonpath-output"
+note_q="$(printf '%q' "$slash_note")"
+wake_q="$(printf '%q' "$wake_command")"
+grep -F -- "--provenance-note $note_q" \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "slash-prefixed provenance note was normalized as a path"
+grep -F -- "--egui-wake-command $wake_q" \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "slash-prefixed wake command was normalized as a path"
+grep -F -- '--ios-launch-arg --prototype --output-root \<' \
+  "$WORK/nonpath-output/issue-211/conformance.md" \
+  || fail "option-shaped launch argument changed path typing"
+"$PYTHON_BIN" - "$WORK/nonpath-output/issue-211/conformance.md" "$slash_note" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+note = os.fsencode(sys.argv[2])
+assert note in data, "trailing newline in non-path note was lost"
+assert b"<external-path>" not in data
+PY
+
+opaque_command="$WORK/wake-window.sh PATH=$WORK/cache:/usr/bin --config=$WORK/a,/etc/stable"
+printf '%s\n' daemon >"$WORK/daemon.bin"
+printf '%s\n' fixtures >"$WORK/fleets.json"
+run_capture --force \
+  --egui-wake-command "$opaque_command" \
+  --ios-command "$WORK/ios-command.sh" \
+  --daemon-binary "$WORK/daemon.bin" \
+  --fixture-registry "$WORK/fleets.json" \
+  --ios-before-launch-arg "$WORK/before payload" \
+  --ios-launch-arg "$WORK/launch payload" \
+  --output-root "$WORK/opaque-output"
+"$PYTHON_BIN" - "$WORK/opaque-output/issue-211/conformance.md" "$WORK" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+work = os.fsencode(sys.argv[2])
+assert work not in data, "opaque command or launch argument leaked the disposable path"
+assert b"external-temp" in data, "opaque disposable paths were not normalized"
+assert b"external-input" in data, "absolute launch arguments were not normalized"
+assert b"--daemon-binary \\<external-input\\>" in data, "daemon binary was not normalized as a path"
+assert b"--fixture-registry \\<external-input\\>" in data, "fixture registry was not normalized as a path"
+assert b"--ios-before-launch-arg \\<external-input\\>" in data, "before-launch argument was not normalized as a launch argument"
+assert b"PATH=\\<external-temp\\>:/usr/bin" in data, "opaque colon-separated content was not preserved"
+assert b"--config=\\<external-temp\\>\\,/etc/stable" in data, "opaque comma-separated content was not preserved"
+PY
+
+known_worktrees_root="$WORK/known herdr root"
+redaction_note="${REPO_DIR}/docs/design/corral-ux-prototype.html"$'\n'"${known_worktrees_root}/repo name/worktree name/ios"$'\n'
+redaction_note="${redaction_note}"$'\xff\n'
+export CORRAL_WORKTREES_ROOT="$known_worktrees_root"
+run_capture --force \
+  --provenance-note "$redaction_note" \
+  --output-root "$WORK/note-redaction-output"
+unset CORRAL_WORKTREES_ROOT
+"$PYTHON_BIN" - \
+  "$WORK/note-redaction-output/issue-211/conformance.md" \
+  "$REPO_DIR" "$known_worktrees_root" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+repo = os.fsencode(sys.argv[2])
+worktrees_root = os.fsencode(sys.argv[3])
+assert repo not in data, "provenance note leaked the absolute repository root"
+assert worktrees_root not in data, "provenance note leaked the configured worktree root"
+assert b"docs/design/corral-ux-prototype.html" in data
+assert b"<herdr-worktree>/ios" in data
+assert b"\xff\n" in data, "invalid provenance-note bytes were replaced"
+PY
+
+markdown_note=$'# heading\n- [injected](https://example.invalid)\n```html\n</pre><script>alert(1)</script>&\n```\n'
+run_capture --force \
+  --provenance-note "$markdown_note" \
+  --output-root "$WORK/markdown-note-output"
+"$PYTHON_BIN" - "$WORK/markdown-note-output/issue-211/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+start_marker = b'<pre class="design-gate-provenance-note">\n'
+start = data.index(start_marker) + len(start_marker)
+end = data.index(b"</pre>", start)
+rendered = data[start:end]
+assert b"# heading" in rendered
+assert b"[injected]" in rendered
+assert b"```html" in rendered
+assert b"&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;" in rendered
+assert b"<script" not in rendered.lower()
+assert b"</pre>" not in rendered, "provenance note injected a second pre close"
+invocation = next(
+    line
+    for line in data.splitlines()
+    if line.startswith(b"- Normalized invocation")
+)
+prefix = b"- Normalized invocation (placeholders are descriptive, not necessarily runnable): "
+assert invocation.startswith(prefix)
+payload = invocation[len(prefix):]
+delimiter = payload[: len(payload) - len(payload.lstrip(b"`") )]
+assert delimiter and payload.endswith(delimiter), "invocation code span is not closed"
+content = payload[len(delimiter) : -len(delimiter)]
+assert b"```html" in content, "note bytes were lost from the invocation"
+longest = current = 0
+for value in content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert len(delimiter) > longest, "invocation delimiter can be closed by note content"
+PY
+
+boundary_note="boundary=${REPO_DIR}. ${REPO_DIR}> ${REPO_DIR}! ${REPO_DIR}? ${REPO_DIR}, ${REPO_DIR}: ${REPO_DIR}; quote=\"${REPO_DIR}\""
+sibling_note="siblings=${REPO_DIR}.bak/x ${REPO_DIR}-backup/x ${REPO_DIR}.bak ${REPO_DIR}-backup"
+run_capture --force \
+  --provenance-note "$boundary_note $sibling_note" \
+  --output-root "$WORK/boundary-output"
+expected_boundary_note="boundary=.. .> .! .? ., .: .; quote=\".\" siblings=${REPO_DIR}.bak/x ${REPO_DIR}-backup/x ${REPO_DIR}.bak ${REPO_DIR}-backup"
+expected_boundary_q="$(printf '%q' "$expected_boundary_note")"
+grep -F -- "--provenance-note $expected_boundary_q" \
+  "$WORK/boundary-output/issue-211/conformance.md" \
+  || fail "known-root punctuation boundary or sibling guard changed"
+
+if PYTHON_BIN="$WORK/bin/python-fail-path" \
+  PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+    --issue 211 \
+    --surface egui \
+    --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+    --live-png "$WORK/live.png" \
+    --ios-app "$WORK/fail-normalization-app" \
+    --output-root "$WORK/path-normalization-failure-output" \
+    --chrome-timeout-seconds 5 \
+    --force >"$WORK/path-normalization-failure.log" 2>&1; then
+  fail "path-normalizer failure was swallowed"
+fi
+grep -q 'could not normalize path argument' "$WORK/path-normalization-failure.log" \
+  || fail "path-normalizer failure did not remain load-bearing"
+
+if PYTHON_BIN="$WORK/bin/python-fail-path" \
+  PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+    --issue 211 \
+    --surface egui \
+    --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+    --live-png "$WORK/live.png" \
+    --provenance-note "$WORK/fail-note-normalization" \
+    --output-root "$WORK/note-normalization-failure-output" \
+    --chrome-timeout-seconds 5 \
+    --force >"$WORK/note-normalization-failure.log" 2>&1; then
+  fail "provenance-note normalizer failure was swallowed"
+fi
+grep -q 'could not normalize provenance note' \
+  "$WORK/note-normalization-failure.log" \
+  || fail "provenance-note normalizer failure did not remain load-bearing"
 
 before_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
-before_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
+before_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
 
 if run_capture >"$WORK/no-force.log" 2>&1; then
   fail "existing evidence bundle was overwritten without --force"
@@ -551,7 +1365,7 @@ after_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print
 [[ "$before_sha" == "$after_sha" ]] || fail "rerun changed deterministic fixture output"
 [[ -f "$CORRAL_TEST_CHROME_FINISHED" ]] \
   || fail "forced rerun did not wait for the Chrome writer"
-after_conformance_sha="$(normalized_conformance_sha "$WORK/output/issue-211/conformance.md")"
+after_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
 [[ "$before_conformance_sha" == "$after_conformance_sha" ]] \
   || fail "normalized conformance changed across a forced rerun"
 
@@ -563,12 +1377,196 @@ unset CORRAL_TEST_CHROME_FAIL
 final_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
 [[ "$final_sha" == "$after_sha" ]] || fail "failed rerun replaced the prior evidence bundle"
 
+cat >"$WORK/bin/mv" <<MV_STUB
+#!/usr/bin/env bash
+set -euo pipefail
+last_argument=""
+for argument in "\$@"; do last_argument="\$argument"; done
+if [[ "\$last_argument" == "$WORK/output/issue-211" && ! -e "$WORK/mv-failed" ]]; then
+  touch "$WORK/mv-failed"
+  exit 73
+fi
+exec /bin/mv "\$@"
+MV_STUB
+chmod +x "$WORK/bin/mv"
+if PATH="$WORK/bin:$ORIGINAL_PATH" run_capture --force \
+  >"$WORK/publication-failure.log" 2>&1; then
+  fail "forced publication unexpectedly succeeded after injected directory rename failure"
+fi
+grep -q 'could not publish the validated evidence bundle' \
+  "$WORK/publication-failure.log" \
+  || {
+    sed -n '1,120p' "$WORK/publication-failure.log" >&2
+    fail "directory publication failure was not actionable"
+  }
+rollback_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
+[[ "$rollback_sha" == "$after_sha" ]] \
+  || fail "directory publication failure did not restore prior evidence"
+rollback_conformance_sha="$(conformance_sha "$WORK/output/issue-211/conformance.md")"
+[[ "$rollback_conformance_sha" == "$after_conformance_sha" ]] \
+  || fail "directory publication failure changed prior conformance"
+rm -f "$WORK/bin/mv" "$WORK/mv-failed"
+
+cat >"$WORK/bin/mv" <<MV_COLLISION_STUB
+#!/usr/bin/env bash
+set -euo pipefail
+last_argument=""
+for argument in "\$@"; do last_argument="\$argument"; done
+if [[ "\$last_argument" == "$WORK/output/issue-211" && ! -e "$WORK/mv-collision" ]]; then
+  mkdir "$WORK/output/issue-211"
+  touch "$WORK/mv-collision"
+  exit 73
+fi
+exec /bin/mv "\$@"
+MV_COLLISION_STUB
+chmod +x "$WORK/bin/mv"
+if PATH="$WORK/bin:$ORIGINAL_PATH" run_capture --force \
+  >"$WORK/publication-collision.log" 2>&1; then
+  fail "forced publication unexpectedly succeeded after destination collision"
+fi
+grep -q 'could not publish the validated evidence bundle' \
+  "$WORK/publication-collision.log" \
+  || fail "destination collision failure was not actionable"
+shopt -s nullglob
+collision_backups=("$WORK/output"/.design-gate.backup.*)
+[[ "${#collision_backups[@]}" -eq 1 ]] \
+  || fail "destination collision did not retain exactly one old evidence backup"
+/bin/rm -rf -- "$WORK/output/issue-211"
+/bin/mv -- "${collision_backups[0]}" "$WORK/output/issue-211"
+collision_sha="$(shasum -a 256 "$WORK/output/issue-211/comparison.png" | awk '{print $1}')"
+[[ "$collision_sha" == "$after_sha" ]] \
+  || fail "destination collision recovery did not preserve prior evidence"
+rm -f "$WORK/bin/mv" "$WORK/mv-collision"
+
 if run_capture --force --live-png "$WORK/truncated.png" \
   >"$WORK/truncated.log" 2>&1; then
   fail "truncated PNG unexpectedly passed validation"
 fi
 grep -E -q 'IEND|IDAT|truncated' "$WORK/truncated.log" \
   || fail "truncated PNG failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-raster.png" \
+  >"$WORK/invalid-raster.log" 2>&1; then
+  fail "invalid PNG raster unexpectedly passed validation"
+fi
+grep -E -q 'decompressed raster|expected' "$WORK/invalid-raster.log" \
+  || fail "invalid PNG raster failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-filter.png" \
+  >"$WORK/invalid-filter.log" 2>&1; then
+  fail "invalid PNG filter unexpectedly passed validation"
+fi
+grep -q 'invalid scanline filter' "$WORK/invalid-filter.log" \
+  || fail "invalid PNG filter failure was not actionable"
+
+run_capture --force --live-png "$WORK/interlaced.png" \
+  --output-root "$WORK/interlaced-output"
+grep -q '1x1' "$WORK/interlaced-output/issue-211/conformance.md" \
+  || fail "valid interlaced PNG was not accepted"
+
+run_capture --force --live-png "$WORK/valid-palette.png" \
+  --output-root "$WORK/valid-palette-output"
+grep -q '1x1' "$WORK/valid-palette-output/issue-211/conformance.md" \
+  || fail "valid indexed PNG was not accepted"
+
+if run_capture --force --live-png "$WORK/invalid-palette.png" \
+  >"$WORK/invalid-palette.log" 2>&1; then
+  fail "indexed PNG without a palette unexpectedly passed validation"
+fi
+grep -q 'indexed raster data' "$WORK/invalid-palette.log" \
+  || fail "indexed PNG palette failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-palette-size.png" \
+  >"$WORK/invalid-palette-size.log" 2>&1; then
+  fail "indexed PNG with an oversized palette unexpectedly passed validation"
+fi
+grep -q 'too many PLTE entries' "$WORK/invalid-palette-size.log" \
+  || fail "indexed PNG palette-size failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-palette-index.png" \
+  >"$WORK/invalid-palette-index.log" 2>&1; then
+  fail "indexed PNG with an out-of-range pixel unexpectedly passed validation"
+fi
+grep -q 'outside its PLTE entries' "$WORK/invalid-palette-index.log" \
+  || fail "indexed PNG pixel-range failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-grayscale-palette.png" \
+  >"$WORK/invalid-grayscale-palette.log" 2>&1; then
+  fail "grayscale PNG with a PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/invalid-grayscale-palette.log" \
+  || fail "grayscale PNG palette failure was not actionable"
+
+if run_capture --force --live-png "$WORK/nonconsecutive-idat.png" \
+  >"$WORK/nonconsecutive-idat.log" 2>&1; then
+  fail "non-consecutive IDAT chunks unexpectedly passed validation"
+fi
+grep -q 'non-consecutive IDAT' "$WORK/nonconsecutive-idat.log" \
+  || fail "non-consecutive IDAT failure was not actionable"
+
+if run_capture --force --live-png "$WORK/unknown-critical.png" \
+  >"$WORK/unknown-critical.log" 2>&1; then
+  fail "PNG with an unknown critical chunk unexpectedly passed validation"
+fi
+grep -q 'unknown critical chunk' "$WORK/unknown-critical.log" \
+  || fail "unknown critical chunk failure was not actionable"
+
+if run_capture --force --live-png "$WORK/indexed-trns-before-plte.png" \
+  >"$WORK/indexed-trns-before-plte.log" 2>&1; then
+  fail "indexed PNG with tRNS before PLTE unexpectedly passed validation"
+fi
+grep -q 'tRNS data before' "$WORK/indexed-trns-before-plte.log" \
+  || fail "indexed tRNS ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/trns-after-idat.png" \
+  >"$WORK/trns-after-idat.log" 2>&1; then
+  fail "PNG with tRNS after IDAT unexpectedly passed validation"
+fi
+grep -q 'invalid tRNS chunk order' "$WORK/trns-after-idat.log" \
+  || fail "tRNS-after-IDAT failure was not actionable"
+
+if run_capture --force --live-png "$WORK/duplicate-trns.png" \
+  >"$WORK/duplicate-trns.log" 2>&1; then
+  fail "PNG with duplicate tRNS chunks unexpectedly passed validation"
+fi
+grep -q 'duplicate tRNS' "$WORK/duplicate-trns.log" \
+  || fail "duplicate tRNS failure was not actionable"
+
+if run_capture --force --live-png "$WORK/truecolor-trns-before-plte.png" \
+  >"$WORK/truecolor-trns-before-plte.log" 2>&1; then
+  fail "truecolor tRNS before PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/truecolor-trns-before-plte.log" \
+  || fail "truecolor tRNS/PLTE ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/truecolor-bkgd-before-plte.png" \
+  >"$WORK/truecolor-bkgd-before-plte.log" 2>&1; then
+  fail "truecolor bKGD before PLTE unexpectedly passed validation"
+fi
+grep -q 'invalid PLTE chunk' "$WORK/truecolor-bkgd-before-plte.log" \
+  || fail "truecolor bKGD/PLTE ordering failure was not actionable"
+
+if run_capture --force --live-png "$WORK/invalid-reserved-chunk.png" \
+  >"$WORK/invalid-reserved-chunk.log" 2>&1; then
+  fail "PNG with an invalid chunk reserved bit unexpectedly passed validation"
+fi
+grep -q 'reserved bit' "$WORK/invalid-reserved-chunk.log" \
+  || fail "invalid chunk reserved-bit failure was not actionable"
+
+run_capture --force --live-png "$WORK/masked-samples.png" \
+  --output-root "$WORK/masked-samples-output"
+grep -q '1x1' "$WORK/masked-samples-output/issue-211/conformance.md" \
+  || fail "valid sub-16-bit tRNS/bKGD samples were not accepted"
+
+run_capture --force --live-png "$WORK/truecolor-hist.png" \
+  --output-root "$WORK/truecolor-hist-output"
+grep -q '1x1' "$WORK/truecolor-hist-output/issue-211/conformance.md" \
+  || fail "valid truecolor PLTE/hIST was not accepted"
+
+run_capture --force --live-png "$WORK/truecolor-alpha-hist.png" \
+  --output-root "$WORK/truecolor-alpha-hist-output"
+grep -q '1x1' "$WORK/truecolor-alpha-hist-output/issue-211/conformance.md" \
+  || fail "valid alpha truecolor PLTE/hIST was not accepted"
 
 export CORRAL_TEST_EXPECTED_ISSUE=205
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="explicit supplied PNG fixture"
@@ -584,13 +1582,90 @@ bash "$SCRIPT" \
 grep -q '900x900' "$WORK/ios-output/issue-205/conformance.md" \
   || fail "iOS prototype render did not use the unclipped 900x900 viewport"
 
+export CORRAL_TEST_EXPECTED_ISSUE=223
+export CORRAL_TEST_EXPECTED_CAPTURE_KIND="iOS simulator before/after screenshots via hermes-sim-task (Debug demo fixture)"
+ios_adversarial_arg=$'before\n```<script>alert(1)</script>'
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 223 \
+  --surface ios \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --ios-app "$WORK/Fake.app" \
+  --ios-mode demo \
+  --ios-before-launch-arg "$ios_adversarial_arg" \
+  --ios-delay-seconds 0 \
+  --no-build \
+  --output-root "$WORK/ios-adversarial-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/ios-adversarial-output/issue-223/conformance.md" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+prefix = b"- Command: "
+start = data.index(prefix) + len(prefix)
+delimiter_length = 0
+while start + delimiter_length < len(data) and data[start + delimiter_length] == 96:
+    delimiter_length += 1
+assert delimiter_length > 0
+delimiter = b"`" * delimiter_length
+end = data.index(delimiter, start + delimiter_length)
+content = data[start + delimiter_length:end]
+assert b"script" in content and b"\\n" in content
+longest = current = 0
+for value in content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert delimiter_length > longest, "dynamic capture command delimiter is unsafe"
+
+invocation_prefix = b"- Normalized invocation"
+invocation_start = data.index(b": ", data.index(invocation_prefix)) + 2
+invocation_delimiter_length = 0
+while (
+    invocation_start + invocation_delimiter_length < len(data)
+    and data[invocation_start + invocation_delimiter_length] == 96
+):
+    invocation_delimiter_length += 1
+assert invocation_delimiter_length > 0
+invocation_delimiter = b"`" * invocation_delimiter_length
+invocation_end = data.index(
+    invocation_delimiter, invocation_start + invocation_delimiter_length
+)
+invocation_content = data[
+    invocation_start + invocation_delimiter_length : invocation_end
+]
+assert b"script" in invocation_content and b"\\n" in invocation_content
+longest = current = 0
+for value in invocation_content:
+    if value == 96:
+        current += 1
+        longest = max(longest, current)
+    else:
+        current = 0
+assert invocation_delimiter_length > longest, "normalized invocation delimiter is unsafe"
+safe_ranges = (
+    (start, end + delimiter_length),
+    (invocation_start, invocation_end + invocation_delimiter_length),
+)
+for needle in (b"<script>", b"</script>"):
+    search = 0
+    while True:
+        occurrence = data.find(needle, search)
+        if occurrence == -1:
+            break
+        assert any(begin <= occurrence < finish for begin, finish in safe_ranges)
+        search = occurrence + 1
+PY
+
 export CORRAL_TEST_PROTOTYPE_PNG="$WORK/prototype.png"
 export CORRAL_TEST_EXPECTED_ISSUE=213
 export CORRAL_TEST_EXPECTED_CAPTURE_KIND="native egui viewport screenshot"
 mkdir -p "$WORK/ui-config-seed"
 printf '%s\n' '{"host_url":"http://fixture"}' >"$WORK/ui-config-seed/config.json"
 export CORRAL_UI_CONFIG_SEED_DIR="$WORK/ui-config-seed"
-export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output/issue-213"
+export CORRAL_TEST_UI_CONFIG_ROOT="$WORK/egui-output"
 rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
 export CORRAL_TEST_EGUI_MODE=partial-then-linger
 egui_partial_start_ns="$($PYTHON_BIN -c 'import time; print(time.monotonic_ns())')"
@@ -621,13 +1696,13 @@ unset CORRAL_UI_CONFIG_SEED_DIR CORRAL_TEST_UI_CONFIG_ROOT
 export CORRAL_TEST_EXPECTED_ISSUE=217
 export CORRAL_TEST_PNG_RACE=1
 export CORRAL_TEST_PNG_RACE_INTERCEPTED="$WORK/png-race-intercepted"
-export CORRAL_TEST_PNG_RACE_VALIDATE_STARTED="$WORK/png-race-validate-started"
+export CORRAL_TEST_PNG_RACE_PREMATURE="$WORK/png-race-premature"
 export CORRAL_TEST_PNG_RACE_WRITER_FINISHED="$WORK/png-race-writer-finished"
 rm -f \
   "$CORRAL_TEST_EGUI_FINISHED" \
   "$CORRAL_TEST_EGUI_PID_FILE" \
   "$CORRAL_TEST_PNG_RACE_INTERCEPTED" \
-  "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" \
+  "$CORRAL_TEST_PNG_RACE_PREMATURE" \
   "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED"
 export CORRAL_TEST_EGUI_MODE=race-during-validation
 PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
@@ -644,10 +1719,10 @@ PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT
   --chrome-timeout-seconds 5
 [[ -f "$CORRAL_TEST_PNG_RACE_INTERCEPTED" ]] \
   || fail "PNG race validator seam was not exercised"
-[[ -f "$CORRAL_TEST_PNG_RACE_VALIDATE_STARTED" ]] \
-  || fail "PNG race did not validate the partial file before writer completion"
+[[ ! -e "$CORRAL_TEST_PNG_RACE_PREMATURE" ]] \
+  || fail "PNG race invoked full validation before writer completion"
 [[ -f "$CORRAL_TEST_PNG_RACE_WRITER_FINISHED" ]] \
-  || fail "PNG race writer did not finish during validation"
+  || fail "PNG race writer did not finish before full validation"
 [[ -s "$WORK/png-race-output/issue-217/comparison.png" ]] \
   || fail "exit-during-validation recheck did not publish complete evidence"
 unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_PNG_RACE
@@ -670,6 +1745,109 @@ PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
 [[ -f "$CORRAL_TEST_EGUI_FINISHED" ]] \
   || fail "TERM-ignoring egui writer did not publish its complete PNG"
 assert_stopped "TERM-ignoring egui" "$CORRAL_TEST_EGUI_PID_FILE"
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=219
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=invalid-bytes
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 219 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/invalid-bytes-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/invalid-bytes-output/issue-219/capture.log" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"\xff" in data, "invalid UTF-8 byte was replaced"
+assert b"FAILURE: exact invalid-byte diagnostic" in data
+PY
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=220
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=large-log
+export CORRAL_TEST_WORKTREES_ROOT="/tmp/Configured Herdr Root"
+export CORRAL_TEST_REPO_ROOT="$REPO_DIR"
+export CORRAL_TEST_OUTPUT_ROOT="$WORK/large-log-output"
+export CORRAL_WORKTREES_ROOT="$CORRAL_TEST_WORKTREES_ROOT"
+PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 220 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/large-log-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/large-log-output/issue-220/capture.log" "$WORK/large-log-output" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+output_root = os.fsencode(sys.argv[2])
+assert len(data) <= 65536, f"capture log exceeded bound: {len(data)}"
+assert b"capture log truncated" in data
+assert b"FAILURE: exact bounded-log diagnostic" in data
+assert b".herdr/worktrees" not in data, "generic Herdr marker leaked"
+assert b"<herdr-worktree>/ios" in data, "full configured worktree was not redacted"
+assert b"configured-root=<herdr-worktree>\n" in data, "bare configured root was not redacted"
+assert b"configured-sibling=/tmp/Configured Herdr Root.bak/repo name/worktree name/ios" in data, "configured sibling was over-redacted"
+assert b"generic-bare=<herdr-worktree>\n" in data, "bare generic worktree root was not redacted"
+assert b"generic-bare-real=<herdr-worktree>\n" in data, "real Herdr worktree root was not redacted"
+assert b"generic-bare-spaces=<herdr-worktree>\n" in data, "space-containing worktree name was not fully redacted"
+assert b"generic-space-marker=<herdr-worktree>\n" in data, "marker word inside a worktree name was leaked"
+assert b"generic-crash-name=<herdr-worktree>\n" in data, "crash marker inside a worktree name was leaked"
+assert b"generic-unfamiliar=<herdr-worktree>\n" in data, "phrase-like worktree name was not fully redacted"
+assert b"generic-crash-diagnostic=<herdr-worktree>\n" in data, "phrase-like crash worktree name was not fully redacted"
+assert b"same-line-two-paths=cp <external-temp> <herdr-worktree>/f\n" in data, "same-line source path was not normalized"
+assert b"known-repo-child=./scripts\n" in data, "specific repo path lost to generic Herdr redaction"
+assert b"output-sibling=" + output_root + b"-backup/file" in data
+assert b"output-dot-sibling=" + output_root + b".bak/file" in data
+assert b"configured-status=<herdr-worktree> status=FAILED code=17\n" in data, "configured same-line status diagnostic was consumed"
+assert b"configured-parenthetical=<herdr-worktree> (No such file)\n" in data, "configured parenthetical diagnostic was consumed"
+assert b'quoted-diagnostic="<herdr-worktree>": permission denied\n' in data, "quoted worktree redaction consumed its diagnostic delimiter"
+assert b"generic-status=<herdr-worktree> status=FAILED code=17\n" in data, "generic same-line status diagnostic was consumed"
+assert b"generic-parenthetical=<herdr-worktree> (No such file)\n" in data, "generic parenthetical diagnostic was consumed"
+PY
+unset CORRAL_TEST_REPO_ROOT CORRAL_TEST_WORKTREES_ROOT CORRAL_TEST_OUTPUT_ROOT CORRAL_WORKTREES_ROOT
+unset CORRAL_TEST_EGUI_MODE
+
+export CORRAL_TEST_EXPECTED_ISSUE=221
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=generic-path-chaff
+run_bounded 15 env PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 221 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --output-root "$WORK/path-chaff-output" \
+  --chrome-timeout-seconds 5
+"$PYTHON_BIN" - "$WORK/path-chaff-output/issue-221/capture.log" <<'PY'
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+assert b"capture log truncated" in data
+assert b"FAILURE: generic path scan completed" in data
+PY
 unset CORRAL_TEST_EGUI_MODE
 
 export CORRAL_TEST_EXPECTED_ISSUE=216
@@ -697,6 +1875,67 @@ assert_stopped "stuck partial egui" "$CORRAL_TEST_EGUI_PID_FILE"
   || fail "stuck partial PNG was published as evidence"
 unset CORRAL_TEST_EGUI_MODE
 
+export CORRAL_TEST_EXPECTED_ISSUE=222
+export CORRAL_TEST_INVALID_PNG="$WORK/invalid-raster.png"
+export CORRAL_TEST_PNG_VALIDATION_COUNT="$WORK/png-validation-count"
+printf '0\n' >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+export CORRAL_TEST_EGUI_MODE=invalid-stable
+if PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 222 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 1 \
+  --output-root "$WORK/invalid-stable-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/invalid-stable.log" 2>&1; then
+  fail "stable invalid PNG unexpectedly succeeded"
+fi
+validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+(( validation_count <= 1 )) \
+  || fail "stable invalid PNG was fully reparsed $validation_count times"
+grep -q 'complete PNG' "$WORK/invalid-stable.log" \
+  || fail "stable invalid PNG failure did not name the complete-PNG contract"
+assert_stopped "stable invalid egui" "$CORRAL_TEST_EGUI_PID_FILE"
+[[ ! -e "$WORK/invalid-stable-output/issue-222/comparison.png" ]] \
+  || fail "stable invalid PNG was published as evidence"
+unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_INVALID_PNG CORRAL_TEST_PNG_VALIDATION_COUNT
+
+export CORRAL_TEST_EXPECTED_ISSUE=224
+export CORRAL_TEST_EGUI_MODE=invalid-then-same-signature-valid
+export CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG="$WORK/invalid-same-signature.png"
+export CORRAL_TEST_VALID_SAME_SIGNATURE_PNG="$WORK/valid-same-signature.png"
+export CORRAL_TEST_PNG_VALIDATION_COUNT="$WORK/same-signature-validation-count"
+printf '0\n' >"$CORRAL_TEST_PNG_VALIDATION_COUNT"
+rm -f "$CORRAL_TEST_EGUI_FINISHED" "$CORRAL_TEST_EGUI_PID_FILE"
+run_bounded 15 env PYTHON_BIN="$WORK/bin/python-race" PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 224 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 3 \
+  --output-root "$WORK/same-signature-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/same-signature.log" 2>&1 \
+  || fail "same-signature invalid-to-valid PNG repair was not accepted"
+validation_count="$(<"$CORRAL_TEST_PNG_VALIDATION_COUNT")"
+(( validation_count >= 2 )) \
+  || fail "same-signature PNG repair was not reparsed after its content changed"
+grep -q 'live: .* (256x256)' "$WORK/same-signature.log" \
+  || fail "same-signature PNG repair did not publish the repaired dimensions"
+assert_stopped "same-signature egui" "$CORRAL_TEST_EGUI_PID_FILE"
+unset CORRAL_TEST_EGUI_MODE CORRAL_TEST_INVALID_SAME_SIGNATURE_PNG \
+  CORRAL_TEST_VALID_SAME_SIGNATURE_PNG CORRAL_TEST_PNG_VALIDATION_COUNT
+
 export CORRAL_TEST_EXPECTED_ISSUE=214
 if PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
   --issue 214 \
@@ -719,16 +1958,49 @@ grep -q 'egui wake command failed' "$WORK/wake-failure.log" \
 [[ ! -e "$WORK/wake-output/issue-214/comparison.png" ]] \
   || fail "wake-command failure published evidence"
 
+export CORRAL_TEST_EXPECTED_ISSUE=215
+rm -f "$CORRAL_TEST_EGUI_PID_FILE"
+if run_bounded 12 env PATH="$WORK/bin:$ORIGINAL_PATH" bash "$SCRIPT" \
+  --issue 215 \
+  --surface egui \
+  --prototype "$REPO_DIR/docs/design/corral-ux-egui-redesign-prototype.html" \
+  --egui-binary "$WORK/bin/egui" \
+  --live-agent agent-1 \
+  --host-url http://fixture \
+  --no-build \
+  --delay-ms 1 \
+  --timeout-seconds 5 \
+  --egui-wake-command 'sleep 300' \
+  --output-root "$WORK/wake-timeout-output" \
+  --chrome-timeout-seconds 5 \
+  >"$WORK/wake-timeout.log" 2>&1; then
+  fail "hung egui wake command unexpectedly succeeded"
+fi
+grep -q 'owned wake command timed out after 2s' "$WORK/wake-timeout.log" \
+  || fail "hung egui wake command was not bounded by its owned cleanup path"
+grep -q 'egui wake command failed' "$WORK/wake-timeout.log" \
+  || fail "hung egui wake failure was not actionable"
+assert_stopped "hung egui wake" "$CORRAL_TEST_EGUI_PID_FILE"
+[[ ! -e "$WORK/wake-timeout-output/issue-215/comparison.png" ]] \
+  || fail "hung egui wake command published evidence"
+
 shopt -s nullglob
 staging_entries=(
-  "$WORK/output/issue-211"/.design-gate.stage.*
-  "$WORK/egui-output/issue-213"/.design-gate.stage.*
-  "$WORK/term-ignore-output/issue-215"/.design-gate.stage.*
-  "$WORK/partial-stuck-output/issue-216"/.design-gate.stage.*
-  "$WORK/wake-output/issue-214"/.design-gate.stage.*
+  "$WORK"/*/.design-gate.stage.*
+  "$WORK"/*/.design-gate.final.*
+  "$WORK"/*/.design-gate.backup.*
 )
 if [[ "${#staging_entries[@]}" -ne 0 ]]; then
   fail "temporary staging directory survived a failed run"
 fi
+lock_entries=("$WORK"/*/.design-gate.lock)
+if [[ "${#lock_entries[@]}" -ne 0 ]]; then
+  fail "publication lock survived a completed or failed run"
+fi
+recovery_entries=("$WORK"/*/.design-gate.lock.recovery)
+if [[ "${#recovery_entries[@]}" -ne 0 ]]; then
+  fail "publication lock recovery path survived a completed or failed run"
+fi
 
+printf 'Real Chrome structural prototype regression: %s\n' "$REAL_CHROME_RESULT"
 echo "OK: design-gate evidence validation, complete-PNG contract, bounded cleanup, trust boundary, capture seams, and failure paths"

@@ -1,5 +1,14 @@
 # Issue #201 egui conformance evidence
 
+## Historical portability note
+
+This document records an earlier native capture. Checkout and temporary paths
+were sanitized in this follow-up, but the historical command below is retained
+in its original `$PWD` form rather than rewritten as a newly reproducible
+invocation. The external prototype crop is identified by its retained
+basename; no SHA-256 was recorded for that input, so this document makes no
+new reproducibility claim for it.
+
 ## Scope and sources
 
 This run targets current-main only. The stale release Corral.app v0.1.0
@@ -8,9 +17,9 @@ fix target or as prototype truth.
 
 Read completely before implementation:
 
-- Conductor report: `/Users/jirathip/Projects/corral/docs/design/corral-ux-pixel-diff.md`
-- Authoritative prototype spec: `/Users/jirathip/Projects/corral/docs/design/corral-ux-prototype-spec.md`
-- Rendered prototype truth: `/tmp/prototype-egui-crop.png`
+- Conductor report: `docs/design/corral-ux-pixel-diff.md`
+- Authoritative prototype spec: `docs/design/corral-ux-prototype-spec.md`
+- Rendered prototype truth: `<external-input>/prototype-egui-crop.png` (SHA-256 not recorded)
 
 The exact spec is also preserved at
 [`docs/design/corral-ux-prototype-spec.md`](../../corral-ux-prototype-spec.md).
@@ -46,9 +55,8 @@ Evidence came from the legitimate native path:
    transcript requests.
 
 The native PNG is 2640×1720 (Retina scale). The exact final evidence is
-[`live-after.png`](live-after.png), at
-`/Users/jirathip/.herdr/worktrees/corral/g201-egui-visual-conformance/docs/design/evidence/issue-201/live-after.png`,
-SHA-256
+[`live-after.png`](live-after.png), at the stable repo-relative path
+`docs/design/evidence/issue-201/live-after.png`, SHA-256
 `8e97e3668cd903466c38170b7c0f407179bbe83ef4c2f8a1a9fbca8fc23c00aa`.
 The pre-change native comparison is [`live-before.png`](live-before.png).
 
@@ -76,7 +84,8 @@ requesting viewport screenshot
 screenshot saved — exiting
 ```
 
-The captured session record is `/tmp/corral-ui-live-after.log`.
+The captured session record was an external temporary file and is not part of
+the repository; its disposable path is intentionally omitted.
 
 The transcript page was successfully authorized but contained zero role
 entries for this live session. The screenshot therefore uses the 51 lines

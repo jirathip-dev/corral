@@ -231,13 +231,40 @@ the selected surface, and writes a stamped prototype/live comparison under
 uses the app's existing `CORRAL_UI_SCREENSHOT` capture hook; it never invents
 board data. If a host window server needs an input event to wake eframe,
 `--egui-wake-command` supplies that explicit caller-owned wake step and a
-failure aborts the capture. Supply an agent id from `/snapshot` when the detail
-selection must be deterministic:
+failure aborts the capture. For a targeted native screenshot, corrald-ui also
+repeats that command at a one-second cadence from the exact process PID after
+target selection, through the configured settle interval, until dispatch or a
+bounded 45-second lifetime. It never broadcasts input or targets another
+process. Supply an agent id from `/snapshot` when the detail selection must be
+deterministic:
 
 ```sh
 scripts/design-gate-evidence.sh --issue 206 --surface egui \
   --live-agent herdr:AGENT_ID
 ```
+
+The generated `conformance.md` is a stable manifest: it omits wall-clock
+metadata, derives the generator path and SHA-256 from one canonical
+`BASH_SOURCE[0]` path (including symlink/wrapper invocation), and records path
+arguments as repo-relative paths or stable external placeholders. Non-path
+arguments are shell-quoted from their original bytes, except that provenance
+notes, opaque command values, and path-like launch arguments receive targeted
+known-root/disposable-path substitutions. The generated `capture.log` is a
+byte-oriented view capped at 64 KiB; it preserves exact head/tail bytes except
+for documented checkout/worktree/staging/disposable-temporary substitutions and
+the explicit middle omission marker, and never decodes invalid UTF-8 with
+replacement.
+Recognized checkout, staging, configured Herdr, generic `.herdr/worktrees`, and
+unambiguous disposable temporary paths are normalized so evidence is
+checkout-independent. Quoted terminal paths retain their delimiters; ambiguous
+unquoted terminal names are redacted conservatively, while an explicit
+whitespace-delimited assignment token (such as `status=FAILED`) or a
+parenthetical diagnostic remains visible. Capture producers should quote paths
+when arbitrary free-form diagnostic text must follow a space-containing name.
+The generated invocation is labeled normalized because external placeholders
+describe the operation but are not necessarily runnable.
+Historical evidence may instead be an explicitly labeled sanitized summary of
+an older capture.
 
 The capture contract is a complete, CRC-checked PNG: the writer may linger
 after publishing it, but a partial file is never accepted or published. The
@@ -247,10 +274,18 @@ KILL if needed. Prototype rendering marks the selected `.desk` or `.phone`
 frame with a small compatibility script; the wrapper also rejects a prototype
 unless the target is inside `body > .rack > .frame`. The derived page retains
 a visible failure if the target is absent at runtime instead of silently
-capturing the wrong surface. Chrome's DevTools endpoint is ephemeral, bound to
-`127.0.0.1`, and
-allows only the matching loopback origin; it is used solely for the scoped
-`Browser.close` request against the private profile.
+capturing the wrong surface. Chrome's one-shot `--screenshot` command runs
+without remote debugging because Chromium rejects headless commands combined
+with a remote-debugging port; it uses a private temporary profile, renders only
+the approved prototype and comparison pages, and is shut down through the
+owned-child TERM/KILL lifecycle. A caller-supplied `--live-png` remains an
+explicitly labeled fixture and is not represented as a Chrome live capture.
+Validated artifacts are assembled in a private directory and published with a
+directory-level rename; a failed replacement restores the prior bundle.
+Publication is serialized by an output-root lock; unexpected destination
+collisions retain the old bundle for recovery. iOS capture is simulator-only through
+`hermes-sim-task`; `--ios-mode demo` is explicitly labeled as a Debug fixture,
+while live mode requires a caller-supplied launch command.
 
 For a real macOS egui lifecycle check—fake herdr fixture, real corrald,
 registered native UI, real target selection, native wgpu PNG, exact-pid wake,
@@ -302,6 +337,16 @@ TERM-ignoring writers, Chrome trust-boundary flags, egui capture/wake seams,
 argument failures, and preservation of an existing bundle after a failed run.
 These remain local/platform-dependent developer checks; they are not wired into
 CI.
+
+For native #206 evidence, the configured 1320x860 logical egui viewport may be
+captured at either 1x (`1320x860`) or 2x Retina backing pixels
+(`2640x1720`). The verifier rejects arbitrary dimensions, requires one scale
+consistently across all four tab bundles, and still checks every conformance
+dimension against the complete PNG bytes.
+
+The hermetic suite also covers symlink and wrapper identity, path normalization,
+manifest stability, invalid UTF-8, bounded logs, complete-PNG races,
+structural prototype rejection, and capture failure cleanup.
 
 ## Rust coverage gate and baseline
 

@@ -918,18 +918,18 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def table():
+def table(live_dimensions="2640x1720"):
     return "\n".join(
         [
             f"| `prototype.png` | `1160x631` | `{digest(bundle / 'prototype.png')}` |",
-            f"| `live-after.png` | `2640x1720` | `{digest(bundle / 'live-after.png')}` |",
+            f"| `live-after.png` | `{live_dimensions}` | `{digest(bundle / 'live-after.png')}` |",
             f"| `comparison.png` | `2400x960` | `{digest(bundle / 'comparison.png')}` |",
             f"| `capture.log` | `n/a` | `{digest(bundle / 'capture.log')}` |",
         ]
     )
 
 
-module.verify_artifact_manifest(bundle, table(), "manifest regression")
+assert module.verify_artifact_manifest(bundle, table(), "manifest regression") == "2x"
 
 
 def expect_failure(label, callback):
@@ -946,6 +946,30 @@ expect_failure(
         bundle,
         table().replace("| `prototype.png` | `1160x631` |", "| `prototype.png` | `2640x1720` |"),
         "swapped dimensions",
+    ),
+)
+write_png(bundle / "live-after.png", 1320, 860)
+assert (
+    module.verify_artifact_manifest(bundle, table("1320x860"), "1x live regression")
+    == "1x"
+)
+expect_failure(
+    "live conformance dimensions",
+    lambda: module.verify_artifact_manifest(
+        bundle, table(), "live conformance dimensions"
+    ),
+)
+expect_failure(
+    "mixed native scales",
+    lambda: module.verify_consistent_native_scale(
+        {"board": "1x", "issues": "1x", "registry": "2x", "settings": "1x"}
+    ),
+)
+write_png(bundle / "live-after.png", 1920, 1080)
+expect_failure(
+    "arbitrary live PNG",
+    lambda: module.verify_artifact_manifest(
+        bundle, table("1920x1080"), "arbitrary live PNG"
     ),
 )
 write_png(bundle / "live-after.png", 32, 24)

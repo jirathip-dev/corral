@@ -338,6 +338,12 @@ argument failures, and preservation of an existing bundle after a failed run.
 These remain local/platform-dependent developer checks; they are not wired into
 CI.
 
+For native #206 evidence, the configured 1320x860 logical egui viewport may be
+captured at either 1x (`1320x860`) or 2x Retina backing pixels
+(`2640x1720`). The verifier rejects arbitrary dimensions, requires one scale
+consistently across all four tab bundles, and still checks every conformance
+dimension against the complete PNG bytes.
+
 The hermetic suite also covers symlink and wrapper identity, path normalization,
 manifest stability, invalid UTF-8, bounded logs, complete-PNG races,
 structural prototype rejection, and capture failure cleanup.

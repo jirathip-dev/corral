@@ -18,8 +18,14 @@ REQUIRED = ("prototype.png", "live-after.png", "comparison.png", "conformance.md
 ARTIFACTS = ("prototype.png", "live-after.png", "comparison.png", "capture.log")
 EXPECTED_DIMENSIONS = {
     "prototype.png": "1160x631",
-    "live-after.png": "2640x1720",
     "comparison.png": "2400x960",
+}
+# The configured egui viewport is 1320x860 logical pixels. Native capture
+# backends may emit either the logical pixels or one Retina backing-pixel
+# multiple, but an arbitrary host/window size is not evidence for this gate.
+NATIVE_LIVE_DIMENSIONS = {
+    (1320, 860): "1x",
+    (2640, 1720): "2x",
 }
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -75,7 +81,30 @@ def complete_png(path: Path) -> tuple[int, int]:
     return width, height
 
 
-def verify_artifact_manifest(bundle: Path, conformance: str, tab: str) -> None:
+def native_live_scale(width: int, height: int, tab: str) -> str:
+    scale = NATIVE_LIVE_DIMENSIONS.get((width, height))
+    if scale is None:
+        allowed = ", ".join(
+            f"{candidate_width}x{candidate_height} ({candidate_scale})"
+            for (candidate_width, candidate_height), candidate_scale in NATIVE_LIVE_DIMENSIONS.items()
+        )
+        raise SystemExit(
+            f"{tab} live-after.png has dimensions {width}x{height}; expected one of {allowed}"
+        )
+    return scale
+
+
+def verify_consistent_native_scale(scales: dict[str, str]) -> str:
+    if not scales:
+        raise SystemExit("no native tab scales were verified")
+    distinct = set(scales.values())
+    if len(distinct) != 1:
+        observed = ", ".join(f"{tab}={scales[tab]}" for tab in TABS if tab in scales)
+        raise SystemExit(f"native live screenshot scale differs across tabs: {observed}")
+    return next(iter(distinct))
+
+
+def verify_artifact_manifest(bundle: Path, conformance: str, tab: str) -> str:
     rows: dict[str, tuple[str, str]] = {}
     for line in conformance.splitlines():
         match = re.fullmatch(r"\| `([^`]+)` \| `([^`]+)` \| `([^`]+)` \|", line.strip())
@@ -92,6 +121,7 @@ def verify_artifact_manifest(bundle: Path, conformance: str, tab: str) -> None:
             detail.append(f"unexpected {', '.join(unexpected)}")
         raise SystemExit(f"{tab} conformance artifact table mismatch: {'; '.join(detail)}")
 
+    native_scale = ""
     for name in ARTIFACTS:
         path = bundle / name
         recorded_dimensions, recorded_digest = rows[name]
@@ -100,19 +130,22 @@ def verify_artifact_manifest(bundle: Path, conformance: str, tab: str) -> None:
         actual_digest = sha(path)
         if actual_digest != recorded_digest:
             raise SystemExit(f"{tab} conformance SHA-256 does not match {name}")
-        if name in EXPECTED_DIMENSIONS:
+        if name in EXPECTED_DIMENSIONS or name == "live-after.png":
             width, height = complete_png(path)
             actual_dimensions = f"{width}x{height}"
             if recorded_dimensions != actual_dimensions:
                 raise SystemExit(
                     f"{tab} conformance dimensions for {name} do not match the PNG"
                 )
-            if actual_dimensions != EXPECTED_DIMENSIONS[name]:
+            if name == "live-after.png":
+                native_scale = native_live_scale(width, height, tab)
+            elif actual_dimensions != EXPECTED_DIMENSIONS[name]:
                 raise SystemExit(
                     f"{tab} {name} has dimensions {actual_dimensions}; expected {EXPECTED_DIMENSIONS[name]}"
                 )
         elif recorded_dimensions != "n/a":
             raise SystemExit(f"{tab} conformance dimensions for {name} must be n/a")
+    return native_scale
 
 
 def provenance_hash(conformance: str, label: str, tab: str) -> str:
@@ -196,6 +229,7 @@ def main() -> int:
     expected_prototype = sha(prototype)
     live_hashes = []
     runtime_hashes = []
+    native_scales = {}
     for tab in TABS:
         bundle = evidence_root / tab
         if not bundle.is_dir():
@@ -233,14 +267,16 @@ def main() -> int:
         if "screenshot saved — exiting" not in capture_log:
             raise SystemExit(f"{tab} capture log does not prove a saved Screenshot PNG")
         verify_native_probe(capture_log, tab)
-        verify_artifact_manifest(bundle, conformance, tab)
+        native_scales[tab] = verify_artifact_manifest(bundle, conformance, tab)
         live_hashes.append(sha(bundle / "live-after.png"))
+    native_scale = verify_consistent_native_scale(native_scales)
     if len(set(live_hashes)) != len(TABS):
         raise SystemExit("native tab screenshots are not distinct")
     if len(set(runtime_hashes)) != 1:
         raise SystemExit("runtime daemon/fixture provenance differs across native tabs")
     print(f"verified committed native evidence: {', '.join(TABS)}")
     print(f"implementation identity: {expected_identity}")
+    print(f"native live scale: {native_scale}")
     print("verification is read-only; no evidence artifact was regenerated")
     return 0
 

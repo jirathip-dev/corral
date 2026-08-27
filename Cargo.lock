@@ -810,6 +810,7 @@ dependencies = [
 name = "corrald-ui"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "base64 0.23.1",
  "chrono",
  "corrald",
@@ -818,6 +819,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "futures",
  "getrandom 0.4.3",
  "image",
  "keyring",

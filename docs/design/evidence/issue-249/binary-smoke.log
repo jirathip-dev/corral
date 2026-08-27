@@ -1,0 +1,34 @@
+== smoke root: /tmp/corral-249-binary-smoke.q2whh9
+== daemon boot (host-key):
+{"algorithm":"X25519","note":"host identity is an X25519 key; device writes are signed with per-device Ed25519 keys","public_key":"klL6JyBmSIPdljuxvokh55Qp06iScMqjb6/kA6i/+lU="}
+== config dir files:
+-rw-------@ 1 jirathip  wheel   45 Aug 28 00:28 admin-token
+-rw-------@ 1 jirathip  wheel   45 Aug 28 00:28 host-key
+-rw-------@ 1 jirathip  wheel   45 Aug 28 00:28 registration-token
+== register original key k1:
+{"algorithm":"Ed25519","expiry_ts":1795627699,"grants":[],"key_id":"dev_aded21decdf3edf67a8ad0225d9616b5","note":"default grants are empty (read-only): drive capabilities are promoted by the host","revoked":false}
+   k1 key_id: dev_aded21decdf3edf67a8ad0225d9616b5
+== grant read_tail via the shipped host-admin script:
+>> granting dev_aded21decdf3edf67a8ad0225d9616b5: read_tail
+{"key_id":"dev_aded21decdf3edf67a8ad0225d9616b5","ok":true}
+== daemon registry now:
+   dev_aded21decdf3edf67a8ad0225d9616b5 grants=['read_tail'] revoked=False
+== re-register fresh key k2 after simulated reinstall:
+{"algorithm":"Ed25519","expiry_ts":1795627699,"grants":[],"key_id":"dev_23d1896602540b05bde1d521505cc5ee","note":"default grants are empty (read-only): drive capabilities are promoted by the host","revoked":false}
+   k2 key_id: dev_23d1896602540b05bde1d521505cc5ee (K1=dev_aded21decdf3edf67a8ad0225d9616b5)
+   -> fresh identity confirmed
+== grant k2 (the recovery restore step):
+>> granting dev_23d1896602540b05bde1d521505cc5ee: read_tail
+{"key_id":"dev_23d1896602540b05bde1d521505cc5ee","ok":true}
+== daemon registry after recovery:
+   dev_23d1896602540b05bde1d521505cc5ee grants=['read_tail'] revoked=False
+   dev_aded21decdf3edf67a8ad0225d9616b5 grants=['read_tail'] revoked=False
+== daemon log tail:
+[2m2026-08-27T17:28:19.304277Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m agent upsert [3magent_id[0m[2m=[0mherdr:pane:w17M:p1 [3mtool[0m[2m=[0mhermes [3mstate[0m[2m=[0mIdle [3mpersisted[0m[2m=[0mtrue
+[2m2026-08-27T17:28:19.304319Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m agent upsert [3magent_id[0m[2m=[0mherdr:pane:w17N:p1 [3mtool[0m[2m=[0mhermes [3mstate[0m[2m=[0mDone [3mpersisted[0m[2m=[0mtrue
+[2m2026-08-27T17:28:19.304359Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m agent upsert [3magent_id[0m[2m=[0mherdr:pane:w17P:p1 [3mtool[0m[2m=[0mhermes [3mstate[0m[2m=[0mDone [3mpersisted[0m[2m=[0mtrue
+[2m2026-08-27T17:28:19.304402Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m agent upsert [3magent_id[0m[2m=[0mherdr:pane:w17Q:p1 [3mtool[0m[2m=[0mhermes [3mstate[0m[2m=[0mWorking [3mpersisted[0m[2m=[0mtrue
+[2m2026-08-27T17:28:19.304415Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m herdr bootstrap complete [3magents[0m[2m=[0m10
+[2m2026-08-27T17:28:19.464214Z[0m [32m INFO[0m [2mcorrald::adapters::herdr[0m[2m:[0m agent detected [3mpane[0m[2m=[0m"w176:p1" [3mtool[0m[2m=[0m"hermes" [3magent_state[0m[2m=[0mUnknown
+== SMOKE PASS (real binary: register + grant + re-register + re-grant)
+/tmp/corral-249-binary-smoke.sh: line 18: 12296 Terminated: 15          CORRAL_CONFIG_DIR="$DAEMON_DIR" CORRAL_REPO_ROOT="$WORKTREE" CORRAL_WORKTREES_ROOT="$ROOT/worktrees" "$BIN" --bind 127.0.0.1 --port "$PORT" > "$LOG" 2>&1

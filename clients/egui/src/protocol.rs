@@ -32,6 +32,21 @@ pub const GRANT_CAPABILITIES: [&str; 7] = [
     "start_worktree",
 ];
 
+/// #249 recovery grant set: the signed drive-plane caps re-applied when a
+/// rebuild/reinstall leaves the board with a fresh key. Deliberately
+/// excludes `start_worktree` (a binding operation, not part of the drive
+/// plane the issue names) and is used for the one-tap
+/// "Re-register + grant" recovery when the previous registration carries
+/// no recorded grants.
+pub const RECOVERY_GRANT_CAPS: [&str; 6] = [
+    "read_tail",
+    "prompt",
+    "interrupt",
+    "approve",
+    "kill",
+    "attach",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HostKey {
     pub algorithm: String,

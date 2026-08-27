@@ -227,6 +227,22 @@ pub fn host_fingerprint(host_public_key_b64: Option<&str>, host_url: &str) -> St
     hex
 }
 
+/// The daemon-side device key id for a public key: `dev_` + the first 16
+/// bytes of the SHA-256 of the Ed25519 public key, hex-encoded (mirrors
+/// `corrald::auth::registry::key_id_for`). Used for #249 identity
+/// detection — the board compares its CURRENT key material's id against
+/// the id its registration record names, without a round trip.
+pub fn device_key_id(public_key: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(public_key);
+    let mut hex = String::with_capacity(32);
+    for b in digest.iter().take(16) {
+        use std::fmt::Write;
+        write!(hex, "{b:02x}").expect("hex write to String cannot fail");
+    }
+    format!("dev_{hex}")
+}
+
 // ---------------------------------------------------------------------------
 // Keychain + file storage
 // ---------------------------------------------------------------------------
@@ -420,6 +436,25 @@ mod tests {
     }
 
     #[test]
+    fn device_key_id_matches_the_daemon_shape_and_is_key_bound() {
+        use ed25519_dalek::SigningKey;
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let id = device_key_id(&signing.verifying_key().to_bytes());
+        assert!(id.starts_with("dev_"), "daemon key id shape: {id}");
+        assert_eq!(id.len(), 4 + 32, "dev_ + 16 sha256 bytes, hex: {id}");
+        // Same key -> same id; distinct keys -> distinct ids; matches the
+        // daemon's own derivation byte-for-byte.
+        assert_eq!(id, device_key_id(&signing.verifying_key().to_bytes()));
+        let other = SigningKey::from_bytes(&[9u8; 32]);
+        assert_ne!(id, device_key_id(&other.verifying_key().to_bytes()));
+        assert_eq!(
+            id,
+            corrald::auth::registry::key_id_for(&signing.verifying_key().to_bytes()),
+            "client key-id derivation must equal the daemon's key_id_for"
+        );
+    }
+
+    #[test]
     fn key_file_round_trips_0600() {
         let dir = std::env::temp_dir().join(format!("corrald-ui-keys-test-{}", std::process::id()));
         let path = dir.join("fp.key");
@@ -530,14 +565,21 @@ mod tests {
 
     #[test]
     fn client_config_dir_uses_home_convention() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = std::env::var("HOME").unwrap();
-        // SAFETY: single-threaded test; env mutation is contained here.
+        let previous = std::env::var("CORRAL_UI_CONFIG_DIR").ok();
+        // SAFETY: test-only env mutation; restored below even on panic via
+        // the guard kept in scope (the suite runs tests on parallel threads,
+        // so the shared TEST_ENV_LOCK serializes every env-mutating test).
         unsafe { std::env::remove_var("CORRAL_UI_CONFIG_DIR") };
         assert!(client_config_dir().starts_with(home));
-        // SAFETY: single-threaded test; env mutation is contained here.
         unsafe { std::env::set_var("CORRAL_UI_CONFIG_DIR", "/tmp/corral-ui-test") };
         assert_eq!(client_config_dir(), PathBuf::from("/tmp/corral-ui-test"));
-        // SAFETY: single-threaded test; env mutation is contained here.
-        unsafe { std::env::remove_var("CORRAL_UI_CONFIG_DIR") };
+        match previous {
+            Some(value) => unsafe { std::env::set_var("CORRAL_UI_CONFIG_DIR", value) },
+            None => unsafe { std::env::remove_var("CORRAL_UI_CONFIG_DIR") },
+        }
     }
 }

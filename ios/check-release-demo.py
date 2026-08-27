@@ -47,8 +47,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # Manifest-listed Swift sources; the pin follows the new source set.
 # #253 read_tail scrub: TUI-furniture divider fallback added to
 # RecentOutputModel (isDividerRun) and the Recent row view (Divider).
+# #245 Fleet compact spacing: FleetViews.swift updated (manual refresh
+# removed, lowercase section headers, tightened spacing); the pin follows.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "f5a0aeea709ed08d942959d9d8171f02d58d68f833662b488302f4e56abf5b25"
+    "f2f84ac056cd74580b7e72c4e15c5325e7bddd17f62b15935da6dbc8bb888b0b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

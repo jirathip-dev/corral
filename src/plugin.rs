@@ -308,8 +308,9 @@ pub async fn scheduled_cards(manifest: &PluginManifest) -> Vec<CardResult> {
                 }
             });
         }
+        let notified = slot.ready.notified();
         if slot.result.lock().await.is_none() {
-            slot.ready.notified().await;
+            notified.await;
         }
         if let Some(result) = slot.result.lock().await.clone() {
             output.push(result);

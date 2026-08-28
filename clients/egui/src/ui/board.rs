@@ -1868,6 +1868,32 @@ fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
     }
 }
 
+fn recent_speaker_rail_label(kind: RecentBlockKind, show_label: bool) -> Option<&'static str> {
+    if !show_label {
+        return None;
+    }
+    Some(match kind {
+        RecentBlockKind::User => "you",
+        RecentBlockKind::Tool => "tool",
+        RecentBlockKind::Agent => "assistant",
+    })
+}
+
+fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
+    let (marker, color) = match kind {
+        RecentBlockKind::User => ("●", theme::ui::USER_BLUE),
+        RecentBlockKind::Tool => ("▸", theme::ui::ACCENT),
+        RecentBlockKind::Agent => ("●", theme::ui::INK),
+    };
+    ui.vertical(|ui| {
+        ui.set_width(52.0);
+        ui.label(RichText::new(marker).small().strong().color(color));
+        if let Some(label) = recent_speaker_rail_label(kind, show_label) {
+            ui.label(RichText::new(label).small().strong().color(color));
+        }
+    });
+}
+
 fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize, show_label: bool) {
     let Some(text) = recent_visible_text(line) else {
         return;
@@ -1910,70 +1936,60 @@ fn recent_chat_block(
             let width = (ui.available_width() - style.inset).max(0.0);
             ui.set_width(width);
             frame.show(ui, |ui| {
-                if show_label {
-                    ui.label(
-                        RichText::new("you")
-                            .small()
-                            .strong()
-                            .color(theme::ui::USER_BLUE),
-                    );
-                }
-                recent_message_lines(ui, text, FontId::proportional(12.0));
+                ui.horizontal(|ui| {
+                    recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                    ui.vertical(|ui| {
+                        recent_message_lines(ui, text, FontId::proportional(12.0));
+                    });
+                });
             });
         });
     } else {
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if style.monospace {
-                if recent_is_code_or_diff(text) {
-                    CollapsingHeader::new(
-                        RichText::new(format!("tool  {}", recent_tool_summary(text)))
-                            .small()
-                            .strong()
-                            .color(theme::ui::ACCENT),
-                    )
-                    .id_salt(recent_tool_disclosure_id(position))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.set_max_width((block_width - 40.0).max(40.0));
-                        egui::Frame::NONE
-                            .fill(theme::ui::BG)
-                            .stroke(Stroke::new(1.0, recent_code_line_color()))
-                            .corner_radius(CornerRadius::same(6))
-                            .inner_margin(egui::Margin::symmetric(8, 6))
-                            .show(ui, |ui| {
-                                for (number, line) in text.split('\n').enumerate() {
-                                    recent_code_line(ui, line, number + 1);
-                                }
-                            });
-                    });
+            ui.columns(2, |columns| {
+                recent_speaker_rail(&mut columns[0], kind, show_label);
+                let ui = &mut columns[1];
+                ui.set_width(ui.available_width());
+                if style.monospace {
+                    if recent_is_code_or_diff(text) {
+                        CollapsingHeader::new(
+                            RichText::new(format!("tool  {}", recent_tool_summary(text)))
+                                .small()
+                                .strong()
+                                .color(theme::ui::ACCENT),
+                        )
+                        .id_salt(recent_tool_disclosure_id(position))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            ui.set_max_width((block_width - 40.0).max(40.0));
+                            egui::Frame::NONE
+                                .fill(theme::ui::BG)
+                                .stroke(Stroke::new(1.0, recent_code_line_color()))
+                                .corner_radius(CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(8, 6))
+                                .show(ui, |ui| {
+                                    for (number, line) in text.split('\n').enumerate() {
+                                        recent_code_line(ui, line, number + 1);
+                                    }
+                                });
+                        });
+                    } else {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(text)
+                                        .monospace()
+                                        .small()
+                                        .color(theme::ui::MUTED),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    }
                 } else {
-                    ui.horizontal_wrapped(|ui| {
-                        if show_label {
-                            ui.label(RichText::new("▸").small().strong().color(theme::ui::ACCENT));
-                        }
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(text)
-                                    .monospace()
-                                    .small()
-                                    .color(theme::ui::MUTED),
-                            )
-                            .wrap(),
-                        );
-                    });
+                    recent_message_lines(ui, text, FontId::proportional(12.0));
                 }
-            } else {
-                if show_label {
-                    ui.label(
-                        RichText::new("assistant")
-                            .small()
-                            .strong()
-                            .color(theme::ui::INK),
-                    );
-                }
-                recent_message_lines(ui, text, FontId::proportional(12.0));
-            }
+            });
         });
     }
     ui.add_space(4.0);
@@ -2032,7 +2048,22 @@ fn recent_is_code_or_diff(text: &str) -> bool {
     let has_diff_evidence = (has_git_header && (has_hunk || (has_file_header && has_change)))
         || (has_hunk && has_change)
         || (has_file_header && has_hunk);
-    has_fence || has_diff_evidence
+    let has_code_signal = lines.iter().any(|line| {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        trimmed.starts_with("#!")
+            || trimmed.starts_with("$ ")
+            || lower.starts_with("def ")
+            || lower.starts_with("class ")
+            || lower.starts_with("import ")
+            || lower.starts_with("from ")
+            || lower.starts_with("echo ")
+            || lower.starts_with("export ")
+            || lower.starts_with("if ")
+            || lower.starts_with("for ")
+            || lower.contains("#!/usr/bin/")
+    });
+    has_fence || has_diff_evidence || has_code_signal
 }
 
 fn append_recent_segment(
@@ -3947,6 +3978,10 @@ mod tests {
         assert!(!recent_is_code_or_diff("index out of bounds"));
         assert!(!recent_is_code_or_diff("---"));
         assert!(!recent_is_code_or_diff("git diff -- src/catalog.rs"));
+        assert!(recent_is_code_or_diff("def deploy():\n    print(\"ok\")"));
+        assert!(recent_is_code_or_diff("#!/bin/sh\necho ok"));
+        assert!(recent_speaker_rail_label(RecentBlockKind::Tool, true).is_some());
+        assert!(recent_speaker_rail_label(RecentBlockKind::Tool, false).is_none());
         assert!(
             recent_highlight("+let value = \"highlighted\";")
                 .iter()

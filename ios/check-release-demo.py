@@ -65,7 +65,7 @@ ROOT = Path(__file__).resolve().parent.parent
 APPROVED_RELEASE_SOURCE_DIGEST = (
     # #280: demo seed newest-first order + offline-spinner parity arms moved
     # the source set (DemoFleet.swift, AppModel.swift); re-pin per convention.
-    "fe015ea8d782c523f5d73792f6d4a95267ff1224798a9ff113c4be3be6769496"
+    "5bb25f70034eb7cd9c6a816b1e2a436822e9b335184346c0c18828fd4c635f57"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

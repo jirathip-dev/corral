@@ -565,7 +565,21 @@ extension RecentOutputRender {
         let hasDiffEvidence = (hasGitHeader && (hasHunk || (hasFileHeader && hasChange)))
             || (hasHunk && hasChange)
             || (hasFileHeader && hasHunk)
-        return hasFence || hasDiffEvidence
+        let hasCodeSignal = lines.contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let lower = trimmed.lowercased()
+            return trimmed.hasPrefix("#!")
+                || trimmed.hasPrefix("$ ")
+                || lower.hasPrefix("def ")
+                || lower.hasPrefix("class ")
+                || lower.hasPrefix("import ")
+                || lower.hasPrefix("from ")
+                || lower.hasPrefix("echo ")
+                || lower.hasPrefix("export ")
+                || lower.hasPrefix("if ")
+                || lower.hasPrefix("for ")
+        }
+        return hasFence || hasDiffEvidence || hasCodeSignal
     }
 
     private static func highlight(_ line: String) -> [RecentCodeSegment] {

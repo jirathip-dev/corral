@@ -1397,6 +1397,7 @@ private struct RecentOutputRowView: View {
             } else {
                 RecentBlockRow(
                     block: block,
+                    showSpeaker: previousBlock?.kind != block.kind,
                     showTimestamp: RecentOutputRender.isBoundary(
                         previous: previousBlock,
                         current: block))
@@ -1432,54 +1433,70 @@ private struct RecentOutputRowView: View {
 
 private struct RecentBlockRow: View {
     let block: TranscriptBlock
+    let showSpeaker: Bool
     let showTimestamp: Bool
     @State private var expanded: Bool
 
-    init(block: TranscriptBlock, showTimestamp: Bool) {
+    init(block: TranscriptBlock, showSpeaker: Bool, showTimestamp: Bool) {
         self.block = block
+        self.showSpeaker = showSpeaker
         self.showTimestamp = showTimestamp
         _expanded = State(initialValue: block.kind == .tool
                           && RecentOutputRender.isCodeOrDiff(block.text))
     }
 
     var body: some View {
-        Group {
-            switch block.kind {
-            case .user:
-                userMessage
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-            case .agent:
-                agentMessage
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-            case .tool, .system:
-                toolMessage
+        HStack(alignment: .top, spacing: 8) {
+            speakerRail
+                .frame(width: 58, alignment: .topLeading)
+            Group {
+                switch block.kind {
+                case .user:
+                    userMessage
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+                case .agent:
+                    agentMessage
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+                case .tool, .system:
+                    toolMessage
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var userMessage: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            roleHeader
-            HStack {
-                Spacer(minLength: 24)
-                messageLines
-                    .padding(10)
-                    .background(RecentOutputPalette.userTint,
-                                in: RoundedRectangle(cornerRadius: 10))
-                    .textSelection(.enabled)
+    private var speakerRail: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Circle()
+                .fill(roleColor)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            if showSpeaker {
+                Text(block.kind == .tool ? "▸" : roleLabel)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(roleColor)
+                    .lineLimit(1)
             }
         }
     }
 
-    private var agentMessage: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            roleHeader
+    private var userMessage: some View {
+        HStack {
+            Spacer(minLength: 24)
             messageLines
+                .padding(10)
+                .background(RecentOutputPalette.userTint,
+                            in: RoundedRectangle(cornerRadius: 10))
                 .textSelection(.enabled)
         }
+    }
+
+    private var agentMessage: some View {
+        messageLines
+            .textSelection(.enabled)
     }
 
     private var toolMessage: some View {

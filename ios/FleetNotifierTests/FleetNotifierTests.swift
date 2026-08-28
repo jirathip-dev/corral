@@ -3816,6 +3816,16 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertFalse(RecentOutputRender.isCodeOrDiff("---"))
         XCTAssertFalse(RecentOutputRender.isCodeOrDiff("git diff -- src/catalog.rs"))
 
+        XCTAssertTrue(RecentOutputRender.isCodeOrDiff("def deploy():\n    print(\"ok\")"))
+        XCTAssertTrue(RecentOutputRender.isCodeOrDiff("#!/bin/sh\necho ok"))
+        XCTAssertTrue(RecentOutputRender.isBoundary(previous: nil, current: diff))
+        XCTAssertFalse(RecentOutputRender.isBoundary(previous: diff, current: block(.tool, "echo ok")))
+        let pythonLines = RecentOutputRender.codeLines(for: block(.tool, "def deploy():\n    print(\"ok\")"))
+        XCTAssertTrue(pythonLines.allSatisfy(\.isHighlighted))
+        XCTAssertTrue(pythonLines.contains { line in
+            line.segments.contains { $0.kind == .string }
+        })
+
         let hashDiff = block(.tool, "git diff -- src/catalog.rs\n@@ -1 +1 @@\n value#hash")
         let hashLine = RecentOutputRender.codeLines(for: hashDiff)
             .first { $0.text == " value#hash" }

@@ -2687,6 +2687,48 @@ impl Adapter for HerdrAdapter {
         })
     }
 
+    fn read_tail_since<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+        since_rev: Option<u64>,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        let (target, generation) = match self.drive_target_with_generation(agent_id) {
+            Ok(t) => t,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let mut params = json!({
+            "target": target.clone(),
+            "source": "recent_unwrapped",
+            "lines": lines.clamp(1, READ_TAIL_MAX_LINES),
+        });
+        if let Some(rev) = since_rev {
+            params["rev"] = json!(rev);
+        }
+        let socket = self.socket_path.clone();
+        let agent_id = agent_id.to_string();
+        let failed_target = target;
+        Box::pin(async move {
+            let response = match rpc_call(&socket, "agent.read", params).await {
+                Ok(response) => response,
+                Err(error) => {
+                    let mapped = map_drive_rpc_error(&agent_id, "agent.read", error);
+                    if matches!(mapped, DriveError::StaleAgent(_)) {
+                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
+                            .await;
+                    }
+                    return Err(mapped);
+                }
+            };
+            let text = response
+                .get("read")
+                .and_then(|read| read.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            Ok(bounded_redacted_tail(text, lines))
+        })
+    }
+
     fn read_diff<'a>(
         &'a self,
         agent_id: &'a str,
@@ -3721,7 +3763,13 @@ mod tests {
         // refuses it rather than discarding the result.
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
         let err = adapter
-            .drive("herdr:a", DriveCommand::ReadTail { lines: Some(5) })
+            .drive(
+                "herdr:a",
+                DriveCommand::ReadTail {
+                    lines: Some(5),
+                    since_rev: None,
+                },
+            )
             .await;
         assert!(matches!(err, Err(DriveError::NotImplemented("read_tail"))));
     }

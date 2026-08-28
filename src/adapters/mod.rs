@@ -31,6 +31,7 @@ pub enum DriveCommand {
     },
     ReadTail {
         lines: Option<u32>,
+        since_rev: Option<u64>,
     },
     /// #232: read the agent's worktree diff (changed-files list + unified
     /// diff page + diffstat). Routed through [`Adapter::read_diff`] like
@@ -129,6 +130,18 @@ pub trait Adapter: Debug + Send + Sync {
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
         let _ = (agent_id, lines);
         Box::pin(async move { Err(DriveError::NotImplemented("read_tail")) })
+    }
+
+    /// Incremental read_tail seam. Adapters that do not expose source
+    /// revisions retain the safe full-tail behavior.
+    fn read_tail_since<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+        since_rev: Option<u64>,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        let _ = since_rev;
+        self.read_tail(agent_id, lines)
     }
 
     /// #232: `read_diff`: fetch `agent_id`'s worktree diff (changed-files

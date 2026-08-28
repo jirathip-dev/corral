@@ -82,7 +82,8 @@ use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
     AuditEntry, AuditLog, AuditOutcome, AuthError, AuthorizedDrive, Capability, DriveEnvelope,
-    DrivePayload, DriveResponse, PayloadError, READ_TAIL_MAX_LINES, SignedDrive, UnknownCapability,
+    DrivePayload, DriveResponse, PayloadError, READ_TAIL_DEFAULT_LINES, READ_TAIL_MAX_LINES,
+    SignedDrive, UnknownCapability,
 };
 use crate::fleet::cli::FleetIdentity;
 use crate::fleet::worktree::{
@@ -325,9 +326,10 @@ fn command_for(
                 DrivePayload::Prompt { text } => {
                     PendingCommand::Command(DriveCommand::Prompt { text })
                 }
-                DrivePayload::ReadTail { lines } => {
+                DrivePayload::ReadTail { lines, since_rev } => {
                     PendingCommand::Command(DriveCommand::ReadTail {
                         lines: Some(bound_tail_lines(lines)),
+                        since_rev,
                     })
                 }
                 DrivePayload::ReadDiff {
@@ -448,11 +450,11 @@ fn worktree_request(
     }
 }
 
-/// `read_tail` line bound (D5): default 200, clamped to `[1, 200]`.
+/// `read_tail` line bound (D5): default 50, clamped to `[1, 200]`.
 fn bound_tail_lines(lines: Option<u32>) -> u32 {
     lines
         .map(|lines| lines.clamp(1, READ_TAIL_MAX_LINES))
-        .unwrap_or(READ_TAIL_MAX_LINES)
+        .unwrap_or(READ_TAIL_DEFAULT_LINES)
 }
 
 fn is_empty_payload(payload: &serde_json::Value) -> bool {
@@ -878,9 +880,13 @@ pub async fn drive(
         // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
         // carry it back in `result.lines`; other drive commands await their
         // source RPC through the same outcome-bearing adapter future.
-        DriveCommand::ReadTail { lines } => {
+        DriveCommand::ReadTail { lines, since_rev } => {
             let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
-            match state.adapter.read_tail(&agent_id, requested).await {
+            match state
+                .adapter
+                .read_tail_since(&agent_id, requested, since_rev)
+                .await
+            {
                 Ok(lines) => {
                     // #167: serve blocks ADDITIVELY alongside the existing
                     // `lines` field. egui still renders `lines` until #168;
@@ -1434,7 +1440,7 @@ mod tests {
 
     #[test]
     fn tail_lines_are_bounded() {
-        assert_eq!(bound_tail_lines(None), READ_TAIL_MAX_LINES);
+        assert_eq!(bound_tail_lines(None), 50);
         assert_eq!(bound_tail_lines(Some(5)), 5);
         assert_eq!(bound_tail_lines(Some(0)), 1);
         assert_eq!(bound_tail_lines(Some(100_000)), READ_TAIL_MAX_LINES);

@@ -1499,7 +1499,7 @@ fn recent_output_surface(
                 })
                 .inner;
             if load_clicked {
-                (actions.drive)(DriveIntent::read_tail(&agent.agent_id, fleet.rev));
+                (actions.drive)(DriveIntent::read_tail_page(&agent.agent_id, 200, fleet.rev));
             }
 
             ui.add_space(2.0);

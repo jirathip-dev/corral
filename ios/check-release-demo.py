@@ -63,8 +63,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
 # IssuesBrowserView (chips + inline detail).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    # #271 R2: view routes highlighted segments for every speaker kind.
-    "86b18b26a8fdea4c1558c94182f5c26b48456ddea3f0741ff6cafb74912d943b"
+    # #290: 50-line initial tail window and explicit 200-line paging.
+    "a4ffc7bb82ce01174a338ac3b05bf61f2b98e6212cdf356ef6c66a7384676c9e"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

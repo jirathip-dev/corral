@@ -27,7 +27,27 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fleet::cli::FleetIdentity;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetIdentity {
+    pub name: String,
+    pub gh_repo: String,
+    pub orch: String,
+    pub workers: usize,
+    pub paused: bool,
+    pub local: PathBuf,
+    pub worktree_dir: String,
+}
+
+impl FleetIdentity {
+    pub fn local_path(&self) -> PathBuf {
+        if let Some(rest) = self.local.to_string_lossy().strip_prefix("~/") {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(rest)
+        } else {
+            self.local.clone()
+        }
+    }
+}
 
 /// The client-confirmed, authorized worktree request.
 ///
@@ -453,7 +473,7 @@ impl<'a> IssueCheck<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::cli::FleetIdentity;
+    use crate::fleet::worktree::FleetIdentity;
     use std::sync::Mutex;
 
     fn fleet() -> FleetIdentity {

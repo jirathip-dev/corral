@@ -397,7 +397,6 @@ fn harness() -> Harness {
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
         issues: issues.clone(),
-        fleets: Arc::new(corrald::fleet::cli::CliFleetOpsProvider),
         cors_origins: Vec::new(),
     });
     Harness {

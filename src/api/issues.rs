@@ -6,9 +6,7 @@
 //! validates a selected issue against), plus empty category entries for the
 //! live agent `workspace.repo` union. Since #237 the category union is the
 //! LIVE HDRD SNAPSHOT ONLY (no registry-derived basenames) and the fleet
-//! identity keys are the fleet-ops CLI validated fleet names
-//! ([`crate::fleet::cli::FleetOpsProvider`]) — corral never reads
-//! `fleets.json`. Display repo categories are never actionable identities.
+//! categories come only from the native issue and workspace caches.
 //!
 //! ## Auth scope (review 2)
 //!
@@ -30,7 +28,6 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::response::Json;
-use tracing::warn;
 
 use crate::core::events::GhIssueRef;
 
@@ -84,19 +81,6 @@ pub async fn issues_view(state: &SuperState) -> serde_json::Value {
     let mut map = state.issues.snapshot();
     let live_repos = live_workspace_repos(&state.store).await;
 
-    // Fleet identity keys from the fleet-ops CLI validated identity path
-    // ONLY. Absent CLI (or an empty registry) leaves the map live-only; the
-    // daemon still starts and renders without any fleets.json.
-    match state.fleets.list() {
-        Ok(identities) => {
-            for identity in identities {
-                map.entry(identity.name).or_default();
-            }
-        }
-        Err(error) => {
-            warn!(error = %error, "fleet-ops CLI identity path unavailable for /issues fleet keys");
-        }
-    }
     for repo in normalize_categories(live_repos) {
         map.entry(repo).or_default();
     }

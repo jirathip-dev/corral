@@ -1720,16 +1720,6 @@ impl CorralApp {
         });
     }
 
-    fn execute_plugin_action(&mut self, action_id: String) {
-        let client = self.client.clone();
-        let base_url = self.config.host_url.clone();
-        let tx = self.tx_apply.clone();
-        self.rt.spawn(async move {
-            let result = protocol::execute_plugin_action(&client, &base_url, &action_id).await;
-            let _ = tx.send(ApplyMsg::PluginAction(result));
-        });
-    }
-
     /// Hydrate the resolved visible Cards detail pane once the live snapshot
     /// and the persisted device grant are both ready. The board owns the
     /// visible/attention-ranked resolver; this method consumes that result,
@@ -3189,14 +3179,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
-            if let Some(event) = crate::ui::plugin::show(&mut right_ui, &mut app.fleet) {
-                match event {
-                    crate::ui::plugin::Event::Refresh => app.refresh_plugin(),
-                    crate::ui::plugin::Event::Execute(action_id) => {
-                        app.execute_plugin_action(action_id)
-                    }
-                }
-            }
         }
         Tab::Issues => {
             app.refresh_issues(false);
@@ -3573,7 +3555,6 @@ mod tests {
             adapter: std::sync::Arc::new(TailAdapter),
             replay: Default::default(),
             issues: Default::default(),
-            fleets: std::sync::Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(vec![])),
             cors_origins: Vec::new(),
         };
         let _cfg_guard = EnvRestore::set("CORRAL_CONFIG_DIR", daemon_dir.display().to_string());

@@ -153,180 +153,26 @@ async fn snapshot_exposes_git_plane_backlog_additively() {
     assert_eq!(v["git_plane_backlog"], true);
 }
 
-use std::sync::Arc;
-
-fn fleet_identity(name: &str, gh_repo: &str) -> corrald::fleet::cli::FleetIdentity {
-    corrald::fleet::cli::FleetIdentity {
-        name: name.to_string(),
-        gh_repo: gh_repo.to_string(),
-        local: std::path::PathBuf::from(format!("/tmp/{name}")),
-        worktree_dir: format!("wt-{name}"),
-        orch: format!("orch-{name}"),
-        workers: 0,
-        paused: false,
-    }
-}
-
-/// #237 configless app: live agents with these repos AND an injected
-/// fleet-ops CLI validated identity catalog (production shells herdr-fleet).
-async fn app_with_repos_and_fleets(
-    repos: &[Option<&str>],
-    identities: Vec<corrald::fleet::cli::FleetIdentity>,
-) -> (Store, axum::Router) {
-    let (store, _app) = app_with_repos(repos).await;
-    let mut state = AppState {
-        fleets: Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(identities)),
-        ..Default::default()
-    };
-    let store2 = store.clone();
-    let coalescer = store2.clone();
-    std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    state.store = store2;
-    let app = router(state);
-    (store, app)
-}
-
-/// #237: the daemon starts and the board renders with NO fleets.json
-/// anywhere — /issues returns the live workspace.repo union (and, with an
-/// unavailable fleet-ops CLI, nothing else).
 #[tokio::test]
-async fn configless_startup_issues_use_live_repos_only() {
+async fn native_issues_use_live_repos_only() {
     let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
-    let (store, app) = app_with_repos_and_fleets(&live, Vec::new()).await;
-    let issues = get_json(&app, "/issues").await;
-
-    assert_eq!(
-        object_keys(&issues["repos"]),
-        BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()]),
-        "categories are the trimmed live workspace.repo union; no registry keys, \
-         no basenames, no fleets.json anywhere"
-    );
-    assert!(
-        store
-            .get("agent-2")
-            .await
-            .expect("orphan agent")
-            .workspace
-            .repo
-            .is_none(),
-        "a missing repo identity stays in the orphan bucket"
-    );
-}
-
-/// #237: category source is the live snapshot ONLY. A CLI-validated fleet
-/// identity contributes its NAME as the action key, never a registry-derived
-/// gh_repo basename category.
-#[tokio::test]
-async fn category_source_never_derives_from_gh_repo_basenames() {
-    let identities = vec![
-        fleet_identity("fleet-canonical", "owner/canonical-repo"),
-        fleet_identity("fleet-primary", "owner/primary-repo"),
-        fleet_identity("fleet-orphan", "owner/orphan-repo"),
-    ];
-    let live = [Some("  primary-repo  "), Some(" herdr-only "), None];
-    let (store, app) = app_with_repos_and_fleets(&live, identities).await;
-    let issues = get_json(&app, "/issues").await;
-
-    // Live repo categories are the trimmed live values; fleet identity keys
-    // are the CLI-validated fleet NAMES. NO registry-derived basenames
-    // ("canonical-repo", "orphan-repo") may appear as categories.
-    let keys = object_keys(&issues["repos"]);
-    assert!(keys.contains("fleet-canonical"));
-    assert!(keys.contains("fleet-primary"));
-    assert!(keys.contains("fleet-orphan"));
-    assert!(keys.contains("herdr-only"));
-    assert!(keys.contains("primary-repo"));
-    assert!(
-        !keys.contains("canonical-repo") && !keys.contains("orphan-repo"),
-        "gh_repo basenames are never categories: {keys:?}"
-    );
-    let _ = store;
-}
-
-/// #237: GET /fleets serves the fleet-ops CLI validated identity catalog and
-/// nothing else — no local/worktree_dir/models/reasoning_effort/path fields.
-#[tokio::test]
-async fn fleets_endpoint_is_the_validated_identity_catalog() {
-    let identities = vec![
-        fleet_identity("corral", "jirathip-dev/corral"),
-        fleet_identity("board", "jirathip-dev/herdr-board"),
-    ];
-    let (_store, app) = app_with_repos_and_fleets(&[], identities).await;
-    let body = get_json(&app, "/fleets").await;
-
-    assert_eq!(body["status"], "ok");
-    assert!(body["error"].is_null());
-    assert_eq!(body["fleets"].as_array().unwrap().len(), 2);
-    assert_eq!(body["fleets"][0]["name"], "corral");
-    assert_eq!(body["fleets"][0]["gh_repo"], "jirathip-dev/corral");
-    assert_eq!(body["fleets"][0]["orch"], "orch-corral");
-    assert!(
-        body["fleets"][0].get("local").is_none()
-            && body["fleets"][0].get("worktree_dir").is_none()
-            && body["fleets"][0].get("models").is_none()
-            && body.get("path").is_none(),
-        "no registry projection fields remain on the identity catalog"
-    );
-}
-
-/// #237: an explicitly unavailable fleet-ops CLI is an explicit status, and
-/// the board still renders live categories (configless-safe daemon).
-#[tokio::test]
-async fn unavailable_provider_reports_error_but_keeps_live_categories() {
-    struct Down;
-    impl corrald::fleet::cli::FleetOpsProvider for Down {
-        fn list(
-            &self,
-        ) -> Result<Vec<corrald::fleet::cli::FleetIdentity>, corrald::fleet::cli::FleetOpsError>
-        {
-            Err(corrald::fleet::cli::FleetOpsError::Unavailable {
-                detail: "no herdr-fleet".to_string(),
-            })
-        }
-    }
-    let live = [Some("  primary-repo  "), None];
-    let (store, _app) = app_with_repos(&live).await;
-    let mut state = AppState {
-        fleets: Arc::new(Down),
-        ..Default::default()
-    };
-    let store2 = store.clone();
-    let coalescer = store2.clone();
-    std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    state.store = store2;
-    let app = router(state);
-    let body = get_json(&app, "/fleets").await;
-    assert_eq!(body["status"], "error");
-    assert!(body["fleets"].as_array().unwrap().is_empty());
+    let (_store, app) = app_with_repos(&live).await;
     let issues = get_json(&app, "/issues").await;
     assert_eq!(
         object_keys(&issues["repos"]),
-        BTreeSet::from(["primary-repo".to_string()]),
-        "live categories still render when the identity path is down"
+        BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()])
     );
 }
 
 #[tokio::test]
-async fn snapshot_never_calls_fleet_ops_provider() {
-    struct Panic;
-    impl corrald::fleet::cli::FleetOpsProvider for Panic {
-        fn list(
-            &self,
-        ) -> Result<Vec<corrald::fleet::cli::FleetIdentity>, corrald::fleet::cli::FleetOpsError>
-        {
-            panic!("snapshot must not enumerate fleet ops")
-        }
-    }
+async fn snapshot_never_needs_fleet_ops() {
     let (store, _app) = app_with_repos(&[Some("primary-repo")]).await;
-    let mut state = AppState {
-        fleets: Arc::new(Panic),
+    let state = AppState {
+        store,
         ..Default::default()
     };
-    state.store = store;
-    let app = router(state);
-    let body = get_json(&app, "/snapshot").await;
+    let body = get_json(&router(state), "/snapshot").await;
     assert!(body["agents"].is_object());
-    assert!(body.get("fleet_health").is_none());
 }
 
 #[test]
@@ -566,42 +412,6 @@ async fn issues_endpoint_serves_last_known_repo_issues() {
     assert_eq!(repos["herdr-board"][0]["labels"][0]["name"], "p2");
 }
 
-#[tokio::test]
-async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
-    let identities = vec![
-        fleet_identity("alpha", "owner/foo"),
-        fleet_identity("beta", "owner/foo"),
-    ];
-    let state = AppState {
-        fleets: Arc::new(corrald::fleet::cli::MemoryFleetOpsProvider::new(identities)),
-        ..Default::default()
-    };
-    state.issues.update(
-        "alpha",
-        vec![corrald::core::events::GhIssueRef {
-            repo: "foo".to_string(),
-            number: 42,
-            state: "OPEN".to_string(),
-            title: "shared issue".to_string(),
-            labels: vec![],
-            url: "https://github.com/example/foo/issues/42".to_string(),
-            body: None,
-            comments: vec![],
-            comment_total: None,
-        }],
-    );
-    let app = router(state);
-    let json = get_json(&app, "/issues").await;
-    assert_eq!(json["repos"]["alpha"].as_array().unwrap().len(), 1);
-    assert!(json["repos"]["beta"].as_array().unwrap().is_empty());
-    // The live category union has no repo keys here; only validated fleet
-    // identity keys exist (no registry-derived basenames like "foo").
-    assert!(
-        json["repos"].get("foo").is_none(),
-        "no guessed category from gh_repo"
-    );
-}
-
 // --- #215: narrow CORS layer on the credential-free read plane ---
 
 const CORS_ORIGIN: &str = "https://demo.corral.pages.github.io";
@@ -813,4 +623,27 @@ async fn cors_default_state_never_emits_cors_headers() {
             .is_none(),
         "no allowlist configured -> the daemon behaves exactly as before"
     );
+}
+
+#[tokio::test]
+async fn poisoned_path_never_invokes_private_fleet_tool_on_read_plane() {
+    let previous = std::env::var_os("PATH");
+    unsafe { std::env::set_var("PATH", "/definitely-not-a-real-path") };
+    let app = router(AppState::default());
+    for path in ["/healthz", "/snapshot", "/events?since=0", "/issues"] {
+        let response = app
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{path}"
+        );
+    }
+    match previous {
+        Some(value) => unsafe { std::env::set_var("PATH", value) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
 }

@@ -292,7 +292,10 @@ jobs:
   pages:
     name: Publish iOS showcase to Pages
     needs: testflight
-    if: (inputs.mode == 'upload' || inputs.mode == 'capture') && github.ref == 'refs/heads/main' && needs.testflight.result == 'success'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((inputs.mode == 'upload' && needs.testflight.result == 'success') ||
+       (inputs.mode == 'capture' && needs.testflight.result != 'cancelled'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -318,7 +321,7 @@ jobs:
           set -euo pipefail
           artifact_sha="$(python3 -c 'import json; print(json.load(open("${{ runner.temp }}/ios-showcase/metadata.json"))["commit_sha"])')"
           found=false
-          for run_id in $(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/ios-testflight.yml/runs?branch=main&status=success&per_page=100" --jq '.workflow_runs[].id'); do
+          for run_id in $(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/ios-testflight.yml/runs?branch=main&status=completed&per_page=100" --jq '.workflow_runs[].id'); do
             run_sha="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')"
             [ "$run_sha" = "$artifact_sha" ] || continue
             if gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[].steps[] | select(.name == "Run fastlane testflight" and .conclusion == "success") | .name' | grep -q .; then

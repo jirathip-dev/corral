@@ -593,6 +593,7 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
 fn capability_description(capability: &str) -> &'static str {
     match capability {
         "read_tail" => "Read live agent output",
+        "read_diff" => "Read the agent's worktree diff (files, diffstat, paged diff)",
         "prompt" => "Send prompts / steer the agent",
         "interrupt" => "Interrupt a running task",
         "approve" => "Approve tool calls & awaiting decisions",

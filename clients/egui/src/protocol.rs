@@ -22,11 +22,12 @@ pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 /// Canonical grant order for the board's grant editor. This is the same
 /// closed set the daemon's `Capability` parser accepts; `start_worktree`
 /// is rendered separately as a fleet-level capability.
-pub const GRANT_CAPABILITIES: [&str; 7] = [
+pub const GRANT_CAPABILITIES: [&str; 8] = [
     "prompt",
     "interrupt",
     "approve",
     "read_tail",
+    "read_diff",
     "kill",
     "attach",
     "start_worktree",
@@ -38,8 +39,9 @@ pub const GRANT_CAPABILITIES: [&str; 7] = [
 /// plane the issue names) and is used for the one-tap
 /// "Re-register + grant" recovery when the previous registration carries
 /// no recorded grants.
-pub const RECOVERY_GRANT_CAPS: [&str; 6] = [
+pub const RECOVERY_GRANT_CAPS: [&str; 7] = [
     "read_tail",
+    "read_diff",
     "prompt",
     "interrupt",
     "approve",
@@ -845,9 +847,22 @@ mod tests {
                 "interrupt",
                 "approve",
                 "read_tail",
+                "read_diff",
                 "kill",
                 "attach",
                 "start_worktree"
+            ]
+        );
+        assert_eq!(
+            RECOVERY_GRANT_CAPS,
+            [
+                "read_tail",
+                "read_diff",
+                "prompt",
+                "interrupt",
+                "approve",
+                "kill",
+                "attach"
             ]
         );
         assert!(

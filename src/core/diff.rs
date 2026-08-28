@@ -91,6 +91,11 @@ impl PageCollector {
             // stream metadata, never the content).
             return;
         }
+        // D9: redact the FULL line before the 4096-char truncation, so a
+        // secret straddling the cut never leaks a prefix that survives
+        // truncation (the adapter boundary keeps its redaction pass too —
+        // `redact` is idempotent).
+        let line = crate::core::redact::redact(&line).into_owned();
         let index = if line.chars().count() > MAX_LINE_CHARS {
             let mut cut = line.chars().take(MAX_LINE_CHARS - 1).collect::<String>();
             cut.push('…');

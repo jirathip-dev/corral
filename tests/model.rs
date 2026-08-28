@@ -81,6 +81,7 @@ fn capability_contract_is_exact() {
             "interrupt",
             "approve",
             "read_tail",
+            "read_diff",
             "kill",
             "attach"
         ]

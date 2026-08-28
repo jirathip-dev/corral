@@ -6770,6 +6770,11 @@ mod review_tests {
             .expect("commit");
     }
 
+    /// Realistic GitHub PAT canary: `ghp_` + 40 alphanumerics, the shape the
+    /// redactor's prefix rule fires on (a short `ghp_ab` fragment never
+    /// matches — that was the weak-canary trap this test used to have).
+    const DIFF_FIXTURE_SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789abcd";
+
     /// Fixture: a repo with one committed file and one local modification on
     /// disk (unstaged, dirty worktree) + worktrees-root attribution.
     struct DiffFixture {
@@ -6786,11 +6791,14 @@ mod review_tests {
         let worktree = worktrees_root.join("corral/feature-x");
         std::fs::create_dir_all(&worktree).expect("worktree dir");
         diff_init_repo(&worktree);
-        std::fs::write(
-            worktree.join("a.txt"),
-            "one\ntwo!!\nthree\nwith-ghp_abcdefghijklmnopqrstuvwxyz0123456789abcd\n",
-        )
-        .expect("dirty");
+        // Long line that PUSHES the secret across the 4096-char truncation
+        // cut (the '-' before "ghp_" gives the redactor a word boundary —
+        // an alnum glue would intentionally pass per F1).
+        let dirty = format!(
+            "one\ntwo!!\nthree\n{}-{DIFF_FIXTURE_SECRET}-\n",
+            "x".repeat(4080)
+        );
+        std::fs::write(worktree.join("a.txt"), dirty).expect("dirty");
 
         let attribution = WorkspaceAttribution::from_roots(
             std::iter::empty::<crate::core::workspace::RepoRoot>(),
@@ -6864,12 +6872,14 @@ mod review_tests {
             "branch: {:?}",
             result.branch
         );
-        // D9 redaction at the adapter boundary: the gh PAT body is scrubbed
-        // before any line leaves the machine.
+        // D9 redaction: the realistic `ghp_`+40 canary is scrubber BEFORE
+        // the 4096-char truncation (core::diff), so no prefix of the secret
+        // survives the cut in ANY served line (the old assertion checked a
+        // marker that never exists in output — this checks the secret).
         for line in &result.lines {
             assert!(
-                !line.contains("ghp_abcdefghijklmnopqrstuvwxyz"),
-                "secret must be redacted: {line}"
+                !line.contains("ghp_"),
+                "raw PAT canary must be redacted: {line}"
             );
         }
         assert!(

@@ -44,6 +44,41 @@ pub fn load() -> DemoData {
     data
 }
 
+/// Glyph-rich transcript blocks for the static board evidence. The same
+/// daemon scrubber is applied here so demo output exercises the shared tofu
+/// contract without changing live read-tail behavior.
+pub fn recent_tail() -> Vec<String> {
+    [
+        "› make the transcript readable",
+        "I grouped the latest work by speaker and kept the live tail bounded.",
+        "$ python deploy.py --dry-run\ndef deploy():\n    print(\"ready ✅\")\n    return True",
+        "git diff -- src/ui/board.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+tool output",
+        "tool status: ok \u{e000} ⚠️",
+    ]
+    .into_iter()
+    .map(scrub_demo_icons)
+    .collect()
+}
+
+fn scrub_demo_icons(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut replaced = false;
+    for character in line.chars() {
+        let private_use = ('\u{e000}'..='\u{f8ff}').contains(&character)
+            || ('\u{f0000}'..='\u{ffffd}').contains(&character)
+            || ('\u{100000}'..='\u{10fffd}').contains(&character);
+        if private_use {
+            if !replaced {
+                output.push_str("[icon]");
+                replaced = true;
+            }
+        } else {
+            replaced = false;
+            output.push(character);
+        }
+    }
+    output
+}
 /// Wall-clock epoch millis that also works on wasm32-unknown-unknown —
 /// `std::time::SystemTime` panics there ("time not implemented"), so the
 /// web build uses `js_sys::Date::now()` (epoch), never the monotonic

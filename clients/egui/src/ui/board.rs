@@ -1938,57 +1938,67 @@ fn recent_chat_block(
             frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     recent_speaker_rail(ui, RecentBlockKind::User, show_label);
-                    ui.vertical(|ui| {
-                        recent_message_lines(ui, text, FontId::proportional(12.0));
-                    });
+                    let content_width = (block_width - style.inset - 62.0).max(40.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(content_width, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            recent_message_lines(ui, text, FontId::proportional(12.0));
+                        },
+                    );
                 });
             });
         });
     } else {
         frame.show(ui, |ui| {
-            ui.columns(2, |columns| {
-                recent_speaker_rail(&mut columns[0], kind, show_label);
-                let ui = &mut columns[1];
-                ui.set_width(ui.available_width());
-                if style.monospace {
-                    if recent_is_code_or_diff(text) {
-                        CollapsingHeader::new(
-                            RichText::new(format!("tool  {}", recent_tool_summary(text)))
-                                .small()
-                                .strong()
-                                .color(theme::ui::ACCENT),
-                        )
-                        .id_salt(recent_tool_disclosure_id(position))
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            ui.set_max_width((block_width - 40.0).max(40.0));
-                            egui::Frame::NONE
-                                .fill(theme::ui::BG)
-                                .stroke(Stroke::new(1.0, recent_code_line_color()))
-                                .corner_radius(CornerRadius::same(6))
-                                .inner_margin(egui::Margin::symmetric(8, 6))
-                                .show(ui, |ui| {
-                                    for (number, line) in text.split('\n').enumerate() {
-                                        recent_code_line(ui, line, number + 1);
-                                    }
-                                });
-                        });
-                    } else {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(text)
-                                        .monospace()
+            ui.horizontal(|ui| {
+                recent_speaker_rail(ui, kind, show_label);
+                let content_width = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(content_width, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        if style.monospace {
+                            if recent_is_code_or_diff(text) {
+                                CollapsingHeader::new(
+                                    RichText::new(format!("tool  {}", recent_tool_summary(text)))
                                         .small()
-                                        .color(theme::ui::MUTED),
+                                        .strong()
+                                        .color(theme::ui::ACCENT),
                                 )
-                                .wrap(),
-                            );
-                        });
-                    }
-                } else {
-                    recent_message_lines(ui, text, FontId::proportional(12.0));
-                }
+                                .id_salt(recent_tool_disclosure_id(position))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.set_max_width((block_width - 40.0).max(40.0));
+                                    egui::Frame::NONE
+                                        .fill(theme::ui::BG)
+                                        .stroke(Stroke::new(1.0, recent_code_line_color()))
+                                        .corner_radius(CornerRadius::same(6))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            for (number, line) in text.split('\n').enumerate() {
+                                                recent_code_line(ui, line, number + 1);
+                                            }
+                                        });
+                                });
+                            } else {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(text)
+                                                .monospace()
+                                                .small()
+                                                .color(theme::ui::MUTED),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                            }
+                        } else {
+                            recent_message_lines(ui, text, FontId::proportional(12.0));
+                        }
+                    },
+                );
             });
         });
     }

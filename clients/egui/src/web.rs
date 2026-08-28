@@ -233,6 +233,16 @@ impl WebCorralApp {
             self.fleet.apply_snapshot(&data.snapshot);
             self.fleet.set_issues(Ok(data.issues.clone()));
             self.fleet.set_fleets(Ok(data.fleets.clone()));
+            for agent in data.snapshot.agents.values() {
+                if agent
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "read_tail")
+                {
+                    self.fleet
+                        .remember_tail(&agent.agent_id, demo::recent_tail());
+                }
+            }
         }
         self.demo_step = 0;
         self.demo_last = now_ms();

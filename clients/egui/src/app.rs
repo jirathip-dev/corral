@@ -1776,6 +1776,11 @@ impl CorralApp {
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
                 }
+                // #232: fold the bounded read_diff page into the per-agent
+                // cache (changed-files + diffstat + paged unified diff).
+                if capability == "read_diff" && result.is_some() {
+                    self.remember_diff_result(&msg);
+                }
                 let text = if capability == "start_worktree" {
                     let wt_state = result
                         .as_ref()
@@ -1891,6 +1896,36 @@ impl CorralApp {
             "read_tail result applied to screenshot/detail cache"
         );
         fleet.remember_tail(&msg.agent_id, lines);
+    }
+
+    /// #232 read_diff content path: the daemon's `DriveResponse.result`
+    /// carries a bounded `ReadDiffResult` page (changed-files list +
+    /// diffstat + paged unified diff, redacted + bounded before leaving the
+    /// daemon) — fold it into the per-agent diff cache. A malformed result
+    /// (or a `None`) is dropped silently: the drive bookkeeping already
+    /// surfaced the dispatch outcome.
+    fn remember_diff_result(&mut self, msg: &DriveMsg) {
+        Self::apply_read_diff_result(&mut self.fleet, msg);
+    }
+
+    fn apply_read_diff_result(fleet: &mut Fleet, msg: &DriveMsg) {
+        let DriveOutcome::Ok { result, .. } = &msg.outcome else {
+            return;
+        };
+        let Some(result) = result else {
+            return;
+        };
+        let Some(page) = crate::drive::parse_diff_page(result) else {
+            tracing::warn!(agent_id = %msg.agent_id, "read_diff result was malformed; skipped");
+            return;
+        };
+        tracing::info!(
+            agent_id = %msg.agent_id,
+            page = page.offset,
+            lines = page.lines.len(),
+            "read_diff result applied to diff cache"
+        );
+        fleet.remember_diff_page(&msg.agent_id, page);
     }
 
     /// Native screenshot evidence helper. It is deliberately opt-in and

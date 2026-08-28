@@ -903,6 +903,45 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
+    /// #232: first worktree-diff fetch (page 0). Bounded (128 files,
+    /// 200 lines) and grant/capability-gated like read_tail — no fleet-wide
+    /// prefetch; the sheet loads one agent at a time on an explicit tap.
+    func driveReadDiff(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.readDiff, for: live) else { return }
+        payload_read_diff(offset: 0, driveClient: driveClient, live: live,
+                          keyId: keyId, signer: signer)
+    }
+
+    /// #232: next lazy page at the pane's `nextOffset`.
+    func driveReadDiffNext(agent: Agent, driveClient: DriveClient) {
+        guard let live = currentAgent(for: agent.agentId) else { return }
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard authorize(.readDiff, for: live) else { return }
+        let offset = UInt32(fleet.diffs[live.agentId]?.nextOffset ?? 0)
+        payload_read_diff(offset: offset, driveClient: driveClient, live: live,
+                          keyId: keyId, signer: signer)
+    }
+
+    private func payload_read_diff(offset: UInt32, driveClient: DriveClient,
+                                   live: Agent, keyId: String, signer: DeviceSigner) {
+        let payload = CanonicalJSON.readDiffPayload(files: 128, offset: offset, lines: 200)
+        let key = DriveActionKey(capability: .readDiff, target: live.agentId,
+                                 identity: "diff-\(offset)")
+        guard let requestId = beginDriveAction(key) else { return }
+        fleet.prepareDiffFetch(agent: live.agentId)
+        drive(capability: .readDiff, target: live.agentId, payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
+    }
+
     /// Outcome of `drivePrompt`. The typed result lets the sheet keep a typed
     /// draft on a real refusal and distinguish it from an in-flight dedup
     /// (same prompt already sending) without sniffing the global banner's
@@ -1151,6 +1190,12 @@ final class AppModel: ObservableObject {
                         // #167: fold the segmented blocks; the result stays in
                         // the detail view (no hijacking fleet banner).
                         self.fleet.rememberTail(lines, blocks: blocks, for: target)
+                    } else if capability == .readDiff {
+                        if let page = response.result?.diffPage {
+                            // #232: fold the bounded page (diffstat + files +
+                            // unified lines) into the agent's diff pane.
+                            self.fleet.rememberDiffPage(page, for: target)
+                        }
                     } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
                     } else if capability == .prompt {
@@ -1171,6 +1216,9 @@ final class AppModel: ObservableObject {
                             kind: response.errorKind ?? "dispatch_refused",
                             message: response.error ?? "dispatch refused (ok:false)",
                             candidates: []), for: target)
+                    } else if capability == .readDiff {
+                        self.fleet.foldDiffFailure(
+                            response.error ?? "dispatch refused (ok:false)", for: target)
                     } else {
                         self.banner = .error("dispatch_refused",
                                              response.error ?? "dispatch refused (ok:false)")

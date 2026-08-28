@@ -4,8 +4,13 @@
 # The host promotes a registered device from read-only to specific
 # capabilities via the admin token (never hands the token to the device).
 #
+# Capabilities (drive contract): prompt, interrupt, approve, read_tail,
+# read_diff (#232: read the agent's worktree diff — read-only, audited,
+# default-empty like every other grant), kill, attach, start_worktree.
+#
 # Usage:
 #   scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt
+#   scripts/corrald-grant.sh --key <key_id> --caps read_diff,read_tail
 #   scripts/corrald-grant.sh --key <key_id> --revoke
 #   scripts/corrald-grant.sh --list
 #

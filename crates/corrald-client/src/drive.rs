@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const READ_TAIL_MAX_LINES: u32 = 200;
 pub const READ_TAIL_MAX_BYTES: usize = 32 * 1024;
 
-/// The six canonical drive capabilities (D7).
+/// The canonical drive capabilities (D7, #232 adds read_diff).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -24,6 +24,7 @@ pub enum Capability {
     Interrupt,
     Approve,
     ReadTail,
+    ReadDiff,
     Kill,
     Attach,
 }
@@ -35,6 +36,7 @@ impl fmt::Display for Capability {
             Self::Interrupt => "interrupt",
             Self::Approve => "approve",
             Self::ReadTail => "read_tail",
+            Self::ReadDiff => "read_diff",
             Self::Kill => "kill",
             Self::Attach => "attach",
         })
@@ -50,6 +52,7 @@ impl FromStr for Capability {
             "interrupt" => Ok(Self::Interrupt),
             "approve" => Ok(Self::Approve),
             "read_tail" => Ok(Self::ReadTail),
+            "read_diff" => Ok(Self::ReadDiff),
             "kill" => Ok(Self::Kill),
             "attach" => Ok(Self::Attach),
             other => Err(UnknownCapability(other.to_string())),

@@ -159,11 +159,18 @@ pub struct Attachment {
 }
 
 /// Capabilities the client renders buttons from — never hardcoded per tool.
-pub const CAPABILITIES: [&str; 6] = [
+/// The daemon stamps every herdr agent with this set (default-READ); each
+/// capability is still grant-gated at /drive, and `read_diff` is a
+/// read-only capability. Keep in sync with `crate::drive::Capability`:
+/// the advertisement test below fails if this constant ever omits a
+/// capability the parser accepts (the clients' gating reads THIS set, so
+/// an omission silently disables the button in production).
+pub const CAPABILITIES: [&str; 7] = [
     "prompt",
     "interrupt",
     "approve",
     "read_tail",
+    "read_diff",
     "kill",
     "attach",
 ];
@@ -246,4 +253,34 @@ pub enum Resume {
     },
     /// Cursor already current: no replay, straight to live.
     Live { rev: u64 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #232 advertisement guard: every herdr agent carries this capability
+    /// set in production, and the clients' gating (egui DIFF column, iOS
+    /// ± Diff button) renders buttons ONLY from this set. `read_diff` must
+    /// stay advertised; removing it fails here even if /drive itself still
+    /// parses the capability (that is the green-on-green trap #232 landed
+    /// in before this guard).
+    #[test]
+    fn advertised_capabilities_include_read_diff_and_parse() {
+        assert!(
+            CAPABILITIES.contains(&"read_diff"),
+            "agent capability advertisement must include read_diff — \
+             the egui DIFF column and iOS ± Diff button are unreachable \
+             in production without it"
+        );
+        // The advertisement must stay a closed set the daemon parser
+        // accepts: an advertised-but-unparseable capability silently
+        // disables the same buttons.
+        for cap in CAPABILITIES {
+            assert!(
+                cap.parse::<crate::drive::Capability>().is_ok(),
+                "advertised capability {cap:?} is not a Capability the daemon accepts"
+            );
+        }
+    }
 }

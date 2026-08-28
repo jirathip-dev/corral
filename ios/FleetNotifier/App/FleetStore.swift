@@ -33,6 +33,8 @@ final class FleetStore: ObservableObject {
     /// daemon now serves `{lines, blocks}` additively; the block renderer
     /// reads this pane, the legacy text surface reads `tails`.
     @Published private(set) var tailPanes: [String: TailPane] = [:]
+    /// #232: per-agent worktree-diff pane (lazy paged daemon pages).
+    @Published private(set) var diffs: [String: DiffPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
     /// #166 review F2: client-side state-entered wall clock (epoch millis).
@@ -318,6 +320,31 @@ final class FleetStore: ObservableObject {
         tailPanes[id] = pane
     }
 
+    /// #232: mark a diff fetch in flight (the sheet shows the spinner).
+    func prepareDiffFetch(agent id: String) {
+        guard agents[id] != nil else { return }
+        var pane = diffs[id] ?? DiffPane()
+        pane.beginFetch()
+        diffs[id] = pane
+    }
+
+    /// #232: fold one daemon page into the pane (seeds at offset 0, appends
+    /// subsequent pages; a re-fetch of the same window is idempotent).
+    func rememberDiffPage(_ page: DiffPageWire, for id: String) {
+        guard agents[id] != nil else { return }
+        var pane = diffs[id] ?? DiffPane()
+        pane.apply(page)
+        diffs[id] = pane
+    }
+
+    /// #232: fold a refused/failed diff fetch into the pane.
+    func foldDiffFailure(_ message: String, for id: String) {
+        guard agents[id] != nil else { return }
+        var pane = diffs[id] ?? DiffPane()
+        pane.apply(message)
+        diffs[id] = pane
+    }
+
     /// Remove a target immediately after a typed stale-agent refusal. The
     /// subsequent snapshot/SSE update may re-add a current identity, but the
     /// old row cannot keep rendering usable controls during the refresh.
@@ -325,6 +352,7 @@ final class FleetStore: ObservableObject {
         agents.removeValue(forKey: id)
         tails.removeValue(forKey: id)
         tailPanes.removeValue(forKey: id)
+        diffs.removeValue(forKey: id)
         previousStates.removeValue(forKey: id)
         streamSeen.removeValue(forKey: id)
         stateEnteredAt.removeValue(forKey: id)

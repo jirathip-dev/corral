@@ -51,8 +51,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # removed, lowercase section headers, tightened spacing); the pin follows.
 # #246 Agent sheet redesign (Variant 2): compact bottom toolbar in
 # AgentDetailContent + toolbar slot in RecentOutputView/BeforeView.
+# #232 read_diff: ± Diff toolbar button + AgentDiffSheet in FleetViews;
+# Capability.readDiff + DiffPageWire/DiffPane in Models; readDiff payload in
+# CanonicalJSON; diff cache in FleetStore/AppModel; the pin follows.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "6d21f6e1fbb4a970b02c06bbb2c8553d25b65b3e9552a35ed322a970c7c7ab65"
+    "f54f3897dc2c38d578a5bbab322614b70a359e343067ade678f657fb5375e61f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

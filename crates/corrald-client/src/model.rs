@@ -139,13 +139,16 @@ pub struct Attachment {
     pub reference: String,
 }
 
-/// The six canonical drive capabilities (D7). Never hardcoded per tool —
-/// clients render buttons from `Agent.capabilities`.
-pub const CAPABILITIES: [&str; 6] = [
+/// The canonical drive capabilities (D7). Never hardcoded per tool —
+/// clients render buttons from `Agent.capabilities`; mirror of the
+/// daemon's `core::model::CAPABILITIES` (must stay in sync, #232 adds
+/// `read_diff`).
+pub const CAPABILITIES: [&str; 7] = [
     "prompt",
     "interrupt",
     "approve",
     "read_tail",
+    "read_diff",
     "kill",
     "attach",
 ];

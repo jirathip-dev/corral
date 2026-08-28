@@ -492,6 +492,8 @@ private struct AgentDetailContent: View {
     @ObservedObject var model: AppModel
     @ObservedObject var drafts: PromptDrafts
     @State private var showKillConfirm = false
+    /// #232: the worktree-diff sheet (lazy paged, grant/capability-gated).
+    @State private var diffPresented = false
     @FocusState private var focusPrompt: Bool
 
     private var grants: Set<Capability> { model.actionGrants }
@@ -584,6 +586,9 @@ private struct AgentDetailContent: View {
         } message: {
             Text("This sends the kill capability to \(agent.tool) on \(agent.workspace.repo ?? "—"). The agent stops; any in-progress work is lost.")
         }
+        .sheet(isPresented: $diffPresented) {
+            AgentDiffSheet(agent: agent, model: model)
+        }
     }
 
     /// #246 Variant 2 (approved): compact thin toolbar pinned directly
@@ -666,12 +671,16 @@ private struct AgentDetailContent: View {
                             : title)
     }
 
-    /// ± Diff is one of the diff access points for #232. read_diff is not
-    /// wired yet, so this is a disabled placeholder that names its future
-    /// issue; #232 is NOT implemented here.
+    /// ± Diff — one of the two diff access points for #232 (the agent-row
+    /// dirty chip is the other). Grant/capability-gated like read_tail;
+    /// presents the diff sheet, which lazy-pages the daemon's bounded pages.
     private var toolbarDiffButton: some View {
-        Button {
-            // No-op placeholder: diff access lands with #232.
+        let item = availability.first(where: { $0.action == .diff })
+        let inFlight = model.isActionInFlight(agentId: agent.agentId,
+                                              capability: .readDiff)
+        let disabled = !(item?.isEnabled ?? false) || inFlight
+        return Button {
+            diffPresented = true
         } label: {
             Text("± Diff")
                 .lineLimit(1)
@@ -679,9 +688,10 @@ private struct AgentDetailContent: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(true)
-        .help("Available with #232")
-        .accessibilityLabel("Diff, coming with #232")
+        .disabled(disabled)
+        .accessibilityLabel(disabled
+                            ? "Diff unavailable — \(item?.disabledReason ?? "diff fetch in progress")"
+                            : "Diff")
     }
 
     /// Issue #166 item 4: Kill leaves the peer button stack and lives in the
@@ -2686,5 +2696,147 @@ struct DeviceAccessSection: View {
             return "dev_\(bare.prefix(8))…\(bare.suffix(4))"
         }
         return "dev_\(bare)"
+    }
+}
+
+/// #232: the worktree-diff sheet (approved 232-diff-page layout: header
+/// (repo · branch, agent, state chip) → one-line diffstat → changed-files
+/// list → paged unified diff, lazy-loaded like the transcript). The first
+/// page loads on appear; "Load next 200 lines" appends the daemon's next
+/// bounded page. Read-only: there is no write path in this sheet.
+struct AgentDiffSheet: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    private var pane: DiffPane? { model.fleet.diffs[agent.agentId] }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let pane, pane.hasLoadedContent {
+                    content(pane)
+                } else {
+                    ProgressView("Loading diff…")
+                        .accessibilityLabel("Loading the worktree diff")
+                        .onAppear {
+                            // Explicit tap only — no auto-prefetch elsewhere.
+                            model.driveReadDiff(agent: agent,
+                                                driveClient: model.makeDriveClient())
+                        }
+                }
+            }
+            .navigationTitle(agent.workspace.branch ?? agent.agentId)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    @ViewBuilder
+    private func content(_ pane: DiffPane) -> some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    LabeledContent("Agent", value: agent.title ?? agent.agentId)
+                    if let repo = pane.repo ?? agent.workspace.repo {
+                        LabeledContent("Repo", value: repo)
+                    }
+                    if let branch = pane.branch ?? agent.workspace.branch {
+                        LabeledContent("Branch", value: branch)
+                    }
+                    LabeledContent("Diffstat", value: diffstatText(pane.stats))
+                }
+                .font(.subheadline)
+            }
+            if !pane.files.isEmpty {
+                Section("Changed files") {
+                    ForEach(Array(pane.files.enumerated()), id: \.offset) { _, file in
+                        HStack {
+                            Text(file.path)
+                                .font(.system(.footnote, design: .monospaced))
+                                .truncationMode(.middle)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("+\(file.adds)/−\(file.dels)")
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if pane.filesTruncated {
+                        Text("… more files")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section("Diff") {
+                if let error = pane.error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Diff failed: \(error)")
+                }
+                if pane.lines.isEmpty && pane.error == nil {
+                    Text("No changes in this worktree.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(pane.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(diffColor(line))
+                        .textSelection(.enabled)
+                }
+                if pane.hasMore, let next = pane.nextOffset {
+                    Button {
+                        model.driveReadDiffNext(agent: agent,
+                                                driveClient: model.makeDriveClient())
+                    } label: {
+                        if pane.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Load next 200 lines (offset \(next))")
+                        }
+                    }
+                    .disabled(pane.isLoading)
+                    .accessibilityLabel("Load the next 200 diff lines from offset \(next)")
+                }
+            }
+        }
+        .listStyle(.plain)
+        .refreshable {
+            model.driveReadDiff(agent: agent, driveClient: model.makeDriveClient())
+        }
+    }
+
+    private func diffstatText(_ stats: DiffStatsWire) -> String {
+        "+\(stats.adds)/−\(stats.dels) · \(stats.files) files"
+    }
+
+    private func diffColor(_ line: String) -> Color {
+        if line.hasPrefix("+") {
+            return .green
+        } else if line.hasPrefix("-") {
+            return .red
+        } else if line.hasPrefix("@") || line.hasPrefix("diff --git") || line.hasPrefix("index ") {
+            return .secondary
+        } else {
+            return .primary.opacity(0.85)
+        }
+    }
+}
+
+private extension DiffPane {
+    /// Distinct from `isEmpty`: a stored pane that already has content (or a
+    /// failure) should render immediately instead of refetching on every
+    /// appear.
+    var hasLoadedContent: Bool {
+        !lines.isEmpty || !files.isEmpty || error != nil
     }
 }

@@ -30,6 +30,10 @@ pub enum Capability {
     Interrupt,
     Approve,
     ReadTail,
+    /// #232: read the agent worktree diff (changed-files list + paged
+    /// unified diff + diffstat). Read-only; every grant/drive rule mirrors
+    /// `read_tail`.
+    ReadDiff,
     Kill,
     Attach,
     /// #113: start an issue-linked or issue-free worktree. Fleet-level (not
@@ -38,10 +42,11 @@ pub enum Capability {
 }
 
 /// Canonical rendering order (board buttons).
-pub const CAPABILITIES_ORDER: [&str; 6] = [
+pub const CAPABILITIES_ORDER: [&str; 7] = [
     "prompt",
     "interrupt",
     "read_tail",
+    "read_diff",
     "approve",
     "kill",
     "attach",
@@ -54,6 +59,7 @@ impl Capability {
             Self::Interrupt => "interrupt",
             Self::Approve => "approve",
             Self::ReadTail => "read_tail",
+            Self::ReadDiff => "read_diff",
             Self::Kill => "kill",
             Self::Attach => "attach",
             Self::StartWorktree => "start_worktree",
@@ -189,6 +195,31 @@ impl DriveIntent {
         }
     }
 
+    /// #232: bounded worktree diff. `files` caps the changed-files list,
+    /// `offset`/`lines` page the unified diff (aggregate line offset). The
+    /// daemon clamps (`1..=128` files, `0..` offset, `1..=400` lines) and
+    /// redacts every line before it leaves the machine.
+    pub fn read_diff(
+        agent_id: &str,
+        files: u32,
+        offset: u32,
+        lines: u32,
+        rev: Option<u64>,
+    ) -> Self {
+        Self {
+            request_id: new_request_id("diff"),
+            capability: Capability::ReadDiff,
+            target: agent_id.to_string(),
+            payload: serde_json::json!({
+                "kind": "read_diff",
+                "files": files,
+                "offset": offset,
+                "lines": lines,
+            }),
+            rev,
+        }
+    }
+
     /// Claim-based approval: `approval_id` + `prompt_hash` echoed verbatim
     /// from the snapshot's `waiting_on` (byte-for-byte claim).
     pub fn approve(agent: &crate::model::Agent, choice: String, rev: Option<u64>) -> Self {
@@ -302,6 +333,115 @@ pub fn parse_tail_lines(result: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// #232: one `read_diff` page as served by the daemon (mirrors
+/// `corrald::drive::ReadDiffResult`; serde mapping only — the daemon owns
+/// bounds/redaction, the client only renders).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DiffStats {
+    pub files: u32,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DiffFileStat {
+    pub path: String,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DiffPage {
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub stats: DiffStats,
+    pub files: Vec<DiffFileStat>,
+    pub files_truncated: bool,
+    pub offset: u32,
+    pub lines: Vec<String>,
+    pub total: u32,
+    pub has_more: bool,
+    pub next_offset: Option<u32>,
+}
+
+/// Parse `DriveResponse.result` for `read_diff`. Tolerant: a malformed or
+/// missing result yields `None` (surface an error, never crash the board).
+pub fn parse_diff_page(result: &serde_json::Value) -> Option<DiffPage> {
+    let wire: WireDiffPage = serde_json::from_value(result.clone()).ok()?;
+    Some(DiffPage {
+        repo: wire.repo,
+        branch: wire.branch,
+        head: wire.head,
+        stats: DiffStats {
+            files: wire.stats.files,
+            adds: wire.stats.adds,
+            dels: wire.stats.dels,
+        },
+        files: wire
+            .files
+            .into_iter()
+            .map(|f| DiffFileStat {
+                path: f.path,
+                adds: f.adds,
+                dels: f.dels,
+            })
+            .collect(),
+        files_truncated: wire.files_truncated,
+        offset: wire.offset,
+        lines: wire.lines,
+        total: wire.total,
+        has_more: wire.has_more,
+        next_offset: wire.next_offset,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct WireDiffPage {
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    stats: WireDiffStats,
+    #[serde(default)]
+    files: Vec<WireDiffFileStat>,
+    #[serde(default)]
+    files_truncated: bool,
+    #[serde(default)]
+    offset: u32,
+    #[serde(default)]
+    lines: Vec<String>,
+    #[serde(default)]
+    total: u32,
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    next_offset: Option<u32>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WireDiffStats {
+    #[serde(default)]
+    files: u32,
+    #[serde(default)]
+    adds: u32,
+    #[serde(default)]
+    dels: u32,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WireDiffFileStat {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    adds: u32,
+    #[serde(default)]
+    dels: u32,
 }
 
 /// Typed refusal space, mirroring the conformance error table:
@@ -1101,5 +1241,53 @@ mod tests {
             parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn read_diff_intent_and_parse_round_trip_daemon_shape() {
+        // Intent payload mirrors the daemon's ReadDiff query fields.
+        let intent = DriveIntent::read_diff("herdr:a", 128, 200, 400, Some(7));
+        assert_eq!(intent.capability, Capability::ReadDiff);
+        assert_eq!(intent.target, "herdr:a");
+        assert_eq!(intent.rev, Some(7));
+        assert_eq!(
+            intent.payload,
+            serde_json::json!({ "kind": "read_diff", "files": 128, "offset": 200, "lines": 400 })
+        );
+        assert!(intent.request_id.starts_with("corrald-ui:diff:"));
+
+        // The daemon's ReadDiffResult parses into the client page shape.
+        let result = serde_json::json!({
+            "repo": "corral",
+            "branch": "g232/read-diff",
+            "head": "abc1234",
+            "stats": { "files": 3, "adds": 12, "dels": 5 },
+            "files": [
+                { "path": "src/drive/mod.rs", "adds": 10, "dels": 4 },
+                { "path": "src/core/diff.rs", "adds": 2, "dels": 1 }
+            ],
+            "files_truncated": true,
+            "offset": 0,
+            "lines": ["diff --git a/src/drive/mod.rs b/src/drive/mod.rs", " one", "-two", "+two!!"],
+            "total": 8,
+            "has_more": true,
+            "next_offset": 4
+        });
+        let page = parse_diff_page(&result).expect("page parses");
+        assert_eq!(page.repo.as_deref(), Some("corral"));
+        assert_eq!(page.branch.as_deref(), Some("g232/read-diff"));
+        assert_eq!(page.stats.adds, 12);
+        assert_eq!(page.stats.dels, 5);
+        assert_eq!(page.files.len(), 2);
+        assert_eq!(page.files[0].path, "src/drive/mod.rs");
+        assert!(page.files_truncated);
+        assert_eq!(page.lines.len(), 4);
+        assert_eq!(page.total, 8);
+        assert!(page.has_more);
+        assert_eq!(page.next_offset, Some(4));
+
+        // Malformed / missing result: tolerant None, never a crash.
+        assert!(parse_diff_page(&serde_json::Value::Null).is_none());
+        assert!(parse_diff_page(&serde_json::json!({ "lines": "nope" })).is_none());
     }
 }

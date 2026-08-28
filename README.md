@@ -26,7 +26,7 @@ git watcher ──┤ → corrald (daemon) → ├─ signed drive: prompt · in
 ## Features
 
 - **One live view of the fleet** — every agent, its state, what it's blocked on, its repo/branch, PR, and CI, all on one board.
-- **Steer it from your phone** — prompt, interrupt, approve, read output, kill, or attach an agent, with signed, capability-gated commands.
+- **Steer it from your phone** — prompt, interrupt, approve, read output, see the agent's worktree diff (changed files + paged unified diff, #232), kill, or attach an agent, with signed, capability-gated commands.
 - **Know what needs you** — blocked agents are surfaced first with the exact question they're waiting on, so you answer in two taps instead of digging through eight terminals.
 - **Approvals that can't go wrong** — an approve action is bound to the exact prompt's hash, so you can't approve the wrong question.
 - **Harness-agnostic** — Claude Code, Codex CLI, OpenCode, and others become the same canonical record, so the board and controls work the same no matter which agent is running.

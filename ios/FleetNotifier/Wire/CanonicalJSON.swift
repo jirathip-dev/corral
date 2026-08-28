@@ -49,6 +49,17 @@ enum CanonicalJSON {
                  (key: "lines", value: lines.map { .uint(UInt64($0)) } ?? .null)])
     }
 
+    /// #232: `{"kind":"read_diff","files":F,"offset":O,"lines":N}`.
+    /// The daemon clamps files to 1..=128 and lines to 1..=400 and pages by
+    /// the aggregate line offset; the canonical encoder sorts the object
+    /// keys lexicographically (BTreeMap order) as everywhere else.
+    static func readDiffPayload(files: UInt32, offset: UInt32, lines: UInt32) -> Value {
+        .object([(key: "kind", value: .string("read_diff")),
+                 (key: "files", value: .uint(UInt64(files))),
+                 (key: "offset", value: .uint(UInt64(offset))),
+                 (key: "lines", value: .uint(UInt64(lines)))])
+    }
+
     /// Interrupt/kill/attach commands take a JSON null payload in the drive
     /// contract. Keeping the builder named prevents the UI from accidentally
     /// inventing a prompt-shaped payload for an interrupt.

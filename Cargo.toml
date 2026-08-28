@@ -27,6 +27,9 @@ chrono = "0.4"
 ed25519-dalek = { version = "3", default-features = true }
 futures = "0.3"
 getrandom = "0.4"
+# #232: worktree diffs are computed through libgit2 (vendored) — local
+# repository diff only, no network/ssh features. Never a git subprocess.
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 keyring = { version = "4.1.6", default-features = false, features = ["apple-native-keyring-store", "linux-keyutils-keyring-store", "v1"] }
 notify = "8"
 # http2: APNs requires HTTP/2 (D16 push notifier). json: drive/read paths.

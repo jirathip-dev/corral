@@ -30,7 +30,9 @@ current runtime coupling is isolated in the herdr adapter described above.
 The canonical board model contains no provider-specific pricing or quota
 fields. Provider session stores are never consulted: the only agent output
 a client can read is the bounded `read_tail` pane tail, redacted and
-segmented server-side into blocks.
+segmented server-side into blocks, plus (since #232) the bounded
+`read_diff` worktree diff page (changed-files list + paged unified diff +
+diffstat), computed via libgit2 from herdr-owned worktrees.
 
 **Implication for a "no-herdr" mode.** The adapter is the runtime coupling
 point. A second-runtime / no-runtime mode would add an `Adapter`
@@ -255,7 +257,10 @@ signed envelope {key_id, signature,       POST /drive
 ## Capabilities
 
 `prompt`, `interrupt`, `approve`, `read_tail` (bounded live tail served as
-segmented blocks on `/drive`), `kill`, `attach`, and the fleet-level
+segmented blocks on `/drive`), `read_diff` (#232: bounded worktree diff
+page — diffstat + changed-files list + paged unified diff, computed via
+libgit2, never a git subprocess, restricted to herdr-owned worktree paths),
+`kill`, `attach`, and the fleet-level
 `start_worktree` — the closed set
 in `src/drive/mod.rs`. Anything else is refused with a typed error before
 dispatch.

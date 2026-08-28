@@ -296,6 +296,28 @@ pub fn scrub_tui_furniture(line: &str) -> String {
     line.to_string()
 }
 
+/// Replace private-use glyphs emitted by terminal icon fonts with readable
+/// ASCII. Ordinary Unicode, including emoji, is preserved.
+pub fn scrub_unsupported_glyphs(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_run = false;
+    for scalar in line.chars() {
+        let private_use = ('\u{e000}'..='\u{f8ff}').contains(&scalar)
+            || ('\u{f0000}'..='\u{ffffd}').contains(&scalar)
+            || ('\u{100000}'..='\u{10fffd}').contains(&scalar);
+        if private_use {
+            if !in_run {
+                out.push_str("[icon]");
+                in_run = true;
+            }
+        } else {
+            out.push(scalar);
+            in_run = false;
+        }
+    }
+    out
+}
+
 fn is_box_drawing(c: char) -> bool {
     ('\u{2500}'..='\u{257F}').contains(&c)
 }

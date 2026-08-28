@@ -3676,6 +3676,15 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertTrue(render.canRetryTail)
     }
 
+    func testConsecutiveToolBlocksRenderAsOneCompactRun() {
+        let render = RecentOutputModel.render(
+            tail: tail([block(.tool, "$ cargo test"), block(.tool, "test result: ok")]))
+        XCTAssertEqual(render.rows.count, 1)
+        guard case .block(let merged) = render.rows.first else {
+            return XCTFail("expected grouped tool row")
+        }
+        XCTAssertEqual(merged.text, "$ cargo test\ntest result: ok")
+    }
     func testLoadedWithTailBlocksAndToolSummary() {
         let render = RecentOutputModel.render(
             tail: tail([block(.agent, "cargo test"),

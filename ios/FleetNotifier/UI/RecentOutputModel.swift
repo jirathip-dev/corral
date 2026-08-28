@@ -417,17 +417,25 @@ enum RecentOutputModel {
     }
 
     private static func visibleBlocks(_ blocks: [TranscriptBlock]) -> [TranscriptBlock] {
-        blocks.compactMap { block in
+        var grouped: [TranscriptBlock] = []
+        for block in blocks {
             let lines = visibleMessageLines(block.text)
             guard lines.contains(where: {
                 !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }) else {
-                return nil
+                continue
             }
             var visible = block
             visible.text = lines.joined(separator: "\n")
-            return visible
+            if let last = grouped.last,
+               (last.kind == .tool || last.kind == .system),
+               last.kind == visible.kind {
+                grouped[grouped.count - 1].text += "\n" + visible.text
+            } else {
+                grouped.append(visible)
+            }
         }
+        return grouped
     }
 
     private static func visibleMessageLines(_ text: String) -> [String] {

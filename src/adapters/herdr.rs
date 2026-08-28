@@ -70,7 +70,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
-use crate::core::blocks::scrub_tui_furniture;
+use crate::core::blocks::{scrub_tui_furniture, scrub_unsupported_glyphs};
 use crate::core::model::{
     Agent, AgentState, Attachment, CAPABILITIES, WaitingOn, WaitingOnKind, Workspace,
 };
@@ -2908,7 +2908,7 @@ fn bounded_redacted_tail(text: &str, max_lines: u32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut bytes = 0usize;
     for raw in text.lines().take(max_lines) {
-        let line = scrub_tui_furniture(&redact(raw));
+        let line = scrub_unsupported_glyphs(&scrub_tui_furniture(&redact(raw)));
         // The wire carries one newline per line; count it so the serialized
         // payload stays under the byte bound too.
         bytes += line.len() + 1;
@@ -3795,6 +3795,12 @@ mod tests {
         );
         // No output -> empty lines, never an error.
         assert!(bounded_redacted_tail("", 200).is_empty());
+    }
+
+    #[test]
+    fn unsupported_private_use_glyphs_are_replaced_but_emoji_survive() {
+        let line = "ok \u{e000}\u{e001} ✅ ⚠️";
+        assert_eq!(scrub_unsupported_glyphs(line), "ok [icon] ✅ ⚠️");
     }
 
     #[test]

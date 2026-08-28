@@ -3784,7 +3784,7 @@ final class RecentOutputModelTests: XCTestCase {
         ])
     }
 
-    func testSyntaxHighlightingIsRestrictedToCodeAndDiffToolBlocks() {
+    func testSyntaxHighlightingIsRestrictedToCodeAndDiffBlocks() {
         let diff = block(.tool, """
         git diff -- src/catalog.rs
         @@ -1,1 +1,2 @@
@@ -3792,7 +3792,7 @@ final class RecentOutputModelTests: XCTestCase {
         +let answer = "ok"
         """)
         let prose = block(.tool, "The tool reports a model mismatch.\nPlease read the result.")
-        let agent = block(.agent, "git diff -- src/catalog.rs\n+not code here")
+        let agent = block(.agent, "def deploy():\n    print(\"ok\")")
 
         let diffLines = RecentOutputRender.codeLines(for: diff)
         XCTAssertTrue(diffLines.allSatisfy(\.isHighlighted))
@@ -3806,7 +3806,7 @@ final class RecentOutputModelTests: XCTestCase {
             .allSatisfy { !$0.isHighlighted && $0.number == nil
                 && $0.segments.allSatisfy { $0.kind == .plain } })
         XCTAssertTrue(RecentOutputRender.codeLines(for: agent)
-            .allSatisfy { !$0.isHighlighted })
+            .allSatisfy(\.isHighlighted))
         let tick = String(UnicodeScalar(0x60)!)
         XCTAssertFalse(RecentOutputRender.isCodeOrDiff(
             "\(tick)let answer = \"plain\"\(tick)"))

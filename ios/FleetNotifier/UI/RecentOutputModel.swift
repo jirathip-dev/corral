@@ -528,7 +528,7 @@ extension RecentOutputRender {
     /// syntax. Prose and ordinary command output stay plain monospace text.
     static func codeLines(for block: TranscriptBlock) -> [RecentCodeLine] {
         let lines = messageLines(block.text)
-        let highlighted = block.kind == .tool && isCodeOrDiff(block.text)
+        let highlighted = isCodeOrDiff(block.text)
         return lines.enumerated().map { index, line in
             RecentCodeLine(
                 number: highlighted ? index + 1 : nil,

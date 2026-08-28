@@ -242,6 +242,7 @@ fn parse_bool(v: &str) -> Result<bool, String> {
 struct CardSlot {
     started: std::sync::atomic::AtomicBool,
     result: tokio::sync::Mutex<Option<CardResult>>,
+    ready: tokio::sync::Notify,
 }
 
 static CARD_SLOTS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<CardSlot>>>> =
@@ -286,17 +287,19 @@ pub async fn scheduled_cards(manifest: &PluginManifest) -> Vec<CardResult> {
                     Arc::new(CardSlot {
                         started: std::sync::atomic::AtomicBool::new(false),
                         result: tokio::sync::Mutex::new(None),
+                        ready: tokio::sync::Notify::new(),
                     })
                 })
                 .clone()
         };
         if !slot.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            let first = run_card_limited(card, &semaphore).await;
-            *slot.result.lock().await = Some(first);
             let slot_clone = slot.clone();
             let card_clone = card.clone();
             let semaphore_clone = semaphore.clone();
             tokio::spawn(async move {
+                let first = run_card_limited(&card_clone, &semaphore_clone).await;
+                *slot_clone.result.lock().await = Some(first);
+                slot_clone.ready.notify_waiters();
                 let interval = Duration::from_secs(card_clone.interval_sec.max(1));
                 loop {
                     tokio::time::sleep(interval).await;
@@ -304,6 +307,9 @@ pub async fn scheduled_cards(manifest: &PluginManifest) -> Vec<CardResult> {
                     *slot_clone.result.lock().await = Some(result);
                 }
             });
+        }
+        if slot.result.lock().await.is_none() {
+            slot.ready.notified().await;
         }
         if let Some(result) = slot.result.lock().await.clone() {
             output.push(result);
@@ -494,6 +500,33 @@ confirm_message = "Refresh Fleet Ops?"
         let mut changed = manifest.cards[0].clone();
         changed.interval_sec = 2;
         assert_ne!(slot_key(&manifest.cards[0]), slot_key(&changed));
+    }
+    #[tokio::test]
+    async fn cancelled_initial_request_does_not_poison_schedule() {
+        let card = CardSpec {
+            id: "cancel-safe-card".into(),
+            title: "Cancel safe".into(),
+            command: vec!["sh".into(), "-c".into(), "sleep 1; printf ok".into()],
+            interval_sec: 1,
+            json: false,
+        };
+        let manifest = PluginManifest {
+            id: ALLOWED_ID.into(),
+            name: "fixture".into(),
+            version: "1".into(),
+            platforms: vec!["macos".into()],
+            plugin_schema: "1".into(),
+            cards: vec![card],
+            actions: vec![],
+        };
+        let task = tokio::spawn({
+            let manifest = manifest.clone();
+            async move { scheduled_cards(&manifest).await }
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        task.abort();
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert_eq!(scheduled_cards(&manifest).await.len(), 1);
     }
     #[tokio::test]
     async fn failed_plugin_is_an_error_result_not_a_daemon_failure() {

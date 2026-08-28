@@ -428,6 +428,68 @@ enum BoardModel {
         case .error(let message): return .error(message)
         }
     }
+
+    // MARK: - #210 fleet-health strip (orch alive, workers, heartbeat age)
+
+    /// The strip's per-fleet line, projected as a pure function of the
+    /// daemon's `FleetHealthEntry` rows so it stays unit-testable and
+    /// independent of section emptiness. HEALTH ONLY — no spend.
+    struct FleetHealthLine: Equatable, Sendable {
+        let name: String
+        /// ● healthy · ⚠ degraded · ⏸ paused.
+        let marker: String
+        let orchAlive: Bool
+        let orchState: String?
+        let workerCount: Int
+        /// Rendered `♥4s`-style age from the heartbeat anchor, `♥—` when
+        /// the orch has never been observed.
+        let heartbeatAgeLabel: String
+        let degraded: Bool
+        let paused: Bool
+    }
+
+    static func fleetHealthLines(
+        _ entries: [FleetHealthEntry],
+        now: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
+    ) -> [FleetHealthLine] {
+        entries.map { entry in
+            let marker: String
+            if entry.paused {
+                marker = "⏸"
+            } else if entry.degraded {
+                marker = "⚠"
+            } else {
+                marker = "●"
+            }
+            let heartbeat = entry.lastHeartbeat.map { at in
+                "♥" + heartbeatAge(at: at, now: now)
+            } ?? "♥—"
+            return FleetHealthLine(
+                name: entry.name,
+                marker: marker,
+                orchAlive: entry.orchAlive,
+                orchState: entry.orchState,
+                workerCount: entry.workers,
+                heartbeatAgeLabel: heartbeat,
+                degraded: entry.degraded,
+                paused: entry.paused
+            )
+        }
+    }
+
+    /// Compact age label for the heartbeat anchor: `4s`, `3m`, `2h 05m`.
+    /// Ticks in place between snapshots because the anchor is an
+    /// epoch-millis value the view ages against its own clock.
+    static func heartbeatAge(at: UInt64, now: UInt64) -> String {
+        let elapsedSeconds = (now - at) / 1000
+        if elapsedSeconds < 60 { return "\(elapsedSeconds)s" }
+        let minutes = elapsedSeconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h \(String(format: "%02d", minutes % 60))m" }
+        let days = hours / 24
+        return "\(days)d \(hours % 24)h"
+    }
 }
 
 /// The four visual states of the persistent connection indicator (review

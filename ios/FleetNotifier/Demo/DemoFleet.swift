@@ -12,6 +12,51 @@ enum DemoFleet {
     /// changing normal fleet selection behavior.
     static let featuredAgentID = "herdr:demo-output"
 
+    /// #210: demo fleet-health strip rows — HEALTH ONLY, no spend. One
+    /// healthy fleet (orch alive, live workers, fresh heartbeat), one
+    /// degraded fleet (missing orch — reads as a warning, not a stall),
+    /// one paused fleet (parked by design). Anchors are relative to `now`.
+    static func seedHealth(now: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)) -> [FleetHealthEntry] {
+        [
+            FleetHealthEntry(
+                name: "corral",
+                ghRepo: "jirathip-dev/corral",
+                paused: false,
+                orch: "orch-corral",
+                orchAlive: true,
+                orchState: "working",
+                workers: 2,
+                lastHeartbeat: now - 4_000,
+                degraded: false,
+                warnings: []
+            ),
+            FleetHealthEntry(
+                name: "sendmeter",
+                ghRepo: "jirathip-dev/sendmeter",
+                paused: false,
+                orch: "orch-sendmeter",
+                orchAlive: false,
+                orchState: nil,
+                workers: 0,
+                lastHeartbeat: nil,
+                degraded: true,
+                warnings: ["orch_missing"]
+            ),
+            FleetHealthEntry(
+                name: "plush",
+                ghRepo: "jirathip-dev/plush-meadow",
+                paused: true,
+                orch: "orch-plush",
+                orchAlive: false,
+                orchState: nil,
+                workers: 0,
+                lastHeartbeat: nil,
+                degraded: false,
+                warnings: []
+            ),
+        ]
+    }
+
     struct RecentBlock: Equatable, Sendable {
         let kind: TranscriptBlockKind
         let text: String

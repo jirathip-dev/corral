@@ -189,6 +189,25 @@ pub struct Agent {
     pub title: Option<String>,
 }
 
+/// #210 wire mirror: one fleet's health row (HEALTH ONLY — no spend).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FleetHealthEntry {
+    pub name: String,
+    #[serde(default)]
+    pub gh_repo: String,
+    pub paused: bool,
+    pub orch: String,
+    pub orch_alive: bool,
+    #[serde(default)]
+    pub orch_state: Option<String>,
+    pub workers: usize,
+    #[serde(default)]
+    pub last_heartbeat: Option<u64>,
+    pub degraded: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a
 /// client's cursor is too old.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,6 +219,10 @@ pub struct Snapshot {
     pub generated_at: u64,
     /// Flat keyed records (NOT JSON Patch).
     pub agents: BTreeMap<String, Agent>,
+    /// #210: per-fleet health strip. Absent/empty from older daemons
+    /// (serde default); NEVER carries spend/balance state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fleet_health: Vec<FleetHealthEntry>,
 }
 
 /// Incremental change batch, the unit of SSE delivery.

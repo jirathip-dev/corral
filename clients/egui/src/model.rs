@@ -273,12 +273,46 @@ pub struct FleetIdentityEntry {
     pub paused: bool,
 }
 
+/// #210: one fleet's health row from the daemon snapshot (HEALTH ONLY —
+/// never spend/balance). `last_heartbeat` is an epoch-millis anchor; the
+/// strip renders `now - last_heartbeat` so the age ticks locally between
+/// snapshots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FleetHealthEntry {
+    pub name: String,
+    #[serde(default)]
+    pub gh_repo: String,
+    pub paused: bool,
+    pub orch: String,
+    pub orch_alive: bool,
+    #[serde(default)]
+    pub orch_state: Option<String>,
+    pub workers: usize,
+    #[serde(default)]
+    pub last_heartbeat: Option<u64>,
+    pub degraded: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+impl FleetHealthEntry {
+    pub fn warned(&self, token: &str) -> bool {
+        self.warnings.iter().any(|w| w == token)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u32,
     pub rev: u64,
     pub generated_at: u64,
     pub agents: BTreeMap<String, Agent>,
+    /// #210: per-fleet health strip rows (orch alive, live worker count,
+    /// presence-heartbeat anchor, degradation warnings). Absent/empty from
+    /// older daemons (serde default) and when the fleet-ops CLI identity
+    /// path is unavailable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fleet_health: Vec<FleetHealthEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

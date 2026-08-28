@@ -109,6 +109,7 @@ fn snapshot_is_versioned_flat_keyed_records() {
         rev: 12,
         generated_at: 1_755_273_000_000,
         agents,
+        fleet_health: Vec::new(),
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(v["schema_version"], SCHEMA_VERSION);

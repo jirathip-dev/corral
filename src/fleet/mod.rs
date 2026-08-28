@@ -12,5 +12,6 @@
 //! brief) and validates identities itself.
 
 pub mod cli;
+pub mod health;
 pub mod switch;
 pub mod worktree;

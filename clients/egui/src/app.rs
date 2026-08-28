@@ -3964,6 +3964,7 @@ mod tests {
                 schema_version: 5,
                 rev: 10,
                 generated_at: 10,
+                fleet_health: Vec::new(),
                 agents: BTreeMap::from([(old_agent.agent_id.clone(), old_agent)]),
             }),
         });
@@ -3981,6 +3982,7 @@ mod tests {
                 schema_version: 5,
                 rev: 99,
                 generated_at: 99,
+                fleet_health: Vec::new(),
                 agents: BTreeMap::from([(obsolete_agent.agent_id.clone(), obsolete_agent)]),
             }),
         });

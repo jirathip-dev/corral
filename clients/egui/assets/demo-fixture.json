@@ -235,7 +235,45 @@
           }
         ]
       }
-    }
+    },
+    "fleet_health": [
+      {
+        "name": "corral",
+        "gh_repo": "jirathip-dev/corral",
+        "paused": false,
+        "orch": "orch-corral",
+        "orch_alive": true,
+        "orch_state": "working",
+        "workers": 4,
+        "last_heartbeat": 1787788796000,
+        "degraded": false,
+        "warnings": []
+      },
+      {
+        "name": "synergy",
+        "gh_repo": "jirathip-dev/synergy-apps",
+        "paused": false,
+        "orch": "orch-synergy",
+        "orch_alive": true,
+        "orch_state": "idle",
+        "workers": 1,
+        "last_heartbeat": 1787788788000,
+        "degraded": false,
+        "warnings": []
+      },
+      {
+        "name": "plush",
+        "gh_repo": "jirathip-dev/plush-meadow",
+        "paused": true,
+        "orch": "orch-plush",
+        "orch_alive": false,
+        "orch_state": null,
+        "workers": 0,
+        "last_heartbeat": null,
+        "degraded": false,
+        "warnings": []
+      }
+    ]
   },
   "deltas": [
     {

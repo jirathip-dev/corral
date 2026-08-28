@@ -54,8 +54,13 @@ ROOT = Path(__file__).resolve().parent.parent
 # #232 read_diff: ± Diff toolbar button + AgentDiffSheet in FleetViews;
 # Capability.readDiff + DiffPageWire/DiffPane in Models; readDiff payload in
 # CanonicalJSON; diff cache in FleetStore/AppModel; the pin follows.
+# #210 fleet-health strip (HEALTH ONLY): FleetHealthEntry in Models +
+# Snapshot.fleetHealth decode (tolerant of omitted empty warnings);
+# strip in FleetViews chrome; FleetStore fleetHealth projection; BoardModel
+# fleetHealthLines + heartbeatAge; demo seedHealth in DemoFleet; the pin
+# follows.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "f54f3897dc2c38d578a5bbab322614b70a359e343067ade678f657fb5375e61f"
+    "65b09e101d927e28a8cd9ec5aaf9f0eb67b4b012cab31e3c8b7f69598b96cb96"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

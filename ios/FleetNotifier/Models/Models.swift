@@ -287,12 +287,89 @@ struct Snapshot: Codable, Sendable {
     var generatedAt: UInt64
     /// Flat keyed records (NOT JSON Patch; JSON, not CBOR).
     var agents: [String: Agent]
+    /// #210: per-fleet health strip (orch alive, live worker count,
+    /// presence-heartbeat anchor, warnings). Absent from older daemons —
+    /// decodes to empty. NEVER carries spend/balance state.
+    var fleetHealth: [FleetHealthEntry]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case rev
         case generatedAt = "generated_at"
         case agents
+        case fleetHealth = "fleet_health"
+    }
+
+    init(
+        schemaVersion: UInt32,
+        rev: UInt64,
+        generatedAt: UInt64,
+        agents: [String: Agent],
+        fleetHealth: [FleetHealthEntry] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.rev = rev
+        self.generatedAt = generatedAt
+        self.agents = agents
+        self.fleetHealth = fleetHealth
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
+        rev = try container.decode(UInt64.self, forKey: .rev)
+        generatedAt = try container.decode(UInt64.self, forKey: .generatedAt)
+        agents = try container.decode([String: Agent].self, forKey: .agents)
+        fleetHealth = try container.decodeIfPresent([FleetHealthEntry].self, forKey: .fleetHealth) ?? []
+    }
+}
+
+/// #210: one fleet's health row (HEALTH ONLY — no spend/balance).
+struct FleetHealthEntry: Codable, Equatable, Sendable {
+    var name: String
+    var ghRepo: String
+    var paused: Bool
+    var orch: String
+    var orchAlive: Bool
+    var orchState: String?
+    var workers: Int
+    /// Epoch-millis anchor of the orch's presence heartbeat; clients render
+    /// `now - lastHeartbeat` so the age ticks between snapshots.
+    var lastHeartbeat: UInt64?
+    var degraded: Bool
+    var warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case ghRepo = "gh_repo"
+        case paused
+        case orch
+        case orchAlive = "orch_alive"
+        case orchState = "orch_state"
+        case workers
+        case lastHeartbeat = "last_heartbeat"
+        case degraded
+        case warnings
+    }
+}
+
+extension FleetHealthEntry {
+    /// Tolerant decode: the daemon omits empty `warnings` (serde
+    /// skip_serializing_if) — decode to `[]` instead of failing the whole
+    /// snapshot. Living in an extension keeps the memberwise initializer
+    /// for the demo seed + tests.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        ghRepo = try container.decode(String.self, forKey: .ghRepo)
+        paused = try container.decode(Bool.self, forKey: .paused)
+        orch = try container.decode(String.self, forKey: .orch)
+        orchAlive = try container.decode(Bool.self, forKey: .orchAlive)
+        orchState = try container.decodeIfPresent(String.self, forKey: .orchState)
+        workers = try container.decode(Int.self, forKey: .workers)
+        lastHeartbeat = try container.decodeIfPresent(UInt64.self, forKey: .lastHeartbeat)
+        degraded = try container.decode(Bool.self, forKey: .degraded)
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
     }
 }
 

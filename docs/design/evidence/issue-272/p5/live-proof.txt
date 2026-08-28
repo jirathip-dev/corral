@@ -1,0 +1,1 @@
+tmux_session=corral-p5-proof-6452\ncursor=80,23\nclosed=true\n

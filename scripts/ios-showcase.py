@@ -83,8 +83,11 @@ def png_size(path: Path) -> tuple[int, int]:
 def validate(root: Path) -> None:
     if not root.is_dir():
         raise ValueError(f"artifact directory does not exist: {root}")
-    actual = {p.name for p in root.iterdir() if p.is_file()}
-    if any(p.is_dir() for p in root.iterdir()) or actual != EXPECTED:
+    entries = list(root.iterdir())
+    if any(path.is_symlink() for path in entries):
+        raise ValueError("artifact contains a symlink")
+    actual = {p.name for p in entries if p.is_file()}
+    if any(p.is_dir() for p in entries) or actual != EXPECTED:
         raise ValueError(f"expected exactly {sorted(EXPECTED)}, found {sorted(actual)}")
     metadata = json.loads((root / "metadata.json").read_text())
     for key in ("commit_sha", "captured_at_utc", "testflight_build"):

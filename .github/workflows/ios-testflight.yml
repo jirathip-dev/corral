@@ -292,29 +292,51 @@ jobs:
   pages:
     name: Publish iOS showcase to Pages
     needs: testflight
-    if: inputs.mode == 'upload' && github.ref == 'refs/heads/main' && needs.testflight.result == 'success'
+    if: (inputs.mode == 'upload' || inputs.mode == 'capture') && github.ref == 'refs/heads/main' && needs.testflight.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
     steps:
-      - name: Download validated showcase
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ios-showcase-${{ github.sha }}
-          path: ios-showcase
-
-      - name: Graft /ios/ onto gh-pages
+      - name: Graft target checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: gh-pages
           fetch-depth: 1
 
+      - name: Download validated showcase
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-showcase-${{ github.sha }}
+          path: ${{ runner.temp }}/ios-showcase
+
+      - name: Require a successful main upload for capture retries
+        if: inputs.mode == 'capture'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_sha="$(python3 -c 'import json; print(json.load(open("${{ runner.temp }}/ios-showcase/metadata.json"))["commit_sha"])')"
+          found=false
+          for run_id in $(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/ios-testflight.yml/runs?branch=main&status=success&per_page=100" --jq '.workflow_runs[].id'); do
+            run_sha="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')"
+            [ "$run_sha" = "$artifact_sha" ] || continue
+            if gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '.jobs[].steps[] | select(.name == "Run fastlane testflight" and .conclusion == "success") | .name' | grep -q .; then
+              found=true
+              break
+            fi
+          done
+          if [ "$found" != true ]; then
+            echo "::error::No successful main-branch TestFlight upload found for artifact revision $artifact_sha"
+            exit 1
+          fi
+          echo "Verified successful main upload for $artifact_sha."
+
       - name: Replace only the iOS showcase
         run: |
           set -euo pipefail
           rm -rf ios
-          cp -R "$GITHUB_WORKSPACE/ios-showcase" ios
+          cp -R "$RUNNER_TEMP/ios-showcase" ios
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add ios
@@ -325,8 +347,15 @@ jobs:
         run: |
           set -euo pipefail
           url="https://jirathip-dev.github.io/corral/ios/"
-          status="$(curl --silent --show-error --location --output /tmp/ios-page.html --write-out '%{http_code}' "$url")"
-          test "$status" = 200
+          page_result="$(curl --silent --show-error --location --output /tmp/ios-page.html --write-out '%{http_code} %{size_download} %{content_type}' "$url")"
+          read -r page_status page_bytes page_type <<< "$page_result"
+          [[ "$page_status" =~ ^2[0-9][0-9]$ && "$page_bytes" -gt 0 && "$page_type" == text/html* ]]
           grep -q "Simulator demo from the TestFlight source revision" /tmp/ios-page.html
-          echo "iOS showcase: $status $url" >> "$GITHUB_STEP_SUMMARY"
-          echo "Verified provenance copy and HTTP 200 response." >> "$GITHUB_STEP_SUMMARY"
+          for png in "$GITHUB_WORKSPACE"/ios/*.png; do
+            name="$(basename "$png")"
+            result="$(curl --silent --show-error --location --output "/tmp/$name" --write-out '%{http_code} %{size_download} %{content_type}' "$url$name")"
+            read -r status bytes content_type <<< "$result"
+            [[ "$status" =~ ^2[0-9][0-9]$ && "$bytes" -gt 0 && "$content_type" == image/png* ]]
+          done
+          echo "iOS showcase: $page_status $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified page and every allowlisted PNG: non-empty 2xx responses with expected content types." >> "$GITHUB_STEP_SUMMARY"

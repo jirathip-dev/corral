@@ -1,6 +1,6 @@
 //! The eframe application: owns the fleet state, the background read
-//! loop (SSE), the signed-drive dispatch, registration, and the four
-//! workspace tabs (Board / Issues / Registry / Settings).
+//! loop (SSE), the signed-drive dispatch, registration, and the three
+//! workspace tabs (Board / Issues / Settings).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -25,14 +25,13 @@ use crate::state::{
 };
 use crate::theme;
 
-/// The four top-level views in the persistent right-hand tab strip. Audit is
+/// The three top-level views in the persistent right-hand tab strip. Audit is
 /// intentionally not a top-level destination; it is rendered below Settings
 /// → Advanced device access when explicitly opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Board,
     Issues,
-    Registry,
     Settings,
 }
 
@@ -54,10 +53,9 @@ enum IdentityRecovery {
     InFlight,
 }
 
-const TAB_LABELS: [(&str, Tab); 4] = [
+const TAB_LABELS: [(&str, Tab); 3] = [
     ("Board", Tab::Board),
     ("Issues", Tab::Issues),
-    ("Fleets", Tab::Registry),
     ("Settings", Tab::Settings),
 ];
 const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -936,7 +934,6 @@ fn tab_from_env() -> Tab {
         .as_str()
     {
         "issues" => Tab::Issues,
-        "registry" => Tab::Registry,
         "settings" => Tab::Settings,
         _ => Tab::Board,
     }
@@ -1728,9 +1725,11 @@ impl CorralApp {
     }
 
     /// #237: fetch the daemon's fleet-ops CLI validated identity catalog
-    /// once per connection, on manual refresh, and while the Fleets tab is
-    /// visible. A previous successful catalog remains rendered while a retry
-    /// is in flight; a transient failure is never converted into "no fleets".
+    /// once per connection and on manual refresh. The Issues tab needs this
+    /// catalog to resolve repo categories into exact fleet-name drive
+    /// targets (#269: the dedicated Fleets tab is gone). A previous
+    /// successful catalog remains rendered while a retry is in flight; a
+    /// transient failure is never converted into "no fleets".
     fn refresh_fleets(&mut self, force: bool) {
         if !issues_refresh_due(
             force,
@@ -1753,15 +1752,6 @@ impl CorralApp {
             }
             let _ = tx.send(ApplyMsg::FleetIdentities { generation, result });
         });
-    }
-
-    /// #237: the Fleets tab is READ-ONLY — the only deferred action is a
-    /// refresh. Mutations run through `herdr-fleet` on the host (corrald is
-    /// configless; no fleets.json write path exists in the client).
-    fn fleets_action(&mut self, action: crate::ui::registry::Action) {
-        match action {
-            crate::ui::registry::Action::Refresh => self.refresh_fleets(true),
-        }
     }
 
     fn on_drive(&mut self, msg: DriveMsg) {
@@ -3191,21 +3181,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             }
             app.dispatch_drive_intents(pending);
         }
-        Tab::Registry => {
-            if app.fleet.fleets.is_none() && app.conn == ConnState::Connected {
-                app.refresh_fleets(false);
-            }
-            let mut pending = None;
-            crate::ui::registry::show(
-                &mut right_ui,
-                &app.fleet.fleets,
-                app.fleet.fleets_loading,
-                &mut |action| pending = Some(action),
-            );
-            if let Some(action) = pending {
-                app.fleets_action(action);
-            }
-        }
         Tab::Settings => {
             let store = app.device_key.as_ref().map(|key| key.store.clone());
             let key_id = app
@@ -3801,9 +3776,9 @@ mod tests {
     }
 
     #[test]
-    fn workspace_navigation_has_exactly_four_tabs_and_demotes_audit() {
+    fn workspace_navigation_has_exactly_three_tabs_and_demotes_audit() {
         let labels: Vec<&str> = TAB_LABELS.iter().map(|(label, _)| *label).collect();
-        assert_eq!(labels, ["Board", "Issues", "Fleets", "Settings"]);
+        assert_eq!(labels, ["Board", "Issues", "Settings"]);
         assert!(!labels.contains(&"Audit"));
     }
 

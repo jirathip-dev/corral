@@ -317,7 +317,7 @@ fn issue_row(
                     crate::ui::disabled_button_with_reason(
                         ui,
                         "start worktree",
-                        "no validated fleet identity owns this repo category — refresh the Fleets tab",
+                        "no validated fleet identity owns this repo category — refresh Issues",
                     );
                 } else if !allowed("start_worktree") {
                     crate::ui::disabled_button_with_reason(

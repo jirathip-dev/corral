@@ -417,17 +417,25 @@ enum RecentOutputModel {
     }
 
     private static func visibleBlocks(_ blocks: [TranscriptBlock]) -> [TranscriptBlock] {
-        blocks.compactMap { block in
+        var grouped: [TranscriptBlock] = []
+        for block in blocks {
             let lines = visibleMessageLines(block.text)
             guard lines.contains(where: {
                 !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }) else {
-                return nil
+                continue
             }
             var visible = block
             visible.text = lines.joined(separator: "\n")
-            return visible
+            if let last = grouped.last,
+               (last.kind == .tool || last.kind == .system),
+               last.kind == visible.kind {
+                grouped[grouped.count - 1].text += "\n" + visible.text
+            } else {
+                grouped.append(visible)
+            }
         }
+        return grouped
     }
 
     private static func visibleMessageLines(_ text: String) -> [String] {
@@ -520,7 +528,7 @@ extension RecentOutputRender {
     /// syntax. Prose and ordinary command output stay plain monospace text.
     static func codeLines(for block: TranscriptBlock) -> [RecentCodeLine] {
         let lines = messageLines(block.text)
-        let highlighted = block.kind == .tool && isCodeOrDiff(block.text)
+        let highlighted = isCodeOrDiff(block.text)
         return lines.enumerated().map { index, line in
             RecentCodeLine(
                 number: highlighted ? index + 1 : nil,
@@ -557,7 +565,21 @@ extension RecentOutputRender {
         let hasDiffEvidence = (hasGitHeader && (hasHunk || (hasFileHeader && hasChange)))
             || (hasHunk && hasChange)
             || (hasFileHeader && hasHunk)
-        return hasFence || hasDiffEvidence
+        let hasCodeSignal = lines.contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let lower = trimmed.lowercased()
+            return trimmed.hasPrefix("#!")
+                || trimmed.hasPrefix("$ ")
+                || lower.hasPrefix("def ")
+                || lower.hasPrefix("class ")
+                || lower.hasPrefix("import ")
+                || lower.hasPrefix("from ")
+                || lower.hasPrefix("echo ")
+                || lower.hasPrefix("export ")
+                || lower.hasPrefix("if ")
+                || lower.hasPrefix("for ")
+        }
+        return hasFence || hasDiffEvidence || hasCodeSignal
     }
 
     private static func highlight(_ line: String) -> [RecentCodeSegment] {

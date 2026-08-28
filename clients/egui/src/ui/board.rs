@@ -1525,11 +1525,48 @@ fn recent_output_surface(
                                     .color(theme::ui::MUTED),
                             );
                         } else {
+                            let mut previous = None;
+                            let mut tool_run: Option<(usize, String)> = None;
                             for position in
                                 recent_output_indices(visible_indices.len(), stick_to_bottom)
                             {
                                 let source_index = visible_indices[position];
-                                recent_tail_entry(ui, &lines[source_index], source_index);
+                                let kind = classify_tail_line(&lines[source_index]);
+                                if kind == RecentBlockKind::Tool {
+                                    if let Some((_, text)) = &mut tool_run {
+                                        text.push('\n');
+                                        text.push_str(&lines[source_index]);
+                                    } else {
+                                        tool_run =
+                                            Some((source_index, lines[source_index].clone()));
+                                    }
+                                    continue;
+                                }
+                                if let Some((tool_position, text)) = tool_run.take() {
+                                    recent_tail_entry(
+                                        ui,
+                                        &text,
+                                        tool_position,
+                                        previous != Some(RecentBlockKind::Tool),
+                                    );
+                                    previous = Some(RecentBlockKind::Tool);
+                                }
+                                let show_label = previous != Some(kind);
+                                recent_tail_entry(
+                                    ui,
+                                    &lines[source_index],
+                                    source_index,
+                                    show_label,
+                                );
+                                previous = Some(kind);
+                            }
+                            if let Some((tool_position, text)) = tool_run {
+                                recent_tail_entry(
+                                    ui,
+                                    &text,
+                                    tool_position,
+                                    previous != Some(RecentBlockKind::Tool),
+                                );
                             }
                         }
                     } else if let Some(state) = read_tail_state {
@@ -1859,11 +1896,37 @@ fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
     }
 }
 
-fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize) {
+fn recent_speaker_rail_label(kind: RecentBlockKind, show_label: bool) -> Option<&'static str> {
+    if !show_label {
+        return None;
+    }
+    Some(match kind {
+        RecentBlockKind::User => "you",
+        RecentBlockKind::Tool => "tool",
+        RecentBlockKind::Agent => "assistant",
+    })
+}
+
+fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
+    let (marker, color) = match kind {
+        RecentBlockKind::User => ("●", theme::ui::USER_BLUE),
+        RecentBlockKind::Tool => ("▸", theme::ui::ACCENT),
+        RecentBlockKind::Agent => ("●", theme::ui::INK),
+    };
+    ui.vertical(|ui| {
+        ui.set_width(52.0);
+        ui.label(RichText::new(marker).small().strong().color(color));
+        if let Some(label) = recent_speaker_rail_label(kind, show_label) {
+            ui.label(RichText::new(label).small().strong().color(color));
+        }
+    });
+}
+
+fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize, show_label: bool) {
     let Some(text) = recent_visible_text(line) else {
         return;
     };
-    recent_chat_block(ui, classify_tail_line(line), &text, position);
+    recent_chat_block(ui, classify_tail_line(line), &text, position, show_label);
 }
 
 fn recent_tool_summary(text: &str) -> String {
@@ -1880,7 +1943,13 @@ fn recent_tool_disclosure_id(position: usize) -> egui::Id {
     egui::Id::new(("corral-ui-tool-block", position))
 }
 
-fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str, position: usize) {
+fn recent_chat_block(
+    ui: &mut Ui,
+    kind: RecentBlockKind,
+    text: &str,
+    position: usize,
+    show_label: bool,
+) {
     let block_width = ui.available_width();
     let style = recent_block_style(kind);
     let frame = egui::Frame::NONE
@@ -1895,69 +1964,74 @@ fn recent_chat_block(ui: &mut Ui, kind: RecentBlockKind, text: &str, position: u
             let width = (ui.available_width() - style.inset).max(0.0);
             ui.set_width(width);
             frame.show(ui, |ui| {
-                ui.label(
-                    RichText::new("you")
-                        .small()
-                        .strong()
-                        .color(theme::ui::USER_BLUE),
-                );
-                recent_message_lines(ui, text, FontId::proportional(12.0));
+                ui.horizontal(|ui| {
+                    recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                    let content_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(content_width, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            if recent_block_is_code_or_diff(RecentBlockKind::User, text) {
+                                for (number, line) in text.split('\n').enumerate() {
+                                    recent_code_line(ui, line, number + 1);
+                                }
+                            } else {
+                                recent_message_lines(ui, text, FontId::proportional(12.0));
+                            }
+                        },
+                    );
+                });
             });
         });
     } else {
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if style.monospace {
-                if recent_is_code_or_diff(text) {
-                    CollapsingHeader::new(
-                        RichText::new(format!("tool  {}", recent_tool_summary(text)))
-                            .small()
-                            .strong()
-                            .color(theme::ui::ACCENT),
-                    )
-                    .id_salt(recent_tool_disclosure_id(position))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.set_max_width((block_width - 40.0).max(40.0));
-                        egui::Frame::NONE
-                            .fill(theme::ui::BG)
-                            .stroke(Stroke::new(1.0, recent_code_line_color()))
-                            .corner_radius(CornerRadius::same(6))
-                            .inner_margin(egui::Margin::symmetric(8, 6))
-                            .show(ui, |ui| {
-                                for (number, line) in text.split('\n').enumerate() {
-                                    recent_code_line(ui, line, number + 1);
-                                }
-                            });
-                    });
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new("tool")
-                                .small()
-                                .strong()
-                                .color(theme::ui::MUTED),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(text)
-                                    .monospace()
+            ui.horizontal(|ui| {
+                recent_speaker_rail(ui, kind, show_label);
+                let content_width = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(content_width, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        if recent_block_is_code_or_diff(kind, text) {
+                            CollapsingHeader::new(
+                                RichText::new(format!("tool  {}", recent_tool_summary(text)))
                                     .small()
-                                    .color(theme::ui::MUTED),
+                                    .strong()
+                                    .color(theme::ui::ACCENT),
                             )
-                            .wrap(),
-                        );
-                    });
-                }
-            } else {
-                ui.label(
-                    RichText::new("assistant")
-                        .small()
-                        .strong()
-                        .color(theme::ui::INK),
+                            .id_salt(recent_tool_disclosure_id(position))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                ui.set_max_width((block_width - 40.0).max(40.0));
+                                egui::Frame::NONE
+                                    .fill(theme::ui::BG)
+                                    .stroke(Stroke::new(1.0, recent_code_line_color()))
+                                    .corner_radius(CornerRadius::same(6))
+                                    .inner_margin(egui::Margin::symmetric(8, 6))
+                                    .show(ui, |ui| {
+                                        for (number, line) in text.split('\n').enumerate() {
+                                            recent_code_line(ui, line, number + 1);
+                                        }
+                                    });
+                            });
+                        } else if style.monospace {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(text)
+                                            .monospace()
+                                            .small()
+                                            .color(theme::ui::MUTED),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        } else {
+                            recent_message_lines(ui, text, FontId::proportional(12.0));
+                        }
+                    },
                 );
-                recent_message_lines(ui, text, FontId::proportional(12.0));
-            }
+            });
         });
     }
     ui.add_space(4.0);
@@ -1994,6 +2068,10 @@ fn recent_code_color(kind: RecentCodeSegmentKind) -> Color32 {
     }
 }
 
+fn recent_block_is_code_or_diff(_kind: RecentBlockKind, text: &str) -> bool {
+    recent_is_code_or_diff(text)
+}
+
 fn recent_is_code_or_diff(text: &str) -> bool {
     let mut has_git_header = false;
     let mut has_file_header = false;
@@ -2016,7 +2094,22 @@ fn recent_is_code_or_diff(text: &str) -> bool {
     let has_diff_evidence = (has_git_header && (has_hunk || (has_file_header && has_change)))
         || (has_hunk && has_change)
         || (has_file_header && has_hunk);
-    has_fence || has_diff_evidence
+    let has_code_signal = lines.iter().any(|line| {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        trimmed.starts_with("#!")
+            || trimmed.starts_with("$ ")
+            || lower.starts_with("def ")
+            || lower.starts_with("class ")
+            || lower.starts_with("import ")
+            || lower.starts_with("from ")
+            || lower.starts_with("echo ")
+            || lower.starts_with("export ")
+            || lower.starts_with("if ")
+            || lower.starts_with("for ")
+            || lower.contains("#!/usr/bin/")
+    });
+    has_fence || has_diff_evidence || has_code_signal
 }
 
 fn append_recent_segment(
@@ -2992,7 +3085,7 @@ fn detail(
                                     .max_height(200.0)
                                     .show(ui, |ui| {
                                         for (position, line) in tail.iter().enumerate() {
-                                            recent_tail_entry(ui, line, position);
+                                            recent_tail_entry(ui, line, position, true);
                                         }
                                     });
                             }
@@ -3931,6 +4024,17 @@ mod tests {
         assert!(!recent_is_code_or_diff("index out of bounds"));
         assert!(!recent_is_code_or_diff("---"));
         assert!(!recent_is_code_or_diff("git diff -- src/catalog.rs"));
+        assert!(recent_block_is_code_or_diff(
+            RecentBlockKind::Agent,
+            "def deploy():\n    print(\"ok\")"
+        ));
+        assert!(recent_block_is_code_or_diff(RecentBlockKind::Agent, diff));
+        assert!(recent_block_is_code_or_diff(
+            RecentBlockKind::User,
+            "#!/bin/sh\necho ok"
+        ));
+        assert!(recent_speaker_rail_label(RecentBlockKind::Tool, true).is_some());
+        assert!(recent_speaker_rail_label(RecentBlockKind::Tool, false).is_none());
         assert!(
             recent_highlight("+let value = \"highlighted\";")
                 .iter()
@@ -4017,7 +4121,7 @@ mod tests {
             |ui| {
                 row_test_style(ui);
                 ui.set_max_width(180.0);
-                recent_chat_block(ui, RecentBlockKind::Tool, &long_tool_line, 0);
+                recent_chat_block(ui, RecentBlockKind::Tool, &long_tool_line, 0, true);
             },
         );
         let rendered = rendered_text(&output, &long_tool_line)

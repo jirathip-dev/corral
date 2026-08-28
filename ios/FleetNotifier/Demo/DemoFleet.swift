@@ -353,8 +353,12 @@ enum DemoFleet {
                         text: "Please verify the diff too.",
                         truncatedBefore: nil),
             RecentBlock(
+                kind: .agent,
+                text: "def deploy():\n    print(\"ready ✅\")\n    return True",
+                truncatedBefore: nil),
+            RecentBlock(
                 kind: .tool,
-                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}",
+                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}\nrun status: ok [icon] ⚠️",
                 truncatedBefore: nil)
         ]
     }

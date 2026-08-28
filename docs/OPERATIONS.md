@@ -38,7 +38,7 @@ plist).
 The macOS desktop install is handled by `scripts/install-corral-ui.sh`. It
 stages the complete `Corral.app` beside `/Applications/Corral.app`, builds and
 round-trips `Contents/Resources/Corral.icns` from the checked-in
-full-bleed opaque `assets/icon/corral-icon-macos.png` (macOS applies the
+transparent-squircle `assets/icon/corral-icon-macos.png`, validates the
 squircle mask), validates the executable, and writes
 `CFBundleIconFile=Corral` in `Info.plist` before touching the live
 destination. Linux stages the binary, the 256px

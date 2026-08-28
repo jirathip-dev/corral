@@ -606,7 +606,8 @@
           { "name": "enhancement", "color": "a2eeef" },
           { "name": "ready-to-work", "color": "0e8a16" }
         ],
-        "url": "https://github.com/jirathip-dev/corral/issues/215"
+        "url": "https://github.com/jirathip-dev/corral/issues/215",
+        "body": "Read-only issue browser demo data.\n\nSelect a repository in the rail, then expand an issue row to read its body and metadata."
       },
       {
         "repo": "jirathip-dev/corral",

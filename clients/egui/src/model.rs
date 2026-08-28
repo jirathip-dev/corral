@@ -165,6 +165,10 @@ pub struct GhIssueRef {
     /// a clickable link.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// #270: body text from the daemon's repo-level issue read. Issue refs
+    /// joined into agent snapshots intentionally omit it on older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// Canonical agent record (mirrors corrald's `Agent`).

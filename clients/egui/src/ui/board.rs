@@ -4839,6 +4839,7 @@ mod tests {
             title: "Deep Dive".into(),
             labels: vec![],
             url: String::new(),
+            body: None,
         }];
         for query in [
             "",
@@ -4976,6 +4977,7 @@ mod tests {
             title: "long branch marker".into(),
             labels: vec![],
             url: String::new(),
+            body: None,
         }];
         assert_eq!(
             inferred_marker(&agent).as_deref(),
@@ -5613,6 +5615,7 @@ mod tests {
             title: "widget".into(),
             labels: vec![],
             url: String::new(),
+            body: None,
         }];
         assert_eq!(
             inferred_marker(&agent).as_deref(),

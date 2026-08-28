@@ -1,8 +1,8 @@
-//! #206: repo-level GitHub issue browser.
+//! #270: repo-level GitHub issue browser.
 //!
-//! Renders the daemon's `GET /issues` view: open/closed filter, title/number
-//! search, refresh, repo grouping, and the issue-linked worktree action. The
-//! daemon remains the authority on which issue is startable. There is no
+//! Renders the daemon's `GET /issues` view: a per-repository rail, open/closed
+//! filter, title/number search, refresh, and the issue-linked worktree action.
+//! The daemon remains the authority on which issue is startable. There is no
 //! issue-free worktree box; creation is available only for a selected, open
 //! issue.
 
@@ -88,6 +88,9 @@ fn is_open(state: &str) -> bool {
     state.trim() == "OPEN"
 }
 
+const REPO_RAIL_WIDTH: f32 = 190.0;
+const SELECTED_REPO_MEMORY: &str = "corral-ui-issues-selected-repo";
+
 /// Render the issue browser section. `refresh_issues` is invoked when the
 /// user taps the manual refresh button; the app owns the actual fetch (so
 /// this module stays immediate-mode and never runs a network call).
@@ -99,7 +102,109 @@ pub fn show(
     refresh_issues: &mut dyn FnMut(),
 ) {
     let groups = display_issue_groups(fleet);
-    let total: usize = groups.iter().map(|group| group.issues.len()).sum();
+    let mut selected_repo = selected_display_repo(ui, &groups);
+    let available_size = ui.available_size();
+    ui.allocate_ui_with_layout(
+        available_size,
+        egui::Layout::left_to_right(egui::Align::Min),
+        |ui| {
+            let rail_width = REPO_RAIL_WIDTH.min(ui.available_width());
+            let clicked_repo = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(rail_width, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| repo_rail(ui, &groups, selected_repo.as_deref()),
+                )
+                .inner;
+            if let Some(repo) = clicked_repo {
+                set_selected_repo(ui, &repo);
+                set_selected(ui, None);
+                selected_repo = Some(repo);
+            }
+            ui.separator();
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                issue_content(
+                    ui,
+                    fleet,
+                    &groups,
+                    selected_repo.as_deref(),
+                    allowed,
+                    drive,
+                    refresh_issues,
+                );
+            });
+        },
+    );
+}
+
+fn repo_rail(
+    ui: &mut Ui,
+    groups: &[DisplayIssueGroup],
+    selected_repo: Option<&str>,
+) -> Option<String> {
+    ui.label(
+        RichText::new("repositories")
+            .small()
+            .strong()
+            .color(theme::ui::TEXT_MUTED),
+    );
+    ui.add_space(4.0);
+    let mut clicked = None;
+    ScrollArea::vertical()
+        .id_salt("corral-ui-issues-repo-rail")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for group in groups {
+                let open_count = group
+                    .issues
+                    .iter()
+                    .filter(|display_issue| is_open(&display_issue.issue.state))
+                    .count();
+                ui.horizontal(|ui| {
+                    let response = ui.selectable_label(
+                        selected_repo == Some(group.display_repo.as_str()),
+                        RichText::new(group.display_repo.clone()).monospace(),
+                    );
+                    if response.clicked() {
+                        clicked = Some(group.display_repo.clone());
+                    }
+                    ui.label(
+                        RichText::new(format!("({open_count})"))
+                            .small()
+                            .monospace()
+                            .color(if selected_repo == Some(group.display_repo.as_str()) {
+                                theme::ui::ACCENT
+                            } else {
+                                theme::ui::TEXT_MUTED
+                            }),
+                    );
+                });
+            }
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(
+                RichText::new("repo categories from the daemon snapshot / issues")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        });
+    clicked
+}
+
+fn issue_content(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    groups: &[DisplayIssueGroup],
+    selected_repo: Option<&str>,
+    allowed: &dyn Fn(&str) -> bool,
+    drive: &mut dyn FnMut(DriveIntent),
+    refresh_issues: &mut dyn FnMut(),
+) {
+    let selected_group =
+        selected_repo.and_then(|repo| groups.iter().find(|group| group.display_repo == repo));
+    let total = selected_group.map_or(0, |group| group.issues.len());
+    let filter = StateFilter::from_memory(ui);
     let title = if fleet.issues_loaded {
         format!("Issues  ({total})")
     } else if fleet.issues_loading {
@@ -107,13 +212,18 @@ pub fn show(
     } else {
         "Issues".to_string()
     };
+    let subtitle = selected_group
+        .map(|group| {
+            format!(
+                "{} · {} · per-repo browser",
+                group.display_repo,
+                filter.label()
+            )
+        })
+        .unwrap_or_else(|| "select a repository".to_string());
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).heading().color(theme::ui::TEXT_STRONG));
-        ui.label(
-            RichText::new("all issues grouped by repository")
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
+        ui.label(RichText::new(subtitle).small().color(theme::ui::TEXT_MUTED));
     });
     ui.add_space(8.0);
     toolbar(ui, fleet, allowed, drive, refresh_issues);
@@ -127,55 +237,55 @@ pub fn show(
             "issue view not loaded — connect to corrald and refresh"
         };
         ui.label(RichText::new(message).small().color(theme::ui::TEXT_MUTED));
-    } else if total == 0 {
-        ui.label(
-            RichText::new("no repo-level issues fetched")
-                .small()
-                .color(theme::ui::TEXT_MUTED),
-        );
     } else {
-        let filter = StateFilter::from_memory(ui);
+        let Some(group) = selected_group else {
+            ui.label(
+                RichText::new("no repo-level issues fetched")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            return;
+        };
         let query = search_query(ui).to_lowercase();
-        ScrollArea::vertical()
-            .id_salt("corral-ui-issues-list")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for group in &groups {
-                    let shown = group
-                        .issues
-                        .iter()
-                        .filter(|display_issue| filter.keeps(&display_issue.issue.state))
-                        .filter(|display_issue| matches_query(&display_issue.issue, &query))
-                        .count();
-                    if shown == 0 {
-                        continue;
-                    }
-                    let title = format!("{}  ({shown})", group.display_repo);
-                    egui::CollapsingHeader::new(
-                        RichText::new(title)
-                            .monospace()
-                            .color(theme::ui::TEXT_STRONG),
-                    )
-                    .id_salt(("corral-ui-issues-repo", &group.display_repo))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for display_issue in &group.issues {
-                            if filter.keeps(&display_issue.issue.state)
-                                && matches_query(&display_issue.issue, &query)
-                            {
-                                issue_row(
-                                    ui,
-                                    fleet,
-                                    &group.display_repo,
-                                    display_issue,
-                                    allowed,
-                                    drive,
-                                );
-                            }
+        let shown = group
+            .issues
+            .iter()
+            .filter(|display_issue| filter.keeps(&display_issue.issue.state))
+            .filter(|display_issue| matches_query(&display_issue.issue, &query))
+            .count();
+        if total == 0 {
+            ui.label(
+                RichText::new("no issues fetched for this repository")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        } else if shown == 0 {
+            ui.label(
+                RichText::new("no issues match the current filter or search")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        } else {
+            ScrollArea::vertical()
+                .id_salt("corral-ui-issues-list")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for display_issue in &group.issues {
+                        if filter.keeps(&display_issue.issue.state)
+                            && matches_query(&display_issue.issue, &query)
+                        {
+                            issue_row(
+                                ui,
+                                fleet,
+                                &group.display_repo,
+                                display_issue,
+                                allowed,
+                                drive,
+                            );
                         }
-                    });
-                }
-            });
+                    }
+                });
+        }
     }
     if let Some(error) = &fleet.issues_error {
         ui.add_space(6.0);
@@ -274,17 +384,15 @@ fn issue_row(
         .selectable_label(selected, RichText::new(row_label).monospace())
         .clicked()
     {
-        set_selected(ui, Some(key.clone()));
+        set_selected(ui, (!selected).then_some(key.clone()));
     }
     if selected {
-        ui.indent(
-            (
-                "corral-ui-issue-detail",
-                display_repo,
-                &display_issue.source,
-                issue.number,
-            ),
-            |ui| {
+        egui::Frame::new()
+            .fill(theme::ui::PANEL2)
+            .stroke(egui::Stroke::new(1.0, theme::ui::LINE))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let color = if is_open(&issue.state) {
                         theme::ui::GOOD
@@ -292,21 +400,59 @@ fn issue_row(
                         theme::ui::TEXT_MUTED
                     };
                     badge(ui, &issue.state, color);
-                    if !issue.url.is_empty() && ui.link(issue.url.clone()).clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(issue.url.clone()));
+                    for label in &issue.labels {
+                        if label.name.is_empty() {
+                            continue;
+                        }
+                        badge(ui, &label.name, label_color(&label.color));
                     }
                 });
-                if !issue.labels.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for label in &issue.labels {
-                            if label.name.is_empty() {
-                                continue;
-                            }
-                            let color = label_color(&label.color);
-                            badge(ui, &label.name, color);
-                        }
-                    });
+                ui.add_space(4.0);
+                let meta = format!(
+                    "{} · #{} · {}",
+                    display_repo,
+                    issue.number,
+                    issue.state.to_lowercase()
+                );
+                ui.label(
+                    RichText::new(meta)
+                        .small()
+                        .monospace()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+                if !issue.url.is_empty() && ui.link(issue.url.clone()).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(issue.url.clone()));
                 }
+                ui.add_space(6.0);
+                match issue.body.as_deref() {
+                    Some(body) if !body.trim().is_empty() => render_issue_body(ui, body),
+                    Some(_) => {
+                        ui.label(
+                            RichText::new("issue body is empty")
+                                .small()
+                                .color(theme::ui::TEXT_MUTED),
+                        );
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("issue body unavailable from this daemon")
+                                .small()
+                                .color(theme::ui::TEXT_MUTED),
+                        );
+                    }
+                };
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("ⓘ").color(theme::ui::ACCENT));
+                    ui.label(
+                        RichText::new(
+                            "read-only · issue data comes from corrald; no GitHub mutations from the board",
+                        )
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                    );
+                });
+                ui.add_space(8.0);
                 if !is_open(&issue.state) {
                     ui.label(
                         RichText::new("closed issue — not startable (the daemon refuses too)")
@@ -328,8 +474,43 @@ fn issue_row(
                 } else {
                     confirm_buttons(ui, &key, &display_issue.action_targets, fleet, issue, drive);
                 }
-            },
-        );
+                if ui.small_button("▴ collapse").clicked() {
+                    set_selected(ui, None);
+                }
+            });
+    }
+}
+
+fn render_issue_body(ui: &mut Ui, body: &str) {
+    for line in body.lines() {
+        let line = line.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            ui.add_space(4.0);
+        } else if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+            .or_else(|| trimmed.strip_prefix("# "))
+        {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(heading)
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                )
+                .wrap(),
+            );
+        } else if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("•").color(theme::ui::ACCENT));
+                ui.add(egui::Label::new(RichText::new(item).color(theme::ui::INK)).wrap());
+            });
+        } else {
+            ui.add(egui::Label::new(RichText::new(line).color(theme::ui::INK)).wrap());
+        }
     }
 }
 
@@ -548,6 +729,31 @@ fn display_issue_groups(fleet: &Fleet) -> Vec<DisplayIssueGroup> {
         .collect()
 }
 
+fn selected_display_repo(ui: &Ui, groups: &[DisplayIssueGroup]) -> Option<String> {
+    let stored = ui.ctx().memory(|memory| {
+        memory
+            .data
+            .get_temp::<String>(egui::Id::new(SELECTED_REPO_MEMORY))
+    });
+    stored
+        .filter(|repo| groups.iter().any(|group| group.display_repo == *repo))
+        .or_else(|| {
+            groups
+                .iter()
+                .find(|group| !group.issues.is_empty())
+                .or_else(|| groups.first())
+                .map(|group| group.display_repo.clone())
+        })
+}
+
+fn set_selected_repo(ui: &Ui, repo: &str) {
+    ui.ctx().memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(egui::Id::new(SELECTED_REPO_MEMORY), repo.to_string());
+    });
+}
+
 type SelectedIssueKey = IssueKey;
 
 fn selected_key(ui: &Ui) -> Option<SelectedIssueKey> {
@@ -644,6 +850,7 @@ mod tests {
                 })
                 .collect(),
             url: format!("https://github.com/example/{repo}/issues/{number}"),
+            body: None,
         }
     }
 
@@ -779,6 +986,77 @@ mod tests {
                 .action_targets,
             BTreeSet::new()
         );
+    }
+
+    #[test]
+    fn selected_issue_renders_body_inline() {
+        let mut issue = issue("corral", 270, "OPEN", "issues browser", &["enhancement"]);
+        issue.body = Some("Body shown when the row expands.".to_string());
+        let fleet = ready_fleet(&[], &[("corral", issue)]);
+        let ctx = egui::Context::default();
+        let intents = std::cell::RefCell::new(Vec::new());
+
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let row = text_rect(&output, "issues browser").map(|rect| rect.center());
+        clear(&mut output);
+        let Some(row) = row else {
+            panic!("issue row");
+        };
+        for pressed in [true, false] {
+            let mut frame = render(&ctx, &fleet, pointer_input(row, pressed), &intents);
+            clear(&mut frame);
+        }
+
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let rendered = text_rect(&output, "Body shown when the row expands.").is_some();
+        clear(&mut output);
+        assert!(rendered, "expanded issue body should be visible");
+    }
+
+    #[test]
+    fn repo_rail_switches_the_visible_issue_group() {
+        let corral = issue("corral", 270, "OPEN", "corral issue", &[]);
+        let sendmeter = issue("sendmeter", 17, "OPEN", "sendmeter issue", &[]);
+        let fleet = Fleet {
+            issues: BTreeMap::from([
+                ("agent-fleet-doctrine".to_string(), Vec::new()),
+                ("corral".to_string(), vec![corral]),
+                ("sendmeter".to_string(), vec![sendmeter]),
+            ]),
+            issues_loaded: true,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let intents = std::cell::RefCell::new(Vec::new());
+
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let rail_visible = text_rect(&output, "repositories").is_some();
+        let corral_visible = text_rect(&output, "corral issue").is_some();
+        let sendmeter_visible = text_rect(&output, "sendmeter issue").is_some();
+        let sendmeter_item = text_rect(&output, "sendmeter").map(|rect| rect.center());
+        clear(&mut output);
+        assert!(rail_visible);
+        assert!(corral_visible);
+        assert!(!sendmeter_visible);
+        let Some(sendmeter_item) = sendmeter_item else {
+            panic!("repo rail item");
+        };
+        for pressed in [true, false] {
+            let mut frame = render(
+                &ctx,
+                &fleet,
+                pointer_input(sendmeter_item, pressed),
+                &intents,
+            );
+            clear(&mut frame);
+        }
+
+        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
+        let sendmeter_visible = text_rect(&output, "sendmeter issue").is_some();
+        let corral_visible = text_rect(&output, "corral issue").is_some();
+        clear(&mut output);
+        assert!(sendmeter_visible);
+        assert!(!corral_visible);
     }
 
     fn test_input(events: Vec<egui::Event>) -> egui::RawInput {

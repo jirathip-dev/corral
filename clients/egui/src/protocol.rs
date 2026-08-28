@@ -917,6 +917,29 @@ mod tests {
     }
 
     #[test]
+    fn issues_decoder_preserves_body_for_inline_expansion() {
+        let body = serde_json::json!({
+            "repos": {
+                "corral": [{
+                    "repo": "corral",
+                    "number": 270,
+                    "state": "OPEN",
+                    "title": "issues browser",
+                    "body": "Body shown when the row expands.",
+                    "labels": [],
+                    "url": "https://github.com/example/corral/issues/270"
+                }]
+            }
+        });
+
+        let issues = decode_issues(body).expect("body-bearing /issues envelope parses");
+        assert_eq!(
+            issues["corral"][0].body.as_deref(),
+            Some("Body shown when the row expands.")
+        );
+    }
+
+    #[test]
     fn grant_bodies_match_corrald_grant_script_shape() {
         let set = grant_set_body("dev_abc", &["read_tail".into(), "prompt".into()]);
         assert_eq!(set["action"], "set_grants");

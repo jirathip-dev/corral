@@ -234,14 +234,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let transport = TmuxTransport::new(root.path().to_path_buf());
         let session = transport.open("cursor-test", root.path()).await.unwrap();
+        transport.resize(&session.id, 100, 30).await.unwrap();
         transport
-            .send_input(&session.id, "printf '\\033[6;24H'; sleep 60\n")
+            .send_input(
+                &session.id,
+                &format!("printf '{}033[24;81H'; sleep 60\n", '\\'),
+            )
             .await
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let frame = transport.capture(&session.id).await.unwrap();
-        assert!(frame.cursor_x < 200);
-        assert!(frame.cursor_y < 100);
+        let mut frame = transport.capture(&session.id).await.unwrap();
+        for _ in 0..100 {
+            if (frame.cursor_x, frame.cursor_y) == (80, 23) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            frame = transport.capture(&session.id).await.unwrap();
+        }
+        assert_eq!((frame.cursor_x, frame.cursor_y), (80, 23));
         transport.close(&session.id).await.unwrap();
     }
 }

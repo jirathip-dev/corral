@@ -143,6 +143,16 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }
 
+#[tokio::test]
+async fn snapshot_exposes_git_plane_backlog_additively() {
+    let (store, app) = app().await;
+    store
+        .git_plane_backlog()
+        .store(true, std::sync::atomic::Ordering::Release);
+    let v = get_json(&app, "/snapshot").await;
+    assert_eq!(v["git_plane_backlog"], true);
+}
+
 use std::sync::Arc;
 
 fn fleet_identity(name: &str, gh_repo: &str) -> corrald::fleet::cli::FleetIdentity {

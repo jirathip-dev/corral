@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, broadcast, watch};
@@ -60,6 +61,7 @@ pub struct Store {
     /// D23: persistent status-transition history (in-memory only when no dir
     /// was configured; see [`HistoryRing::open`]).
     history: HistoryRing,
+    git_plane_backlog: Arc<AtomicBool>,
 }
 
 impl Default for Store {
@@ -72,6 +74,7 @@ impl Default for Store {
             notify: Arc::new(Notify::new()),
             version,
             history: HistoryRing::in_memory(RotationPolicy::default()),
+            git_plane_backlog: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -94,6 +97,10 @@ impl Store {
     /// was built with [`Store::with_history_dir`]).
     pub fn history(&self) -> HistoryRing {
         self.history.clone()
+    }
+
+    pub fn git_plane_backlog(&self) -> Arc<AtomicBool> {
+        self.git_plane_backlog.clone()
     }
 
     /// Apply one change. State updates immediately; publishing waits for the
@@ -322,6 +329,7 @@ impl Store {
             generated_at: now_millis(),
             agents: inner.agents.clone(),
             fleet_health: Vec::new(),
+            git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
         }
     }
 
@@ -376,6 +384,7 @@ impl Store {
             generated_at: now_millis(),
             agents: inner.agents.clone(),
             fleet_health: Vec::new(),
+            git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
         }
     }
 

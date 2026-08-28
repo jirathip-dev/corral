@@ -59,8 +59,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # strip in FleetViews chrome; FleetStore fleetHealth projection; BoardModel
 # fleetHealthLines + heartbeatAge; demo seedHealth in DemoFleet; the pin
 # follows.
+# #267: read-only issue browser — Capability.readIssues, GhIssueRef
+# body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
+# IssuesBrowserView (chips + inline detail).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "65b09e101d927e28a8cd9ec5aaf9f0eb67b4b012cab31e3c8b7f69598b96cb96"
+    "bb4778aecba359ab8d9617e23e10aef87592d9345b0db5a53e1463d8ccfa7287"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

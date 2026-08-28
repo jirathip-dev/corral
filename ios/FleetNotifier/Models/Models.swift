@@ -35,11 +35,12 @@ enum CiStatus: String, Codable, CaseIterable, Sendable {
     case success, failure, pending, unknown
 }
 
-/// The six canonical drive capabilities (D7). UI buttons are rendered from
-/// grants + agent capabilities — never hardcoded per tool.
+/// The seven canonical drive capabilities (D7, #267 adds `read_issues`).
+/// UI buttons are rendered from grants + agent capabilities — never
+/// hardcoded per tool.
 enum Capability: String, Codable, CaseIterable, Sendable {
     case prompt, interrupt, approve, readTail = "read_tail",
-         readDiff = "read_diff", kill, attach
+         readDiff = "read_diff", readIssues = "read_issues", kill, attach
 
     var displayName: String {
         switch self {
@@ -48,6 +49,7 @@ enum Capability: String, Codable, CaseIterable, Sendable {
         case .approve: return "Approve"
         case .readTail: return "Tail"
         case .readDiff: return "Diff"
+        case .readIssues: return "Issues"
         case .kill: return "Kill"
         case .attach: return "Attach"
         }
@@ -62,6 +64,7 @@ enum Capability: String, Codable, CaseIterable, Sendable {
         case .approve: return "Approve tool calls & awaiting decisions"
         case .readTail: return "Read live agent output"
         case .readDiff: return "Read the agent's worktree diff"
+        case .readIssues: return "Read repo issues (list + detail)"
         case .kill: return "Terminate a task"
         case .attach: return "Attach to a session & stream events"
         }
@@ -159,15 +162,93 @@ struct Workspace: Codable, Equatable, Sendable {
     }
 }
 
+/// One GitHub issue label (name + GitHub color, no `#`).
+struct IssueLabel: Codable, Equatable, Hashable, Sendable {
+    var name: String
+    var color: String
+}
+
+/// One GitHub issue comment (#267): display author, body, ISO-8601
+/// `createdAt` verbatim from GitHub.
+struct IssueComment: Codable, Equatable, Hashable, Sendable {
+    var author: String?
+    var body: String
+    var createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case author, body
+        case createdAt = "created_at"
+    }
+}
+
 /// Issue reference joined into the agent model (G23): mirrors corrald's
 /// `GhIssueRef` — the bound PR's authoritative `closingIssuesReferences`.
 /// Authoritative linkage only; branch-name inference lives in BoardModel
 /// and is display-only (D21).
+/// #267: the same wire type is reused for the read-only issue BROWSER
+/// payload (the `repos` map of the `read_issues` drive result), so the
+/// agent-chip path and the browser rows decode one shape. Every field
+/// beyond the original four is `decodeIfPresent`-defaulted: older daemons
+/// (no body/comments) and closing-refs (no body/comments by design) decode
+/// cleanly.
 struct GhIssueRef: Codable, Equatable, Sendable {
     var repo: String
     var number: UInt64
     var state: String
     var title: String
+    var labels: [IssueLabel]
+    var url: String
+    var body: String?
+    var commentTotal: UInt64?
+    var comments: [IssueComment]
+
+    init(repo: String, number: UInt64, state: String, title: String,
+         labels: [IssueLabel] = [], url: String = "", body: String? = nil,
+         commentTotal: UInt64? = nil, comments: [IssueComment] = []) {
+        self.repo = repo
+        self.number = number
+        self.state = state
+        self.title = title
+        self.labels = labels
+        self.url = url
+        self.body = body
+        self.commentTotal = commentTotal
+        self.comments = comments
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case repo, number, state, title, labels, url, body, comments
+        case commentTotal = "comment_total"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        repo = try c.decode(String.self, forKey: .repo)
+        number = try c.decode(UInt64.self, forKey: .number)
+        state = try c.decode(String.self, forKey: .state)
+        title = try c.decode(String.self, forKey: .title)
+        labels = try c.decodeIfPresent([IssueLabel].self, forKey: .labels) ?? []
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        body = try c.decodeIfPresent(String.self, forKey: .body)
+        commentTotal = try c.decodeIfPresent(UInt64.self, forKey: .commentTotal)
+        comments = try c.decodeIfPresent([IssueComment].self, forKey: .comments) ?? []
+    }
+}
+
+/// #267: the read-only issue browser payload (`{"repos": {<fleet>: [issue]}}`,
+/// served by the grant-gated `/drive read_issues` arm and the board's
+/// `GET /issues`). Repo keys are the fleet/issue-group names the daemon
+/// groups under; empty arrays are informational placeholders.
+struct IssuesBrowserWire: Codable, Equatable, Sendable {
+    var repos: [String: [GhIssueRef]]
+
+    /// All issues across repos, newest-number first (the daemon sorts each
+    /// repo by number; the browser renders one flat list per approved V3).
+    var all: [GhIssueRef] {
+        repos.values.flatMap { $0 }.sorted { l, r in
+            l.number > r.number
+        }
+    }
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).
@@ -586,6 +667,13 @@ enum CodableValue: Codable, Equatable, Sendable {
         return try? JSONDecoder().decode(DiffPageWire.self, from: data)
     }
 
+    /// #267: the daemon's read-only issue browser payload (`{"repos": …}`).
+    var issuesBrowser: IssuesBrowserWire? {
+        guard case .object = self else { return nil }
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return try? JSONDecoder().decode(IssuesBrowserWire.self, from: data)
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
@@ -781,6 +869,44 @@ enum TranscriptText {
         default:
             return "\(error.kind): \(error.message)"
         }
+    }
+}
+
+/// #267: the fleet-level read-only issue browser pane — the last fetched
+/// `IssuesBrowserWire` with the four-state machine (idle/loading/loaded/
+/// error), mirroring `DiffPane`. The daemon serves the bounded gh poller
+/// window; the VIEW owns the lazy comment reveal (client-side within the
+/// fetched newest-first window).
+struct IssuesBrowserPane: Equatable, Sendable {
+    var repos: [String: [GhIssueRef]] = [:]
+    var isLoading = false
+    var error: String?
+    var updatedAt: Date?
+
+    var isEmpty: Bool {
+        repos.values.allSatisfy(\.isEmpty) && !isLoading && error == nil
+    }
+
+    mutating func beginFetch() {
+        isLoading = true
+        error = nil
+    }
+
+    mutating func apply(_ wire: IssuesBrowserWire) {
+        isLoading = false
+        error = nil
+        repos = wire.repos
+        updatedAt = Date()
+    }
+
+    mutating func apply(_ failure: String) {
+        isLoading = false
+        error = failure
+        updatedAt = nil
+    }
+
+    mutating func reset() {
+        self = IssuesBrowserPane()
     }
 }
 

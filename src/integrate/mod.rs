@@ -760,6 +760,9 @@ mod tests {
             title: title.to_string(),
             labels: vec![],
             url: String::new(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
         }
     }
 
@@ -981,6 +984,9 @@ mod tests {
                 title: "x".to_string(),
                 labels: vec![],
                 url: String::new(),
+                body: None,
+                comments: vec![],
+                comment_total: None,
             }],
             ..Default::default()
         };
@@ -1015,6 +1021,9 @@ mod tests {
                 title: "x".to_string(),
                 labels: vec![],
                 url: String::new(),
+                body: None,
+                comments: vec![],
+                comment_total: None,
             }],
             ..Default::default()
         };

@@ -135,11 +135,13 @@ enum IssueChip: Equatable {
 
 // MARK: - Tappable controls and selection
 
-/// A navigation value for the agent detail surface. It carries only the
-/// opaque, source-stable agent id; the detail view resolves the current
-/// record again before every action.
-struct AgentRoute: Hashable, Sendable {
-    let agentId: String
+/// A navigation value for the fleet screen's pushed destinations (#267). An
+/// agent detail carries only the opaque, source-stable agent id (the detail
+/// view resolves the current record again before every action); the issues
+/// browser is a fleet-level push (the approved V3 entry point).
+enum FleetRoute: Hashable, Sendable {
+    case agent(agentId: String)
+    case issues
 }
 
 /// State for the Idle/Done disclosure header. The UI owns the animation;
@@ -160,7 +162,7 @@ struct IdleDoneDisclosure: Equatable, Sendable {
 /// selection bookkeeping object that can drift from the visible destination.
 struct FleetViewState: Equatable, Sendable {
     var idleDoneDisclosure = IdleDoneDisclosure()
-    var navigationPath: [AgentRoute] = []
+    var navigationPath: [FleetRoute] = []
 
     mutating func toggleIdleDone() {
         idleDoneDisclosure.toggle()
@@ -173,12 +175,22 @@ struct FleetViewState: Equatable, Sendable {
     /// Test and non-SwiftUI callers can open the same route value used by the
     /// row NavigationLink.
     mutating func open(agentId: String) {
-        navigationPath = [AgentRoute(agentId: agentId)]
+        navigationPath = [.agent(agentId: agentId)]
     }
 
-    /// A deleted agent must be removed from the actual NavigationStack path.
+    mutating func openIssues() {
+        navigationPath = [.issues]
+    }
+
+    /// A deleted agent must be removed from the actual NavigationStack path;
+    /// the fleet-level issues route is never agent-scoped.
     mutating func reconcile(availableAgentIds: Set<String>) {
-        navigationPath.removeAll { !availableAgentIds.contains($0.agentId) }
+        navigationPath.removeAll { route in
+            if case .agent(let agentId) = route {
+                return !availableAgentIds.contains(agentId)
+            }
+            return false
+        }
     }
 }
 
@@ -529,5 +541,53 @@ enum RowPrimaryAction: Equatable, Sendable {
         case .attach: return "Attach"
         case .none: return ""
         }
+    }
+}
+
+// MARK: - #267 read-only issue browser (pure logic)
+
+/// The open/closed filter (approved V3: open by default). Pure + testable;
+/// the UI renders the two chips from `allCases`.
+enum IssueFilter: String, Equatable, CaseIterable, Sendable {
+    case open
+    case closed
+
+    var label: String { rawValue }
+
+    func stateMatches(_ issue: GhIssueRef) -> Bool {
+        issue.state.lowercased() == rawValue
+    }
+}
+
+/// Pure browser projections (#267) — the list rows (flat newest-first, per
+/// the approved V3) and the lazy comment reveal over the daemon's bounded
+/// newest-first window. The view is a thin shell over these.
+enum IssueBrowser {
+    /// Comments revealed per "Load earlier" tap (the window is
+    /// daemon-bounded at 30; 20 per page per the approved mock's note —
+    /// the client never re-fetches).
+    static let commentChunk = 20
+
+    /// The issues matching the filter, newest number first.
+    static func rows(_ issues: [GhIssueRef], filter: IssueFilter) -> [GhIssueRef] {
+        issues.filter(filter.stateMatches).sorted { $0.number > $1.number }
+    }
+
+    /// The revealed portion of the fetched window (newest-first).
+    static func visibleComments(_ issue: GhIssueRef, revealed: Int) -> [IssueComment] {
+        Array(issue.comments.prefix(max(0, revealed)))
+    }
+
+    /// How many comments are still unloaded, per GitHub's authoritative
+    /// total (absent total = the fetched window is everything).
+    static func earlierCount(_ issue: GhIssueRef, revealed: Int) -> Int {
+        let shown = min(max(0, revealed), issue.comments.count)
+        let total = issue.commentTotal ?? UInt64(issue.comments.count)
+        return Int(total) > shown ? Int(total) - shown : 0
+    }
+
+    /// More of the fetched window left to reveal.
+    static func canRevealMore(_ issue: GhIssueRef, revealed: Int) -> Bool {
+        revealed < issue.comments.count
     }
 }

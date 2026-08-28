@@ -18,6 +18,11 @@ struct FleetNotifierApp: App {
                         arguments: CommandLine.arguments) {
                         model.enterDemo(presentation: presentation,
                                         detailAgentId: DemoFleet.featuredAgentID)
+                    } else if CorralDemoLaunch.wantsIssues(arguments: CommandLine.arguments) {
+                        model.enterDemo()
+                        model.demoOpenIssues = true
+                        model.demoOpenIssueNumber =
+                            CorralDemoLaunch.issueDetailNumber(arguments: CommandLine.arguments)
                     } else if CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -52,12 +57,31 @@ struct FleetNotifierApp: App {
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let beforeArgument = "-corralDemoBefore"
+    /// #267: open the read-only issue browser straight into demo (list
+    /// evidence route; `detailIssueNumber` auto-expands one row's inline
+    /// detail for the detail evidence route).
+    static let issuesArgument = "-corralDemoIssues"
+    static let detailIssueArgument = "-corralDemoIssuesDetail"
 
     static func presentation(arguments: [String]) -> AppModel.DemoPresentation? {
         guard arguments.contains(detailArgument) || arguments.contains(beforeArgument) else {
             return nil
         }
         return arguments.contains(beforeArgument) ? .before : .after
+    }
+
+    static func wantsIssues(arguments: [String]) -> Bool {
+        arguments.contains(issuesArgument)
+    }
+
+    /// The issue number to auto-expand, when the detail evidence route is
+    /// requested (nil = plain list).
+    static func issueDetailNumber(arguments: [String]) -> UInt64? {
+        guard arguments.contains(detailIssueArgument),
+              let index = arguments.firstIndex(of: detailIssueArgument),
+              arguments.indices.contains(index + 1),
+              let number = UInt64(arguments[index + 1]) else { return nil }
+        return number
     }
 }
 #endif

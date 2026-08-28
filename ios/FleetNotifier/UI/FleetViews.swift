@@ -1946,12 +1946,43 @@ struct FleetView: View {
                     filterChip = .all
                 }
             }
-            .navigationDestination(for: AgentRoute.self) { route in
-                AgentDetailView(agentId: route.agentId, model: model, drafts: promptDrafts)
+            .navigationDestination(for: FleetRoute.self) { route in
+                switch route {
+                case .agent(let agentId):
+                    AgentDetailView(agentId: agentId, model: model, drafts: promptDrafts)
+                case .issues:
+                    IssuesBrowserView(model: model)
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
+                    HStack(spacing: 10) {
+                        // #267 approved entry point: a teal Issues button
+                        // (icon + label) next to the slider menu. Gated by
+                        // the device ledger grant (read_issues, default-
+                        // empty) — the browser is never shown to an
+                        // ungranted device.
+                        if model.actionGrants.contains(.readIssues) {
+                            Button {
+                                viewState.openIssues()
+                            } label: {
+                                // Explicit HStack: SwiftUI toolbar items
+                                // collapse a Label to its icon, which would
+                                // drop the approved "Issues" label.
+                                HStack(spacing: 4) {
+                                    Image(systemName: "list.bullet.rectangle")
+                                    Text("Issues")
+                                }
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Issues")
+                        }
+                        Menu {
 #if DEBUG
                         Button(model.mode == .demo ? "Exit demo" : "Demo mode",
                                systemImage: "sparkles") {
@@ -1970,6 +2001,7 @@ struct FleetView: View {
                         }
                     } label: {
                         Image(systemName: "slider.horizontal.3")
+                    }
                     }
                 }
             }
@@ -2003,8 +2035,14 @@ struct FleetView: View {
     /// the design-gate command can reproduce the same detail from a clean app
     /// launch and normal users never enter it accidentally.
     private func applyDebugDemoRoute() {
-        guard model.mode == .demo,
-              let agentId = model.demoDetailAgentId,
+        guard model.mode == .demo else { return }
+        // #267: the issues evidence route wins (it is the shallowest demo
+        // destination; the detail route below targets an agent row).
+        if model.demoOpenIssues {
+            viewState.openIssues()
+            return
+        }
+        guard let agentId = model.demoDetailAgentId,
               model.fleet.agent(agentId) != nil else { return }
         viewState.open(agentId: agentId)
         if promptDrafts.drafts[agentId]
@@ -2286,7 +2324,7 @@ struct FleetView: View {
         let answerAction: (() -> Void)? = answerAvailable
             ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) }
             : nil
-        return NavigationLink(value: AgentRoute(agentId: agent.agentId)) {
+        return NavigationLink(value: FleetRoute.agent(agentId: agent.agentId)) {
             AgentRow(agent: agent,
                      onAnswer: answerAction,
                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
@@ -2880,5 +2918,362 @@ private extension DiffPane {
     /// appear.
     var hasLoadedContent: Bool {
         !lines.isEmpty || !files.isEmpty || error != nil
+    }
+}
+
+// MARK: - #267 read-only issue browser (approved V3: flat list + chips + inline detail)
+
+/// The read-only GitHub issues browser: flat list (newest-first), open/
+/// closed chip filter in the pinned chrome (open by default), and a
+/// tap-to-expand INLINE detail (state + label pills, repo meta, body,
+/// lazy comment reveal with the transcript-style divider, `▴ collapse`).
+/// Grant-gated by the device ledger (read_issues, default-empty): the entry
+/// button lives on the fleet screen toolbar.
+struct IssuesBrowserView: View {
+    @ObservedObject var model: AppModel
+
+    @State private var filter: IssueFilter = .open
+    @State private var expandedKey: IssueBrowserKey?
+    /// #267 lazy comment reveal: per issue, how many of the daemon's
+    /// newest-first window comments are shown (revealed in `commentChunk`
+    /// chunks on "Load earlier").
+    @State private var revealedComments: [IssueBrowserKey: Int] = [:]
+
+    /// Identities one browser row (repo + number).
+    struct IssueBrowserKey: Hashable {
+        let repo: String
+        let number: UInt64
+    }
+
+    private struct BrowserRowItem: Identifiable {
+        let key: IssueBrowserKey
+        let issue: GhIssueRef
+        var id: String { "\(key.repo)#\(key.number)" }
+    }
+
+    private func key(_ issue: GhIssueRef) -> IssueBrowserKey {
+        IssueBrowserKey(repo: issue.repo, number: issue.number)
+    }
+
+    var body: some View {
+        let pane = model.fleet.issuesBrowser
+        let rows = IssueBrowser.rows(pane.repos.flatMap { $0.value }, filter: filter)
+        List {
+            Section {
+                if pane.isLoading && !pane.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("loading issues…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+                if let error = pane.error {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Retry") { model.driveReadIssues(driveClient: model.makeDriveClient()) }
+                            .font(.caption.weight(.semibold))
+                            .tint(Color.accentColor)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+                if !pane.isLoading, pane.error == nil, rows.isEmpty {
+                    Text(emptyCopy)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(rows.map { BrowserRowItem(key: key($0), issue: $0) }) { item in
+                    IssueBrowserRow(issue: item.issue,
+                                    isExpanded: expandedKey == item.key,
+                                    revealed: revealedComments[item.key] ?? 0,
+                                    onToggle: {
+                                        withAnimation {
+                                            if expandedKey == item.key {
+                                                expandedKey = nil
+                                            } else {
+                                                expandedKey = item.key
+                                            }
+                                        }
+                                    },
+                                    onLoadEarlier: {
+                                        let newCount = (revealedComments[item.key] ?? 0)
+                                            + IssueBrowser.commentChunk
+                                        revealedComments[item.key] = newCount
+                                    })
+                }
+            } header: {
+                // #219-grade chrome: the filter chips ride the SAME scroll
+                // surface (pinned header), so the pull gesture never strands
+                // the chips against a fixed surface.
+                PinnedHeader(fillsInteractiveWidth: true) {
+                    browserChrome
+                }
+            }
+        }
+        .listStyle(.plain)
+        .listSectionSpacing(.compact)
+        .navigationTitle("Issues")
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable {
+            model.driveReadIssues(driveClient: model.makeDriveClient())
+        }
+        .task {
+            // First open: fetch once (refreshable + retry cover the rest).
+            if model.fleet.issuesBrowser.isEmpty {
+                model.driveReadIssues(driveClient: model.makeDriveClient())
+            }
+            // #267 DEBUG evidence route: auto-expand the requested issue's
+            // inline detail (with one reveal chunk) so the design-gate
+            // command can reproduce the annotated proof. Runs AFTER the
+            // (synchronous demo) seed above.
+#if DEBUG
+            applyDemoIssueRoute()
+#endif
+        }
+    }
+
+#if DEBUG
+    /// #267: auto-expand `demoOpenIssueNumber`'s row (no-op in live mode
+    /// where the flag is nil). Hoisted into a method: the Release swiftc
+    /// pass cannot resolve the observed-object dynamic member from a
+    /// nested escaping closure.
+    private func applyDemoIssueRoute() {
+        guard let number = model.demoOpenIssueNumber else { return }
+        let seeded = IssueBrowser.rows(model.fleet.issuesBrowser.repos.flatMap { $0.value },
+                                       filter: filter)
+        guard let issue = seeded.first(where: { $0.number == number }) else { return }
+        expandedKey = key(issue)
+        revealedComments[key(issue)] = IssueBrowser.commentChunk
+    }
+#endif
+
+    private var emptyCopy: String {
+        filter == .open ? "no open issues — all clear"
+                        : "no closed issues in this view"
+    }
+
+    /// Pinned chrome: open/closed chips + the read-only subline (approved
+    /// V3 copy, device-neutral).
+    private var browserChrome: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(IssueFilter.allCases, id: \.self) { candidate in
+                    Button {
+                        withAnimation { filter = candidate }
+                    } label: {
+                        Text(candidate.label)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(candidate == filter
+                                        ? Color.accentColor
+                                        : Color.secondary.opacity(0.12),
+                                        in: Capsule())
+                            .foregroundStyle(candidate == filter ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(candidate.label)
+                    .accessibilityAddTraits(candidate == filter ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 20)
+            Label("read-only · tap a row to expand · no mutations from this device",
+                  systemImage: "info.circle")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 20)
+        }
+        .padding(.top, 2)
+        .padding(.bottom, 6)
+    }
+}
+
+/// One browser row: `#N  title  STATE-pill  ›` — or, when expanded, the
+/// inline detail panel (label + state pills, repo meta, body, lazy
+/// comments, `▴ collapse`) with the approved `--panel2` backing.
+private struct IssueBrowserRow: View {
+    let issue: GhIssueRef
+    let isExpanded: Bool
+    let revealed: Int
+    let onToggle: () -> Void
+    let onLoadEarlier: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if isExpanded {
+                detail
+                    .padding(.top, 6)
+            }
+        }
+        .padding(.vertical, 8)
+        .listRowBackground(isExpanded ? Color.secondary.opacity(0.16) : Color.clear)
+        .listRowSeparator(isExpanded ? .hidden : .automatic)
+    }
+
+    private var header: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 8) {
+                Text("#\(issue.number)")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Color.accentColor)
+                Text(issue.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                statePill
+                chevron
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Issue \(issue.number): \(issue.title)")
+        .accessibilityAddTraits(isExpanded ? .isSelected : [])
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2)
+            .foregroundStyle(isExpanded ? Color.accentColor : Color.secondary)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+    }
+
+    private var statePill: some View {
+        let open = issue.state.lowercased() == "open"
+        let color = open ? Color.accentColor : Color.secondary
+        return Text(open ? "OPEN" : "CLOSED")
+            .font(.caption2.weight(.bold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .overlay(Capsule().stroke(color, lineWidth: 1))
+            .foregroundStyle(color)
+            .opacity(open ? 1 : 0.65)
+    }
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            labelRow
+            Text("\(issue.repo) · #\(issue.number)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let body = issue.body, !body.isEmpty {
+                Text(body)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            commentSection
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 2)
+    }
+
+    private var labelRow: some View {
+        HStack(spacing: 6) {
+            statePill
+            ForEach(issue.labels, id: \.name) { label in
+                issueLabelPill(label)
+            }
+        }
+    }
+
+    private func issueLabelPill(_ label: IssueLabel) -> some View {
+        let color = Color(uiColor: UIColor(hex: "#" + label.color))
+        return Text(label.name)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.25), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    /// The transcript-style lazy comment paging (approved V3): the newest
+    /// comments render first; `──── N earlier comments · Load earlier ────`
+    /// reveals the rest of the daemon's bounded window chunk by chunk. When
+    /// the window is exhausted the divider stays informative (no fake link).
+    @ViewBuilder
+    private var commentSection: some View {
+        let earlier = IssueBrowser.earlierCount(issue, revealed: revealed)
+        let comments = IssueBrowser.visibleComments(issue, revealed: revealed)
+        if earlier > 0 {
+            earlierDivider(earlier: earlier)
+        }
+        ForEach(comments, id: \.self) { comment in
+            commentBlock(comment)
+        }
+        if !comments.isEmpty || earlier > 0 {
+            collapseButton
+        }
+    }
+
+    private func earlierDivider(earlier: Int) -> some View {
+        HStack(spacing: 6) {
+            dividerLine
+            if IssueBrowser.canRevealMore(issue, revealed: revealed) {
+                Button(action: onLoadEarlier) {
+                    Text("\(earlier) earlier comments · Load earlier")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("\(earlier) earlier comments")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            dividerLine
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func commentBlock(_ comment: IssueComment) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(comment.author ?? "someone")
+                    .font(.caption.weight(.semibold))
+                Text(comment.createdAt.map(shortTime) ?? "")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(comment.body)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var collapseButton: some View {
+        Button(action: onToggle) {
+            Label("collapse", systemImage: "chevron.up")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+    }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.35))
+            .frame(height: 1)
+    }
+
+    /// `2026-08-28T14:02:00Z` → `28 Aug, 14:02` (display-only).
+    private func shortTime(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: iso) else { return iso }
+        let time = DateFormatter()
+        time.dateFormat = "d MMM, HH:mm"
+        time.timeZone = TimeZone(identifier: "UTC")
+        return time.string(from: date)
     }
 }

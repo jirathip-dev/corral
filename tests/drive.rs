@@ -280,7 +280,7 @@ impl Adapter for RecordingAdapter {
 }
 
 /// Every capability the drive tests exercise, granted to the harness device.
-const ALL_CAPABILITIES: [Capability; 8] = [
+const ALL_CAPABILITIES: [Capability; 9] = [
     Capability::Prompt,
     Capability::Interrupt,
     Capability::Approve,
@@ -289,6 +289,7 @@ const ALL_CAPABILITIES: [Capability; 8] = [
     Capability::Attach,
     Capability::StartWorktree,
     Capability::ReadDiff,
+    Capability::ReadIssues,
 ];
 
 /// Real W3 auth plane over a temp dir + a registered, fully-granted device.
@@ -301,6 +302,9 @@ struct Harness {
     pubkey: [u8; 32],
     key_id: String,
     app: Router,
+    /// #267: the shared issue cache the router serves (GET /issues and the
+    /// /drive read_issues arm) — kept so tests can seed last-known issues.
+    issues: Arc<corrald::api::issues::IssuesCache>,
     _dir: tempfile::TempDir,
 }
 
@@ -386,12 +390,13 @@ fn harness() -> Harness {
         .set_grants(&key_id, ALL_CAPABILITIES.to_vec())
         .expect("grants");
 
+    let issues = Arc::new(corrald::api::issues::IssuesCache::default());
     let app = router(AppState {
         store: store.clone(),
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
-        issues: Arc::new(corrald::api::issues::IssuesCache::default()),
+        issues: issues.clone(),
         fleets: Arc::new(corrald::fleet::cli::CliFleetOpsProvider),
         cors_origins: Vec::new(),
     });
@@ -403,6 +408,7 @@ fn harness() -> Harness {
         pubkey,
         key_id,
         app,
+        issues,
         _dir: dir,
     }
 }
@@ -1928,4 +1934,97 @@ async fn read_diff_dispatch_refusal_is_typed_and_audited_refused() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
+}
+
+// read_issues (#267): the fleet-level read-only browser payload. Mirrors
+// read_diff's grant gate (403 not_granted, default-empty) and audit, but is
+// dispatched BEFORE the per-agent path (like start_worktree) because
+// issues are fleet-level, not per-agent.
+
+#[tokio::test]
+async fn read_issues_result_carries_repos_and_audits_executed() {
+    let h = harness();
+    h.issues.update(
+        "corral",
+        vec![corrald::core::events::GhIssueRef {
+            repo: "corral".to_string(),
+            number: 267,
+            state: "OPEN".to_string(),
+            title: "iOS issue browser".to_string(),
+            labels: vec![corrald::core::events::GhIssueLabel {
+                name: "enhancement".to_string(),
+                color: "5319E7".to_string(),
+            }],
+            url: "https://github.com/jirathip-dev/corral/issues/267".to_string(),
+            body: Some("Read-only browser.".to_string()),
+            comments: vec![corrald::core::events::GhIssueComment {
+                author: "jirathip-k".to_string(),
+                body: "LGTM".to_string(),
+                created_at: "2026-08-28T08:00:00Z".to_string(),
+            }],
+            comment_total: Some(3),
+        }],
+    );
+
+    // Fleet-level: target is the fleet namespace, NOT an agent id.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-issues",
+            Capability::ReadIssues,
+            "fleet",
+            json!({ "kind": "read_issues" }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    let repos = value["result"]["repos"].as_object().expect("repos object");
+    let issues = repos["corral"].as_array().expect("corral issues");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0]["number"], 267);
+    assert_eq!(issues[0]["title"], "iOS issue browser");
+    assert_eq!(issues[0]["body"], "Read-only browser.");
+    assert_eq!(issues[0]["comment_total"], 3);
+    assert_eq!(issues[0]["comments"][0]["author"], "jirathip-k");
+    assert_eq!(issues[0]["labels"][0]["name"], "enhancement");
+
+    // No adapter dispatch: the payload is the shared cache view.
+    assert_eq!(h.adapter.dispatch_count(), 0);
+    assert!(h.adapter.commands().is_empty());
+
+    // Audited as Executed, like read_diff's response-bearing seam.
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].capability, "read_issues");
+    assert_eq!(entries[0].target, "fleet");
+    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
+}
+
+#[tokio::test]
+async fn read_issues_without_grant_is_403_not_granted_and_not_audited() {
+    let h = harness();
+    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body_from(
+            &other_signing,
+            other_pubkey,
+            "req-issues-nogrant",
+            Capability::ReadIssues,
+            "fleet",
+            json!({ "kind": "read_issues" }),
+            None,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(value["kind"], "not_granted");
+    // Default-empty: no dispatch, no audit.
+    assert!(h.audit_entries().is_empty());
+    assert_eq!(h.adapter.dispatch_count(), 0);
 }

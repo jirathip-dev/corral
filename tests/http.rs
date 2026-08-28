@@ -610,6 +610,9 @@ async fn issues_endpoint_serves_last_known_repo_issues() {
                 color: "5319E7".to_string(),
             }],
             url: "https://github.com/herdr-board/herdr-board/issues/4".to_string(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
         }],
     );
     let app = router(state);
@@ -650,6 +653,9 @@ async fn issues_shared_gh_repo_keeps_one_cached_issue_and_both_fleet_keys() {
             title: "shared issue".to_string(),
             labels: vec![],
             url: "https://github.com/example/foo/issues/42".to_string(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
         }],
     );
     let app = router(state);

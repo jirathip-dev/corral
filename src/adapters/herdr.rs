@@ -3252,6 +3252,9 @@ mod tests {
             title: "primary attribution".to_string(),
             labels: vec![],
             url: String::new(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
         }];
         store.apply(Change::upsert(existing)).await;
         adapter

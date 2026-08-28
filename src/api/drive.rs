@@ -295,6 +295,9 @@ enum PendingCommand {
     },
     /// #113: a fleet-level worktree start (not an agent drive).
     Worktree(WorktreeRequest),
+    /// #267: a fleet-level read-only issue browser fetch (not an agent
+    /// drive) — dispatched before the per-agent path like `Worktree`.
+    Issues,
 }
 
 /// Map a verified capability + payload onto the adapter command vocabulary.
@@ -306,7 +309,11 @@ fn command_for(
     target: &str,
 ) -> Result<PendingCommand, PayloadError> {
     match capability {
-        Capability::Prompt | Capability::ReadTail | Capability::ReadDiff | Capability::Approve => {
+        Capability::Prompt
+        | Capability::ReadTail
+        | Capability::ReadDiff
+        | Capability::ReadIssues
+        | Capability::Approve => {
             let parsed = DrivePayload::parse(capability, payload)?;
             Ok(match parsed {
                 DrivePayload::Prompt { text } => {
@@ -324,6 +331,7 @@ fn command_for(
                 } => PendingCommand::Command(DriveCommand::ReadDiff {
                     query: crate::drive::ReadDiffQuery::clamped(files, offset, lines),
                 }),
+                DrivePayload::ReadIssues => PendingCommand::Issues,
                 DrivePayload::Approve {
                     approval_id,
                     prompt_hash,
@@ -352,6 +360,7 @@ fn command_for(
                 Capability::Prompt
                 | Capability::ReadTail
                 | Capability::ReadDiff
+                | Capability::ReadIssues
                 | Capability::Approve
                 | Capability::StartWorktree => unreachable!(),
             })
@@ -780,10 +789,13 @@ pub async fn drive(
     // #113: start_worktree is a fleet-level operation, not an agent drive —
     // it must not run the per-agent (tomestone / approve / adapter) path.
     // The dispatch handles the replay/audit/write side itself.
+    // #267: read_issues is the same shape — a fleet-level read, not an
+    // agent drive.
     let pending = match pending {
         PendingCommand::Worktree(request) => {
             return dispatch_worktree(&state, &authorized, request).await;
         }
+        PendingCommand::Issues => return dispatch_issues(&state, &authorized).await,
         other => other,
     };
 
@@ -813,6 +825,9 @@ pub async fn drive(
         PendingCommand::Command(command) => command,
         PendingCommand::Worktree(_) => {
             unreachable!("worktree requests are dispatched before the agent path")
+        }
+        PendingCommand::Issues => {
+            unreachable!("read_issues is dispatched before the agent path")
         }
         PendingCommand::Approve {
             approval_id,
@@ -987,6 +1002,49 @@ async fn dispatch_worktree(
             )
         }
     };
+
+    append_audit(state.auth.audit.as_ref(), authorized, outcome);
+    let rev = state.store.snapshot().await.rev;
+    let response = DriveResponse {
+        request_id,
+        ok,
+        error,
+        error_kind,
+        rev,
+        result,
+    };
+    state
+        .replay
+        .complete(&authorized.envelope.request_id, response.clone());
+    Ok(Json(response))
+}
+
+/// #267: serve the grant-gated read-only issue browser payload. Fleet-level
+/// like `dispatch_worktree` (no agent target): replay idempotency + audit,
+/// then the SHARED issues view (`GET /issues`' exact builder) — one source
+/// for both surfaces, so the iOS browser can never diverge from the board.
+/// Read-only by construction: it is the gh poller's last-known cache.
+async fn dispatch_issues(
+    state: &AppState,
+    authorized: &AuthorizedDrive,
+) -> Result<Json<DriveResponse>, DriveApiError> {
+    let request_id = authorized.envelope.request_id.clone();
+
+    // A completed request is immutable — retries return the first response.
+    if let Some(response) = state.replay.completed(&request_id) {
+        return Ok(Json(response));
+    }
+    match state.replay.claim(&request_id) {
+        Claim::Done(response) => return Ok(Json(response)),
+        Claim::Pending => {
+            return Err(DriveApiError::InFlight { request_id });
+        }
+        Claim::Claimed => {}
+    }
+
+    let view = crate::api::issues::issues_view(state).await;
+    let (ok, error, error_kind, outcome, result) =
+        (true, None, None, AuditOutcome::Executed, Some(view));
 
     append_audit(state.auth.audit.as_ref(), authorized, outcome);
     let rev = state.store.snapshot().await.rev;
@@ -1261,6 +1319,9 @@ mod tests {
             title: "shared issue".into(),
             labels: Vec::new(),
             url: format!("https://github.com/example/foo/issues/{number}"),
+            body: None,
+            comments: Vec::new(),
+            comment_total: None,
         }
     }
 

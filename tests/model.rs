@@ -216,6 +216,9 @@ fn g23_workspace_fields_round_trip() {
                 title: "PR badges: add headRefName to gh fragment".to_string(),
                 labels: vec![],
                 url: String::new(),
+                body: None,
+                comments: vec![],
+                comment_total: None,
             }],
             ..Default::default()
         },

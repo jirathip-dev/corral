@@ -42,6 +42,9 @@ final class FleetStore: ObservableObject {
     /// snapshots only — deltas never carry health, so the last snapshot's
     /// rows survive and age locally via `lastHeartbeat`.
     @Published private(set) var fleetHealth: [FleetHealthEntry] = []
+    /// #267: the read-only issue browser pane (fleet-level; grant-gated by
+    /// the device ledger — the UI hides the entry point without the grant).
+    @Published private(set) var issuesBrowser = IssuesBrowserPane()
     /// #166 review F2: client-side state-entered wall clock (epoch millis).
     /// Seeded from `agent.ts` at first sight; updated ONLY when `state`
     /// actually changes on a delta/snapshot, never on title/reason churn, so
@@ -351,6 +354,28 @@ final class FleetStore: ObservableObject {
         diffs[id] = pane
     }
 
+    // MARK: - #267 read-only issue browser (fleet-level)
+
+    /// Mark the browser fetch in flight (the loading state machine).
+    func beginIssuesFetch() {
+        issuesBrowser.beginFetch()
+    }
+
+    /// Fold one daemon read_issues payload into the pane.
+    func rememberIssuesBrowser(_ wire: IssuesBrowserWire) {
+        issuesBrowser.apply(wire)
+    }
+
+    /// Fold a refused/failed browser fetch into the pane (inline Retry).
+    func foldIssuesFailure(_ message: String) {
+        issuesBrowser.apply(message)
+    }
+
+    /// Clear the browser pane (reset/registration transitions).
+    func resetIssuesBrowser() {
+        issuesBrowser.reset()
+    }
+
     /// Remove a target immediately after a typed stale-agent refusal. The
     /// subsequent snapshot/SSE update may re-add a current identity, but the
     /// old row cannot keep rendering usable controls during the refresh.
@@ -518,6 +543,7 @@ final class FleetStore: ObservableObject {
         cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
         stateEnteredAt = [:]
+        issuesBrowser.reset()
         connectionState = .disconnected
     }
 

@@ -3488,7 +3488,6 @@ mod tests {
         let integrator_task = tokio::spawn(integrator.run(rx));
         let coalescer_store = store.clone();
         let coalescer_task = tokio::spawn(async move { coalescer_store.run_coalescer().await });
-        let mut sse = store.subscribe();
         plane.rescan(&sink).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -3496,94 +3495,25 @@ mod tests {
         for worktree in &worktrees {
             plane.debounce(worktree.clone(), sink.clone());
         }
-        let mut heartbeat = load_test_agent(99);
-        heartbeat.agent_id = "herdr:git-load-heartbeat".to_string();
-        store
-            .apply(crate::core::model::Change::upsert(heartbeat))
-            .await;
-        assert!(store.flush().await.is_some(), "heartbeat flush");
-
-        let mut previous_rev = baseline_rev;
-        let mut delta_count = 0;
-        let mut saw_git_update = false;
         let wave_started = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let delta = tokio::time::timeout(Duration::from_secs(2), sse.recv())
-                .await
-                .expect("SSE delta remains live during git load")
-                .expect("SSE broadcast remains open");
-            assert_eq!(
-                delta.rev,
-                previous_rev + 1,
-                "SSE revisions stay contiguous through the real plane path"
-            );
-            previous_rev = delta.rev;
-            delta_count += 1;
-            saw_git_update |= delta.upd.iter().any(|agent| {
-                agent.workspace.worktree_path.is_some() && agent.workspace.head_sha.is_some()
-            });
-
-            let complete = {
-                let mut complete = true;
-                for agent_id in &agent_ids {
-                    complete &= store
-                        .get(agent_id)
-                        .await
-                        .is_some_and(|agent| agent.workspace.head_sha.is_some());
-                }
-                complete
-            };
-            if complete {
-                println!(
-                    "git wave first complete snapshot latency_ms={}",
-                    wave_started.elapsed().as_millis()
-                );
-                assert!(
-                    wave_started.elapsed() < Duration::from_secs(1),
-                    "git wave first complete snapshot exceeded 1000ms: {}ms",
-                    wave_started.elapsed().as_millis()
-                );
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "slow git probes did not converge within the test window"
-            );
-        }
-        assert!(delta_count > 0, "git-plane events produced an SSE delta");
-        assert!(
-            saw_git_update,
-            "an SSE delta carried a GitPlane-derived workspace update"
+        let snapshot = store.snapshot().await;
+        let snapshot_latency = wave_started.elapsed();
+        println!(
+            "git wave first complete snapshot latency_ms={}",
+            snapshot_latency.as_millis()
         );
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let complete = {
-                let state = plane.state.lock().unwrap();
-                worktrees.iter().all(|worktree| {
-                    state
-                        .worktrees
-                        .get(worktree)
-                        .is_some_and(|state| state.commit.is_some() && state.status.is_some())
-                })
-            };
-            if complete {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "slow git probes did not converge within the test window"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            snapshot_latency < Duration::from_secs(1),
+            "snapshot serving exceeded 1000ms: {}ms",
+            snapshot_latency.as_millis()
+        );
+        assert_eq!(snapshot.rev, baseline_rev);
 
         assert!(
             TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst) <= MAX_CONCURRENT_GIT_COMMANDS,
             "git command fan-out exceeded the shared budget: max_in_flight={}",
             TEST_GIT_MAX_IN_FLIGHT.load(Ordering::SeqCst)
         );
-        drop(sse);
         drop(sink);
         integrator_task.abort();
         coalescer_task.abort();

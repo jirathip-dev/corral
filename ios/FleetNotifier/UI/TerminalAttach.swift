@@ -108,7 +108,7 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         view.backgroundColor = .black; view.textColor = .white; return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
-        view.text = text.replacingOccurrences(of: "\\u{1B}[", with: "")
+        view.text = text.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression)
         view.accessibilityLabel = "Terminal cursor column \(cursor.0), row \(cursor.1)"
     }
 }
@@ -137,10 +137,34 @@ struct TerminalAttachView: View {
     @State private var output = ""
     @State private var cursor = (0, 0)
     var body: some View {
-        SwiftTermTerminalView(text: output, cursor: cursor).task {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("cursor: \(cursor.0),\(cursor.1)")
+                .font(.caption.monospaced())
+                .accessibilityLabel("Terminal cursor column \(cursor.0), row \(cursor.1)")
+            SwiftTermTerminalView(text: output, cursor: cursor)
+        }
+        .task {
             try? await client.connect(worktree: worktree) { frame in
                 Task { @MainActor in output = frame.ansi ?? output; cursor = (frame.cursorX ?? 0, frame.cursorY ?? 0) }
             }
         }.onDisappear { client.close() }.navigationTitle(worktree.branch)
     }
 }
+
+#if DEBUG
+struct TerminalAttachDemoView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("cursor: 80,23")
+                .font(.caption.monospaced())
+            SwiftTermTerminalView(
+                text: "\u{1b}[1;34mLAZYGIT\u{1b}[0m  worktree\n\n▸ Files\n  src/tmux.rs\n  ios/FleetNotifier/UI/TerminalAttach.swift\n\n  2 changed files  •  ready",
+                cursor: (80, 23))
+        }
+        .padding()
+        .navigationTitle("Terminal Preview")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Terminal ANSI preview; cursor column 80, row 23")
+    }
+}
+#endif

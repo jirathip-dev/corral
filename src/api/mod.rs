@@ -48,23 +48,27 @@ pub mod issues;
 pub(crate) mod repo;
 
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use futures::stream::{self, Stream, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
 use crate::core::model::{Resume, Snapshot};
 use crate::core::store::Store;
+use crate::core::util::now_millis;
+use crate::drive::AuditLog;
 use crate::push::payload::{
     DeviceTokenRequest, GrantsReadRequest, canonical_device_token_bytes,
     canonical_grants_read_bytes,
@@ -151,6 +155,8 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history))
         .route("/issues", get(issues::issues))
         .route("/fleets", get(fleets::fleets))
+        .route("/v1/worktrees", get(worktrees))
+        .route("/v1/terminal", get(terminal_ws))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             cors::cors,
@@ -188,6 +194,154 @@ async fn history(
         .min(HISTORY_MAX_LIMIT);
     let events = state.store.history().query(params.since, Some(limit));
     Json(serde_json::json!({ "events": events }))
+}
+
+#[derive(Debug, Serialize)]
+struct WorktreeRow {
+    repo: String,
+    branch: String,
+    path: String,
+    workspace_id: String,
+    pane_id: Option<String>,
+    is_prunable: bool,
+    dirty: bool,
+    agent_attached: bool,
+    current_focus: bool,
+}
+
+fn tmux_root() -> PathBuf {
+    std::env::var_os("CORRAL_WORKTREES_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".herdr/worktrees"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".herdr/worktrees"))
+}
+
+async fn worktrees() -> Json<serde_json::Value> {
+    let root = tmux_root();
+    let mut rows = Vec::new();
+    if let Ok(repos) = std::fs::read_dir(&root) {
+        for repo in repos.flatten().filter(|entry| entry.path().is_dir()) {
+            let Ok(entries) = std::fs::read_dir(repo.path()) else {
+                continue;
+            };
+            for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                let path = entry.path();
+                let branch = entry.file_name().to_string_lossy().into_owned();
+                let workspace_id = format!("{}:{}", repo.file_name().to_string_lossy(), branch);
+                rows.push(WorktreeRow {
+                    repo: repo.file_name().to_string_lossy().into_owned(),
+                    branch,
+                    path: path.to_string_lossy().into_owned(),
+                    workspace_id,
+                    pane_id: None,
+                    is_prunable: false,
+                    dirty: false,
+                    agent_attached: false,
+                    current_focus: false,
+                });
+            }
+        }
+    }
+    Json(serde_json::json!({"worktrees": rows}))
+}
+
+#[derive(Debug, Deserialize)]
+struct TerminalOpen {
+    auth: crate::drive::SignedDrive,
+    cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TerminalCommand {
+    Input { text: String },
+    Resize { cols: u16, rows: u16 },
+    Close,
+}
+
+static TMUX_TRANSPORT: OnceLock<crate::tmux::TmuxTransport> = OnceLock::new();
+
+fn transport() -> &'static crate::tmux::TmuxTransport {
+    TMUX_TRANSPORT.get_or_init(|| crate::tmux::TmuxTransport::new(tmux_root()))
+}
+
+async fn terminal_ws(
+    upgrade: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    upgrade.on_upgrade(move |socket| terminal_session(socket, state))
+}
+
+async fn terminal_session(mut socket: WebSocket, state: Arc<AppState>) {
+    let Some(Ok(Message::Text(text))) = socket.recv().await else {
+        return;
+    };
+    let Ok(open) = serde_json::from_str::<TerminalOpen>(&text) else {
+        return;
+    };
+    if open.auth.envelope.capability != crate::drive::Capability::Attach {
+        return;
+    }
+    let Ok(authorized) = state.auth.authorizer.verify(&open.auth) else {
+        return;
+    };
+    let expected_payload = serde_json::json!({
+        "cwd": open.cwd,
+        "workspace_id": authorized.envelope.target,
+    });
+    // The request id is the fresh one-shot nonce. Claim it only after
+    // signature and complete parameter binding have been verified.
+    if open.auth.envelope.payload != expected_payload
+        || !state.replay.claim_once(&authorized.envelope.request_id)
+    {
+        return;
+    }
+    let Ok(session) = transport()
+        .open(&authorized.envelope.target, Path::new(&open.cwd))
+        .await
+    else {
+        return;
+    };
+    audit_terminal(&state, &authorized, "attach", &session.id);
+    let _ = socket.send(Message::Text(serde_json::json!({"type":"opened", "session_id":session.id, "workspace_id":session.workspace_id}).to_string().into())).await;
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let Ok(frame) = transport().capture(&session.id).await else { break };
+                let value = serde_json::json!({"type":"frame", "ansi":frame.ansi,"cursor_x":frame.cursor_x,"cursor_y":frame.cursor_y});
+                if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
+            }
+            message = socket.recv() => {
+                let Some(Ok(Message::Text(text))) = message else { break };
+                let Ok(command) = serde_json::from_str::<TerminalCommand>(&text) else { continue };
+                match command {
+                    TerminalCommand::Input { text } => { if transport().send_input(&session.id, &text).await.is_ok() { audit_terminal(&state, &authorized, "input", &session.id); } }
+                    TerminalCommand::Resize { cols, rows } => { if transport().resize(&session.id, cols, rows).await.is_ok() { audit_terminal(&state, &authorized, "resize", &session.id); } }
+                    TerminalCommand::Close => { if transport().close(&session.id).await.is_ok() { audit_terminal(&state, &authorized, "kill", &session.id); } break; }
+                }
+            }
+        }
+    }
+}
+
+fn audit_terminal(
+    state: &AppState,
+    authorized: &crate::drive::AuthorizedDrive,
+    action: &str,
+    session_id: &str,
+) {
+    let entry = crate::drive::AuditEntry {
+        ts: now_millis(),
+        key_id: authorized.key_id.clone(),
+        request_id: authorized.envelope.request_id.clone(),
+        capability: format!("tmux_{action}"),
+        target: session_id.to_string(),
+        outcome: crate::drive::AuditOutcome::Executed,
+    };
+    let _ = state.auth.audit.append(&entry);
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {

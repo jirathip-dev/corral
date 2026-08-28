@@ -21,7 +21,7 @@ license = "MIT OR Apache-2.0"
 test-utils = []
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.23"
 chrono = "0.4"
 ed25519-dalek = { version = "3", default-features = true }

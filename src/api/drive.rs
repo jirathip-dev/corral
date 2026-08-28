@@ -173,6 +173,12 @@ impl ReplayTable {
         Self::default()
     }
 
+    /// Atomically consume a request id for one-shot protocols that have no
+    /// response to cache (for example a WebSocket session open).
+    pub fn claim_once(&self, request_id: &str) -> bool {
+        matches!(self.claim(request_id), Claim::Claimed)
+    }
+
     fn claim(&self, request_id: &str) -> Claim {
         let mut inner = self.inner.lock().expect("replay table poisoned");
         inner.evict_stale_claims();
@@ -1323,6 +1329,13 @@ mod tests {
             comments: Vec::new(),
             comment_total: None,
         }
+    }
+
+    #[test]
+    fn terminal_open_request_id_is_consumed_once() {
+        let replay = ReplayTable::new();
+        assert!(replay.claim_once("terminal-open-1"));
+        assert!(!replay.claim_once("terminal-open-1"));
     }
 
     #[test]

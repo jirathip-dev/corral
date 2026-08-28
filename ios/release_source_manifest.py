@@ -23,6 +23,7 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/UI/BoardFilter.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",
     "ios/FleetNotifier/UI/FleetViews.swift",
+    "ios/FleetNotifier/UI/TerminalAttach.swift",
     "ios/FleetNotifier/UI/RecentOutputModel.swift",
     "ios/FleetNotifier/UI/StateStyle.swift",
     "ios/FleetNotifier/UI/TimeInState.swift",

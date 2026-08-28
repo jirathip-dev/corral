@@ -209,7 +209,7 @@ final class AppModel: ObservableObject {
         /// even though no daemon grant exists. Live mode always uses the
         /// device's signed grants.
         if mode == .demo {
-            return [.prompt, .interrupt, .approve, .readTail, .readIssues]
+            return [.prompt, .interrupt, .approve, .readTail, .readIssues, .attach]
         }
 #endif
         return Set(grants.compactMap(Capability.init(rawValue:)))

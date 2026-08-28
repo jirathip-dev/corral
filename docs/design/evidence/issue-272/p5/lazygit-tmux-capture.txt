@@ -1,0 +1,24 @@
+╭─[1]─Status──────────────╮╭─[0]─Unstaged changes──────────────────────────────╮
+│corral([36mg272-p5-tmux-trans[39m││[1mdiff --git a/Cargo.lock b/Cargo.lock[0m               ▐
+╰─────────────────────────╯│[1mindex 553fff1..5cc00d6 100644[0m                      │
+[1m[32m╭─[2]─Files [0m- Worktrees -[1m[32m─╮[0m│[1m--- a/Cargo.lock[0m                                   │
+[1m[32m│[39m[44m▼ /                      [32m[49m▐[0m│[1m+++ b/Cargo.lock[0m                                   │
+[1m[32m│[0m  ▼ ios                  [1m[32m▐[0m│[36m@@ -315,6 +315,7 @@[39m source =                       │
+[1m[32m│[0m    ▼ FleetNotifier/UI   [1m[32m▐[0m│"registry+https://github.com/rust-lang/crates.io-  │
+[1m[32m│[0m      [31m??[39m TerminalAttach.s[1m[32m▐[0m│index"                                             │
+[1m[32m│[0m    ▼ FleetNotifier.xcode[1m[32m▐[0m│ checksum =                                        │
+[1m[32m│[0m       [31mM[39m project.pbxproj [1m[32m▐[0m│"31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a8│
+[1m[32m│[0m  ▼ src/api              [1m[32m▐[0m│9fc1867a71cd90"                                    │
+[1m[32m│[0m     [31mM[39m mod.rs            [1m[32m▐[0m│ dependencies = [                                  │
+[1m[32m│[0m   [31mM[39m Cargo.lock          [1m[32m│[0m│  "axum-core",                                     │
+[1m[32m╰─────────────────1 of 10─╯[0m│[32m+ "base64 0.22.1",[39m                                 │
+╭─[3]─[32mLocal branches [39m- Re─╮│  "bytes",                                         │
+│[32m  *[39m g272/p5-tmux-transpo…││  "form_urlencoded",                               │
+╰────────────────1 of 204─╯│  "futures-util",                                  │
+╭─[4]─[32mCommits [39m- Reflog────╮│[36m@@ -333,8 +334,10 @@[39m dependencies = [              │
+│[33m7f7449a8[39m [38;2;40;129;179mGu[39m [38;2;40;129;179m◯[39m corrald: ad││  "serde_json",                                    │
+╰────────────────1 of 273─╯╰───────────────────────────────────────────────────╯
+╭─[5]─Stash───────────────╮╭─Command log───────────────────────────────────────╮
+│[36m6d[39m On main: wip-icon-salv││[32mspot what's new.                                   [39m│
+╰──────────────────1 of 3─╯╰───────────────────────────────────────────────────╯
+[34mStage: <space> | Commit: c | Stash: s | Discard: d | [39m [4m[35mDonate[0m [4m[33mAsk Question[0m 0.58.1

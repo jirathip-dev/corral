@@ -1282,6 +1282,10 @@ final class AppModel: ObservableObject {
                     if capability == .readTail {
                         self.fleet.foldTailFailure(TranscriptFailure(
                             kind: "transport", message: message, candidates: []), for: target)
+                    } else if capability == .readDiff {
+                        self.fleet.foldDiffFailure(message, for: target)
+                    } else if capability == .readIssues {
+                        self.fleet.foldIssuesFailure(message)
                     } else {
                         self.banner = .error("network", message)
                     }
@@ -1290,6 +1294,10 @@ final class AppModel: ObservableObject {
                         self.fleet.foldTailFailure(TranscriptFailure(
                             kind: "encoding", message: "payload encoding failed",
                             candidates: []), for: target)
+                    } else if capability == .readDiff {
+                        self.fleet.foldDiffFailure("payload encoding failed", for: target)
+                    } else if capability == .readIssues {
+                        self.fleet.foldIssuesFailure("payload encoding failed")
                     } else {
                         self.banner = .error("encoding", "payload encoding failed")
                     }

@@ -4710,6 +4710,115 @@ final class FleetHealthStripTests: XCTestCase {
     }
 }
 
+// MARK: - #280 offline-spinner-parity stub
+
+/// #280: a URLProtocol mock that FAILS every request (connection refused) —
+/// `URLSession` then throws before any response bytes, so the drive client
+/// folds the failure into `.refused(.network(...))`: the transport path the
+/// read panes must survive without a stuck spinner. Mirrors the #92
+/// FailingStreamURLProtocol (deterministic; never serves an HTTP response).
+private final class FailingDriveURLProtocol: URLProtocol {
+    private static let startProbe = URLProtocolStartProbe()
+
+    static func setStartHandler(_ handler: @escaping @Sendable () -> Void) {
+        startProbe.set(handler)
+    }
+
+    static func clearStartHandler() {
+        startProbe.clear()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.startProbe.fire()
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    override func stopLoading() {}
+}
+
+// MARK: - #280 offline-spinner parity (transport-level drive failures)
+
+/// #280: `AppModel.drive`'s `.refused(.network/.encoding)` branch only had a
+/// readTail arm, so a TRANSPORT failure (connection refused — no HTTP
+/// response at all) left the read panes' spinners running forever, while
+/// server refusals (ok:false / typed .server) did fold. These tests drive
+/// the real drive path through a failing URLProtocol and require BOTH read
+/// panes to land their failure state.
+@MainActor
+final class ReadPaneOfflineParityTests: XCTestCase {
+
+    private func failingSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingDriveURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testTransportFailureFoldsIntoIssuesPaneInsteadOfStuckSpinner() throws {
+        let session = failingSession()
+        defer {
+            session.invalidateAndCancel()
+            FailingDriveURLProtocol.clearStartHandler()
+        }
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_issues"]
+        let daemonURL = try XCTUnwrap(URL(string: "http://daemon"))
+        model.hostURL = daemonURL
+        let client = DriveClient(host: daemonURL, session: session)
+
+        let landed = expectation(description: "transport failure folded into the issues pane")
+        let cancellable = model.fleet.$issuesBrowser.sink { pane in
+            if pane.error != nil && !pane.isLoading { landed.fulfill() }
+        }
+        model.driveReadIssues(driveClient: client)
+        XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: 5), .completed,
+                       "the issues pane must land its failure state on a transport failure")
+        XCTAssertFalse(model.fleet.issuesBrowser.isLoading,
+                       "no stuck spinner: beginFetch's in-flight flag must be cleared")
+        XCTAssertFalse(model.fleet.issuesBrowser.error?.isEmpty ?? true)
+        cancellable.cancel()
+    }
+
+    func testTransportFailureFoldsIntoDiffPaneInsteadOfStuckSpinner() throws {
+        let session = failingSession()
+        defer {
+            session.invalidateAndCancel()
+            FailingDriveURLProtocol.clearStartHandler()
+        }
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_diff"]
+        let daemonURL = try XCTUnwrap(URL(string: "http://daemon"))
+        model.hostURL = daemonURL
+        let live = Agent(agentId: "herdr:diff", state: .working,
+                         capabilities: ["read_diff"], displayName: "herdr:diff")
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [live.agentId: live])))
+        let client = DriveClient(host: daemonURL, session: session)
+
+        let landed = expectation(description: "transport failure folded into the diff pane")
+        let cancellable = model.fleet.$diffs.sink { diffs in
+            if let pane = diffs[live.agentId], pane.error != nil && !pane.isLoading {
+                landed.fulfill()
+            }
+        }
+        model.driveReadDiff(agent: live, driveClient: client)
+        XCTAssertEqual(XCTWaiter.wait(for: [landed], timeout: 5), .completed,
+                       "the diff pane must land its failure state on a transport failure")
+        XCTAssertFalse(model.fleet.diffs[live.agentId]?.isLoading ?? true,
+                       "no stuck spinner: prepareDiffFetch's in-flight flag must be cleared")
+        XCTAssertFalse(model.fleet.diffs[live.agentId]?.error?.isEmpty ?? true)
+        cancellable.cancel()
+    }
+}
+
 // MARK: - #267 read-only issue browser (V3: chips + inline detail)
 
 @MainActor
@@ -4851,5 +4960,21 @@ final class IssueBrowserTests: XCTestCase {
         XCTAssertTrue(corral.contains { $0.state == "closed" })
         // Repos are the tracked fleets.
         XCTAssertEqual(Set(seeded.repos.keys), ["corral", "sendmeter", "plush-meadow"])
+    }
+
+    /// #280: the demo seed must mirror the live wire contract — the daemon
+    /// serves comments `orderBy: CREATED_AT DESC` (newest-first), so the
+    /// hand-written window cannot land oldest-first. ISO-8601 stamps sort
+    /// lexicographically in chronological order, so a string compare is the
+    /// same ordering the daemon's CREATED_AT sort produces.
+    func testDemoCommentWindowIsNewestFirst() throws {
+        let seeded = DemoFleet.seedIssues()
+        let issue267 = try XCTUnwrap(seeded.repos["corral"]?.first { $0.number == 267 })
+        let stamps = issue267.comments.map(\.createdAt)
+        XCTAssertFalse(stamps.isEmpty, "the demo comment window is non-empty")
+        let rendered = stamps.map { $0 ?? "" }
+        XCTAssertEqual(rendered, rendered.sorted(by: >),
+                       "demo comments must render newest-first like the live wire")
+        XCTAssertEqual(rendered.first, "2026-08-28T15:10:00Z")
     }
 }

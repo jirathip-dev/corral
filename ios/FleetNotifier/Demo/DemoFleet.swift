@@ -99,8 +99,8 @@ enum DemoFleet {
             body: "Read-only issues browser (list + detail) for FleetNotifier, modeled on read_tail / read_diff: same read-only grant gating, default-empty, no GitHub mutations from the device.",
             comments: commentWindow(
                 count: 30, total: 38, newest: [
-                    comment("Read-only surface, same grant pattern as the tail — no GitHub mutations from iOS.", at: "2026-08-28T14:02:00Z"),
                     comment("V3 inline approved; lazy window rendered newest-first.", at: "2026-08-28T15:10:00Z"),
+                    comment("Read-only surface, same grant pattern as the tail — no GitHub mutations from iOS.", at: "2026-08-28T14:02:00Z"),
                 ]),
             commentTotal: 38)
         let sendmeter722 = issue(

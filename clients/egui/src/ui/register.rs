@@ -594,6 +594,7 @@ fn capability_description(capability: &str) -> &'static str {
     match capability {
         "read_tail" => "Read live agent output",
         "read_diff" => "Read the agent's worktree diff (files, diffstat, paged diff)",
+        "read_issues" => "Read repo issues (list + detail)",
         "prompt" => "Send prompts / steer the agent",
         "interrupt" => "Interrupt a running task",
         "approve" => "Approve tool calls & awaiting decisions",

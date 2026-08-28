@@ -22,12 +22,13 @@ pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 /// Canonical grant order for the board's grant editor. This is the same
 /// closed set the daemon's `Capability` parser accepts; `start_worktree`
 /// is rendered separately as a fleet-level capability.
-pub const GRANT_CAPABILITIES: [&str; 8] = [
+pub const GRANT_CAPABILITIES: [&str; 9] = [
     "prompt",
     "interrupt",
     "approve",
     "read_tail",
     "read_diff",
+    "read_issues",
     "kill",
     "attach",
     "start_worktree",
@@ -848,6 +849,7 @@ mod tests {
                 "approve",
                 "read_tail",
                 "read_diff",
+                "read_issues",
                 "kill",
                 "attach",
                 "start_worktree"

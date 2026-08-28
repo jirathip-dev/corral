@@ -23,10 +23,7 @@ pub(crate) async fn view(
 ) -> (StatusCode, Json<serde_json::Value>) {
     match plugin::discover(&config_dir()) {
         Ok(Some(manifest)) => {
-            let mut cards = Vec::with_capacity(manifest.cards.len());
-            for card in &manifest.cards {
-                cards.push(plugin::run_card(card).await);
-            }
+            let cards = plugin::scheduled_cards(&manifest).await;
             let view = PluginView {
                 name: manifest.name,
                 version: manifest.version,

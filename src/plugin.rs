@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -238,6 +239,83 @@ fn parse_bool(v: &str) -> Result<bool, String> {
     }
 }
 
+struct CardSlot {
+    started: std::sync::atomic::AtomicBool,
+    result: tokio::sync::Mutex<Option<CardResult>>,
+}
+
+static CARD_SLOTS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<CardSlot>>>> =
+    OnceLock::new();
+static CARD_LIMIT: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn slot_key(card: &CardSpec) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        card.id,
+        card.interval_sec,
+        card.json,
+        card.command
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// Returns cached card values and starts one bounded, non-overlapping timer per
+/// manifest card. The key includes interval and argv, so an edited manifest
+/// automatically gets a fresh schedule on the next request.
+pub async fn scheduled_cards(manifest: &PluginManifest) -> Vec<CardResult> {
+    let slots = CARD_SLOTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let semaphore = CARD_LIMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(4)))
+        .clone();
+    let mut output = Vec::with_capacity(manifest.cards.len());
+    for card in &manifest.cards {
+        let key = slot_key(card);
+        let slot = {
+            let mut all = slots.lock().expect("card slots lock");
+            all.retain(|known, _| {
+                manifest
+                    .cards
+                    .iter()
+                    .any(|candidate| slot_key(candidate) == *known)
+            });
+            all.entry(key)
+                .or_insert_with(|| {
+                    Arc::new(CardSlot {
+                        started: std::sync::atomic::AtomicBool::new(false),
+                        result: tokio::sync::Mutex::new(None),
+                    })
+                })
+                .clone()
+        };
+        if !slot.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let first = run_card_limited(card, &semaphore).await;
+            *slot.result.lock().await = Some(first);
+            let slot_clone = slot.clone();
+            let card_clone = card.clone();
+            let semaphore_clone = semaphore.clone();
+            tokio::spawn(async move {
+                let interval = Duration::from_secs(card_clone.interval_sec.max(1));
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let result = run_card_limited(&card_clone, &semaphore_clone).await;
+                    *slot_clone.result.lock().await = Some(result);
+                }
+            });
+        }
+        if let Some(result) = slot.result.lock().await.clone() {
+            output.push(result);
+        }
+    }
+    output
+}
+
+async fn run_card_limited(card: &CardSpec, semaphore: &tokio::sync::Semaphore) -> CardResult {
+    let _permit = semaphore.acquire().await.expect("card semaphore");
+    run_card(card).await
+}
 pub async fn run_card(card: &CardSpec) -> CardResult {
     let output = run_argv(&card.command).await;
     match output {
@@ -385,6 +463,37 @@ confirm_message = "Refresh Fleet Ops?"
     #[test]
     fn rejects_non_allowlisted_id() {
         assert!(parse_manifest(&MANIFEST.replace("fleet-ops", "other")).is_err());
+    }
+    #[tokio::test]
+    async fn scheduled_card_runs_again_after_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ticks");
+        let card = CardSpec {
+            id: format!("tick-{}", marker.display()),
+            title: "Tick".into(),
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                format!("printf x >> '{}'", marker.display()),
+            ],
+            interval_sec: 1,
+            json: false,
+        };
+        let manifest = PluginManifest {
+            id: ALLOWED_ID.into(),
+            name: "fixture".into(),
+            version: "1".into(),
+            platforms: vec!["macos".into()],
+            plugin_schema: "1".into(),
+            cards: vec![card],
+            actions: vec![],
+        };
+        scheduled_cards(&manifest).await;
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        assert!(std::fs::metadata(marker).unwrap().len() >= 2);
+        let mut changed = manifest.cards[0].clone();
+        changed.interval_sec = 2;
+        assert_ne!(slot_key(&manifest.cards[0]), slot_key(&changed));
     }
     #[tokio::test]
     async fn failed_plugin_is_an_error_result_not_a_daemon_failure() {

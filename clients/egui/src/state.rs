@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::drive::{DriveFailure, DriveOutcome};
-use crate::model::{Agent, FleetHealthEntry, FleetIdentities, GhIssueRef};
+use crate::model::{Agent, FleetIdentities, GhIssueRef};
 
 /// Registration record persisted per host fingerprint.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -159,10 +159,7 @@ pub struct Fleet {
     /// Whether the identity catalog has been successfully fetched at least
     /// once.
     pub fleets_loaded: bool,
-    /// #210: per-fleet health strip from the latest snapshot (orch alive,
     /// live worker count, presence-heartbeat anchor, warnings). Empty until
-    /// the daemon sends a snapshot carrying `fleet_health`.
-    pub fleet_health: Vec<FleetHealthEntry>,
     /// #239: sidecar Fleet Ops result and in-flight marker.
     pub plugin: Option<Result<crate::protocol::PluginView, String>>,
     pub plugin_loading: bool,
@@ -180,7 +177,6 @@ impl Fleet {
         self.agents = snap.agents.clone();
         self.rev = Some(snap.rev);
         self.generated_at = Some(snap.generated_at);
-        self.fleet_health = snap.fleet_health.clone();
         // #64 review R8: a reconnect snapshot that dropped an agent must
         // not leave an orphan tail cache (a stale read_tail fetch against
         // it would burn an audited unknown_agent fetch). The bounded
@@ -493,7 +489,6 @@ mod tests {
             rev: 10,
             generated_at: 0,
             agents: BTreeMap::new(),
-            fleet_health: Vec::new(),
         };
         snap.agents.insert("a".into(), agent("a"));
         snap.agents.insert("b".into(), agent("b"));
@@ -521,7 +516,6 @@ mod tests {
             rev: 20,
             generated_at: 0,
             agents: BTreeMap::new(),
-            fleet_health: Vec::new(),
         };
         snap.agents.insert("a".into(), agent("a"));
         fleet.apply_snapshot(&snap);
@@ -544,7 +538,6 @@ mod tests {
             rev: 20,
             generated_at: 0,
             agents: BTreeMap::new(),
-            fleet_health: Vec::new(),
         };
         current_snapshot.agents.insert("a".into(), agent("a"));
         fleet.apply_snapshot(&current_snapshot);
@@ -686,7 +679,6 @@ mod tests {
             rev: 1,
             generated_at: 0,
             agents: BTreeMap::new(),
-            fleet_health: Vec::new(),
         };
         snap.agents.insert("a".into(), agent("a"));
         fleet.apply_snapshot(&snap);

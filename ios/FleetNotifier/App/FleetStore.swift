@@ -37,11 +37,6 @@ final class FleetStore: ObservableObject {
     @Published private(set) var diffs: [String: DiffPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
-    /// #210: per-fleet health strip from the latest snapshot (orch alive,
-    /// live worker count, presence-heartbeat anchor, warnings). Set from
-    /// snapshots only — deltas never carry health, so the last snapshot's
-    /// rows survive and age locally via `lastHeartbeat`.
-    @Published private(set) var fleetHealth: [FleetHealthEntry] = []
     /// #267: the read-only issue browser pane (fleet-level; grant-gated by
     /// the device ledger — the UI hides the entry point without the grant).
     @Published private(set) var issuesBrowser = IssuesBrowserPane()
@@ -219,7 +214,6 @@ final class FleetStore: ObservableObject {
         case .snapshot(let snapshot):
             let old = agents
             agents = snapshot.agents
-            fleetHealth = snapshot.fleetHealth
             tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
@@ -550,10 +544,9 @@ final class FleetStore: ObservableObject {
 
 #if DEBUG
     /// Debug-only demo mode: seed the store directly (no daemon).
-    func seedDemo(agents: [String: Agent], rev: UInt64, fleetHealth: [FleetHealthEntry] = []) {
+    func seedDemo(agents: [String: Agent], rev: UInt64) {
         let old = self.agents
         self.agents = agents
-        self.fleetHealth = fleetHealth
         tails = tails.filter { agents[$0.key] != nil }
         lastEventId = rev
         cursorBox.write(rev)

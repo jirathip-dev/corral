@@ -66,7 +66,7 @@ use tracing::info;
 
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
-use crate::core::model::{Resume, Snapshot};
+use crate::core::model::Resume;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::AuditLog;
@@ -349,31 +349,7 @@ fn audit_terminal(
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let snap = state.store.snapshot().await;
-    let snap = snapshot_with_fleet_health(&state, snap).await;
     Json(serde_json::to_value(&snap).unwrap_or_else(|_| serde_json::json!({ "error": "encode" })))
-}
-
-/// #210: fold the read-only per-fleet health aggregation onto a snapshot.
-/// The fleet-ops CLI identity path may be unavailable (a herdr-free
-/// machine, the CLI went away): the snapshot then simply carries no
-/// fleet-health rows — the strip reads as "no registry", never as a
-/// fabricated roster. The aggregation never touches wallet/provider state.
-async fn snapshot_with_fleet_health(state: &AppState, mut snap: Snapshot) -> Snapshot {
-    match state.fleets.list() {
-        Ok(identities) => {
-            let last_seen = state.adapter.last_seen_millis();
-            snap.fleet_health = crate::fleet::health::aggregate(
-                &identities,
-                &snap.agents,
-                &last_seen,
-                crate::core::util::now_millis(),
-            );
-        }
-        Err(error) => {
-            info!(error = %error, "fleet-ops identity path unavailable; snapshot carries no fleet health");
-        }
-    }
-    snap
 }
 
 /// SSE stream. The first frame is either a full `snapshot` or a `delta`
@@ -397,7 +373,6 @@ async fn events(
     // A fabricated empty delta would look like a state change to clients.
     let (initial, live_from_rev) = match store.resume_from(last_rev).await {
         Resume::Snapshot(snap) => {
-            let snap = snapshot_with_fleet_health(&state, snap).await;
             info!(rev = snap.rev, "SSE client joined with full snapshot");
             (vec![delta_event("snapshot", snap.rev, &snap)], snap.rev)
         }
@@ -419,7 +394,6 @@ async fn events(
 
     let live = stream::unfold(rx, move |mut rx| {
         let store = store.clone();
-        let state = state.clone();
         async move {
             loop {
                 match rx.recv().await {
@@ -429,7 +403,7 @@ async fn events(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Client fell too far behind: full resnapshot.
-                        let snap = snapshot_with_fleet_health(&state, store.snapshot().await).await;
+                        let snap = store.snapshot().await;
                         return Some((Ok(delta_event("snapshot", snap.rev, &snap)), rx));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,

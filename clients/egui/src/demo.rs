@@ -31,16 +31,7 @@ const FIXTURE: &str = include_str!("../assets/demo-fixture.json");
 /// this crate, so this may panic (embedded data can never change at
 /// runtime).
 pub fn load() -> DemoData {
-    let mut data: DemoData = serde_json::from_str(FIXTURE).expect("embedded demo fixture is valid");
-    // #210: the fixture's heartbeat anchors are static; the demo board
-    // must not read as a stale lane, so re-anchor them to "a few seconds
-    // ago" from the wall clock (demo-only sugar, never production data).
-    let now = demo_now_epoch_ms();
-    for (i, row) in data.snapshot.fleet_health.iter_mut().enumerate() {
-        if row.last_heartbeat.is_some() {
-            row.last_heartbeat = Some(now.saturating_sub((4 + i as u64 * 8) * 1000));
-        }
-    }
+    let data: DemoData = serde_json::from_str(FIXTURE).expect("embedded demo fixture is valid");
     data
 }
 
@@ -79,24 +70,6 @@ fn scrub_demo_icons(line: &str) -> String {
     }
     output
 }
-/// Wall-clock epoch millis that also works on wasm32-unknown-unknown —
-/// `std::time::SystemTime` panics there ("time not implemented"), so the
-/// web build uses `js_sys::Date::now()` (epoch), never the monotonic
-/// `performance.now()` (page-relative, useless for epoch math).
-fn demo_now_epoch_ms() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,13 +81,6 @@ mod tests {
         assert!(
             demo.snapshot.agents.len() >= 5,
             "fixture snapshot carries a believable fleet"
-        );
-        // #210: the demo fixture carries pre-aggregated fleet-health rows so
-        // the wasm demo renders the strip with no daemon anywhere.
-        assert_eq!(
-            demo.snapshot.fleet_health.len(),
-            3,
-            "fixture carries the fleet-health strip (healthy/degraded/paused)"
         );
         assert!(!demo.deltas.is_empty(), "canned SSE frames are required");
         let mut rev = demo.snapshot.rev;

@@ -1,5 +1,8 @@
 # Issue #210 — fleet-health status strip (HEALTH ONLY, no spend)
 
+> Superseded by issue #289. This is historical evidence only; the strip and
+> its snapshot aggregation were removed from production clients and daemon.
+
 Evidence for the compact per-fleet health strip on both clients. The strip
 shows, per fleet: **orch alive?**, **live worker count**, **last heartbeat
 age**, plus a **warning indicator** when a fleet is degraded/stale (missing

@@ -216,13 +216,6 @@ pub struct Snapshot {
     pub generated_at: u64,
     /// Flat keyed records (NOT JSON Patch; JSON, not CBOR).
     pub agents: BTreeMap<String, Agent>,
-    /// #210: per-fleet health strip (orch alive, live worker count,
-    /// presence-heartbeat anchor, degradation warnings). Read-only
-    /// aggregation over existing herdr/fleet signals, computed at
-    /// snapshot-assembly time. Empty when the fleet-ops CLI identity path
-    /// is unavailable. NEVER carries spend/balance state.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fleet_health: Vec<crate::fleet::health::FleetHealthEntry>,
     /// True while git-plane worktree probes are deferred for retry.
     #[serde(default)]
     pub git_plane_backlog: bool,

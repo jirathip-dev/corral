@@ -765,11 +765,6 @@ struct SessionState {
     /// removed and recreated with the same id; replacing the sender prevents
     /// an old retry loop from surviving into the new pane's generation.
     pane_streams: HashMap<String, watch::Sender<bool>>,
-    /// #210: per-agent presence heartbeat — epoch millis when the adapter
-    /// last observed the agent in herdr's trusted catalog/event stream.
-    /// This is an adapter-local read signal for the fleet-health strip; it
-    /// never changes the store or publishes SSE deltas.
-    last_seen_millis: HashMap<String, u64>,
 }
 
 impl SessionState {
@@ -807,20 +802,8 @@ impl SessionState {
     fn mark_stale_agent(&mut self, agent_id: impl Into<String>) {
         let agent_id = agent_id.into();
         self.status_seqs.remove(&agent_id);
-        self.last_seen_millis.remove(&agent_id);
         self.stale_agents.insert(agent_id, Instant::now());
         self.prune_tombstones();
-    }
-
-    /// #210: record that the adapter observed this agent alive right now
-    /// (the presence heartbeat). Called from every path that hands the
-    /// agent's canonical id to the store or builds its record — catalog
-    /// refreshes, status changes, agent detection — including paths that
-    /// settle on a content-identical record and publish no delta: presence
-    /// is observed, not changed.
-    fn note_seen(&mut self, agent_id: &str) {
-        self.last_seen_millis
-            .insert(agent_id.to_string(), now_millis());
     }
 
     fn mark_stale_pane(&mut self, pane_id: impl Into<String>) {
@@ -1577,9 +1560,6 @@ impl HerdrAdapter {
             let previous_agent_id = state.pane_agents.get(&agent.pane_id).cloned();
             let agent_id = state.resolve_agent_id(&agent.pane_id, session_value);
             // #210: the trusted catalog saw this agent — stamp the presence
-            // heartbeat even when the rebuilt row is content-identical and
-            // publishes no delta.
-            state.note_seen(&agent_id);
             let stale_status = !state.apply_status_seq_transition(
                 &agent.pane_id,
                 &agent_id,
@@ -1816,7 +1796,6 @@ impl HerdrAdapter {
                 crate::approve::approval_id_for(agent_id, &waiting_on.prompt_hash);
         }
         let seq = self.state.lock().unwrap().next_seq(agent_id);
-        self.state.lock().unwrap().note_seen(agent_id);
         agent.seq = seq;
         agent.ts = now_millis();
         info!(agent_id, previous = old_agent_id, "herdr agent id migrated");
@@ -1881,9 +1860,6 @@ impl HerdrAdapter {
         else {
             return;
         };
-        // #210: a status/output event proves the agent is live — stamp the
-        // presence heartbeat for the fleet-health aggregation.
-        self.state.lock().unwrap().note_seen(agent_id);
         let Some(mut agent) = store.get(agent_id).await else {
             return;
         };
@@ -2233,7 +2209,6 @@ impl HerdrAdapter {
                 return;
             }
             let agent_id = state.resolve_agent_id(pane_id, None);
-            state.note_seen(&agent_id);
             let migrated = self.register_pane(&mut state, pane_id, &agent_id, None);
             let canonical = self.build_agent(
                 &mut state,
@@ -2546,13 +2521,6 @@ fn hex(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 impl Adapter for HerdrAdapter {
-    /// #210: snapshot of the presence heartbeat map for the fleet-health
-    /// aggregation at snapshot-assembly time.
-    fn last_seen_millis(&self) -> HashMap<String, u64> {
-        let state = self.state.lock().unwrap();
-        state.last_seen_millis.clone()
-    }
-
     fn source(&self) -> &'static str {
         "herdr"
     }

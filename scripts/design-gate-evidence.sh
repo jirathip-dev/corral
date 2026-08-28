@@ -192,7 +192,7 @@ Options:
   --egui-binary PATH          corrald-ui binary override.
   --daemon-binary PATH        Runtime corrald binary to hash in provenance.
   --fixture-registry PATH     Runtime fleets.json to hash in provenance.
-  --egui-tab board|issues|registry|settings
+  --egui-tab board|issues|settings
                               Native/prototype tab to capture (default: board).
   --delay-ms N                egui screenshot delay (default: 8000).
   --egui-wake-command SHELL   Explicit eframe wake/input command.
@@ -488,8 +488,8 @@ validate_live_agent() {
 validate_live_agent "$LIVE_AGENT"
 if [[ "$SURFACE" == "egui" ]]; then
   case "$EGUI_TAB" in
-    board|issues|registry|settings) ;;
-    *) die "--egui-tab must be board, issues, registry, or settings" ;;
+    board|issues|settings) ;;
+    *) die "--egui-tab must be board, issues, or settings" ;;
   esac
 fi
 

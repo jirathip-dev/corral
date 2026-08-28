@@ -550,8 +550,9 @@ watch/reap/prune` with `--registry`) is superseded — those commands were
 the corral-owned read/write path that configless removes. Pane/worktree
 cleanup uses `herdr` directly (`herdr pane close`, `herdr worktree
 remove`, `git worktree prune`) and `fleet-watch` remains the fleet-ops
-watcher. The board's Fleets tab is read-only and shows the fleet-ops CLI
-validated identities (`GET /fleets`).
+watcher. The core board exposes only the `Board`, `Issues`, and `Settings`
+tabs; it has no Fleets tab. Fleet-ops surfaces live in the private sidecar
+plugin described in #239, not in corrald's core UI.
 
 ## Workspace/repo attribution
 

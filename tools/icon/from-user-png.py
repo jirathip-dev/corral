@@ -6,7 +6,7 @@ Process:
   1. Load the source (1254x1254 RGB, near-black bg).
   2. Auto-crop to content (threshold on near-black) + keep a ~9% safe
      margin so the subject fills the icon without touching the squircle.
-  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 full-bleed opaque,
+  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 transparent squircle,
      repo 1024, social preview.
 
 Usage: python3 tools/icon/from-user-png.py <input.png>
@@ -20,6 +20,7 @@ There is deliberately no typography fallback.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import sys
 from pathlib import Path
@@ -34,6 +35,8 @@ APPROVED_WORDMARK_FONT_SHA256 = (
 WORDMARK_FONT_ENV = "CORRAL_ICON_FONT"
 MAC_SAFE_EXTENT = 824
 MAC_PLATE_SIZE = 1024
+MAC_SQUIRCLE_EXTENT = 960
+MAC_SQUIRCLE_EXPONENT = 5
 MAC_PLATE_BACKGROUND = (1, 1, 1)
 
 
@@ -74,13 +77,12 @@ def content_bbox(img: Image.Image, bg_thresh: int = 18) -> tuple[int, int, int, 
     return min_x, min_y, max_x, max_y
 
 
-def macos_fullbleed(icon_1024: Image.Image) -> Image.Image:
-    """Return the full-bleed opaque macOS plate with safe inner padding.
+def macos_squircle(icon_1024: Image.Image) -> Image.Image:
+    """Return the artwork with a deterministic transparent macOS silhouette.
 
-    macOS itself applies the rounded squircle mask, so the artwork must remain
-    opaque edge to edge. The canonical 1024 output is scaled only when needed to
-    keep the visible subject inside the standard central safe region, then pasted
-    centered on the artwork background with alpha left at 255 everywhere.
+    The artwork is uniformly fitted to the existing 824px safe region. The
+    outer plate is a centered fifth-power superellipse, matching the rounded
+    squircle used by macOS while keeping its corners genuinely transparent.
     """
 
     if icon_1024.size != (MAC_PLATE_SIZE, MAC_PLATE_SIZE):
@@ -89,18 +91,26 @@ def macos_fullbleed(icon_1024: Image.Image) -> Image.Image:
     source = icon_1024.convert("RGB")
     min_x, min_y, max_x, max_y = content_bbox(source)
     max_extent = max(max_x - min_x + 1, max_y - min_y + 1)
-    side = MAC_PLATE_SIZE
-    if max_extent > MAC_SAFE_EXTENT:
-        side = round(MAC_PLATE_SIZE * MAC_SAFE_EXTENT / max_extent)
-
-    subject = source.resize((side, side), Image.LANCZOS) if side != MAC_PLATE_SIZE else source
-    plate = Image.new(
-        "RGBA",
-        (MAC_PLATE_SIZE, MAC_PLATE_SIZE),
-        (*MAC_PLATE_BACKGROUND, 255),
-    )
+    side = min(MAC_PLATE_SIZE, round(MAC_PLATE_SIZE * MAC_SAFE_EXTENT / max_extent))
+    subject = source.resize((side, side), Image.Resampling.LANCZOS) if side != MAC_PLATE_SIZE else source
+    plate = Image.new("RGBA", (MAC_PLATE_SIZE, MAC_PLATE_SIZE), (*MAC_PLATE_BACKGROUND, 0))
     offset = ((MAC_PLATE_SIZE - side) // 2, (MAC_PLATE_SIZE - side) // 2)
     plate.paste(subject, offset)
+
+    # Supersampling leaves a stable antialiased edge instead of jagged corners.
+    scale = 4
+    mask = Image.new("L", (MAC_PLATE_SIZE * scale, MAC_PLATE_SIZE * scale), 0)
+    center = MAC_PLATE_SIZE * scale / 2
+    half = MAC_SQUIRCLE_EXTENT * scale / 2
+    points = []
+    for index in range(257):
+        angle = 2 * math.pi * index / 256
+        x = abs(math.cos(angle)) ** (2 / MAC_SQUIRCLE_EXPONENT)
+        y = abs(math.sin(angle)) ** (2 / MAC_SQUIRCLE_EXPONENT)
+        points.append((center + half * math.copysign(x, math.cos(angle)), center + half * math.copysign(y, math.sin(angle))))
+    ImageDraw.Draw(mask).polygon(points, fill=255)
+    mask = mask.resize((MAC_PLATE_SIZE, MAC_PLATE_SIZE), Image.Resampling.LANCZOS)
+    plate.putalpha(mask)
     return plate
 
 
@@ -174,12 +184,10 @@ def main() -> None:
     egui.save(assets_dir / "corral-icon-256.png")
     print("  ✓ egui icon (256)")
 
-    # 3b. macOS app icon: full-bleed opaque. macOS applies its own squircle
-    # mask, so the artwork must cover every pixel and keep the glyph inside the
-    # standard ~10% safe margin instead of baking transparency into the PNG.
-    mac = macos_fullbleed(ios)
+    # 3b. macOS app icon: bake the rounded squircle and transparency.
+    mac = macos_squircle(ios)
     mac.save(assets_dir / "corral-icon-macos.png")
-    print("  ✓ macOS app icon (1024 full-bleed opaque)")
+    print("  ✓ macOS app icon (1024 transparent squircle)")
 
     # 4. Repository reference 1024.
     ios.save(assets_dir / "corral-icon-1024.png")

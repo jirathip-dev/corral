@@ -1,0 +1,72 @@
+design-gate prototype render log — issue-271 (transcript restyle mockup, board + phone)
+========================================================================================
+
+Sources (authored in-lane — this prototype lane is its own design source; no
+external ~/design-output bundle exists for #271):
+  prototype-v1-cards-board.html          sha256 dd5d4f53e70018ec88a4f4d2bda47a62988099beb3329a59c79c6298b99c596c
+  prototype-v1-cards-phone.html          sha256 f444471c658794194ee0adfa6ad2eb810abe5dcd0398e48719878a6c83f1ba09
+  prototype-v2-rail-board.html            sha256 e2b69a0e0fd4fdfd447344a7d6c26c07386b6ced92998af62b7198ed2dffa0ba
+  prototype-v2-rail-phone.html            sha256 69327e0cabc55e6dd2b72e8a598634aeb4f4ace82049263f2ce8884c59fa6806
+  prototype-v3-dense-board.html           sha256 3dcd1d49afeae869ad1be3cf5f33b78186c930ea061b65aa8e0964241f47229f
+  prototype-v3-dense-phone.html           sha256 755449d1cab8dcd09f3428eeba45dda1e178aad5d1aa7b621cde732df624386b
+  prototype-tofu-board.html               sha256 2f9131700f73f37bb243b91e8d05c8343c57a530c82e160f0a078441ecb33a63
+  prototype-tofu-phone.html               sha256 dbb772f496b2670a63d7b361d806f0d91e29fab8f303c57cc38b1bebc0d4b7c2
+
+These ARE the stage copies (issue-267 authoring conventions): body margin 0,
+no .meta caption block, no box-shadow, phone frame exactly 390x844. Design
+tokens: contracts/state-tokens.json (sha256
+  022ace14f2c1e8714e7a2ee7d51b017ff7303048cc5bd9def7e511af7e79dad7) + the
+approved docs/design/corral-ux-prototype.html (sha256
+  343689f39a14114b83d0a942480da0901671749013b6f401247d3a801593d71e) — no new
+design language; SwiftUI/egui are the visual truth, these HTMLs are outline
+only. One Python generator (/tmp/gen271.py) emits all 8 stage copies, so any
+visual fix = patch generator + regenerate (sources stay byte-consistent).
+
+Renderer: machine-cached chrome-headless-shell (playwright cache; pre-existing
+on host, no browser/driver installed by this lane)
+  $HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  (same engine design-gate-evidence.sh uses for prototype renders)
+
+Commands (per screen; one invocation per file — headless-shell flakes when
+chained):
+
+  ## Phone frames (390x844 gate): 2x render, downscale to exactly 390x844
+  chrome-headless-shell --headless --disable-gpu --no-first-run --hide-scrollbars \
+    --user-data-dir=$(mktemp -d) --window-size=390,844 --force-device-scale-factor=2 \
+    --screenshot=render-2x.png file://<repo>/docs/design/evidence/issue-271/<prototype-*.html>
+  sips -z 844 390 render-2x.png --out <variant>-*390x844.png
+
+  ## Board frames: 1040x720 mock window (real egui window is resizable;
+  ## phone surface is the pinned 390x844 evidence size)
+  chrome-headless-shell --headless --disable-gpu --no-first-run --hide-scrollbars \
+    --user-data-dir=$(mktemp -d) --window-size=1040,720 --force-device-scale-factor=2 \
+    --screenshot=render-2x.png file://<repo>/docs/design/evidence/issue-271/<prototype-*.html>
+  sips -z 720 1040 render-2x.png --out <variant>-board.png
+
+Results (file(1) verified — PNG image data, exact sizes):
+  variant-1-cards-390x844.png           155226 bytes  sha256 fd3ae75b3df446520bb3af2a9038f563e1e22892534fe1ea01242ad841ce59ca
+  variant-1-cards-board.png             197285 bytes  sha256 8d445505e6ac51db50e2d4ecb77ae18d2c8271fa0d6799cef7104ed6216fe765
+  variant-2-rail-390x844.png            156916 bytes  sha256 68835f50879936db469bcba104ed9c78b84043682d2e4ff2d90ba9b43178dbe3
+  variant-2-rail-board.png              198438 bytes  sha256 93a9f85999e0c1df3be0310fb436a498ccbe1e56695d3146f225be9f0ddea2af
+  variant-3-dense-390x844.png           149951 bytes  sha256 8f4ef49c9a725ef9086fd0bcd3a162a7d6e36bf78581c05de760548a314e5d3a
+  variant-3-dense-board.png             192400 bytes  sha256 8a0f5b4a2766e5c0fd35f6cccc50800b6c0192d3bd836a32469537529e9975e2
+  tofu-before-after-390x844.png         162872 bytes  sha256 8dc70a730ecab6c6cb71ab17776ce3ee43c2f01845b3dabc40543d2dcb6cc645
+  tofu-before-after-board.png           197938 bytes  sha256 171a0af42655f85d34c8067446c6dc9b2549172114e9c3b8830db475aa1342d4
+
+  Intermediate 2x renders (780x1688 / 2080x1440) kept in /tmp and deleted
+  after downscale; the stage copies above reproduce them byte-exactly given
+  the same engine revision.
+
+Visual check (all 8 inspected with vision): full frames, no scroll chrome,
+no captions. V1 run cards label on speaker change only (ASSISTANT once per
+run; continuation inside the same card carries no label; USER card tinted);
+tool runs icon-compact with counts (terminal ×4 / apply_patch +2 −1); diff
+hunks styled (teal +, red −, amber @@) with numbered gutter; code rows wrap
+(no mid-word cut at the right edge); emoji (✅ ⚠️ 🚀) render color on both
+surfaces. V2 rail: dots per speaker, name at change, timestamps, live tick.
+V3 dense: sticky header, role tags at boundaries only, icon one-liners.
+Tofu frames: BEFORE rows show the raw PUA glyphs as notdef boxes (the tofu
+the app paints today); AFTER rows show [ok]/[warn]/[env] tags with emoji
+preserved; mapping table rows wrap cleanly. Board frames end on a card
+boundary (no mid-card clip); phone frames end with the final assistant card
+visible in full.

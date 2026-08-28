@@ -1,0 +1,56 @@
+design-gate prototype render log — issue-267 (iOS issue browser: read-only list + detail)
+===========================================================================================
+
+Sources (authored in-lane — this prototype lane is its own design source; no
+external ~/design-output bundle exists for #267):
+  prototype-fleet-issues-button.html   sha256 c8c998a18cf95ad07421a666d1102150a7881add8aae276ff7bfd50c97cd4a8b
+  prototype-v2-fleet-entry-menu.html   sha256 c017b2bef0a7d9f084281c3df0faccf63c7078de3d580eb0b5ed44b99a80fcb5
+  prototype-v1-repos-list.html         sha256 d7f6deae95807f08a75429dacf2eb518f467067ba68a99aef4839e3094a345ef
+  prototype-v1-repos-detail.html       sha256 2c3be00866427259dbfe199e80fbe49fc3825fd4298cbaa3510ecfc96599b6cc
+  prototype-v2-flat-list.html          sha256 17eb4f573f9e189cb6c859eb7b78483c31419c09d8feb21a2466419ea7e1f8fb
+  prototype-v2-flat-detail.html        sha256 fa0ab0d75a6d752971ca410b6f93e7acf20c364eb38f9364a2f03cd63bb764e7
+  prototype-v3-inline-list.html        sha256 5a9f61f36ee913014f991680fdf73a26f2f424d2bb427a13de1636aa4971ad0d
+
+These ARE the stage copies (issue-246 wrap conventions applied at authoring
+time): body margin 0, no .meta caption block, .phone margin 0, no box-shadow.
+Phone frame exactly 390x844 (the repos' token scale; evidence standard pixel
+size). Design tokens: contracts/state-tokens.json + the approved
+docs/design/corral-ux-prototype.html system — no new design language;
+SwiftUI is the visual truth, these HTMLs are outline only.
+
+Renderer: machine-cached chrome-headless-shell (playwright cache; pre-existing
+on host, no browser/driver installed by this lane)
+  $HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  (same engine design-gate-evidence.sh uses for prototype renders)
+
+Commands (per screen; one invocation per file — headless-shell flakes when
+chained):
+
+  chrome-headless-shell --headless --disable-gpu --no-first-run --hide-scrollbars \
+    --user-data-dir=$(mktemp -d) \
+    --window-size=390,844 --force-device-scale-factor=2 \
+    --screenshot=<render-2x>.png \
+    file://<repo>/docs/design/evidence/issue-267/<prototype-*.html>
+
+  sips -z 844 390 <render-2x>.png --out <variant>-390x844.png
+
+Results (all PNG 390x844):
+  variant-fleet-issues-button-390x844.png   sha256 e29f86abc7afc61d6297fe491f5c6ac2f42292c0392769613592f96bedf31cab
+  variant-2-fleet-entry-menu-390x844.png    sha256 ead536c9aadb768c1aff455a711609bdc2364b6209056ff140a24bfc5102a647
+  variant-1-repos-list-390x844.png          sha256 946993bc99760c1821223bc30e04d90e8261cea33c586ab411dd45eeb0d2813c
+  variant-1-repos-detail-390x844.png        sha256 4d05afbf2b7bf2ef4004e3abe56202ae241a9026e87e7f02a1d41a62fd2c8bba
+  variant-2-flat-list-390x844.png           sha256 ff79edab5dc5949d3b564712e60ed9c7571f93a9e149d04b4a51243085ab071f
+  variant-2-flat-detail-390x844.png         sha256 a749592bf3d6c7d071c4438be1efea3dac17b4a87117c2c266d95b3bef7de659
+  variant-3-inline-list-390x844.png         sha256 c41dee1d14b3b1973cdb9bea8f1ec2d2ed31b3f31a92cf9f41a126358ba593a3
+  Intermediate 2x renders (780x1688) kept in /tmp and deleted after
+  downscale; the stage copies above reproduce them byte-exactly given the
+  same engine revision.
+
+Visual check (all 7 inspected with vision): full 390x844 phone frame, no
+caption/scrollbars/clipping; V1 list rows truncate titles with ellipsis (no
+mid-word wrap), repo section headers pinned; V2 segmented control renders
+with the Closed segment active and closed rows dimmed; V2 detail sheet has
+grabber + rounded corners over a dimmed list; V3 #267 row expanded inline
+with OPEN/enhancement pills, body, Load earlier divider, comment, collapse
+hint; fleet screens show the Issues entry (toolbar button / open toolbar
+menu) without mid-word chip cuts.

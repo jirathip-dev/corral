@@ -1,0 +1,69 @@
+design-gate prototype render log — issue-270 (egui Issues tab: per-repo browser + inline issue body)
+====================================================================================================
+
+Sources (authored in-lane — this prototype lane is its own design source; no
+external ~/design-output bundle exists for #270):
+  prototype-v1-side-rail.html          sha256 5bc0a58d20565f666800dfb0b64ceaac20e2f24c3b5ea9b6a7d936dcfb822f43
+  prototype-v2-combo-picker.html       sha256 61219c9fd4a812756c35c6c4bc19f32932a311b090775c92462d93490416f7ed
+  prototype-v3-expanded-closeup.html   sha256 f33b1b5bcac1ac1c4d676d85791df21a66646e8a3f92f4df97d8786bbe748dbf
+
+ONE python generator authored the whole bundle: /tmp/gen270.py
+  sha256 991f94aa67288deed9e071c6b410da84bbe067be9742b7b8c042db68d749bbc4
+(documentation of the setup; the generator itself lives in /tmp — the stage
+copies ARE the committed sources). A visual fix = patch the generator,
+regenerate — every source and PNG SHA stays consistent.
+
+These ARE the stage copies (#267 wrap conventions): body margin 0, no .meta
+caption block, no box-shadow. Board frame exactly 1320x860 — the native egui
+window size (clients/egui/src/main.rs: with_inner_size([1320.0, 860.0]); the
+evidence standard for board-frame renders). Design tokens: contracts/
+state-tokens.json + docs/design/corral-ux-prototype.html +
+clients/egui/src/theme.rs (selection #1f3a3d / stroke #148f84) — no new
+design language; egui is the visual truth, these HTMLs are outline only.
+
+Renderer: machine-cached chrome-headless-shell (playwright cache; pre-existing
+on host, no browser/driver installed by this lane)
+  $HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  (same engine design-gate-evidence.sh uses for prototype renders)
+
+Commands (per screen; one invocation per file — headless-shell flakes when
+chained):
+
+  SHELL_BIN=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  "$SHELL_BIN" --headless --disable-gpu --no-first-run --hide-scrollbars \
+    --user-data-dir=$(mktemp -d) \
+    --window-size=1320,860 --force-device-scale-factor=2 \
+    --screenshot=/tmp/render-<screen>-2x.png \
+    file://<repo>/docs/design/evidence/issue-270/prototype-<screen>.html
+
+  sips -z 860 1320 /tmp/render-<screen>-2x.png --out variant-<screen>-1320x860.png
+
+Results (all PNG 1320x860 — verified with file(1) "PNG image data, 1320 x 860"):
+  variant-v1-side-rail-1320x860.png       sha256 16ae472abfca57bbce72193273b1cb9b89d1d782d8b3f66b480d8abfe203086c
+  variant-v2-combo-picker-1320x860.png    sha256 1967c2112357be632cdbc670dacde9f18cf016061366cdf9a5e915160237e4cb
+  variant-v3-expanded-closeup-1320x860.png sha256 1b748fbd43149629e9816d388d3de83a6cb854a7c9b4a0b06581b782ce3faaca
+  Intermediate 2x renders (2640x1720) kept in /tmp and deleted after
+  downscale; the stage copies above reproduce them byte-exactly given the
+  same engine revision.
+
+Visual check (all 3 final PNGs inspected with vision after EVERY generator
+fix): full 1320x860 board frame, no caption/scrollbars/clipping; V1 rail
+items one line each ("project-hearthwild" never wraps mid-word), tabs
+Board/Issues/Settings with Issues active (accent underline), toolbar
+open|closed|all + search + refresh, rows are "#N title STATE" monospace
+board-parity, expanded #270 card with OPEN/enhancement pills, mono meta
+"corral · #270 · opened 2026-08-28" (one line), verbatim body, one-line
+read-only note, start-worktree action, ▴ collapse; V2 combo picker with
+closed filter + "grant" search proving closed dimming and not-startable
+note; V3 close-up renders the full #270 body without clipping.
+
+Data provenance (real, fetched 2026-08-28):
+  gh issue list --repo jirathip-dev/corral | --state open|closed (7 open,
+    5 closed shown) --json number,title,labels,state
+  gh issue list --repo sendmeter/sendmeter / jirathip-k/project-hearthwild /
+    jirathip-k/dotfiles --state open (counts 17 / 28 / 1)
+  gh issue view 270 --repo jirathip-dev/corral --json body,labels,createdAt
+  gh issue view 250 --repo jirathip-dev/corral --json body,labels,createdAt
+  gh label list --repo jirathip-dev/corral --json name,color
+  Bodies rendered verbatim; wrapping/spacing and the one-line subnote prose
+  are illustrative (flagged in README).

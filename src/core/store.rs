@@ -321,6 +321,7 @@ impl Store {
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
+            fleet_health: Vec::new(),
         }
     }
 
@@ -374,6 +375,7 @@ impl Store {
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
+            fleet_health: Vec::new(),
         }
     }
 

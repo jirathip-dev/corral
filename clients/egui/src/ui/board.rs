@@ -202,6 +202,11 @@ pub fn show(
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
+    // #210: the web/pages board renders through this entry point, so the
+    // fleet-health strip lives here too (the desktop app shows it in the
+    // persistent master bar). Renders even when the agent set is empty —
+    // fleet health is the one surface that must survive a zero-agent board.
+    show_health_strip(ui, &fleet.fleet_health, now_millis());
     if fleet.agents.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
@@ -613,6 +618,7 @@ pub fn show_master(
     let mut grouped = false;
     toolbar(ui, fleet, &mut cards, &mut grouped, &mut query, &mut filter);
     ui.add_space(2.0);
+    show_health_strip(ui, &fleet.fleet_health, now_millis());
     ui.ctx().memory_mut(|memory| {
         memory.data.insert_temp(
             egui::Id::new("corral-ui-show-idle-collapsed"),
@@ -642,6 +648,102 @@ pub fn show_master(
         fleet.select_agent(id);
     }
     clicked.or(selected)
+}
+
+/// #210: compact per-fleet health strip above the master list — HEALTH
+/// ONLY (orch alive, live worker count, presence-heartbeat age). One pill
+/// per fleet, wrapped; degraded fleets get the warning tint + ⚠, paused
+/// fleets render muted. No spend/balance value ever reaches this surface.
+fn show_health_strip(ui: &mut Ui, health: &[crate::model::FleetHealthEntry], now_ms: u64) {
+    if health.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        for entry in health {
+            let color = health_pill_color(entry);
+            let text = health_pill_text(entry, now_ms);
+            ui.label(RichText::new(text).monospace().size(10.5).color(color))
+                .on_hover_text(health_pill_hover(entry, now_ms));
+        }
+    });
+}
+
+/// Pure text projection of one fleet-health pill (testable; mirrors the
+/// daemon's `FleetHealthEntry` shape).
+pub fn health_pill_text(entry: &crate::model::FleetHealthEntry, now_ms: u64) -> String {
+    let marker = if entry.paused {
+        "⏸"
+    } else if entry.degraded {
+        "⚠"
+    } else {
+        "●"
+    };
+    let orch = if entry.orch_alive {
+        "orch ✓"
+    } else {
+        "orch ✗"
+    };
+    let workers = format!("{}w", entry.workers);
+    let heartbeat = match entry.last_heartbeat {
+        Some(at) => format!("♥{}", fleet_heartbeat_age(at, now_ms)),
+        None => "♥—".to_string(),
+    };
+    let paused = if entry.paused { " paused" } else { "" };
+    format!(
+        "{marker} {}  {orch}  {workers}  {heartbeat}{paused}",
+        entry.name
+    )
+}
+
+/// Compact heartbeat-age label (`4s`, `3m`, `2h 05m`) — the same shape the
+/// iOS strip renders, so both surfaces read identically.
+pub fn fleet_heartbeat_age(at_ms: u64, now_ms: u64) -> String {
+    let elapsed_secs = now_ms.saturating_sub(at_ms) / 1000;
+    if elapsed_secs < 60 {
+        return format!("{elapsed_secs}s");
+    }
+    let minutes = elapsed_secs / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h {:02}m", minutes % 60);
+    }
+    format!("{}d {}h", hours / 24, hours % 24)
+}
+
+fn health_pill_hover(entry: &crate::model::FleetHealthEntry, now_ms: u64) -> String {
+    let state = entry.orch_state.as_deref().unwrap_or("absent");
+    let mut detail = format!(
+        "{} · orch {} ({state}) · {} workers",
+        entry.name, entry.orch, entry.workers
+    );
+    if let Some(at) = entry.last_heartbeat {
+        detail.push_str(&format!(
+            " · heartbeat {} ago",
+            fleet_heartbeat_age(at, now_ms)
+        ));
+    } else {
+        detail.push_str(" · heartbeat unknown");
+    }
+    if !entry.warnings.is_empty() {
+        detail.push_str(&format!(" · ⚠ {}", entry.warnings.join(", ")));
+    }
+    detail
+}
+
+fn health_pill_color(entry: &crate::model::FleetHealthEntry) -> Color32 {
+    if entry.paused {
+        theme::ui::TEXT_MUTED
+    } else if entry.degraded {
+        theme::ui::WARN
+    } else {
+        // A live fleet reads as healthy teal; the accent avoids the
+        // system-red/green palette (design-system-patterns).
+        theme::ui::ACCENT
+    }
 }
 
 /// Render the Board detail pane after the app has drawn the common tab strip.
@@ -3133,6 +3235,55 @@ pub fn classify_drive_state(outcome: &DriveOutcome, capability: &str) -> DriveSt
 mod tests {
     use super::*;
     use crate::drive::DriveFailure;
+
+    fn health_entry(
+        name: &str,
+        orch_alive: bool,
+        workers: usize,
+        heartbeat: Option<u64>,
+        degraded: bool,
+        paused: bool,
+        warnings: &[&str],
+    ) -> crate::model::FleetHealthEntry {
+        crate::model::FleetHealthEntry {
+            name: name.into(),
+            gh_repo: "owner/repo".into(),
+            paused,
+            orch: format!("orch-{name}"),
+            orch_alive,
+            orch_state: orch_alive.then(|| "working".to_string()),
+            workers,
+            last_heartbeat: heartbeat,
+            degraded,
+            warnings: warnings.iter().map(|w| w.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn health_pill_healthy_shows_live_orch_workers_and_heartbeat_age() {
+        let entry = health_entry("corral", true, 2, Some(1_000_000), false, false, &[]);
+        assert_eq!(
+            health_pill_text(&entry, 1_004_000),
+            "● corral  orch ✓  2w  ♥4s",
+            "healthy pill carries orch alive, live worker count and a ticking heartbeat age"
+        );
+    }
+
+    #[test]
+    fn health_pill_degraded_warns_and_paused_renders_muted_marker() {
+        let degraded = health_entry("sendmeter", false, 0, None, true, false, &["orch_missing"]);
+        assert_eq!(
+            health_pill_text(&degraded, 1_000),
+            "⚠ sendmeter  orch ✗  0w  ♥—",
+            "a missing orch reads as a warning pill, never as a stall accusation"
+        );
+        let paused = health_entry("plush", false, 0, None, false, true, &[]);
+        assert_eq!(
+            health_pill_text(&paused, 1_000),
+            "⏸ plush  orch ✗  0w  ♥— paused",
+            "paused fleets are parked by design and read muted"
+        );
+    }
 
     fn agent_with_caps(caps: &[&str]) -> Agent {
         Agent {

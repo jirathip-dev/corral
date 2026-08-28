@@ -2168,9 +2168,51 @@ struct FleetView: View {
             if model.mode == .live {
                 connectionStatusLine
             }
+            fleetHealthStrip
             filterChipRow(chips: chips)
             refreshHintLine
         }
+    }
+
+    /// #210: compact per-fleet health strip (HEALTH ONLY — orch alive,
+    /// live worker count, presence-heartbeat age). One pill per fleet, in
+    /// a horizontal scroll so nine fleets never stack the header. Warning
+    /// tint reads as a health cue, never a stall accusation; paused fleets
+    /// render muted. Rendered from the daemon snapshot; the heartbeat age
+    /// ticks locally between snapshots from the epoch anchor.
+    @ViewBuilder
+    private var fleetHealthStrip: some View {
+        let lines = BoardModel.fleetHealthLines(model.fleet.fleetHealth)
+        if !lines.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(lines, id: \.name) { line in
+                        fleetHealthPill(line)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Fleet health")
+        }
+    }
+
+    private func fleetHealthPill(_ line: BoardModel.FleetHealthLine) -> some View {
+        let tint = line.paused
+            ? Color.secondary
+            : (line.degraded ? Color.orange : Color.accentColor)
+        let orch = line.orchAlive ? "orch ✓" : "orch ✗"
+        let state = line.orchState.map { " · \($0)" } ?? ""
+        return Text("\(line.marker) \(line.name)  \(orch)  \(line.workerCount)w  \(line.heartbeatAgeLabel)\(state)")
+            .font(.caption2.monospaced())
+            .foregroundStyle(tint)
+            .accessibilityLabel(
+                "\(line.name) fleet: orch " + (line.orchAlive ? "alive" : "missing")
+                    + ", \(line.workerCount) workers, heartbeat \(line.heartbeatAgeLabel)"
+                    + (line.degraded ? ", degraded" : "")
+                    + (line.paused ? ", paused" : "")
+            )
     }
 
     /// #245 (approved Variant 1): the manual refresh button (chrome ⟳ and

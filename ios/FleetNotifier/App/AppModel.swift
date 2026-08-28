@@ -1325,7 +1325,7 @@ final class AppModel: ObservableObject {
         cancelLifecycleTasks()
         fleet.disconnect()
         fleet.reset()
-        fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
+        fleet.seedDemo(agents: DemoFleet.seed(), rev: 1, fleetHealth: DemoFleet.seedHealth())
         mode = .demo
         demoPresentation = presentation
         demoDetailAgentId = detailAgentId
@@ -1384,7 +1384,9 @@ final class AppModel: ObservableObject {
         let result = DemoFleet.respond(to: capability, payload: payload, agent: agent,
                                        rev: (fleet.lastEventId ?? 1) + 1)
         if case .dispatched(let response) = result {
-            fleet.seedDemo(agents: fleet.agents, rev: response.rev)
+            // Keep the demo health strip across a drive (seedDemo defaults to
+            // an empty strip — the drive path must surface the seeded rows).
+            fleet.seedDemo(agents: fleet.agents, rev: response.rev, fleetHealth: fleet.fleetHealth)
             if capability == .readTail {
                 fleet.rememberTail(response.result?.tailLines ?? [],
                                    blocks: response.result?.tailBlocks ?? [],

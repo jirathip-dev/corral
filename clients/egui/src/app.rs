@@ -3147,6 +3147,7 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
+            crate::ui::plugin::show(&mut right_ui);
         }
         Tab::Issues => {
             app.refresh_issues(false);

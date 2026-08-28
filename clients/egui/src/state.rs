@@ -162,6 +162,11 @@ pub struct Fleet {
     /// live worker count, presence-heartbeat anchor, warnings). Empty until
     /// the daemon sends a snapshot carrying `fleet_health`.
     pub fleet_health: Vec<FleetHealthEntry>,
+    /// #239: sidecar Fleet Ops result and in-flight marker.
+    pub plugin: Option<Result<crate::protocol::PluginView, String>>,
+    pub plugin_loading: bool,
+    pub plugin_confirm: Option<usize>,
+    pub plugin_result: Option<Result<serde_json::Value, String>>,
 }
 
 impl Fleet {
@@ -242,6 +247,18 @@ impl Fleet {
                 self.issues_error = Some(error);
             }
         }
+    }
+
+    pub fn set_plugin(&mut self, result: Result<Option<crate::protocol::PluginView>, String>) {
+        self.plugin_loading = false;
+        self.plugin = Some(result.map(|view| {
+            view.unwrap_or(crate::protocol::PluginView {
+                name: "Fleet Ops".into(),
+                version: "not installed".into(),
+                cards: Vec::new(),
+                actions: Vec::new(),
+            })
+        }));
     }
 
     /// Whether the selected agent needs its first Recent-output hydration.

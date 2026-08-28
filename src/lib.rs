@@ -13,5 +13,6 @@ pub mod drive;
 pub mod fleet;
 pub mod history;
 pub mod integrate;
+pub mod plugin;
 pub mod push;
 pub mod tmux;

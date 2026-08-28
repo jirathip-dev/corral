@@ -45,6 +45,7 @@ pub(crate) mod cors;
 pub mod drive;
 pub mod fleets;
 pub mod issues;
+pub(crate) mod plugin;
 pub(crate) mod repo;
 
 use std::convert::Infallible;
@@ -155,6 +156,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history))
         .route("/issues", get(issues::issues))
         .route("/fleets", get(fleets::fleets))
+        .route("/plugins", get(plugin::view))
         .route("/v1/worktrees", get(worktrees))
         .route("/v1/terminal", get(terminal_ws))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -163,6 +165,7 @@ pub fn router(state: AppState) -> Router {
         ));
     let write = Router::new()
         .route("/drive", post(drive))
+        .route("/plugins/action", post(plugin::action))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))
         .merge(crate::auth::http::auth_routes());

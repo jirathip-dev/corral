@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>#271 v2 rail — board</title><style>
+:root{
+  --bg:#0d1117; --panel:#10151c; --panel2:#161b22; --panel3:#1c2128;
+  --line:#30363d; --ink:#e6edf3; --muted:#8b949e; --accent:#2dd4bf;
+  --blocked:#f85149; --done:#d29922; --working:#58a6ff; --idle:#8b949e;
+  --unknown:#6e7681; --user-tint:#12263f;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{background:#05070a; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;}
+
+/* ---------- phone frame (exactly 390x844) ---------- */
+.phone{width:390px; height:844px; background:var(--bg); border:1px solid #2a2f37; overflow:hidden; display:flex; flex-direction:column; position:relative;}
+.phone .notch{width:110px; height:22px; background:#000; border-radius:0 0 14px 14px; margin:0 auto;}
+.nav{display:flex; align-items:center; justify-content:space-between; padding:10px 16px 6px;}
+.nav .back{color:var(--accent); font-size:20px; font-weight:600;}
+.nav .t{font-size:17px; font-weight:700;}
+.nav .st{font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; background:rgba(88,166,255,.12); color:var(--working);}
+.meta{font-size:10px; color:var(--muted); padding:0 16px 6px;}
+.sect{font-size:12px; font-weight:700; padding:8px 16px 6px; letter-spacing:.02em;}
+.body{flex:1; overflow-y:auto; padding:0 12px 14px;}
+.tlive{font-size:10px; color:var(--accent); display:flex; justify-content:space-between; align-items:center; margin:0 4px 8px; font-weight:600;}
+.tlive .rg{font-size:9px; color:var(--muted); font-weight:400;}
+
+/* ---------- egui board desk (1040x560) ---------- */
+.desk{width:1040px; height:720px; background:var(--bg); border:1px solid #2a2f37; overflow:hidden; display:grid; grid-template-columns:42% 58%;}
+.dleft{border-right:1px solid var(--line); display:flex; flex-direction:column; background:var(--panel);}
+.dright{background:var(--bg); display:flex; flex-direction:column;}
+.dtop{display:flex; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); align-items:center;}
+.dtop input{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--ink); font-size:12px; padding:7px 10px;}
+.chip{font-size:11px; padding:5px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); white-space:nowrap;}
+.chip.on{background:var(--working); color:#08131f; border-color:transparent; font-weight:600;}
+.chip.need{background:rgba(248,81,73,.16); color:var(--blocked);}
+.colhead{display:grid; grid-template-columns:1fr 90px; font-size:9px; color:var(--muted); padding:6px 12px; letter-spacing:.05em;}
+.lrow{display:grid; grid-template-columns:1fr 90px; gap:6px; padding:8px 12px; border-left:3px solid transparent; align-items:center;}
+.lrow.sel{background:var(--panel2);}
+.lrow.w{background:rgba(88,166,255,.05); border-left-color:var(--working);}
+.lr1{display:flex; gap:7px; align-items:center; min-width:0;}
+.lr1 .t{font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
+.lr1 .tl{font-size:9px; font-family:ui-monospace,monospace; padding:1px 5px; border-radius:3px; background:var(--panel3); color:var(--muted); flex:none;}
+.lr2{font-size:10px; font-family:ui-monospace,monospace; color:var(--muted); text-align:right; white-space:nowrap; overflow:hidden;}
+.lr2 .s{color:var(--working);}
+.dot{width:11px; height:11px; border-radius:50%; flex:none; border:1.5px solid transparent;}
+.dot.ring{border-color:var(--working); background:transparent;}
+.dot.empty{background:var(--idle);}
+.dtabs{display:flex; border-bottom:1px solid var(--line);}
+.dtab{padding:8px 14px; font-size:11px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent;}
+.dtab.on{color:var(--ink); border-bottom-color:var(--accent);}
+.dtailcards{display:flex; gap:6px; padding:8px 12px 0;}
+.dbtn{font-size:11px; font-weight:600; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--muted);}
+.dbtn.on{color:var(--ink); border-color:var(--accent);}
+.dbtn.red{color:var(--blocked);}
+.rhead{font-size:12px; font-weight:700; padding:8px 12px 4px;}
+.rtail{padding:0 12px 10px; flex:1; display:flex; flex-direction:column; overflow-y:auto;}
+
+/* ---------- shared transcript building blocks ---------- */
+.twrap{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+.twrap.prose{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;}
+.divider{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:10px; font-family:ui-monospace,monospace; margin:6px 2px 10px;}
+.divider::before,.divider::after{content:""; flex:1; height:1px; background:var(--line);}
+.divider .ld{color:var(--accent); text-decoration:underline;}
+
+/* code / diff: gutter + token colors (state-token palette only) */
+.code{border:1px solid var(--line); border-radius:8px; background:var(--bg); overflow:hidden; margin:8px 0 2px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+.code .file{font-size:9px; color:var(--muted); background:var(--panel3); padding:4px 10px; border-bottom:1px solid var(--line); font-family:ui-monospace,monospace;}
+.code .cl{display:flex; font-size:10.5px; line-height:1.55; font-family:ui-monospace,monospace;}
+.code .num{flex:none; width:26px; text-align:right; color:var(--unknown); padding-right:9px; user-select:none;}
+.code .tx{flex:1; white-space:pre-wrap; overflow-wrap:anywhere; padding-right:8px;}
+.code .tx .k{color:var(--working);}      /* keywords */
+.code .tx .s{color:var(--done);}          /* strings   */
+.code .tx .c{color:var(--muted);}         /* comments  */
+.code .tx .a{color:var(--accent);}        /* functions/type */
+.code .tx .n{color:var(--ink);}
+.code .add .tx{background:rgba(45,212,191,.07);}
+.code .add .tx::before{content:"+ "; color:var(--accent);}
+.code .del .tx{background:rgba(248,81,73,.07);}
+.code .del .tx::before{content:"- "; color:var(--blocked);}
+.code .hunk .tx{color:var(--done);}
+.code .hunk .tx::before{content:"@@ "; color:var(--done);}
+.code .ctx .tx{color:var(--ink);}
+.code .hdr .tx{color:var(--muted);}
+
+/* ------------------- VARIANT 1: speaker-run cards ------------------- */
+.v1 .run{background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:10px;}
+.v1 .run.user{background:var(--user-tint);}
+.v1 .runhead{display:flex; gap:8px; align-items:center; margin-bottom:7px;}
+.v1 .rpill{font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; padding:2px 8px; border-radius:4px;}
+.v1 .rpill.assistant{background:rgba(45,212,191,.14); color:var(--accent);}
+.v1 .rpill.user{background:rgba(88,166,255,.16); color:var(--working);}
+.v1 .rpill.tool{background:var(--panel3); color:var(--muted);}
+.v1 .rmeta{font-size:9px; color:var(--muted); font-family:ui-monospace,monospace; white-space:nowrap;}
+.v1 .rtm{margin-left:auto; font-size:9px; color:var(--muted); font-family:ui-monospace,monospace;}
+.v1 .cont{margin-left:auto; font-size:9px; color:var(--unknown); font-family:ui-monospace,monospace;}
+.v1 .msg{font-size:12.5px; line-height:1.5; color:var(--ink);}
+.v1 .blockcont{color:var(--muted);}
+.v1 .toolrun{display:flex; gap:7px; align-items:center; padding:6px 9px; margin-top:7px; background:var(--panel3); border-radius:8px; border-left:2px solid var(--done);}
+.v1 .toolrun .ic{flex:none; width:14px; height:14px;}
+.v1 .toolrun .tl{font-size:10.5px; color:var(--ink); font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.v1 .toolrun .cnt{font-size:9.5px; color:var(--done); font-family:ui-monospace,monospace;}
+.v1 .toolrun .chev{margin-left:auto; color:var(--muted); font-size:9px;}
+.v1 .toolcap{font-size:9.5px; color:var(--muted); font-family:ui-monospace,monospace; margin-top:5px; padding-left:21px;}
+.v1 .glyphnote{display:flex; gap:6px; align-items:center; margin-top:7px; font-size:9.5px; color:var(--muted); font-family:ui-monospace,monospace;}
+
+/* ------------------- VARIANT 2: timeline rail ------------------- */
+.v2 .rail{position:relative; padding:2px 0 2px 20px;}
+.v2 .rail::before{content:""; position:absolute; left:6px; top:4px; bottom:4px; width:1px; background:var(--line);}
+.v2 .blk{position:relative; margin-bottom:10px;}
+.v2 .blk::before{content:""; position:absolute; left:-20px; top:4px; width:9px; height:9px; border-radius:50%; border:1.5px solid; background:var(--bg);}
+.v2 .blk.assistant::before{border-color:var(--accent);}
+.v2 .blk.user::before{border-color:var(--working);}
+.v2 .blk.tool::before{border-color:var(--idle);}
+.v2 .bhead{display:flex; gap:8px; align-items:baseline; margin-bottom:3px;}
+.v2 .bname{font-size:10px; font-weight:700; letter-spacing:.03em; text-transform:uppercase;}
+.v2 .blk.assistant .bname{color:var(--accent);}
+.v2 .blk.user .bname{color:var(--working);}
+.v2 .blk.tool .bname{color:var(--muted);}
+.v2 .btm{font-size:9px; color:var(--muted); font-family:ui-monospace,monospace;}
+.v2 .bmsg{font-size:12.5px; line-height:1.5;}
+.v2 .bmeta{font-size:9px; color:var(--muted); font-family:ui-monospace,monospace; margin-left:4px;}
+.v2 .tchip{display:flex; gap:6px; align-items:center; padding:5px 8px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; margin-top:6px; max-width:92%;}
+.v2 .tchip .ic{flex:none; width:12px; height:12px;}
+.v2 .tchip .tl{font-size:10.5px; color:var(--ink); font-family:ui-monospace,monospace;}
+.v2 .tchip .cnt{font-size:9.5px; color:var(--done); font-family:ui-monospace,monospace; margin-left:auto;}
+.v2 .glyphnote{display:flex; gap:6px; align-items:center; margin-top:6px; font-size:9.5px; color:var(--muted); font-family:ui-monospace,monospace;}
+.v2 .now{display:flex; align-items:center; gap:7px; margin-top:4px; font-size:9px; color:var(--accent); font-weight:600;}
+.v2 .now::before{content:""; width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px rgba(45,212,191,.15);}
+
+/* ------------------- VARIANT 3: dense reduced ------------------- */
+.v3{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+.v3 .sticky{display:flex; gap:8px; align-items:center; padding:6px 8px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; margin-bottom:8px; font-size:10.5px;}
+.v3 .sticky .run{color:var(--accent); font-weight:700;}
+.v3 .sticky .m{color:var(--muted);}
+.v3 .sticky .chev{margin-left:auto; color:var(--muted); font-size:9px;}
+.v3 .speak{border-top:1px solid var(--line); margin-top:8px; padding-top:6px;}
+.v3 .speak .tag{font-size:9px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);}
+.v3 .speak.assistant .tag{color:var(--accent);}
+.v3 .speak.user .tag{color:var(--working);}
+.v3 .msg{font-size:11.5px; line-height:1.5; margin-top:3px; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;}
+.v3 .tline{display:flex; gap:6px; align-items:center; margin-top:5px; font-size:10.5px;}
+.v3 .tline .ic{flex:none; width:12px; height:12px;}
+.v3 .tline .tlb{color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.v3 .tline .cnt{color:var(--done); font-size:9.5px;}
+.v3 .tline .prep{color:var(--muted); font-size:9.5px;}
+.v3 .code{margin:6px 0 2px;}
+.v3 .code .cl{font-size:10px;}
+.v3 .code .num{width:22px;}
+.v3 .glyphnote{display:flex; gap:6px; align-items:center; margin-top:6px; font-size:9.5px; color:var(--muted);}
+.v3 .livefoot{display:flex; justify-content:space-between; margin-top:8px; padding-top:6px; border-top:1px dashed var(--line); font-size:9.5px; color:var(--muted);}
+
+/* ------------------- tofu evidence ------------------- */
+.tofu .panel{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px;}
+.tofu .ptitle{font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; margin-bottom:6px; display:flex; align-items:center; gap:7px;}
+.tofu .ptitle .badge{font-size:9px; padding:1px 6px; border-radius:4px; background:var(--panel3); color:var(--muted);}
+.tofu .ptitle.before{color:var(--blocked);}
+.tofu .ptitle.after{color:var(--accent);}
+.tofu .row{font-size:11px; line-height:1.65; font-family:ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere;}
+.tofu .row .tofu-glyph{color:var(--blocked);}
+.tofu .row .em{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;}
+.tofu .tag{color:var(--accent); font-weight:700;}
+.tofu .tag.warn{color:var(--done);}
+.tofu .tag.env{color:var(--working);}
+.tofu .note{font-size:10px; color:var(--muted); line-height:1.5; margin-top:4px;}
+.tofu .note b{color:var(--ink);}
+.tofu .emrow{display:flex; gap:6px; align-items:baseline; font-family:ui-monospace,monospace; font-size:11px;}
+</style></head>
+<body>
+<div class="desk">
+  <div class="dleft">
+    <div class="dtop"><input placeholder="Search repo / branch / issue…"><span class="chip need">Needs you</span><span class="chip on">All</span></div>
+    <div class="colhead"><span>Agent</span><span>State · time</span></div>
+    <div class="lrow w"><div class="lr1"><span class="dot ring"></span><span class="t">Wire state-token map into iOS client</span><span class="tl">claude-code</span></div><div class="lr2"><span class="s">working</span> · 24m</div></div>
+    <div class="lrow sel w"><div class="lr1"><span class="dot ring"></span><span class="t">Snapshot read model · transcript restyle</span><span class="tl">claude-code</span></div><div class="lr2"><span class="s">working</span> · 24m</div></div>
+    <div class="lrow"><div class="lr1"><span class="dot empty"></span><span class="t">Idle / done (19) — expandable</span><span class="tl">…</span></div><div class="lr2" style="color:var(--muted)">idle</div></div>
+  </div>
+  <div class="dright">
+    <div class="dtabs"><span class="dtab on">Board</span><span class="dtab">Issues</span><span class="dtab">Audit</span></div>
+    <div class="dtailcards"><span class="dbtn on">Cards</span><span class="dbtn">Table</span><span class="dbtn">Interrupt</span><span class="dbtn red">Kill</span></div>
+    <div class="rhead">Recent output</div>
+    <div class="rtail">
+      <div class="tlive"><span>● live</span><span class="rg">stick-to-bottom: on</span></div>
+      
+<div class="v2">
+  <div class="divider">─── 229 earlier lines · <span class="ld">Load earlier</span> ───</div>
+  <div class="rail">
+
+    <div class="blk assistant">
+      <div class="bhead"><span class="bname">assistant</span><span class="bmeta">claude-code · high · ~/worktrees/corral/g271-ux</span><span class="btm">14:02</span></div>
+      <div class="bmsg">Snapshot read model is consistent across the board — now wiring the single state-token map into the iOS client.</div>
+      <div class="tchip"><svg class="ic" width="13" height="13" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="display:block;flex:none;"><rect x="1" y="1.5" width="14" height="12" rx="2" fill="none" stroke="var(--done)" stroke-width="1.4"/><path d="M4 5.5l2.2 2.2L4 9.9" stroke="var(--done)" stroke-width="1.4" fill="none"/><line x1="8.5" y1="10" x2="11.5" y2="10" stroke="var(--done)" stroke-width="1.4"/></svg><span class="tl">preparing terminal… · cargo test · exit 0</span><span class="cnt">×4</span></div>
+      <div class="code"><div class="cl n"><span class="num">1</span><span class="tx">$ cargo test --lib</span></div>
+<div class="cl c"><span class="num">2</span><span class="tx">Finished `test` profile [unoptimized + debuginfo] target(s) in 3.2s</span></div>
+<div class="cl n"><span class="num">3</span><span class="tx">running 42 tests</span></div>
+<div class="cl a"><span class="num">4</span><span class="tx">test result: ok. 42 passed; 0 failed</span></div></div>
+      <div class="tchip"><svg class="ic" width="13" height="13" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="display:block;flex:none;"><path d="M11.5 2.5l2 2L6 12l-2.7.7L4 10z" fill="none" stroke="var(--done)" stroke-width="1.4" stroke-linejoin="round"/><line x1="10.7" y1="3.3" x2="13.7" y2="6.3" stroke="var(--done)" stroke-width="1.4"/></svg><span class="tl">apply_patch · src/ui/board.rs</span><span class="cnt">+2 −1</span></div>
+      <div class="code"><div class="cl hdr"><span class="num">1</span><span class="tx">diff --git a/clients/egui/src/ui/board.rs b/clients/egui/src/ui/board.rs</span></div>
+<div class="cl hunk"><span class="num">2</span><span class="tx">-1924,6 +1924,9 @@ fn recent_blocks(ui: &amp;mut Ui, blocks: &amp;[TranscriptBlock]) {</span></div>
+<div class="cl ctx"><span class="num">3</span><span class="tx">    for (number, line) in text.split('\n').enumerate() {</span></div>
+<div class="cl add"><span class="num">4</span><span class="tx">        run_label_once(ui, last_speaker);</span></div>
+<div class="cl del"><span class="num">5</span><span class="tx">    // every block today repeats its role label</span></div></div>
+    </div>
+
+    <div class="blk assistant">
+      <div class="bhead"><span class="btm">14:03</span></div>
+      <div class="bmsg">Tests green on both clients — the glyph pass stays in the daemon&apos;s tail path, so board and phone see the same text.</div>
+      <div class="glyphnote">4 icon glyphs → ASCII tags · kept 3 emoji: ✅ ⚠️ 🚀</div>
+    </div>
+
+    <div class="blk user">
+      <div class="bhead"><span class="bname">user</span><span class="btm">13:58</span></div>
+      <div class="bmsg">Make the transcript read as chat, not a terminal blob.</div>
+    </div>
+
+    <div class="blk assistant">
+      <div class="bhead"><span class="bname">assistant</span><span class="btm">13:58</span></div>
+      <div class="bmsg">Right — Recent output only, live at the bottom, scroll up for older.</div>
+    </div>
+
+    <div class="now">live · stick-to-bottom</div>
+  </div>
+</div>
+    </div>
+  </div>
+</div>
+</body></html>

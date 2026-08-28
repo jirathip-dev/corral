@@ -129,6 +129,7 @@ pub fn read_worktree_diff(path: &Path, query: &ReadDiffQuery) -> Result<ReadDiff
         .and_then(|full| full.get(..7).map(str::to_owned));
     let branch = head
         .shorthand()
+        .ok()
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 

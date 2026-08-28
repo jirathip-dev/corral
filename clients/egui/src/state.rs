@@ -580,6 +580,7 @@ mod tests {
             title: title.to_string(),
             labels: Vec::new(),
             url: format!("https://github.com/example/{repo}/issues/{number}"),
+            body: None,
         }
     }
 

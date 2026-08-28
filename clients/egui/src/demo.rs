@@ -92,6 +92,13 @@ mod tests {
         }
         assert_eq!(demo.fleets.status, "ok");
         assert!(!demo.issues.is_empty());
+        assert!(
+            demo.issues
+                .values()
+                .flatten()
+                .any(|issue| issue.body.is_some()),
+            "fixture carries an expandable issue body"
+        );
 
         // The fixture must actually fold into the view model (the demo
         // board is fed through the same path as live SSE).

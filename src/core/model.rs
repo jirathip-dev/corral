@@ -223,6 +223,9 @@ pub struct Snapshot {
     /// is unavailable. NEVER carries spend/balance state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fleet_health: Vec<crate::fleet::health::FleetHealthEntry>,
+    /// True while git-plane worktree probes are deferred for retry.
+    #[serde(default)]
+    pub git_plane_backlog: bool,
 }
 
 /// Incremental change batch, the unit of SSE delivery.

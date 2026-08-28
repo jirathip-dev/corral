@@ -565,6 +565,7 @@ pub struct GitPlane {
     /// sweep loops exit and a supervised restart can re-arm `start()` without
     /// duplicating loops.
     stopped: AtomicBool,
+    backlog: Arc<AtomicBool>,
     sweep_intervals: SweepIntervals,
 }
 
@@ -628,6 +629,7 @@ impl GitPlane {
             last_rescan: AtomicU64::new(0),
             retry_scheduled: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            backlog: Arc::new(AtomicBool::new(false)),
             sweep_intervals: PRODUCTION_SWEEP_INTERVALS,
         }
     }
@@ -658,6 +660,11 @@ impl GitPlane {
     #[cfg(test)]
     fn with_sweep_intervals(mut self, sweep_intervals: SweepIntervals) -> Self {
         self.sweep_intervals = sweep_intervals;
+        self
+    }
+
+    pub fn with_backlog_flag(mut self, backlog: Arc<AtomicBool>) -> Self {
+        self.backlog = backlog;
         self
     }
 
@@ -1277,6 +1284,7 @@ impl GitPlane {
                 if let Some(worktree) = state.worktrees.get_mut(wt) {
                     worktree.stale = true;
                 }
+                self.backlog.store(true, Ordering::Release);
                 warn!(
                     worktree = %wt.display(),
                     took_ms = started.elapsed().as_millis() as u64,
@@ -1325,6 +1333,10 @@ impl GitPlane {
             st.subject = probe.subject.clone();
             st.status = Some(probe.status.clone());
             st.stale = false;
+            self.backlog.store(
+                state.worktrees.values().any(|worktree| worktree.stale),
+                Ordering::Release,
+            );
         }
         for event in events {
             info!(
@@ -3478,11 +3490,18 @@ mod tests {
         let coalescer_task = tokio::spawn(async move { coalescer_store.run_coalescer().await });
         let mut sse = store.subscribe();
         plane.rescan(&sink).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let _slow_git = TestGitDelayReset::new(20);
+        let _slow_git = TestGitDelayReset::new(80);
         for worktree in &worktrees {
             plane.debounce(worktree.clone(), sink.clone());
         }
+        let mut heartbeat = load_test_agent(99);
+        heartbeat.agent_id = "herdr:git-load-heartbeat".to_string();
+        store
+            .apply(crate::core::model::Change::upsert(heartbeat))
+            .await;
+        assert!(store.flush().await.is_some(), "heartbeat flush");
 
         let mut previous_rev = baseline_rev;
         let mut delta_count = 0;
@@ -3490,7 +3509,7 @@ mod tests {
         let wave_started = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let delta = tokio::time::timeout(Duration::from_secs(5), sse.recv())
+            let delta = tokio::time::timeout(Duration::from_secs(2), sse.recv())
                 .await
                 .expect("SSE delta remains live during git load")
                 .expect("SSE broadcast remains open");
@@ -3518,6 +3537,11 @@ mod tests {
             if complete {
                 println!(
                     "git wave first complete snapshot latency_ms={}",
+                    wave_started.elapsed().as_millis()
+                );
+                assert!(
+                    wave_started.elapsed() < Duration::from_secs(1),
+                    "git wave first complete snapshot exceeded 1000ms: {}ms",
                     wave_started.elapsed().as_millis()
                 );
                 break;
@@ -3654,18 +3678,67 @@ mod tests {
     async fn over_budget_probe_is_skipped_and_retried_later() {
         let _guard = PROBE_LOCK.lock().await;
         let (_temp, root, _) = scratch_repo("budget-enforcement");
-        let _slow_git = TestGitDelayReset::new(300);
-        let budget = Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS));
-        let started = Instant::now();
-        let first = probe_worktree_with_budget(&root, None, None, budget.clone()).await;
-        assert!(matches!(first, Err(ProbeError::OverBudget)));
-        assert!(started.elapsed() < Duration::from_secs(1));
-
-        drop(_slow_git);
-        let second = probe_worktree_with_budget(&root, None, None, budget)
-            .await
-            .expect("later round retries the deferred worktree");
-        assert_eq!(second.branch, "main");
+        let plane = Arc::new(
+            GitPlane::new(root.clone(), root.join("worktrees")).with_sweep_intervals(
+                SweepIntervals {
+                    startup_delay: Duration::ZERO,
+                    topology: Duration::from_secs(60 * 60),
+                    rediscovery: Duration::from_secs(60 * 60),
+                    status: Duration::from_millis(100),
+                },
+            ),
+        );
+        let (sink, _rx) = crate::core::plane_channel();
+        plane.rescan(&sink).await;
+        let worktree = fs::canonicalize(&root).unwrap();
+        let (watcher_cmd_tx, _watcher_cmd_rx) = mpsc::channel(1);
+        let sweep = {
+            let plane = plane.clone();
+            tokio::spawn(async move { plane.run_sweep(sink, watcher_cmd_tx).await })
+        };
+        let slow_git = TestGitDelayReset::new(300);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "sweep did not skip the slow worktree"
+            );
+            if plane
+                .state
+                .lock()
+                .unwrap()
+                .worktrees
+                .get(&worktree)
+                .is_some_and(|state| state.stale)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(slow_git);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "sweep did not retry the worktree"
+            );
+            if plane
+                .state
+                .lock()
+                .unwrap()
+                .worktrees
+                .get(&worktree)
+                .is_some_and(|state| {
+                    !state.stale && state.commit.is_some() && state.status.is_some()
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        plane.stopped.store(true, Ordering::Relaxed);
+        sweep.abort();
+        let _ = sweep.await;
     }
 
     #[tokio::test]

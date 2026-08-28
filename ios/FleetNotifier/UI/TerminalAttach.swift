@@ -46,8 +46,12 @@ final class TerminalAttachClient: NSObject, @unchecked Sendable {
 
     func connect(worktree: CorralWorktree, onFrame: @escaping @Sendable (TerminalFrame) -> Void) async throws {
         let requestId = DriveClient.newRequestId()
+        let payload: CanonicalJSON.Value = .object([
+            (key: "cwd", value: .string(worktree.path)),
+            (key: "workspace_id", value: .string(worktree.workspaceId)),
+        ])
         let bytes = CanonicalJSON.envelopeBytes(requestId: requestId, capability: Capability.attach.rawValue,
-                                                target: worktree.workspaceId, payload: .null, rev: nil)
+                                                target: worktree.workspaceId, payload: payload, rev: nil)
         let signature = try signer.sign(bytes).base64EncodedString()
         let escapedKey = try JSONEncoder().encode(keyId)
         let escapedSignature = try JSONEncoder().encode(signature)

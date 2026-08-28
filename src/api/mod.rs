@@ -281,14 +281,23 @@ async fn terminal_session(mut socket: WebSocket, state: Arc<AppState>) {
     let Ok(open) = serde_json::from_str::<TerminalOpen>(&text) else {
         return;
     };
-    if open.auth.envelope.capability != crate::drive::Capability::Attach
-        || !open.auth.envelope.payload.is_null()
-    {
+    if open.auth.envelope.capability != crate::drive::Capability::Attach {
         return;
     }
     let Ok(authorized) = state.auth.authorizer.verify(&open.auth) else {
         return;
     };
+    let expected_payload = serde_json::json!({
+        "cwd": open.cwd,
+        "workspace_id": authorized.envelope.target,
+    });
+    // The request id is the fresh one-shot nonce. Claim it only after
+    // signature and complete parameter binding have been verified.
+    if open.auth.envelope.payload != expected_payload
+        || !state.replay.claim_once(&authorized.envelope.request_id)
+    {
+        return;
+    }
     let Ok(session) = transport()
         .open(&authorized.envelope.target, Path::new(&open.cwd))
         .await

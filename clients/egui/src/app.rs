@@ -1614,6 +1614,7 @@ impl CorralApp {
                         // non-actionable until both read models catch up.
                         self.refresh_issues(true);
                         self.refresh_fleets(true);
+                        self.refresh_plugin();
                     }
                     protocol::Live::Disconnected => {
                         self.invalidate_read_model();
@@ -1670,6 +1671,10 @@ impl CorralApp {
             }
             ApplyMsg::GrantDevices(result) => self.handle_grant_devices(result),
             ApplyMsg::GrantMutation(msg) => self.handle_grant_mutation(msg),
+            ApplyMsg::Plugin(result) => self.fleet.set_plugin(result),
+            ApplyMsg::PluginAction(result) => {
+                self.fleet.plugin_result = Some(result);
+            }
         }
     }
 
@@ -1698,6 +1703,30 @@ impl CorralApp {
                 tracing::warn!(error, "GET /issues unavailable");
             }
             let _ = tx.send(ApplyMsg::Issues { generation, result });
+        });
+    }
+
+    fn refresh_plugin(&mut self) {
+        if self.fleet.plugin_loading {
+            return;
+        }
+        self.fleet.plugin_loading = true;
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            let result = protocol::fetch_plugin(&client, &base_url).await;
+            let _ = tx.send(ApplyMsg::Plugin(result));
+        });
+    }
+
+    fn execute_plugin_action(&mut self, action_id: String) {
+        let client = self.client.clone();
+        let base_url = self.config.host_url.clone();
+        let tx = self.tx_apply.clone();
+        self.rt.spawn(async move {
+            let result = protocol::execute_plugin_action(&client, &base_url, &action_id).await;
+            let _ = tx.send(ApplyMsg::PluginAction(result));
         });
     }
 
@@ -3147,7 +3176,14 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
-            crate::ui::plugin::show(&mut right_ui);
+            if let Some(event) = crate::ui::plugin::show(&mut right_ui, &mut app.fleet) {
+                match event {
+                    crate::ui::plugin::Event::Refresh => app.refresh_plugin(),
+                    crate::ui::plugin::Event::Execute(action_id) => {
+                        app.execute_plugin_action(action_id)
+                    }
+                }
+            }
         }
         Tab::Issues => {
             app.refresh_issues(false);

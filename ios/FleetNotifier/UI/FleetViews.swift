@@ -1450,17 +1450,23 @@ private struct RecentBlockRow: View {
             speakerRail
                 .frame(width: 58, alignment: .topLeading)
             Group {
-                switch block.kind {
-                case .user:
-                    userMessage
+                if rendersHighlighted {
+                    highlightedMessage
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                case .agent:
-                    agentMessage
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                case .tool, .system:
-                    toolMessage
+                } else {
+                    switch block.kind {
+                    case .user:
+                        userMessage
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+                    case .agent:
+                        agentMessage
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+                    case .tool, .system:
+                        toolMessage
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1481,6 +1487,27 @@ private struct RecentBlockRow: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    private var rendersHighlighted: Bool {
+        RecentOutputRender.codeLines(for: block).contains { $0.isHighlighted }
+    }
+
+    private var highlightedMessage: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(RecentOutputRender.codeLines(for: block).enumerated()),
+                    id: \.offset) { item in
+                RecentCodeLineView(line: item.element)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RecentOutputPalette.codeBg,
+                    in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(RecentOutputPalette.codeLine, lineWidth: 1))
+        .textSelection(.enabled)
     }
 
     private var userMessage: some View {

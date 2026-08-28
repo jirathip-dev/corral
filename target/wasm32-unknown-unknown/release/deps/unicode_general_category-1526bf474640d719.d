@@ -1,0 +1,12 @@
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/unicode_general_category-1526bf474640d719.d: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/category.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/tables.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/unicode-general-category-d11aa2545abb8140/out/category.rs
+
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/libunicode_general_category-1526bf474640d719.rlib: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/category.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/tables.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/unicode-general-category-d11aa2545abb8140/out/category.rs
+
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/libunicode_general_category-1526bf474640d719.rmeta: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/category.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/tables.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/unicode-general-category-d11aa2545abb8140/out/category.rs
+
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/lib.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/category.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-general-category-1.1.0/src/tables.rs:
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/unicode-general-category-d11aa2545abb8140/out/category.rs:
+
+# env-dep:OUT_DIR=/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/unicode-general-category-d11aa2545abb8140/out

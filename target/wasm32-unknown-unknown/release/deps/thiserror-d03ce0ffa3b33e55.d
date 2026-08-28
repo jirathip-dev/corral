@@ -1,0 +1,14 @@
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/thiserror-d03ce0ffa3b33e55.d: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/aserror.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/display.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/var.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/private.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/thiserror-99dbfeb49930ffae/out/private.rs
+
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/libthiserror-d03ce0ffa3b33e55.rlib: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/aserror.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/display.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/var.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/private.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/thiserror-99dbfeb49930ffae/out/private.rs
+
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/deps/libthiserror-d03ce0ffa3b33e55.rmeta: /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/aserror.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/display.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/var.rs /Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/private.rs /private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/thiserror-99dbfeb49930ffae/out/private.rs
+
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/aserror.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/display.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/var.rs:
+/Users/jirathip/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/private.rs:
+/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/thiserror-99dbfeb49930ffae/out/private.rs:
+
+# env-dep:OUT_DIR=/private/tmp/corral-pages-build/target/wasm32-unknown-unknown/release/build/thiserror-99dbfeb49930ffae/out

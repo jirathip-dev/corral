@@ -1750,7 +1750,16 @@ impl CorralApp {
             return;
         }
 
-        self.dispatch_drive_intents(vec![DriveIntent::read_tail(&agent_id, self.fleet.rev)]);
+        let intent = self
+            .fleet
+            .tail_source_revs
+            .get(&agent_id)
+            .copied()
+            .map(|source_rev| {
+                DriveIntent::read_tail_since(&agent_id, 50, source_rev, self.fleet.rev)
+            })
+            .unwrap_or_else(|| DriveIntent::read_tail(&agent_id, self.fleet.rev));
+        self.dispatch_drive_intents(vec![intent]);
     }
 
     /// #237: fetch the daemon's fleet-ops CLI validated identity catalog
@@ -1914,7 +1923,11 @@ impl CorralApp {
             lines = lines.len(),
             "read_tail result applied to screenshot/detail cache"
         );
-        fleet.remember_tail(&msg.agent_id, lines);
+        let source_rev = crate::drive::parse_tail_source_rev(result).or(match msg.outcome {
+            DriveOutcome::Ok { rev, .. } => Some(rev),
+            DriveOutcome::Refused(_) => None,
+        });
+        fleet.remember_tail_with_rev(&msg.agent_id, lines, source_rev);
     }
 
     /// #232 read_diff content path: the daemon's `DriveResponse.result`

@@ -348,6 +348,10 @@ pub fn parse_tail_lines(result: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn parse_tail_source_rev(result: &serde_json::Value) -> Option<u64> {
+    result.get("source_rev").and_then(serde_json::Value::as_u64)
+}
+
 /// #232: one `read_diff` page as served by the daemon (mirrors
 /// `corrald::drive::ReadDiffResult`; serde mapping only — the daemon owns
 /// bounds/redaction, the client only renders).

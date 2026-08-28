@@ -896,7 +896,8 @@ final class AppModel: ObservableObject {
             return
         }
         guard authorize(.readTail, for: live, silent: silent) else { return }
-        let payload = CanonicalJSON.readTailPayload(lines: lines)
+        let sinceRev = fleet.tailPane(for: live.agentId)?.sourceRev
+        let payload = CanonicalJSON.readTailPayload(lines: lines, sinceRev: sinceRev)
         let key = DriveActionKey(capability: .readTail, target: live.agentId,
                                  identity: "tail-\(lines)")
         guard let requestId = beginDriveAction(key, silent: silent) else { return }
@@ -1221,7 +1222,7 @@ final class AppModel: ObservableObject {
                         let blocks = response.result?.tailBlocks ?? []
                         // #167: fold the segmented blocks; the result stays in
                         // the detail view (no hijacking fleet banner).
-                        self.fleet.rememberTail(lines, blocks: blocks, for: target)
+                        self.fleet.rememberTail(lines, blocks: blocks, sourceRev: response.result?.tailSourceRev ?? response.rev, for: target)
                     } else if capability == .readDiff {
                         if let page = response.result?.diffPage {
                             // #232: fold the bounded page (diffstat + files +

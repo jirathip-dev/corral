@@ -3855,9 +3855,7 @@ mod tests {
         let tail = bounded_redacted_tail(&text, 200);
         assert!(started.elapsed() < std::time::Duration::from_millis(300));
         assert!(tail.len() <= 200);
-        assert!(
-            tail.iter().map(|line| line.len() + 1).sum::<usize>() <= READ_TAIL_MAX_BYTES
-        );
+        assert!(tail.iter().map(|line| line.len() + 1).sum::<usize>() <= READ_TAIL_MAX_BYTES);
     }
 
     #[test]

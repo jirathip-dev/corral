@@ -901,7 +901,7 @@ pub async fn drive(
                         None,
                         AuditOutcome::Executed,
                         Some(
-                            serde_json::json!({ "lines": lines, "blocks": blocks, "source_rev": source_rev }),
+                            serde_json::json!({ "lines": lines, "blocks": blocks, "source_rev": source_rev.or(since_rev) }),
                         ),
                     )
                 }

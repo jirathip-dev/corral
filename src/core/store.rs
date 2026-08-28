@@ -328,7 +328,6 @@ impl Store {
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
-            fleet_health: Vec::new(),
             git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
         }
     }
@@ -383,7 +382,6 @@ impl Store {
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
-            fleet_health: Vec::new(),
             git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
         }
     }

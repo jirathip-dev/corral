@@ -12,51 +12,6 @@ enum DemoFleet {
     /// changing normal fleet selection behavior.
     static let featuredAgentID = "herdr:demo-output"
 
-    /// #210: demo fleet-health strip rows — HEALTH ONLY, no spend. One
-    /// healthy fleet (orch alive, live workers, fresh heartbeat), one
-    /// degraded fleet (missing orch — reads as a warning, not a stall),
-    /// one paused fleet (parked by design). Anchors are relative to `now`.
-    static func seedHealth(now: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)) -> [FleetHealthEntry] {
-        [
-            FleetHealthEntry(
-                name: "corral",
-                ghRepo: "jirathip-dev/corral",
-                paused: false,
-                orch: "orch-corral",
-                orchAlive: true,
-                orchState: "working",
-                workers: 2,
-                lastHeartbeat: now - 4_000,
-                degraded: false,
-                warnings: []
-            ),
-            FleetHealthEntry(
-                name: "sendmeter",
-                ghRepo: "jirathip-dev/sendmeter",
-                paused: false,
-                orch: "orch-sendmeter",
-                orchAlive: false,
-                orchState: nil,
-                workers: 0,
-                lastHeartbeat: nil,
-                degraded: true,
-                warnings: ["orch_missing"]
-            ),
-            FleetHealthEntry(
-                name: "plush",
-                ghRepo: "jirathip-dev/plush-meadow",
-                paused: true,
-                orch: "orch-plush",
-                orchAlive: false,
-                orchState: nil,
-                workers: 0,
-                lastHeartbeat: nil,
-                degraded: false,
-                warnings: []
-            ),
-        ]
-    }
-
     /// #267: seeded read-only issue browser (mirrors the approved V3 mock's
     /// shape: repos → issues with body + newest-first comment window).
     /// Issue lists use real repo data (jirathip-dev/corral, -sendmeter,
@@ -115,9 +70,7 @@ enum DemoFleet {
         let corral232 = issue(
             "corral", 232, "open", "Agent worktree diff view (board + iOS)",
             labels: [IssueLabel(name: "docs", color: "0E8A16")], commentTotal: 12)
-        let corral210 = issue(
-            "corral", 210, "open", "Fleet-health status strip (orch/workers)",
-            labels: [infraLabel], commentTotal: 7)
+
         let corral164 = issue(
             "corral", 164, "open", "UX redesign umbrella (tracker)",
             labels: [openLabel], commentTotal: 9)
@@ -129,7 +82,7 @@ enum DemoFleet {
             labels: [bugLabel, infraLabel], commentTotal: 5)
 
         return IssuesBrowserWire(repos: [
-            "corral": [corral267, corral239, corral232, corral210, corral164, corral843, corral168],
+            "corral": [corral267, corral239, corral232, corral164, corral843, corral168],
             "sendmeter": [sendmeter722],
             "plush-meadow": [plush108],
         ])

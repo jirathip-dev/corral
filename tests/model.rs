@@ -109,7 +109,6 @@ fn snapshot_is_versioned_flat_keyed_records() {
         rev: 12,
         generated_at: 1_755_273_000_000,
         agents,
-        fleet_health: Vec::new(),
         git_plane_backlog: false,
     };
     let v = serde_json::to_value(&snap).unwrap();

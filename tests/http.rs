@@ -269,107 +269,6 @@ async fn fleets_endpoint_is_the_validated_identity_catalog() {
     );
 }
 
-/// #210: GET /snapshot carries the read-only per-fleet health aggregation
-/// computed from the injected fleet identities + the live agent set. The
-/// strip never carries spend/balance state — the health rows are exactly
-/// and only the three health signals (orch alive, worker count, heartbeat).
-#[tokio::test]
-async fn snapshot_carries_fleet_health_aggregation() {
-    let identities = vec![fleet_identity("corral", "jirathip-dev/corral")];
-    let (store, app) = app_with_repos_and_fleets(&[], identities).await;
-    let mut orch = agent("orch", AgentState::Working);
-    orch.display_name = Some("orch-corral".into());
-    orch.workspace.repo = Some("primary-repo".into());
-    let mut worker_a = agent("worker-a", AgentState::Working);
-    worker_a.workspace.repo = Some("primary-repo".into());
-    let mut worker_b = agent("worker-b", AgentState::Idle);
-    worker_b.workspace.repo = Some("primary-repo".into());
-    let mut foreign = agent("foreign", AgentState::Working);
-    foreign.workspace.repo = Some("other-repo".into());
-    for agent in [orch, worker_a, worker_b, foreign] {
-        store.apply(Change::upsert(agent)).await;
-    }
-
-    let body = get_json(&app, "/snapshot").await;
-    let health = body["fleet_health"]
-        .as_array()
-        .expect("snapshot carries fleet_health");
-    assert_eq!(health.len(), 1, "one row per fleet identity");
-    let row = &health[0];
-    assert_eq!(row["name"], "corral");
-    assert_eq!(row["gh_repo"], "jirathip-dev/corral");
-    assert_eq!(row["orch"], "orch-corral");
-    assert_eq!(row["orch_alive"], true);
-    assert_eq!(row["orch_state"], "working");
-    assert_eq!(row["workers"], 2, "repo-group workers only, orch excluded");
-    assert_eq!(row["last_heartbeat"], serde_json::Value::Null);
-    assert!(
-        row["degraded"] == serde_json::json!(true),
-        "no adapter presence signal -> a refusal to guess a fresh heartbeat walks `heartbeat_stale`"
-    );
-    assert!(
-        row["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w == "heartbeat_stale")
-    );
-    // HEALTH ONLY guard: nothing but the health fields is ever carried.
-    let keys = body["fleet_health"][0]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<String>>();
-    assert_eq!(
-        keys,
-        BTreeSet::from([
-            "name".into(),
-            "gh_repo".into(),
-            "paused".into(),
-            "orch".into(),
-            "orch_alive".into(),
-            "orch_state".into(),
-            "workers".into(),
-            "last_heartbeat".into(),
-            "degraded".into(),
-            "warnings".into(),
-        ]),
-        "no spend/balance field can ever appear on the fleet-health strip"
-    );
-}
-
-#[tokio::test]
-async fn snapshot_with_unavailable_fleet_ops_carries_no_health_rows() {
-    struct Down;
-    impl corrald::fleet::cli::FleetOpsProvider for Down {
-        fn list(
-            &self,
-        ) -> Result<Vec<corrald::fleet::cli::FleetIdentity>, corrald::fleet::cli::FleetOpsError>
-        {
-            Err(corrald::fleet::cli::FleetOpsError::Unavailable {
-                detail: "no herdr-fleet".to_string(),
-            })
-        }
-    }
-    let (store, _app) = app_with_repos(&[]).await;
-    let mut state = AppState {
-        fleets: Arc::new(Down),
-        ..Default::default()
-    };
-    let store2 = store.clone();
-    let coalescer = store2.clone();
-    std::mem::drop(tokio::spawn(async move { coalescer.run_coalescer().await }));
-    state.store = store2;
-    let app = router(state);
-    let body = get_json(&app, "/snapshot").await;
-    let rows = body.get("fleet_health").and_then(|v| v.as_array());
-    assert!(
-        rows.is_none_or(|rows| rows.is_empty()),
-        "an unavailable identity path yields an empty/absent strip, never a guessed roster: {body}"
-    );
-}
-
 /// #237: an explicitly unavailable fleet-ops CLI is an explicit status, and
 /// the board still renders live categories (configless-safe daemon).
 #[tokio::test]
@@ -405,6 +304,29 @@ async fn unavailable_provider_reports_error_but_keeps_live_categories() {
         BTreeSet::from(["primary-repo".to_string()]),
         "live categories still render when the identity path is down"
     );
+}
+
+#[tokio::test]
+async fn snapshot_never_calls_fleet_ops_provider() {
+    struct Panic;
+    impl corrald::fleet::cli::FleetOpsProvider for Panic {
+        fn list(
+            &self,
+        ) -> Result<Vec<corrald::fleet::cli::FleetIdentity>, corrald::fleet::cli::FleetOpsError>
+        {
+            panic!("snapshot must not enumerate fleet ops")
+        }
+    }
+    let (store, _app) = app_with_repos(&[Some("primary-repo")]).await;
+    let mut state = AppState {
+        fleets: Arc::new(Panic),
+        ..Default::default()
+    };
+    state.store = store;
+    let app = router(state);
+    let body = get_json(&app, "/snapshot").await;
+    assert!(body["agents"].is_object());
+    assert!(body.get("fleet_health").is_none());
 }
 
 #[test]

@@ -767,7 +767,7 @@ struct SessionState {
     pane_streams: HashMap<String, watch::Sender<bool>>,
     /// #210: per-agent presence heartbeat — epoch millis when the adapter
     /// last observed the agent in herdr's trusted catalog/event stream.
-    /// This is an adapter-local read signal for the fleet-health strip; it
+    /// This is an adapter-local read signal for presence tracking; it
     /// never changes the store or publishes SSE deltas.
     last_seen_millis: HashMap<String, u64>,
 }
@@ -1882,7 +1882,7 @@ impl HerdrAdapter {
             return;
         };
         // #210: a status/output event proves the agent is live — stamp the
-        // presence heartbeat for the fleet-health aggregation.
+        // presence heartbeat for the read model.
         self.state.lock().unwrap().note_seen(agent_id);
         let Some(mut agent) = store.get(agent_id).await else {
             return;
@@ -2546,7 +2546,7 @@ fn hex(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 impl Adapter for HerdrAdapter {
-    /// #210: snapshot of the presence heartbeat map for the fleet-health
+    /// Snapshot of the presence heartbeat map for the read model
     /// aggregation at snapshot-assembly time.
     fn last_seen_millis(&self) -> HashMap<String, u64> {
         let state = self.state.lock().unwrap();

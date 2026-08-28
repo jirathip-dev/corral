@@ -1,0 +1,7 @@
+cargo build --release -p corrald-ui
+RESULT: Finished `release` profile [optimized] target(s) in 4m 35s
+CORRAL_SKIP_CODESIGN=1 scripts/install-corral-ui.sh
+RESULT: ✓ installed. Launch: open /Applications/Corral.app
+open /Applications/Corral.app
+screencapture -x /tmp/g289-board.png
+RESULT: could not create image from display (exit 1)

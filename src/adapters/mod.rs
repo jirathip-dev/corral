@@ -205,9 +205,8 @@ pub trait Adapter: Debug + Send + Sync {
 
     /// #210: the per-agent presence heartbeat — epoch millis when this
     /// adapter last observed each agent alive in its source's trusted
-    /// catalog/event stream. The fleet-health aggregation
-    /// ([`crate::fleet::health`]) uses it as the lane heartbeat. Adapters
-    /// that do not track presence return an empty map.
+    /// catalog/event stream. Presence tracking is an adapter-local signal;
+    /// adapters that do not track presence return an empty map.
     fn last_seen_millis(&self) -> std::collections::HashMap<String, u64> {
         std::collections::HashMap::new()
     }

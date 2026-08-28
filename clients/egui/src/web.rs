@@ -1,8 +1,9 @@
 //! Read-only web (wasm) board — the #215 web build of the corral fleet
 //! board. It deliberately serves ONLY the daemon's credential-free read
 //! plane (`GET /snapshot`, `GET /events` SSE; plus the read-only
-//! `GET /issues` and `GET /fleets` projections on their tabs) and can also
-//! render a bundled demo fixture with no daemon at all.
+//! `GET /issues` projection and the `GET /fleets` identity catalog the
+//! Issues view resolves repo categories against) and can also render a
+//! bundled demo fixture with no daemon at all.
 //!
 //! Boundary (never narrowed, see the issue):
 //!
@@ -38,7 +39,7 @@ use crate::ui::board::{self, BoardActions};
 const STORAGE_KEY: &str = "corral_web_setup_v1";
 /// Demo tick: one canned SSE frame every this many seconds.
 const DEMO_STEP_INTERVAL: f64 = 3.0;
-/// Issues/Fleets tab refresh cadence while live (mirrors the client's
+/// Issues/fleet-identity refresh cadence while live (mirrors the client's
 /// ISSUES_REFRESH_INTERVAL).
 const REFRESH_INTERVAL_SECS: f64 = 5.0;
 
@@ -158,7 +159,6 @@ enum InboxMsg {
 enum Tab {
     Board,
     Issues,
-    Fleets,
 }
 
 /// The read-only web board.
@@ -370,8 +370,11 @@ impl WebCorralApp {
         self.ctx.request_repaint();
     }
 
-    /// Periodic refresh of the read-only issues/fleets projections while
-    /// live, mirroring the desktop client's cadence.
+    /// Periodic refresh of the read-only issues projection while live,
+    /// mirroring the desktop client's cadence. The fleet-identity catalog is
+    /// refreshed from the Issues tab too: it is the only remaining consumer
+    /// (the #269 Fleets tab is gone) and the Issues view needs it to resolve
+    /// repo categories into exact fleet-name drive targets.
     fn live_ticks(&mut self) {
         let now = now_ms();
         if self.tab == Tab::Issues
@@ -380,7 +383,8 @@ impl WebCorralApp {
             self.issues_last_refresh = now;
             self.request_issues();
         }
-        if self.tab == Tab::Fleets
+        if self.tab == Tab::Issues
+            && !self.fleet.fleets_ready()
             && now - self.fleets_last_refresh >= REFRESH_INTERVAL_SECS * 1000.0
         {
             self.fleets_last_refresh = now;
@@ -502,7 +506,6 @@ impl WebCorralApp {
                 }
                 ui.selectable_value(&mut self.tab, Tab::Board, "Board");
                 ui.selectable_value(&mut self.tab, Tab::Issues, "Issues");
-                ui.selectable_value(&mut self.tab, Tab::Fleets, "Fleets");
             });
         });
         // The read-only boundary is stated where the action would be:
@@ -544,27 +547,6 @@ impl WebCorralApp {
                             "demo data — there is no daemon to refresh from",
                             Level::Info,
                         );
-                    }
-                }
-            }
-            Tab::Fleets => {
-                let mut refresh_requested = false;
-                crate::ui::registry::show(
-                    ui,
-                    &self.fleet.fleets,
-                    self.fleet.fleets_loading,
-                    &mut |action| {
-                        if action == crate::ui::registry::Action::Refresh {
-                            refresh_requested = true;
-                        }
-                    },
-                );
-                if refresh_requested {
-                    if self.setup.mode == WebMode::Live {
-                        self.fleets_last_refresh = now_ms();
-                        self.request_fleets();
-                    } else {
-                        self.push_toast("demo data — fleet catalog is bundled", Level::Info);
                     }
                 }
             }

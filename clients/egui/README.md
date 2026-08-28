@@ -74,13 +74,13 @@ surface directly (`docs/corral/P4-conformance.md` is the normative contract).
   the grant editor lists registered devices via `GET /grants`, replaces a
   selected device's full capability set via `POST /grants`, and exposes the
   same revoke action as `corrald-grant.sh --revoke`.
-- **Fleets tab** — `GET /fleets` (non-auth read-only): the fleet-ops CLI
-  validated identity catalog (configless #237 — corral never reads or
-  writes the fleet registry file). It lists every validated fleet's name,
-  gh_repo, orchestrator, worker count, and pause state; fleet-ops CLI
-  failures render prominently with a manual refresh. The tab is READ-ONLY:
-  mutations (add/remove/pause/resume/models) run through `herdr-fleet` on
-  the host, and `corrald fleet switch <name>` delegates the re-arm to the
+- **Fleet identities (no dedicated tab)** — the Issues tab resolves repo
+  categories into exact fleet-name drive targets via the daemon's
+  `GET /fleets` identity catalog (configless #237 — corral never reads or
+  writes the fleet registry file). The dedicated Fleets tab was removed
+  (#269); the private fleet surface belongs to the future fleet-ops
+  sidecar plugin (#239). Mutations still run through `herdr-fleet` on the
+  host, and `corrald fleet switch <name>` delegates the re-arm to the
   fleet-ops CLI. There is no fleets.json editing anywhere in the client.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
   into its own top-level tab, keeping the issue-linked worktree action
@@ -305,7 +305,7 @@ src/
   theme.rs     dark-dashboard palette (the only place colors live)
   state.rs     fleet cache, grant ledger, toasts, config records
   ui/          board (master/detail + cards/table), issues, audit,
-               registry, register/settings
+               register/settings
 tests/
   conformance.rs  in-process conformance vs the daemon's own seams
   live.rs         #[ignore] live probe against a real corrald

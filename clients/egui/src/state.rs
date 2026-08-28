@@ -268,8 +268,7 @@ impl Fleet {
         true
     }
 
-    /// #237: fold one fleet-identities fetch outcome into the tab's view
-    /// model.
+    /// #237: fold one fleet-identities fetch outcome into the view model.
     pub fn set_fleets(&mut self, result: Result<FleetIdentities, String>) {
         self.fleets_loading = false;
         if result.is_ok() {

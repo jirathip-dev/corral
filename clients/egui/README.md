@@ -305,7 +305,7 @@ src/
   theme.rs     dark-dashboard palette (the only place colors live)
   state.rs     fleet cache, grant ledger, toasts, config records
   ui/          board (master/detail + cards/table), issues, audit,
-               registry, register/settings
+               register/settings
 tests/
   conformance.rs  in-process conformance vs the daemon's own seams
   live.rs         #[ignore] live probe against a real corrald

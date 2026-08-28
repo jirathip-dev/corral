@@ -3495,6 +3495,11 @@ mod tests {
         for worktree in &worktrees {
             plane.debounce(worktree.clone(), sink.clone());
         }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while TEST_GIT_IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "git wave never became in flight");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let wave_started = Instant::now();
         let snapshot = store.snapshot().await;
         let snapshot_latency = wave_started.elapsed();

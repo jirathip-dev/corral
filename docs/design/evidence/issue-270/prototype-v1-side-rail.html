@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>270 · V1 Issues — side rail repo picker</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#10151c; --panel2:#161b22; --panel3:#1c2128;
+  --line:#30363d; --hair:#21262d; --ink:#e6edf3; --muted:#8b949e; --faint:#6e7681;
+  --accent:#2dd4bf; --accent-dim:#148f84; --sel:#1f3a3d;
+  --needs:#f85149; --review:#d29922; --working:#58a6ff; --idle:#8b949e;
+  --label-enh:#a2eeef; --label-bug:#d73a4a; --label-doc:#0075ca; --label-ready:#cccccc;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1320px;height:860px}
+body{margin:0;background:#05070a;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.desk{width:1320px;height:860px;background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+/* top tab strip (app.rs tab_strip: selectable_label + accent underline) */
+.topbar{display:flex;align-items:flex-end;gap:4px;padding:9px 14px 0;border-bottom:1px solid var(--hair);flex:none}
+.tab{font-size:12.5px;font-weight:600;padding:7px 13px 8px;color:var(--muted);border-bottom:2px solid transparent}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+.tb-r{margin-left:auto;align-self:center;font-family:ui-monospace,SFMono-Regular,monospace;font-size:10.5px;color:var(--idle);padding-bottom:8px}
+/* side rail (V1) */
+.rail{width:200px;flex:none;border-right:1px solid var(--hair);background:var(--panel);display:flex;flex-direction:column;padding:11px 8px 8px}
+.railhd{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:700;padding:0 9px 7px}
+.ri{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:11.5px;color:var(--muted);border:1px solid transparent;margin-bottom:2px;white-space:nowrap;min-width:0}
+.ri .nm{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ri .n{margin-left:auto;font-size:10px;color:var(--faint);flex:none}
+.ri.on{background:var(--sel);border-color:var(--accent-dim);color:var(--ink)}
+.ri.on .n{color:var(--accent)}
+.raildesc{margin-top:auto;padding:9px 9px 2px;font-size:10px;line-height:1.5;color:var(--faint);border-top:1px solid var(--hair)}
+/* main pane */
+.main{flex:1;display:flex;flex-direction:column;padding:0 18px;min-width:0}
+.mtitle{display:flex;align-items:baseline;gap:10px;padding:12px 2px 4px}
+.mtitle .h{font-size:15px;font-weight:700;color:var(--ink)}
+.mtitle .s{font-size:11px;color:var(--muted)}
+.toolbar{display:flex;align-items:center;gap:6px;padding:7px 0 9px;flex-wrap:nowrap}
+.sel{font-size:11.5px;font-weight:600;padding:4px 11px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);flex:none}
+.sel.on{background:var(--sel);border-color:var(--accent-dim);color:var(--ink)}
+.combo{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;padding:4px 10px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);flex:none}
+.combo .mono{font-size:11.5px;font-weight:600}
+.combo .cr{color:var(--muted);font-size:11px}
+.combo .caret{color:var(--faint);font-size:10px}
+.search{width:236px;height:25px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--ink);font-size:11.5px;padding:0 9px;font-family:ui-monospace,SFMono-Regular,monospace;outline:none;flex:none}
+.search::placeholder{color:var(--faint)}
+.rebtn{font-size:11.5px;font-weight:600;padding:4px 11px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);flex:none}
+.sep{height:1px;background:var(--hair);flex:none}
+.list{flex:1;overflow-y:auto;min-height:0;padding:5px 0 12px}
+/* rows (issues.rs: "#N  title  STATE", monospace selectable_label) */
+.row{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;border:1px solid transparent;margin-bottom:1px;min-width:0}
+.row .num{color:var(--accent);flex:none;min-width:38px;text-align:right}
+.row .tl{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+.row .st{flex:none;font-size:10px;font-weight:700}
+.row .st.op{color:var(--accent)}
+.row .st.cl{color:var(--muted)}
+.row.dim .tl{color:var(--muted)}
+.row.on{background:var(--sel);border-color:var(--accent-dim)}
+.row .chev{color:var(--faint);flex:none;font-size:11px}
+/* inline expanded detail */
+.inl{margin:3px 10px 12px 56px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.pills{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.pill{font-size:10px;font-weight:700;padding:2.5px 9px;border-radius:999px;flex:none}
+.pill.open{color:var(--accent);background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.4)}
+.pill.closed{color:var(--muted);background:rgba(139,148,158,.10);border:1px solid var(--line)}
+.lp{font-size:10px;font-family:ui-monospace,SFMono-Regular,monospace;padding:2.5px 8px;border-radius:999px;font-weight:700;flex:none}
+.lp.enh{color:#08131f;background:var(--label-enh)}
+.lp.dep{color:#fff;background:var(--label-doc)}
+.inl .meta{font-family:ui-monospace,SFMono-Regular,monospace;font-size:10.5px;color:var(--muted);margin-bottom:9px}
+.inl .meta .lk{color:var(--working)}
+.inl .bod{font-size:12.5px;line-height:1.6;color:#c6cdd6}
+.inl .bod b{color:var(--ink)}
+.inl .bod .hd{display:block;font-weight:700;color:var(--ink);margin-top:9px}
+.inl .bod ul{margin:3px 0 3px 16px}
+.inl .bod li{margin-bottom:2px}
+.inl .bod code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11.5px;color:var(--working)}
+.noteline{display:flex;gap:6px;margin-top:11px;padding:8px 10px;background:rgba(45,212,191,.06);border-left:2px solid var(--accent);font-size:10.5px;color:var(--muted);line-height:1.5}
+.noteline .w{color:var(--faint);flex:none}
+.actions{display:flex;gap:9px;margin-top:11px;align-items:center}
+.abtn{font-size:11.5px;font-weight:600;padding:5px 12px;border-radius:7px;border:1px solid var(--accent-dim);color:var(--accent);background:rgba(45,212,191,.08);flex:none}
+.abtn.dis{color:var(--muted);border-color:var(--line);background:var(--panel3)}
+.cap{font-size:10px;color:var(--faint)}
+.collapse{margin-top:10px;font-size:10.5px;color:var(--muted);display:flex;gap:6px;align-items:center}
+.subnote{font-size:11px;color:var(--muted);padding:8px 2px 4px}
+</style>
+</head>
+<body>
+<div class="desk"><div class="topbar"><span class="tab">Board</span><span class="tab on">Issues</span><span class="tab">Settings</span><span class="tb-r">corrald · live · 127.0.0.1:8474</span></div><div style="flex:1;display:flex;min-height:0;"><div class="rail"><div class="railhd">repositories</div><div class="ri on"><span class="nm">corral</span><span class="n">7</span></div><div class="ri"><span class="nm">sendmeter</span><span class="n">17</span></div><div class="ri"><span class="nm">project-hearthwild</span><span class="n">28</span></div><div class="ri"><span class="nm">dotfiles</span><span class="n">1</span></div><div class="raildesc">repo categories from the daemon snapshot / issues — same grouping as today; open counts at fetch time</div></div><div class="main"><div class="mtitle"><span class="h">Issues&nbsp;&nbsp;(7)</span><span class="s">corral · open · per-repo browser</span></div><div class="toolbar"><span class="sel on">open</span><span class="sel">closed</span><span class="sel">all</span><input class="search" placeholder="search title or #number"><span class="rebtn">↻ refresh</span></div><div class="sep"></div><div class="list"><div class="row"><span class="num">#272</span><span class="tl">P5: Worktree browser + herdr-pane terminal attach (iOS FleetNotifier)</span><span class="st op">OPEN</span></div><div class="row"><span class="num">#271</span><span class="tl">Transcript rendering: styled blocks, no per-block 'assistant' labels, tofu-glyph fix, syntax highlighting (board + iOS)</span><span class="st op">OPEN</span></div><div class="row on"><span class="num">#270</span><span class="tl">egui Issues tab: per-repo browser (side repo picker) + expandable issue body</span><span class="st op">OPEN</span><span class="chev">▴</span></div><div class="inl"><div class="pills"><span class="pill open">OPEN</span><span class="lp enh">enhancement</span></div><div class="meta">corral · #270 · opened 2026-08-28 · <span class="lk">jirathip-dev/corral#270</span></div><div class="bod"><span class="hd">Why</span>The Issues tab renders ALL repos' issues at once (75+ grouped) — noisy, and issue bodies require the web/GitHub. Direction (Guy 2026-08-28): render <b>per selected repo</b> with the repo picker on the side, and <b>expand each issue row to read its body</b> inline, egui board.
+<span class="hd">Scope (egui board only)</span><ul><li>Repo selector on the side (from the daemon's snapshot repo/tags — same source as today's grouping)</li><li>Selected repo -&gt; that repo's issues (open/closed filter, search retained)</li><li>Issue row expands inline to read title/body/labels/state (body from the daemon issues data; add a body-bearing read path if the snapshot lacks it — read-only, no mutation)</li><li>No change to iOS or daemon write paths</li></ul>
+<span class="hd">DESIGN GATE</span>Per Guy's standing rule: outline/mockup of the per-repo layout first (same design language as <code>corral-ux-prototype</code>) -&gt; Guy approval -&gt; impl.
+<span class="hd">Acceptance criteria</span><ul><li>Mockup posted on this issue; Guy approval recorded</li><li>Repo picker on the side; selecting a repo renders only its issues</li><li>Issue row expands to read body inline (title/body/labels/state)</li><li>Open/closed filter + search still work per repo</li><li>Read-only; no new write endpoints</li><li>Screenshot-to-issue evidence of the shipped surface</li></ul>
+<span class="hd">Serialization</span>clients/egui only — after #210 and after the Fleets-tab removal lane (same crate).</div><div class="noteline"><span class="w">ⓘ</span> read-only · snapshot refs carry no body — the expanded text arrives via a new daemon read path · no GitHub mutations from the board</div><div class="actions"><span class="abtn">start worktree</span><span class="cap">capability-gated (start_worktree) · unchanged from today</span></div><div class="collapse">▴ collapse</div></div><div class="row"><span class="num">#269</span><span class="tl">Board: remove Fleets tab from core (fleet-ops surfaces move to private plugin)</span><span class="st op">OPEN</span></div><div class="row"><span class="num">#267</span><span class="tl">iOS issue browser: read-only issues list + detail (board parity)</span><span class="st op">OPEN</span></div><div class="row"><span class="num">#239</span><span class="tl">plugin engine: sidecar plugin API for corrald + egui (allowlist fleet-ops)</span><span class="st op">OPEN</span></div><div class="row"><span class="num">#164</span><span class="tl">UX redesign umbrella (tracker) — child map + design docs; not actionable</span><span class="st op">OPEN</span></div></div></div></div></div>
+</body>
+</html>

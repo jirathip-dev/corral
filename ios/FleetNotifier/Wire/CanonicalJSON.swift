@@ -60,6 +60,12 @@ enum CanonicalJSON {
                  (key: "lines", value: .uint(UInt64(lines)))])
     }
 
+    /// #267: `{"kind":"read_issues"}` — unit payload; the daemon serves the
+    /// same last-known window as the board's `GET /issues` (grant-gated).
+    static func readIssuesPayload() -> Value {
+        .object([(key: "kind", value: .string("read_issues"))])
+    }
+
     /// Interrupt/kill/attach commands take a JSON null payload in the drive
     /// contract. Keeping the builder named prevents the UI from accidentally
     /// inventing a prompt-shaped payload for an interrupt.

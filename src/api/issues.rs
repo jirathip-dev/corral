@@ -73,6 +73,14 @@ impl IssuesCache {
 /// write by itself: what matters is the capability grant and the worktree
 /// dispatch's own fleet-ops CLI identity validation.
 pub async fn issues(State(state): State<Arc<SuperState>>) -> Json<serde_json::Value> {
+    Json(issues_view(&state).await)
+}
+
+/// The shared read-only issues view (#267): built once and served by BOTH
+/// the unauthenticated `GET /issues` (egui board parity) and the
+/// grant-gated `/drive read_issues` arm (iOS browser) — one builder so the
+/// two surfaces can never diverge on what the iOS client sees.
+pub async fn issues_view(state: &SuperState) -> serde_json::Value {
     let mut map = state.issues.snapshot();
     let live_repos = live_workspace_repos(&state.store).await;
 
@@ -92,7 +100,7 @@ pub async fn issues(State(state): State<Arc<SuperState>>) -> Json<serde_json::Va
     for repo in normalize_categories(live_repos) {
         map.entry(repo).or_default();
     }
-    Json(serde_json::json!({ "repos": map }))
+    serde_json::json!({ "repos": map })
 }
 
 /// Thin alias so the handler signature stays readable (the full state type

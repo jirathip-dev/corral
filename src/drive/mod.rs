@@ -63,6 +63,13 @@ pub enum Capability {
     /// diff + diffstat). Read-only; mirrored from `read_tail` (auth, audit,
     /// refusal kinds) with the same per-device default-deny grant.
     ReadDiff,
+    /// #267: read the repo-level issue browser payload (fleet-level, like
+    /// `start_worktree` — NOT an agent drive). Serves the same
+    /// last-known issue set as `GET /issues` (the gh poller's window:
+    /// number/state/title/labels/url + body + newest-first comments), so
+    /// the iOS browser is grant-gated + audited like `read_diff` while the
+    /// egui board keeps its unauthenticated read surface. Default-empty.
+    ReadIssues,
 }
 
 impl fmt::Display for Capability {
@@ -76,6 +83,7 @@ impl fmt::Display for Capability {
             Self::Attach => "attach",
             Self::StartWorktree => "start_worktree",
             Self::ReadDiff => "read_diff",
+            Self::ReadIssues => "read_issues",
         })
     }
 }
@@ -93,6 +101,7 @@ impl FromStr for Capability {
             "attach" => Ok(Self::Attach),
             "start_worktree" => Ok(Self::StartWorktree),
             "read_diff" => Ok(Self::ReadDiff),
+            "read_issues" => Ok(Self::ReadIssues),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -134,6 +143,10 @@ pub enum DrivePayload {
         #[serde(default)]
         lines: Option<u32>,
     },
+    /// #267: read the read-only issue browser payload. No parameters: the
+    /// daemon serves the same last-known window as `GET /issues` (the gh
+    /// poller's bounded set) — the client never selects or mutates.
+    ReadIssues,
     /// Claim-based approval reply (D8): the client echoes the exact
     /// `prompt_hash` it is answering. The host refuses when the current
     /// prompt's hash differs — this kills the wrong-question race.
@@ -189,6 +202,7 @@ impl DrivePayload {
             (Self::Prompt { .. }, Capability::Prompt)
             | (Self::ReadTail { .. }, Capability::ReadTail)
             | (Self::ReadDiff { .. }, Capability::ReadDiff)
+            | (Self::ReadIssues, Capability::ReadIssues)
             | (Self::Approve { .. }, Capability::Approve)
             | (Self::StartWorktree { .. }, Capability::StartWorktree) => Ok(typed),
             _ => Err(PayloadError {
@@ -442,6 +456,7 @@ mod tests {
             Capability::Attach,
             Capability::StartWorktree,
             Capability::ReadDiff,
+            Capability::ReadIssues,
         ] {
             let s = cap.to_string();
             assert_eq!(s.parse::<Capability>().unwrap(), cap);
@@ -449,6 +464,35 @@ mod tests {
             assert_eq!(serde_json::from_str::<Capability>(&wire).unwrap(), cap);
         }
         assert_eq!(Capability::from_str("sudo").unwrap_err().0, "sudo");
+    }
+
+    /// #267 RED guard (rev-g232 lesson): the issue browser capability is
+    /// carved into the payload path as the string `"read_issues"` — this
+    /// guard reds when the FromStr/Display arm or the enum entry drifts so
+    /// the iOS constant is never green-on-green with a daemon that cannot
+    /// parse it. Read-ONLY: the payload shape is asserted to stay empty, so
+    /// a future write-bearing field must be an explicit decision.
+    #[test]
+    fn read_issues_is_canonical_and_payload_is_read_only_empty() {
+        assert_eq!(Capability::ReadIssues.to_string(), "read_issues");
+        assert_eq!(
+            "read_issues".parse::<Capability>().unwrap(),
+            Capability::ReadIssues
+        );
+        let parsed = DrivePayload::parse(
+            Capability::ReadIssues,
+            &serde_json::json!({ "kind": "read_issues" }),
+        )
+        .unwrap();
+        assert_eq!(parsed, DrivePayload::ReadIssues);
+        // The variant is a UNIT payload: it carries no fields at all, so a
+        // write cannot ride it (serde ignores unknown keys, so an extra
+        // `mutate` key still parses — but there is no written field in the
+        // typed shape; a writer would need this enum to grow one).
+        assert!(
+            matches!(DrivePayload::ReadIssues, DrivePayload::ReadIssues),
+            "unit payload — structurally no data"
+        );
     }
 
     #[test]

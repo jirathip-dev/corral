@@ -78,7 +78,7 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 
 use crate::core::events::{
-    GhIssueLabel, GhIssueRef, GhPrState, GhRepoState, Plane, PlaneEvent, PlaneSink,
+    GhIssueComment, GhIssueLabel, GhIssueRef, GhPrState, GhRepoState, Plane, PlaneEvent, PlaneSink,
 };
 use crate::core::store::Store;
 
@@ -102,6 +102,10 @@ pub const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const PR_LIMIT: usize = 20;
 /// Recent issues per repo per poll (open + closed, by updated).
 const ISSUE_LIMIT: usize = 10;
+/// #267: NEWEST-first comment window fetched per repo-level issue (the read
+/// browser reveals this bounded window lazily; the daemon never pages
+/// GitHub on demand). `comment_total` still carries the authoritative total.
+const COMMENTS_LIMIT: usize = 30;
 /// Issues a PR closes, per PR per poll (the authoritative issue-linkage
 /// surface, #23).
 const CLOSING_ISSUES_LIMIT: usize = 10;
@@ -778,7 +782,13 @@ fragment GhPlaneRepo on Repository {{
     }}
   }}
   issues(first: {ISSUE_LIMIT}, orderBy: {{field: UPDATED_AT, direction: DESC}}, states: [OPEN, CLOSED]) {{
-    nodes {{ number state title url labels(first: 10) {{ nodes {{ name color }} }} }}
+    nodes {{ number state title url labels(first: 10) {{ nodes {{ name color }} }}
+      body
+      comments(first: {COMMENTS_LIMIT}, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
+        totalCount
+        nodes {{ body createdAt author {{ login }} }}
+      }}
+    }}
   }}
 }}
 "#,
@@ -873,6 +883,32 @@ struct IssueWire {
     title: Option<String>,
     url: Option<String>,
     labels: Option<NodesWire<LabelWire>>,
+    /// #267: body + newest-first comment window (see `COMMENTS_LIMIT`).
+    body: Option<String>,
+    comments: Option<CommentsWire>,
+}
+
+/// The `comments` connection on an issue node (#267).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct CommentsWire {
+    total_count: Option<u64>,
+    nodes: Option<Vec<CommentWire>>,
+}
+
+/// One comment node on an issue (#267).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct CommentWire {
+    body: Option<String>,
+    created_at: Option<String>,
+    author: Option<AuthorWire>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AuthorWire {
+    login: Option<String>,
 }
 
 /// Normalize a GraphQL `labels` connection into [`GhIssueLabel`]s. A label
@@ -893,6 +929,36 @@ fn labels_from(wire: &Option<NodesWire<LabelWire>>) -> Vec<GhIssueLabel> {
                     Some(GhIssueLabel {
                         name,
                         color: label.color.clone().unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// #267: map the issue's comment window into [`GhIssueComment`]s. The wire
+/// order comes from the query's `orderBy: CREATED_AT DESC`, so the Vec is
+/// newest-first (the browser reveals this window lazily). A comment without
+/// a body is dropped; a missing connection stays empty — never a guess.
+fn comments_from(wire: &Option<CommentsWire>) -> Vec<GhIssueComment> {
+    wire.as_ref()
+        .and_then(|w| w.nodes.as_ref())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|comment| {
+                    let body = comment.body.clone()?;
+                    if body.is_empty() {
+                        return None;
+                    }
+                    Some(GhIssueComment {
+                        author: comment
+                            .author
+                            .as_ref()
+                            .and_then(|a| a.login.clone())
+                            .unwrap_or_default(),
+                        body,
+                        created_at: comment.created_at.clone().unwrap_or_default(),
                     })
                 })
                 .collect()
@@ -1002,6 +1068,9 @@ fn build_repo_state(spec: &GhRepoSpec, wire: &RepoWire) -> GhRepoState {
                     title: issue.title.clone().unwrap_or_default(),
                     labels: labels_from(&issue.labels),
                     url: issue.url.clone().unwrap_or_default(),
+                    body: issue.body.clone().filter(|b| !b.is_empty()),
+                    comments: comments_from(&issue.comments),
+                    comment_total: issue.comments.as_ref().and_then(|c| c.total_count),
                 })
                 .collect()
         })
@@ -1053,6 +1122,9 @@ fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
                         title: closing.title.clone().unwrap_or_default(),
                         labels: labels_from(&closing.labels),
                         url: closing.url.clone().unwrap_or_default(),
+                        body: None,
+                        comments: Vec::new(),
+                        comment_total: None,
                     }
                 })
                 .collect()
@@ -1103,6 +1175,14 @@ mod tests {
         assert!(
             query.contains("closingIssuesReferences(first: 10)"),
             "authoritative issue linkage (issue #23)"
+        );
+        assert!(
+            query.contains("comments(first: 30"),
+            "#267: newest-first comment window for the read browser"
+        );
+        assert!(
+            query.contains("direction: DESC"),
+            "#267: comments ordered newest-first so the browser can lazy-reveal"
         );
         assert!(!query.contains("mutation"), "never a mutation (D-083)");
         assert_eq!(
@@ -1286,7 +1366,15 @@ mod tests {
                   "labels": { "nodes": [
                     { "name": "p2", "color": "5319E7" },
                     { "name": "bug", "color": "D73A4A" }
-                  ]}
+                  ]},
+                  "body": "Ship the three-plane architecture.",
+                  "comments": {
+                    "totalCount": 2,
+                    "nodes": [
+                      { "body": "LGTM", "createdAt": "2026-08-28T08:00:00Z", "author": { "login": "reviewer" } },
+                      { "body": "Shipped.", "createdAt": "2026-08-28T07:02:17Z", "author": { "login": "jirathip-k" } }
+                    ]
+                  }
                 },
                 { "number": 3, "state": "CLOSED", "title": "P1 shipped" }
             ]}
@@ -1349,6 +1437,29 @@ mod tests {
         assert_eq!(state.issues[1].labels[0].color, "5319E7");
         assert_eq!(state.issues[1].labels[1].name, "bug");
         assert_eq!(state.issues[1].labels[1].color, "D73A4A");
+        // #267: repo-level issues carry the body + newest-first comment
+        // window + the authoritative total count.
+        assert_eq!(
+            state.issues[1].body.as_deref(),
+            Some("Ship the three-plane architecture.")
+        );
+        assert_eq!(state.issues[1].comment_total, Some(2));
+        assert_eq!(state.issues[1].comments.len(), 2);
+        assert_eq!(state.issues[1].comments[0].author, "reviewer");
+        assert_eq!(state.issues[1].comments[0].body, "LGTM");
+        assert_eq!(
+            state.issues[1].comments[0].created_at,
+            "2026-08-28T08:00:00Z"
+        );
+        assert_eq!(state.issues[1].comments[1].author, "jirathip-k");
+        assert_eq!(
+            state.issues[1].comments[1].created_at, "2026-08-28T07:02:17Z",
+            "wire order (DESC) is preserved -> newest first"
+        );
+        // An issue with no comments leg stays empty on all three fields.
+        assert_eq!(state.issues[0].body, None);
+        assert!(state.issues[0].comments.is_empty());
+        assert_eq!(state.issues[0].comment_total, None);
         // #113: closing-issue refs carry labels + url too (not just title).
         assert_eq!(
             state.prs[1].closing_issues[0].url,

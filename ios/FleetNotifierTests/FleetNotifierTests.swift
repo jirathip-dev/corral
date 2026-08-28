@@ -2494,7 +2494,7 @@ final class TappableControlStateTests: XCTestCase {
     func testFleetNavigationPathReconcilesWhenTheRoutedAgentIsDeleted() {
         var state = FleetViewState()
         state.open(agentId: "herdr:selected")
-        XCTAssertEqual(state.navigationPath, [AgentRoute(agentId: "herdr:selected")])
+        XCTAssertEqual(state.navigationPath, [FleetRoute.agent(agentId: "herdr:selected")])
 
         state.reconcile(availableAgentIds: ["herdr:other"])
         XCTAssertTrue(state.navigationPath.isEmpty,
@@ -2505,7 +2505,15 @@ final class TappableControlStateTests: XCTestCase {
         var state = FleetViewState()
         state.open(agentId: "herdr:selected")
         state.reconcile(availableAgentIds: ["herdr:selected", "herdr:new"])
-        XCTAssertEqual(state.navigationPath, [AgentRoute(agentId: "herdr:selected")])
+        XCTAssertEqual(state.navigationPath, [FleetRoute.agent(agentId: "herdr:selected")])
+    }
+
+    func testIssueBrowserRouteSurvivesAgentReconcile() {
+        var state = FleetViewState()
+        state.openIssues()
+        // The fleet-level issues route is never agent-scoped.
+        state.reconcile(availableAgentIds: [])
+        XCTAssertEqual(state.navigationPath, [FleetRoute.issues])
     }
 
     func testExplicitStateTextCoversEveryLifecycleState() {
@@ -4699,5 +4707,149 @@ final class FleetHealthStripTests: XCTestCase {
         XCTAssertEqual(store.fleetHealth.count, 1)
         XCTAssertEqual(store.fleetHealth[0].name, "corral")
         XCTAssertTrue(store.fleetHealth[0].orchAlive)
+    }
+}
+
+// MARK: - #267 read-only issue browser (V3: chips + inline detail)
+
+@MainActor
+final class IssueBrowserTests: XCTestCase {
+
+    private func wire() throws -> IssuesBrowserWire {
+        let data = Data(#"""
+        {"repos": {
+          "corral": [
+            {"repo":"corral","number":267,"state":"open","title":"iOS issue browser",
+             "labels":[{"name":"enhancement","color":"5319E7"}],
+             "url":"https://github.com/jirathip-dev/corral/issues/267",
+             "body":"Read-only browser.",
+             "comment_total":38,
+             "comments":[
+                {"author":"reviewer","body":"LGTM","created_at":"2026-08-28T08:00:00Z"},
+                {"author":"jirathip-k","body":"Shipped.","created_at":"2026-08-28T07:00:00Z"}
+             ]},
+            {"repo":"corral","number":168,"state":"closed","title":"Rate-limit the poller"}
+          ],
+          "sendmeter": [
+            {"repo":"sendmeter","number":722,"state":"open","title":"Offline-first cache"}
+          ]
+        }}
+        """#.utf8)
+        return try JSONDecoder().decode(IssuesBrowserWire.self, from: data)
+    }
+
+    func testBrowserPayloadDecodesBodyLabelsAndNewestFirstComments() throws {
+        let browser = try wire()
+        XCTAssertEqual(browser.repos["corral"]?.count, 2)
+        let issue = try XCTUnwrap(browser.repos["corral"]?.first { $0.number == 267 })
+        XCTAssertEqual(issue.state, "open")
+        XCTAssertEqual(issue.body, "Read-only browser.")
+        XCTAssertEqual(issue.commentTotal, 38)
+        XCTAssertEqual(issue.labels.first?.name, "enhancement")
+        XCTAssertEqual(issue.labels.first?.color, "5319E7")
+        // Newest-first wire order is preserved.
+        XCTAssertEqual(issue.comments.count, 2)
+        XCTAssertEqual(issue.comments[0].author, "reviewer")
+        XCTAssertEqual(issue.comments[1].author, "jirathip-k")
+    }
+
+    func testOldDaemonPayloadWithoutCommentsStillDecodes() throws {
+        // The pre-#267 GhIssueRef shape (no labels/url/body/comments) must
+        // decode with defaults — the agent-chip path depends on it.
+        let data = Data(#"""
+        {"repos": {"corral": [{"repo":"corral","number":4,"state":"OPEN","title":"P2 planes"}]}}
+        """#.utf8)
+        let browser = try JSONDecoder().decode(IssuesBrowserWire.self, from: data)
+        let issue = try XCTUnwrap(browser.repos["corral"]?.first)
+        XCTAssertEqual(issue.number, 4)
+        XCTAssertTrue(issue.labels.isEmpty)
+        XCTAssertEqual(issue.url, "")
+        XCTAssertNil(issue.body)
+        XCTAssertNil(issue.commentTotal)
+        XCTAssertTrue(issue.comments.isEmpty)
+    }
+
+    func testRowsFilterOpenByDefaultNewestFirst() throws {
+        let issues = try wire().repos.flatMap { $0.value }
+        let open = IssueBrowser.rows(issues, filter: .open)
+        XCTAssertEqual(open.map(\.number), [722, 267])
+        let closed = IssueBrowser.rows(issues, filter: .closed)
+        XCTAssertEqual(closed.map(\.number), [168])
+    }
+
+    func testLazyCommentRevealWithinBoundedWindow() throws {
+        let issue = try XCTUnwrap(wire().repos["corral"]?.first { $0.number == 267 })
+        // Nothing revealed yet: zero visible, 38 earlier, revealable.
+        XCTAssertTrue(IssueBrowser.visibleComments(issue, revealed: 0).isEmpty)
+        XCTAssertEqual(IssueBrowser.earlierCount(issue, revealed: 0), 38)
+        XCTAssertTrue(IssueBrowser.canRevealMore(issue, revealed: 0))
+        // One chunk: all 2 window comments visible (window < chunk); the
+        // divider still reports the 36 comments the daemon did NOT fetch.
+        let revealed = 20
+        XCTAssertEqual(IssueBrowser.visibleComments(issue, revealed: revealed).count, 2)
+        XCTAssertEqual(IssueBrowser.earlierCount(issue, revealed: revealed), 36)
+        // Window exhausted: no more reveal (honest bounded window).
+        XCTAssertFalse(IssueBrowser.canRevealMore(issue, revealed: revealed))
+    }
+
+    func testEarlierCountWithoutTotalTreatsWindowAsEverything() {
+        let plain = GhIssueRef(repo: "corral", number: 1, state: "open", title: "x",
+                               comments: [IssueComment(author: "a", body: "b", createdAt: nil)])
+        XCTAssertEqual(IssueBrowser.earlierCount(plain, revealed: 0), 1)
+        XCTAssertEqual(IssueBrowser.earlierCount(plain, revealed: 1), 0)
+        XCTAssertFalse(IssueBrowser.canRevealMore(plain, revealed: 1))
+    }
+
+    func testReadIssuesCapabilityStringAndDemoExposure() {
+        // The daemon-side RED-guard mirror: the capability string is the
+        // canonical wire name — never invent another spelling.
+        XCTAssertEqual(Capability.readIssues.rawValue, "read_issues")
+        XCTAssertEqual(Capability.readIssues.displayName, "Issues")
+        XCTAssertNotEqual(Capability.readIssues.grantDescription, "")
+
+        let model = AppModel(session: URLSession(configuration: .ephemeral))
+        model.mode = .demo
+        XCTAssertTrue(model.actionGrants.contains(.readIssues),
+                      "demo exposes the read-only browser (local seed)")
+        model.mode = .live
+        model.grants = ["read_issues"]
+        XCTAssertTrue(model.actionGrants.contains(.readIssues))
+        model.grants = []
+        XCTAssertFalse(model.actionGrants.contains(.readIssues),
+                       "live mode: default-empty until the host grants read_issues")
+    }
+
+    func testIssuesBrowserPaneStateMachine() throws {
+        var pane = IssuesBrowserPane()
+        XCTAssertTrue(pane.isEmpty)
+        pane.beginFetch()
+        XCTAssertTrue(pane.isLoading)
+        pane.apply(try wire())
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertFalse(pane.isEmpty)
+        XCTAssertEqual(pane.repos["sendmeter"]?.first?.number, 722)
+        XCTAssertNotNil(pane.updatedAt)
+        pane.apply("not_granted")
+        XCTAssertNil(pane.updatedAt, "failure clears the updatedAt marker")
+
+        var fresh = IssuesBrowserPane()
+        fresh.apply("dispatch refused")
+        XCTAssertFalse(fresh.isEmpty, "an error is a state, not emptiness")
+        XCTAssertEqual(fresh.error, "dispatch refused")
+    }
+
+    func testDemoIssuesSeedMirrorsApprovedRows() throws {
+        let seeded = DemoFleet.seedIssues()
+        // Open #267 with a body + comment window + authoritative total.
+        let corral = try XCTUnwrap(seeded.repos["corral"])
+        let issue267 = try XCTUnwrap(corral.first { $0.number == 267 })
+        XCTAssertEqual(issue267.state, "open")
+        XCTAssertNotNil(issue267.body)
+        XCTAssertEqual(issue267.commentTotal, 38)
+        XCTAssertFalse(issue267.comments.isEmpty)
+        // Closed bucket exists (proves the closed filter).
+        XCTAssertTrue(corral.contains { $0.state == "closed" })
+        // Repos are the tracked fleets.
+        XCTAssertEqual(Set(seeded.repos.keys), ["corral", "sendmeter", "plush-meadow"])
     }
 }

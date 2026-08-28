@@ -209,7 +209,7 @@ final class AppModel: ObservableObject {
         /// even though no daemon grant exists. Live mode always uses the
         /// device's signed grants.
         if mode == .demo {
-            return [.prompt, .interrupt, .approve, .readTail]
+            return [.prompt, .interrupt, .approve, .readTail, .readIssues]
         }
 #endif
         return Set(grants.compactMap(Capability.init(rawValue:)))
@@ -942,6 +942,35 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
+    /// #267: fetch the read-only issue browser payload. FLEET-level (no
+    /// agent target) — gated by the device ledger grant only, signed +
+    /// audited like every read_diff/read_tail read.
+    func driveReadIssues(driveClient: DriveClient) {
+#if DEBUG
+        if mode == .demo {
+            fleet.rememberIssuesBrowser(DemoFleet.seedIssues())
+            return
+        }
+#endif
+        guard let signer, let keyId else {
+            banner = .error("unregistered", "Device is not registered.")
+            return
+        }
+        guard actionGrants.contains(.readIssues) else {
+            banner = .error("not_granted",
+                            "requires the read_issues grant — ask the host.")
+            return
+        }
+        let payload = CanonicalJSON.readIssuesPayload()
+        let key = DriveActionKey(capability: .readIssues, target: "fleet",
+                                 identity: "browser")
+        guard let requestId = beginDriveAction(key) else { return }
+        fleet.beginIssuesFetch()
+        drive(capability: .readIssues, target: "fleet", payload: payload,
+              driveClient: driveClient, keyId: keyId, signer: signer,
+              actionKey: key, requestId: requestId)
+    }
+
     /// Outcome of `drivePrompt`. The typed result lets the sheet keep a typed
     /// draft on a real refusal and distinguish it from an in-flight dedup
     /// (same prompt already sending) without sniffing the global banner's
@@ -1196,6 +1225,12 @@ final class AppModel: ObservableObject {
                             // unified lines) into the agent's diff pane.
                             self.fleet.rememberDiffPage(page, for: target)
                         }
+                    } else if capability == .readIssues {
+                        if let browser = response.result?.issuesBrowser {
+                            // #267: fold the read-only browser payload into
+                            // the fleet-level pane.
+                            self.fleet.rememberIssuesBrowser(browser)
+                        }
                     } else if capability == .approve {
                         self.banner = .info("Approved \(target): rev \(response.rev)")
                     } else if capability == .prompt {
@@ -1219,6 +1254,9 @@ final class AppModel: ObservableObject {
                     } else if capability == .readDiff {
                         self.fleet.foldDiffFailure(
                             response.error ?? "dispatch refused (ok:false)", for: target)
+                    } else if capability == .readIssues {
+                        self.fleet.foldIssuesFailure(
+                            response.error ?? "dispatch refused (ok:false)")
                     } else {
                         self.banner = .error("dispatch_refused",
                                              response.error ?? "dispatch refused (ok:false)")
@@ -1319,6 +1357,11 @@ final class AppModel: ObservableObject {
 
     @Published var demoPresentation: DemoPresentation = .after
     @Published var demoDetailAgentId: String?
+    /// #267: launch-arg demo route straight to the issue browser (DEBUG
+    /// evidence route; see `-corralDemoIssues`). `demoOpenIssueNumber`
+    /// auto-expands one row for the inline-detail evidence route.
+    @Published var demoOpenIssues = false
+    @Published var demoOpenIssueNumber: UInt64?
 
     func enterDemo(presentation: DemoPresentation = .after,
                    detailAgentId: String? = nil) {

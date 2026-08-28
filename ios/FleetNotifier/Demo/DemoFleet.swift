@@ -57,6 +57,84 @@ enum DemoFleet {
         ]
     }
 
+    /// #267: seeded read-only issue browser (mirrors the approved V3 mock's
+    /// shape: repos → issues with body + newest-first comment window).
+    /// Issue lists use real repo data (jirathip-dev/corral, -sendmeter,
+    /// -plush-meadow at prototype time); comment text is illustrative demo
+    /// copy — the LIVE surface renders verbatim daemon data.
+    static func seedIssues() -> IssuesBrowserWire {
+        let openLabel = IssueLabel(name: "enhancement", color: "5319E7")
+        let bugLabel = IssueLabel(name: "bug", color: "D73A4A")
+        let infraLabel = IssueLabel(name: "infra", color: "FB8532")
+        func comment(_ body: String, at created: String, author: String = "jirathip-k") -> IssueComment {
+            IssueComment(author: author, body: body, createdAt: created)
+        }
+        func issue(_ repo: String, _ number: UInt64, _ state: String, _ title: String,
+                   labels: [IssueLabel] = [], body: String? = nil,
+                   comments: [IssueComment] = [], commentTotal: UInt64? = nil) -> GhIssueRef {
+            GhIssueRef(repo: repo, number: number, state: state, title: title,
+                       labels: labels, url: "https://github.com/jirathip-dev/\(repo)/issues/\(number)",
+                       body: body, commentTotal: commentTotal, comments: comments)
+        }
+        /// Newest-first window (the daemon's `orderBy: CREATED_AT DESC`):
+        /// `newest` first, then `count - newest.count` older filler
+        /// comments, so the "Load earlier · 18 earlier comments" divider is
+        /// reproducible in demo evidence (the LIVE surface renders the
+        /// daemon's bounded window verbatim).
+        func commentWindow(count: Int, total: UInt64, newest: [IssueComment]) -> [IssueComment] {
+            var window = newest
+            var index = newest.count
+            while window.count < count {
+                index += 1
+                let day = 27 - max(0, window.count - newest.count)
+                window.append(comment("Automated demo comment \(index) (illustrative).",
+                                      at: String(format: "2026-08-%02dT12:00:00Z", day),
+                                      author: index.isMultiple(of: 2) ? "review" : "jirathip-k"))
+            }
+            return window
+        }
+        let corral267 = issue(
+            "corral", 267, "open", "iOS issue browser: read-only issue list + detail",
+            labels: [openLabel, IssueLabel(name: "ios", color: "FD8C73")],
+            body: "Read-only issues browser (list + detail) for FleetNotifier, modeled on read_tail / read_diff: same read-only grant gating, default-empty, no GitHub mutations from the device.",
+            comments: commentWindow(
+                count: 30, total: 38, newest: [
+                    comment("Read-only surface, same grant pattern as the tail — no GitHub mutations from iOS.", at: "2026-08-28T14:02:00Z"),
+                    comment("V3 inline approved; lazy window rendered newest-first.", at: "2026-08-28T15:10:00Z"),
+                ]),
+            commentTotal: 38)
+        let sendmeter722 = issue(
+            "sendmeter", 722, "open", "Offline-first read cache for the watch session",
+            labels: [openLabel], body: "Cache the latest session summary on-device so the watch opens instantly.", commentTotal: 2)
+        let plush108 = issue(
+            "plush-meadow", 108, "open", "Production chains: re-check gauntlet rollout",
+            labels: [IssueLabel(name: "ops", color: "1D76DB")], commentTotal: 0)
+        let corral239 = issue(
+            "corral", 239, "open", "plugin engine: sidecar plugin API for agent rows",
+            labels: [openLabel], commentTotal: 4)
+        let corral232 = issue(
+            "corral", 232, "open", "Agent worktree diff view (board + iOS)",
+            labels: [IssueLabel(name: "docs", color: "0E8A16")], commentTotal: 12)
+        let corral210 = issue(
+            "corral", 210, "open", "Fleet-health status strip (orch/workers)",
+            labels: [infraLabel], commentTotal: 7)
+        let corral164 = issue(
+            "corral", 164, "open", "UX redesign umbrella (tracker)",
+            labels: [openLabel], commentTotal: 9)
+        let corral843 = issue(
+            "corral", 843, "open", "native: Send Conditions card tap does nothing",
+            labels: [bugLabel], commentTotal: 3)
+        let corral168 = issue(
+            "corral", 168, "closed", "Rate-limit the gh poller on 401 storms",
+            labels: [bugLabel, infraLabel], commentTotal: 5)
+
+        return IssuesBrowserWire(repos: [
+            "corral": [corral267, corral239, corral232, corral210, corral164, corral843, corral168],
+            "sendmeter": [sendmeter722],
+            "plush-meadow": [plush108],
+        ])
+    }
+
     struct RecentBlock: Equatable, Sendable {
         let kind: TranscriptBlockKind
         let text: String

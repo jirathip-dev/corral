@@ -153,6 +153,9 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
             title: "Integration coverage".to_string(),
             labels: Vec::new(),
             url: "https://github.com/jirathip-dev/corral/issues/113".to_string(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
         }],
     );
     state.issues = issues;

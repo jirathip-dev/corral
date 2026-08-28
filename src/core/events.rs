@@ -130,6 +130,23 @@ pub struct GhIssueLabel {
     pub color: String,
 }
 
+/// One GitHub issue comment (#267): display author, body text, and the
+/// ISO-8601 creation timestamp exactly as GitHub reports it. This is the
+/// bounded window the poller fetches per issue — comments are never paged
+/// further daemon-side (the browser reveals the fetched window lazily).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhIssueComment {
+    /// Author login. Empty when GitHub reports none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// Comment body (markdown, verbatim from GitHub).
+    pub body: String,
+    /// ISO-8601 createdAt, e.g. `2026-08-28T07:02:17Z`. Empty when GitHub
+    /// reports none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created_at: String,
+}
+
 /// Issue reference for one repo (WS2) — "issue refs" leg of the aliased
 /// query: number, current state, title, labels, and the canonical HTML url.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +165,21 @@ pub struct GhIssueRef {
     /// without a clickable link.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// #267: issue body (markdown, verbatim). Fetched by the poller for the
+    /// repo-level issue window; `None` on older daemons and on issue refs
+    /// that are NOT repo-level polls (e.g. a PR's closing refs) — those
+    /// intentionally carry no body to keep agent snapshots lean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// #267: NEWEST-first bounded comment window (poller
+    /// `COMMENTS_LIMIT`). Empty when GitHub reports none or the daemon is
+    /// older. `comment_total` carries GitHub's authoritative total so the
+    /// client can label how many comments are still unloaded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<GhIssueComment>,
+    /// #267: GitHub's authoritative total comment count for the issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_total: Option<u64>,
 }
 
 /// Repo-level gh facts for one poll round-trip (WS2).
@@ -272,6 +304,9 @@ mod tests {
                         title: "P2 planes".to_string(),
                         labels: vec![],
                         url: String::new(),
+                        body: None,
+                        comments: vec![],
+                        comment_total: None,
                     }],
                 }],
                 ..Default::default()

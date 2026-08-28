@@ -6,7 +6,9 @@
 #
 # Capabilities (drive contract): prompt, interrupt, approve, read_tail,
 # read_diff (#232: read the agent's worktree diff — read-only, audited,
-# default-empty like every other grant), kill, attach, start_worktree.
+# default-empty like every other grant), read_issues (#267: read the
+# read-only issue browser payload — fleet-level, audited, default-empty),
+# kill, attach, start_worktree.
 #
 # Usage:
 #   scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt

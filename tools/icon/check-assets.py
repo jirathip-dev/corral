@@ -38,19 +38,19 @@ APPROVED_SHA256 = {
     "assets/icon/corral-master.png": "f2274158afa6bda99b9e2a64a140096f5c55aa4daae7dabe89132f8afe385873",
     "assets/icon/corral-icon-1024.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
     "assets/icon/corral-icon-256.png": "b3b59cb2c51564ac7aa8d1fe6ffcde0897d83676ed585eedd4284346ca7ae58a",
-    "assets/icon/corral-icon-macos.png": "7c078ebcd1f4650979db1edc05f599b9d0a522c85e58cc755a21348d601ae2d7",
+    "assets/icon/corral-icon-macos.png": "8c20a7a96f7405e51d3e49dcdb6477720645dc2c46116c9e034313b409de09d6",
     "assets/icon/social-preview.png": "9d8ec825b05cb8655fe9aef6d73e61e7ff443b54854b3d502078e3a01d4103ec",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
 }
 
 INTEGRATION_SHA256 = {
-    "clients/egui/src/main.rs": "09e3162acf7a21fe76efbd869a8b2550ab52fd942b461c4fd7d52a9934202287",
-    "tools/icon/from-user-png.py": "a1ff1b31bb4155e75387f9dd31fe0af93345c4255d1ae3df16774822ec277512",
+    "clients/egui/src/main.rs": "a1fb60dbd7db67b5303409e75f2a3af51b66f8aa3e39555854d330cf900c4b92",
+    "tools/icon/from-user-png.py": "ac45d24e32410c0c2738d1c516d4be6e95568c894d000252d7fe27bb32163084",
     "tools/icon/check-desktop-entry.py": "801960b07623033a96bf22360800be9806ef500c2a9e0f7253957dd03869ba54",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "6f220fa5539fcd1adbd53e771c1d7232305058dbf69ef5f730ff6166e2041d45",
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "bd5d8ab95270d017bb5d2b4c6c965d3fcf61e1e1e0776fe211f0caf397c5945d",
     "scripts/install-corral-ui.sh": "962b084810ed8d23f09fbe616037a9372641826cf3e9b53cfcb28dbc4715445f",
-    "scripts/setup-corrald.sh": "e213e77278019798a21c05321233c1b6be2ef1de24771341aebeaba8b31a57b2",
+    "scripts/setup-corrald.sh": "8e369126d9658408a69aa3e1311343254f0f7ab9d95d562f7e1d74408c6eff01",
     "scripts/test-icon-packaging.sh": "3839305fe3a2d7db82412902c3f9f3a5e7d24a34c79e565c59fcd4f92319b5c5",
 }
 
@@ -66,7 +66,6 @@ PNG_SPECS = {
     "assets/icon/corral-icon-macos.png": ((1024, 1024), "RGBA"),
 }
 
-MAC_ALPHA_HISTOGRAM = {255: 1024 * 1024}
 MAC_SAFE_EXTENT = 824
 MAC_PLATE_SIZE = 1024
 MAC_CENTER_TOLERANCE = 1
@@ -204,22 +203,16 @@ def check_pixels(root: Path) -> None:
     )
 
     generator = load_icon_generator(root)
-    expected_mac = generator.macos_fullbleed(icon_1024)
+    expected_mac = generator.macos_squircle(icon_1024)
     require(
         ImageChops.difference(mac, expected_mac).getbbox() is None,
-        "macOS output does not match the full-bleed generator derivation",
+        "macOS output does not match the squircle generator derivation",
     )
     alpha_histogram = Counter(compatible_pixel_data(mac.getchannel("A")))
+    require(0 in alpha_histogram and 255 in alpha_histogram, "macOS output lacks transparent corners or opaque interior")
     require(
-        dict(alpha_histogram) == MAC_ALPHA_HISTOGRAM,
-        "macOS output is not fully opaque",
-    )
-    require(
-        all(
-            mac.getpixel(point)[3] == 255
-            for point in ((0, 0), (1023, 0), (0, 1023), (1023, 1023))
-        ),
-        "macOS output corners are not opaque",
+        all(mac.getpixel(point)[3] == 0 for point in ((0, 0), (1023, 0), (0, 1023), (1023, 1023))),
+        "macOS output corners are not transparent",
     )
     require(mac.getpixel((512, 512))[3] == 255, "macOS output center is not opaque")
     mac_bbox = generator.content_bbox(mac.convert("RGB"))
@@ -435,7 +428,7 @@ def mutate_mac_corner_alpha(root: Path) -> None:
     with Image.open(path) as source:
         image = source.copy()
     red, green, blue, _ = image.getpixel((0, 0))
-    image.putpixel((0, 0), (red, green, blue, 0))
+    image.putpixel((0, 0), (red, green, blue, 255))
     image.save(path)
 
 

@@ -48,6 +48,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/BoardFilter.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/TerminalAttach.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/StateStyle.swift"
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"

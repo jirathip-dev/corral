@@ -559,11 +559,14 @@ async fn supervise_planes(
         // emit nothing until the next real change), and the per-instance
         // stopped flag must not couple generations (a lingering old
         // watcher's sink failure must not kill the new watcher too).
-        let git_plane: Arc<dyn Plane> = Arc::new(GitPlane::with_repo_roots_and_discovery(
-            vec![fallback_repo_root.clone()],
-            attribution.worktrees_root(),
-            source_discovery.clone(),
-        ));
+        let git_plane: Arc<dyn Plane> = Arc::new(
+            GitPlane::with_repo_roots_and_discovery(
+                vec![fallback_repo_root.clone()],
+                attribution.worktrees_root(),
+                source_discovery.clone(),
+            )
+            .with_backlog_flag(store.git_plane_backlog()),
+        );
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
             Arc::new(store.clone()),
             gh_repo_specs(&identities),

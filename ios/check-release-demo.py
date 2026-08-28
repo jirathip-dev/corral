@@ -64,7 +64,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # IssuesBrowserView (chips + inline detail).
 APPROVED_RELEASE_SOURCE_DIGEST = (
     # #271 R2: view routes highlighted segments for every speaker kind.
-    "d4aefd41fc33960fe857fcdcea7ca48bf5eac5a1c0ad6de10112a7ea5ecf4e19"
+    "86b18b26a8fdea4c1558c94182f5c26b48456ddea3f0741ff6cafb74912d943b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

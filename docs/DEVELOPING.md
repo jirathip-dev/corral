@@ -59,9 +59,10 @@ AppIcon catalog:
 - `corral-master.png` is the cropped square reference.
 - `corral-icon-1024.png` is the opaque repository/reference output.
 - `corral-icon-256.png` is the opaque egui/Linux desktop output.
-- `corral-icon-macos.png` is the 1024px full-bleed opaque macOS output.
-  macOS applies the squircle mask itself, and `macos_fullbleed()` keeps the
-  glyph inside the standard ~80% safe region.
+- `corral-icon-macos.png` is a 1024px RGBA macOS output with a baked,
+  centered rounded-squircle mask and transparent outer corners. The artwork
+  stays inside the standard ~80% safe region; macOS does not add this mask to
+  an opaque square automatically.
 - `social-preview.png` is the 1280×640 repository preview asset. Committing
   it does not change GitHub's social-preview setting; that remains a manual
   repository-settings step.
@@ -84,7 +85,7 @@ different. A machine with the exact approved font at another path may set
 silent Pillow fallback. The checked-in social preview is the approved output
 and should not be regenerated without an approved visual-equivalent change.
 The macOS output can also be derived directly from the checked-in canonical
-`corral-icon-1024.png` with `macos_fullbleed()`; the approved source image is
+`corral-icon-1024.png` with `macos_squircle()`; the approved source image is
 not checked in.
 
 `check-assets.py` is read-only: it checks the pinned SHA-256 manifest for the

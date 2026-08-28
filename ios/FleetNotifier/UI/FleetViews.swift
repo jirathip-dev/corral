@@ -494,6 +494,7 @@ private struct AgentDetailContent: View {
     @State private var showKillConfirm = false
     /// #232: the worktree-diff sheet (lazy paged, grant/capability-gated).
     @State private var diffPresented = false
+    @State private var terminalPresented = false
     @FocusState private var focusPrompt: Bool
 
     private var grants: Set<Capability> { model.actionGrants }
@@ -502,6 +503,17 @@ private struct AgentDetailContent: View {
     }
     private var driveClient: DriveClient {
         model.makeDriveClient()
+    }
+
+    private var terminalWorktree: CorralWorktree? {
+        guard let path = agent.workspace.worktreePath, !path.isEmpty,
+              model.hostURL != nil, model.keyId != nil, model.signer != nil,
+              grants.contains(.attach) else { return nil }
+        return CorralWorktree(repo: agent.workspace.repo ?? "—",
+                              branch: agent.workspace.branch ?? agent.title ?? agent.agentId,
+                              path: path, workspaceId: agent.agentId, paneId: nil,
+                              isPrunable: false, dirty: agent.workspace.dirty,
+                              agentAttached: true, currentFocus: true)
     }
 
     var body: some View {
@@ -588,6 +600,19 @@ private struct AgentDetailContent: View {
         }
         .sheet(isPresented: $diffPresented) {
             AgentDiffSheet(agent: agent, model: model)
+        }
+        .sheet(isPresented: $terminalPresented) {
+            if let worktree = terminalWorktree,
+               let signer = model.signer,
+               let keyId = model.keyId,
+               let host = model.hostURL {
+                TerminalAttachView(
+                    client: TerminalAttachClient(host: host, keyId: keyId, signer: signer),
+                    worktree: worktree)
+            } else {
+                Text("Terminal unavailable")
+                    .padding()
+            }
         }
     }
 
@@ -728,6 +753,14 @@ private struct AgentDetailContent: View {
                     Label("Attach", systemImage: "paperclip")
                 }
                 .disabled(!item.isEnabled)
+            }
+            if terminalWorktree != nil {
+                Button {
+                    terminalPresented = true
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                }
+                .accessibilityHint("Open the attached worktree terminal")
             }
             if let item = availability.first(where: { $0.action == .kill }) {
                 Button(role: .destructive) {
@@ -1960,6 +1993,12 @@ struct FleetView: View {
 #if DEBUG
             .task {
                 applyDebugDemoRoute()
+#if DEBUG
+                if model.mode == .demo && CommandLine.arguments.contains("-corralTerminalPreview") {
+                    try? await Task.sleep(for: .milliseconds(750))
+                    terminalDemoPresented = true
+                }
+#endif
             }
             .onChange(of: model.demoDetailAgentId) { _, _ in
                 applyDebugDemoRoute()
@@ -2026,6 +2065,16 @@ struct FleetView: View {
                             .buttonStyle(.plain)
                             .accessibilityLabel("Issues")
                         }
+#if DEBUG
+                        if model.mode == .demo && model.actionGrants.contains(.attach) {
+                            Button {
+                                terminalDemoPresented = true
+                            } label: {
+                                Label("Terminal", systemImage: "terminal")
+                            }
+                            .accessibilityLabel("Terminal preview")
+                        }
+#endif
                         Menu {
 #if DEBUG
                         Button(model.mode == .demo ? "Exit demo" : "Demo mode",
@@ -2052,6 +2101,11 @@ struct FleetView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(model: model)
             }
+#if DEBUG
+            .sheet(isPresented: $terminalDemoPresented) {
+                NavigationStack { TerminalAttachDemoView() }
+            }
+#endif
             .sheet(item: $answerTarget) { target in
                 AnswerPromptSheet(agentId: target.agentId, model: model, drafts: promptDrafts)
             }
@@ -2059,6 +2113,9 @@ struct FleetView: View {
     }
 
     @State private var showSettings = false
+#if DEBUG
+    @State private var terminalDemoPresented = false
+#endif
     @State private var viewState = FleetViewState()
     /// #166 item 5: the active filter chip and the `.searchable` query over
     /// repo / branch / title / issue. Pure logic lives in `BoardFilter`.
@@ -2080,6 +2137,10 @@ struct FleetView: View {
     /// launch and normal users never enter it accidentally.
     private func applyDebugDemoRoute() {
         guard model.mode == .demo else { return }
+        if CommandLine.arguments.contains("-corralTerminalPreview") {
+            terminalDemoPresented = true
+            return
+        }
         // #267: the issues evidence route wins (it is the shallowest demo
         // destination; the detail route below targets an agent row).
         if model.demoOpenIssues {

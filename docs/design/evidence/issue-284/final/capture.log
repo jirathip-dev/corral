@@ -1,0 +1,7 @@
+# Issue 284 screenshot capture attempt
+# App install: CORRAL_SKIP_CODESIGN=1 bash scripts/install-corral-ui.sh --binary target/release/corrald-ui
+# Launch: open -a /Applications/Corral.app; sleep 3
+# Dock: screencapture -x dock.png -> could not create image from display
+# Command-Tab: screencapture -x command-tab.png -> could not create image from display
+# Applications/Finder: screencapture -x applications-finder.png -> could not create image from display
+# This lane has no accessible real display; no screenshot files were created.

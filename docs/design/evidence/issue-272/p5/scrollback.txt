@@ -1,0 +1,24 @@
+╭─[1]─Status──────────────╮╭─[0]─Unstaged changes──────────────────────────────╮
+│corral(g272-p5-tmux-trans││diff --git a/Cargo.lock b/Cargo.lock               ▐
+╰─────────────────────────╯│index 553fff1..5cc00d6 100644                      │
+╭─[2]─Files - Worktrees -─╮│--- a/Cargo.lock                                   │
+│▼ /                      ▐│+++ b/Cargo.lock                                   │
+│  ▼ ios                  ▐│@@ -315,6 +315,7 @@ source =                       │
+│    ▼ FleetNotifier/UI   ▐│"registry+https://github.com/rust-lang/crates.io-  │
+│      ?? TerminalAttach.s▐│index"                                             │
+│    ▼ FleetNotifier.xcode▐│ checksum =                                        │
+│       M project.pbxproj ▐│"31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a8│
+│  ▼ src/api              ▐│9fc1867a71cd90"                                    │
+│     M mod.rs            ▐│ dependencies = [                                  │
+│   M Cargo.lock          ││  "axum-core",                                     │
+╰─────────────────1 of 10─╯│+ "base64 0.22.1",                                 │
+╭─[3]─Local branches - Re─╮│  "bytes",                                         │
+│  * g272/p5-tmux-transpo…││  "form_urlencoded",                               │
+╰────────────────1 of 204─╯│  "futures-util",                                  │
+╭─[4]─Commits - Reflog────╮│@@ -333,8 +334,10 @@ dependencies = [              │
+│7f7449a8 Gu ◯ corrald: ad││  "serde_json",                                    │
+╰────────────────1 of 273─╯╰───────────────────────────────────────────────────╯
+╭─[5]─Stash───────────────╮╭─Command log───────────────────────────────────────╮
+│6d On main: wip-icon-salv││spot what's new.                                   │
+╰──────────────────1 of 3─╯╰───────────────────────────────────────────────────╯
+Stage: <space> | Commit: c | Stash: s | Discard: d |  Donate Ask Question 0.58.1

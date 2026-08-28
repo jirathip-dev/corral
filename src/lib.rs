@@ -15,3 +15,4 @@ pub mod history;
 pub mod integrate;
 pub mod plugin;
 pub mod push;
+pub mod tmux;

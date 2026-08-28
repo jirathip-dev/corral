@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA272TERMINAL01 /* TerminalAttach.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA272TERMINAL02 /* TerminalAttach.swift */; };
 		04FEAD293E09FF31A5CF356A /* CorraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */; };
 		07BCD4DDA01FCF6529B8CB0B /* DemoFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA101747C96FC7E0499AD652 /* DemoFleet.swift */; };
 		13DBAFCB67403E977144984E /* DriveClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E397B25B007445181A67AA /* DriveClient.swift */; };
@@ -45,6 +46,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AA272TERMINAL02 /* TerminalAttach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAttach.swift; sourceTree = "<group>"; };
 		0642A04325429AB1072D2ADB /* FleetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetStore.swift; sourceTree = "<group>"; };
 		0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierApp.swift; sourceTree = "<group>"; };
 		0C6D9CFBBF9EDC1179F7E4D4 /* FleetNotifierTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FleetNotifierTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -111,6 +113,7 @@
 				B8277522F2489E093BC28309 /* BoardModel.swift */,
 				8439EED775F825EE1DE8EAC3 /* FleetViews.swift */,
 				F933E32D259974E2C207BA96 /* RecentOutputModel.swift */,
+				AA272TERMINAL02 /* TerminalAttach.swift */,
 				5544FDC9B954FE32A7275A43 /* StateStyle.swift */,
 				49D01A23F02B422A1C580729 /* TimeInState.swift */,
 			);
@@ -322,6 +325,7 @@
 				"$(SRCROOT)/FleetNotifier/UI/BoardFilter.swift",
 				"$(SRCROOT)/FleetNotifier/UI/BoardModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
+				"$(SRCROOT)/FleetNotifier/UI/TerminalAttach.swift",
 				"$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/StateStyle.swift",
 				"$(SRCROOT)/FleetNotifier/UI/TimeInState.swift",
@@ -368,6 +372,7 @@
 				E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */,
 				8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */,
 				925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */,
+				AA272TERMINAL01 /* TerminalAttach.swift in Sources */,
 				E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */,
 				EF3EC8BE7904D4B3B6E47091 /* TimeInState.swift in Sources */,
 			);

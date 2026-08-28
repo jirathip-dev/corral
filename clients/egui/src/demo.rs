@@ -32,10 +32,6 @@ const FIXTURE: &str = include_str!("../assets/demo-fixture.json");
 /// runtime).
 pub fn load() -> DemoData {
     let data: DemoData = serde_json::from_str(FIXTURE).expect("embedded demo fixture is valid");
-    // #210: the fixture's heartbeat anchors are static; the demo board
-    // must not read as a stale lane, so re-anchor them to "a few seconds
-    // ago" from the wall clock (demo-only sugar, never production data).
-
     data
 }
 
@@ -86,7 +82,15 @@ mod tests {
             demo.snapshot.agents.len() >= 5,
             "fixture snapshot carries a believable fleet"
         );
-
+        assert!(!demo.deltas.is_empty(), "canned SSE frames are required");
+        let mut rev = demo.snapshot.rev;
+        for delta in &demo.deltas {
+            assert!(
+                delta.rev > rev,
+                "delta revs must strictly increase from the snapshot"
+            );
+            rev = delta.rev;
+        }
         assert_eq!(demo.fleets.status, "ok");
         assert!(!demo.issues.is_empty());
         assert!(

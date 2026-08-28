@@ -202,14 +202,6 @@ pub trait Adapter: Debug + Send + Sync {
     fn is_stale_agent(&self, _agent_id: &str) -> bool {
         false
     }
-
-    /// #210: the per-agent presence heartbeat — epoch millis when this
-    /// adapter last observed each agent alive in its source's trusted
-    /// catalog/event stream. Presence tracking is an adapter-local signal;
-    /// adapters that do not track presence return an empty map.
-    fn last_seen_millis(&self) -> std::collections::HashMap<String, u64> {
-        std::collections::HashMap::new()
-    }
 }
 
 /// Convenience: canonical record with its agent_id, as adapters hand off to

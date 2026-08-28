@@ -882,20 +882,24 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    /// `read_tail` is bounded (D5): 200 lines, with no fleet-wide prefetch.
+    /// `read_tail` is bounded (D5): 50 lines initially, with explicit paging
+    /// up to the daemon's 200-line cap and no fleet-wide prefetch.
     /// #167: the currently open iOS detail view auto-loads it (no tap) and
     /// auto-refreshes while open; this existing iOS policy is unchanged by
     /// #207. `silent` suppresses the in-flight/again banners so the auto timer
     /// does not spam the fleet banner.
-    func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false) {
+    func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false,
+                       lines: UInt32 = 50) {
         guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
             if !silent { banner = .error("unregistered", "Device is not registered.") }
             return
         }
         guard authorize(.readTail, for: live, silent: silent) else { return }
-        let payload = CanonicalJSON.readTailPayload(lines: 200)
-        let key = DriveActionKey(capability: .readTail, target: live.agentId, identity: "tail-200")
+        let sinceRev = fleet.tailPane(for: live.agentId)?.sourceRev
+        let payload = CanonicalJSON.readTailPayload(lines: lines, sinceRev: sinceRev)
+        let key = DriveActionKey(capability: .readTail, target: live.agentId,
+                                 identity: "tail-\(lines)")
         guard let requestId = beginDriveAction(key, silent: silent) else { return }
         fleet.prepareTailFetch(agent: live.agentId)
         drive(capability: .readTail, target: live.agentId, payload: payload,
@@ -1090,7 +1094,7 @@ final class AppModel: ObservableObject {
         }
         let client = driveClient ?? DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!,
                                                 session: session)
-        driveReadTail(agent: live, driveClient: client)
+        driveReadTail(agent: live, driveClient: client, lines: 200)
         return true
     }
 
@@ -1218,7 +1222,7 @@ final class AppModel: ObservableObject {
                         let blocks = response.result?.tailBlocks ?? []
                         // #167: fold the segmented blocks; the result stays in
                         // the detail view (no hijacking fleet banner).
-                        self.fleet.rememberTail(lines, blocks: blocks, for: target)
+                        self.fleet.rememberTail(lines, blocks: blocks, sourceRev: response.result?.tailSourceRev ?? response.rev, for: target)
                     } else if capability == .readDiff {
                         if let page = response.result?.diffPage {
                             // #232: fold the bounded page (diffstat + files +

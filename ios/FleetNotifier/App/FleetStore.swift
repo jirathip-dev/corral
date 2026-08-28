@@ -288,7 +288,7 @@ final class FleetStore: ObservableObject {
 
     /// #167 overload: also fold the segmented blocks + clear the loading/
     /// error flags (the live tail is now "loaded", never a spinner).
-    func rememberTail(_ lines: [String], blocks: [TranscriptBlock], for id: String) {
+    func rememberTail(_ lines: [String], blocks: [TranscriptBlock], sourceRev: UInt64? = nil, for id: String) {
         let maxLines = 200
         let maxBytes = 32 * 1024
         var bounded: [String] = []
@@ -302,6 +302,7 @@ final class FleetStore: ObservableObject {
         tails[id] = bounded
         var pane = tailPanes[id] ?? TailPane()
         pane.apply(blocks, lines: bounded)
+        pane.sourceRev = sourceRev ?? pane.sourceRev
         tailPanes[id] = pane
     }
 

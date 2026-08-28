@@ -131,6 +131,7 @@ pub struct Fleet {
     /// visible Cards selection when capability/grant-gated, and still
     /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
+    pub tail_source_revs: HashMap<String, u64>,
     /// #232: per-agent read_diff cache (changed-files list + paged unified
     /// diff + diffstat). Paged: each fetch appends at `next_offset`.
     pub diffs: HashMap<String, DiffCache>,
@@ -321,6 +322,15 @@ impl Fleet {
     /// content at 200 lines / 32 KiB; the client bounds the number of
     /// cached tails).
     pub fn remember_tail(&mut self, agent_id: &str, tail: Vec<String>) {
+        self.remember_tail_with_rev(agent_id, tail, None);
+    }
+
+    pub fn remember_tail_with_rev(
+        &mut self,
+        agent_id: &str,
+        tail: Vec<String>,
+        source_rev: Option<u64>,
+    ) {
         if self.tails.len() >= 64
             && !self.tails.contains_key(agent_id)
             && let Some(oldest) = self.tails.keys().next().cloned()
@@ -328,6 +338,10 @@ impl Fleet {
             self.tails.remove(&oldest);
         }
         self.tails.insert(agent_id.to_string(), tail);
+        if let Some(source_rev) = source_rev {
+            self.tail_source_revs
+                .insert(agent_id.to_string(), source_rev);
+        }
     }
 
     /// #232: fold one read_diff page into the per-agent cache. The first

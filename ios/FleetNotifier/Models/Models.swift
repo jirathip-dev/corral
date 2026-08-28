@@ -646,6 +646,12 @@ enum CodableValue: Codable, Equatable, Sendable {
         return lines.count == values.count ? lines : nil
     }
 
+    var tailSourceRev: UInt64? {
+        guard case .object(let object) = self,
+              case .uint(let rev) = object["source_rev"] else { return nil }
+        return rev
+    }
+
     /// #167: the `blocks` array the daemon now serves ADDITIVELY alongside
     /// `lines` on a read_tail result.
     var tailBlocks: [TranscriptBlock]? {
@@ -768,6 +774,7 @@ struct TranscriptFailure: Equatable, Sendable, Error {
 /// the bounded lines (the legacy text surface), plus the four-state machine
 /// (loading / empty / error / loaded) and a hard-timeout marker.
 struct TailPane: Equatable, Sendable {
+    var sourceRev: UInt64? = nil
     var blocks: [TranscriptBlock] = []
     var lines: [String] = []
     var loading = false

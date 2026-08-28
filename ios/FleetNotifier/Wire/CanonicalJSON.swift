@@ -44,9 +44,11 @@ enum CanonicalJSON {
 
     /// `{"kind":"read_tail","lines":N}`; `lines: null` when absent (serde
     /// has no skip attr on `lines`, so None serializes as JSON null).
-    static func readTailPayload(lines: UInt32?) -> Value {
-        .object([(key: "kind", value: .string("read_tail")),
-                 (key: "lines", value: lines.map { .uint(UInt64($0)) } ?? .null)])
+    static func readTailPayload(lines: UInt32?, sinceRev: UInt64? = nil) -> Value {
+        var fields: [(key: String, value: Value)] = [(key: "kind", value: .string("read_tail")),
+                 (key: "lines", value: lines.map { .uint(UInt64($0)) } ?? .null)]
+        if let sinceRev { fields.append((key: "since_rev", value: .uint(sinceRev))) }
+        return .object(fields)
     }
 
     /// #232: `{"kind":"read_diff","files":F,"offset":O,"lines":N}`.

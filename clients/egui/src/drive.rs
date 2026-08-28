@@ -181,18 +181,31 @@ impl DriveIntent {
         }
     }
 
-    /// Bounded read_tail: default 200 lines, clamped by the daemon to
+    /// Bounded read_tail: default 50 lines, clamped by the daemon to
     /// `1..=200`. The Cards app may use this for the one-shot hydration of
     /// its already-resolved visible selection; every other fetch remains
     /// explicit and callers must not enumerate agents or prefetch panes.
     pub fn read_tail(agent_id: &str, rev: Option<u64>) -> Self {
+        Self::read_tail_page(agent_id, 50, rev)
+    }
+
+    /// Explicit tail page used by the Recent Output "load more" action.
+    pub fn read_tail_page(agent_id: &str, lines: u32, rev: Option<u64>) -> Self {
         Self {
             request_id: new_request_id("tail"),
             capability: Capability::ReadTail,
             target: agent_id.to_string(),
-            payload: serde_json::json!({ "kind": "read_tail", "lines": 200 }),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": lines }),
             rev,
         }
+    }
+
+    /// Refresh a cached tail from a source revision. The daemon forwards this
+    /// cursor to herdr, which may return only lines newer than it.
+    pub fn read_tail_since(agent_id: &str, lines: u32, since_rev: u64, rev: Option<u64>) -> Self {
+        let mut intent = Self::read_tail_page(agent_id, lines, rev);
+        intent.payload["since_rev"] = serde_json::json!(since_rev);
+        intent
     }
 
     /// #232: bounded worktree diff. `files` caps the changed-files list,
@@ -333,6 +346,10 @@ pub fn parse_tail_lines(result: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn parse_tail_source_rev(result: &serde_json::Value) -> Option<u64> {
+    result.get("source_rev").and_then(serde_json::Value::as_u64)
 }
 
 /// #232: one `read_diff` page as served by the daemon (mirrors
@@ -1214,11 +1231,17 @@ mod tests {
     }
 
     #[test]
-    fn read_tail_is_bounded_to_200_lines_on_tap() {
+    fn read_tail_since_carries_the_source_cursor() {
+        let intent = DriveIntent::read_tail_since("herdr:a", 50, 7, Some(9));
+        assert_eq!(intent.payload["since_rev"], 7);
+        assert_eq!(intent.rev, Some(9));
+    }
+
+    #[test]
+    fn read_tail_is_bounded_to_50_lines_on_tap() {
         let intent = DriveIntent::read_tail("herdr:a", None);
         assert_eq!(intent.capability, Capability::ReadTail);
-        let payload = intent.payload.as_object().unwrap();
-        assert_eq!(payload["lines"], 200);
+        assert_eq!(intent.payload["lines"], 50);
     }
 
     #[test]

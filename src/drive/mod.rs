@@ -126,11 +126,11 @@ impl std::error::Error for UnknownCapability {}
 pub enum DrivePayload {
     /// Free-form text to send to the agent (W2 uses this for approval
     /// choices only when a prompt is waiting).
-    Prompt {
-        text: String,
-    },
+    Prompt { text: String },
     ReadTail {
         lines: Option<u32>,
+        #[serde(default)]
+        since_rev: Option<u64>,
     },
     /// #232: read the agent's worktree diff. `files` caps the changed-files
     /// list; `offset`/`lines` page the unified diff (aggregate line offset +
@@ -354,6 +354,10 @@ pub struct DriveResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 }
+
+/// Default first-open read_tail page. Explicit requests may still use the
+/// full 200-line daemon cap.
+pub const READ_TAIL_DEFAULT_LINES: u32 = 50;
 
 // ---------------------------------------------------------------------------
 // read_diff (#232) — request/response contract

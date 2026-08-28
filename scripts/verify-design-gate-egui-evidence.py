@@ -13,7 +13,7 @@ import sys
 import zlib
 
 
-TABS = ("board", "issues", "registry", "settings")
+TABS = ("board", "issues", "settings")
 REQUIRED = ("prototype.png", "live-after.png", "comparison.png", "conformance.md", "capture.log")
 ARTIFACTS = ("prototype.png", "live-after.png", "comparison.png", "capture.log")
 EXPECTED_DIMENSIONS = {

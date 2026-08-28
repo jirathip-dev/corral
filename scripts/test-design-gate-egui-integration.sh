@@ -41,7 +41,7 @@ while [[ "$#" -gt 0 ]]; do
     -h|--help)
       printf '%s\n' \
         "Usage: $0 [--verify|--publish]" \
-        "  --verify   read and validate committed four-tab evidence (default)" \
+        "  --verify   read and validate committed three-tab evidence (default)" \
         "  --publish  run native captures and explicitly replace issue-206 evidence"
       exit 0
       ;;
@@ -755,8 +755,8 @@ else:
 print("verified native evidence privacy schema and rejection path")
 PY
 
-printf 'egui integration: capturing all four native #206 tabs\n'
-for tab in board issues registry settings; do
+printf 'egui integration: capturing all three native #206 tabs\n'
+for tab in board issues settings; do
   printf 'egui integration: capturing tab %s\n' "$tab"
   wake_count_file="$WORK/wake-count-$tab.log"
   : >"$wake_count_file"
@@ -804,7 +804,6 @@ done
 "$PYTHON_BIN" - \
   "$REPO_DIR/docs/design/evidence/issue-206"/board/live-after.png \
   "$REPO_DIR/docs/design/evidence/issue-206"/issues/live-after.png \
-  "$REPO_DIR/docs/design/evidence/issue-206"/registry/live-after.png \
   "$REPO_DIR/docs/design/evidence/issue-206"/settings/live-after.png <<'PY'
 from pathlib import Path
 import struct

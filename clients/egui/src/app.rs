@@ -3783,6 +3783,15 @@ mod tests {
     }
 
     #[test]
+    fn legacy_registry_screenshot_tab_falls_back_to_board() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _env = EnvRestore::set("CORRAL_UI_SCREENSHOT_TAB", "registry");
+        assert_eq!(tab_from_env(), Tab::Board);
+    }
+
+    #[test]
     fn live_connected_orders_issue_and_registry_refreshes_by_identity_generation() {
         let (_runtime, mut app) = read_model_test_app();
         app.fleet

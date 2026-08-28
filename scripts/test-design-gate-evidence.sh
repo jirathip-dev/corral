@@ -1054,7 +1054,7 @@ expect_failure(
 expect_failure(
     "mixed native scales",
     lambda: module.verify_consistent_native_scale(
-        {"board": "1x", "issues": "1x", "registry": "2x", "settings": "1x"}
+        {"board": "1x", "issues": "1x", "settings": "2x"}
     ),
 )
 write_png(bundle / "live-after.png", 1920, 1080)

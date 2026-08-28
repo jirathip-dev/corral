@@ -63,7 +63,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
 # IssuesBrowserView (chips + inline detail).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    "bb4778aecba359ab8d9617e23e10aef87592d9345b0db5a53e1463d8ccfa7287"
+    # #280: demo seed newest-first order + offline-spinner parity arms moved
+    # the source set (DemoFleet.swift, AppModel.swift); re-pin per convention.
+    "d96ae107ddb52d1c6a9712d3f6888fcdebebf6851a3bed784345dd2f4474cf0d"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

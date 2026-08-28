@@ -2028,3 +2028,54 @@ async fn read_issues_without_grant_is_403_not_granted_and_not_audited() {
     assert!(h.audit_entries().is_empty());
     assert_eq!(h.adapter.dispatch_count(), 0);
 }
+
+// #280: direct replay-idempotency proof for dispatch_issues — mirrors the
+// start_worktree replay test (tests/worktree.rs:230-246). The same signed
+// request id returns the stored first response (no second dispatch, no
+// second audit entry), so a duplicate tap/retry stays byte-identical.
+#[tokio::test]
+async fn read_issues_replay_returns_stored_response_without_reaudit() {
+    let h = harness();
+    h.issues.update(
+        "corral",
+        vec![corrald::core::events::GhIssueRef {
+            repo: "corral".to_string(),
+            number: 267,
+            state: "OPEN".to_string(),
+            title: "iOS issue browser".to_string(),
+            labels: vec![],
+            url: "https://github.com/jirathip-dev/corral/issues/267".to_string(),
+            body: None,
+            comments: vec![],
+            comment_total: None,
+        }],
+    );
+
+    let request_body = || {
+        h.body(
+            "req-issues-replay",
+            Capability::ReadIssues,
+            "fleet",
+            json!({ "kind": "read_issues" }),
+            None,
+        )
+    };
+
+    let (first_status, first) = post(&h.app, request_body()).await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(first["ok"], true);
+    assert_eq!(first["request_id"], "req-issues-replay");
+    assert_eq!(first["result"]["repos"]["corral"][0]["number"], 267);
+
+    let (replay_status, replay) = post(&h.app, request_body()).await;
+    assert_eq!(replay_status, StatusCode::OK);
+    assert_eq!(
+        replay, first,
+        "the replay returns the stored first response byte-identical"
+    );
+
+    // Only the FIRST dispatch is audited; the replay hit appends nothing.
+    let entries = h.audit_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].request_id, "req-issues-replay");
+}

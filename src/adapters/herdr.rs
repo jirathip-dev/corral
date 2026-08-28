@@ -3846,6 +3846,21 @@ mod tests {
     }
 
     #[test]
+    fn hundred_thousand_lines_stay_bounded_quickly() {
+        let text = (0..100_000)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let started = std::time::Instant::now();
+        let tail = bounded_redacted_tail(&text, 200);
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+        assert!(tail.len() <= 200);
+        assert!(
+            tail.iter().map(|line| line.len() + 1).sum::<usize>() <= READ_TAIL_MAX_BYTES
+        );
+    }
+
+    #[test]
     fn unsupported_private_use_glyphs_are_replaced_but_emoji_survive() {
         let line = "ok \u{e000}\u{e001} ✅ ⚠️";
         assert_eq!(scrub_unsupported_glyphs(line), "ok [icon] ✅ ⚠️");

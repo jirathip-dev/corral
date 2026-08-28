@@ -14,6 +14,8 @@ use std::sync::Arc;
 use crate::core::model::Agent;
 use crate::core::store::Store;
 
+pub type ReadTailResult = (Vec<String>, Option<u64>);
+
 /// Command targeting a single agent. Drive-path module boundary: the HTTP
 /// drive endpoints arrive in P3; the command vocabulary lives here from day
 /// one so the read path never reaches into adapters.
@@ -142,6 +144,20 @@ pub trait Adapter: Debug + Send + Sync {
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
         let _ = since_rev;
         self.read_tail(agent_id, lines)
+    }
+
+    /// Incremental read_tail plus source revision returned by the provider.
+    fn read_tail_since_with_rev<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+        since_rev: Option<u64>,
+    ) -> futures::future::BoxFuture<'a, Result<ReadTailResult, DriveError>> {
+        Box::pin(async move {
+            self.read_tail_since(agent_id, lines, since_rev)
+                .await
+                .map(|lines| (lines, None))
+        })
     }
 
     /// #232: `read_diff`: fetch `agent_id`'s worktree diff (changed-files

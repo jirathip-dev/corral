@@ -881,13 +881,13 @@ pub async fn drive(
         // carry it back in `result.lines`; other drive commands await their
         // source RPC through the same outcome-bearing adapter future.
         DriveCommand::ReadTail { lines, since_rev } => {
-            let requested = lines.unwrap_or(READ_TAIL_MAX_LINES);
+            let requested = lines.unwrap_or(READ_TAIL_DEFAULT_LINES);
             match state
                 .adapter
-                .read_tail_since(&agent_id, requested, since_rev)
+                .read_tail_since_with_rev(&agent_id, requested, since_rev)
                 .await
             {
-                Ok(lines) => {
+                Ok((lines, source_rev)) => {
                     // #167: serve blocks ADDITIVELY alongside the existing
                     // `lines` field. egui still renders `lines` until #168;
                     // the block renderer (iOS) consumes `blocks`. Redaction
@@ -900,7 +900,9 @@ pub async fn drive(
                         None,
                         None,
                         AuditOutcome::Executed,
-                        Some(serde_json::json!({ "lines": lines, "blocks": blocks })),
+                        Some(
+                            serde_json::json!({ "lines": lines, "blocks": blocks, "source_rev": source_rev }),
+                        ),
                     )
                 }
                 Err(e) => drive_refusal(e),

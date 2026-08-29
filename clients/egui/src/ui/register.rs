@@ -24,7 +24,7 @@ pub struct SettingsState {
     pub token_input: String,
     pub admin_token_input: String,
     pub notice: Option<(Level, String)>,
-    /// Audit is reachable only below Advanced device access, never as a
+    /// Audit is reachable only below Devices & Grants, never as a
     /// top-level workspace tab.
     pub audit_open: bool,
     /// Set by the view when the user asks for an action.
@@ -91,7 +91,7 @@ impl Default for SettingsState {
             token_input: String::new(),
             admin_token_input: String::new(),
             notice: None,
-            audit_open: false,
+            audit_open: true,
             requested: None,
             admin_token_configured: false,
             grant_admin: GrantAdminState::default(),
@@ -446,7 +446,7 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
 
             ui.add_space(12.0);
             egui::CollapsingHeader::new(
-                RichText::new("Advanced device access")
+                RichText::new("Devices & Grants")
                     .strong()
                     .color(theme::ui::TEXT_STRONG),
             )
@@ -1103,7 +1103,7 @@ fn grant_management_block(
     ui.add_space(10.0);
     let state = &mut settings.grant_admin;
     ui.label(
-        RichText::new("DEVICE ACCESS")
+        RichText::new("DEVICES & GRANTS")
             .size(10.0)
             .strong()
             .color(theme::ui::TEXT_MUTED),
@@ -1426,6 +1426,52 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn first_settings_entry_exposes_devices_and_grants_expanded() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState::default();
+        assert!(settings.audit_open);
+        settings.admin_token_configured = true;
+        settings
+            .grant_admin
+            .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                settings_pane(
+                    ui,
+                    &mut settings,
+                    SettingsPaneContext {
+                        key_id: "dev_test",
+                        grants: &[],
+                        store: None,
+                        conn: ConnState::Connected,
+                        rev: None,
+                        audit: &None,
+                        audit_loading: false,
+                    },
+                );
+            },
+        );
+        let mut text = String::new();
+        for clipped in &output.shapes {
+            rendered_text(&clipped.shape, &mut text);
+        }
+        output.textures_delta.clear();
+        assert!(text.contains("Devices & Grants"));
+        assert!(text.contains("THIS DEVICE"));
+        assert!(text.contains("REMOTE DEVICES"));
+        assert!(!include_str!("../app.rs").contains("Device access, or use"));
+        assert!(!include_str!("../app.rs").contains("available — Settings → Device access"));
+        assert!(!include_str!("../app.rs").contains("(Settings → Device access → THIS"));
     }
 
     #[test]

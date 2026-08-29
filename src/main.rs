@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use corrald::adapters::Adapter;
-use corrald::adapters::gh_plane::GhPlane;
-use corrald::adapters::git_plane::{GitPlane, LiveRepoSourceDiscovery};
+use corrald::adapters::gh_plane::{GhPlane, GhRepoSpec};
+use corrald::adapters::git_plane::{GitPlane, LiveRepoSourceDiscovery, RepoSourceDiscovery};
 use corrald::adapters::herdr::HerdrAdapter;
 use corrald::api::AppState;
 use corrald::api::drive::ReplayTable;
@@ -379,14 +379,44 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
     axum::serve(listener, app).await.expect("axum server");
 }
 
-/// Build the gh-plane repo-spec set: the compile-time tracked repos (PR read
-/// model) PLUS every fleet-ops CLI validated fleet's `gh_repo` so #113 can
-/// issue-start any validated fleet, grouped by its fleet name. A fleet whose
-/// `gh_repo` points at a repo that shares a workspace-repo name with a
-/// tracked repo is authoritative for that identity (the fleet-ops validated
-/// identity is what the operator is working on).
-fn gh_repo_specs() -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
-    corrald::adapters::gh_plane::tracked_specs()
+/// Build gh-plane specs from the same native checkout discovery used by the
+/// git plane, retaining the static set as a fallback. Origin remotes are read
+/// with git2 during plane generation, never while serving an API request.
+fn gh_repo_specs(
+    source_discovery: &LiveRepoSourceDiscovery,
+    fallback_root: &PathBuf,
+) -> Vec<GhRepoSpec> {
+    let mut specs = corrald::adapters::gh_plane::tracked_specs();
+    for root in source_discovery.discover(std::slice::from_ref(fallback_root)) {
+        let Some((owner, name)) = github_origin(&root) else {
+            continue;
+        };
+        let spec = GhRepoSpec {
+            owner,
+            key: name.clone(),
+            name,
+        };
+        if !specs.iter().any(|existing| existing.slug() == spec.slug()) {
+            specs.push(spec);
+        }
+    }
+    specs
+}
+
+fn github_origin(root: &std::path::Path) -> Option<(String, String)> {
+    let repo = git2::Repository::open(root).ok()?;
+    let url = repo.find_remote("origin").ok()?.url().ok()?.to_string();
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let mut parts = path
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .split('/');
+    let owner = parts.next()?.to_string();
+    let name = parts.next()?.to_string();
+    (parts.next().is_none() && !owner.is_empty() && !name.is_empty()).then_some((owner, name))
 }
 
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
@@ -422,7 +452,7 @@ async fn supervise_planes(
         );
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
             Arc::new(store.clone()),
-            gh_repo_specs(),
+            gh_repo_specs(&source_discovery, &fallback_repo_root),
         ));
         let (sink, rx) = plane_channel();
         let integrator =
@@ -450,11 +480,77 @@ async fn supervise_planes(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_permitted, origin_valid};
+    use super::{LiveRepoSourceDiscovery, bind_permitted, gh_repo_specs, origin_valid};
+    use corrald::api::issues::IssuesCache;
+    use corrald::core::events::{GhIssueRef, GhRepoState, PlaneEvent, plane_channel};
+    use corrald::core::store::Store;
+    use corrald::core::workspace::WorkspaceAttribution;
+    use corrald::integrate::Integrator;
     use std::net::IpAddr;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().expect("test ip parses")
+    }
+
+    #[tokio::test]
+    async fn live_origin_repo_reaches_issue_cache_through_production_seam() {
+        let root = std::env::temp_dir().join(format!("corral-g207-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let checkout = root.join("live-only");
+        let repository = git2::Repository::init(&checkout).unwrap();
+        repository
+            .remote("origin", "git@github.com:example/live-only.git")
+            .unwrap();
+
+        let discovery = LiveRepoSourceDiscovery::new(root);
+        let fallback = PathBuf::from("/not-a-repo");
+        let specs = gh_repo_specs(&discovery, &fallback);
+        let spec = specs
+            .iter()
+            .find(|spec| spec.name == "live-only")
+            .expect("live origin repo is included in production gh specs");
+        assert_eq!(spec.owner, "example");
+        assert_eq!(spec.slug(), "example/live-only");
+
+        let issues = Arc::new(IssuesCache::default());
+        let integrator = Integrator::with_issues(
+            Store::new(),
+            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            issues.clone(),
+        );
+        let (sink, receiver) = plane_channel();
+        let task = tokio::spawn(integrator.run(receiver));
+        sink.send(PlaneEvent::Gh(GhRepoState {
+            repo: spec.name.clone(),
+            default_branch: "main".to_string(),
+            issues: vec![GhIssueRef {
+                repo: spec.name.clone(),
+                number: 207,
+                state: "OPEN".to_string(),
+                title: "hydrate live repo".to_string(),
+                labels: vec![],
+                url: String::new(),
+                body: None,
+                comments: vec![],
+                comment_total: None,
+            }],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            if issues.get("live-only", 207).is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(issues.get("live-only", 207).is_some());
+        drop(sink);
+        task.await.unwrap();
+        std::fs::remove_dir_all(checkout.parent().unwrap()).unwrap();
     }
 
     /// #65: the bind allowlist — loopback, RFC 1918, Tailscale/CGNAT

@@ -27,7 +27,7 @@ use crate::theme;
 
 /// The three top-level views in the persistent right-hand tab strip. Audit is
 /// intentionally not a top-level destination; it is rendered below Settings
-/// → Advanced device access when explicitly opened.
+/// → Devices & Grants when explicitly opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Board,
@@ -1523,7 +1523,7 @@ impl CorralApp {
                             format!(
                                 "device identity changed (#249) — re-register needs the \
                                  registration token: {error}. Paste it in Settings → \
-                                 Device access, or use the one-tap Re-register + grant."
+                                 Devices & Grants, or use the one-tap Re-register + grant."
                             ),
                         ));
                         return false;
@@ -1548,7 +1548,7 @@ impl CorralApp {
             self.settings.notice = Some((
                 Level::Warn,
                 "identity re-registered (#249) but grants were not restored: no admin token \
-                 available — Settings → Device access → Restore grant set to re-grant the \
+                 available — Settings → Devices & Grants → Restore grant set to re-grant the \
                  drive plane."
                     .to_string(),
             ));
@@ -1847,7 +1847,7 @@ impl CorralApp {
                     self.settings.notice = Some((
                         Level::Warn,
                         format!(
-                            "{failure} — re-register this device (Settings → Device access → THIS device card → Re-register)."
+                            "{failure} — re-register this device (Settings → Devices & Grants → THIS device card → Re-register)."
                         ),
                     ));
                 }
@@ -2149,7 +2149,7 @@ impl CorralApp {
     fn refresh_audit(&mut self) {
         let Some(token) = self.admin_token() else {
             self.audit = Some(Err(
-                "no admin token available (Settings → Advanced device access → audit) — the log is host-admin".into(),
+                "no admin token available (Settings → Devices & Grants → audit) — the log is host-admin".into(),
             ));
             return;
         };

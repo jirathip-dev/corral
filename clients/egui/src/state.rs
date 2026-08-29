@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::drive::{DriveFailure, DriveOutcome};
-use crate::model::{Agent, FleetIdentities, GhIssueRef};
+use crate::model::{Agent, GhIssueRef};
 
 /// Registration record persisted per host fingerprint.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -151,20 +151,7 @@ pub struct Fleet {
     /// Last issue-fetch failure. A previous successful snapshot remains
     /// visible while this is set so a transient refresh cannot blank the tab.
     pub issues_error: Option<String>,
-    /// #237: fleet-ops CLI validated identity catalog (configless). `Ok`
-    /// includes daemon-side `status="error"` responses so an unavailable
-    /// identity path is visible; `Err` is a transport/endpoint failure.
-    pub fleets: Option<Result<FleetIdentities, String>>,
-    pub fleets_loading: bool,
-    /// Whether the identity catalog has been successfully fetched at least
-    /// once.
-    pub fleets_loaded: bool,
-    /// live worker count, presence-heartbeat anchor, warnings). Empty until
-    /// #239: sidecar Fleet Ops result and in-flight marker.
-    pub plugin: Option<Result<crate::protocol::PluginView, String>>,
-    pub plugin_loading: bool,
-    pub plugin_confirm: Option<usize>,
-    pub plugin_result: Option<Result<serde_json::Value, String>>,
+    // live worker count, presence-heartbeat anchor, warnings).
 }
 
 impl Fleet {
@@ -246,18 +233,6 @@ impl Fleet {
         }
     }
 
-    pub fn set_plugin(&mut self, result: Result<Option<crate::protocol::PluginView>, String>) {
-        self.plugin_loading = false;
-        self.plugin = Some(result.map(|view| {
-            view.unwrap_or(crate::protocol::PluginView {
-                name: "Fleet Ops".into(),
-                version: "not installed".into(),
-                cards: Vec::new(),
-                actions: Vec::new(),
-            })
-        }));
-    }
-
     /// Whether the selected agent needs its first Recent-output hydration.
     /// A cached empty tail is still a successful response and must not cause
     /// a request loop; an existing drive for read_tail likewise proves that
@@ -280,26 +255,6 @@ impl Fleet {
             return false;
         }
         true
-    }
-
-    /// #237: fold one fleet-identities fetch outcome into the view model.
-    pub fn set_fleets(&mut self, result: Result<FleetIdentities, String>) {
-        self.fleets_loading = false;
-        if result.is_ok() {
-            self.fleets_loaded = true;
-        }
-        self.fleets = Some(result);
-    }
-
-    /// Whether the catalog contains the successful daemon-side identity list
-    /// needed to turn an Issues category into an exact fleet-name drive
-    /// target. Transport failures and daemon `status="error"` responses
-    /// remain in the view model for diagnostics, but neither is actionable.
-    pub fn fleets_ready(&self) -> bool {
-        matches!(
-            self.fleets.as_ref(),
-            Some(Ok(fleets)) if fleets.status.trim() == "ok"
-        )
     }
 
     pub fn toggle_expanded(&mut self, agent_id: &str) {
@@ -560,40 +515,6 @@ mod tests {
         assert_eq!(fleet.rev, Some(21));
         assert_eq!(fleet.agents["a"].title.as_deref(), Some("newer SSE"));
         assert!(!fleet.agents.contains_key("late"));
-    }
-
-    #[test]
-    fn fleets_fetch_marks_loaded_only_on_success_and_clears_loading() {
-        let mut fleet = Fleet {
-            fleets_loading: true,
-            ..Default::default()
-        };
-        fleet.set_fleets(Err("connect refused".into()));
-        assert!(!fleet.fleets_loading);
-        assert!(
-            !fleet.fleets_loaded,
-            "a failed fetch must not mark the catalog loaded"
-        );
-        assert!(matches!(fleet.fleets, Some(Err(_))));
-
-        let identities: FleetIdentities = serde_json::from_value(serde_json::json!({
-            "status": "ok",
-            "error": null,
-            "fleets": [{"name": "corral", "gh_repo": "jirathip-dev/corral", "orch": "orch-corral", "workers": 0, "paused": false}]
-        }))
-        .unwrap();
-        fleet.set_fleets(Ok(identities));
-        assert!(fleet.fleets_loaded);
-        assert!(!fleet.fleets_loading);
-        assert!(fleet.fleets_ready());
-
-        fleet.set_fleets(Ok(FleetIdentities {
-            status: "error".into(),
-            error: Some("no herdr-fleet".into()),
-            fleets: Vec::new(),
-        }));
-        assert!(fleet.fleets_loaded);
-        assert!(!fleet.fleets_ready());
     }
 
     fn issue(repo: &str, number: u64, title: &str) -> GhIssueRef {

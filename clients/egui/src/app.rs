@@ -1053,7 +1053,6 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     issues_last_refresh: std::time::Instant,
-    fleets_last_refresh: std::time::Instant,
 
     // Tabs.
     tab: Tab,
@@ -1177,7 +1176,7 @@ impl CorralApp {
             // Permit the first Issues visit to fetch immediately; every
             // subsequent attempt records its start time, including errors.
             issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
-            fleets_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
+
             tab: tab_from_env(),
             screenshot_path,
             screenshot_state,
@@ -1344,9 +1343,7 @@ impl CorralApp {
         );
     }
 
-    /// Start a new identity epoch for the read-only issue/fleets views.
-    ///
-    /// The old cache is deliberately removed before a reconnect or host
+    /// Start a new identity epoch for the read-only issue view.
     /// switch starts new requests: a fresh `/issues` response must never be
     /// actionable through a previous catalog, and an old in-flight response
     /// must not clear the loading flag for the replacement request.
@@ -1359,9 +1356,6 @@ impl CorralApp {
         self.fleet.issues_loaded = false;
         self.fleet.issues_loading = false;
         self.fleet.issues_error = None;
-        self.fleet.fleets = None;
-        self.fleet.fleets_loading = false;
-        self.fleet.fleets_loaded = false;
         self.read_generation
     }
 
@@ -1613,8 +1607,6 @@ impl CorralApp {
                         // The invalidation above makes the current generation
                         // non-actionable until both read models catch up.
                         self.refresh_issues(true);
-                        self.refresh_fleets(true);
-                        self.refresh_plugin();
                     }
                     protocol::Live::Disconnected => {
                         self.invalidate_read_model();
@@ -1658,23 +1650,8 @@ impl CorralApp {
                 }
                 self.fleet.set_issues(result);
             }
-            ApplyMsg::FleetIdentities { generation, result } => {
-                if generation != self.read_generation {
-                    tracing::debug!(
-                        generation,
-                        current = self.read_generation,
-                        "ignored fleet-identities response from an obsolete identity generation"
-                    );
-                    return;
-                }
-                self.fleet.set_fleets(result);
-            }
             ApplyMsg::GrantDevices(result) => self.handle_grant_devices(result),
             ApplyMsg::GrantMutation(msg) => self.handle_grant_mutation(msg),
-            ApplyMsg::Plugin(result) => self.fleet.set_plugin(result),
-            ApplyMsg::PluginAction(result) => {
-                self.fleet.plugin_result = Some(result);
-            }
         }
     }
 
@@ -1703,20 +1680,6 @@ impl CorralApp {
                 tracing::warn!(error, "GET /issues unavailable");
             }
             let _ = tx.send(ApplyMsg::Issues { generation, result });
-        });
-    }
-
-    fn refresh_plugin(&mut self) {
-        if self.fleet.plugin_loading {
-            return;
-        }
-        self.fleet.plugin_loading = true;
-        let client = self.client.clone();
-        let base_url = self.config.host_url.clone();
-        let tx = self.tx_apply.clone();
-        self.rt.spawn(async move {
-            let result = protocol::fetch_plugin(&client, &base_url).await;
-            let _ = tx.send(ApplyMsg::Plugin(result));
         });
     }
 
@@ -1750,36 +1713,6 @@ impl CorralApp {
             })
             .unwrap_or_else(|| DriveIntent::read_tail(&agent_id, self.fleet.rev));
         self.dispatch_drive_intents(vec![intent]);
-    }
-
-    /// #237: fetch the daemon's fleet-ops CLI validated identity catalog
-    /// once per connection and on manual refresh. The Issues tab needs this
-    /// catalog to resolve repo categories into exact fleet-name drive
-    /// targets (#269: the dedicated Fleets tab is gone). A previous
-    /// successful catalog remains rendered while a retry is in flight; a
-    /// transient failure is never converted into "no fleets".
-    fn refresh_fleets(&mut self, force: bool) {
-        if !issues_refresh_due(
-            force,
-            self.conn,
-            self.fleet.fleets_loading,
-            self.fleets_last_refresh,
-        ) {
-            return;
-        }
-        self.fleet.fleets_loading = true;
-        self.fleets_last_refresh = std::time::Instant::now();
-        let generation = self.read_generation;
-        let client = self.client.clone();
-        let base_url = self.config.host_url.clone();
-        let tx = self.tx_apply.clone();
-        self.rt.spawn(async move {
-            let result = protocol::fetch_fleet_identities(&client, &base_url).await;
-            if let Err(error) = &result {
-                tracing::warn!(error, "GET /fleets unavailable");
-            }
-            let _ = tx.send(ApplyMsg::FleetIdentities { generation, result });
-        });
     }
 
     fn on_drive(&mut self, msg: DriveMsg) {
@@ -3182,14 +3115,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         }
         Tab::Issues => {
             app.refresh_issues(false);
-            if app.fleet.fleets.is_none() && app.conn == ConnState::Connected {
-                // The Issues tab can win the first frame after connection
-                // while the fleet-identities request is still racing the issue
-                // request. The loading guard in refresh_registry prevents a
-                // second request; a later manual Issues refresh retries a
-                // failed projection as well.
-                app.refresh_fleets(false);
-            }
             let ledger = app.ledger.clone();
             let allowed = |cap: &str| ledger.allowed(cap);
             let mut pending: Vec<DriveIntent> = Vec::new();
@@ -3203,13 +3128,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             if refresh_requested {
                 app.refresh_issues(true);
-                if !app.fleet.fleets_ready() {
-                    // A failed catalog must be recoverable
-                    // from the surface that needs it. Force only here, after
-                    // the user explicitly refreshed Issues; an in-flight
-                    // request is still protected by refresh_registry's guard.
-                    app.refresh_fleets(true);
-                }
             }
             app.dispatch_drive_intents(pending);
         }
@@ -3312,9 +3230,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::model::{
-        Agent, AgentState, FleetIdentities, FleetIdentityEntry, GhIssueRef, Workspace,
-    };
+    use crate::model::{Agent, AgentState, GhIssueRef, Workspace};
     use crate::ui::board::{self, StateFilter};
 
     fn agent(id: &str, state: AgentState, capabilities: &[&str]) -> Agent {
@@ -3384,7 +3300,7 @@ mod tests {
             audit: None,
             audit_loading: false,
             issues_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
-            fleets_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
+
             tab: Tab::Issues,
             screenshot_path: None,
             screenshot_state: ScreenshotCaptureState::initial(
@@ -3408,20 +3324,6 @@ mod tests {
             native_probe_in_flight: false,
         };
         (runtime, app)
-    }
-
-    fn test_fleet_identities(name: &str, gh_repo: &str) -> FleetIdentities {
-        FleetIdentities {
-            status: "ok".into(),
-            error: None,
-            fleets: vec![FleetIdentityEntry {
-                name: name.into(),
-                gh_repo: gh_repo.into(),
-                orch: "orch".into(),
-                workers: 0,
-                paused: false,
-            }],
-        }
     }
 
     /// #249 test app: a registered device whose key material was replaced
@@ -3828,10 +3730,6 @@ mod tests {
         let (_runtime, mut app) = read_model_test_app();
         app.fleet
             .set_issues(Ok(BTreeMap::from([("foo".into(), vec![test_issue()])])));
-        app.fleet
-            .set_fleets(Ok(test_fleet_identities("alpha", "owner/foo")));
-        assert!(app.fleet.fleets_ready());
-        app.fleet.fleets_loading = true;
         app.fleet.issues_loading = true;
         let stale_generation = app.read_generation;
         let loop_generation = app.read_loop_generation;
@@ -3844,13 +3742,10 @@ mod tests {
         });
         let current_generation = app.read_generation;
         assert_ne!(current_generation, stale_generation);
-        assert!(app.fleet.fleets.is_none());
         assert!(app.fleet.issues.is_empty());
-        assert!(app.fleet.fleets_loading);
         assert!(app.fleet.issues_loading);
 
-        // `/issues` can arrive first, but the old alpha registry is no longer
-        // allowed to turn that category into an action.
+        // `/issues` can arrive first and its native repo key is actionable.
         app.on_apply(ApplyMsg::Issues {
             generation: current_generation,
             result: Ok(BTreeMap::from([("foo".into(), vec![test_issue()])])),
@@ -3859,28 +3754,10 @@ mod tests {
         ctx.memory_mut(|memory| {
             memory.data.insert_temp(
                 egui::Id::new("corral-ui-issues-selected"),
-                Some(("foo".to_string(), "unregistered:foo".to_string(), 42_u64)),
+                Some(("foo".to_string(), "foo".to_string(), 42_u64)),
             );
         });
         let intents = std::cell::RefCell::new(Vec::new());
-        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
-        let disabled = text_rect(&frame, "start worktree")
-            .expect("the current issue remains visibly disabled during the gap")
-            .center();
-        frame.textures_delta.clear();
-        for pressed in [true, false] {
-            let mut attempted = render_issues(
-                &ctx,
-                &app.fleet,
-                issue_pointer_input(disabled, pressed),
-                &intents,
-            );
-            attempted.textures_delta.clear();
-        }
-        let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
-        assert!(text_rect(&frame, "✓ confirm create").is_none());
-        frame.textures_delta.clear();
-        assert!(intents.borrow().is_empty());
 
         app.on_apply(ApplyMsg::Issues {
             generation: stale_generation,
@@ -3890,33 +3767,10 @@ mod tests {
         assert_eq!(issue_keys, ["foo"]);
         assert!(!app.fleet.issues_loading);
 
-        // A response from the pre-reconnect request cannot replace the
-        // current empty/loading registry or clear its loading flag.
-        app.on_apply(ApplyMsg::FleetIdentities {
-            generation: stale_generation,
-            result: Ok(test_fleet_identities("alpha", "owner/foo")),
-        });
-        assert!(app.fleet.fleets.is_none());
-        assert!(app.fleet.fleets_loading);
-
-        // The current response restores the exact current fleet action.
-        app.on_apply(ApplyMsg::FleetIdentities {
-            generation: current_generation,
-            result: Ok(test_fleet_identities("foo", "owner/foo")),
-        });
-        assert_eq!(
-            app.fleet
-                .fleets
-                .as_ref()
-                .and_then(|result| result.as_ref().ok())
-                .and_then(|fleets| fleets.fleets.first())
-                .map(|entry| entry.name.as_str()),
-            Some("foo")
-        );
         ctx.memory_mut(|memory| {
             memory.data.insert_temp(
                 egui::Id::new("corral-ui-issues-selected"),
-                Some(("foo".to_string(), "owner/foo".to_string(), 42_u64)),
+                Some(("foo".to_string(), "foo".to_string(), 42_u64)),
             );
         });
         let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
@@ -3949,22 +3803,6 @@ mod tests {
         }
         assert_eq!(intents.borrow().len(), 1);
         assert_eq!(intents.borrow()[0].target, "foo");
-
-        // Even after the current response, a late old response cannot restore
-        // alpha or overwrite the current exact fleet.
-        app.on_apply(ApplyMsg::FleetIdentities {
-            generation: stale_generation,
-            result: Ok(test_fleet_identities("alpha", "owner/foo")),
-        });
-        assert_eq!(
-            app.fleet
-                .fleets
-                .as_ref()
-                .and_then(|result| result.as_ref().ok())
-                .and_then(|fleets| fleets.fleets.first())
-                .map(|entry| entry.name.as_str()),
-            Some("foo")
-        );
     }
 
     #[test]

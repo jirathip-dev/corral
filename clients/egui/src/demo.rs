@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::model::{Delta, FleetIdentities, GhIssueRef, Snapshot};
+use crate::model::{Delta, GhIssueRef, Snapshot};
 
 /// Everything the demo mode needs to render + animate the board.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -21,8 +21,6 @@ pub struct DemoData {
     pub deltas: Vec<Delta>,
     /// Demo repo-level issue view (`GET /issues` shape).
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
-    /// Demo fleet identity catalog (`GET /fleets` shape).
-    pub fleets: FleetIdentities,
 }
 
 const FIXTURE: &str = include_str!("../assets/demo-fixture.json");
@@ -91,7 +89,6 @@ mod tests {
             );
             rev = delta.rev;
         }
-        assert_eq!(demo.fleets.status, "ok");
         assert!(!demo.issues.is_empty());
         assert!(
             demo.issues
@@ -109,8 +106,6 @@ mod tests {
         assert!(fleet.rev.unwrap() > demo.snapshot.rev);
         assert_eq!(fleet.agents.len(), demo.snapshot.agents.len());
         fleet.set_issues(Ok(demo.issues.clone()));
-        fleet.set_fleets(Ok(demo.fleets.clone()));
         assert!(fleet.issues_loaded);
-        assert!(fleet.fleets_ready());
     }
 }

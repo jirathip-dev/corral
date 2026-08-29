@@ -11,19 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use eframe::egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
 
 use crate::drive::DriveIntent;
-use crate::model::{FleetIdentities, FleetIdentityEntry, GhIssueRef};
+use crate::model::GhIssueRef;
 use crate::state::Fleet;
 use crate::theme;
 use crate::ui::badge;
 
 type IssueKey = (String, String, u64);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RepoIdentity {
-    display_repo: String,
-    source: String,
-    action_targets: BTreeSet<String>,
-}
 
 #[derive(Debug, Default)]
 struct IssueGroupBuilder {
@@ -584,107 +577,9 @@ fn action_label(prefix: &str, target: &str, multiple: bool) -> String {
     }
 }
 
-/// Resolve a valid fleet-ops CLI validated identity for a display or
-/// issue-map key.
-///
-/// Configless corral (#237): display repo categories are NEVER actionable
-/// identities. The client uses the daemon's fleet-ops CLI validated identity
-/// catalog as the identity boundary: either a fleet NAME or its `gh_repo`
-/// basename may select an entry, and an unambiguous action target is always
-/// the exact fleet name. Matching both spellings together is important: a
-/// collision between one fleet name and another fleet's basename is
-/// ambiguous in either direction and must be disabled symmetrically.
-fn registered_repo_identity(fleet: &Fleet, key: &str) -> Option<RepoIdentity> {
-    let fleet_identities = ready_fleets(fleet)?;
-    let key = key.trim();
-    if key.is_empty() {
-        return None;
-    }
-
-    let matches: Vec<&FleetIdentityEntry> = fleet_identities
-        .fleets
-        .iter()
-        .filter(|entry| {
-            let name_matches = entry.name.trim() == key;
-            let repo_matches = canonical_repo_identity(&entry.gh_repo)
-                .is_some_and(|(_, display_repo)| display_repo == key);
-            name_matches || repo_matches
-        })
-        .collect();
-    if matches.is_empty() {
-        return None;
-    }
-
-    let mut canonical_slugs = BTreeSet::new();
-    let mut display_repos = BTreeSet::new();
-    let mut malformed = false;
-    for entry in &matches {
-        if let Some((slug, display_repo)) = canonical_repo_identity(&entry.gh_repo) {
-            canonical_slugs.insert(slug);
-            display_repos.insert(display_repo);
-        } else {
-            malformed = true;
-        }
-    }
-    let unambiguous = !malformed && canonical_slugs.len() == 1;
-    let display_repo = if display_repos.len() == 1 {
-        display_repos.into_iter().next().expect("one display repo")
-    } else {
-        key.to_string()
-    };
-    let source = if unambiguous {
-        canonical_slugs
-            .iter()
-            .next()
-            .cloned()
-            .expect("one canonical repo")
-    } else {
-        format!("ambiguous:{key}")
-    };
-    let action_targets = if unambiguous {
-        let canonical_slug = canonical_slugs.iter().next().expect("one canonical repo");
-        fleet_identities
-            .fleets
-            .iter()
-            .filter(|entry| {
-                canonical_repo_identity(&entry.gh_repo)
-                    .is_some_and(|(slug, _)| slug == *canonical_slug)
-            })
-            .filter(|entry| !entry.name.trim().is_empty())
-            .map(|entry| entry.name.clone())
-            .collect()
-    } else {
-        BTreeSet::new()
-    };
-
-    Some(RepoIdentity {
-        display_repo,
-        source,
-        action_targets,
-    })
-}
-
-fn ready_fleets(fleet: &Fleet) -> Option<&FleetIdentities> {
-    match fleet.fleets.as_ref()? {
-        Ok(fleet_identities) if fleet_identities.status.trim() == "ok" => Some(fleet_identities),
-        _ => None,
-    }
-}
-
-/// Return the canonical full repository slug and basename for a single
-/// `owner/repo` shape. The daemon validates this before it emits a registry,
-/// but the client remains defensive for hand-built fixtures and older peers.
-fn canonical_repo_identity(gh_repo: &str) -> Option<(String, String)> {
-    let (owner, repo) = gh_repo.split_once('/')?;
-    let (owner, repo) = (owner.trim(), repo.trim());
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return None;
-    }
-    Some((format!("{owner}/{repo}"), repo.to_string()))
-}
-
-/// Fold issue-map aliases into canonical display categories. An unregistered
-/// live-only category stays visible, but its issue action has no target.
+/// Fold the native issue map into display categories. The daemon's native repo
+/// key is also the validated worktree target, so no second identity request is
+/// needed by the client.
 fn display_issue_groups(fleet: &Fleet) -> Vec<DisplayIssueGroup> {
     let mut groups: BTreeMap<String, IssueGroupBuilder> = BTreeMap::new();
     for (key, issues) in &fleet.issues {
@@ -692,23 +587,16 @@ fn display_issue_groups(fleet: &Fleet) -> Vec<DisplayIssueGroup> {
         if key.is_empty() {
             continue;
         }
-        let identity = registered_repo_identity(fleet, key).unwrap_or_else(|| RepoIdentity {
-            display_repo: key.to_string(),
-            source: format!("unregistered:{key}"),
-            action_targets: BTreeSet::new(),
-        });
-        let group = groups.entry(identity.display_repo).or_default();
+        let group = groups.entry(key.to_string()).or_default();
         for issue in issues {
             let entry = group
                 .issues
-                .entry((identity.source.clone(), issue.number))
+                .entry((key.to_string(), issue.number))
                 .or_insert_with(|| DisplayIssueBuilder {
                     issue: issue.clone(),
                     action_targets: BTreeSet::new(),
                 });
-            entry
-                .action_targets
-                .extend(identity.action_targets.iter().cloned());
+            entry.action_targets.insert(key.to_string());
         }
     }
 
@@ -834,7 +722,6 @@ fn label_color(color: &str) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::FleetIdentityEntry;
 
     fn issue(repo: &str, number: u64, state: &str, title: &str, labels: &[&str]) -> GhIssueRef {
         GhIssueRef {
@@ -854,31 +741,14 @@ mod tests {
         }
     }
 
-    fn fleet_identities(fleets: &[(&str, &str)]) -> FleetIdentities {
-        FleetIdentities {
-            status: "ok".to_string(),
-            error: None,
-            fleets: fleets
-                .iter()
-                .map(|(name, gh_repo)| FleetIdentityEntry {
-                    name: (*name).to_string(),
-                    gh_repo: (*gh_repo).to_string(),
-                    orch: "orch".to_string(),
-                    workers: 0,
-                    paused: false,
-                })
-                .collect(),
-        }
-    }
-
     fn ready_fleet(fleets: &[(&str, &str)], issues: &[(&str, GhIssueRef)]) -> Fleet {
+        let _ = fleets;
         Fleet {
             issues: issues
                 .iter()
                 .map(|(key, issue)| ((*key).to_string(), vec![issue.clone()]))
                 .collect(),
             issues_loaded: true,
-            fleets: Some(Ok(fleet_identities(fleets))),
             ..Default::default()
         }
     }
@@ -914,78 +784,6 @@ mod tests {
         assert_eq!(label_color("d4c5f9"), Color32::from_rgb(0xd4, 0xc5, 0xf9));
         assert_eq!(label_color(""), theme::ui::TEXT_MUTED);
         assert_eq!(label_color("#zzzzzz"), theme::ui::TEXT_MUTED);
-    }
-
-    #[test]
-    fn aliases_fold_to_one_canonical_category_and_dedupe_issues() {
-        let shared = issue("corral", 7, "OPEN", "same issue", &[]);
-        let fleet = ready_fleet(
-            &[("fleet-name", "owner/canonical-repo")],
-            &[("fleet-name", shared.clone()), ("canonical-repo", shared)],
-        );
-
-        let groups = display_issue_groups(&fleet);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].display_repo, "canonical-repo");
-        assert_eq!(groups[0].issues.len(), 1);
-        assert_eq!(groups[0].issues[0].action_targets, ["fleet-name"]);
-    }
-
-    #[test]
-    fn shared_gh_repo_keeps_distinct_actions_and_dedupes_identical_issues() {
-        let shared = issue("foo", 42, "OPEN", "shared issue", &[]);
-        let fleet = ready_fleet(
-            &[("alpha", "owner/foo"), ("beta", "owner/foo")],
-            &[("alpha", shared)],
-        );
-
-        let groups = display_issue_groups(&fleet);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].display_repo, "foo");
-        assert_eq!(groups[0].issues.len(), 1);
-        assert_eq!(groups[0].issues[0].action_targets, ["alpha", "beta"]);
-    }
-
-    #[test]
-    fn reconnect_fleet_rename_uses_only_the_current_exact_fleet_target() {
-        let issue = issue("foo", 42, "OPEN", "renamed fleet", &[]);
-        let mut fleet = ready_fleet(&[("alpha", "owner/foo")], &[("foo", issue)]);
-
-        let before_reconnect = display_issue_groups(&fleet);
-        assert_eq!(before_reconnect[0].issues[0].action_targets, ["alpha"]);
-
-        // A reconnect refresh replaces the ready identity catalog. The issue
-        // response still uses the stable repo category, but its action must
-        // resolve against the current exact fleet name rather than the old
-        // alias.
-        fleet.set_fleets(Ok(fleet_identities(&[("foo", "owner/foo")])));
-        let after_reconnect = display_issue_groups(&fleet);
-        assert_eq!(after_reconnect[0].issues[0].action_targets, ["foo"]);
-        assert!(
-            !after_reconnect[0].issues[0]
-                .action_targets
-                .contains(&"alpha".to_string())
-        );
-    }
-
-    #[test]
-    fn alias_ambiguity_is_symmetric_and_not_actionable() {
-        let shared = issue("foo", 1, "OPEN", "ambiguous", &[]);
-        let fleet = ready_fleet(
-            &[("foo", "owner/bar"), ("bar-fleet", "owner/foo")],
-            &[("foo", shared)],
-        );
-
-        let groups = display_issue_groups(&fleet);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].display_repo, "foo");
-        assert!(groups[0].issues[0].action_targets.is_empty());
-        assert_eq!(
-            registered_repo_identity(&fleet, "foo")
-                .expect("the colliding alias remains visible")
-                .action_targets,
-            BTreeSet::new()
-        );
     }
 
     #[test]
@@ -1121,25 +919,18 @@ mod tests {
     #[test]
     fn frame_issue_action_dispatches_the_selected_shared_fleet_target() {
         let issue = issue("foo", 42, "OPEN", "shared issue", &[]);
-        let fleet = ready_fleet(
-            &[("alpha", "owner/foo"), ("beta", "owner/foo")],
-            &[
-                ("alpha", issue.clone()),
-                ("beta", issue.clone()),
-                ("foo", issue),
-            ],
-        );
+        let fleet = ready_fleet(&[], &[("foo", issue)]);
         let ctx = egui::Context::default();
         ctx.memory_mut(|memory| {
             memory.data.insert_temp(
                 egui::Id::new("corral-ui-issues-selected"),
-                Some(("foo".to_string(), "owner/foo".to_string(), 42_u64)),
+                Some(("foo".to_string(), "foo".to_string(), 42_u64)),
             );
         });
         let intents = std::cell::RefCell::new(Vec::new());
         let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
-        let start = text_rect(&output, "start worktree (beta)")
-            .expect("the distinct beta fleet action is rendered")
+        let start = text_rect(&output, "start worktree")
+            .expect("the native repository action is rendered")
             .center();
         clear(&mut output);
         for pressed in [true, false] {
@@ -1148,8 +939,8 @@ mod tests {
         }
 
         let mut frame = render(&ctx, &fleet, test_input(vec![]), &intents);
-        let confirm = text_rect(&frame, "✓ confirm create (beta)")
-            .expect("the beta confirmation is keyed independently")
+        let confirm = text_rect(&frame, "✓ confirm create")
+            .expect("the confirmation is keyed independently")
             .center();
         clear(&mut frame);
         for pressed in [true, false] {
@@ -1159,46 +950,12 @@ mod tests {
 
         let intents = intents.into_inner();
         assert_eq!(intents.len(), 1);
-        assert_eq!(intents[0].target, "beta");
+        assert_eq!(intents[0].target, "foo");
         assert_eq!(
             intents[0].capability,
             crate::drive::Capability::StartWorktree
         );
         assert_eq!(intents[0].payload["mode"], "issue");
         assert_eq!(intents[0].payload["number"], 42);
-    }
-
-    #[test]
-    fn frame_disabled_unregistered_action_never_dispatches_unknown_fleet() {
-        let issue = issue("herdr-only", 9, "OPEN", "unregistered", &[]);
-        let fleet = Fleet {
-            issues: [("herdr-only".to_string(), vec![issue])]
-                .into_iter()
-                .collect(),
-            issues_loaded: true,
-            ..Default::default()
-        };
-        let ctx = egui::Context::default();
-        ctx.memory_mut(|memory| {
-            memory.data.insert_temp(
-                egui::Id::new("corral-ui-issues-selected"),
-                Some((
-                    "herdr-only".to_string(),
-                    "unregistered:herdr-only".to_string(),
-                    9_u64,
-                )),
-            );
-        });
-        let intents = std::cell::RefCell::new(Vec::new());
-        let mut output = render(&ctx, &fleet, test_input(vec![]), &intents);
-        let disabled = text_rect(&output, "start worktree")
-            .expect("the unregistered action is visible but disabled")
-            .center();
-        clear(&mut output);
-        for pressed in [true, false] {
-            let mut frame = render(&ctx, &fleet, pointer_input(disabled, pressed), &intents);
-            clear(&mut frame);
-        }
-        assert!(intents.borrow().is_empty());
     }
 }

@@ -29,11 +29,6 @@ fn daemon_config_dir() -> PathBuf {
     PathBuf::from(home).join(".config/corral")
 }
 
-// NOTE: configless #237 — there is deliberately no fleets.json path helper
-// here. Corral never reads or writes the fleet registry file; the daemon's
-// fleet identities come from the fleet-ops CLI via GET /fleets, and the
-// registry itself is fleet-ops' config.
-
 /// Where the device key actually lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStore {

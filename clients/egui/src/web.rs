@@ -1,8 +1,7 @@
 //! Read-only web (wasm) board — the #215 web build of the corral fleet
 //! board. It deliberately serves ONLY the daemon's credential-free read
 //! plane (`GET /snapshot`, `GET /events` SSE; plus the read-only
-//! `GET /issues` projection and the `GET /fleets` identity catalog the
-//! Issues view resolves repo categories against) and can also render a
+//! `GET /issues` projection) and can also render a
 //! bundled demo fixture with no daemon at all.
 //!
 //! Boundary (never narrowed, see the issue):
@@ -27,7 +26,7 @@ use std::rc::Rc;
 use eframe::egui::{self, RichText};
 
 use crate::demo::{self, DemoData};
-use crate::model::{Delta, FleetIdentities, GhIssueRef, Snapshot};
+use crate::model::{Delta, GhIssueRef, Snapshot};
 use crate::protocol::{
     self, DEFAULT_HOST_URL, SSE_BACKOFF_BASE_MS, SSE_BACKOFF_MAX_MS, SseEvent, SseParser,
 };
@@ -150,7 +149,7 @@ enum InboxMsg {
     Snapshot(Snapshot),
     Delta(Delta),
     Issues(Result<BTreeMap<String, Vec<GhIssueRef>>, String>),
-    Fleets(Result<FleetIdentities, String>),
+
     Conn(ConnState),
     Toast(String),
 }
@@ -182,7 +181,6 @@ pub struct WebCorralApp {
     demo_step: usize,
     demo_last: f64,
     issues_last_refresh: f64,
-    fleets_last_refresh: f64,
 }
 
 impl WebCorralApp {
@@ -216,7 +214,6 @@ impl WebCorralApp {
             demo_step: 0,
             demo_last: now_ms(),
             issues_last_refresh: now_ms(),
-            fleets_last_refresh: now_ms(),
         };
         match app.setup.mode {
             WebMode::Demo => app.load_demo(),
@@ -232,7 +229,7 @@ impl WebCorralApp {
             self.fleet = Fleet::default();
             self.fleet.apply_snapshot(&data.snapshot);
             self.fleet.set_issues(Ok(data.issues.clone()));
-            self.fleet.set_fleets(Ok(data.fleets.clone()));
+
             for agent in data.snapshot.agents.values() {
                 if agent
                     .capabilities
@@ -393,13 +390,6 @@ impl WebCorralApp {
             self.issues_last_refresh = now;
             self.request_issues();
         }
-        if self.tab == Tab::Issues
-            && !self.fleet.fleets_ready()
-            && now - self.fleets_last_refresh >= REFRESH_INTERVAL_SECS * 1000.0
-        {
-            self.fleets_last_refresh = now;
-            self.request_fleets();
-        }
     }
 
     fn request_issues(&mut self) {
@@ -414,22 +404,6 @@ impl WebCorralApp {
         wasm_bindgen_futures::spawn_local(async move {
             let result = protocol::fetch_issues(&client, &base_url).await;
             let _ = inbox.borrow_mut().push_back(InboxMsg::Issues(result));
-            ctx.request_repaint();
-        });
-    }
-
-    fn request_fleets(&mut self) {
-        if self.fleet.fleets_loading {
-            return;
-        }
-        self.fleet.fleets_loading = true;
-        let client = self.client.clone();
-        let base_url = self.setup.base_url.clone();
-        let inbox = self.inbox.clone();
-        let ctx = self.ctx.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = protocol::fetch_fleet_identities(&client, &base_url).await;
-            let _ = inbox.borrow_mut().push_back(InboxMsg::Fleets(result));
             ctx.request_repaint();
         });
     }
@@ -459,7 +433,7 @@ impl WebCorralApp {
                     self.conn = ConnState::Connected;
                 }
                 Some(InboxMsg::Issues(result)) => self.fleet.set_issues(result),
-                Some(InboxMsg::Fleets(result)) => self.fleet.set_fleets(result),
+
                 Some(InboxMsg::Conn(conn)) => self.conn = conn,
                 Some(InboxMsg::Toast(text)) => self.push_toast(text, Level::Warn),
                 None => break,

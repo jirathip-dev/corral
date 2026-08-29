@@ -175,10 +175,6 @@ pub const TRACKED_REPOS: &[TrackedRepo] = &[
 /// onto. A single query aliases every spec (`q0..qN`), so the fleet registry
 /// can join the poll without a second round-trip.
 ///
-/// #113: `issues_key` is the fleet/repo name the read-only issue view groups
-/// issues under. `None` for a tracked repo that is NOT a configured fleet —
-/// such a repo is still polled for the PR read model but is deliberately not
-/// issue-startable, so the browser never offers a non-fleet issue action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRepoSpec {
     pub owner: String,
@@ -189,8 +185,6 @@ pub struct GhRepoSpec {
     /// for a configured fleet it is the `gh_repo` basename so PR attribution
     /// matches the fleet's checkout/worktree path repo.
     pub key: String,
-    /// The fleet name the issue view + worktree guard group issues under.
-    pub issues_key: Option<String>,
 }
 
 impl GhRepoSpec {
@@ -202,8 +196,7 @@ impl GhRepoSpec {
     }
 }
 
-/// The compile-time tracked repo set expressed as [`GhRepoSpec`]s (no fleet
-/// issue key — these are polled for the PR read model only).
+/// The compile-time tracked repo set expressed as [`GhRepoSpec`]s.
 pub fn tracked_specs() -> Vec<GhRepoSpec> {
     TRACKED_REPOS
         .iter()
@@ -211,7 +204,6 @@ pub fn tracked_specs() -> Vec<GhRepoSpec> {
             owner: r.owner.to_string(),
             name: r.repo.to_string(),
             key: r.name.to_string(),
-            issues_key: None,
         })
         .collect()
 }
@@ -1081,7 +1073,6 @@ fn build_repo_state(spec: &GhRepoSpec, wire: &RepoWire) -> GhRepoState {
     issues.sort_by_key(|issue| issue.number);
     GhRepoState {
         repo: spec.key.clone(),
-        issue_repo: spec.issues_key.clone(),
         default_branch: wire
             .default_branch_ref
             .as_ref()
@@ -1497,48 +1488,6 @@ mod tests {
         assert_eq!(state.default_branch, "", "missing default branch -> empty");
         assert!(state.prs.is_empty());
         assert!(state.issues.is_empty());
-    }
-
-    #[test]
-    fn fleet_spec_carries_the_issue_display_key() {
-        // A registry-driven fleet spec (e.g. `corral`) must publish issues
-        // under the FLEET name while keeping the PR attribution key = the
-        // `gh_repo` basename, so PR facts still fold onto the fleet agents.
-        let spec = GhRepoSpec {
-            owner: "jirathip-dev".into(),
-            name: "corral".into(),
-            key: "corral".into(),
-            issues_key: Some("corral".into()),
-        };
-        let wire: RepoWire = serde_json::from_value(json!({
-            "name": "corral",
-            "defaultBranchRef": { "name": "main" },
-            "issues": { "nodes": [
-                { "number": 113, "state": "OPEN", "title": "browse issues" }
-            ]}
-        }))
-        .unwrap();
-        let state = build_repo_state(&spec, &wire);
-        assert_eq!(state.repo, "corral", "PR attribution key");
-        assert_eq!(
-            state.issue_repo.as_deref(),
-            Some("corral"),
-            "issue view key"
-        );
-        assert_eq!(state.issues.len(), 1);
-        assert_eq!(state.issues[0].repo, "corral");
-    }
-
-    #[test]
-    fn tracked_non_fleet_spec_is_not_issue_startable() {
-        let spec = tracked_specs()
-            .into_iter()
-            .find(|s| s.key == "herdr-board")
-            .expect("tracked");
-        assert_eq!(
-            spec.issues_key, None,
-            "non-fleet tracked repo has no issue key"
-        );
     }
 
     // -----------------------------------------------------------------------

@@ -62,8 +62,8 @@ impl IssuesCache {
 /// `GET /issues`: the last-known repo-level issues, grouped by repo.
 ///
 /// The map contains:
-/// - live issue-cache keys (`issues_key`, the validated fleet name under
-///   which the gh plane grouped them), and
+/// - live issue-cache keys (the native `workspace.repo` identity under which
+///   the gh plane grouped them), and
 /// - the live `workspace.repo` category union.
 ///
 /// Empty arrays are informational placeholders. Neither kind authorizes a

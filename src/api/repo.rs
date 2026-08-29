@@ -5,10 +5,7 @@
 //! `workspace.repo` values already present on agent records in the Herdr
 //! snapshot. Corral does not own, read, or write the fleet registry, so no
 //! registry-derived basenames can appear. This module never derives a
-//! category from an agent id, pane label, or arbitrary path, and it never
-//! turns a live-only category into a fleet-operation target — actionable
-//! identities come exclusively from the fleet-ops CLI validated identity
-//! path ([`crate::fleet::cli`]).
+//! category from an agent id, pane label, or arbitrary path.
 
 use std::collections::BTreeSet;
 

@@ -5,12 +5,7 @@
 //! - D33 digest, offline against the history ring:
 //!   `corrald digest [--since <epoch-millis>] [--config-dir <path>]`
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
-//! - #237 configless fleet operations: `corrald fleet switch <name>`
-//!   delegates to the fleet-ops CLI (`herdr-fleet switch`) — corral does not
-//!   own, read, or write `fleets.json`. The registry views/mutations
-//!   (`list`/`check`/`add`/`remove`/`pause`/`resume`/`models`/`watch` --
-//!   `reap`/`prune`) were the #35 registry-ownership surface and are
-//!   superseded by `herdr-fleet` (see docs/corral/G35-registry.md).
+//! - The registry views and mutations belong to the private fleet tool.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -27,7 +22,7 @@ use corrald::core::events::{Plane, plane_channel};
 use corrald::core::store::Store;
 use corrald::core::util::now_millis;
 use corrald::core::workspace::WorkspaceAttribution;
-use corrald::fleet::cli::{CliFleetOpsProvider, FleetIdentity, FleetOpsProvider};
+
 use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
@@ -63,10 +58,6 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("digest") {
         run_digest(&args[1..]);
-        return;
-    }
-    if args.first().map(String::as_str) == Some("fleet") {
-        run_fleet(&args[1..]);
         return;
     }
 
@@ -133,91 +124,6 @@ fn run_digest(args: &[String]) {
     print!("{}", digest.render());
 }
 
-/// `corrald fleet` — the configless fleet-operation surface (#237).
-///
-/// `switch` is the only subcommand. It delegates the whole auth-gated
-/// re-arm to the fleet-ops CLI (`herdr-fleet switch <name>`), which is
-/// lanes-aware and validates the fleet identity itself; corral never reads
-/// or writes `fleets.json`. The legacy #35 registry subcommands
-/// (`list`/`check`/`add`/`remove`/`pause`/`resume`/`models`/`watch`/
-/// `reap`/`prune`) are superseded — use `herdr-fleet` for registry
-/// operations.
-fn run_fleet(args: &[String]) {
-    // `corrald fleet` with no subcommand prints the (tiny) help + exit 2.
-    let Some(sub) = args.first() else {
-        eprintln!("corrald fleet: need a subcommand: switch (see --help)");
-        std::process::exit(2);
-    };
-    match sub.as_str() {
-        "switch" => run_fleet_switch(&args[1..]),
-        "--help" | "-h" => {
-            print_fleet_help();
-            std::process::exit(0);
-        }
-        other => {
-            eprintln!("corrald fleet: unknown subcommand: {other} (see --help)");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn print_fleet_help() {
-    println!(
-        "corrald fleet — configless fleet operations (#237)\n\n\
-         USAGE: corrald fleet switch <name> [--pane <id>]\n\n\
-         switch   auth-gated orchestrator re-arm, delegated to the fleet-ops CLI\n\
-         (herdr-fleet switch <name>): the fleet identity, harness, auth gates,\n\
-         and continuation brief are fleet-ops' — corral no longer owns, reads,\n\
-         or writes the fleet registry file (the registry stays fleet-ops' config).\n\
-         Registry views/mutations (list/check/add/remove/\n\
-         pause/resume/models/watch/reap/prune) moved to `herdr-fleet`; use\n\
-         `herdr-fleet list|check|add|remove|pause|resume|models|switch|doctor`.\n\n\
-         --pane <id>   pass an explicit pane id through to herdr-fleet switch\n"
-    );
-}
-
-/// `corrald fleet switch <name>`: delegate to the fleet-ops CLI.
-fn run_fleet_switch(args: &[String]) {
-    let mut name: Option<String> = None;
-    let mut pane: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--pane" => {
-                i += 1;
-                pane = args.get(i).cloned();
-                if pane.is_none() {
-                    eprintln!("corrald fleet switch: --pane needs a value");
-                    std::process::exit(2);
-                }
-            }
-            "--help" | "-h" => {
-                print_fleet_help();
-                std::process::exit(0);
-            }
-            other if !other.starts_with("--") && name.is_none() => {
-                name = Some(other.to_string());
-            }
-            other => {
-                eprintln!("corrald fleet switch: unknown argument: {other} (see --help)");
-                std::process::exit(2);
-            }
-        }
-        i += 1;
-    }
-    let Some(name) = name else {
-        eprintln!("corrald fleet switch: need a fleet name");
-        std::process::exit(2);
-    };
-    match corrald::fleet::switch::switch_fleet(&name, pane.as_deref()) {
-        Ok(()) => std::process::exit(0),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(error.exit_code());
-        }
-    }
-}
-
 fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>) {
     let mut socket: Option<String> = None;
     let mut port: Option<u16> = None;
@@ -262,7 +168,7 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>) {
                      network itself is the read boundary (prefer a tailnet)\n\
                      --cors-origin  exact browser origin allowed to READ the\n\
                      credential-free read plane (/healthz, /snapshot,\n\
-                     /events, /history, /issues, /fleets) — repeatable, or\n\
+                     /events, /history, /issues) — repeatable, or\n\
                      set $CORRALD_CORS_ORIGIN (comma-separated). `*` is\n\
                      refused. The write plane (/drive, auth) never gets\n\
                      CORS headers; only the read routes above do. Empty\n\
@@ -441,7 +347,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
         tracing::info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");
     }
 
-    let fleet_provider: Arc<dyn FleetOpsProvider> = Arc::new(CliFleetOpsProvider);
     if cors_origins.is_empty() {
         tracing::info!("CORS read plane disabled (no --cors-origin / $CORRALD_CORS_ORIGIN)");
     } else {
@@ -453,7 +358,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
         adapter,
         replay: Arc::new(ReplayTable::default()),
         issues: issues_cache.clone(),
-        fleets: fleet_provider,
+
         cors_origins,
     });
     let listener = tokio::net::TcpListener::bind(addr)
@@ -480,48 +385,8 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
 /// `gh_repo` points at a repo that shares a workspace-repo name with a
 /// tracked repo is authoritative for that identity (the fleet-ops validated
 /// identity is what the operator is working on).
-fn gh_repo_specs(identities: &[FleetIdentity]) -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
-    let mut specs = corrald::adapters::gh_plane::tracked_specs();
-    add_fleet_specs(&mut specs, identities);
-    specs
-}
-
-/// Fold each CLI-validated fleet's `gh_repo` into the gh spec set, keyed by
-/// fleet name.
-fn add_fleet_specs(
-    specs: &mut Vec<corrald::adapters::gh_plane::GhRepoSpec>,
-    identities: &[FleetIdentity],
-) {
-    for fleet in identities {
-        let Some((owner, name)) = fleet.gh_repo.split_once('/') else {
-            continue;
-        };
-        let slug = format!("{owner}/{name}");
-        // Same GitHub repo: fold the fleet's issue-view key onto the existing
-        // spec AND force the PR attribution key to the fleet-ops `gh_repo`
-        // basename. A tracked repo's compile-time folder-derived name may be
-        // stale (e.g. synergy-costing vs synergy-apps) — configless
-        // attribution falls back to the live directory name, so the gh fold
-        // key is the CLI-validated basename.
-        if let Some(existing) = specs.iter_mut().find(|s| s.slug() == slug) {
-            existing.key = name.to_string();
-            if existing.issues_key.is_none() {
-                existing.issues_key = Some(fleet.name.clone());
-            }
-            continue;
-        }
-        // A different repo that shares the workspace repo basename: the
-        // validated fleet is authoritative for that workspace identity.
-        if let Some(pos) = specs.iter().position(|s| s.key == name) {
-            specs.remove(pos);
-        }
-        specs.push(corrald::adapters::gh_plane::GhRepoSpec {
-            owner: owner.to_string(),
-            name: name.to_string(),
-            key: name.to_string(),
-            issues_key: Some(fleet.name.clone()),
-        });
-    }
+fn gh_repo_specs() -> Vec<corrald::adapters::gh_plane::GhRepoSpec> {
+    corrald::adapters::gh_plane::tracked_specs()
 }
 
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
@@ -538,18 +403,6 @@ async fn supervise_planes(
     fallback_repo_root: PathBuf,
     source_discovery: Arc<LiveRepoSourceDiscovery>,
 ) {
-    // Configless identity set for the gh plane: fleet-ops CLI validated
-    // fleets. Unavailable CLI -> tracked specs only; the daemon still runs.
-    let identities = match CliFleetOpsProvider.list() {
-        Ok(identities) => identities,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "fleet-ops CLI identity path unavailable; gh specs fall back to tracked repos"
-            );
-            Vec::new()
-        }
-    };
     let mut backoff = INTEGRATOR_RECONNECT_BASE;
     loop {
         // Fresh plane instances per generation (re-review R1/R2): a re-armed
@@ -569,7 +422,7 @@ async fn supervise_planes(
         );
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
             Arc::new(store.clone()),
-            gh_repo_specs(&identities),
+            gh_repo_specs(),
         ));
         let (sink, rx) = plane_channel();
         let integrator =
@@ -598,23 +451,10 @@ async fn supervise_planes(
 #[cfg(test)]
 mod tests {
     use super::{bind_permitted, origin_valid};
-    use corrald::fleet::cli::FleetIdentity;
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().expect("test ip parses")
-    }
-
-    fn identity(name: &str, gh_repo: &str) -> FleetIdentity {
-        FleetIdentity {
-            name: name.to_string(),
-            gh_repo: gh_repo.to_string(),
-            local: std::path::PathBuf::from(format!("~/Projects/{name}")),
-            worktree_dir: name.to_string(),
-            orch: format!("orch-{name}"),
-            workers: 0,
-            paused: false,
-        }
     }
 
     /// #65: the bind allowlist — loopback, RFC 1918, Tailscale/CGNAT
@@ -671,81 +511,6 @@ mod tests {
         ] {
             assert!(!bind_permitted(&ip(refused)), "should refuse {refused}");
         }
-    }
-
-    #[test]
-    fn fleet_specs_make_corral_issue_startable() {
-        // #113 review 1 (#237 configless): a CLI-validated fleet whose
-        // `gh_repo` is NOT in the compile-time tracked set (e.g. `corral`)
-        // must still get its issues fetched, grouped by the FLEET name so the
-        // worktree action can start an issue against it.
-        let identities = vec![
-            identity("corral", "jirathip-dev/corral"),
-            identity("plush", "jirathip-dev/plush-meadow"),
-        ];
-        let mut specs = super::gh_repo_specs(&identities);
-
-        let corral = specs
-            .iter()
-            .find(|s| s.owner == "jirathip-dev" && s.name == "corral")
-            .expect("corral fleet spec present");
-        assert_eq!(
-            corral.key, "corral",
-            "PR attribution key == gh_repo basename"
-        );
-        assert_eq!(
-            corral.issues_key.as_deref(),
-            Some("corral"),
-            "issues grouped by the fleet name"
-        );
-
-        let plush = specs
-            .iter()
-            .find(|s| s.owner == "jirathip-dev" && s.name == "plush-meadow")
-            .expect("plush fleet spec present");
-        assert_eq!(plush.key, "plush-meadow", "attribution key stays basename");
-        assert_eq!(
-            plush.issues_key.as_deref(),
-            Some("plush"),
-            "issue view keyed by the fleet name, not the basename"
-        );
-        let _ = &mut specs;
-    }
-
-    #[test]
-    fn tracked_fleet_spec_uses_canonical_gh_repo_basename() {
-        // #182 review F1 (#237 configless): when a compile-time tracked repo
-        // is ALSO a validated fleet whose gh_repo differs from the historical
-        // folder name, the PR/CI attribution key follows the CLI-validated
-        // basename.
-        let identities = vec![identity(
-            "synergy",
-            "synergy-services-cooling-tower/synergy-apps",
-        )];
-        let specs = super::gh_repo_specs(&identities);
-
-        let baseline = corrald::adapters::gh_plane::tracked_specs()
-            .into_iter()
-            .find(|s| s.name == "synergy-apps")
-            .expect("tracked synergy spec present");
-        assert_eq!(
-            baseline.key, "synergy-apps",
-            "tracked PR key is the canonical repo basename"
-        );
-
-        let synergy = specs
-            .iter()
-            .find(|s| s.owner == "synergy-services-cooling-tower" && s.name == "synergy-apps")
-            .expect("synergy fleet spec present");
-        assert_eq!(
-            synergy.key, "synergy-apps",
-            "fleet gh_repo basename is authoritative for PR attribution"
-        );
-        assert_eq!(
-            synergy.issues_key.as_deref(),
-            Some("synergy"),
-            "issues still grouped by the fleet name"
-        );
     }
 
     /// #215: the CORS allowlist accepts exact `scheme://host[:port]`

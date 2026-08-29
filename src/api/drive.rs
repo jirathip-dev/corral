@@ -59,7 +59,7 @@
 //! Storing and replaying the exact body keeps idempotent retries byte-identical.
 
 use std::collections::hash_map::Entry as HashMapEntry;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -76,7 +76,6 @@ use tracing::warn;
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
 use crate::core::blocks::segment_lines;
-use crate::core::events::GhIssueRef;
 use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
@@ -85,7 +84,7 @@ use crate::drive::{
     DrivePayload, DriveResponse, PayloadError, READ_TAIL_DEFAULT_LINES, READ_TAIL_MAX_LINES,
     SignedDrive, UnknownCapability,
 };
-use crate::fleet::cli::FleetIdentity;
+use crate::fleet::worktree::FleetIdentity;
 use crate::fleet::worktree::{
     self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
     WorktreeRequest,
@@ -1092,178 +1091,93 @@ async fn worktree_dispatch(
     ),
     WorktreeError,
 > {
-    // #237: the fleet identity is validated by the fleet-ops CLI identity
-    // path — corral never reads fleets.json. Display repo categories are
-    // never actionable identities, so the request's `repo` must be a
-    // CLI-validated fleet name (an UnknownFleet here is a refusal, not an
-    // identity drift: the client only offers CLI-validated names).
-    let fleet = state
-        .fleets
-        .get(request.repo())
-        .map_err(|error| match error {
-            crate::fleet::cli::FleetOpsError::UnknownFleet { name } => {
-                WorktreeError::UnknownFleet(name)
-            }
-            other => WorktreeError::InvalidName(other.to_string()),
-        })?;
-
-    // #113 review 3: the issue URL in the audit/metadata is derived from the
-    // daemon's authoritative issue ref, never trusted from the client. A
-    // client could sign a bogus URL; the worktree action echoes the SAME
-    // fetched set it validates against.
-    let issue_snapshot = state.issues.snapshot();
-    let all_identities = match state.fleets.list() {
-        Ok(identities) => identities,
-        Err(error) => {
-            // The identity itself was validated above; only the alias
-            // expansion is reduced. Never fabricate aliases from display
-            // categories.
-            tracing::warn!(error = %error, "fleet-ops CLI identity path unavailable for issue aliases");
-            Vec::new()
-        }
+    let repo = request.repo().to_string();
+    let snapshot = state.issues.snapshot();
+    let known = snapshot.contains_key(&repo)
+        || crate::api::repo::live_workspace_repos(&state.store)
+            .await
+            .contains(&repo);
+    if !known {
+        return Err(WorktreeError::UnknownFleet(repo));
+    }
+    let issue_url = match &request {
+        WorktreeRequest::Issue { number, .. } => snapshot
+            .get(&repo)
+            .and_then(|items| items.iter().find(|issue| issue.number == *number))
+            .map(|issue| issue.url.clone())
+            .unwrap_or_default(),
+        WorktreeRequest::Free { .. } => String::new(),
     };
     let request = match request {
-        WorktreeRequest::Issue { repo, number, .. } => {
-            let authoritative_url =
-                authoritative_issue(&all_identities, &issue_snapshot, &fleet, number)
-                    .map(|issue| issue.url)
-                    .unwrap_or_default();
-            WorktreeRequest::Issue {
-                repo,
-                number,
-                issue_url: authoritative_url,
-            }
-        }
+        WorktreeRequest::Issue { repo, number, .. } => WorktreeRequest::Issue {
+            repo,
+            number,
+            issue_url,
+        },
         free => free,
     };
-
-    // The stale/closed-issue guard runs against the SAME repo-level issue set
-    // the browser renders (the integrator's cache), never a guess.
-    let issues = issue_summaries(&all_identities, issue_snapshot);
-    let issue_check = IssueCheck::new(&issues);
-
-    let creator = GitCreator;
-    let launcher = HerdrLauncher;
+    let issues = snapshot
+        .into_iter()
+        .flat_map(|(repo, items)| {
+            items.into_iter().map(move |issue| IssueSummary {
+                repo: repo.clone(),
+                number: issue.number,
+                state: issue.state,
+            })
+        })
+        .collect::<Vec<_>>();
+    let identity = FleetIdentity {
+        name: repo.clone(),
+        gh_repo: repo.clone(),
+        orch: String::new(),
+        workers: 0,
+        paused: false,
+        local: std::env::var_os("CORRAL_REPO_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(format!("~/Projects/{repo}"))),
+        worktree_dir: repo,
+    };
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let outcome = worktree::start(
-        &fleet,
+        &identity,
         &request,
         "HEAD",
         &home,
-        issue_check,
-        &creator,
-        &launcher,
+        IssueCheck::new(&issues),
+        &GitCreator,
+        &HerdrLauncher,
     )?;
-
     match outcome {
         WorktreeOutcome::Started {
             branch,
             path,
             handoff,
         } => {
-            let handoff_state = match handoff {
+            let handoff = match handoff {
                 worktree::Handoff::Launched => "launched",
                 worktree::Handoff::Deferred => "deferred",
-                worktree::Handoff::Failed(msg) => {
-                    return Err(WorktreeError::Launch(msg));
-                }
+                worktree::Handoff::Failed(msg) => return Err(WorktreeError::Launch(msg)),
             };
-            let result = serde_json::json!({
-                "state": "started",
-                "branch": branch,
-                "path": path.to_string_lossy(),
-                "handoff": handoff_state,
-            });
-            Ok((true, None, None, AuditOutcome::Executed, Some(result)))
+            Ok((
+                true,
+                None,
+                None,
+                AuditOutcome::Executed,
+                Some(
+                    serde_json::json!({"state":"started","branch":branch,"path":path.to_string_lossy(),"handoff":handoff}),
+                ),
+            ))
         }
-        WorktreeOutcome::AlreadyStarted { branch, path } => {
-            let result = serde_json::json!({
-                "state": "already_started",
-                "branch": branch,
-                "path": path.to_string_lossy(),
-            });
-            Ok((true, None, None, AuditOutcome::Executed, Some(result)))
-        }
+        WorktreeOutcome::AlreadyStarted { branch, path } => Ok((
+            true,
+            None,
+            None,
+            AuditOutcome::Executed,
+            Some(
+                serde_json::json!({"state":"already_started","branch":branch,"path":path.to_string_lossy()}),
+            ),
+        )),
     }
-}
-
-/// Return the cached issue for a fleet, including another fleet's cache entry
-/// when both CLI-validated identities point at the same full GitHub
-/// repository. The gh plane polls one repository once, so the first fleet's
-/// issue key is the source of truth for every exact fleet-name action in
-/// that repository. `identities` is the fleet-ops CLI validated catalog.
-fn authoritative_issue(
-    identities: &[FleetIdentity],
-    snapshot: &BTreeMap<String, Vec<GhIssueRef>>,
-    fleet: &FleetIdentity,
-    number: u64,
-) -> Option<GhIssueRef> {
-    let aliases = identities
-        .iter()
-        .filter(|candidate| same_gh_repo(&candidate.gh_repo, &fleet.gh_repo))
-        .map(|candidate| candidate.name.as_str());
-    let mut names = vec![fleet.name.as_str()];
-    names.extend(aliases.filter(|name| *name != fleet.name));
-    names
-        .into_iter()
-        .filter_map(|name| snapshot.get(name))
-        .flat_map(|issues| issues.iter())
-        .find(|issue| issue.number == number)
-        .cloned()
-}
-
-/// Expand one cached fleet issue onto every exact fleet-name alias that shares
-/// its full GitHub repository. This keeps the daemon-side issue check aligned
-/// with the client surface without adding duplicate entries to `GET /issues`.
-fn issue_summaries(
-    identities: &[FleetIdentity],
-    snapshot: BTreeMap<String, Vec<GhIssueRef>>,
-) -> Vec<IssueSummary> {
-    let mut summaries = BTreeMap::<(String, u64), IssueSummary>::new();
-    for (repo, issues) in snapshot {
-        let aliases: Vec<String> = identities
-            .iter()
-            .find(|fleet| fleet.name == repo)
-            .map(|source| {
-                identities
-                    .iter()
-                    .filter(|candidate| same_gh_repo(&candidate.gh_repo, &source.gh_repo))
-                    .map(|candidate| candidate.name.clone())
-                    .collect()
-            })
-            .filter(|aliases: &Vec<String>| !aliases.is_empty())
-            .unwrap_or_else(|| vec![repo.clone()]);
-        for issue in issues {
-            for alias in &aliases {
-                let summary = IssueSummary {
-                    repo: alias.clone(),
-                    number: issue.number,
-                    state: issue.state.clone(),
-                };
-                let key = (summary.repo.clone(), summary.number);
-                if alias == &repo {
-                    summaries.insert(key, summary);
-                } else {
-                    summaries.entry(key).or_insert(summary);
-                }
-            }
-        }
-    }
-    summaries.into_values().collect()
-}
-
-fn same_gh_repo(left: &str, right: &str) -> bool {
-    canonical_gh_repo(left)
-        .is_some_and(|left| canonical_gh_repo(right).is_some_and(|right| left == right))
-}
-
-fn canonical_gh_repo(gh_repo: &str) -> Option<String> {
-    let (owner, repo) = gh_repo.split_once('/')?;
-    let (owner, repo) = (owner.trim(), repo.trim());
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return None;
-    }
-    Some(format!("{owner}/{repo}"))
 }
 
 /// Stable wire `error_kind` for a typed worktree failure.
@@ -1311,72 +1225,12 @@ mod tests {
     use super::*;
     use crate::drive::canonical_envelope_bytes;
     use serde_json::json;
-    use std::path::PathBuf;
-
-    fn worktree_fleet(name: &str, gh_repo: &str) -> FleetIdentity {
-        FleetIdentity {
-            name: name.into(),
-            gh_repo: gh_repo.into(),
-            local: PathBuf::from("/tmp/local"),
-            worktree_dir: name.into(),
-            orch: "orch".into(),
-            workers: 0,
-            paused: false,
-        }
-    }
-
-    fn cached_issue(number: u64) -> GhIssueRef {
-        GhIssueRef {
-            repo: "foo".into(),
-            number,
-            state: "OPEN".into(),
-            title: "shared issue".into(),
-            labels: Vec::new(),
-            url: format!("https://github.com/example/foo/issues/{number}"),
-            body: None,
-            comments: Vec::new(),
-            comment_total: None,
-        }
-    }
 
     #[test]
     fn terminal_open_request_id_is_consumed_once() {
         let replay = ReplayTable::new();
         assert!(replay.claim_once("terminal-open-1"));
         assert!(!replay.claim_once("terminal-open-1"));
-    }
-
-    #[test]
-    fn shared_gh_repo_issue_cache_serves_each_fleet_target_without_api_duplicates() {
-        let identities = vec![
-            worktree_fleet("alpha", "owner/foo"),
-            worktree_fleet("beta", "owner/foo"),
-        ];
-        let issue = cached_issue(42);
-        let snapshot = BTreeMap::from([
-            ("alpha".to_string(), vec![issue.clone()]),
-            ("beta".to_string(), vec![issue.clone()]),
-        ]);
-
-        let summaries = issue_summaries(&identities, snapshot.clone());
-        assert_eq!(
-            summaries.len(),
-            2,
-            "identical cached issues are deduplicated"
-        );
-        assert_eq!(
-            summaries
-                .iter()
-                .map(|issue| issue.repo.as_str())
-                .collect::<Vec<_>>(),
-            vec!["alpha", "beta"],
-            "one fetched issue is valid for both exact fleet targets"
-        );
-        assert_eq!(
-            authoritative_issue(&identities, &snapshot, &identities[1], 42,),
-            Some(issue),
-            "the second fleet gets the same authoritative URL without a second poll"
-        );
     }
 
     #[derive(Debug)]

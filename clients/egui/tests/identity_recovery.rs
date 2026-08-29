@@ -34,7 +34,6 @@ use corrald::adapters::{Adapter, DriveCommand, DriveError};
 use corrald::api::{AppState, router as api_router};
 use corrald::auth::AuthPlane;
 use corrald::core::store::Store;
-use corrald::fleet::cli::MemoryFleetOpsProvider;
 use corrald_ui::drive::{DriveEndpoint, DriveFailure, DriveIntent, DriveOutcome};
 use corrald_ui::protocol;
 use corrald_ui::state::PersistedConfig;
@@ -132,7 +131,6 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         adapter: Arc::new(TailAdapter),
         replay: Default::default(),
         issues: Default::default(),
-        fleets: Arc::new(MemoryFleetOpsProvider::new(vec![])),
         cors_origins: Vec::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

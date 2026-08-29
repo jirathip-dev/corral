@@ -1,7 +1,7 @@
 //! Narrow CORS layer for the credential-free read plane (#215).
 //!
 //! corrald's read plane (`/healthz`, `/snapshot`, `/events`, `/history`,
-//! `/issues`, `/fleets`) is credential-free by design (#65). The read-only
+//! `/issues`) is credential-free by design (#65). The read-only
 //! web board (`clients/egui` wasm build, GitHub Pages demo) fetches those
 //! from a DIFFERENT origin, so `Access-Control-Allow-Origin` is the only
 //! daemon-side change a browser page needs to read the live board.

@@ -6,14 +6,8 @@
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
-//! - `GET /issues` — #113/#237: read-only repo-level issue view for the
-//!   board's issue browser and worktree action (live `workspace.repo`
-//!   categories plus fleet-ops CLI validated fleet-name keys; configless —
-//!   no `fleets.json` is read).
-//! - `GET /fleets` — #237: the fleet-ops CLI validated identity catalog
-//!   (name, gh_repo, orch, workers, paused) for the board's read-only Fleets
-//!   tab. NOT a registry projection: no `local`/`worktree_dir`/`models`/path
-//!   fields. A fleet-ops CLI failure is HTTP 200 `status="error"`.
+//! - `GET /issues` — read-only repo-level issue view for the
+
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
 //!   capability-gated, signed by the device authorizer, step-up-gated for
 //!   destructive payloads (see [`crate::api::drive`]).
@@ -43,9 +37,7 @@
 
 pub(crate) mod cors;
 pub mod drive;
-pub mod fleets;
 pub mod issues;
-pub(crate) mod plugin;
 pub(crate) mod repo;
 
 use std::convert::Infallible;
@@ -98,12 +90,7 @@ pub struct AppState {
     /// served by [`issues::issues`]). The browser and the worktree action
     /// read this; nothing here mutates GitHub.
     pub issues: Arc<issues::IssuesCache>,
-    /// #237: the fleet-ops CLI validated identity path (configless corral).
-    /// The daemon never reads fleets.json; every actionable fleet identity
-    /// (issue-free / issue-linked start targets, `/fleets` catalog) comes
-    /// from this provider. Tests inject a stub; production shells
-    /// `herdr-fleet list`.
-    pub fleets: Arc<dyn crate::fleet::cli::FleetOpsProvider>,
+
     /// #215: exact-origin allowlist for the read plane's CORS headers
     /// (`--cors-origin` / `CORRALD_CORS_ORIGIN`). Empty (the default) =
     /// no CORS headers at all — the daemon behaves exactly as before.
@@ -129,10 +116,7 @@ impl Default for AppState {
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
             issues: Arc::new(issues::IssuesCache::default()),
-            // #237: the production provider shells the fleet-ops CLI; tests
-            // replace it with a stub so the hermetic suite never depends on
-            // a live `herdr-fleet` on PATH.
-            fleets: Arc::new(crate::fleet::cli::CliFleetOpsProvider),
+
             cors_origins: Vec::new(),
         }
     }
@@ -155,8 +139,6 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(events))
         .route("/history", get(history))
         .route("/issues", get(issues::issues))
-        .route("/fleets", get(fleets::fleets))
-        .route("/plugins", get(plugin::view))
         .route("/v1/worktrees", get(worktrees))
         .route("/v1/terminal", get(terminal_ws))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -165,7 +147,6 @@ pub fn router(state: AppState) -> Router {
         ));
     let write = Router::new()
         .route("/drive", post(drive))
-        .route("/plugins/action", post(plugin::action))
         .route("/device-token", post(device_token))
         .route("/grants-read", post(grants_read))
         .merge(crate::auth::http::auth_routes());

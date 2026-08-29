@@ -1103,7 +1103,7 @@ fn grant_management_block(
     ui.add_space(10.0);
     let state = &mut settings.grant_admin;
     ui.label(
-        RichText::new("DEVICE ACCESS")
+        RichText::new("DEVICES & GRANTS")
             .size(10.0)
             .strong()
             .color(theme::ui::TEXT_MUTED),
@@ -1469,6 +1469,9 @@ mod tests {
         assert!(text.contains("Devices & Grants"));
         assert!(text.contains("THIS DEVICE"));
         assert!(text.contains("REMOTE DEVICES"));
+        assert!(!include_str!("../app.rs").contains("Device access, or use"));
+        assert!(!include_str!("../app.rs").contains("available — Settings → Device access"));
+        assert!(!include_str!("../app.rs").contains("(Settings → Device access → THIS"));
     }
 
     #[test]

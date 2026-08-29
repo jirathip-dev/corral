@@ -3229,6 +3229,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::Instant;
 
+    use axum::{Router, body::Body, http::Request, response::Response, routing::any};
+    use tokio::sync::Mutex;
+
     use super::*;
     use crate::model::{Agent, AgentState, GhIssueRef, Workspace};
     use crate::ui::board::{self, StateFilter};
@@ -3714,6 +3717,78 @@ mod tests {
         let labels: Vec<&str> = TAB_LABELS.iter().map(|(label, _)| *label).collect();
         assert_eq!(labels, ["Board", "Issues", "Settings"]);
         assert!(!labels.contains(&"Audit"));
+    }
+
+    #[test]
+    fn initial_connection_requests_only_live_read_routes() {
+        let (runtime, mut app) = read_model_test_app();
+        let requests = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let request_log = requests.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let request_log = request_log.clone();
+            async move {
+                let path = request.uri().path().to_string();
+                let method = request.method().to_string();
+                request_log.lock().await.push(format!("{method} {path}"));
+                if path == "/events" {
+                    let snapshot = serde_json::json!({
+                        "schema_version": 5,
+                        "rev": 1,
+                        "generated_at": 1,
+                        "agents": {}
+                    });
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(format!("event: snapshot\ndata: {snapshot}\n\n")))
+                        .unwrap()
+                } else {
+                    Response::new(Body::from(r#"{"repos":{}}"#))
+                }
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            app.config.host_url = format!("http://{address}");
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.spawn_read_loop(format!("http://{address}"));
+            for _ in 0..100 {
+                while let Ok(message) = app.rx_apply.try_recv() {
+                    app.on_apply(message);
+                }
+                if requests
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|path| path == "GET /issues")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let requests = runtime.block_on(async { requests.lock().await.clone() });
+        assert!(
+            requests.contains(&"GET /events".to_string()),
+            "{requests:?}"
+        );
+        assert!(
+            requests.contains(&"GET /issues".to_string()),
+            "{requests:?}"
+        );
+        let retired_routes = [
+            format!("GET /{}", "plugins"),
+            format!("POST /{}/{}", "plugins", "action"),
+            format!("GET /{}", "fleets"),
+        ];
+        assert!(
+            !requests.iter().any(|path| retired_routes.contains(path)),
+            "retired route requested: {requests:?}"
+        );
     }
 
     #[test]

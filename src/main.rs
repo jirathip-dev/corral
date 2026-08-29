@@ -647,17 +647,20 @@ mod tests {
             .filter(|spec| spec.name == "sendmeter")
             .collect();
         assert_eq!(matching.len(), 2, "one spec per canonical GitHub slug");
-        assert!(
+        assert_eq!(
             matching
                 .iter()
-                .any(|spec| spec.aliases.contains(&"sendmeter-services".to_string()))
+                .filter(|spec| spec.aliases.contains(&"sendmeter-services".to_string()))
+                .count(),
+            1,
         );
-        assert!(
+        assert_eq!(
             matching
                 .iter()
-                .any(|spec| spec.aliases.contains(&"sendmeter-services".to_string()))
+                .filter(|spec| spec.aliases.contains(&"sendmeter-jirathip".to_string()))
+                .count(),
+            1,
         );
-        assert!(matching.iter().any(|spec| spec.key == "sendmeter-jirathip"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

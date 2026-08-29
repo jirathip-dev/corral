@@ -75,13 +75,9 @@ surface directly (`docs/corral/P4-conformance.md` is the normative contract).
   selected device's full capability set via `POST /grants`, and exposes the
   same revoke action as `corrald-grant.sh --revoke`.
 - **Fleet identities (no dedicated tab)** — the Issues tab resolves repo
-  categories into exact fleet-name drive targets via the daemon's
-  `GET /fleets` identity catalog (configless #237 — corral never reads or
-  writes the fleet registry file). The dedicated Fleets tab was removed
-  (#269); the private fleet surface belongs to the future fleet-ops
-  sidecar plugin (#239). Mutations still run through `herdr-fleet` on the
-  host, and `corrald fleet switch <name>` delegates the re-arm to the
-  fleet-ops CLI. There is no fleets.json editing anywhere in the client.
+  categories into exact native-repository drive targets. The dedicated
+  Fleets tab was removed (#269); worktree actions use the native repository
+  identities supplied by the daemon's issue view.
 - **Issues tab** — the repo-level `GET /issues` browser moved out of Board
   into its own top-level tab, keeping the issue-linked worktree action
   alongside the board's other tabs. Issue-free worktree creation is not
@@ -214,7 +210,7 @@ glow/WebGL, no tokio runtime, no `keyring`, no `/drive`):
 | Surface | Web | Desktop |
 |---|---|---|
 | `GET /snapshot`, `GET /events` SSE | yes | yes |
-| `GET /issues`, `GET /fleets` (read projections) | yes | yes |
+| `GET /issues` (read projection) | yes | yes |
 | `POST /drive`, `POST /step-up`, `POST /register`, `GET /grants` | **no** | yes |
 | `/host-key`, `keyring`, device signing | **no** | yes |
 
@@ -264,7 +260,7 @@ the read routes. The policy (see `src/api/cors.rs`):
   is refused at startup. Matching is byte-exact, `scheme://host[:port]`,
   no trailing slash.
 - **Read plane only.** The middleware sits only on `/healthz`,
-  `/snapshot`, `/events`, `/history`, `/issues`, `/fleets`. The write
+  `/snapshot`, `/events`, `/history`, `/issues`. The write
   plane (`/drive`, device-token, grants-read, auth routes) never emits
   CORS headers — a browser from another origin cannot complete a signed
   write even if the page tried.

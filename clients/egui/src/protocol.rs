@@ -15,77 +15,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, FleetIdentities, GhIssueRef, Snapshot};
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct PluginCard {
-    pub id: String,
-    pub title: String,
-    pub value: serde_json::Value,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct PluginAction {
-    pub id: String,
-    pub title: String,
-    pub command: Vec<String>,
-    pub confirm_message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct PluginView {
-    pub name: String,
-    pub version: String,
-    pub cards: Vec<PluginCard>,
-    pub actions: Vec<PluginAction>,
-}
-
-pub async fn fetch_plugin(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<Option<PluginView>, String> {
-    let response = client
-        .get(format!("{}/plugins", base_url.trim_end_matches('/')))
-        .timeout(Duration::from_secs(35))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GET /plugins -> {}", response.status()));
-    }
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
-    if body.get("installed") == Some(&serde_json::Value::Bool(false)) {
-        return Ok(None);
-    }
-    serde_json::from_value(body)
-        .map(Some)
-        .map_err(|e| format!("body: {e}"))
-}
-
-pub async fn execute_plugin_action(
-    client: &reqwest::Client,
-    base_url: &str,
-    action_id: &str,
-) -> Result<serde_json::Value, String> {
-    let response = client
-        .post(format!("{}/plugins/action", base_url.trim_end_matches('/')))
-        .json(&serde_json::json!({"action_id": action_id, "confirmed": true}))
-        .timeout(Duration::from_secs(35))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    let status = response.status();
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
-    if !status.is_success() || body.get("error").is_some() {
-        return Err(body
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("plugin action failed")
-            .into());
-    }
-    Ok(body)
-}
+use crate::model::{Delta, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
@@ -254,28 +184,6 @@ fn decode_issues(body: serde_json::Value) -> Result<BTreeMap<String, Vec<GhIssue
     serde_json::from_value::<Wire>(body)
         .map(|wire| wire.repos)
         .map_err(|e| format!("body: {e}"))
-}
-
-/// #237: `GET /fleets` — the fleet-ops CLI validated identity catalog
-/// (configless: corral never reads fleets.json). Transport, non-2xx, and
-/// body decode failures are strict `Err(String)`s; a daemon-level fleet-ops
-/// CLI failure is a successful HTTP 200 `FleetIdentities { status: "error",
-/// .. }` and is rendered prominently.
-pub async fn fetch_fleet_identities(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<FleetIdentities, String> {
-    let url = format!("{}/fleets", base_url.trim_end_matches('/'));
-    let response = client
-        .get(&url)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GET /fleets -> {}", response.status()));
-    }
-    response.json().await.map_err(|e| format!("body: {e}"))
 }
 
 /// `POST /register` with the routing-only registration token and the
@@ -829,8 +737,6 @@ pub fn spawn_read_loop(
 /// Messages from background tasks to the UI state.
 #[derive(Debug, Clone)]
 pub enum ApplyMsg {
-    Plugin(Result<Option<PluginView>, String>),
-    PluginAction(Result<serde_json::Value, String>),
     /// Snapshot/delta data from a particular spawned read loop. The app
     /// drops events from loops that were stopped by a host switch, including
     /// events a stream had already decoded before cancellation.
@@ -861,15 +767,7 @@ pub enum ApplyMsg {
         generation: u64,
         result: Result<BTreeMap<String, Vec<GhIssueRef>>, String>,
     },
-    /// #237: the fleet-ops CLI validated identity catalog arrived from
-    /// `GET /fleets`. The generation is stamped when the request starts so
-    /// a response from a prior connection/host cannot make stale fleet names
-    /// actionable. `Err` is a transport/endpoint failure; daemon fleet-ops
-    /// failures ride an `Ok(FleetIdentities)` with `status="error"`.
-    FleetIdentities {
-        generation: u64,
-        result: Result<FleetIdentities, String>,
-    },
+
     /// #137: host-admin device/grants view arrived from `GET /grants`.
     GrantDevices(Result<AdminGrantsView, String>),
     /// #137: a host-admin grant set replacement or device revocation

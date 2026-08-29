@@ -247,36 +247,6 @@ fn shortened_agent_id(agent_id: &str) -> String {
     tail.chars().take(SHORT_ID_MAX_CHARS).collect()
 }
 
-/// #237: configless `GET /fleets` response mirror — the fleet-ops CLI
-/// validated identity catalog. Corral no longer reads or writes
-/// `fleets.json`, so this carries ONLY validated identities (name, gh_repo,
-/// orch, worker count, paused); the old registry projection fields
-/// (`local`, `worktree_dir`, `models`, `reasoning_effort`) do not exist.
-/// A fleet-ops CLI failure is still a successful HTTP response with
-/// `status="error"` and an empty `fleets` list.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct FleetIdentities {
-    pub status: String,
-    #[serde(default)]
-    pub error: Option<String>,
-    pub fleets: Vec<FleetIdentityEntry>,
-}
-
-impl FleetIdentities {
-    pub fn failed(&self) -> bool {
-        self.status == "error"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct FleetIdentityEntry {
-    pub name: String,
-    pub gh_repo: String,
-    pub orch: String,
-    pub workers: usize,
-    pub paused: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u32,
@@ -531,70 +501,6 @@ mod tests {
         assert_eq!(agent.issues[0].repo, "jirathip-k/corral");
         assert_eq!(agent.issues[0].title, "Branch-name issue inference");
         assert_eq!(agent.known_issue_numbers(), BTreeSet::from([24]));
-    }
-
-    #[test]
-    fn fleet_identities_ok_fixture_decodes_the_validated_catalog() {
-        let wire = serde_json::json!({
-            "status": "ok",
-            "error": null,
-            "fleets": [{
-                "name": "corral",
-                "gh_repo": "jirathip-dev/corral",
-                "orch": "orch-corral",
-                "workers": 2,
-                "paused": true
-            }]
-        });
-        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
-        assert_eq!(identities.status, "ok");
-        assert_eq!(identities.error, None);
-        assert!(!identities.failed());
-        assert_eq!(identities.fleets.len(), 1);
-        let fleet = &identities.fleets[0];
-        assert_eq!(fleet.name, "corral");
-        assert_eq!(fleet.gh_repo, "jirathip-dev/corral");
-        assert_eq!(fleet.orch, "orch-corral");
-        assert_eq!(fleet.workers, 2);
-        assert!(fleet.paused);
-    }
-
-    #[test]
-    fn fleet_identities_error_fixture_decodes_with_empty_list() {
-        let wire = serde_json::json!({
-            "status": "error",
-            "error": "fleet-ops CLI identity path unavailable: no herdr-fleet",
-            "fleets": []
-        });
-        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
-        assert!(identities.failed());
-        assert_eq!(
-            identities.error.as_deref(),
-            Some("fleet-ops CLI identity path unavailable: no herdr-fleet")
-        );
-        assert!(identities.fleets.is_empty());
-    }
-
-    #[test]
-    fn fleet_identities_catalog_knows_no_registry_projection_fields() {
-        // Configless: the wire carries ONLY name/gh_repo/orch/workers/paused
-        // — the old registry projection fields (local, worktree_dir, models,
-        // reasoning_effort, path) must not decode.
-        let wire = serde_json::json!({
-            "status": "ok",
-            "error": null,
-            "fleets": [{
-                "name": "board",
-                "gh_repo": "jirathip-dev/herdr-board",
-                "orch": "orch-board",
-                "workers": 0,
-                "paused": false
-            }]
-        });
-        let identities: FleetIdentities = serde_json::from_value(wire).unwrap();
-        assert_eq!(identities.fleets[0].orch, "orch-board");
-        assert_eq!(identities.fleets[0].workers, 0);
-        assert!(!identities.fleets[0].paused);
     }
 
     #[test]

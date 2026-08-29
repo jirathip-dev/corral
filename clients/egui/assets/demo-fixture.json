@@ -618,25 +618,5 @@
         "url": "https://github.com/jirathip-dev/herdr-board/issues/41"
       }
     ]
-  },
-  "fleets": {
-    "status": "ok",
-    "error": null,
-    "fleets": [
-      {
-        "name": "corral",
-        "gh_repo": "jirathip-dev/corral",
-        "orch": "orch-corral",
-        "workers": 2,
-        "paused": false
-      },
-      {
-        "name": "synergy",
-        "gh_repo": "jirathip-dev/synergy-apps",
-        "orch": "orch-synergy",
-        "workers": 1,
-        "paused": false
-      }
-    ]
   }
 }

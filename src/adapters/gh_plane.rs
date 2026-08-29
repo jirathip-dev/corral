@@ -796,7 +796,7 @@ fragment GhPlaneRepo on Repository {{
   issues(first: {ISSUE_LIMIT}, orderBy: {{field: UPDATED_AT, direction: DESC}}, states: [OPEN, CLOSED]) {{
     nodes {{ number state title url labels(first: 10) {{ nodes {{ name color }} }}
       body
-      comments(first: {COMMENTS_LIMIT}, orderBy: {{field: CREATED_AT, direction: DESC}}) {{
+      comments(first: {COMMENTS_LIMIT}, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
         totalCount
         nodes {{ body createdAt author {{ login }} }}
       }}
@@ -949,7 +949,7 @@ fn labels_from(wire: &Option<NodesWire<LabelWire>>) -> Vec<GhIssueLabel> {
 }
 
 /// #267: map the issue's comment window into [`GhIssueComment`]s. The wire
-/// order comes from the query's `orderBy: CREATED_AT DESC`, so the Vec is
+/// order comes from the query's `orderBy: UPDATED_AT DESC`, so the Vec is
 /// newest-first (the browser reveals this window lazily). A comment without
 /// a body is dropped; a missing connection stays empty — never a guess.
 fn comments_from(wire: &Option<CommentsWire>) -> Vec<GhIssueComment> {
@@ -1215,6 +1215,14 @@ mod tests {
         assert!(
             query.contains("comments(first: 30"),
             "#267: newest-first comment window for the read browser"
+        );
+        assert!(
+            query.contains("comments(first: 30, orderBy: {field: UPDATED_AT, direction: DESC})"),
+            "#267: comments use the schema-supported ordering field"
+        );
+        assert!(
+            !query.contains("comments(first: 30, orderBy: {field: CREATED_AT"),
+            "#267: comments must not use the invalid CREATED_AT ordering field"
         );
         assert!(
             query.contains("direction: DESC"),

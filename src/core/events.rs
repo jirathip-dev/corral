@@ -186,13 +186,6 @@ pub struct GhIssueRef {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhRepoState {
     pub repo: String,
-    /// #113: the fleet/repo key the read-only issue view (`GET /issues`) and
-    /// the worktree issue-guard group issues under. `None` for a tracked repo
-    /// that is NOT a configured fleet — in that case the integrator does not
-    /// publish the issues to the startable browser (only configured fleets
-    /// are startable).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_repo: Option<String>,
     pub default_branch: String,
     /// Local tracking info, where the poller can observe it.
     pub ahead: u64,

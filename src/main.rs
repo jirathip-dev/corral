@@ -7,6 +7,7 @@
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
 //! - The registry views and mutations belong to the private fleet tool.
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -386,8 +387,11 @@ fn gh_repo_specs(
     source_discovery: &LiveRepoSourceDiscovery,
     fallback_root: &PathBuf,
 ) -> Vec<GhRepoSpec> {
-    let mut specs = corrald::adapters::gh_plane::tracked_specs();
-    for root in source_discovery.discover(std::slice::from_ref(fallback_root)) {
+    let mut discovered: Vec<GhRepoSpec> = Vec::new();
+    let mut claimed_discovered_aliases = BTreeSet::new();
+    let mut roots = source_discovery.discover(std::slice::from_ref(fallback_root));
+    roots.sort();
+    for root in roots {
         let Some((owner, name)) = github_origin(&root) else {
             continue;
         };
@@ -403,7 +407,12 @@ fn gh_repo_specs(
             name,
             aliases: vec![key],
         };
-        if let Some(existing) = specs
+        let alias = spec.aliases[0].clone();
+        if claimed_discovered_aliases.contains(&alias) {
+            continue;
+        }
+        claimed_discovered_aliases.insert(alias);
+        if let Some(existing) = discovered
             .iter_mut()
             .find(|existing| existing.slug() == spec.slug())
         {
@@ -413,9 +422,34 @@ fn gh_repo_specs(
                 }
             }
         } else {
-            specs.push(spec);
+            discovered.push(spec);
         }
     }
+    let discovered_aliases: BTreeSet<String> = discovered
+        .iter()
+        .flat_map(|spec| spec.aliases.iter().cloned())
+        .collect();
+    let mut specs = Vec::new();
+    for mut fallback in corrald::adapters::gh_plane::tracked_specs() {
+        if let Some(existing) = discovered
+            .iter_mut()
+            .find(|existing| existing.slug() == fallback.slug())
+        {
+            for alias in fallback.aliases {
+                if !discovered_aliases.contains(&alias) && !existing.aliases.contains(&alias) {
+                    existing.aliases.push(alias);
+                }
+            }
+        } else {
+            fallback
+                .aliases
+                .retain(|alias| !discovered_aliases.contains(alias));
+            if !fallback.aliases.is_empty() {
+                specs.push(fallback);
+            }
+        }
+    }
+    specs.extend(discovered);
     specs
 }
 
@@ -625,6 +659,42 @@ mod tests {
         );
         assert!(matching.iter().any(|spec| spec.key == "sendmeter-jirathip"));
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovered_alias_replaces_conflicting_static_fallback() {
+        let root = std::env::temp_dir().join(format!("corral-g207-static-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (directory, remote) in [
+            ("sendmeter", "git@github.com:jirathip-dev/sendmeter.git"),
+            (
+                "synergy-services-website",
+                "git@github.com:synergy-services-cooling-tower/synergy-services-website.git",
+            ),
+        ] {
+            let checkout = root.join(directory);
+            let repository = git2::Repository::init(&checkout).unwrap();
+            repository.remote("origin", remote).unwrap();
+        }
+
+        let specs = gh_repo_specs(
+            &LiveRepoSourceDiscovery::new(root.clone()),
+            &PathBuf::from("/not-a-repo"),
+        );
+        for (name, slug) in [
+            ("sendmeter", "jirathip-dev/sendmeter"),
+            (
+                "synergy-services-website",
+                "synergy-services-cooling-tower/synergy-services-website",
+            ),
+        ] {
+            let matching: Vec<_> = specs.iter().filter(|spec| spec.name == name).collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].slug(), slug);
+            assert_eq!(matching[0].aliases, vec![name]);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

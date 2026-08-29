@@ -185,6 +185,8 @@ pub struct GhRepoSpec {
     /// for a configured fleet it is the `gh_repo` basename so PR attribution
     /// matches the fleet's checkout/worktree path repo.
     pub key: String,
+    /// Native checkout identities that share this GitHub query.
+    pub aliases: Vec<String>,
 }
 
 impl GhRepoSpec {
@@ -204,6 +206,7 @@ pub fn tracked_specs() -> Vec<GhRepoSpec> {
             owner: r.owner.to_string(),
             name: r.repo.to_string(),
             key: r.name.to_string(),
+            aliases: vec![r.name.to_string()],
         })
         .collect()
 }
@@ -716,7 +719,24 @@ fn process_response(
             continue;
         }
         new_last.insert(spec.slug(), state.clone());
-        changed.push(state);
+        let aliases: Vec<&str> = if spec.aliases.is_empty() {
+            vec![spec.key.as_str()]
+        } else {
+            spec.aliases.iter().map(String::as_str).collect()
+        };
+        for alias in aliases {
+            let mut aliased = state.clone();
+            aliased.repo = alias.to_string();
+            for issue in &mut aliased.issues {
+                issue.repo = alias.to_string();
+            }
+            for pr in &mut aliased.prs {
+                for issue in &mut pr.closing_issues {
+                    issue.repo = alias.to_string();
+                }
+            }
+            changed.push(aliased);
+        }
     }
     (new_last, changed)
 }
@@ -1140,6 +1160,31 @@ fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_query_fans_out_issue_state_to_native_aliases() {
+        let spec = GhRepoSpec {
+            owner: "example".into(),
+            name: "shared".into(),
+            key: "checkout-a".into(),
+            aliases: vec!["checkout-a".into(), "checkout-b".into()],
+        };
+        let response = json!({
+            "q0": {
+                "defaultBranchRef": { "name": "main" },
+                "issues": { "nodes": [
+                    { "number": 7, "state": "OPEN", "title": "shared issue" }
+                ]}
+            }
+        });
+        let (_, changed) =
+            process_response(response.as_object().unwrap(), &BTreeMap::new(), &[spec]);
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed[0].repo, "checkout-a");
+        assert_eq!(changed[0].issues[0].repo, "checkout-a");
+        assert_eq!(changed[1].repo, "checkout-b");
+        assert_eq!(changed[1].issues[0].repo, "checkout-b");
+    }
 
     #[test]
     fn query_covers_all_repos_once() {

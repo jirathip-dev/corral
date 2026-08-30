@@ -15,10 +15,7 @@ FORBIDDEN = (
 SYNTHETIC_REPOS = frozenset({
     "atlas-board", "route-lab", "pixel-garden", "orbit-console",
 })
-SYNTHETIC_ISSUE_TITLE_PREFIXES = (
-    "Demo ", "Fleet gate:", "Routing slices", "Add ", "Read loop",
-    "iOS ", "Offline-first ",
-)
+SYNTHETIC_ISSUE_TITLE_PREFIXES = ("Demo sample issue: ",)
 
 
 def validate_fixture(path: Path) -> int:
@@ -43,16 +40,30 @@ def validate_fixture(path: Path) -> int:
                 if not valid:
                     print(f"{path}: fixture repo is not synthetic: {repo}")
                     violations += 1
+            elif "repo" in node:
+                print(f"{path}: fixture repo has invalid type")
+                violations += 1
             for number_key in ("number", "pr_number"):
                 number = node.get(number_key)
-                if isinstance(number, int) and number < 9000:
+                if number_key in node and (not isinstance(number, int) or isinstance(number, bool)):
+                    print(f"{path}: fixture {number_key} has invalid type")
+                    violations += 1
+                elif isinstance(number, int) and number < 9000:
                     print(f"{path}: fixture {number_key} is not synthetic: {number}")
+                    violations += 1
+            for identity_key in ("agent_id", "ref"):
+                identity = node.get(identity_key)
+                if identity_key in node and (not isinstance(identity, str) or not identity.startswith("demo:")):
+                    print(f"{path}: fixture {identity_key} is not synthetic: {identity}")
                     violations += 1
             title = node.get("title")
             if isinstance(node.get("number"), int) and isinstance(title, str):
                 if not title.startswith(SYNTHETIC_ISSUE_TITLE_PREFIXES):
                     print(f"{path}: fixture issue title is not synthetic: {title}")
                     violations += 1
+            elif "number" in node and "title" in node:
+                print(f"{path}: fixture issue title has invalid type")
+                violations += 1
             for child_key, child in node.items():
                 visit(child, child_key.lower())
         elif isinstance(node, list):
@@ -65,8 +76,10 @@ def validate_fixture(path: Path) -> int:
             if key in {"worktree_path", "path"} and not node.startswith("/demo/"):
                 print(f"{path}: fixture path is not synthetic: {node}")
                 violations += 1
-            if key == "agent_id" and not node.startswith("demo:"):
-                print(f"{path}: fixture agent id is not synthetic: {node}")
+            if key in {"agent_id", "ref", "del"} and (
+                not isinstance(node, str) or not node.startswith("demo:")
+            ):
+                print(f"{path}: fixture {key} is not synthetic: {node}")
                 violations += 1
 
     visit(value)
@@ -75,20 +88,41 @@ def validate_fixture(path: Path) -> int:
 
 def self_test(path: Path) -> int:
     data = json.loads(path.read_text())
-    mutations = ("customer-finance-prod", "github.com/acme/private")
-    for mutation in mutations:
+    mutations = (
+        ("customer-finance-prod", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("repo", "customer-finance-prod")),
+        ("github.com/acme/private", lambda d: d["issues"]["atlas-board"][0].__setitem__("repo", "github.com/acme/private")),
+        ("live #282 title", lambda d: d["issues"]["atlas-board"][0].__setitem__("title", "Devices/Grants surface — names + grant toggles on board and iOS")),
+        ("string issue number", lambda d: d["issues"]["atlas-board"][0].__setitem__("number", "215")),
+        ("non-demo attachment ref", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["attachment"].__setitem__("ref", "herdr:real-prod-agent")),
+        ("non-demo delta deletion", lambda d: d["deltas"][0].__setitem__("del", ["herdr:real-prod-agent"])),
+    )
+    for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
-        if mutation.startswith("github.com/"):
-            candidate["issues"]["atlas-board"][0]["repo"] = mutation
-        else:
-            candidate["snapshot"]["agents"]["demo:p01:impl"]["workspace"]["repo"] = mutation
+        mutate(candidate)
         with tempfile.TemporaryDirectory() as directory:
             mutated = Path(directory) / "demo-fixture.json"
             mutated.write_text(json.dumps(candidate))
             if validate_fixture(mutated) == 0:
-                print(f"privacy self-test unexpectedly accepted: {mutation}", file=sys.stderr)
+                print(f"privacy self-test unexpectedly accepted: {name}", file=sys.stderr)
                 return 1
-    print("privacy self-test: customer-finance-prod and github.com/acme/private rejected")
+    gh = subprocess.run(
+        ["gh", "issue", "list", "--repo", "jirathip-dev/corral", "--state", "all",
+         "--limit", "200", "--json", "title", "--jq", ".[].title"],
+        capture_output=True, text=True, check=False,
+    )
+    if gh.returncode != 0 or not gh.stdout.strip():
+        print("privacy self-test could not fetch live issue titles", file=sys.stderr)
+        return 2
+    for live_title in gh.stdout.splitlines():
+        candidate = json.loads(json.dumps(data))
+        candidate["issues"]["atlas-board"][0]["title"] = live_title
+        with tempfile.TemporaryDirectory() as directory:
+            mutated = Path(directory) / "demo-fixture.json"
+            mutated.write_text(json.dumps(candidate))
+            if validate_fixture(mutated) == 0:
+                print(f"privacy self-test unexpectedly accepted live title: {live_title}", file=sys.stderr)
+                return 1
+    print("privacy self-test: all six identity mutations and live titles rejected")
     return 0
 
 
@@ -111,7 +145,7 @@ def main(argv: list[str]) -> int:
         if not files:
             print(f"privacy scan: empty input: {path}", file=sys.stderr)
             return 2
-        if path.is_file() and path.name == "demo-fixture.json":
+        if path.is_file() and path.suffix.lower() == ".json":
             result = validate_fixture(path)
             if result:
                 return result

@@ -42,7 +42,7 @@
             "repo": "demo.example.invalid/atlas-board",
             "number": 9001,
             "state": "OPEN",
-            "title": "Demo web board with fictional fixture data",
+            "title": "Demo sample issue: web-board",
             "labels": [
               {
                 "name": "enhancement",
@@ -104,7 +104,7 @@
             "repo": "demo.example.invalid/atlas-board",
             "number": 9002,
             "state": "OPEN",
-            "title": "Demo device grants sample for fictional agents",
+            "title": "Demo sample issue: device-grants",
             "labels": [
               {
                 "name": "ready-to-work",
@@ -151,7 +151,7 @@
             "repo": "demo.example.invalid/pixel-garden",
             "number": 9005,
             "state": "OPEN",
-            "title": "Add Acme as a partner",
+            "title": "Demo sample issue: partner-collaboration",
             "labels": [
               {
                 "name": "content",
@@ -200,7 +200,7 @@
             "repo": "demo.example.invalid/atlas-board",
             "number": 9003,
             "state": "OPEN",
-            "title": "Fleet gate: wasm build proof",
+            "title": "Demo sample issue: wasm-gate",
             "labels": [
               {
                 "name": "enhancement",
@@ -249,7 +249,7 @@
             "repo": "demo.example.invalid/orbit-console",
             "number": 9006,
             "state": "OPEN",
-            "title": "Read loop reconnect backoff",
+            "title": "Demo sample issue: reconnect-loop",
             "labels": [
               {
                 "name": "bug",
@@ -302,7 +302,7 @@
             "repo": "demo.example.invalid/route-lab",
             "number": 9004,
             "state": "OPEN",
-            "title": "Routing slices for the app shell",
+            "title": "Demo sample issue: routing-slices",
             "labels": [
               {
                 "name": "frontend",
@@ -651,7 +651,7 @@
               "repo": "demo.example.invalid/atlas-board",
               "number": 9007,
               "state": "OPEN",
-              "title": "iOS board demo",
+              "title": "Demo sample issue: ios-board",
               "labels": [
                 {
                   "name": "mobile",
@@ -722,7 +722,7 @@
         "repo": "demo.example.invalid/atlas-board",
         "number": 9001,
         "state": "OPEN",
-        "title": "Demo web board with fictional fixture data",
+        "title": "Demo sample issue: web-board",
         "labels": [
           {
             "name": "enhancement",
@@ -740,7 +740,7 @@
         "repo": "demo.example.invalid/atlas-board",
         "number": 9002,
         "state": "OPEN",
-        "title": "Demo device grants sample for fictional agents",
+        "title": "Demo sample issue: device-grants",
         "labels": [
           {
             "name": "ready-to-work",
@@ -753,7 +753,7 @@
         "repo": "demo.example.invalid/atlas-board",
         "number": 9003,
         "state": "OPEN",
-        "title": "Fleet gate: wasm build proof",
+        "title": "Demo sample issue: wasm-gate",
         "labels": [
           {
             "name": "enhancement",
@@ -768,7 +768,7 @@
         "repo": "demo.example.invalid/route-lab",
         "number": 9004,
         "state": "OPEN",
-        "title": "Routing slices for the app shell",
+        "title": "Demo sample issue: routing-slices",
         "labels": [
           {
             "name": "frontend",
@@ -783,7 +783,7 @@
         "repo": "demo.example.invalid/pixel-garden",
         "number": 9005,
         "state": "OPEN",
-        "title": "Add Acme as a partner",
+        "title": "Demo sample issue: partner-collaboration",
         "labels": [
           {
             "name": "content",
@@ -798,7 +798,7 @@
         "repo": "demo.example.invalid/orbit-console",
         "number": 9006,
         "state": "OPEN",
-        "title": "Read loop reconnect backoff",
+        "title": "Demo sample issue: reconnect-loop",
         "labels": [
           {
             "name": "bug",

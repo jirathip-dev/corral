@@ -249,6 +249,31 @@ def main(argv: list[str]) -> int:
                 print(f"privacy scan: cannot read {file}: {exc}", file=sys.stderr)
                 return 2
             for needle in FORBIDDEN:
+                if needle == "github.com" and not path.is_file():
+                    # Binary/toolchain artifacts embed upstream dependency
+                    # provenance (e.g. egui/rerun issue-tracker URLs). Those are
+                    # not private data. In binaries, flag only github.com
+                    # owner/repo refs whose owner or repo touches a forbidden
+                    # identifier (Guy's namespaces). Fixture JSON text stays
+                    # fully closed via check_urls.
+                    idents = {
+                        n.lower()
+                        for n in FORBIDDEN
+                        if re.fullmatch(r"[a-z0-9_.-]+", n.lower())
+                    }
+                    for owner, repo in re.findall(
+                        r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", text
+                    ):
+                        if any(
+                            i in owner.lower() or i in repo.lower()
+                            for i in idents
+                        ):
+                            print(
+                                f"{file}: binary artifact contains forbidden "
+                                f"github.com ref: github.com/{owner}/{repo}"
+                            )
+                            hits += 1
+                    continue
                 count = text.count(needle.lower())
                 if count:
                     print(f"{file}: {needle}: {count}")

@@ -9,10 +9,10 @@ import sys
 import tempfile
 from urllib.parse import urlparse
 
-URL_RE = re.compile(r"(?:https?|ftp)://[^\s\"'<>]+", re.IGNORECASE)
+URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
 
 FORBIDDEN = (
-    "jirathip", "github.com/jirathip", "/Users/", "~/.herdr", "sendmeter",
+    "jirathip", "github.com/jirathip", "github.com", "/Users/", "~/.herdr", "sendmeter",
     "morsel", "plush-meadow", "synergy-apps", "synergy-costing",
     "fleet-operations", "hermes-brain", "herdr-board", "project-hearthwild",
 )
@@ -58,6 +58,9 @@ def validate_fixture(path: Path) -> int:
 
     def check_urls(text: str) -> None:
         nonlocal violations
+        if "github.com" in text.lower():
+            print(f"{path}: fixture contains forbidden github.com: {text}")
+            violations += 1
         for candidate in URL_RE.findall(text):
             parsed = urlparse(candidate.rstrip(".,;:!?)]}"))
             if parsed.scheme != "https" or parsed.netloc != "demo.example.invalid":
@@ -157,6 +160,17 @@ def self_test(path: Path) -> int:
         ("uppercase GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://github.com/acme/private")),
         ("wrong-host HTTPS URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://secret.example.com/private")),
         ("saturated-s wrong-host URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://sass.scss.example/private")),
+        ("bare GitHub host", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See github.com/acme/private")),
+        ("ssh body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ssh://github.com/acme/private")),
+        ("git body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See git://github.com/acme/private")),
+        ("ws body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ws://github.com/acme/private")),
+        ("wss body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See wss://github.com/acme/private")),
+        ("ftps body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftps://github.com/acme/private")),
+        ("ssh URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ssh://github.com/acme/private")),
+        ("git URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "git://github.com/acme/private")),
+        ("ws URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ws://github.com/acme/private")),
+        ("wss URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "wss://github.com/acme/private")),
+        ("ftps URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ftps://github.com/acme/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))

@@ -10,6 +10,12 @@ import tempfile
 from urllib.parse import urlparse
 
 URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
+# Also catch anchored scheme tokens without //; plain "note: this" has no
+# non-whitespace URI remainder and remains ordinary prose.
+PARTIAL_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9+.:-])[A-Za-z][A-Za-z0-9+.-]*:(?!//)[^\s\"'<>]+",
+    re.IGNORECASE,
+)
 
 FORBIDDEN = (
     "jirathip", "github.com/jirathip", "github.com", "/Users/", "~/.herdr", "sendmeter",
@@ -56,14 +62,20 @@ def validate_fixture(path: Path) -> int:
 
     violations = 0
 
-    def check_urls(text: str) -> None:
+    def check_urls(text: str, allow_partial: bool = True) -> None:
         nonlocal violations
         if "github.com" in text.lower():
             print(f"{path}: fixture contains forbidden github.com: {text}")
             violations += 1
-        for candidate in URL_RE.findall(text):
+        partial_candidates = (
+            PARTIAL_URL_RE.findall(text)
+            if allow_partial and text not in APPROVED_IDENTITIES
+            else []
+        )
+        candidates = URL_RE.findall(text) + partial_candidates
+        for candidate in candidates:
             parsed = urlparse(candidate.rstrip(".,;:!?)]}"))
-            if parsed.scheme != "https" or parsed.netloc != "demo.example.invalid":
+            if parsed.scheme.lower() != "https" or parsed.netloc.lower() != "demo.example.invalid":
                 print(f"{path}: fixture URL has invalid origin: {candidate}")
                 violations += 1
 
@@ -76,7 +88,7 @@ def validate_fixture(path: Path) -> int:
                 ):
                     print(f"{path}: fixture key is not approved: {child_key}")
                     violations += 1
-                check_urls(child_key)
+                check_urls(child_key, child_key not in APPROVED_IDENTITIES)
             repo = node.get("repo")
             if isinstance(repo, str):
                 if "/" in repo:
@@ -120,7 +132,7 @@ def validate_fixture(path: Path) -> int:
             if key in IDENTITY_FIELDS and node and node not in APPROVED_IDENTITIES:
                 print(f"{path}: fixture identity is not approved: {node}")
                 violations += 1
-            check_urls(node)
+            check_urls(node, key not in IDENTITY_FIELDS and key != "prompt_hash")
             if key in {"worktree_path", "path"} and not node.startswith("/demo/"):
                 print(f"{path}: fixture path is not synthetic: {node}")
                 violations += 1
@@ -171,6 +183,9 @@ def self_test(path: Path) -> int:
         ("ws URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ws://secret.example.com/private")),
         ("wss URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "wss://private.example.org/private")),
         ("ftps URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ftps://secret.example.com/private")),
+        ("ftps partial URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftps:demo.example.invalid@host")),
+        ("ssh partial URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ssh:git@server")),
+        ("uppercase wrong host", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://GITHUB.COM/acme/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -186,7 +201,10 @@ def self_test(path: Path) -> int:
         ("fixture URL in approved field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "https://demo.example.invalid/atlas-board/issues/9001")),
         ("ordinary prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
         ("HTTPS demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://demo.example.invalid/private")),
+        ("uppercase demo origin", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://DEMO.EXAMPLE.INVALID/private")),
         ("URL followed by whitespace", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private for details")),
+        ("note colon prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "note: this")),
+        ("time colon prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "12:30")),
         ("quoted demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See 'https://demo.example.invalid/private'")),
         ("URL before angle bracket", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private<")),
     ):

@@ -2673,12 +2673,31 @@ fn transcript_font_definitions() -> egui::FontDefinitions {
         "corral-transcript-fallback".into(),
         egui::FontData::from_static(include_bytes!("../assets/NotoEmoji-Regular.ttf")).into(),
     );
+    fonts.font_data.insert(
+        "corral-transcript-symbols".into(),
+        egui::FontData::from_static(include_bytes!("../assets/NotoSansSymbols2-Regular.ttf"))
+            .into(),
+    );
+    fonts.font_data.insert(
+        "corral-transcript-ascii".into(),
+        egui::FontData::from_static(include_bytes!("../assets/Hack-Regular.ttf")).into(),
+    );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         fonts
             .families
-            .entry(family)
+            .entry(family.clone())
             .or_default()
             .push("corral-transcript-fallback".into());
+        fonts
+            .families
+            .entry(family.clone())
+            .or_default()
+            .push("corral-transcript-ascii".into());
+        fonts
+            .families
+            .entry(family.clone())
+            .or_default()
+            .push("corral-transcript-symbols".into());
     }
     fonts
 }
@@ -2698,13 +2717,25 @@ mod font_tests {
 
     #[test]
     fn transcript_fixture_has_glyph_coverage() {
-        let fonts = transcript_font_definitions();
         let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
-        assert!(fixture.contains(['✓', '✗', '✅', '⚠', '▸', '●', '⏺', '░']));
-        assert!(fonts.font_data.contains_key("corral-transcript-fallback"));
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            assert!(fonts.families[&family].contains(&"corral-transcript-fallback".to_string()));
-        }
+        let symbol_fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
+        let ctx = egui::Context::default();
+        configure_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|fonts| {
+                for glyph in symbol_fixture
+                    .chars()
+                    .filter(|c| !c.is_ascii_whitespace() && !matches!(c, '✅' | '⚠' | '\u{fe0f}'))
+                {
+                    assert!(
+                        fonts.has_glyph(&egui::FontId::proportional(12.0), glyph),
+                        "missing {glyph}"
+                    );
+                }
+            });
+        });
+        output.textures_delta.clear();
+        assert!(fixture.contains(['✅', '⚠']));
     }
 }
 

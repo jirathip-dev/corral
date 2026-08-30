@@ -216,8 +216,9 @@ glow/WebGL, no tokio runtime, no `keyring`, no `/drive`):
 
 Every write control is replaced by a disabled **read-only (web)**
 indicator (`BoardActions::read_only`), and the drive callback is a no-op.
-`read_tail` is a signed /drive capability, so the web build does not fetch
-recent-output either — that stays desktop.
+`read_tail` is hydrated from the bundled demo fixture through the same
+read-tail cache and renderer as live data; live daemon `read_tail` remains a
+signed /drive capability and is not fetched by the web build.
 
 ### Build (wasm-pack + target)
 

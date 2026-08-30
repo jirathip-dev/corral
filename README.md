@@ -17,11 +17,10 @@ git watcher ──┤ → corrald (daemon) → ├─ signed drive: prompt · in
               └                    └─ register devices · grants · audit log
 ```
 
-## See it in action
+## Demo showcase
 
-![Corral UI preview](assets/demo/corral-ui-preview.png)
+**[Open the live web demo](https://jirathip-dev.github.io/corral/)** — the board uses bundled fictional sample data by default; connecting to a Live daemon is optional. The iOS showcase is a Simulator demo from the TestFlight source revision: [![iOS board](https://jirathip-dev.github.io/corral/ios/board.png)](https://jirathip-dev.github.io/corral/ios/).
 
-*The desktop board (egui) and the phone app (iOS) share the same live fleet picture. Demo walkthrough video coming soon.*
 
 ## Features
 

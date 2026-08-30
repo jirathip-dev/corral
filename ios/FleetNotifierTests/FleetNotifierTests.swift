@@ -601,6 +601,29 @@ final class DemoSeedTests: XCTestCase {
             }
         }
     }
+
+    func testSeedUsesOnlyFictionalRepositoriesAndURLs() {
+        let forbidden = ["jirathip", "github.com", "/Users/", "~/.herdr", "sendmeter", "plush-meadow", "synergy-costing", "herdr-board", "project-hearthwild"]
+        let seed = DemoFleet.seed()
+        XCTAssertGreaterThanOrEqual(Set(seed.values.compactMap(\.workspace.repo)).count, 3)
+        for agent in seed.values {
+            let values = [agent.agentId, agent.displayName, agent.title ?? "", agent.workspace.repo ?? "", agent.workspace.branch ?? "", agent.workspace.worktreePath ?? ""].compactMap { $0 }
+            XCTAssertTrue(values.allSatisfy { value in forbidden.allSatisfy { !value.localizedCaseInsensitiveContains($0) } })
+        }
+        for issue in DemoFleet.seedIssues().repos.values.flatMap({ $0 }) {
+            XCTAssertTrue(issue.url.hasPrefix("https://demo.example.invalid/"))
+            XCTAssertFalse(forbidden.contains { issue.repo.localizedCaseInsensitiveContains($0) })
+        }
+    }
+
+    func testSeedPrivacyGateRejectsForbiddenThrowawayValue() {
+        let forbidden = ["jirathip", "github.com", "/Users/", "~/.herdr"]
+        func isForbidden(_ value: String) -> Bool {
+            forbidden.contains { value.localizedCaseInsensitiveContains($0) }
+        }
+        XCTAssertTrue(isForbidden("https://github.com/jirathip-dev/private"))
+        XCTAssertFalse(isForbidden("https://demo.example.invalid/atlas-board/issues/9007"))
+    }
 }
 
 // MARK: - Read-only default + typed error decoding
@@ -4049,8 +4072,8 @@ final class RecentOutputModelTests: XCTestCase {
     }
 
     func testRecentOutputMetadataAccessibilityLabelsKeepRolesDistinct() {
-        XCTAssertEqual(RecentOutputAccessibility.modelLabel("gpt-5.6-demo"),
-                       "Model: gpt-5.6-demo")
+        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-codex-demo"),
+                       "Model: demo-codex-demo")
         XCTAssertEqual(RecentOutputAccessibility.effortLabel("high"),
                        "Effort: high")
         XCTAssertEqual(RecentOutputAccessibility.worktreeLabel("~/worktrees/corral/demo"),
@@ -4853,16 +4876,16 @@ final class IssueBrowserTests: XCTestCase {
     func testDemoIssuesSeedMirrorsApprovedRows() throws {
         let seeded = DemoFleet.seedIssues()
         // Open #267 with a body + comment window + authoritative total.
-        let corral = try XCTUnwrap(seeded.repos["corral"])
-        let issue267 = try XCTUnwrap(corral.first { $0.number == 267 })
-        XCTAssertEqual(issue267.state, "open")
-        XCTAssertNotNil(issue267.body)
-        XCTAssertEqual(issue267.commentTotal, 38)
-        XCTAssertFalse(issue267.comments.isEmpty)
+        let atlas = try XCTUnwrap(seeded.repos["atlas-board"])
+        let issue9007 = try XCTUnwrap(atlas.first { $0.number == 9007 })
+        XCTAssertEqual(issue9007.state, "open")
+        XCTAssertNotNil(issue9007.body)
+        XCTAssertEqual(issue9007.commentTotal, 38)
+        XCTAssertFalse(issue9007.comments.isEmpty)
         // Closed bucket exists (proves the closed filter).
-        XCTAssertTrue(corral.contains { $0.state == "closed" })
+        XCTAssertTrue(atlas.contains { $0.state == "closed" })
         // Repos are the tracked fleets.
-        XCTAssertEqual(Set(seeded.repos.keys), ["corral", "sendmeter", "plush-meadow"])
+        XCTAssertEqual(Set(seeded.repos.keys), ["atlas-board", "signal-grove", "paper-orchard"])
     }
 
     /// #280: the demo seed must mirror the live wire contract — the daemon
@@ -4872,8 +4895,8 @@ final class IssueBrowserTests: XCTestCase {
     /// same ordering the daemon's CREATED_AT sort produces.
     func testDemoCommentWindowIsNewestFirst() throws {
         let seeded = DemoFleet.seedIssues()
-        let issue267 = try XCTUnwrap(seeded.repos["corral"]?.first { $0.number == 267 })
-        let stamps = issue267.comments.map(\.createdAt)
+        let issue9007 = try XCTUnwrap(seeded.repos["atlas-board"]?.first { $0.number == 9007 })
+        let stamps = issue9007.comments.map(\.createdAt)
         XCTAssertFalse(stamps.isEmpty, "the demo comment window is non-empty")
         let rendered = stamps.map { $0 ?? "" }
         XCTAssertEqual(rendered, rendered.sorted(by: >),

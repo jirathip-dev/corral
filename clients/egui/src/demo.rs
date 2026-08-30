@@ -21,6 +21,8 @@ pub struct DemoData {
     pub deltas: Vec<Delta>,
     /// Demo repo-level issue view (`GET /issues` shape).
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
+    /// Sanitized transcript lines served through the normal read-tail cache.
+    pub recent_output: Vec<String>,
 }
 
 const FIXTURE: &str = include_str!("../assets/demo-fixture.json");
@@ -33,20 +35,14 @@ pub fn load() -> DemoData {
     data
 }
 
-/// Glyph-rich transcript blocks for the static board evidence. The same
-/// daemon scrubber is applied here so demo output exercises the shared tofu
-/// contract without changing live read-tail behavior.
+/// Fixture-backed transcript lines. The browser demo stores these through
+/// `Fleet::remember_tail`, exactly as the live read-tail result is stored.
 pub fn recent_tail() -> Vec<String> {
-    [
-        "› make the transcript readable",
-        "I grouped the latest work by speaker and kept the live tail bounded.",
-        "$ python deploy.py --dry-run\ndef deploy():\n    print(\"ready ✅\")\n    return True",
-        "git diff -- src/ui/board.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+tool output",
-        "tool status: ok \u{e000} ⚠️",
-    ]
-    .into_iter()
-    .map(scrub_demo_icons)
-    .collect()
+    load()
+        .recent_output
+        .into_iter()
+        .map(|line| scrub_demo_icons(&line))
+        .collect()
 }
 
 fn scrub_demo_icons(line: &str) -> String {

@@ -858,7 +858,7 @@ mod tests {
                         "state": "OPEN",
                         "title": "fetch path",
                         "labels": [{"name": "bug", "color": "f85149"}],
-                        "url": "https://github.com/example/corral/issues/207"
+                        "url": "https://demo.example.invalid/corral/issues/207"
                     },
                     {
                         "repo": "corral",
@@ -897,7 +897,7 @@ mod tests {
                     "title": "issues browser",
                     "body": "Body shown when the row expands.",
                     "labels": [],
-                    "url": "https://github.com/example/corral/issues/270"
+                    "url": "https://demo.example.invalid/corral/issues/270"
                 }]
             }
         });

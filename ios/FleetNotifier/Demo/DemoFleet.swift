@@ -7,28 +7,27 @@ import Foundation
 /// answered locally and mutate the seeded fleet.
 enum DemoFleet {
 
-    /// The opt-in detail route used by the reproducible #205 evidence gate.
+    /// The opt-in detail route used by the reproducible #9005 evidence gate.
     /// Keeping the target in the fixture makes the route deterministic without
     /// changing normal fleet selection behavior.
     static let featuredAgentID = "herdr:demo-output"
 
-    /// #267: seeded read-only issue browser (mirrors the approved V3 mock's
+    /// #9007: seeded read-only issue browser (mirrors the approved V3 mock's
     /// shape: repos → issues with body + newest-first comment window).
-    /// Issue lists use real repo data (jirathip-dev/corral, -sendmeter,
-    /// -plush-meadow at prototype time); comment text is illustrative demo
-    /// copy — the LIVE surface renders verbatim daemon data.
+    /// Issue lists use deterministic fictional repositories; comment text is
+    /// illustrative demo copy — the LIVE surface renders daemon data.
     static func seedIssues() -> IssuesBrowserWire {
         let openLabel = IssueLabel(name: "enhancement", color: "5319E7")
         let bugLabel = IssueLabel(name: "bug", color: "D73A4A")
         let infraLabel = IssueLabel(name: "infra", color: "FB8532")
-        func comment(_ body: String, at created: String, author: String = "jirathip-k") -> IssueComment {
+        func comment(_ body: String, at created: String, author: String = "sample-author") -> IssueComment {
             IssueComment(author: author, body: body, createdAt: created)
         }
         func issue(_ repo: String, _ number: UInt64, _ state: String, _ title: String,
                    labels: [IssueLabel] = [], body: String? = nil,
                    comments: [IssueComment] = [], commentTotal: UInt64? = nil) -> GhIssueRef {
             GhIssueRef(repo: repo, number: number, state: state, title: title,
-                       labels: labels, url: "https://github.com/jirathip-dev/\(repo)/issues/\(number)",
+                       labels: labels, url: "https://demo.example.invalid/\(repo)/issues/\(number)",
                        body: body, commentTotal: commentTotal, comments: comments)
         }
         /// Newest-first window (the daemon's `orderBy: CREATED_AT DESC`):
@@ -44,12 +43,12 @@ enum DemoFleet {
                 let day = 27 - max(0, window.count - newest.count)
                 window.append(comment("Automated demo comment \(index) (illustrative).",
                                       at: String(format: "2026-08-%02dT12:00:00Z", day),
-                                      author: index.isMultiple(of: 2) ? "review" : "jirathip-k"))
+                                      author: index.isMultiple(of: 2) ? "review" : "sample-author"))
             }
             return window
         }
-        let corral267 = issue(
-            "corral", 267, "open", "iOS issue browser: read-only issue list + detail",
+        let atlasBoard267 = issue(
+            "atlas-board", 9007, "open", "iOS issue browser: read-only issue list + detail",
             labels: [openLabel, IssueLabel(name: "ios", color: "FD8C73")],
             body: "Read-only issues browser (list + detail) for FleetNotifier, modeled on read_tail / read_diff: same read-only grant gating, default-empty, no GitHub mutations from the device.",
             comments: commentWindow(
@@ -58,33 +57,33 @@ enum DemoFleet {
                     comment("Read-only surface, same grant pattern as the tail — no GitHub mutations from iOS.", at: "2026-08-28T14:02:00Z"),
                 ]),
             commentTotal: 38)
-        let sendmeter722 = issue(
-            "sendmeter", 722, "open", "Offline-first read cache for the watch session",
+        let signalGrove722 = issue(
+            "signal-grove", 9012, "open", "Offline-first read cache for the watch session",
             labels: [openLabel], body: "Cache the latest session summary on-device so the watch opens instantly.", commentTotal: 2)
-        let plush108 = issue(
-            "plush-meadow", 108, "open", "Production chains: re-check gauntlet rollout",
+        let paperOrchard108 = issue(
+            "paper-orchard", 9013, "open", "Production chains: re-check gauntlet rollout",
             labels: [IssueLabel(name: "ops", color: "1D76DB")], commentTotal: 0)
-        let corral239 = issue(
-            "corral", 239, "open", "plugin engine: sidecar plugin API for agent rows",
+        let atlasBoard239 = issue(
+            "atlas-board", 9014, "open", "plugin engine: sidecar plugin API for agent rows",
             labels: [openLabel], commentTotal: 4)
-        let corral232 = issue(
-            "corral", 232, "open", "Agent worktree diff view (board + iOS)",
+        let atlasBoard232 = issue(
+            "atlas-board", 9015, "open", "Agent worktree diff view (board + iOS)",
             labels: [IssueLabel(name: "docs", color: "0E8A16")], commentTotal: 12)
 
-        let corral164 = issue(
-            "corral", 164, "open", "UX redesign umbrella (tracker)",
+        let atlasBoard164 = issue(
+            "atlas-board", 9016, "open", "UX redesign umbrella (tracker)",
             labels: [openLabel], commentTotal: 9)
-        let corral843 = issue(
-            "corral", 843, "open", "native: Send Conditions card tap does nothing",
+        let atlasBoard843 = issue(
+            "atlas-board", 9017, "open", "native: Send Conditions card tap does nothing",
             labels: [bugLabel], commentTotal: 3)
-        let corral168 = issue(
-            "corral", 168, "closed", "Rate-limit the gh poller on 401 storms",
+        let atlasBoard168 = issue(
+            "atlas-board", 9018, "closed", "Rate-limit the gh poller on 401 storms",
             labels: [bugLabel, infraLabel], commentTotal: 5)
 
         return IssuesBrowserWire(repos: [
-            "corral": [corral267, corral239, corral232, corral164, corral843, corral168],
-            "sendmeter": [sendmeter722],
-            "plush-meadow": [plush108],
+            "atlas-board": [atlasBoard267, atlasBoard239, atlasBoard232, atlasBoard164, atlasBoard843, atlasBoard168],
+            "signal-grove": [signalGrove722],
+            "paper-orchard": [paperOrchard108],
         ])
     }
 
@@ -118,7 +117,7 @@ enum DemoFleet {
         }
 
         // Blocked on an approve-tool prompt with a menu (the classic flow).
-        let approvePrompt = "Approve this change to push 2 commits to feat/plush-v2?"
+        let approvePrompt = "Approve this change to push 2 commits to demo/catalog-v2?"
         agents["herdr:demo-approve"] = agent("herdr:demo-approve", tool: "codex", state: .blocked,
             reason: "waiting for approval",
             waiting: WaitingOn(kind: .approveTool, prompt: approvePrompt,
@@ -131,10 +130,10 @@ enum DemoFleet {
             // wire location the daemon emits — so the demo `⑂ #N` chip goes
             // through the same read path as live data. The other demo agents
             // exercise the inferred `~#N?` / no-chip paths.
-            workspace: Workspace(repo: "project-hearthwild", branch: "feat/plush-v2",
-                                 worktreePath: "~/worktrees/project-hearthwild/feat-plush-v2",
-                                 prNumber: 42, ciStatus: .pending, dirty: true, ahead: 3, behind: 0,
-                                 issues: [GhIssueRef(repo: "project-hearthwild", number: 41,
+            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-v2",
+                                 worktreePath: "/demo/worktrees/crystal-garden/feat-plush-v2",
+                                 prNumber: 9026, ciStatus: .pending, dirty: true, ahead: 3, behind: 0,
+                                 issues: [GhIssueRef(repo: "crystal-garden", number: 9027,
                                                      state: "open", title: "Plush catalog v2")]),
             seq: 5, tsOffset: 30)
 
@@ -147,9 +146,9 @@ enum DemoFleet {
                                choices: ["1", "2", "3"]),
             capabilities: tail("approve"),
             displayName: "demo-menu", title: "Ship or hold the migration",
-            workspace: Workspace(repo: "synergy-costing", branch: "fix-migration-late-arrival",
-                                 worktreePath: "~/worktrees/synergy-costing/fix-migration",
-                                 prNumber: 431, ciStatus: .failure, dirty: false, ahead: 8, behind: 2),
+            workspace: Workspace(repo: "ledger-lantern", branch: "demo/migration-check",
+                                 worktreePath: "/demo/worktrees/ledger-lantern/fix-migration",
+                                 prNumber: 9021, ciStatus: .failure, dirty: false, ahead: 8, behind: 2),
             seq: 4, tsOffset: 90)
 
         // Blocked on a free-form question.
@@ -161,9 +160,9 @@ enum DemoFleet {
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-question", title: "Rename tracking branch",
-            workspace: Workspace(repo: "sendmeter", branch: "native-637-testflight",
-                                 worktreePath: "~/worktrees/sendmeter/native-637",
-                                 prNumber: 637, ciStatus: .success, dirty: true, ahead: 1, behind: 0),
+            workspace: Workspace(repo: "signal-grove", branch: "demo/device-check",
+                                 worktreePath: "/demo/worktrees/signal-grove/native-637",
+                                 prNumber: 9022, ciStatus: .success, dirty: true, ahead: 1, behind: 0),
             seq: 3, tsOffset: 240)
 
         // Crash kind: never approvable.
@@ -174,9 +173,9 @@ enum DemoFleet {
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-crash", title: "Parallel docs sweep",
-            workspace: Workspace(repo: "herdr-board", branch: "w3/ios-fleet-notifier",
-                                 worktreePath: "~/worktrees/herdr-board/corral-p4-w3",
-                                 prNumber: 15, ciStatus: .unknown, dirty: true, ahead: 4, behind: 1),
+            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
+                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+                                 prNumber: 9025, ciStatus: .unknown, dirty: true, ahead: 4, behind: 1),
             seq: 2, tsOffset: 600)
 
         // Working, idle, done.
@@ -184,9 +183,9 @@ enum DemoFleet {
             reason: "running the test suite",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-working", title: "Wire canonical bytes unit tests",
-            workspace: Workspace(repo: "herdr-board", branch: "w3/ios-fleet-notifier",
-                                 worktreePath: "~/worktrees/herdr-board/corral-p4-w3",
-                                 prNumber: 15, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
+            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
+                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+                                 prNumber: 9025, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
             seq: 9, tsOffset: 20)
 
         // Dedicated recent-output fixture: no approval card consumes the
@@ -196,26 +195,26 @@ enum DemoFleet {
             reason: "streaming a segmented recent output",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-output", title: "Review recent output",
-            workspace: Workspace(repo: "corral", branch: "g205/ios-recent-output",
-                                 worktreePath: "~/worktrees/corral/g205-ios-recent-output",
-                                 prNumber: 205, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
+            workspace: Workspace(repo: "atlas-board", branch: "demo/recent-output",
+                                 worktreePath: "/demo/worktrees/atlas-board/g205-ios-recent-output",
+                                 prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
             seq: 10, tsOffset: 12)
 
         agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "claude", state: .idle,
             reason: nil, waiting: nil, capabilities: ["read_tail", "prompt"],
             displayName: "demo-idle", title: "Investigate SSO migration",
-            workspace: Workspace(repo: "synergy-costing", branch: "issue-431-embed-pm",
-                                 worktreePath: "~/worktrees/synergy-costing/issue-431",
-                                 prNumber: 439, ciStatus: .success, dirty: false, ahead: 0, behind: 0),
+            workspace: Workspace(repo: "ledger-lantern", branch: "demo/embed-sample",
+                                 worktreePath: "/demo/worktrees/ledger-lantern/issue-431",
+                                 prNumber: 9023, ciStatus: .success, dirty: false, ahead: 0, behind: 0),
             seq: 8, tsOffset: 1800)
 
         agents["herdr:demo-done"] = agent("herdr:demo-done", tool: "codex", state: .done,
             reason: "task complete",
             waiting: nil, capabilities: ["read_tail"],
             displayName: "demo-done", title: "Update plush catalog",
-            workspace: Workspace(repo: "project-hearthwild", branch: "gauntlet-54-catalog",
-                                 worktreePath: "~/worktrees/project-hearthwild/gauntlet-54",
-                                 prNumber: 412, ciStatus: .success, dirty: false, ahead: 2, behind: 0),
+            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-sweep",
+                                 worktreePath: "/demo/worktrees/crystal-garden/gauntlet-54",
+                                 prNumber: 9024, ciStatus: .success, dirty: false, ahead: 2, behind: 0),
             seq: 7, tsOffset: 3600)
 
         return agents
@@ -266,11 +265,11 @@ enum DemoFleet {
             ?? "demo"
         let normalized = slug.replacingOccurrences(of: "_", with: "-")
         switch agent.tool.lowercased() {
-        case "codex": return "gpt-5.6-\(normalized)"
-        case "claude": return "claude-4.1-\(normalized)"
-        case "gemini": return "gemini-2.5-\(normalized)"
-        case "opencode": return "gpt-5.4-\(normalized)"
-        default: return "\(agent.tool)-\(normalized)"
+        case "codex": return "demo-codex-\(normalized)"
+        case "claude": return "demo-claude-\(normalized)"
+        case "gemini": return "demo-gemini-\(normalized)"
+        case "opencode": return "demo-opencode-\(normalized)"
+        default: return "demo-\(agent.tool)-\(normalized)"
         }
     }
 
@@ -280,7 +279,7 @@ enum DemoFleet {
         }
         let repo = agent.workspace.repo ?? "demo"
         let branch = agent.workspace.branch ?? agent.agentId.replacingOccurrences(of: ":", with: "-")
-        return "~/worktrees/\(repo)/\(branch)"
+        return "/demo/worktrees/\(repo)/\(branch)"
     }
 
     static func effort(for agent: Agent) -> String {

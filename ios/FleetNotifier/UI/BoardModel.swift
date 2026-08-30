@@ -203,6 +203,7 @@ enum RowAction: Equatable, Sendable {
     case interrupt
     case tail
     case diff
+    case terminal
     case kill
     case attach
 
@@ -213,6 +214,7 @@ enum RowAction: Equatable, Sendable {
         case .interrupt: return "Interrupt"
         case .tail: return "Recent output"
         case .diff: return "Diff"
+        case .terminal: return "Terminal"
         case .kill: return "Kill"
         case .attach: return "Attach"
         }
@@ -225,6 +227,7 @@ enum RowAction: Equatable, Sendable {
         case .interrupt: return .interrupt
         case .tail: return .readTail
         case .diff: return .readDiff
+        case .terminal: return .attach
         case .kill: return .kill
         case .attach: return .attach
         }
@@ -333,6 +336,7 @@ enum BoardModel {
     /// tests.
     static func rowActions(agent: Agent, grants: Set<Capability>) -> [RowAction] {
         actionAvailability(agent: agent, grants: grants)
+            .filter { $0.action != .terminal }
             .filter(\.isEnabled)
             .map(\.action)
     }
@@ -370,6 +374,9 @@ enum BoardModel {
             }
         }
 
+        if action == .terminal {
+            return terminalAvailability(agent: agent, grants: grants, isRegistered: true)
+        }
         guard let capability = action.capability else {
             return AgentActionAvailability(action: action, isEnabled: false,
                                            disabledReason: "This action is not available for this agent.")
@@ -397,6 +404,27 @@ enum BoardModel {
                 disabledReason: "requires the \(capability.rawValue) grant — ask the host.")
         }
         return AgentActionAvailability(action: action, isEnabled: true, disabledReason: nil)
+    }
+
+    static func terminalAvailability(agent: Agent, grants: Set<Capability>,
+                                     isRegistered: Bool) -> AgentActionAvailability {
+        guard isRegistered else {
+            return AgentActionAvailability(action: .terminal, isEnabled: false,
+                                           disabledReason: "Terminal unavailable: device is not registered.")
+        }
+        guard agent.capabilities.contains(Capability.attach.rawValue) else {
+            return AgentActionAvailability(action: .terminal, isEnabled: false,
+                                           disabledReason: "Terminal unavailable: attach is not available for this agent.")
+        }
+        guard grants.contains(.attach) else {
+            return AgentActionAvailability(action: .terminal, isEnabled: false,
+                                           disabledReason: "Terminal unavailable: requires the attach grant.")
+        }
+        guard let path = agent.workspace.worktreePath, !path.isEmpty else {
+            return AgentActionAvailability(action: .terminal, isEnabled: false,
+                                           disabledReason: "Terminal unavailable: worktree_path is missing.")
+        }
+        return AgentActionAvailability(action: .terminal, isEnabled: true, disabledReason: nil)
     }
 
     // MARK: - Answer-loop prominence (#166 item 3)

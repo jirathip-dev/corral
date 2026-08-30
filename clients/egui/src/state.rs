@@ -524,7 +524,7 @@ mod tests {
             state: "OPEN".to_string(),
             title: title.to_string(),
             labels: Vec::new(),
-            url: format!("https://github.com/example/{repo}/issues/{number}"),
+            url: format!("https://demo.example.invalid/{repo}/issues/{number}"),
             body: None,
         }
     }

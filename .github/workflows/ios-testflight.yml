@@ -239,6 +239,10 @@ jobs:
           set -euo pipefail
           bundle exec fastlane testflight
 
+      - name: Install OCR privacy verifier
+        if: (inputs.mode == 'upload' && github.ref == 'refs/heads/main') || inputs.mode == 'capture'
+        run: brew install tesseract
+
       - name: Capture Simulator showcase
         if: (inputs.mode == 'upload' && github.ref == 'refs/heads/main') || inputs.mode == 'capture'
         run: |

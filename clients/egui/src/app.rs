@@ -3707,7 +3707,7 @@ mod tests {
             state: "OPEN".into(),
             title: "renamed fleet".into(),
             labels: vec![],
-            url: "https://github.com/example/foo/issues/42".into(),
+            url: "https://demo.example.invalid/foo/issues/42".into(),
             body: None,
         }
     }

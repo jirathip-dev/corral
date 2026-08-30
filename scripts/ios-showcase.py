@@ -24,6 +24,8 @@ EXPECTED = {f"{name}.png" for name in ALLOWLIST} | {"metadata.json", "index.html
 DENYLIST = (
     b"AKIA", b"BEGIN PRIVATE KEY", b"GITHUB_TOKEN", b"ASC_API_KEY",
     b"/Users/", b"/home/", b"dev_", b"registration-token", b"admin-token",
+    b"jirathip", b"sendmeter", b"plush-meadow",
+    b"synergy-apps", b"synergy-costing", b"herdr-board", b"project-hearthwild",
 )
 UUID_RE = re.compile(rb"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b")
 
@@ -90,6 +92,8 @@ def validate(root: Path) -> None:
     if any(p.is_dir() for p in entries) or actual != EXPECTED:
         raise ValueError(f"expected exactly {sorted(EXPECTED)}, found {sorted(actual)}")
     metadata = json.loads((root / "metadata.json").read_text())
+    if metadata.get("route_ownership") != {name: f"DemoFleet.{name}" for name in ALLOWLIST}:
+        raise ValueError("metadata route ownership does not match the allowlisted DemoFleet routes")
     for key in ("commit_sha", "captured_at_utc", "testflight_build"):
         if key not in metadata:
             raise ValueError(f"metadata missing {key}")
@@ -101,6 +105,19 @@ def validate(root: Path) -> None:
         data = path.read_bytes()
         if any(marker in data for marker in DENYLIST) or UUID_RE.search(data):
             raise ValueError(f"secret/private identifier detected in {path.name}")
+        if path.suffix.lower() == ".png":
+            tesseract = shutil.which("tesseract")
+            if tesseract is None:
+                raise ValueError("rendered-text privacy check requires tesseract")
+            result = subprocess.run(
+                [tesseract, str(path), "stdout", "--psm", "11"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+            )
+            if result.returncode != 0:
+                raise ValueError(f"OCR failed for {path.name}")
+            rendered = result.stdout.lower().encode()
+            if any(marker.lower() in rendered for marker in DENYLIST) or UUID_RE.search(rendered):
+                raise ValueError(f"private identifier detected in rendered text of {path.name}")
     print(f"validated {len(ALLOWLIST)} PNGs at {WIDTH}x{HEIGHT}; allowlist and secret scan passed")
 
 
@@ -132,7 +149,8 @@ def capture(args: argparse.Namespace) -> None:
         time.sleep(args.wait)
         run("xcrun", "simctl", "io", args.udid, "screenshot", str(out / f"{name}.png"))
         run("sips", "-z", str(HEIGHT), str(WIDTH), str(out / f"{name}.png"), "--out", str(out / f"{name}.png"))
-    metadata = {"commit_sha": args.sha, "captured_at_utc": args.captured_at, "testflight_build": args.build}
+    metadata = {"commit_sha": args.sha, "captured_at_utc": args.captured_at, "testflight_build": args.build,
+                "route_ownership": {name: f"DemoFleet.{name}" for name in ALLOWLIST}}
     (out / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     gallery(out)
     validate(out)

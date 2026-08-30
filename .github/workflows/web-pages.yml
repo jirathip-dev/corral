@@ -1,0 +1,53 @@
+name: Web demo Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/egui/**'
+      - 'clients/egui/assets/demo-fixture.json'
+      - 'scripts/check-demo-privacy.py'
+      - '.github/workflows/web-pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: web-pages-demo
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6a4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Build and validate demo
+        run: |
+          set -euo pipefail
+          cd clients/egui
+          RUSTFLAGS="--remap-path-prefix=/home/runner=/build --remap-path-prefix=/Users/jirathip=/build" wasm-pack build --target web --out-dir pkg --out-name corral-web
+          cp web/index.html pkg/
+          cd ../..
+          python3 scripts/check-demo-privacy.py clients/egui/assets/demo-fixture.json clients/egui/pkg
+      - name: Publish root without deleting /ios/
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pages
+          git clone --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/pages
+          cp clients/egui/pkg/index.html clients/egui/pkg/corral-web.js clients/egui/pkg/corral-web_bg.wasm /tmp/pages/
+          python3 scripts/check-demo-privacy.py /tmp/pages/index.html /tmp/pages/corral-web.js /tmp/pages/corral-web_bg.wasm
+          cd /tmp/pages
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add index.html corral-web.js corral-web_bg.wasm
+          git commit -m "pages: refresh web demo from ${GITHUB_SHA}" || exit 0
+          git push origin gh-pages

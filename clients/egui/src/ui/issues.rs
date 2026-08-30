@@ -736,7 +736,7 @@ mod tests {
                     color: "d4c5f9".to_string(),
                 })
                 .collect(),
-            url: format!("https://github.com/example/{repo}/issues/{number}"),
+            url: format!("https://demo.example.invalid/{repo}/issues/{number}"),
             body: None,
         }
     }

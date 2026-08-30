@@ -60,8 +60,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
 # IssuesBrowserView (chips + inline detail).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    # #290: source-revision tail cursor wiring.
-    "77c6eeee638aceb1e5ffb7cbbb4eb7bac1e11a4ba348755e9f2563e8d5a1b8f3"
+    # #215/#282: sanitized fictional web and iOS demo identities.
+    "ac9bbe6f684ca07b337d191c25ed0031ba184f9465bf9ed04756a595ac34ce1e"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

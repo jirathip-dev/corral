@@ -2,11 +2,11 @@
 """Fail-closed privacy gate for bundled and published demo artifacts."""
 from pathlib import Path
 import json
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlparse
 
 FORBIDDEN = (
     "jirathip", "github.com/jirathip", "/Users/", "~/.herdr", "sendmeter",
@@ -25,7 +25,23 @@ APPROVED_TITLES = frozenset({
     "Demo sample issue: reconnect-loop",
     "Demo sample issue: ios-board",
 })
-IDENTITY_RE = re.compile(r"^(?!sha256:)[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9][A-Za-z0-9:_-]*$")
+APPROVED_IDENTITIES = frozenset({
+    "demo:p01:impl", "demo:p02:impl", "demo:p03:rev", "demo:p04:fleet",
+    "demo:p05:orch", "demo:p06:rs", "demo:p07:impl",
+    "demo:p01:impl:sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
+    "demo:p02:impl:sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
+    "demo:p04:fleet:sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
+})
+IDENTITY_FIELDS = frozenset({"agent_id", "parent_id", "ref", "del", "approval_id"})
+APPROVED_FIELDS = frozenset({
+    "agent_id", "agents", "ahead", "approval_id", "atlas-board", "attachment",
+    "behind", "body", "branch", "capabilities", "choices", "ci_status", "color",
+    "del", "deltas", "dirty", "display_name", "generated_at", "host", "issues",
+    "kind", "labels", "name", "number", "orbit-console", "parent_id", "pixel-garden",
+    "pr_number", "prompt", "prompt_hash", "reason", "recent_output", "ref", "repo",
+    "rev", "route-lab", "schema_version", "seq", "snapshot", "source", "state",
+    "title", "tool", "ts", "upd", "url", "waiting_on", "workspace", "worktree_path",
+})
 
 
 def validate_fixture(path: Path) -> int:
@@ -41,8 +57,14 @@ def validate_fixture(path: Path) -> int:
         nonlocal violations
         if isinstance(node, dict):
             for child_key in node:
-                if IDENTITY_RE.fullmatch(child_key) and not child_key.startswith("demo:"):
-                    print(f"{path}: fixture identity key is not synthetic: {child_key}")
+                if child_key not in APPROVED_FIELDS and not (
+                    key == "agents" and child_key in APPROVED_IDENTITIES
+                ):
+                    print(f"{path}: fixture key is not approved: {child_key}")
+                    violations += 1
+                parsed = urlparse(child_key)
+                if parsed.scheme in {"http", "https"} and parsed.netloc != "demo.example.invalid":
+                    print(f"{path}: fixture URL key has invalid origin: {child_key}")
                     violations += 1
             repo = node.get("repo")
             if isinstance(repo, str):
@@ -84,8 +106,12 @@ def validate_fixture(path: Path) -> int:
             for child in node:
                 visit(child, key)
         elif isinstance(node, str):
-            if IDENTITY_RE.fullmatch(node) and not node.startswith("demo:"):
-                print(f"{path}: fixture identity value is not synthetic: {node}")
+            if key in IDENTITY_FIELDS and node and node not in APPROVED_IDENTITIES:
+                print(f"{path}: fixture identity is not approved: {node}")
+                violations += 1
+            parsed = urlparse(node)
+            if parsed.scheme in {"http", "https"} and parsed.netloc != "demo.example.invalid":
+                print(f"{path}: fixture URL has invalid origin: {node}")
                 violations += 1
             if key == "url" and not node.startswith("https://demo.example.invalid/"):
                 print(f"{path}: fixture URL is not reserved: {node}")
@@ -118,8 +144,11 @@ def self_test(path: Path) -> int:
         ("non-demo attachment ref", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["attachment"].__setitem__("ref", "herdr:real-prod-agent")),
         ("non-demo delta deletion", lambda d: d["deltas"][0].__setitem__("del", ["herdr:real-prod-agent"])),
         ("non-demo parent id", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "herdr:real-prod-agent")),
+        ("non-demo parent id without colon", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "real-prod-agent")),
         ("non-demo agent map key", rename_agent),
+        ("non-demo agent map key with slash", lambda d: d["snapshot"]["agents"].__setitem__("herdr:real/prod-agent", d["snapshot"]["agents"].pop("demo:p01:impl"))),
         ("non-demo novel field", lambda d: d.__setitem__("novel_identity", "herdr:real-prod-agent")),
+        ("non-demo URL under unknown key", lambda d: d.__setitem__("novel_url", "https://github.com/acme/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -129,6 +158,18 @@ def self_test(path: Path) -> int:
             mutated.write_text(json.dumps(candidate))
             if validate_fixture(mutated) == 0:
                 print(f"privacy self-test unexpectedly accepted: {name}", file=sys.stderr)
+                return 1
+    for name, mutate in (
+        ("fixture agent id", lambda d: None),
+        ("fixture URL in approved field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "https://demo.example.invalid/atlas-board/issues/9001")),
+    ):
+        candidate = json.loads(json.dumps(data))
+        mutate(candidate)
+        with tempfile.TemporaryDirectory() as directory:
+            valid = Path(directory) / "demo-fixture.json"
+            valid.write_text(json.dumps(candidate))
+            if validate_fixture(valid) != 0:
+                print(f"privacy self-test unexpectedly rejected positive control: {name}", file=sys.stderr)
                 return 1
     gh = subprocess.run(
         ["gh", "issue", "list", "--repo", "jirathip-dev/corral", "--state", "all",

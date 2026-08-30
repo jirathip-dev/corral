@@ -2,11 +2,14 @@
 """Fail-closed privacy gate for bundled and published demo artifacts."""
 from pathlib import Path
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from urllib.parse import urlparse
+
+URL_RE = re.compile(r"https?://[^\\s\\\"'<>]+")
 
 FORBIDDEN = (
     "jirathip", "github.com/jirathip", "/Users/", "~/.herdr", "sendmeter",
@@ -53,6 +56,14 @@ def validate_fixture(path: Path) -> int:
 
     violations = 0
 
+    def check_urls(text: str) -> None:
+        nonlocal violations
+        for candidate in URL_RE.findall(text):
+            parsed = urlparse(candidate.rstrip(".,;:!?)]}"))
+            if parsed.scheme != "https" or parsed.netloc != "demo.example.invalid":
+                print(f"{path}: fixture URL has invalid origin: {candidate}")
+                violations += 1
+
     def visit(node: object, key: str = "") -> None:
         nonlocal violations
         if isinstance(node, dict):
@@ -62,10 +73,7 @@ def validate_fixture(path: Path) -> int:
                 ):
                     print(f"{path}: fixture key is not approved: {child_key}")
                     violations += 1
-                parsed = urlparse(child_key)
-                if parsed.scheme in {"http", "https"} and parsed.netloc != "demo.example.invalid":
-                    print(f"{path}: fixture URL key has invalid origin: {child_key}")
-                    violations += 1
+                check_urls(child_key)
             repo = node.get("repo")
             if isinstance(repo, str):
                 if "/" in repo:
@@ -109,13 +117,7 @@ def validate_fixture(path: Path) -> int:
             if key in IDENTITY_FIELDS and node and node not in APPROVED_IDENTITIES:
                 print(f"{path}: fixture identity is not approved: {node}")
                 violations += 1
-            parsed = urlparse(node)
-            if parsed.scheme in {"http", "https"} and parsed.netloc != "demo.example.invalid":
-                print(f"{path}: fixture URL has invalid origin: {node}")
-                violations += 1
-            if key == "url" and not node.startswith("https://demo.example.invalid/"):
-                print(f"{path}: fixture URL is not reserved: {node}")
-                violations += 1
+            check_urls(node)
             if key in {"worktree_path", "path"} and not node.startswith("/demo/"):
                 print(f"{path}: fixture path is not synthetic: {node}")
                 violations += 1
@@ -149,6 +151,8 @@ def self_test(path: Path) -> int:
         ("non-demo agent map key with slash", lambda d: d["snapshot"]["agents"].__setitem__("herdr:real/prod-agent", d["snapshot"]["agents"].pop("demo:p01:impl"))),
         ("non-demo novel field", lambda d: d.__setitem__("novel_identity", "herdr:real-prod-agent")),
         ("non-demo URL under unknown key", lambda d: d.__setitem__("novel_url", "https://github.com/acme/private")),
+        ("HTTP demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "http://demo.example.invalid/atlas-board/issues/9001")),
+        ("embedded GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://github.com/acme/private for details")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -162,6 +166,7 @@ def self_test(path: Path) -> int:
     for name, mutate in (
         ("fixture agent id", lambda d: None),
         ("fixture URL in approved field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "https://demo.example.invalid/atlas-board/issues/9001")),
+        ("ordinary prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
     ):
         candidate = json.loads(json.dumps(data))
         mutate(candidate)

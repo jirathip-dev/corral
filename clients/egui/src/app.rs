@@ -2667,11 +2667,45 @@ impl CorralApp {
     }
 }
 
+fn transcript_font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "corral-transcript-fallback".into(),
+        egui::FontData::from_static(include_bytes!("../assets/NotoEmoji-Regular.ttf")).into(),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("corral-transcript-fallback".into());
+    }
+    fonts
+}
+
 fn configure_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(transcript_font_definitions());
+
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.button_padding = egui::vec2(8.0, 3.0);
     ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+
+    #[test]
+    fn transcript_fixture_has_glyph_coverage() {
+        let fonts = transcript_font_definitions();
+        let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
+        assert!(fixture.contains(['✓', '✗', '✅', '⚠', '▸', '●', '⏺', '░']));
+        assert!(fonts.font_data.contains_key("corral-transcript-fallback"));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            assert!(fonts.families[&family].contains(&"corral-transcript-fallback".to_string()));
+        }
+    }
 }
 
 /// Write a viewport `ColorImage` as PNG (evidence capture only).
@@ -3863,7 +3897,7 @@ mod tests {
             attempted.textures_delta.clear();
         }
         let mut frame = render_issues(&ctx, &app.fleet, issue_input(vec![]), &intents);
-        let confirm = text_rect(&frame, "✓ confirm create")
+        let confirm = text_rect(&frame, "confirm create")
             .expect("the current fleet action asks for confirmation")
             .center();
         frame.textures_delta.clear();

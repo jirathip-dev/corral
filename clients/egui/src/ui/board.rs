@@ -1790,14 +1790,20 @@ fn recent_speaker_rail_label(kind: RecentBlockKind, show_label: bool) -> Option<
 }
 
 fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
-    let (marker, color) = match kind {
-        RecentBlockKind::User => ("●", theme::ui::USER_BLUE),
-        RecentBlockKind::Tool => ("▸", theme::ui::ACCENT),
-        RecentBlockKind::Agent => ("●", theme::ui::INK),
+    let color = match kind {
+        RecentBlockKind::User => theme::ui::USER_BLUE,
+        RecentBlockKind::Tool => theme::ui::ACCENT,
+        RecentBlockKind::Agent => theme::ui::INK,
     };
     ui.vertical(|ui| {
         ui.set_width(52.0);
-        ui.label(RichText::new(marker).small().strong().color(color));
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        let painter = ui.painter();
+        if kind == RecentBlockKind::Tool {
+            painter.rect_filled(rect.shrink(3.0), egui::CornerRadius::same(1), color);
+        } else {
+            painter.circle_filled(rect.center(), 4.0, color);
+        }
         if let Some(label) = recent_speaker_rail_label(kind, show_label) {
             ui.label(RichText::new(label).small().strong().color(color));
         }

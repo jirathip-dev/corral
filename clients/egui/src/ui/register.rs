@@ -1136,9 +1136,9 @@ fn grant_management_block(
         }
         ui.label(
             RichText::new(if admin_token_configured {
-                "admin token ✓"
+                "admin token: configured"
             } else {
-                "admin token ✗"
+                "admin token: not configured"
             })
             .monospace()
             .size(10.0)

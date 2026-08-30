@@ -542,7 +542,7 @@ fn confirm_buttons(
             continue;
         }
         ui.horizontal(|ui| {
-            let label = action_label("✓ confirm create", action_target, multiple);
+            let label = action_label("confirm create", action_target, multiple);
             if ui.small_button(label).clicked() {
                 let intent = DriveIntent::start_worktree_issue(
                     action_target,
@@ -939,7 +939,7 @@ mod tests {
         }
 
         let mut frame = render(&ctx, &fleet, test_input(vec![]), &intents);
-        let confirm = text_rect(&frame, "✓ confirm create")
+        let confirm = text_rect(&frame, "confirm create")
             .expect("the confirmation is keyed independently")
             .center();
         clear(&mut frame);

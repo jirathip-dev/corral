@@ -2,6 +2,7 @@
 """Fail-closed privacy gate for bundled and published demo artifacts."""
 from pathlib import Path
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,16 @@ FORBIDDEN = (
 SYNTHETIC_REPOS = frozenset({
     "atlas-board", "route-lab", "pixel-garden", "orbit-console",
 })
-SYNTHETIC_ISSUE_TITLE_PREFIXES = ("Demo sample issue: ",)
+APPROVED_TITLES = frozenset({
+    "Demo sample issue: web-board",
+    "Demo sample issue: device-grants",
+    "Demo sample issue: wasm-gate",
+    "Demo sample issue: routing-slices",
+    "Demo sample issue: partner-collaboration",
+    "Demo sample issue: reconnect-loop",
+    "Demo sample issue: ios-board",
+})
+IDENTITY_RE = re.compile(r"^(?!sha256:)[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9][A-Za-z0-9:_-]*$")
 
 
 def validate_fixture(path: Path) -> int:
@@ -30,6 +40,10 @@ def validate_fixture(path: Path) -> int:
     def visit(node: object, key: str = "") -> None:
         nonlocal violations
         if isinstance(node, dict):
+            for child_key in node:
+                if IDENTITY_RE.fullmatch(child_key) and not child_key.startswith("demo:"):
+                    print(f"{path}: fixture identity key is not synthetic: {child_key}")
+                    violations += 1
             repo = node.get("repo")
             if isinstance(repo, str):
                 if "/" in repo:
@@ -58,7 +72,7 @@ def validate_fixture(path: Path) -> int:
                     violations += 1
             title = node.get("title")
             if isinstance(node.get("number"), int) and isinstance(title, str):
-                if not title.startswith(SYNTHETIC_ISSUE_TITLE_PREFIXES):
+                if title not in APPROVED_TITLES:
                     print(f"{path}: fixture issue title is not synthetic: {title}")
                     violations += 1
             elif "number" in node and "title" in node:
@@ -70,6 +84,9 @@ def validate_fixture(path: Path) -> int:
             for child in node:
                 visit(child, key)
         elif isinstance(node, str):
+            if IDENTITY_RE.fullmatch(node) and not node.startswith("demo:"):
+                print(f"{path}: fixture identity value is not synthetic: {node}")
+                violations += 1
             if key == "url" and not node.startswith("https://demo.example.invalid/"):
                 print(f"{path}: fixture URL is not reserved: {node}")
                 violations += 1
@@ -88,13 +105,21 @@ def validate_fixture(path: Path) -> int:
 
 def self_test(path: Path) -> int:
     data = json.loads(path.read_text())
+
+    def rename_agent(d: dict) -> None:
+        agents = d["snapshot"]["agents"]
+        agents["herdr:real-prod-agent"] = agents.pop("demo:p01:impl")
+
     mutations = (
         ("customer-finance-prod", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("repo", "customer-finance-prod")),
         ("github.com/acme/private", lambda d: d["issues"]["atlas-board"][0].__setitem__("repo", "github.com/acme/private")),
-        ("live #282 title", lambda d: d["issues"]["atlas-board"][0].__setitem__("title", "Devices/Grants surface — names + grant toggles on board and iOS")),
+        ("sentinel-prefixed live title", lambda d: d["issues"]["atlas-board"][0].__setitem__("title", "Demo sample issue: iOS showcase: automatically refresh GitHub Pages after successful TestFlight upload")),
         ("string issue number", lambda d: d["issues"]["atlas-board"][0].__setitem__("number", "215")),
         ("non-demo attachment ref", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["attachment"].__setitem__("ref", "herdr:real-prod-agent")),
         ("non-demo delta deletion", lambda d: d["deltas"][0].__setitem__("del", ["herdr:real-prod-agent"])),
+        ("non-demo parent id", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "herdr:real-prod-agent")),
+        ("non-demo agent map key", rename_agent),
+        ("non-demo novel field", lambda d: d.__setitem__("novel_identity", "herdr:real-prod-agent")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -122,7 +147,7 @@ def self_test(path: Path) -> int:
             if validate_fixture(mutated) == 0:
                 print(f"privacy self-test unexpectedly accepted live title: {live_title}", file=sys.stderr)
                 return 1
-    print("privacy self-test: all six identity mutations and live titles rejected")
+    print("privacy self-test: all identity mutations and live titles rejected")
     return 0
 
 

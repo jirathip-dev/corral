@@ -241,7 +241,7 @@ jobs:
 
       - name: Install OCR privacy verifier
         if: (inputs.mode == 'upload' && github.ref == 'refs/heads/main') || inputs.mode == 'capture'
-        run: sudo apt-get update && sudo apt-get install --yes tesseract-ocr
+        run: brew install tesseract
 
       - name: Capture Simulator showcase
         if: (inputs.mode == 'upload' && github.ref == 'refs/heads/main') || inputs.mode == 'capture'

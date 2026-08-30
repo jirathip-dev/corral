@@ -5,11 +5,19 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 
 FORBIDDEN = (
     "jirathip", "github.com/jirathip", "/Users/", "~/.herdr", "sendmeter",
     "morsel", "plush-meadow", "synergy-apps", "synergy-costing",
     "fleet-operations", "hermes-brain", "herdr-board", "project-hearthwild",
+)
+SYNTHETIC_REPOS = frozenset({
+    "atlas-board", "route-lab", "pixel-garden", "orbit-console",
+})
+SYNTHETIC_ISSUE_TITLE_PREFIXES = (
+    "Demo ", "Fleet gate:", "Routing slices", "Add ", "Read loop",
+    "iOS ", "Offline-first ",
 )
 
 
@@ -25,6 +33,26 @@ def validate_fixture(path: Path) -> int:
     def visit(node: object, key: str = "") -> None:
         nonlocal violations
         if isinstance(node, dict):
+            repo = node.get("repo")
+            if isinstance(repo, str):
+                if "/" in repo:
+                    owner, _, name = repo.partition("/")
+                    valid = owner == "demo.example.invalid" and name in SYNTHETIC_REPOS
+                else:
+                    valid = repo in SYNTHETIC_REPOS
+                if not valid:
+                    print(f"{path}: fixture repo is not synthetic: {repo}")
+                    violations += 1
+            for number_key in ("number", "pr_number"):
+                number = node.get(number_key)
+                if isinstance(number, int) and number < 9000:
+                    print(f"{path}: fixture {number_key} is not synthetic: {number}")
+                    violations += 1
+            title = node.get("title")
+            if isinstance(node.get("number"), int) and isinstance(title, str):
+                if not title.startswith(SYNTHETIC_ISSUE_TITLE_PREFIXES):
+                    print(f"{path}: fixture issue title is not synthetic: {title}")
+                    violations += 1
             for child_key, child in node.items():
                 visit(child, child_key.lower())
         elif isinstance(node, list):
@@ -45,7 +73,31 @@ def validate_fixture(path: Path) -> int:
     return 1 if violations else 0
 
 
+def self_test(path: Path) -> int:
+    data = json.loads(path.read_text())
+    mutations = ("customer-finance-prod", "github.com/acme/private")
+    for mutation in mutations:
+        candidate = json.loads(json.dumps(data))
+        if mutation.startswith("github.com/"):
+            candidate["issues"]["atlas-board"][0]["repo"] = mutation
+        else:
+            candidate["snapshot"]["agents"]["demo:p01:impl"]["workspace"]["repo"] = mutation
+        with tempfile.TemporaryDirectory() as directory:
+            mutated = Path(directory) / "demo-fixture.json"
+            mutated.write_text(json.dumps(candidate))
+            if validate_fixture(mutated) == 0:
+                print(f"privacy self-test unexpectedly accepted: {mutation}", file=sys.stderr)
+                return 1
+    print("privacy self-test: customer-finance-prod and github.com/acme/private rejected")
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--self-test"]:
+        if len(argv) != 2:
+            print("privacy self-test requires a fixture path", file=sys.stderr)
+            return 2
+        return self_test(Path(argv[1]))
     if not argv:
         print("privacy scan: no inputs", file=sys.stderr)
         return 2

@@ -25,7 +25,7 @@
           "repo": "atlas-board",
           "branch": "demo/atlas-web",
           "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
-          "pr_number": 215,
+          "pr_number": 9001,
           "ci_status": "success",
           "dirty": false,
           "ahead": 1,
@@ -40,9 +40,9 @@
         "issues": [
           {
             "repo": "demo.example.invalid/atlas-board",
-            "number": 215,
+            "number": 9001,
             "state": "OPEN",
-            "title": "egui web: read-only WASM build of the board + GitHub Pages demo against a local daemon",
+            "title": "Demo web board with fictional fixture data",
             "labels": [
               {
                 "name": "enhancement",
@@ -53,7 +53,7 @@
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/215"
+            "url": "https://demo.example.invalid/atlas-board/issues/9001"
           }
         ]
       },
@@ -87,7 +87,7 @@
           "repo": "atlas-board",
           "branch": "demo/cors-check",
           "worktree_path": "/demo/worktrees/atlas-board/w209",
-          "pr_number": 241,
+          "pr_number": 9002,
           "ci_status": "pending",
           "dirty": true,
           "ahead": 2,
@@ -102,16 +102,16 @@
         "issues": [
           {
             "repo": "demo.example.invalid/atlas-board",
-            "number": 209,
+            "number": 9002,
             "state": "OPEN",
-            "title": "Devices/Grants surface — names + grant toggles on board and iOS",
+            "title": "Demo device grants sample for fictional agents",
             "labels": [
               {
                 "name": "ready-to-work",
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/209"
+            "url": "https://demo.example.invalid/atlas-board/issues/9002"
           }
         ]
       },
@@ -134,7 +134,7 @@
           "repo": "pixel-garden",
           "branch": "demo/partner-sprout",
           "worktree_path": "/demo/worktrees/synergy/partner-acme",
-          "pr_number": 88,
+          "pr_number": 9005,
           "ci_status": "success",
           "dirty": false,
           "ahead": 0,
@@ -149,7 +149,7 @@
         "issues": [
           {
             "repo": "demo.example.invalid/pixel-garden",
-            "number": 88,
+            "number": 9005,
             "state": "OPEN",
             "title": "Add Acme as a partner",
             "labels": [
@@ -158,7 +158,7 @@
                 "color": "d4c5f9"
               }
             ],
-            "url": "https://demo.example.invalid/pixel-garden/issues/88"
+            "url": "https://demo.example.invalid/pixel-garden/issues/9005"
           }
         ]
       },
@@ -183,7 +183,7 @@
           "repo": "atlas-board",
           "branch": "demo/route-check",
           "worktree_path": "/demo/worktrees/atlas-board/g216-fleet-gate",
-          "pr_number": 216,
+          "pr_number": 9003,
           "ci_status": "pending",
           "dirty": true,
           "ahead": 3,
@@ -198,7 +198,7 @@
         "issues": [
           {
             "repo": "demo.example.invalid/atlas-board",
-            "number": 216,
+            "number": 9003,
             "state": "OPEN",
             "title": "Fleet gate: wasm build proof",
             "labels": [
@@ -207,7 +207,7 @@
                 "color": "a2eeef"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/216"
+            "url": "https://demo.example.invalid/atlas-board/issues/9003"
           }
         ]
       },
@@ -232,7 +232,7 @@
           "repo": "orbit-console",
           "branch": "demo/read-loop",
           "worktree_path": "/demo/worktrees/orbit-console/w41",
-          "pr_number": 42,
+          "pr_number": 9006,
           "ci_status": "success",
           "dirty": false,
           "ahead": 0,
@@ -247,7 +247,7 @@
         "issues": [
           {
             "repo": "demo.example.invalid/orbit-console",
-            "number": 41,
+            "number": 9006,
             "state": "OPEN",
             "title": "Read loop reconnect backoff",
             "labels": [
@@ -256,7 +256,7 @@
                 "color": "d73a4a"
               }
             ],
-            "url": "https://demo.example.invalid/orbit-console/issues/41"
+            "url": "https://demo.example.invalid/orbit-console/issues/9006"
           }
         ]
       },
@@ -285,7 +285,7 @@
           "repo": "route-lab",
           "branch": "demo/router-slices",
           "worktree_path": "/demo/worktrees/route-lab/route-slices",
-          "pr_number": 722,
+          "pr_number": 9004,
           "ci_status": "pending",
           "dirty": false,
           "ahead": 1,
@@ -300,7 +300,7 @@
         "issues": [
           {
             "repo": "demo.example.invalid/route-lab",
-            "number": 722,
+            "number": 9004,
             "state": "OPEN",
             "title": "Routing slices for the app shell",
             "labels": [
@@ -309,7 +309,7 @@
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/route-lab/issues/722"
+            "url": "https://demo.example.invalid/route-lab/issues/9004"
           }
         ]
       }
@@ -340,7 +340,7 @@
             "repo": "atlas-board",
             "branch": "demo/cors-check",
             "worktree_path": "/demo/worktrees/atlas-board/w209",
-            "pr_number": 241,
+            "pr_number": 9002,
             "ci_status": "pending",
             "dirty": true,
             "ahead": 2,
@@ -385,7 +385,7 @@
             "repo": "route-lab",
             "branch": "demo/router-slices",
             "worktree_path": "/demo/worktrees/route-lab/route-slices",
-            "pr_number": 722,
+            "pr_number": 9004,
             "ci_status": "pending",
             "dirty": false,
             "ahead": 1,
@@ -424,7 +424,7 @@
             "repo": "pixel-garden",
             "branch": "demo/partner-sprout",
             "worktree_path": "/demo/worktrees/synergy/partner-acme",
-            "pr_number": 88,
+            "pr_number": 9005,
             "ci_status": "success",
             "dirty": false,
             "ahead": 0,
@@ -468,7 +468,7 @@
             "repo": "atlas-board",
             "branch": "demo/atlas-web",
             "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
-            "pr_number": 215,
+            "pr_number": 9001,
             "ci_status": "success",
             "dirty": false,
             "ahead": 1,
@@ -509,7 +509,7 @@
             "repo": "orbit-console",
             "branch": "demo/read-loop",
             "worktree_path": "/demo/worktrees/orbit-console/w41",
-            "pr_number": 42,
+            "pr_number": 9006,
             "ci_status": "failure",
             "dirty": true,
             "ahead": 0,
@@ -550,7 +550,7 @@
             "repo": "atlas-board",
             "branch": "demo/atlas-web",
             "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
-            "pr_number": 215,
+            "pr_number": 9001,
             "ci_status": "success",
             "dirty": false,
             "ahead": 1,
@@ -591,7 +591,7 @@
             "repo": "atlas-board",
             "branch": "demo/cors-check",
             "worktree_path": "/demo/worktrees/atlas-board/w209",
-            "pr_number": 241,
+            "pr_number": 9002,
             "ci_status": "success",
             "dirty": false,
             "ahead": 2,
@@ -634,7 +634,7 @@
             "repo": "atlas-board",
             "branch": "demo/pixel-ios",
             "worktree_path": "/demo/worktrees/atlas-board/g217-ios-demo",
-            "pr_number": 217,
+            "pr_number": 9007,
             "ci_status": "pending",
             "dirty": false,
             "ahead": 0,
@@ -649,7 +649,7 @@
           "issues": [
             {
               "repo": "demo.example.invalid/atlas-board",
-              "number": 217,
+              "number": 9007,
               "state": "OPEN",
               "title": "iOS board demo",
               "labels": [
@@ -658,7 +658,7 @@
                   "color": "5319e7"
                 }
               ],
-              "url": "https://demo.example.invalid/atlas-board/issues/217"
+              "url": "https://demo.example.invalid/atlas-board/issues/9007"
             }
           ]
         }
@@ -698,7 +698,7 @@
             "repo": "atlas-board",
             "branch": "demo/route-check",
             "worktree_path": "/demo/worktrees/atlas-board/g216-fleet-gate",
-            "pr_number": 216,
+            "pr_number": 9003,
             "ci_status": "pending",
             "dirty": true,
             "ahead": 3,
@@ -720,9 +720,9 @@
     "atlas-board": [
       {
         "repo": "demo.example.invalid/atlas-board",
-        "number": 215,
+        "number": 9001,
         "state": "OPEN",
-        "title": "egui web: read-only WASM build of the board + GitHub Pages demo against a local daemon",
+        "title": "Demo web board with fictional fixture data",
         "labels": [
           {
             "name": "enhancement",
@@ -733,25 +733,25 @@
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/215",
+        "url": "https://demo.example.invalid/atlas-board/issues/9001",
         "body": "Read-only issue browser demo data.\n\nSelect a repository in the rail, then expand an issue row to read its body and metadata."
       },
       {
         "repo": "demo.example.invalid/atlas-board",
-        "number": 209,
+        "number": 9002,
         "state": "OPEN",
-        "title": "Devices/Grants surface — names + grant toggles on board and iOS",
+        "title": "Demo device grants sample for fictional agents",
         "labels": [
           {
             "name": "ready-to-work",
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/209"
+        "url": "https://demo.example.invalid/atlas-board/issues/9002"
       },
       {
         "repo": "demo.example.invalid/atlas-board",
-        "number": 216,
+        "number": 9003,
         "state": "OPEN",
         "title": "Fleet gate: wasm build proof",
         "labels": [
@@ -760,13 +760,13 @@
             "color": "a2eeef"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/216"
+        "url": "https://demo.example.invalid/atlas-board/issues/9003"
       }
     ],
     "route-lab": [
       {
         "repo": "demo.example.invalid/route-lab",
-        "number": 722,
+        "number": 9004,
         "state": "OPEN",
         "title": "Routing slices for the app shell",
         "labels": [
@@ -775,13 +775,13 @@
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/route-lab/issues/722"
+        "url": "https://demo.example.invalid/route-lab/issues/9004"
       }
     ],
     "pixel-garden": [
       {
         "repo": "demo.example.invalid/pixel-garden",
-        "number": 88,
+        "number": 9005,
         "state": "OPEN",
         "title": "Add Acme as a partner",
         "labels": [
@@ -790,13 +790,13 @@
             "color": "d4c5f9"
           }
         ],
-        "url": "https://demo.example.invalid/pixel-garden/issues/88"
+        "url": "https://demo.example.invalid/pixel-garden/issues/9005"
       }
     ],
     "orbit-console": [
       {
         "repo": "demo.example.invalid/orbit-console",
-        "number": 41,
+        "number": 9006,
         "state": "OPEN",
         "title": "Read loop reconnect backoff",
         "labels": [
@@ -805,7 +805,7 @@
             "color": "d73a4a"
           }
         ],
-        "url": "https://demo.example.invalid/orbit-console/issues/41"
+        "url": "https://demo.example.invalid/orbit-console/issues/9006"
       }
     ]
   },

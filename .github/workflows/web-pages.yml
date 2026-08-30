@@ -6,6 +6,7 @@ on:
     paths:
       - 'clients/egui/**'
       - 'clients/egui/assets/demo-fixture.json'
+      - 'scripts/check-demo-privacy.py'
       - '.github/workflows/web-pages.yml'
   workflow_dispatch:
 

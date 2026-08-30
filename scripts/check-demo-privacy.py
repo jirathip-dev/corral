@@ -9,7 +9,7 @@ import sys
 import tempfile
 from urllib.parse import urlparse
 
-URL_RE = re.compile(r"https?://[^\\s\\\"'<>]+")
+URL_RE = re.compile(r"(?:https?|ftp)://[^\s\"'<>]+", re.IGNORECASE)
 
 FORBIDDEN = (
     "jirathip", "github.com/jirathip", "/Users/", "~/.herdr", "sendmeter",
@@ -153,6 +153,10 @@ def self_test(path: Path) -> int:
         ("non-demo URL under unknown key", lambda d: d.__setitem__("novel_url", "https://github.com/acme/private")),
         ("HTTP demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "http://demo.example.invalid/atlas-board/issues/9001")),
         ("embedded GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://github.com/acme/private for details")),
+        ("FTP URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftp://demo.example.invalid/private")),
+        ("uppercase GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://github.com/acme/private")),
+        ("wrong-host HTTPS URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://secret.example.com/private")),
+        ("saturated-s wrong-host URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://sass.scss.example/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -167,6 +171,10 @@ def self_test(path: Path) -> int:
         ("fixture agent id", lambda d: None),
         ("fixture URL in approved field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "https://demo.example.invalid/atlas-board/issues/9001")),
         ("ordinary prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
+        ("HTTPS demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://demo.example.invalid/private")),
+        ("URL followed by whitespace", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private for details")),
+        ("quoted demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See 'https://demo.example.invalid/private'")),
+        ("URL before angle bracket", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private<")),
     ):
         candidate = json.loads(json.dumps(data))
         mutate(candidate)

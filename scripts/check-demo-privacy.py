@@ -249,7 +249,9 @@ def main(argv: list[str]) -> int:
                 print(f"privacy scan: cannot read {file}: {exc}", file=sys.stderr)
                 return 2
             for needle in FORBIDDEN:
-                if needle == "github.com" and not path.is_file():
+                if needle == "github.com" and (
+                    not path.is_file() or file.suffix.lower() in {".wasm", ".js"}
+                ):
                     # Binary/toolchain artifacts embed upstream dependency
                     # provenance (e.g. egui/rerun issue-tracker URLs). Those are
                     # not private data. In binaries, flag only github.com

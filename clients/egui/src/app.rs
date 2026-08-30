@@ -2687,12 +2687,12 @@ fn transcript_font_definitions() -> egui::FontDefinitions {
             .families
             .entry(family.clone())
             .or_default()
-            .push("corral-transcript-fallback".into());
+            .push("corral-transcript-ascii".into());
         fonts
             .families
             .entry(family.clone())
             .or_default()
-            .push("corral-transcript-ascii".into());
+            .push("corral-transcript-fallback".into());
         fonts
             .families
             .entry(family.clone())
@@ -2718,16 +2718,39 @@ mod font_tests {
     #[test]
     fn transcript_fixture_has_glyph_coverage() {
         let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
-        let measured_fixture = "tool ✓ ✗ ▸ ● ⏺ ░";
         let ctx = egui::Context::default();
         configure_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|fonts| {
-                assert!(fonts.has_glyphs(&egui::FontId::proportional(12.0), measured_fixture,));
+                let mut job = egui::text::LayoutJob::simple(
+                    fixture.into(),
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::WHITE,
+                    f32::INFINITY,
+                );
+                job.wrap.max_width = f32::INFINITY;
+                let galley = fonts.layout_job(job);
+                let glyphs: Vec<_> = galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+                    .collect();
+                for glyph in ['t', 'o', 'l', '✓', '✗', '✅', '⚠', '▸', '●', '⏺', '░']
+                {
+                    assert!(glyphs.contains(&glyph), "missing visible glyph {glyph}");
+                }
+                for glyph in fixture
+                    .chars()
+                    .filter(|c| !c.is_ascii_whitespace() && !matches!(c, '✅' | '⚠' | '\u{fe0f}'))
+                {
+                    assert!(
+                        fonts.has_glyph(&egui::FontId::proportional(12.0), glyph),
+                        "missing configured glyph {glyph}"
+                    );
+                }
             });
         });
         output.textures_delta.clear();
-        assert!(fixture.contains(['✅', '⚠']));
     }
 }
 

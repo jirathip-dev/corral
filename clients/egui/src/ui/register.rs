@@ -11,14 +11,16 @@ use eframe::egui::{
 
 use crate::keys::KeyStore;
 use crate::protocol::{GRANT_CAPABILITIES, GrantDevice};
-use crate::state::{ConnState, Level};
+use crate::state::{CompletedMode, ConnState, Level};
 use crate::theme;
 
 pub struct SettingsState {
     pub host_url: String,
     pub auto_reconnect: bool,
     pub group_by_repo: bool,
-    pub show_idle_collapsed: bool,
+    /// #310 tri-state Completed agents mode (replaces the ambiguous
+    /// `show idle / done collapsed` checkbox).
+    pub completed_mode: CompletedMode,
     pub stick_to_bottom: bool,
     pub theme: String,
     pub token_input: String,
@@ -27,6 +29,8 @@ pub struct SettingsState {
     /// Audit is reachable only below Devices & Grants, never as a
     /// top-level workspace tab.
     pub audit_open: bool,
+    /// Health-line Details disclosure (key id / store / grants).
+    pub health_details_open: bool,
     /// Set by the view when the user asks for an action.
     pub requested: Option<Request>,
     /// Host-admin credential availability for the grant editor, refreshed
@@ -39,7 +43,9 @@ pub enum Request {
     Connect,
     AutoRegister,
     Register,
-    ReRegister,
+    /// #310 recovery: re-register the CURRENT key material and re-apply its
+    /// recorded grant set ("Restore saved identity" — never a fresh key).
+    RecoverIdentity,
     RefreshGrants,
     SaveAdminToken,
     ClearAdminToken,
@@ -85,13 +91,14 @@ impl Default for SettingsState {
             host_url: crate::protocol::DEFAULT_HOST_URL.to_string(),
             auto_reconnect: true,
             group_by_repo: true,
-            show_idle_collapsed: true,
+            completed_mode: CompletedMode::Collapsed,
             stick_to_bottom: true,
             theme: "dark".to_string(),
             token_input: String::new(),
             admin_token_input: String::new(),
             notice: None,
             audit_open: true,
+            health_details_open: false,
             requested: None,
             admin_token_configured: false,
             grant_admin: GrantAdminState::default(),
@@ -149,6 +156,10 @@ pub struct GrantAdminState {
     pub restore_grants: Vec<String>,
     /// Previous key id shown in the detail meta while `reregistered`.
     pub previous_key: Option<String>,
+    /// #310: true only after an actual current-key `bad_signature`
+    /// rejection. Healthy state never shows re-register guidance; the
+    /// recovery block renders only while this is set.
+    pub bad_signature: bool,
     /// Captured before a THIS-device re-register: `(key_id, grants)` of the
     /// registration being replaced, consumed by the RegisterResult path.
     /// Kept here because the request and its async result are separate
@@ -214,10 +225,13 @@ impl GrantAdminState {
             selected_key: new_key.to_string(),
             caps: BTreeSet::new(),
         };
+        // A successful re-register means the daemon accepted the fresh key:
+        // any recorded bad_signature rejection is resolved.
+        self.bad_signature = false;
         self.notice = Some((
             Level::Warn,
             format!(
-                "Re-registered: fresh key {new_key} — grants are EMPTY. Use Restore to re-apply the previous set."
+                "Re-registered: fresh key {new_key} — grants are EMPTY. Restore the previous set above, or grant this fresh key directly below."
             ),
         ));
     }
@@ -225,6 +239,7 @@ impl GrantAdminState {
     pub fn mark_restored(&mut self) {
         self.reregistered = false;
         self.restore_grants.clear();
+        self.bad_signature = false;
         self.notice = Some((
             Level::Info,
             "Restored the previous grant set to this device.".to_string(),
@@ -338,7 +353,10 @@ pub fn register_screen(ui: &mut Ui, settings: &mut SettingsState, conn: ConnStat
     }
 }
 
-/// Settings tab (device already registered).
+/// Settings tab (device already registered). #310 V1 Compact List: one
+/// human-readable health line, compact GENERAL/DEVICE rows (no cards),
+/// recovery only after an actual current-key rejection, tri-state
+/// Completed agents mode, audit subordinate to Device access.
 pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: SettingsPaneContext<'_>) {
     let mut requested = None;
     let admin_token_configured = settings.admin_token_configured;
@@ -363,106 +381,331 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
                 }
             });
             ui.add_space(8.0);
+            health_line(ui, settings, &context);
+            ui.add_space(12.0);
 
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(16, 12))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Connection")
-                            .strong()
-                            .color(theme::ui::TEXT_STRONG),
-                    );
-                    ui.add_space(5.0);
-                    ui.horizontal(|ui| {
-                        ui.label("host URL");
-                        let mut url = settings.host_url.clone();
-                        ui.add(
-                            TextEdit::singleline(&mut url)
-                                .hint_text("http://127.0.0.1:8474")
-                                .desired_width(360.0),
-                        );
-                        settings.host_url = url;
-                        if ui.button("reconnect").clicked() {
-                            requested = Some(Request::Connect);
-                        }
-                    });
-                    ui.checkbox(&mut settings.auto_reconnect, "auto-reconnect");
-                    ui.label(
-                        RichText::new("Reconnect the live read path after a dropped SSE connection.")
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                    );
-                });
-            ui.add_space(10.0);
+            // GENERAL — compact rows, no cards (#310).
+            group_header(ui, "GENERAL", "");
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(6.0);
 
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(16, 12))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Board")
-                            .strong()
-                            .color(theme::ui::TEXT_STRONG),
-                    );
-                    ui.checkbox(&mut settings.group_by_repo, "group agents by repo");
-                    ui.checkbox(&mut settings.show_idle_collapsed, "show idle / done collapsed");
-                    ui.checkbox(&mut settings.stick_to_bottom, "stick output to bottom");
-                    ui.label(
-                        RichText::new("Cards is the only board view; repo grouping stays on the master bar.")
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                    );
-                });
-            ui.add_space(10.0);
-
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(16, 12))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Display")
-                            .strong()
-                            .color(theme::ui::TEXT_STRONG),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("theme");
+            // Connection row.
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Connection")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                ui.add_space(10.0);
+                ui.label("host URL");
+                let mut url = settings.host_url.clone();
+                ui.add(
+                    TextEdit::singleline(&mut url)
+                        .hint_text("http://127.0.0.1:8474")
+                        .desired_width(280.0),
+                );
+                settings.host_url = url;
+                if ui.button("reconnect").clicked() {
+                    requested = Some(Request::Connect);
+                }
+                ui.checkbox(&mut settings.auto_reconnect, "auto-reconnect");
+                if let Some(rev) = context.rev {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new("dark dashboard (approved prototype)")
+                            RichText::new(format!("live · rev {rev}"))
                                 .monospace()
-                                .color(theme::ui::TEXT_STRONG),
+                                .small()
+                                .color(theme::ui::GOOD),
                         );
                     });
+                }
+            });
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Board row — explicit Completed agents tri-state.
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("Board")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                ui.add_space(10.0);
+                ui.checkbox(&mut settings.group_by_repo, "group agents by repo");
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("completed agents")
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+                for mode in [CompletedMode::Hide, CompletedMode::Collapsed, CompletedMode::Show] {
+                    if ui
+                        .selectable_label(settings.completed_mode == mode, mode.label())
+                        .clicked()
+                    {
+                        settings.completed_mode = mode;
+                    }
+                }
+            });
+            ui.label(
+                RichText::new("Mixed repo groups keep working agents open; completed rows stay folded.")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Output row.
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Output")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                ui.add_space(10.0);
+                ui.checkbox(&mut settings.stick_to_bottom, "stick recent output to bottom");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Theme selection is intentionally fixed to the approved dark dashboard.")
+                        RichText::new("Saved with Board behavior")
                             .small()
                             .color(theme::ui::TEXT_MUTED),
                     );
                 });
-            ui.add_space(10.0);
+            });
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Display — subordinate text, not a card (#310).
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Display")
+                        .strong()
+                        .color(theme::ui::TEXT_STRONG),
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("Dark dashboard · fixed product theme")
+                        .monospace()
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+            });
+            ui.add_space(6.0);
             if ui
                 .add(egui::Button::new(RichText::new("Save settings").strong()))
                 .clicked()
             {
                 requested = Some(Request::SaveSettings);
             }
+            ui.add_space(14.0);
 
-            ui.add_space(12.0);
-            egui::CollapsingHeader::new(
-                RichText::new("Devices & Grants")
-                    .strong()
-                    .color(theme::ui::TEXT_STRONG),
-            )
-            .default_open(settings.audit_open)
-            .show(ui, |ui| {
+            // DEVICE & GRANTS — Device access hierarchy (#250/#310).
+            group_header(ui, "DEVICE & GRANTS", "");
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // This device identity summary row.
+            let own_device = settings
+                .grant_admin
+                .view
+                .as_ref()
+                .and_then(|view| view.as_ref().ok())
+                .and_then(|devices| devices.iter().find(|d| d.key_id == context.key_id));
+            let own_title = own_device
+                .map(device_title)
+                .unwrap_or_else(|| short_key(context.key_id));
+            let own_grant_count = own_device
+                .map(|device| device.grants.len())
+                .unwrap_or(context.grants.len());
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    RichText::new("Device identity, host-admin credentials, grants, and the subordinate audit view live here.")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("device identity")
+                    RichText::new("This device")
                         .strong()
                         .color(theme::ui::TEXT_STRONG),
                 );
+                ui.label(RichText::new(own_title).strong().color(theme::ui::INK));
+                small_chip(ui, "THIS DEVICE", theme::ui::ACCENT);
+                ui.label(
+                    RichText::new(format!("{} · keychain · active", short_key(context.key_id)))
+                        .monospace()
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} of {} granted",
+                            own_grant_count,
+                            GRANT_CAPABILITIES.len()
+                        ))
+                        .monospace()
+                        .small()
+                        .color(theme::ui::GOOD),
+                    );
+                });
+            });
+            let identity_note = if settings.grant_admin.bad_signature {
+                "Identity rejected — recovery is available below."
+            } else if settings.grant_admin.reregistered {
+                "Fresh key active · default-empty grants · restore available"
+            } else {
+                "Identity trust check passed · current key accepted by the daemon."
+            };
+            ui.label(
+                RichText::new(identity_note)
+                    .small()
+                    .color(if settings.grant_admin.bad_signature {
+                        theme::ui::WARN
+                    } else {
+                        theme::ui::TEXT_MUTED
+                    }),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Refresh identity").clicked() {
+                    requested = Some(Request::RefreshGrants);
+                }
+                ui.label(
+                    RichText::new(
+                        "Reconcile the local registration with the daemon's current grant set.",
+                    )
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+                );
+            });
+            ui.add_space(8.0);
+
+            // Host administration (admin token).
+            ui.horizontal(|ui| {
+                ui.label("admin token");
+                let mut token = settings.admin_token_input.clone();
+                ui.add(
+                    TextEdit::singleline(&mut token)
+                        .password(true)
+                        .desired_width(300.0),
+                );
+                settings.admin_token_input = token;
+                if ui.button("save (keychain)").clicked() {
+                    requested = Some(Request::SaveAdminToken);
+                }
+                if ui.button("clear").clicked() {
+                    requested = Some(Request::ClearAdminToken);
+                }
+            });
+            ui.label(
+                RichText::new("Host-side credentials are kept out of the normal settings flow and are never sent in a device-signed drive request.")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            grant_management_block(
+                ui,
+                settings,
+                context.key_id,
+                admin_token_configured,
+                &mut requested,
+            );
+            ui.add_space(12.0);
+            if settings.audit_open {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Audit — subordinate Settings surface")
+                            .strong()
+                            .color(theme::ui::TEXT_STRONG),
+                    );
+                    if ui.small_button("hide audit").clicked() {
+                        requested = Some(Request::CloseAudit);
+                    }
+                });
+                crate::ui::audit::show(
+                    ui,
+                    context.audit,
+                    admin_token_configured,
+                    context.audit_loading,
+                    &mut || requested = Some(Request::RefreshAudit),
+                );
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("open audit log").clicked() {
+                        requested = Some(Request::OpenAudit);
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Host-admin audit is available here when needed; it is not a top-level tab.",
+                        )
+                        .small()
+                        .color(theme::ui::TEXT_MUTED),
+                    );
+                });
+            }
+
+            if let Some((level, text)) = &settings.notice {
+                let color = match level {
+                    Level::Info => theme::ui::GOOD,
+                    Level::Warn => theme::ui::WARN,
+                    Level::Error => theme::ui::BAD,
+                };
+                ui.add_space(8.0);
+                ui.label(RichText::new(text).color(color));
+            }
+        });
+
+    if let Some(request) = requested {
+        settings.requested = Some(request);
+    }
+}
+
+/// The #310 health line: Connected / Identity / Admin in one human-readable
+/// row. The healthy state carries NO re-register guidance; key IDs, key
+/// store, and grants live behind the Details disclosure.
+fn health_line(ui: &mut Ui, settings: &mut SettingsState, context: &SettingsPaneContext<'_>) {
+    let connected = matches!(context.conn, ConnState::Connected);
+    let (connected_ok, connected_label) = if connected {
+        (true, "Connected")
+    } else {
+        (false, context.conn.label())
+    };
+    let (identity_ok, identity_label) = if settings.grant_admin.bad_signature {
+        (false, "Identity rejected")
+    } else if settings.grant_admin.reregistered {
+        (false, "New key needs grants")
+    } else if context.key_id.is_empty() {
+        (false, "Identity unknown")
+    } else {
+        (true, "Identity healthy")
+    };
+    let admin = settings.admin_token_configured;
+    let (admin_ok, admin_label) = if admin {
+        (true, "Admin ready")
+    } else {
+        (false, "Admin token missing")
+    };
+    egui::Frame::group(ui.style())
+        .fill(theme::ui::PANEL2)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                health_item(ui, connected_ok, connected_label);
+                health_item(ui, identity_ok, identity_label);
+                health_item(ui, admin_ok, admin_label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let details = if settings.health_details_open {
+                        "▴ Details"
+                    } else {
+                        "▾ Details"
+                    };
+                    if ui.button(details).clicked() {
+                        settings.health_details_open = !settings.health_details_open;
+                    }
+                });
+            });
+            if settings.health_details_open {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     detail_kv(ui, "key_id", context.key_id);
                     let store_text = context
@@ -495,97 +738,22 @@ pub fn settings_pane(ui: &mut Ui, settings: &mut SettingsState, context: Setting
                             .color(theme::ui::TEXT_MUTED),
                     );
                 }
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("re-register (new device key)").clicked() {
-                        requested = Some(Request::ReRegister);
-                    }
-                    if ui.button("refresh grants").clicked() {
-                        requested = Some(Request::RefreshGrants);
-                    }
-                });
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("host administration (admin token)")
-                        .strong()
-                        .color(theme::ui::TEXT_STRONG),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("admin token");
-                    let mut token = settings.admin_token_input.clone();
-                    ui.add(
-                        TextEdit::singleline(&mut token)
-                            .password(true)
-                            .desired_width(300.0),
-                    );
-                    settings.admin_token_input = token;
-                    if ui.button("save (keychain)").clicked() {
-                        requested = Some(Request::SaveAdminToken);
-                    }
-                    if ui.button("clear").clicked() {
-                        requested = Some(Request::ClearAdminToken);
-                    }
-                });
-                ui.label(
-                    RichText::new("Host-side credentials are kept out of the normal settings flow and are never sent in a device-signed drive request.")
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                );
-                grant_management_block(
-                    ui,
-                    settings,
-                    context.key_id,
-                    admin_token_configured,
-                    &mut requested,
-                );
-                ui.add_space(12.0);
-                if settings.audit_open {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Audit — subordinate Settings surface")
-                                .strong()
-                                .color(theme::ui::TEXT_STRONG),
-                        );
-                        if ui.small_button("hide audit").clicked() {
-                            requested = Some(Request::CloseAudit);
-                        }
-                    });
-                    crate::ui::audit::show(
-                        ui,
-                        context.audit,
-                        admin_token_configured,
-                        context.audit_loading,
-                        &mut || requested = Some(Request::RefreshAudit),
-                    );
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("open audit log").clicked() {
-                            requested = Some(Request::OpenAudit);
-                        }
-                        ui.label(
-                            RichText::new(
-                                "Host-admin audit is available here when needed; it is not a top-level tab.",
-                            )
-                            .small()
-                            .color(theme::ui::TEXT_MUTED),
-                        );
-                    });
-                }
-            });
-
-            if let Some((level, text)) = &settings.notice {
-                let color = match level {
-                    Level::Info => theme::ui::GOOD,
-                    Level::Warn => theme::ui::WARN,
-                    Level::Error => theme::ui::BAD,
-                };
-                ui.add_space(8.0);
-                ui.label(RichText::new(text).color(color));
             }
         });
+}
 
-    if let Some(request) = requested {
-        settings.requested = Some(request);
-    }
+fn health_item(ui: &mut Ui, ok: bool, label: &str) {
+    let (color, glyph) = if ok {
+        (theme::ui::GOOD, "✓")
+    } else {
+        (theme::ui::WARN, "!")
+    };
+    ui.label(
+        RichText::new(format!("{glyph} {label}"))
+            .strong()
+            .color(color),
+    );
+    ui.add_space(16.0);
 }
 
 /// Plain-language capability descriptions for the Devices & Grants
@@ -977,6 +1145,33 @@ fn device_detail(
     );
     ui.add_space(6.0);
 
+    // #310: recovery / device actions sit BEFORE the capability list.
+    if is_self {
+        if state.bad_signature {
+            bad_signature_recovery(ui, busy, requested);
+        } else if state.reregistered {
+            restore_strip(ui, state, busy, admin_token_configured, requested);
+        }
+    } else if !device.revoked {
+        let revoke = egui::Button::new(RichText::new("Revoke device").color(theme::ui::BAD))
+            .fill(Color32::TRANSPARENT);
+        if ui
+            .add_enabled(!busy && admin_token_configured, revoke)
+            .clicked()
+        {
+            *requested = Some(Request::RevokeGrantDevice);
+        }
+    } else if ui
+        .add_enabled(
+            !busy && admin_token_configured,
+            egui::Button::new(RichText::new("Re-grant device").strong()).fill(theme::ui::ACCENT),
+        )
+        .clicked()
+    {
+        *requested = Some(Request::ReGrantDevice);
+    }
+    ui.add_space(8.0);
+
     let granted = state.draft.caps.len();
     ui.horizontal(|ui| {
         ui.label(
@@ -992,10 +1187,19 @@ fn device_detail(
                 .color(theme::ui::TEXT_MUTED),
         );
     });
-    let caps_enabled = admin_token_configured && !busy && !device.revoked && !state.reregistered;
-    if !admin_token_configured {
+    // #310: `reregistered` is NOT a lock — an admin-authorized owner edits
+    // a fresh key directly. Only a real current-key rejection, a missing
+    // admin token, a revoked device, or an in-flight mutation pauses
+    // editing, and each disabled state names its precise reason.
+    let caps_enabled = admin_token_configured && !busy && !device.revoked && !state.bad_signature;
+    if let Some(lock) = edit_lock(
+        admin_token_configured,
+        busy,
+        device.revoked,
+        state.bad_signature,
+    ) {
         ui.label(
-            RichText::new("admin token required to edit grants (save/paste it above).")
+            RichText::new(edit_lock_reason(lock))
                 .size(10.0)
                 .color(theme::ui::WARN),
         );
@@ -1005,86 +1209,162 @@ fn device_detail(
         capability_row(ui, capability, on, caps_enabled, requested);
     }
     ui.add_space(6.0);
+}
 
-    if is_self {
-        let rebutton =
-            egui::Button::new(RichText::new("Re-register").strong()).fill(theme::ui::ACCENT);
-        if ui.add_enabled(!busy, rebutton).clicked() {
-            *requested = Some(Request::ReRegisterFromGrants);
-        }
-        if ui
-            .add_enabled(!busy, egui::Button::new("Refresh grants"))
-            .clicked()
-        {
-            *requested = Some(Request::RefreshGrants);
-        }
-        if state.reregistered {
-            // Restore strip: the previous grant set is one tap away.
-            egui::Frame::group(ui.style())
-                .fill(theme::ui::PANEL2)
-                .stroke(Stroke::new(1.0, theme::ui::ACCENT))
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    "New key runs with zero grants until restored or re-granted:",
-                                )
-                                .size(11.0)
-                                .color(theme::ui::TEXT_MUTED),
-                            )
-                            .wrap(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    !busy
-                                        && admin_token_configured
-                                        && !state.restore_grants.is_empty(),
-                                    egui::Button::new("Restore grant set"),
-                                )
-                                .clicked()
-                            {
-                                *requested = Some(Request::RestoreGrantSet);
-                            }
-                        });
-                    });
-                });
-        }
-        // #249 trust-check note — only on the THIS-device card.
-        egui::Frame::group(ui.style())
-            .fill(Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
-            .stroke(Stroke::new(1.0, theme::ui::WARN))
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.label(
+/// #310 bad-signature recovery: rendered ONLY after an actual current-key
+/// `bad_signature` rejection. Restore and Re-register appear together with
+/// their exact consequences; the healthy state never shows this.
+fn bad_signature_recovery(ui: &mut Ui, busy: bool, requested: &mut Option<Request>) {
+    egui::Frame::group(ui.style())
+        .fill(Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
+        .stroke(Stroke::new(1.0, theme::ui::WARN))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("BAD-SIGNATURE REJECTION")
+                    .size(10.5)
+                    .strong()
+                    .color(theme::ui::WARN),
+            );
+            ui.add(
+                egui::Label::new(
                     RichText::new(
-                        "Bad-signature trust check (#249). If the daemon rejects this device with a bad-signature error, the stored key is stale — Re-register above to mint a fresh key, then Restore the grants.",
+                        "The daemon rejected this current key. Recovery appears only for this recorded event.",
                     )
                     .size(10.5)
-                    .color(theme::ui::WARN),
-                );
+                    .color(theme::ui::TEXT_MUTED),
+                )
+                .wrap(),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(RichText::new("Restore saved identity").strong())
+                            .fill(theme::ui::ACCENT),
+                    )
+                    .clicked()
+                {
+                    *requested = Some(Request::RecoverIdentity);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Re-register…")).clicked() {
+                    *requested = Some(Request::ReRegisterFromGrants);
+                }
             });
+            ui.label(
+                RichText::new("Restore keeps this key ID and grants.")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            ui.label(
+                RichText::new("Re-register mints a fresh default-empty key.")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        });
+}
+
+/// #310 post-re-register restore strip: shown above capabilities while the
+/// fresh key runs with default-empty grants. Toggles stay editable for an
+/// admin-authorized owner (Restore is a convenience, not a lock).
+fn restore_strip(
+    ui: &mut Ui,
+    state: &mut GrantAdminState,
+    busy: bool,
+    admin_token_configured: bool,
+    requested: &mut Option<Request>,
+) {
+    egui::Frame::group(ui.style())
+        .fill(theme::ui::PANEL2)
+        .stroke(Stroke::new(1.0, theme::ui::ACCENT))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("FRESH KEY · DEFAULT-EMPTY GRANTS")
+                    .size(10.5)
+                    .strong()
+                    .color(theme::ui::WARN),
+            );
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Re-registration succeeded. Restore the previous grants, or grant this fresh key directly below.",
+                    )
+                    .size(10.5)
+                    .color(theme::ui::TEXT_MUTED),
+                )
+                .wrap(),
+            );
+            ui.label(
+                RichText::new("Restore keeps the new key; it only reapplies the saved capability set.")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !busy && admin_token_configured && !state.restore_grants.is_empty(),
+                        egui::Button::new(format!(
+                            "Restore {} previous grants",
+                            state.restore_grants.len()
+                        )),
+                    )
+                    .clicked()
+                {
+                    *requested = Some(Request::RestoreGrantSet);
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Refresh grants")).clicked() {
+                    *requested = Some(Request::RefreshGrants);
+                }
+            });
+        });
+}
+
+/// Why capability editing is paused (or None = editable). `reregistered`
+/// is deliberately NOT a lock: an admin-authorized owner edits a fresh key
+/// directly (#310).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditLock {
+    Busy,
+    NoAdminToken,
+    BadSignature,
+    Revoked,
+}
+
+fn edit_lock(
+    admin_token_configured: bool,
+    busy: bool,
+    revoked: bool,
+    bad_signature: bool,
+) -> Option<EditLock> {
+    if busy {
+        Some(EditLock::Busy)
+    } else if bad_signature {
+        Some(EditLock::BadSignature)
+    } else if !admin_token_configured {
+        Some(EditLock::NoAdminToken)
+    } else if revoked {
+        Some(EditLock::Revoked)
     } else {
-        if !device.revoked {
-            let revoke = egui::Button::new(RichText::new("Revoke device").color(theme::ui::BAD))
-                .fill(Color32::TRANSPARENT);
-            if ui
-                .add_enabled(!busy && admin_token_configured, revoke)
-                .clicked()
-            {
-                *requested = Some(Request::RevokeGrantDevice);
-            }
-        } else if ui
-            .add_enabled(
-                !busy && admin_token_configured,
-                egui::Button::new(RichText::new("Re-grant device").strong())
-                    .fill(theme::ui::ACCENT),
-            )
-            .clicked()
-        {
-            *requested = Some(Request::ReGrantDevice);
+        None
+    }
+}
+
+fn edit_lock_reason(lock: EditLock) -> &'static str {
+    match lock {
+        EditLock::Busy => {
+            "Grant editing is temporarily paused while device grants refresh. Wait for completion or retry Refresh grants."
+        }
+        EditLock::NoAdminToken => {
+            "Grant editing is locked because no admin token is available. Save an admin token above, then retry."
+        }
+        EditLock::BadSignature => {
+            "Editing is paused because the daemon rejected this key. Restore saved identity or Re-register above."
+        }
+        EditLock::Revoked => {
+            "Grant editing is locked because this device is revoked. Re-grant device to edit capabilities."
         }
     }
 }
@@ -1102,12 +1382,6 @@ fn grant_management_block(
 ) {
     ui.add_space(10.0);
     let state = &mut settings.grant_admin;
-    ui.label(
-        RichText::new("DEVICES & GRANTS")
-            .size(10.0)
-            .strong()
-            .color(theme::ui::TEXT_MUTED),
-    );
     ui.horizontal(|ui| {
         if state.loading {
             ui.spinner();
@@ -1466,9 +1740,14 @@ mod tests {
             rendered_text(&clipped.shape, &mut text);
         }
         output.textures_delta.clear();
-        assert!(text.contains("Devices & Grants"));
+        assert!(text.contains("DEVICE & GRANTS"));
         assert!(text.contains("THIS DEVICE"));
         assert!(text.contains("REMOTE DEVICES"));
+        // Healthy state carries no re-register guidance anywhere (#310).
+        assert!(!text.contains("BAD-SIGNATURE REJECTION"));
+        assert!(!text.contains("Restore saved identity"));
+        assert!(!text.contains("Re-register"));
+        assert!(!text.contains("Bad-signature trust check"));
         assert!(!include_str!("../app.rs").contains("Device access, or use"));
         assert!(!include_str!("../app.rs").contains("available — Settings → Device access"));
         assert!(!include_str!("../app.rs").contains("(Settings → Device access → THIS"));
@@ -1513,5 +1792,140 @@ mod tests {
         assert!(text.contains("Audit — subordinate Settings surface"));
         assert!(text.contains("AUDIT LOG"));
         assert!(!text.contains("Board / Issues / Registry / Settings / Audit"));
+    }
+
+    /// Render the full Settings pane and collect every text shape.
+    fn render_settings_pane(
+        ctx: &egui::Context,
+        settings: &mut SettingsState,
+        key_id: &str,
+    ) -> String {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                settings_pane(
+                    ui,
+                    settings,
+                    SettingsPaneContext {
+                        key_id,
+                        grants: &[],
+                        store: None,
+                        conn: ConnState::Connected,
+                        rev: None,
+                        audit: &None,
+                        audit_loading: false,
+                    },
+                );
+            },
+        );
+        let mut text = String::new();
+        for clipped in &output.shapes {
+            rendered_text(&clipped.shape, &mut text);
+        }
+        output.textures_delta.clear();
+        text
+    }
+
+    /// #310: the recovery block renders ONLY after an actual current-key
+    /// `bad_signature` rejection; a healthy render shows none of it and the
+    /// health line stays human-readable.
+    #[test]
+    fn bad_signature_recovery_renders_only_after_an_actual_rejection() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState::default();
+        settings.admin_token_configured = true;
+        settings
+            .grant_admin
+            .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
+
+        let healthy = render_settings_pane(&ctx, &mut settings, "dev_test");
+        assert!(healthy.contains("✓ Identity healthy"));
+        assert!(!healthy.contains("BAD-SIGNATURE REJECTION"));
+        assert!(!healthy.contains("Restore saved identity"));
+        assert!(!healthy.contains("Editing is paused because the daemon rejected this key"));
+        assert!(!healthy.contains("Bad-signature trust check"));
+
+        settings.grant_admin.bad_signature = true;
+        let rejected = render_settings_pane(&ctx, &mut settings, "dev_test");
+        assert!(rejected.contains("! Identity rejected"));
+        assert!(rejected.contains("BAD-SIGNATURE REJECTION"));
+        assert!(rejected.contains("Restore saved identity"));
+        assert!(rejected.contains("Re-register…"));
+        assert!(rejected.contains("Restore keeps this key ID and grants."));
+        assert!(rejected.contains("Re-register mints a fresh default-empty key."));
+        assert!(rejected.contains(
+            "Editing is paused because the daemon rejected this key. Restore saved identity or Re-register above."
+        ));
+    }
+
+    /// #310: after a re-register the fresh key stays directly editable for
+    /// an admin-authorized owner and the Restore strip renders above
+    /// capabilities — `reregistered` is never a lock.
+    #[test]
+    fn reregistered_fresh_key_stays_editable_and_restore_sits_before_capabilities() {
+        assert_eq!(edit_lock(true, false, false, false), None);
+        assert_eq!(
+            edit_lock(true, false, false, true),
+            Some(EditLock::BadSignature)
+        );
+
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState::default();
+        settings.admin_token_configured = true;
+        settings.grant_admin.mark_reregistered(
+            vec!["read_tail".to_string(), "prompt".to_string()],
+            "dev_old",
+            "dev_new",
+        );
+        settings
+            .grant_admin
+            .set_view(vec![device("dev_new", &[])], "dev_new");
+        let text = render_settings_pane(&ctx, &mut settings, "dev_new");
+        assert!(text.contains("FRESH KEY · DEFAULT-EMPTY GRANTS"));
+        assert!(text.contains("Restore 2 previous grants"));
+        assert!(text.contains("grant this fresh key directly below"));
+        assert!(text.contains("CAPABILITIES"));
+        assert!(text.contains("0 of 9 granted"));
+        assert!(!text.contains("BAD-SIGNATURE REJECTION"));
+    }
+
+    /// #310: every disabled capability state names its precise reason, and
+    /// the health line reads Connected / Identity / Admin without key IDs.
+    #[test]
+    fn health_line_is_human_readable_and_each_lock_names_its_reason() {
+        assert_eq!(edit_lock(true, true, false, false), Some(EditLock::Busy));
+        assert_eq!(
+            edit_lock(false, false, false, false),
+            Some(EditLock::NoAdminToken)
+        );
+        assert_eq!(edit_lock(true, false, true, false), Some(EditLock::Revoked));
+        assert!(
+            edit_lock_reason(EditLock::BadSignature)
+                .contains("Restore saved identity or Re-register above")
+        );
+        assert!(edit_lock_reason(EditLock::NoAdminToken).contains("no admin token is available"));
+        assert!(
+            edit_lock_reason(EditLock::Revoked).contains("Re-grant device to edit capabilities")
+        );
+
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState::default();
+        settings.admin_token_configured = false;
+        settings
+            .grant_admin
+            .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
+        let text = render_settings_pane(&ctx, &mut settings, "dev_test");
+        assert!(text.contains("✓ Connected"));
+        assert!(text.contains("✓ Identity healthy"));
+        assert!(text.contains("! Admin token missing"));
+        assert!(text
+            .contains("Grant editing is locked because no admin token is available. Save an admin token above, then retry."));
+        assert!(!text.contains("key_id:"), "details disclosure stays closed");
     }
 }

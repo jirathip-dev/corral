@@ -946,7 +946,8 @@ struct PersistedConfig {
     registration: Option<RegistrationRecord>,
     auto_reconnect: bool,
     group_by_repo: bool,
-    show_idle_collapsed: bool,
+    /// #310 tri-state Completed agents mode (replaces `show_idle_collapsed`).
+    completed_mode: crate::state::CompletedMode,
     stick_to_bottom: bool,
     theme: String,
 }
@@ -958,7 +959,7 @@ impl Default for PersistedConfig {
             registration: None,
             auto_reconnect: true,
             group_by_repo: true,
-            show_idle_collapsed: true,
+            completed_mode: crate::state::CompletedMode::Collapsed,
             stick_to_bottom: true,
             theme: "dark".to_string(),
         }
@@ -977,7 +978,11 @@ impl PersistedConfig {
                 registration: c.registration,
                 auto_reconnect: c.auto_reconnect.unwrap_or(true),
                 group_by_repo: c.group_by_repo.unwrap_or(true),
-                show_idle_collapsed: c.show_idle_collapsed.unwrap_or(true),
+                completed_mode: c.completed_mode.unwrap_or_else(|| {
+                    crate::state::CompletedMode::from_legacy_show_idle_collapsed(
+                        c.show_idle_collapsed.unwrap_or(true),
+                    )
+                }),
                 stick_to_bottom: c.stick_to_bottom.unwrap_or(true),
                 theme: c
                     .theme
@@ -995,7 +1000,10 @@ impl PersistedConfig {
             registration: self.registration.clone(),
             auto_reconnect: Some(self.auto_reconnect),
             group_by_repo: Some(self.group_by_repo),
-            show_idle_collapsed: Some(self.show_idle_collapsed),
+            // Keep the legacy boolean truthful for older readers; #310
+            // readers prefer `completed_mode`.
+            show_idle_collapsed: Some(self.completed_mode.legacy_show_idle_collapsed()),
+            completed_mode: Some(self.completed_mode),
             stick_to_bottom: Some(self.stick_to_bottom),
             theme: Some(self.theme.clone()),
         };
@@ -1157,7 +1165,7 @@ impl CorralApp {
                 host_url: host_url.clone(),
                 auto_reconnect: config.auto_reconnect,
                 group_by_repo: config.group_by_repo,
-                show_idle_collapsed: config.show_idle_collapsed,
+                completed_mode: config.completed_mode,
                 stick_to_bottom: config.stick_to_bottom,
                 theme: config.theme.clone(),
                 ..Default::default()
@@ -1723,6 +1731,10 @@ impl CorralApp {
             DriveOutcome::Ok { rev, result } => {
                 self.ledger.note_success(&capability);
                 self.persist_ledger();
+                // #310: a successful drive proves the current key is
+                // accepted — any recorded bad_signature rejection is
+                // resolved and the recovery block disappears.
+                self.settings.grant_admin.bad_signature = false;
                 // If the daemon ever grows a read_tail result, surface it.
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
@@ -1752,10 +1764,12 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
-                // #249: a bad_signature refusal is the first live signal
-                // that the key material no longer matches the registered
-                // key_id — detect and auto-recover (or surface the prompt).
+                // #249/#310: a bad_signature refusal is the first live
+                // signal that the key material no longer matches the
+                // registered key_id — record the rejection (Settings shows
+                // recovery ONLY after this) and auto-recover when possible.
                 if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
+                    self.settings.grant_admin.bad_signature = true;
                     self.check_identity_recovery();
                 }
                 if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
@@ -1780,7 +1794,7 @@ impl CorralApp {
                     self.settings.notice = Some((
                         Level::Warn,
                         format!(
-                            "{failure} — re-register this device (Settings → Devices & Grants → THIS device card → Re-register)."
+                            "{failure} — open Settings → DEVICE & GRANTS to restore or re-register this device."
                         ),
                     ));
                 }
@@ -2012,6 +2026,10 @@ impl CorralApp {
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
+                // #310: a successful (re)registration means the daemon
+                // accepted the current key — any recorded bad_signature
+                // rejection is resolved.
+                self.settings.grant_admin.bad_signature = false;
                 // A successful (re)registration refreshes the ledger from
                 // the host's CURRENT grant set: any locally-demoted
                 // capability the host re-granted is re-enabled, and a
@@ -2462,16 +2480,15 @@ impl CorralApp {
                     }
                 }
             }
-            crate::ui::register::Request::ReRegister => {
-                match crate::keys::read_daemon_registration_token() {
-                    Ok(token) => self.register(token, true),
-                    Err(e) => {
-                        self.settings.notice = Some((
-                            Level::Error,
-                            format!("re-register needs the token: {e} (paste it above)"),
-                        ));
-                    }
+            crate::ui::register::Request::RecoverIdentity => {
+                // #310 "Restore saved identity": re-register the CURRENT
+                // key material and re-apply its recorded grant set — never
+                // mints a fresh key. Only offered after an actual
+                // bad_signature rejection.
+                if self.identity_recovery == IdentityRecovery::None {
+                    self.identity_recovery = IdentityRecovery::Mismatch;
                 }
+                let _ = self.try_start_recovery();
             }
             crate::ui::register::Request::RefreshGrants => {
                 // Re-register the SAME device key: the daemon returns the
@@ -2576,7 +2593,7 @@ impl CorralApp {
                 self.config.host_url = url.clone();
                 self.config.auto_reconnect = self.settings.auto_reconnect;
                 self.config.group_by_repo = self.settings.group_by_repo;
-                self.config.show_idle_collapsed = self.settings.show_idle_collapsed;
+                self.config.completed_mode = self.settings.completed_mode;
                 self.config.stick_to_bottom = self.settings.stick_to_bottom;
                 // The approved #206 surface currently ships one theme. Keep
                 // the persisted compatibility key truthful instead of
@@ -3081,7 +3098,7 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         &mut left_ui,
         &mut app.fleet,
         app.settings.group_by_repo,
-        app.settings.show_idle_collapsed,
+        app.settings.completed_mode,
     );
 
     let mut right_ui = ui.new_child(
@@ -3327,6 +3344,53 @@ mod tests {
             native_probe_in_flight: false,
         };
         (runtime, app)
+    }
+
+    /// #310: `completed_mode` survives a config save/reload round-trip, and
+    /// the legacy `show_idle_collapsed` boolean migrates (true→Collapsed,
+    /// false→Show) when the new field is absent.
+    #[test]
+    fn completed_mode_persists_round_trip_and_migrates_legacy_boolean() {
+        let dir =
+            std::env::temp_dir().join(format!("corral-ui-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("config.json");
+
+        // Legacy file: only the boolean exists → Collapsed (true) / Show (false).
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":true}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(
+            loaded.completed_mode,
+            crate::state::CompletedMode::Collapsed
+        );
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":false}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(loaded.completed_mode, crate::state::CompletedMode::Show);
+
+        // New file: the tri-state wins, and persist writes it back.
+        let mut config = PersistedConfig::default();
+        config.completed_mode = crate::state::CompletedMode::Hide;
+        config.persist(&path);
+        let reloaded = PersistedConfig::load(&path);
+        assert_eq!(reloaded.completed_mode, crate::state::CompletedMode::Hide);
+        let wire: crate::state::PersistedConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(wire.completed_mode, Some(crate::state::CompletedMode::Hide));
+        assert_eq!(
+            wire.show_idle_collapsed,
+            Some(true),
+            "Hide folds completed rows, so the legacy boolean reads collapsed=true"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// #249 test app: a registered device whose key material was replaced

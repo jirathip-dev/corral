@@ -2730,14 +2730,18 @@ mod font_tests {
                 );
                 job.wrap.max_width = f32::INFINITY;
                 let galley = fonts.layout_job(job);
-                let glyphs: Vec<_> = galley
-                    .rows
-                    .iter()
-                    .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
-                    .collect();
                 for glyph in ['t', 'o', 'l', '✓', '✗', '✅', '⚠', '▸', '●', '⏺', '░']
                 {
-                    assert!(glyphs.contains(&glyph), "missing visible glyph {glyph}");
+                    let rendered = galley
+                        .rows
+                        .iter()
+                        .flat_map(|row| row.glyphs.iter())
+                        .find(|candidate| candidate.chr == glyph)
+                        .unwrap_or_else(|| panic!("missing visible glyph {glyph}"));
+                    assert!(
+                        !rendered.uv_rect.is_nothing() && rendered.advance_width > 0.0,
+                        "visible glyph {glyph} has no usable rendered coverage"
+                    );
                 }
                 for glyph in fixture
                     .chars()

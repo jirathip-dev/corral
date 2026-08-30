@@ -2,7 +2,7 @@
 
 - Source: epaint_default_fonts 0.36.1, `fonts/Hack-Regular.ttf`
 - Upstream: https://github.com/source-foundry/Hack
-- Binary name table: family `Hack`; version `3.003`; foundry `SRC`
+- Name-table fields: family `Hack`; version `3.003`
 - Hack project: Copyright 2018 Source Foundry Authors; MIT License
 - Embedded DejaVu component: committed to the public domain
 - Embedded Bitstream Vera Sans Mono component: Copyright 2003 Bitstream Inc.; Bitstream Vera License

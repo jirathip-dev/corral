@@ -412,6 +412,10 @@ enum BoardModel {
             return AgentActionAvailability(action: .terminal, isEnabled: false,
                                            disabledReason: "Terminal unavailable: device is not registered.")
         }
+        guard agent.capabilities.contains(Capability.attach.rawValue) else {
+            return AgentActionAvailability(action: .terminal, isEnabled: false,
+                                           disabledReason: "Terminal unavailable: attach is not available for this agent.")
+        }
         guard grants.contains(.attach) else {
             return AgentActionAvailability(action: .terminal, isEnabled: false,
                                            disabledReason: "Terminal unavailable: requires the attach grant.")

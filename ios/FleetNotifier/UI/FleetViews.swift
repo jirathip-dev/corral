@@ -506,8 +506,22 @@ private struct AgentDetailContent: View {
         model.makeDriveClient()
     }
 
+    private var terminalAvailability: AgentActionAvailability {
+#if DEBUG
+        let demoRegistered = model.mode == .demo
+#else
+        let demoRegistered = false
+#endif
+        return BoardModel.terminalAvailability(
+            agent: agent,
+            grants: grants,
+            isRegistered: demoRegistered ||
+                (model.hostURL != nil && model.keyId != nil && model.signer != nil))
+    }
+
     private var terminalWorktree: CorralWorktree? {
-        guard let path = agent.workspace.worktreePath, !path.isEmpty,
+        guard agent.capabilities.contains(Capability.attach.rawValue),
+              let path = agent.workspace.worktreePath, !path.isEmpty,
               model.hostURL != nil, model.keyId != nil, model.signer != nil,
               grants.contains(.attach) else { return nil }
         return CorralWorktree(repo: agent.workspace.repo ?? "—",
@@ -539,6 +553,21 @@ private struct AgentDetailContent: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel(diff.disabledReason ?? "Diff unavailable")
+                }
+
+                if !terminalAvailability.isEnabled,
+                   let reason = terminalAvailability.disabledReason {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(reason, systemImage: "terminal")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(reason)
+                        Button("Open Devices & Grants", systemImage: "lock.shield") {
+                            devicesGrantsPresented = true
+                        }
+                        .font(.caption.weight(.semibold))
+                        .accessibilityHint("Navigation only; grants are not changed")
+                    }
                 }
 
                 if let waiting = agent.waitingOn, agent.isBlocked,
@@ -763,10 +792,7 @@ private struct AgentDetailContent: View {
                 }
                 .disabled(!item.isEnabled)
             }
-            let terminal = BoardModel.terminalAvailability(
-                agent: agent,
-                grants: grants,
-                isRegistered: model.hostURL != nil && model.keyId != nil && model.signer != nil)
+            let terminal = terminalAvailability
             Button {
                 terminalPresented = true
             } label: {

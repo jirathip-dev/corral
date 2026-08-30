@@ -2422,23 +2422,42 @@ final class RowActionTests: XCTestCase {
         XCTAssertEqual(actions, [.tail, .diff, .prompt, .interrupt, .kill, .attach, .approveDeny])
     }
 
-    func testTerminalAvailabilityExplainsEveryUnavailableState() {
-        let base = agent("herdr:terminal", state: .working,
-                         capabilities: ["attach"], waiting: false)
-        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [.attach],
-                                                       isRegistered: false).disabledReason,
-                       "Terminal unavailable: device is not registered.")
-        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [],
-                                                       isRegistered: true).disabledReason,
-                       "Terminal unavailable: requires the attach grant.")
-        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [.attach],
-                                                       isRegistered: true).disabledReason,
-                       "Terminal unavailable: worktree_path is missing.")
-        let attached = Agent(agentId: "herdr:terminal", state: .working,
-                             capabilities: ["attach"],
-                             workspace: Workspace(worktreePath: "/tmp/worktree"))
-        XCTAssertTrue(BoardModel.terminalAvailability(agent: attached, grants: [.attach],
-                                                      isRegistered: true).isEnabled)
+    func testTerminalAvailabilityCoversEveryGateCombination() {
+        let path = Workspace(worktreePath: "/tmp/worktree")
+        var cases = 0
+        for hasGrant in [false, true] {
+            for advertisesAttach in [false, true] {
+                for hasPath in [false, true] {
+                    for isRegistered in [false, true] {
+                        let agent = Agent(agentId: "herdr:terminal", state: .working,
+                                          capabilities: advertisesAttach ? ["attach"] : [],
+                                          workspace: hasPath ? path : Workspace())
+                        let item = BoardModel.terminalAvailability(
+                            agent: agent,
+                            grants: hasGrant ? [.attach] : [],
+                            isRegistered: isRegistered)
+                        XCTAssertEqual(item.isEnabled,
+                                       hasGrant && advertisesAttach && hasPath && isRegistered,
+                                       "unexpected terminal state for grant=\(hasGrant), advertised=\(advertisesAttach), path=\(hasPath), registered=\(isRegistered)")
+                        cases += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases, 16)
+
+        let noAdvertisement = Agent(agentId: "herdr:terminal", state: .working,
+                                    capabilities: [], workspace: path)
+        let unavailable = BoardModel.terminalAvailability(agent: noAdvertisement,
+                                                           grants: [.attach],
+                                                           isRegistered: true)
+        XCTAssertEqual(unavailable.disabledReason,
+                       "Terminal unavailable: attach is not available for this agent.")
+
+        let valid = Agent(agentId: "herdr:terminal", state: .working,
+                          capabilities: ["attach"], workspace: path)
+        XCTAssertTrue(BoardModel.terminalAvailability(agent: valid, grants: [.attach],
+                                                       isRegistered: true).isEnabled)
     }
 
     /// Both the agent capability and the device grant must hold. The detail

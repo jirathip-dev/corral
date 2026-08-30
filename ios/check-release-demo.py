@@ -59,7 +59,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # #308: native agent action toolbar, visible capability reasons, and recovery route.
 APPROVED_RELEASE_SOURCE_DIGEST = (
     # #308: re-pinned after the approved agent-actions implementation.
-    "e85c698fd901b03511c5b3b818c57aae115edef6bc47a4a98ac0c75cb4558a31"
+    "77f5f62971df5877ae22423990b10c6cb08643b02f8bf1f5742072272cdc0e1b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

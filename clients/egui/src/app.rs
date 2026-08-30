@@ -2718,20 +2718,12 @@ mod font_tests {
     #[test]
     fn transcript_fixture_has_glyph_coverage() {
         let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
-        let symbol_fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
+        let measured_fixture = "tool ✓ ✗ ▸ ● ⏺ ░";
         let ctx = egui::Context::default();
         configure_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|fonts| {
-                for glyph in symbol_fixture
-                    .chars()
-                    .filter(|c| !c.is_ascii_whitespace() && !matches!(c, '✅' | '⚠' | '\u{fe0f}'))
-                {
-                    assert!(
-                        fonts.has_glyph(&egui::FontId::proportional(12.0), glyph),
-                        "missing {glyph}"
-                    );
-                }
+                assert!(fonts.has_glyphs(&egui::FontId::proportional(12.0), measured_fixture,));
             });
         });
         output.textures_delta.clear();

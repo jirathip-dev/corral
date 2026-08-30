@@ -56,12 +56,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # CanonicalJSON; diff cache in FleetStore/AppModel; the pin follows.
 # #289 retired the fleet-health strip and its demo/model wiring; the pin
 # follows the remaining Release source set.
-# #267: read-only issue browser — Capability.readIssues, GhIssueRef
-# body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
-# IssuesBrowserView (chips + inline detail).
+# #308: native agent action toolbar, visible capability reasons, and recovery route.
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    # #215/#282: sanitized fictional web and iOS demo identities.
-    "ac9bbe6f684ca07b337d191c25ed0031ba184f9465bf9ed04756a595ac34ce1e"
+    # #308: re-pinned after the approved agent-actions implementation.
+    "e85c698fd901b03511c5b3b818c57aae115edef6bc47a4a98ac0c75cb4558a31"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -2422,6 +2422,25 @@ final class RowActionTests: XCTestCase {
         XCTAssertEqual(actions, [.tail, .diff, .prompt, .interrupt, .kill, .attach, .approveDeny])
     }
 
+    func testTerminalAvailabilityExplainsEveryUnavailableState() {
+        let base = agent("herdr:terminal", state: .working,
+                         capabilities: ["attach"], waiting: false)
+        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [.attach],
+                                                       isRegistered: false).disabledReason,
+                       "Terminal unavailable: device is not registered.")
+        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [],
+                                                       isRegistered: true).disabledReason,
+                       "Terminal unavailable: requires the attach grant.")
+        XCTAssertEqual(BoardModel.terminalAvailability(agent: base, grants: [.attach],
+                                                       isRegistered: true).disabledReason,
+                       "Terminal unavailable: worktree_path is missing.")
+        let attached = Agent(agentId: "herdr:terminal", state: .working,
+                             capabilities: ["attach"],
+                             workspace: Workspace(worktreePath: "/tmp/worktree"))
+        XCTAssertTrue(BoardModel.terminalAvailability(agent: attached, grants: [.attach],
+                                                      isRegistered: true).isEnabled)
+    }
+
     /// Both the agent capability and the device grant must hold. The detail
     /// surface retains a reason for every disabled action.
     func testActionsRequireCapabilityAndGrant() {

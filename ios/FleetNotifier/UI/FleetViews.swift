@@ -495,6 +495,7 @@ private struct AgentDetailContent: View {
     /// #232: the worktree-diff sheet (lazy paged, grant/capability-gated).
     @State private var diffPresented = false
     @State private var terminalPresented = false
+    @State private var devicesGrantsPresented = false
     @FocusState private var focusPrompt: Bool
 
     private var grants: Set<Capability> { model.actionGrants }
@@ -532,6 +533,13 @@ private struct AgentDetailContent: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
+                if let diff = availability.first(where: { $0.action == .diff }),
+                   !diff.isEnabled {
+                    Text(diff.disabledReason ?? "Diff unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(diff.disabledReason ?? "Diff unavailable")
+                }
 
                 if let waiting = agent.waitingOn, agent.isBlocked,
                    let approval = availability.first(where: { $0.action == .approveDeny }) {
@@ -564,7 +572,7 @@ private struct AgentDetailContent: View {
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
                     onSend: dispatchPrompt,
-                    toolbar: AnyView(actionToolbar))
+                    toolbar: nil)
                     .frame(minHeight: 260, maxHeight: .infinity)
             } else {
                 RecentOutputView(
@@ -573,7 +581,7 @@ private struct AgentDetailContent: View {
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
                     onSend: dispatchPrompt,
-                    toolbar: AnyView(actionToolbar))
+                    toolbar: nil)
                     .frame(minHeight: 260, maxHeight: .infinity)
             }
 #else
@@ -583,7 +591,7 @@ private struct AgentDetailContent: View {
                 drafts: drafts,
                 focusPrompt: $focusPrompt,
                 onSend: dispatchPrompt,
-                toolbar: AnyView(actionToolbar))
+                toolbar: nil)
                 .frame(minHeight: 260, maxHeight: .infinity)
 #endif
         }
@@ -614,29 +622,27 @@ private struct AgentDetailContent: View {
                     .padding()
             }
         }
+        .sheet(isPresented: $devicesGrantsPresented) {
+            DevicesGrantsView(model: model)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                toolbarPrimaryControl
+                toolbarDiffButton
+                overflowMenu
+            }
+        }
     }
 
-    /// #246 Variant 2 (approved): compact thin toolbar pinned directly
-    /// above the reply field — state-dependent primary (■ Interrupt /
-    /// Answer / Attach), ± Diff (#232 placeholder), ⋯ More overflow, and the
-    /// kill-grant note demoted to one tiny ⓘ line (full sentence in More).
+    /// #308 V1: compact trailing top action group. Interrupt is destructive;
+    /// Diff is evidence/review; More contains secondary actions and recovery.
     private var actionToolbar: some View {
         HStack(spacing: 8) {
             toolbarPrimaryControl
             toolbarDiffButton
             overflowMenu
-            Spacer(minLength: 8)
-            if let killItem = availability.first(where: { $0.action == .kill }),
-               !killItem.isEnabled {
-                Label("no kill grant", systemImage: "info.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Why Kill is disabled: \(killItem.disabledReason ?? "no kill grant")")
-            }
         }
-        .frame(minHeight: 28)
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
+        .frame(minHeight: 44)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent actions")
     }
@@ -690,6 +696,8 @@ private struct AgentDetailContent: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .tint(title == "Interrupt" ? .red : .accentColor)
+        .frame(minWidth: 44, minHeight: 44)
         .disabled(disabled)
         .accessibilityLabel(disabled
                             ? "\(title) unavailable — \(item?.disabledReason ?? "action in progress")"
@@ -707,12 +715,13 @@ private struct AgentDetailContent: View {
         return Button {
             diffPresented = true
         } label: {
-            Text("± Diff")
+            Label("Diff", systemImage: "doc.text.magnifyingglass")
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .frame(minWidth: 44, minHeight: 44)
         .disabled(disabled)
         .accessibilityLabel(disabled
                             ? "Diff unavailable — \(item?.disabledReason ?? "diff fetch in progress")"
@@ -754,13 +763,30 @@ private struct AgentDetailContent: View {
                 }
                 .disabled(!item.isEnabled)
             }
-            if terminalWorktree != nil {
+            let terminal = BoardModel.terminalAvailability(
+                agent: agent,
+                grants: grants,
+                isRegistered: model.hostURL != nil && model.keyId != nil && model.signer != nil)
+            Button {
+                terminalPresented = true
+            } label: {
+                Label("Terminal", systemImage: "terminal")
+            }
+            .disabled(!terminal.isEnabled)
+            .accessibilityLabel(terminal.isEnabled ? "Terminal" : "Terminal unavailable")
+            .accessibilityHint(terminal.disabledReason ?? "Open the attached worktree terminal")
+            if let reason = terminal.disabledReason {
                 Button {
-                    terminalPresented = true
+                    // Read-only recovery route; it never changes grants.
+                    devicesGrantsPresented = true
                 } label: {
-                    Label("Terminal", systemImage: "terminal")
+                    Text(reason)
                 }
-                .accessibilityHint("Open the attached worktree terminal")
+                .disabled(true)
+                Button("Open Devices & Grants", systemImage: "lock.shield") {
+                    devicesGrantsPresented = true
+                }
+                .accessibilityHint("Navigation only; grants are not changed")
             }
             if let item = availability.first(where: { $0.action == .kill }) {
                 Button(role: .destructive) {
@@ -784,6 +810,7 @@ private struct AgentDetailContent: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel("More actions")
     }
 
@@ -2686,6 +2713,22 @@ struct SettingsView: View {
 /// DEVICES (other machines), per-capability toggles that apply immediately,
 /// and Revoke/Re-grant for remote devices — mirroring the approved #250
 /// mockup's grouping and labels. Same host ledger as the board.
+/// Navigation-only wrapper for the recovery destination. Mutations remain
+/// inside the existing admin surface and are never triggered by this route.
+struct DevicesGrantsView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                DeviceAccessSection(model: model)
+            }
+            .navigationTitle("Devices & Grants")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 struct DeviceAccessSection: View {
     @ObservedObject var model: AppModel
     @State private var adminTokenInput = ""

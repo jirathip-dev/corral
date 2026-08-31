@@ -132,6 +132,11 @@ pub struct Fleet {
     /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
     pub tail_source_revs: HashMap<String, u64>,
+    /// #315: the daemon's CANONICAL semantic blocks for the read window,
+    /// cached alongside the legacy `tails` lines. When present the Recent
+    /// output view renders these verbatim — the client never re-derives
+    /// block kinds from raw lines.
+    pub tail_blocks: HashMap<String, Vec<crate::drive::CanonicalBlock>>,
     /// #232: per-agent read_diff cache (changed-files list + paged unified
     /// diff + diffstat). Paged: each fetch appends at `next_offset`.
     pub diffs: HashMap<String, DiffCache>,
@@ -170,6 +175,7 @@ impl Fleet {
         // read_tail cache follows the same removal rule.
         let agents = &self.agents;
         self.tails.retain(|id, _| agents.contains_key(id));
+        self.tail_blocks.retain(|id, _| agents.contains_key(id));
         self.expanded.retain(|id| agents.contains_key(id));
         if self
             .selected_agent
@@ -202,6 +208,7 @@ impl Fleet {
     pub fn remove_agent(&mut self, agent_id: &str) {
         self.agents.remove(agent_id);
         self.tails.remove(agent_id);
+        self.tail_blocks.remove(agent_id);
         self.diffs.remove(agent_id);
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);
@@ -282,13 +289,28 @@ impl Fleet {
         tail: Vec<String>,
         source_rev: Option<u64>,
     ) {
+        self.remember_tail_full(agent_id, tail, Vec::new(), source_rev);
+    }
+
+    /// #315: fold a full read_tail result (lines + canonical blocks) into
+    /// the caches. `blocks` empty = an old daemon without the canonical
+    /// stream; the Recent output view falls back to the legacy lines.
+    pub fn remember_tail_full(
+        &mut self,
+        agent_id: &str,
+        tail: Vec<String>,
+        blocks: Vec<crate::drive::CanonicalBlock>,
+        source_rev: Option<u64>,
+    ) {
         if self.tails.len() >= 64
             && !self.tails.contains_key(agent_id)
             && let Some(oldest) = self.tails.keys().next().cloned()
         {
             self.tails.remove(&oldest);
+            self.tail_blocks.remove(&oldest);
         }
         self.tails.insert(agent_id.to_string(), tail);
+        self.tail_blocks.insert(agent_id.to_string(), blocks);
         if let Some(source_rev) = source_rev {
             self.tail_source_revs
                 .insert(agent_id.to_string(), source_rev);
@@ -668,6 +690,68 @@ mod tests {
         assert!(
             tail[1].contains("[REDACTED]"),
             "daemon-redacted line survives"
+        );
+    }
+
+    #[test]
+    fn canonical_blocks_are_cached_and_evicted_with_their_agent() {
+        // #315: the canonical block cache mirrors the tails cache — same
+        // agent keys, same bounded eviction, same removal rules.
+        let mut fleet = Fleet::default();
+        let blocks = vec![crate::drive::CanonicalBlock {
+            kind: crate::drive::CanonicalBlockKind::User,
+            text: "ship it".into(),
+            prompt_request_id: Some("req-1".into()),
+        }];
+        fleet.remember_tail_full("herdr:a", vec!["ship it".into()], blocks.clone(), Some(3));
+        assert_eq!(fleet.tail_blocks.get("herdr:a"), Some(&blocks));
+        fleet.remove_agent("herdr:a");
+        assert!(!fleet.tail_blocks.contains_key("herdr:a"));
+        // Old-daemon result (no blocks) caches an EMPTY canonical stream so
+        // the view falls back to legacy lines.
+        fleet.remember_tail_full("herdr:b", vec!["legacy".into()], Vec::new(), None);
+        assert!(fleet.tail_blocks.get("herdr:b").is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn cross_client_generic_snapshot_decodes_identically_through_the_view_model() {
+        // AC5 (discriminating), view-model half: the SAME generic terminal
+        // snapshot + recorded Prompt provenance decodes into the identical
+        // canonical sequence on egui (the UI half lives in
+        // ui::board::tests::recent_canonical_blocks_render_identically_across_clients;
+        // the daemon-side emitter lives in tests/provenance.rs). Identical
+        // kinds, identical order, user exactly once.
+        let daemon_result = serde_json::json!({
+            "lines": ["x"],
+            "blocks": [
+                { "kind": "tool", "text": "$ cargo build\nCompiling corrald v0.1.0" },
+                { "kind": "user", "text": "ship the canonical transcript stream",
+                  "prompt_request_id": "req-prompt" },
+                { "kind": "unknown", "text": "Canonical stream wired end to end." },
+                { "kind": "system", "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt" },
+                { "kind": "unknown", "text": "fix the flaky test by hand" }
+            ]
+        });
+        let blocks = crate::drive::parse_tail_blocks(&daemon_result);
+        let kinds: Vec<crate::drive::CanonicalBlockKind> = blocks.iter().map(|b| b.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::drive::CanonicalBlockKind::Tool,
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "identical kind sequence on every client"
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| b.kind == crate::drive::CanonicalBlockKind::User)
+                .count(),
+            1,
+            "exactly-once user rendering"
         );
     }
 

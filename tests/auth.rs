@@ -299,6 +299,7 @@ async fn http_app() -> (Arc<AuthPlane>, tempfile::TempDir, axum::Router) {
         adapter,
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
         issues: Arc::new(corrald::api::issues::IssuesCache::default()),
+        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
         cors_origins: Vec::new(),
     });
     (auth, dir, app)

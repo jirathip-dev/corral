@@ -3838,10 +3838,12 @@ final class RecentOutputModelTests: XCTestCase {
         pane.lines = ["first line", "second line", "third line"]
         let render = RecentOutputModel.render(tail: pane)
 
+        // #315: legacy daemon tail lines carry NO provenance, so they render
+        // as separate `unknown` rows — the old `agent` guess is removed.
         XCTAssertEqual(render.rows, [
-            .block(block(.agent, "first line")),
-            .block(block(.agent, "second line")),
-            .block(block(.agent, "third line")),
+            .block(block(.unknown, "first line")),
+            .block(block(.unknown, "second line")),
+            .block(block(.unknown, "third line")),
         ])
     }
 
@@ -4149,6 +4151,79 @@ final class RecentOutputModelTests: XCTestCase {
             return XCTFail("divider-run block remains a block row")
         }
         XCTAssertTrue(RecentOutputRender.isDividerRun(visible.text))
+    }
+
+    // MARK: - #315 canonical transcript provenance (cross-client)
+
+    /// The EXACT canonical stream the daemon emits for the generic terminal
+    /// snapshot + recorded Prompt provenance (see the daemon counterpart in
+    /// corral tests/provenance.rs and the egui counterpart in
+    /// Fleet::cross_client_generic_snapshot_decodes_identically…). One
+    /// fixture, three layers, identical kinds/order.
+    private func canonicalDaemonJSON() -> String {
+        #"""
+        {
+          "lines": ["x"],
+          "blocks": [
+            { "kind": "tool", "text": "$ cargo build\nCompiling corrald v0.1.0" },
+            { "kind": "user", "text": "ship the canonical transcript stream",
+              "prompt_request_id": "req-prompt" },
+            { "kind": "unknown", "text": "Canonical stream wired end to end." },
+            { "kind": "system", "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt" },
+            { "kind": "unknown", "text": "fix the flaky test by hand" }
+          ]
+        }
+        """#
+    }
+
+    func testCrossClientGenericSnapshotRendersIdenticalKindsAndOrder() throws {
+        // AC5 (discriminating): same snapshot + provenance → identical block
+        // kinds and order on iOS as on the daemon and egui. User renders
+        // exactly once, carrying its provenance request id.
+        let data = Data(canonicalDaemonJSON().utf8)
+        let value = try JSONDecoder().decode(CodableValue.self, from: data)
+        let blocks = try XCTUnwrap(value.tailBlocks)
+
+        XCTAssertEqual(blocks.map(\.kind), [
+            .tool, .user, .unknown, .system, .unknown,
+        ], "identical kind sequence on every client")
+        let userBlocks = blocks.filter { $0.kind == .user }
+        XCTAssertEqual(userBlocks.count, 1, "exactly-once user rendering")
+        XCTAssertEqual(userBlocks.first?.promptRequestId, "req-prompt")
+        XCTAssertEqual(userBlocks.first?.text, "ship the canonical transcript stream")
+    }
+
+    func testUnknownKindSurvivesTheReadModelWithoutRoleAttribution() {
+        // AC2/AC7: a block the daemon marks unknown (direct terminal input,
+        // no provenance) reaches the view layer as unknown — never
+        // re-bucketed into user/agent/tool/system by this client.
+        let render = RecentOutputModel.render(
+            tail: tail([block(.unknown, "typed straight into the pane")]))
+        XCTAssertEqual(render.phase, .loaded)
+        guard case .block(let visible) = render.rows[0] else {
+            return XCTFail("unknown block remains a block row")
+        }
+        XCTAssertEqual(visible.kind, .unknown)
+        // The accessibility label names it honestly instead of guessing.
+        XCTAssertTrue(
+            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Terminal:"),
+            "unknown content is labelled as terminal activity, not a role")
+    }
+
+    func testLegacyLineFallbackNoLongerGuessesRoles() {
+        // The daemon-less fallback that reclassified raw tail LINES is
+        // gone: legacy lines render as unknown blocks, never as guessed
+        // user/agent content. The `› fix it` shape (previously classified
+        // `user` here) can only become user via daemon provenance.
+        var pane = TailPane()
+        pane.lines = ["› fix it from a bare terminal", "$ status"]
+        pane.blocks = []
+        let render = RecentOutputModel.render(tail: pane)
+        let blockRows = render.rows.compactMap { row -> TranscriptBlock? in
+            if case .block(let b) = row { return b }
+            return nil
+        }
+        XCTAssertEqual(blockRows.map(\.kind), [.unknown, .unknown])
     }
 
 #if DEBUG

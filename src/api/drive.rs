@@ -75,7 +75,7 @@ use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
-use crate::core::blocks::segment_lines;
+use crate::core::blocks::canonical_blocks;
 use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
@@ -893,7 +893,12 @@ pub async fn drive(
                     // runs at the adapter boundary (D9) BEFORE these blocks
                     // are segmented, so block text rides the same redaction
                     // path as the lines.
-                    let blocks = segment_lines(&lines, None);
+                    // #315: blocks are now the CANONICAL provenance-first
+                    // stream — recorded Prompt echoes become the single
+                    // `user` block, session chrome is demoted, and
+                    // unprovenanced input stays `unknown`. `lines` is
+                    // unchanged (backward compatibility).
+                    let blocks = canonical_blocks(&lines, &state.provenance, &agent_id, None);
                     (
                         true,
                         None,
@@ -932,6 +937,33 @@ pub async fn drive(
             Err(e) => drive_refusal(e),
         },
     };
+
+    // #315: a successfully dispatched signed Prompt records the authoritative
+    // user provenance for its target. Recorded ONLY on the success path (an
+    // echo must never dedupe against a prompt that never dispatched), and
+    // the ledger stores only content identity (SHA-256 + length) — never the
+    // raw text. The replay table already guarantees exactly-once dispatch.
+    if ok
+        && matches!(
+            authorized.envelope.capability,
+            crate::drive::Capability::Prompt
+        )
+    {
+        let text = authorized
+            .envelope
+            .payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        state
+            .provenance
+            .record(crate::core::provenance::PromptEvent::new(
+                &authorized.envelope.request_id,
+                &agent_id,
+                text,
+                now_millis(),
+            ));
+    }
 
     append_audit(state.auth.audit.as_ref(), &authorized, outcome);
 

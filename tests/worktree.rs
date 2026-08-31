@@ -182,6 +182,7 @@ async fn real_dispatch_creates_exactly_one_issue_worktree_and_defers_handoff() {
         adapter,
         replay: Arc::new(corrald::api::drive::ReplayTable::default()),
         issues,
+        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
         cors_origins: Vec::new(),
     });
 

@@ -1398,57 +1398,41 @@ fn recent_output_surface(
                 .max_height(max_height)
                 .show(ui, |ui| {
                     if let Some(lines) = fleet.tails.get(id) {
-                        let visible_indices =
-                            recent_visible_indices(lines.iter().map(String::as_str));
-                        if visible_indices.is_empty() {
+                        // #315: the daemon's canonical semantic blocks are
+                        // THE render source — kinds and order come from the
+                        // daemon (provenance-backed), never re-derived from
+                        // raw lines. Legacy plain-text fallback: daemons
+                        // old enough to predate the canonical stream serve
+                        // no `blocks`; their lines render as an
+                        // undecorated read-only text surface (no guesses).
+                        let empty_blocks: Vec<crate::drive::CanonicalBlock> = Vec::new();
+                        let canonical = fleet.tail_blocks.get(id).unwrap_or(&empty_blocks);
+                        if canonical.is_empty() && lines.is_empty() {
                             ui.label(
                                 RichText::new("No readable recent output.")
                                     .small()
                                     .color(theme::ui::MUTED),
                             );
+                        } else if canonical.is_empty() {
+                            let text = lines.join("\n");
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(text)
+                                        .monospace()
+                                        .small()
+                                        .color(theme::ui::INK),
+                                )
+                                .wrap(),
+                            );
                         } else {
-                            let mut previous = None;
-                            let mut tool_run: Option<(usize, String)> = None;
-                            for position in
-                                recent_output_indices(visible_indices.len(), stick_to_bottom)
-                            {
-                                let source_index = visible_indices[position];
-                                let kind = classify_tail_line(&lines[source_index]);
-                                if kind == RecentBlockKind::Tool {
-                                    if let Some((_, text)) = &mut tool_run {
-                                        text.push('\n');
-                                        text.push_str(&lines[source_index]);
-                                    } else {
-                                        tool_run =
-                                            Some((source_index, lines[source_index].clone()));
-                                    }
-                                    continue;
-                                }
-                                if let Some((tool_position, text)) = tool_run.take() {
-                                    recent_tail_entry(
-                                        ui,
-                                        &text,
-                                        tool_position,
-                                        previous != Some(RecentBlockKind::Tool),
-                                    );
-                                    previous = Some(RecentBlockKind::Tool);
-                                }
+                            let count = canonical.len();
+                            let mut previous: Option<RecentBlockKind> = None;
+                            for position in recent_output_indices(count, stick_to_bottom) {
+                                let block = &canonical[position];
+                                let kind = recent_block_kind(block.kind);
                                 let show_label = previous != Some(kind);
-                                recent_tail_entry(
-                                    ui,
-                                    &lines[source_index],
-                                    source_index,
-                                    show_label,
-                                );
+                                recent_canonical_entry(ui, block, kind, position, show_label);
                                 previous = Some(kind);
-                            }
-                            if let Some((tool_position, text)) = tool_run {
-                                recent_tail_entry(
-                                    ui,
-                                    &text,
-                                    tool_position,
-                                    previous != Some(RecentBlockKind::Tool),
-                                );
                             }
                         }
                     } else if let Some(state) = read_tail_state {
@@ -1722,6 +1706,8 @@ enum RecentBlockKind {
     User,
     Tool,
     Agent,
+    System,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1731,30 +1717,16 @@ struct RecentBlockStyle {
     monospace: bool,
 }
 
-/// Recover user/tool/assistant semantics from the terminal-shaped read_tail
-/// fallback.
-fn classify_tail_line(line: &str) -> RecentBlockKind {
-    let trimmed = line.trim_start();
-    let lower = trimmed.to_ascii_lowercase();
-    let typed_prompt = trimmed.strip_prefix('›').map(str::trim).filter(|payload| {
-        !payload.is_empty() && !payload.eq_ignore_ascii_case("ask codex to do anything")
-    });
-    let typed_role_line = ["user:", "you:", "prompt:"]
-        .into_iter()
-        .find_map(|prefix| lower.strip_prefix(prefix).map(str::trim))
-        .filter(|payload| !payload.is_empty());
-    if typed_prompt.is_some() || typed_role_line.is_some() {
-        RecentBlockKind::User
-    } else if trimmed.starts_with('•')
-        || trimmed.starts_with('●')
-        || trimmed.starts_with('⏺')
-        || lower.starts_with("tool:")
-        || lower.starts_with("command:")
-        || lower.starts_with("$ ")
-    {
-        RecentBlockKind::Tool
-    } else {
-        RecentBlockKind::Agent
+/// Map a daemon canonical kind onto the render style. #315: this is a
+/// STYLE lookup, not classification — the semantic kind was decided by the
+/// daemon (from recorded Prompt provenance), and this board never guesses.
+fn recent_block_kind(kind: crate::drive::CanonicalBlockKind) -> RecentBlockKind {
+    match kind {
+        crate::drive::CanonicalBlockKind::User => RecentBlockKind::User,
+        crate::drive::CanonicalBlockKind::Tool => RecentBlockKind::Tool,
+        crate::drive::CanonicalBlockKind::Agent => RecentBlockKind::Agent,
+        crate::drive::CanonicalBlockKind::System => RecentBlockKind::System,
+        crate::drive::CanonicalBlockKind::Unknown => RecentBlockKind::Unknown,
     }
 }
 
@@ -1775,6 +1747,18 @@ fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
             inset: 0.0,
             monospace: false,
         },
+        // Diagnostics chrome: dim mono, like the tool panel but quieter.
+        RecentBlockKind::System => RecentBlockStyle {
+            fill: theme::ui::PANEL2,
+            inset: 0.0,
+            monospace: true,
+        },
+        // Unprovenanced terminal content: visible, attributed to nobody.
+        RecentBlockKind::Unknown => RecentBlockStyle {
+            fill: Color32::TRANSPARENT,
+            inset: 0.0,
+            monospace: true,
+        },
     }
 }
 
@@ -1786,6 +1770,8 @@ fn recent_speaker_rail_label(kind: RecentBlockKind, show_label: bool) -> Option<
         RecentBlockKind::User => "you",
         RecentBlockKind::Tool => "tool",
         RecentBlockKind::Agent => "assistant",
+        RecentBlockKind::System => "system",
+        RecentBlockKind::Unknown => "unknown",
     })
 }
 
@@ -1794,6 +1780,8 @@ fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
         RecentBlockKind::User => ("●", theme::ui::USER_BLUE),
         RecentBlockKind::Tool => ("▸", theme::ui::ACCENT),
         RecentBlockKind::Agent => ("●", theme::ui::INK),
+        RecentBlockKind::System => ("·", theme::ui::MUTED),
+        RecentBlockKind::Unknown => ("·", theme::ui::MUTED),
     };
     ui.vertical(|ui| {
         ui.set_width(52.0);
@@ -1804,11 +1792,19 @@ fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
     });
 }
 
-fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize, show_label: bool) {
-    let Some(text) = recent_visible_text(line) else {
+/// #315: render ONE canonical daemon block. The kind came from the daemon;
+/// this function only picks the visual treatment.
+fn recent_canonical_entry(
+    ui: &mut Ui,
+    block: &crate::drive::CanonicalBlock,
+    kind: RecentBlockKind,
+    position: usize,
+    show_label: bool,
+) {
+    if block.text.trim().is_empty() {
         return;
-    };
-    recent_chat_block(ui, classify_tail_line(line), &text, position, show_label);
+    }
+    recent_chat_block(ui, kind, &block.text, position, show_label);
 }
 
 fn recent_tool_summary(text: &str) -> String {
@@ -2966,8 +2962,17 @@ fn detail(
                                     .id_salt("corral-ui-recent-output")
                                     .max_height(200.0)
                                     .show(ui, |ui| {
+                                        // #315: the legacy table renderer is a
+                                        // conformance helper only — it shows the
+                                        // plain text surface without role guesses.
                                         for (position, line) in tail.iter().enumerate() {
-                                            recent_tail_entry(ui, line, position, true);
+                                            ui.label(
+                                                RichText::new(line)
+                                                    .monospace()
+                                                    .small()
+                                                    .color(theme::ui::INK),
+                                            );
+                                            let _ = position;
                                         }
                                     });
                             }
@@ -3751,30 +3756,38 @@ mod tests {
     }
 
     #[test]
-    fn recent_tail_classifies_terminal_semantics_into_chat_styles() {
-        assert_eq!(classify_tail_line("› fix the board"), RecentBlockKind::User);
+    fn recent_tail_maps_daemon_kinds_onto_chat_styles() {
+        // #315: the board NO LONGER classifies raw lines — every assert
+        // below is a pure STYLE mapping of a daemon-decided kind. The
+        // removed `classify_tail_line` heuristics (`›` = user, `$` = tool,
+        // fallthrough = agent) used to attribute an unprovenanced `›` line
+        // to the operator and unknown output to the assistant; those
+        // guesses are gone.
         assert_eq!(
-            classify_tail_line("› Ask Codex to do anything"),
-            RecentBlockKind::Agent,
-            "the empty Codex prompt is not a human message"
+            recent_block_kind(crate::drive::CanonicalBlockKind::User),
+            RecentBlockKind::User
         );
         assert_eq!(
-            classify_tail_line("• Working (5m43s • esc to interrupt)"),
+            recent_block_kind(crate::drive::CanonicalBlockKind::Tool),
             RecentBlockKind::Tool
         );
         assert_eq!(
-            classify_tail_line("Here is the assistant response."),
+            recent_block_kind(crate::drive::CanonicalBlockKind::Agent),
             RecentBlockKind::Agent
         );
         assert_eq!(
-            classify_tail_line("The tool_call concept is explained here."),
-            RecentBlockKind::Agent,
-            "ordinary prose containing tool_call stays agent text"
+            recent_block_kind(crate::drive::CanonicalBlockKind::System),
+            RecentBlockKind::System
         );
         assert_eq!(
-            classify_tail_line("This tool-use phrase is prose."),
-            RecentBlockKind::Agent,
-            "ordinary prose containing tool-use stays agent text"
+            recent_block_kind(crate::drive::CanonicalBlockKind::Unknown),
+            RecentBlockKind::Unknown
+        );
+        // The wire decode never re-attributes: an unrecognized future kind
+        // lands on Unknown, never on user/agent.
+        assert_eq!(
+            crate::drive::CanonicalBlockKind::from_wire("mystery"),
+            crate::drive::CanonicalBlockKind::Unknown
         );
 
         let user = recent_block_style(RecentBlockKind::User);

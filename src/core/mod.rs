@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod diff;
 pub mod events;
 pub mod model;
+pub mod provenance;
 pub mod redact;
 pub mod store;
 pub mod util;

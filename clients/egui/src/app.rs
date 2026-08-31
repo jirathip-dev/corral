@@ -1841,16 +1841,20 @@ impl CorralApp {
             return;
         };
         let lines = crate::drive::parse_tail_lines(result);
+        // #315: the canonical semantic blocks ride additively; when present
+        // the Recent output view renders THEM (never re-classified lines).
+        let blocks = crate::drive::parse_tail_blocks(result);
         tracing::info!(
             agent_id = %msg.agent_id,
             lines = lines.len(),
+            blocks = blocks.len(),
             "read_tail result applied to screenshot/detail cache"
         );
         let source_rev = crate::drive::parse_tail_source_rev(result).or(match msg.outcome {
             DriveOutcome::Ok { rev, .. } => Some(rev),
             DriveOutcome::Refused(_) => None,
         });
-        fleet.remember_tail_with_rev(&msg.agent_id, lines, source_rev);
+        fleet.remember_tail_full(&msg.agent_id, lines, blocks, source_rev);
     }
 
     /// #232 read_diff content path: the daemon's `DriveResponse.result`
@@ -3460,6 +3464,7 @@ mod tests {
             adapter: std::sync::Arc::new(TailAdapter),
             replay: Default::default(),
             issues: Default::default(),
+            provenance: std::sync::Arc::new(corrald::core::provenance::PromptProvenance::new()),
             cors_origins: Vec::new(),
         };
         let _cfg_guard = EnvRestore::set("CORRAL_CONFIG_DIR", daemon_dir.display().to_string());

@@ -668,27 +668,33 @@ enum Claim {
     }
 }
 
-/// One daemon block (D7). `kind` is the client's only vocabulary;
+/// One daemon block (D7 + #315). `kind` is the client's only vocabulary;
 /// `truncatedBefore` is the count lifted from a `... +N lines` marker that
-/// preceded this block (absent = no marker).
+/// preceded this block (absent = no marker); `promptRequestId` (#315) is the
+/// signed request id of the recorded Prompt dispatch behind a `user` block
+/// (absent = no provenance).
 struct TranscriptBlock: Codable, Equatable, Sendable {
     var kind: TranscriptBlockKind
     var text: String
     /// Epoch millis at block boundary (absent = not labelled).
     var at: UInt64?
     var truncatedBefore: UInt32?
+    /// #315 provenance: the dispatch that vouches for a `user` block.
+    var promptRequestId: String?
 
     enum CodingKeys: String, CodingKey {
         case kind, text, at
         case truncatedBefore = "truncated_before"
+        case promptRequestId = "prompt_request_id"
     }
 
     init(kind: TranscriptBlockKind, text: String, at: UInt64? = nil,
-         truncatedBefore: UInt32? = nil) {
+         truncatedBefore: UInt32? = nil, promptRequestId: String? = nil) {
         self.kind = kind
         self.text = text
         self.at = at
         self.truncatedBefore = truncatedBefore
+        self.promptRequestId = promptRequestId
     }
 
     init(from decoder: Decoder) throws {
@@ -697,12 +703,14 @@ struct TranscriptBlock: Codable, Equatable, Sendable {
         text = try c.decode(String.self, forKey: .text)
         at = try c.decodeIfPresent(UInt64.self, forKey: .at)
         truncatedBefore = try c.decodeIfPresent(UInt32.self, forKey: .truncatedBefore)
+        promptRequestId = try c.decodeIfPresent(String.self, forKey: .promptRequestId)
     }
 }
 
-/// The four block kinds (D7).
+/// The block kinds (D7 + #315). `unknown` is terminal content the daemon
+/// could not provenance — preserved, never falsely attributed.
 enum TranscriptBlockKind: String, Codable, Equatable, Sendable {
-    case user, agent, tool, system
+    case user, agent, tool, system, unknown
 }
 
 /// One typed drive-refusal result used by the Recent-output tail state.

@@ -59,6 +59,7 @@ use tracing::info;
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
 use crate::core::model::Resume;
+use crate::core::provenance;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::AuditLog;
@@ -91,6 +92,12 @@ pub struct AppState {
     /// read this; nothing here mutates GitHub.
     pub issues: Arc<issues::IssuesCache>,
 
+    /// #315: the bounded ledger of successfully dispatched signed Prompts.
+    /// The drive handler records an event per dispatch; the read_tail path
+    /// joins the events with the terminal snapshot to emit the canonical
+    /// semantic blocks. Corral-owned provenance, no harness metadata.
+    pub provenance: Arc<provenance::PromptProvenance>,
+
     /// #215: exact-origin allowlist for the read plane's CORS headers
     /// (`--cors-origin` / `CORRALD_CORS_ORIGIN`). Empty (the default) =
     /// no CORS headers at all — the daemon behaves exactly as before.
@@ -116,6 +123,7 @@ impl Default for AppState {
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
             issues: Arc::new(issues::IssuesCache::default()),
+            provenance: Arc::new(provenance::PromptProvenance::new()),
 
             cors_origins: Vec::new(),
         }

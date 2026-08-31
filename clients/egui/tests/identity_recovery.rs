@@ -131,6 +131,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         adapter: Arc::new(TailAdapter),
         replay: Default::default(),
         issues: Default::default(),
+        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
         cors_origins: Vec::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

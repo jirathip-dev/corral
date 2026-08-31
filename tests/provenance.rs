@@ -631,3 +631,38 @@ async fn read_tail_result_still_serves_lines_additively() {
         "blocks remain additive alongside lines"
     );
 }
+
+/// #315 R3 (AC5, load-bearing): the committed golden fixture is the artifact
+/// BOTH clients consume (egui `state.rs` loads it; iOS bundles it via
+/// project.yml). This test regenerates the daemon's canonical stream for the
+/// SAME generic snapshot + recorded Prompt provenance through the REAL
+/// production segmenter and compares the FULL serialized block list, in
+/// order, to that fixture — so any grouping, kind, text, order, or
+/// prompt-request-id drift fails the daemon suite instead of leaving three
+/// hand-authored copies agreeing. (First added in R3: the R2 report named
+/// this test but it was absent at 86d1b16.)
+#[test]
+fn daemon_golden_fixture_matches_canonical_blocks() {
+    let prov = corrald::core::provenance::PromptProvenance::new();
+    prov.record(corrald::core::provenance::PromptEvent::new(
+        "req-prompt",
+        "herdr:abc",
+        PROMPT_TEXT,
+        1,
+    ));
+    let blocks = corrald::core::blocks::canonical_blocks(
+        &generic_snapshot_lines(),
+        &prov,
+        "herdr:abc",
+        None,
+    );
+    let emitted = serde_json::to_value(&blocks).expect("blocks serialize");
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/canonical_stream_golden.json"))
+            .expect("committed golden fixture parses");
+    assert_eq!(
+        emitted, golden,
+        "daemon segmentation drifted from the committed golden fixture \
+         (both client contracts consume exactly this artifact)"
+    );
+}

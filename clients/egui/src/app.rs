@@ -42,10 +42,10 @@ enum Tab {
 /// the previous grant set through the host-admin token — zero manual
 /// keychain surgery. States:
 ///
-/// - `None` — identity consistent (steady state, no banner).
-/// - `Mismatch` — detected; recovery requested or still needed (banner
-///   with the one-tap "Re-register + grant" action).
-/// - `InFlight` — re-register / grant restore running (banner spinner).
+/// - `None` — identity consistent (steady state).
+/// - `Mismatch` — recovery needed; only ever set by the USER-initiated
+///   Settings recovery block (Restore saved identity), never at startup.
+/// - `InFlight` — the user-initiated re-register / grant restore is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityRecovery {
     None,
@@ -946,7 +946,8 @@ struct PersistedConfig {
     registration: Option<RegistrationRecord>,
     auto_reconnect: bool,
     group_by_repo: bool,
-    show_idle_collapsed: bool,
+    /// #310 tri-state Completed agents mode (replaces `show_idle_collapsed`).
+    completed_mode: crate::state::CompletedMode,
     stick_to_bottom: bool,
     theme: String,
 }
@@ -958,7 +959,7 @@ impl Default for PersistedConfig {
             registration: None,
             auto_reconnect: true,
             group_by_repo: true,
-            show_idle_collapsed: true,
+            completed_mode: crate::state::CompletedMode::Collapsed,
             stick_to_bottom: true,
             theme: "dark".to_string(),
         }
@@ -977,7 +978,11 @@ impl PersistedConfig {
                 registration: c.registration,
                 auto_reconnect: c.auto_reconnect.unwrap_or(true),
                 group_by_repo: c.group_by_repo.unwrap_or(true),
-                show_idle_collapsed: c.show_idle_collapsed.unwrap_or(true),
+                completed_mode: c.completed_mode.unwrap_or_else(|| {
+                    crate::state::CompletedMode::from_legacy_show_idle_collapsed(
+                        c.show_idle_collapsed.unwrap_or(true),
+                    )
+                }),
                 stick_to_bottom: c.stick_to_bottom.unwrap_or(true),
                 theme: c
                     .theme
@@ -995,7 +1000,10 @@ impl PersistedConfig {
             registration: self.registration.clone(),
             auto_reconnect: Some(self.auto_reconnect),
             group_by_repo: Some(self.group_by_repo),
-            show_idle_collapsed: Some(self.show_idle_collapsed),
+            // Keep the legacy boolean truthful for older readers; #310
+            // readers prefer `completed_mode`.
+            show_idle_collapsed: Some(self.completed_mode.legacy_show_idle_collapsed()),
+            completed_mode: Some(self.completed_mode),
             stick_to_bottom: Some(self.stick_to_bottom),
             theme: Some(self.theme.clone()),
         };
@@ -1027,6 +1035,10 @@ pub struct CorralApp {
     host_fingerprint: Option<String>,
     /// #249: key-vs-registration mismatch state (None = consistent).
     identity_recovery: IdentityRecovery,
+    /// #310 r3: identity epoch for drive results. Bumped on every
+    /// successful (re)registration; a drive initiated under an older epoch
+    /// must not set or clear current recovery state when it lands late.
+    identity_generation: u64,
 
     // Config + settings.
     config: PersistedConfig,
@@ -1151,13 +1163,14 @@ impl CorralApp {
             registration: config.registration.clone(),
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config: config.clone(),
             config_path,
             settings: crate::ui::register::SettingsState {
                 host_url: host_url.clone(),
                 auto_reconnect: config.auto_reconnect,
                 group_by_repo: config.group_by_repo,
-                show_idle_collapsed: config.show_idle_collapsed,
+                completed_mode: config.completed_mode,
                 stick_to_bottom: config.stick_to_bottom,
                 theme: config.theme.clone(),
                 ..Default::default()
@@ -1419,16 +1432,21 @@ impl CorralApp {
                 .or_else(crate::keys::read_daemon_admin_token);
             self.settings.admin_token_input = admin_token.unwrap_or_default();
         }
-        self.check_identity_recovery();
+        // #310: startup never mutates identity and never auto-re-registers.
+        // A local key-ID mismatch gets a passive notice pointing at
+        // Settings; the recovery block there renders only after an actual
+        // server-side bad_signature rejection.
+        self.passive_identity_mismatch_notice();
     }
 
     // -------------------------------------------------------------------
-    // #249 identity recovery: detect a device key that no longer matches
-    // the registered key_id (rebuild/reinstall wiped or replaced the key
-    // material while config.json kept the old record), then either
-    // auto-recover through the registration token + host-admin token, or
-    // surface the one-tap prompt. Signing is never weakened: there is no
-    // unsigned fallback and no grant path beyond the existing
+    // #249/#310 identity recovery: detect a device key that no longer
+    // matches the registered key_id (rebuild/reinstall wiped or replaced
+    // the key material while config.json kept the old record). Recovery is
+    // USER-INITIATED only: the Settings recovery block renders after an
+    // actual server-side bad_signature rejection, and its Restore /
+    // Re-register actions drive `try_start_recovery` / `register`. There is
+    // no unsigned fallback and no grant path beyond the existing
     // registration-token / admin-token mechanisms.
     // -------------------------------------------------------------------
 
@@ -1444,32 +1462,20 @@ impl CorralApp {
         current != reg.key_id
     }
 
-    /// Detect a mismatch, fail loud once, then start recovery when the
-    /// registration token is available (localhost: same machine, same
-    /// user). Kept idempotent so the startup call and the first
-    /// bad_signature refusal cannot double-fire.
-    fn check_identity_recovery(&mut self) {
-        if self.identity_recovery != IdentityRecovery::None || !self.identity_mismatch() {
+    /// #310: passive, non-mutating notice for a local key-ID mismatch at
+    /// startup. Sets a Settings-visible notice and changes nothing else —
+    /// no IdentityRecovery state, no token read, no re-registration.
+    fn passive_identity_mismatch_notice(&mut self) {
+        if !self.identity_mismatch() {
             return;
         }
-        let reg = self.registration.as_ref().expect("checked above");
-        let current = crate::keys::device_key_id(
-            &self
-                .device_key
-                .as_ref()
-                .expect("checked above")
-                .signing
-                .verifying_key()
-                .to_bytes(),
-        );
-        tracing::warn!(
-            stored_key_id = %reg.key_id,
-            current_key_id = %current,
-            "device identity mismatch (#249): current key differs from the registered key — \
-             restarting the signed drive plane"
-        );
-        self.identity_recovery = IdentityRecovery::Mismatch;
-        let _ = self.try_start_recovery();
+        self.settings.notice = Some((
+            Level::Warn,
+            "Device identity changed: the board's key no longer matches the registered \
+             device. Open Settings → DEVICE & GRANTS to restore or re-register — no \
+             automatic re-registration is performed."
+                .to_string(),
+        ));
     }
 
     /// Re-register the CURRENT key material (never rotates: the fresh key
@@ -1517,7 +1523,7 @@ impl CorralApp {
                             format!(
                                 "device identity changed (#249) — re-register needs the \
                                  registration token: {error}. Paste it in Settings → \
-                                 Devices & Grants, or use the one-tap Re-register + grant."
+                                 DEVICE & GRANTS, then use Restore saved identity."
                             ),
                         ));
                         return false;
@@ -1551,10 +1557,22 @@ impl CorralApp {
         self.restore_grant_set();
     }
 
-    /// A failed recovery leg leaves the banner retryable.
+    /// A failed recovery leg leaves the user-initiated recovery retryable.
     fn mark_recovery_failed(&mut self) {
         if self.identity_recovery == IdentityRecovery::InFlight {
             self.identity_recovery = IdentityRecovery::Mismatch;
+        }
+    }
+
+    /// #310 r3: drop the persisted recovery-guidance notice and its
+    /// `settings.notice` twin, but ONLY when the current notice is still
+    /// exactly that guidance — unrelated notices are never deleted.
+    fn clear_recovery_notice(&mut self) {
+        if let Some(previous) = self.settings.grant_admin.recovery_notice.take()
+            && let Some((_, text)) = &self.settings.notice
+            && text == &previous
+        {
+            self.settings.notice = None;
         }
     }
 
@@ -1717,12 +1735,25 @@ impl CorralApp {
 
     fn on_drive(&mut self, msg: DriveMsg) {
         let capability = msg.capability.clone();
+        // #310 r3: recovery-affecting drive results are scoped to the
+        // identity generation that dispatched them. A result from a prior
+        // generation (e.g. an in-flight drive that predates a rotation)
+        // must never set or clear the CURRENT recovery latch/notice.
+        let current_generation = msg.identity_generation == self.identity_generation;
         let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
         self.fleet.remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
             DriveOutcome::Ok { rev, result } => {
                 self.ledger.note_success(&capability);
                 self.persist_ledger();
+                if current_generation {
+                    // #310: a current-generation successful drive proves
+                    // the current key is accepted — clear the bad-signature
+                    // latch AND its persisted recovery guidance (leaving
+                    // unrelated notices untouched).
+                    self.settings.grant_admin.bad_signature = false;
+                    self.clear_recovery_notice();
+                }
                 // If the daemon ever grows a read_tail result, surface it.
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
@@ -1752,11 +1783,23 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
-                // #249: a bad_signature refusal is the first live signal
-                // that the key material no longer matches the registered
-                // key_id — detect and auto-recover (or surface the prompt).
-                if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
-                    self.check_identity_recovery();
+                if current_generation {
+                    // #249/#310: a bad_signature refusal is the live signal
+                    // that the daemon rejected the CURRENT key — record it so
+                    // the Settings recovery block renders. Recovery is
+                    // user-initiated there (Restore / Re-register); no
+                    // automatic re-registration. Stale-generation refusals
+                    // never touch current recovery state.
+                    if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
+                        self.settings.grant_admin.bad_signature = true;
+                    }
+                    if failure.suggests_re_registration() {
+                        let text = format!(
+                            "{failure} — open Settings → DEVICE & GRANTS to restore or re-register this device."
+                        );
+                        self.settings.grant_admin.recovery_notice = Some(text.clone());
+                        self.settings.notice = Some((Level::Warn, text));
+                    }
                 }
                 if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
                     // A stale tap is a read-model event, not a generic drive
@@ -1776,14 +1819,10 @@ impl CorralApp {
                     Level::Error
                 };
                 self.toast(level, format!("{capability} refused: {failure}"));
-                if failure.suggests_re_registration() {
-                    self.settings.notice = Some((
-                        Level::Warn,
-                        format!(
-                            "{failure} — re-register this device (Settings → Devices & Grants → THIS device card → Re-register)."
-                        ),
-                    ));
-                }
+                // #310 r4: re-registration guidance is written ONLY by the
+                // generation-gated writer above — an unguarded duplicate here
+                // let stale-generation refusals plant permanent
+                // Restore/Re-register guidance on the healthy current key.
             }
         }
     }
@@ -2016,6 +2055,15 @@ impl CorralApp {
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
+                // #310 r3: any successful (re)registration opens a NEW
+                // identity generation — in-flight drives dispatched before
+                // this moment can no longer affect recovery state.
+                self.identity_generation = self.identity_generation.wrapping_add(1);
+                // #310: a successful (re)registration means the daemon
+                // accepted the current key — any recorded bad_signature
+                // rejection and its recovery guidance are resolved.
+                self.settings.grant_admin.bad_signature = false;
+                self.clear_recovery_notice();
                 // A successful (re)registration refreshes the ledger from
                 // the host's CURRENT grant set: any locally-demoted
                 // capability the host re-granted is re-enabled, and a
@@ -2466,16 +2514,15 @@ impl CorralApp {
                     }
                 }
             }
-            crate::ui::register::Request::ReRegister => {
-                match crate::keys::read_daemon_registration_token() {
-                    Ok(token) => self.register(token, true),
-                    Err(e) => {
-                        self.settings.notice = Some((
-                            Level::Error,
-                            format!("re-register needs the token: {e} (paste it above)"),
-                        ));
-                    }
+            crate::ui::register::Request::RecoverIdentity => {
+                // #310 "Restore saved identity": re-register the CURRENT
+                // key material and re-apply its recorded grant set — never
+                // mints a fresh key. Only offered after an actual
+                // bad_signature rejection.
+                if self.identity_recovery == IdentityRecovery::None {
+                    self.identity_recovery = IdentityRecovery::Mismatch;
                 }
+                let _ = self.try_start_recovery();
             }
             crate::ui::register::Request::RefreshGrants => {
                 // Re-register the SAME device key: the daemon returns the
@@ -2580,7 +2627,7 @@ impl CorralApp {
                 self.config.host_url = url.clone();
                 self.config.auto_reconnect = self.settings.auto_reconnect;
                 self.config.group_by_repo = self.settings.group_by_repo;
-                self.config.show_idle_collapsed = self.settings.show_idle_collapsed;
+                self.config.completed_mode = self.settings.completed_mode;
                 self.config.stick_to_bottom = self.settings.stick_to_bottom;
                 // The approved #206 surface currently ships one theme. Keep
                 // the persisted compatibility key truthful instead of
@@ -2622,6 +2669,7 @@ impl CorralApp {
     fn dispatch_drive_intents(&mut self, pending: Vec<DriveIntent>) {
         let registration = self.registration.clone();
         let signing = self.device_key.as_ref().map(|k| k.signing.clone());
+        let identity_generation = self.identity_generation;
         let client = self.client.clone();
         let host_url = self.config.host_url.clone();
         let tx_drive = self.tx_drive.clone();
@@ -2665,6 +2713,7 @@ impl CorralApp {
                     agent_id,
                     capability,
                     outcome,
+                    identity_generation,
                 });
             });
         }
@@ -2990,64 +3039,10 @@ impl Drop for CorralApp {
     }
 }
 
-/// #249 identity-recovery banner — one glance, one tap. `Mismatch` shows
-/// the "Re-register + grant" action (runs the same recovery as the
-/// automatic path: re-register the current key, then re-apply the previous
-/// grant set); `InFlight` shows a spinner. `None` renders nothing.
-fn identity_recovery_banner(ui: &mut egui::Ui, app: &mut CorralApp) {
-    match app.identity_recovery {
-        IdentityRecovery::None => {}
-        IdentityRecovery::InFlight => {
-            egui::Frame::group(ui.style())
-                .fill(theme::ui::PANEL2)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("device identity changed — recovering…")
-                                .color(theme::ui::TEXT_STRONG),
-                        );
-                    });
-                });
-        }
-        IdentityRecovery::Mismatch => {
-            let frame = egui::Frame::group(ui.style())
-                .fill(egui::Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
-                .stroke(egui::Stroke::new(1.0, theme::ui::WARN))
-                .inner_margin(egui::Margin::symmetric(10, 8));
-            frame.show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "Device identity changed (#249): the board's key no longer matches \
-                             the registered device, so signed drives are refused. Re-register \
-                             the current key and re-apply the drive-plane grants with one tap.",
-                        )
-                        .size(11.0)
-                        .color(theme::ui::WARN),
-                    )
-                    .wrap(),
-                );
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("Re-register + grant").strong())
-                                .fill(theme::ui::ACCENT),
-                        )
-                        .clicked()
-                    {
-                        let _ = app.try_start_recovery();
-                    }
-                    if ui.button("open settings").clicked() {
-                        app.tab = Tab::Settings;
-                    }
-                });
-            });
-        }
-    }
-}
-
+/// #310: no workspace-wide identity banner. Recovery guidance lives ONLY
+/// inside the Settings recovery block, and only after an actual current-key
+/// `bad_signature` rejection; a local fingerprint mismatch at startup is a
+/// passive Settings notice, never a mutation or a re-registration prompt.
 fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     let available = ui.available_size();
     let (workspace_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
@@ -3085,7 +3080,7 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         &mut left_ui,
         &mut app.fleet,
         app.settings.group_by_repo,
-        app.settings.show_idle_collapsed,
+        app.settings.completed_mode,
     );
 
     let mut right_ui = ui.new_child(
@@ -3096,7 +3091,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     );
     tab_strip(&mut right_ui, &mut app.tab);
     right_ui.separator();
-    identity_recovery_banner(&mut right_ui, app);
 
     match app.tab {
         Tab::Board => {
@@ -3292,6 +3286,7 @@ mod tests {
             registration: None,
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config,
             config_path: PathBuf::from("/tmp/corral-ui-read-model-test.json"),
             settings,
@@ -3331,6 +3326,55 @@ mod tests {
             native_probe_in_flight: false,
         };
         (runtime, app)
+    }
+
+    /// #310: `completed_mode` survives a config save/reload round-trip, and
+    /// the legacy `show_idle_collapsed` boolean migrates (true→Collapsed,
+    /// false→Show) when the new field is absent.
+    #[test]
+    fn completed_mode_persists_round_trip_and_migrates_legacy_boolean() {
+        let dir =
+            std::env::temp_dir().join(format!("corral-ui-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("config.json");
+
+        // Legacy file: only the boolean exists → Collapsed (true) / Show (false).
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":true}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(
+            loaded.completed_mode,
+            crate::state::CompletedMode::Collapsed
+        );
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":false}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(loaded.completed_mode, crate::state::CompletedMode::Show);
+
+        // New file: the tri-state wins, and persist writes it back.
+        let config = PersistedConfig {
+            completed_mode: crate::state::CompletedMode::Hide,
+            ..Default::default()
+        };
+        config.persist(&path);
+        let reloaded = PersistedConfig::load(&path);
+        assert_eq!(reloaded.completed_mode, crate::state::CompletedMode::Hide);
+        let wire: crate::state::PersistedConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(wire.completed_mode, Some(crate::state::CompletedMode::Hide));
+        assert_eq!(
+            wire.show_idle_collapsed,
+            Some(true),
+            "Hide folds completed rows, so the legacy boolean reads collapsed=true"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// #249 test app: a registered device whose key material was replaced
@@ -3440,15 +3484,17 @@ mod tests {
         }
     }
 
-    /// #249 auto-recovery through the APP'S REAL WIRING, end to end: the
-    /// startup hook (`apply_fingerprint`) detects the key-vs-registration
-    /// mismatch, auto-kicks the recovery, the re-register and the grant
-    /// restore go through the real account, and the board finishes in the
-    /// recovered state — then a signed read_tail executes. Same journey as
-    /// the (wire-only) `tests/identity_recovery.rs` e2e, but driven through
-    /// `CorralApp` itself against a real axum router on loopback.
+    /// #310: the USER-INITIATED recovery through the APP'S REAL WIRING,
+    /// end to end. Startup (`apply_fingerprint`) detects the key-vs-
+    /// registration mismatch but must NOT auto-recover — the user then
+    /// triggers Restore saved identity (the Settings recovery block's
+    /// action), the re-register and the grant restore go through the real
+    /// account, and the board finishes in the recovered state — then a
+    /// signed read_tail executes. Same journey as the (wire-only)
+    /// `tests/identity_recovery.rs` e2e, but driven through `CorralApp`
+    /// itself against a real axum router on loopback.
     #[test]
-    fn identity_auto_recovery_completes_through_the_app_wiring() {
+    fn user_initiated_identity_recovery_completes_through_the_app_wiring() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3509,9 +3555,29 @@ mod tests {
                 denied: vec![],
             };
 
-            // Start the board: the startup hook detects the mismatch and
-            // auto-recovers in one pass.
+            // Start the board: the startup hook detects the mismatch but
+            // must NOT mutate identity or auto-recover — it only surfaces a
+            // passive notice pointing at Settings.
             app.apply_fingerprint(fingerprint.clone());
+            assert_eq!(
+                app.identity_recovery,
+                IdentityRecovery::None,
+                "startup must not auto-start recovery"
+            );
+            assert!(
+                app.settings
+                    .notice
+                    .as_ref()
+                    .map(|(_, text)| text.contains("Settings"))
+                    .unwrap_or(false),
+                "startup surfaces a passive notice pointing at Settings"
+            );
+
+            // The user triggers the Settings recovery block's "Restore
+            // saved identity" (Request::RecoverIdentity): arm Mismatch and
+            // run the same recovery the request handler runs.
+            app.identity_recovery = IdentityRecovery::Mismatch;
+            assert!(app.try_start_recovery(), "user-initiated recovery starts");
             assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
 
             let deadline = Instant::now() + std::time::Duration::from_secs(15);
@@ -3567,7 +3633,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_detection_ignores_consistent_keys_but_flags_mismatch() {
+    fn startup_identity_mismatch_surfaces_passive_notice_without_mutating_identity() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3584,40 +3650,59 @@ mod tests {
         );
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
 
-        // Consistent: the device key's id matches the registered id.
+        // Consistent: the device key's id matches the registered id — no
+        // notice, no state change.
         let key = fresh_device_key(7);
         let id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
         let (_rt, mut app) = identity_test_app(&id, key);
         assert!(!app.identity_mismatch());
-        app.check_identity_recovery();
+        app.passive_identity_mismatch_notice();
+        assert!(app.settings.notice.is_none());
         assert_eq!(app.identity_recovery, IdentityRecovery::None);
 
-        // Mismatch: a fresh seed under the OLD registered id.
+        // Mismatch: a fresh seed under the OLD registered id. Startup only
+        // surfaces a passive notice pointing at Settings — no
+        // IdentityRecovery state, no token read, no re-registration.
         let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(
             app.identity_mismatch(),
             "fresh key must not match the old registration"
         );
-        // No registration-token file (scratch env): detection flags the
-        // mismatch and surfaces the one-tap prompt instead of auto-running.
-        app.check_identity_recovery();
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        app.passive_identity_mismatch_notice();
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
         assert!(
             app.settings
                 .notice
                 .as_ref()
                 .unwrap()
                 .1
-                .contains("registration token"),
-            "the prompt must explain the missing token: {:?}",
+                .contains("Settings → DEVICE & GRANTS"),
+            "the passive notice must point at Settings: {:?}",
             app.settings.notice
         );
-        assert!(!app.try_start_recovery(), "no token -> no auto-recovery");
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        assert!(
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("no automatic re-registration"),
+            "the passive notice must state no automatic re-registration: {:?}",
+            app.settings.notice
+        );
+        assert!(
+            !app.try_start_recovery(),
+            "startup must never auto-start recovery"
+        );
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(
+            app.settings.grant_admin.pending_restore.is_none(),
+            "no recovery was queued"
+        );
     }
 
     #[test]
-    fn identity_detection_kicks_auto_recovery_when_the_token_exists() {
+    fn startup_never_auto_recovers_even_when_registration_token_exists() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3633,75 +3718,210 @@ mod tests {
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
         let (rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(app.identity_mismatch());
-        app.check_identity_recovery();
-        // The token exists, so the recovery started (InFlight) — re-register
-        // is queued on the app runtime. Drive the current-thread runtime while
-        // draining the apply channel: the daemon at 127.0.0.1:1 refuses
-        // immediately, and the failure leg returns the banner to the
-        // retryable state.
-        assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
-        rt.block_on(async {
-            let deadline = Instant::now() + std::time::Duration::from_secs(10);
-            while app.identity_recovery == IdentityRecovery::InFlight && Instant::now() < deadline {
-                while let Ok(msg) = app.rx_apply.try_recv() {
-                    app.on_apply(msg);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        });
+        // The token EXISTS, yet startup must NOT auto-recover: recovery is
+        // user-initiated in the Settings block only.
+        app.passive_identity_mismatch_notice();
         assert_eq!(
             app.identity_recovery,
-            IdentityRecovery::Mismatch,
-            "a failed register must leave the banner retryable: {:?}",
-            app.toasts
+            IdentityRecovery::None,
+            "startup must not enter the recovery state machine even with a token present"
         );
         assert!(
             app.settings.grant_admin.pending_restore.is_none(),
-            "the captured restore set must be released on the failure leg"
+            "no restore set may be captured at startup"
+        );
+        // Drive the runtime briefly: no register may have been dispatched.
+        rt.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(app.settings.notice.as_ref().unwrap().1.contains("Settings"));
+    }
+
+    /// #310 (blocker): no workspace-wide identity banner exists; recovery
+    /// guidance lives only inside the Settings recovery block. The banner surface
+    /// and its one-tap action must not be reachable outside Settings.
+    #[test]
+    fn no_workspace_identity_banner_outside_settings() {
+        // Split needles so the assertion's own literals can never match.
+        let banner_fn = format!("fn {banner}", banner = "identity_recovery_banner");
+        let one_tap = format!("Re-register {plus} grant", plus = "+");
+        let source = include_str!("app.rs");
+        assert!(
+            !source.contains(&banner_fn),
+            "the workspace banner function must be gone"
+        );
+        assert!(
+            !source.contains(&one_tap),
+            "the one-tap banner action must be gone"
         );
     }
 
+    /// #310 r3 (blocker 3): recovery state is identity-generation scoped and
+    /// self-clearing. A current-generation refusal sets the latch + notice; a
+    /// current-generation success clears BOTH without deleting unrelated
+    /// notices; a stale-generation refusal or success arriving after a
+    /// rotation is ignored for current recovery state.
     #[test]
-    fn identity_banner_renders_one_tap_recovery_and_resolves_state() {
-        let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
-        app.identity_recovery = IdentityRecovery::Mismatch;
-        let ctx = egui::Context::default();
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 900.0),
-                )),
-                ..Default::default()
+    fn recovery_state_is_identity_generation_scoped_and_self_clearing() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+        let epoch = app.identity_generation;
+        let bad_signature = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: generation,
+        };
+        let ok = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Ok {
+                rev: 1,
+                result: Some(serde_json::json!({ "lines": [] })),
             },
-            |ui| identity_recovery_banner(ui, &mut app),
-        );
-        fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {
-            match shape {
-                egui::epaint::Shape::Text(shape) => {
-                    text.push_str(shape.galley.text());
-                    text.push('\n');
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        rendered_text(shape, text);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut text = String::new();
-        for clipped in &output.shapes {
-            rendered_text(&clipped.shape, &mut text);
-        }
-        output.textures_delta.clear();
+            identity_generation: generation,
+        };
+
+        // 1) Current-generation bad_signature refusal -> latch + notice.
+        app.on_drive(bad_signature(epoch));
+        assert!(app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_some());
         assert!(
-            text.contains("Re-register + grant"),
-            "one-tap action: {text}"
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("Settings → DEVICE & GRANTS"),
+            "recovery guidance must be persisted: {:?}",
+            app.settings.notice
+        );
+
+        // 2) Current-generation success clears BOTH and leaves an unrelated
+        // notice intact.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+        app.on_drive(ok(epoch));
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "the persisted recovery guidance must be cleared"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().unwrap().1,
+            "unrelated notice",
+            "unrelated notices must survive a recovery-clearing success"
+        );
+
+        // 3) Rotation: a successful (re)registration opens a new generation.
+        let gen_before = app.identity_generation;
+        app.handle_register_result(Ok(("dev_new".to_string(), vec!["read_tail".to_string()])));
+        assert_eq!(
+            app.identity_generation,
+            gen_before.wrapping_add(1),
+            "every successful registration must bump the identity generation"
+        );
+        let old_gen = gen_before;
+
+        // A stale-generation refusal after rotation must NOT set current
+        // recovery state.
+        app.on_drive(bad_signature(old_gen));
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // A stale-generation success must NOT clear current recovery state.
+        app.settings.grant_admin.bad_signature = true;
+        app.settings.grant_admin.recovery_notice = Some("recovery".into());
+        app.on_drive(ok(old_gen));
+        assert!(
+            app.settings.grant_admin.bad_signature,
+            "a stale-generation success must not clear the current latch"
         );
         assert!(
-            text.contains("Device identity changed (#249)"),
-            "banner copy: {text}"
+            app.settings.grant_admin.recovery_notice.is_some(),
+            "a stale-generation success must not clear current recovery guidance"
+        );
+    }
+
+    /// #310 r4: the refusal branch had a SECOND, unguarded re-registration
+    /// guidance writer on `settings.notice`. A stale-generation refusal
+    /// arriving after key rotation therefore planted permanent
+    /// Restore/Re-register guidance for the healthy current key — guidance
+    /// no current-generation success or re-registration could reliably
+    /// clear (it never owned `recovery_notice`). Regression: after
+    /// rotation, a stale old-generation refusal that suggests
+    /// re-registration must leave BOTH recovery state and `settings.notice`
+    /// untouched, while an unrelated notice survives.
+    #[test]
+    fn stale_generation_refusal_never_plants_re_registration_guidance() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+
+        // Rotate the identity/generation WITHOUT any stale refusal pending:
+        // after a successful registration the current key is healthy and no
+        // recovery state exists.
+        let old_generation = app.identity_generation;
+        app.handle_register_result(Ok((
+            "dev_rotated".to_string(),
+            vec!["read_tail".to_string()],
+        )));
+        assert_ne!(app.identity_generation, old_generation);
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // An unrelated notice must survive this scenario untouched.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+
+        // A stale old-generation refusal that suggests re-registration.
+        app.on_drive(DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: old_generation,
+        });
+
+        // The stale refusal must not plant ANY recovery guidance.
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "a stale-generation refusal must not set owned recovery guidance"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().map(|(_, text)| text.as_str()),
+            Some("unrelated notice"),
+            "a stale-generation refusal must not write Restore/Re-register guidance into settings.notice"
         );
     }
 
@@ -4498,6 +4718,7 @@ mod tests {
                     "lines": ["older line one", "older line two"]
                 })),
             },
+            identity_generation: 0,
         };
 
         CorralApp::apply_read_tail_result(&mut fleet, &msg);

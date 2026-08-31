@@ -515,7 +515,13 @@ impl WebCorralApp {
                     },
                     read_only: true,
                 };
-                board::show(ui, &mut self.fleet, &allowed, &mut actions);
+                board::show(
+                    ui,
+                    &mut self.fleet,
+                    crate::state::CompletedMode::Collapsed,
+                    &allowed,
+                    &mut actions,
+                );
             }
             Tab::Issues => {
                 let mut refresh_requested = false;

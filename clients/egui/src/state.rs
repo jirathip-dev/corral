@@ -33,12 +33,59 @@ pub struct PersistedConfig {
     pub auto_reconnect: Option<bool>,
     #[serde(default)]
     pub group_by_repo: Option<bool>,
+    /// Legacy (pre-#310): `true` = CompletedMode::Collapsed, `false` =
+    /// CompletedMode::Show. Kept for forward-compatible migration; new
+    /// writes set it alongside `completed_mode`.
     #[serde(default)]
     pub show_idle_collapsed: Option<bool>,
+    /// #310 tri-state Completed agents mode. Supersedes
+    /// `show_idle_collapsed`.
+    #[serde(default)]
+    pub completed_mode: Option<CompletedMode>,
     #[serde(default)]
     pub stick_to_bottom: Option<bool>,
     #[serde(default)]
     pub theme: Option<String>,
+}
+
+/// How the board treats completed (idle / done / unknown) agents (#310).
+/// Persisted as lowercase JSON (`"hide"` / `"collapsed"` / `"show"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletedMode {
+    /// Hide completed agents entirely.
+    Hide,
+    /// Fold completed agents into one collapsed section.
+    #[default]
+    Collapsed,
+    /// Show completed agents inline like any other row.
+    Show,
+}
+
+impl CompletedMode {
+    /// Human label for the Settings segmented control and header salts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hide => "Hide",
+            Self::Collapsed => "Collapsed",
+            Self::Show => "Show",
+        }
+    }
+
+    /// Legacy boolean mapping (pre-#310 `show_idle_collapsed`).
+    pub fn from_legacy_show_idle_collapsed(collapsed: bool) -> Self {
+        if collapsed {
+            Self::Collapsed
+        } else {
+            Self::Show
+        }
+    }
+
+    /// Legacy boolean for older readers: Hide and Collapsed both fold
+    /// completed rows, so both map to `true`.
+    pub fn legacy_show_idle_collapsed(self) -> bool {
+        !matches!(self, Self::Show)
+    }
 }
 
 /// One drive action in flight (UI-side bookkeeping only — the actual
@@ -418,6 +465,10 @@ pub struct DriveMsg {
     pub agent_id: String,
     pub capability: String,
     pub outcome: DriveOutcome,
+    /// Identity epoch at dispatch time (#310 r3): a drive initiated before
+    /// the current key/registration generation must never set or clear
+    /// current recovery state when its result arrives late.
+    pub identity_generation: u64,
 }
 
 impl DriveMsg {

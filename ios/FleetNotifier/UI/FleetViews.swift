@@ -1550,7 +1550,7 @@ private struct RecentBlockRow: View {
                         agentMessage
                             .accessibilityElement(children: .combine)
                             .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                    case .tool, .system:
+                    case .tool, .system, .unknown:
                         toolMessage
                     }
                 }
@@ -1690,6 +1690,7 @@ private struct RecentBlockRow: View {
         case .agent: return "assistant"
         case .tool: return "tool"
         case .system: return "system"
+        case .unknown: return "terminal"
         }
     }
 
@@ -1699,6 +1700,7 @@ private struct RecentBlockRow: View {
         case .agent: return RecentOutputPalette.ink
         case .tool: return RecentOutputPalette.accent
         case .system: return RecentOutputPalette.muted
+        case .unknown: return RecentOutputPalette.muted
         }
     }
 }

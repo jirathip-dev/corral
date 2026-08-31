@@ -45,12 +45,13 @@ use serde::{Deserialize, Serialize};
 /// Redaction marker reused so block text stays consistent with `lines`.
 pub use crate::core::redact::REDACTED;
 
-/// The four block kinds a client may render (D7). No chat bubbles, no
+/// The block kinds a client may render (D7 + #315). No chat bubbles, no
 /// per-message timestamps — the client renders these with minimal contrast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptBlockKind {
-    /// The operator's prompt / message. Rendered trailing-aligned + tinted.
+    /// The operator's prompt / message, provenance-backed (a recorded
+    /// Corral Prompt dispatch). Rendered trailing-aligned + tinted.
     User,
     /// Model/agent output. Rendered leading-aligned plain.
     Agent,
@@ -61,6 +62,10 @@ pub enum TranscriptBlockKind {
     /// `• Ask Codex to do anything`, box-drawing rules). Dim, mono, collapsible
     /// — never deleted (AC7).
     System,
+    /// #315: terminal text with NO reliable provenance (direct terminal
+    /// input, unrecognised activity). Preserved but never falsely
+    /// attributed — a client must not render it as user/system/assistant.
+    Unknown,
 }
 
 impl TranscriptBlockKind {
@@ -80,7 +85,9 @@ impl TranscriptBlockKind {
 /// One segmented block (D7). `text` is the cleaned, non-hard-wrapped text;
 /// `at` is epoch millis when the source carried one (absent = unlabelled);
 /// `truncated_before` is the count lifted from a `... +N lines` marker that
-/// immediately precedes this block (absent = no marker).
+/// immediately precedes this block (absent = no marker);
+/// `prompt_request_id` (#315) is the signed request id of the recorded
+/// Prompt dispatch this user block is provenance-backed by (absent = none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptBlock {
     pub kind: TranscriptBlockKind,
@@ -89,6 +96,8 @@ pub struct TranscriptBlock {
     pub at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_before: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_request_id: Option<String>,
 }
 
 /// Run all five cleaning passes over a raw string. Exposed so the table-driven
@@ -567,6 +576,221 @@ pub fn segment_lines(lines: &[String], at: Option<u64>) -> Vec<TranscriptBlock> 
     segment_cleaned(&cleaned, None, at)
 }
 
+/// Terminal-shaped lines that are STATUS/SESSION CHROME rather than
+/// conversation content (#315). These describe the runtime session (model
+/// badges, context gauges, state footers, composer hints); they must never
+/// enter the conversation as assistant output. Matching is SHAPE-based on
+/// the line itself — never keyed to a harness, provider, or model name.
+///
+/// #315 R2 (F6): real chrome rows are SHORT single terminal rows whose
+/// model/context/token words LEAD the row (the row's subject IS the
+/// session). Ordinary prose that merely mentions a model or a percentage
+/// ("The model achieved 98% accuracy…") is longer and mid-sentence, and
+/// must not be demoted.
+const SESSION_CHROME_MAX_LEN: usize = 80;
+
+fn is_session_chrome(line: &str) -> bool {
+    // Long prose is never chrome, whatever it mentions.
+    if line.chars().count() > SESSION_CHROME_MAX_LEN {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    let bare = lower.trim_start();
+    // "status: working · esc to interrupt" footers and esc/menu hints
+    // (short rows only — the length guard above already ran).
+    let is_status_footer =
+        lower.starts_with("status:") || bare.starts_with("esc to") || bare.starts_with("(esc");
+    // Gauge rows LEAD with the session subject: "model context 42%",
+    // "context left 12k", "tokens in flight". Prose like "the model
+    // achieved 98% accuracy" mentions a model mid-sentence and stays
+    // conversation.
+    let leads_with_session_subject =
+        bare.starts_with("model") || bare.starts_with("context") || bare.starts_with("tokens");
+    let shows_a_gauge = lower.contains('%') || lower.contains("tokens") || lower.contains(" left");
+    (leads_with_session_subject && shows_a_gauge) || is_status_footer
+}
+
+/// #315: build the CANONICAL semantic block stream for a read window.
+///
+/// Provenance-first, in order:
+/// 1. A line that is a STRUCTURALLY ELIGIBLE echo of a successfully
+///    dispatched Corral Prompt for this exact target (matched by content
+///    identity — the ledger stores only a hash + length) IS the operator's
+///    message: emitted exactly once as a `user` block carrying
+///    `prompt_request_id`, regardless of the echo's terminal shape (`›`,
+///    `>` prefixes, decorations). #315 R2: eligibility requires a
+///    typed-input echo — a decoration-prefixed line (`› hello`) or a
+///    standalone line equal to the recorded text — so machine output that
+///    merely EQUALS an old prompt (`yes`, `ok`) is never promoted. Binding
+///    is one-to-one per read over an immutable ledger snapshot, oldest
+///    event first, with the window bounded by this read's line count:
+///    one event backs at most one echo (exactly-once), repeated identical
+///    prompts keep their own request ids, and repeated reads stay stable
+///    (the ledger is never consumed).
+/// 2. Session chrome (status footers, model/context gauges) is demoted to
+///    `system` so runtime metadata never poses as assistant conversation.
+/// 3. Everything else keeps the existing mechanical segmentation, except
+///    that raw-pane User guesses (`>`-prefix heuristics) are retired: a
+///    `>`-prefixed line with NO recorded provenance is terminal-only
+///    content of unknown origin (`unknown`), never a guessed human message.
+///
+/// `lines` is the same redacted, bounded tail the wire already serves;
+/// redaction order (D9-before-segmentation) and all bounds (D5) are
+/// untouched — this only re-shapes the block view additively.
+pub fn canonical_blocks(
+    lines: &[String],
+    provenance: &crate::core::provenance::PromptProvenance,
+    target: &str,
+    at: Option<u64>,
+) -> Vec<TranscriptBlock> {
+    let joined = lines.join("\n");
+    let cleaned = clean(&joined);
+    // Which CLEANED lines are eligible typed-input echoes: the echoed text
+    // (decoration-stripped) is what the ledger compares by content
+    // identity. #315 R2: eligibility is STRUCTURAL — the line must carry a
+    // typed-input decoration (`›`, `>`, `❯`, …) that was actually
+    // stripped, i.e. it must LOOK like submitted input. An undecorated
+    // line is never a candidate, so machine output that happens to equal a
+    // recorded prompt (`yes`, `ok`, `continue`) can never be promoted to
+    // `user` under any ledger state. Matching per cleaned line keeps echo
+    // routing aligned with the segmentation input. Single-line echoes
+    // cover the Corral composers (single-line editors on both clients); a
+    // multi-line prompt simply does not dedupe (its echo stays unknown) —
+    // never mis-attributed.
+    let eligible: Vec<Option<String>> = cleaned
+        .split('\n')
+        .map(|line| {
+            let candidate = line.trim();
+            if candidate.is_empty() {
+                return None;
+            }
+            let bare = strip_typed_input_prefix(candidate);
+            (bare.len() < candidate.len()).then(|| bare.to_string())
+        })
+        .collect();
+    // The read window is the read itself: at most one binding per eligible
+    // echo slot, one-to-one against the ledger's oldest events.
+    let echoed: Vec<Option<crate::core::provenance::PromptEvent>> =
+        provenance.bind_echoes(target, &eligible, eligible.len());
+    segment_canonical(&cleaned, &echoed, at)
+}
+
+/// Strip a typed-input decoration prefix (`›`, `>`, `❯`, `$ `, `!`) so a
+/// terminal echo compares equal to the recorded prompt text.
+fn strip_typed_input_prefix(line: &str) -> &str {
+    let mut current = line.trim_start();
+    for prefix in ["›", ">", "❯", "❮", "🞈"] {
+        if let Some(rest) = current.strip_prefix(prefix) {
+            current = rest.trim_start();
+        }
+    }
+    current
+}
+
+/// The #315 canonical segmentation: identical mechanical cleaning to
+/// [`segment_cleaned`], but line kinds come from recorded Prompt provenance
+/// and shape classification that never guesses an unprovenanced human.
+fn segment_canonical(
+    cleaned: &str,
+    echoed: &[Option<crate::core::provenance::PromptEvent>],
+    at: Option<u64>,
+) -> Vec<TranscriptBlock> {
+    let mut blocks: Vec<TranscriptBlock> = Vec::new();
+    let mut pending_truncated: Option<u32> = None;
+    // (kind, lines, provenance request_id)
+    let mut current: Option<(TranscriptBlockKind, Vec<String>, Option<String>)> = None;
+
+    let flush = |blocks: &mut Vec<TranscriptBlock>,
+                 current: &mut Option<(TranscriptBlockKind, Vec<String>, Option<String>)>,
+                 at: Option<u64>,
+                 truncated: &mut Option<u32>| {
+        if let Some((kind, lines, prompt_id)) = current.take() {
+            let block = TranscriptBlock {
+                kind,
+                text: lines.join("\n"),
+                at,
+                truncated_before: *truncated,
+                prompt_request_id: prompt_id,
+            };
+            *truncated = None;
+            if block.text.is_empty() {
+                return;
+            }
+            blocks.push(block);
+        }
+    };
+
+    for (line_index, line) in cleaned.split('\n').enumerate() {
+        let source_echo = echoed.get(line_index).cloned().flatten();
+        if line.is_empty() {
+            flush(&mut blocks, &mut current, at, &mut pending_truncated);
+            continue;
+        }
+        if let Some(n) = parse_truncation_marker(line) {
+            flush(&mut blocks, &mut current, at, &mut pending_truncated);
+            pending_truncated =
+                pending_truncated.map_or(Some(n), |existing| Some(existing.saturating_add(n)));
+            continue;
+        }
+
+        let kind = if source_echo.is_some() {
+            TranscriptBlockKind::User
+        } else if is_session_chrome(line) {
+            TranscriptBlockKind::System
+        } else {
+            let t = line.trim_start();
+            if is_system_artifact(t) {
+                TranscriptBlockKind::System
+            } else if is_tool_line(t) {
+                TranscriptBlockKind::Tool
+            } else if t.starts_with('>') {
+                // #315: a `>`-prefixed line with NO recorded provenance is
+                // terminal-only content of unknown origin — never guessed
+                // as the operator's message.
+                TranscriptBlockKind::Unknown
+            } else if is_tool_output(line, current.as_ref().map(|(k, _, _)| *k)) {
+                TranscriptBlockKind::Tool
+            } else {
+                // #315: ordinary terminal output has no role provenance —
+                // it stays unknown rather than being asserted as model
+                // output (the issue's "unrecognized lines fall through to
+                // Agent" defect).
+                TranscriptBlockKind::Unknown
+            }
+        };
+        // A provenance-backed user block carries the DISPATCHED text (the
+        // authoritative message), not the terminal's echo decoration, and
+        // the signed request id for audit.
+        let text = if source_echo.is_some() {
+            strip_typed_input_prefix(line.trim()).to_string()
+        } else {
+            line.to_string()
+        };
+        let prompt_id = source_echo.map(|event| event.request_id);
+
+        match &mut current {
+            Some((cur_kind, _, cur_prompt)) if *cur_kind == kind && *cur_prompt == prompt_id => {
+                let (_, lines, _) = current.as_mut().expect("matched arm");
+                lines.push(text);
+            }
+            _ => {
+                flush(&mut blocks, &mut current, at, &mut pending_truncated);
+                current = Some((kind, vec![text], prompt_id));
+            }
+        }
+    }
+    flush(&mut blocks, &mut current, at, &mut pending_truncated);
+
+    if let Some(n) = pending_truncated
+        && let Some(last) = blocks.last_mut()
+    {
+        last.truncated_before = last
+            .truncated_before
+            .map_or(Some(n), |e| Some(e.saturating_add(n)));
+    }
+    blocks
+}
+
 /// The shared segmenter over a cleaned string.
 fn segment_cleaned(
     cleaned: &str,
@@ -588,6 +812,7 @@ fn segment_cleaned(
                 text: lines.join("\n"),
                 at,
                 truncated_before: *truncated,
+                prompt_request_id: None,
             };
             // A marker with no following text should still surface as a
             // divider datum on the block it precedes; if there is nothing
@@ -969,5 +1194,166 @@ mod tests {
                 "block {i} leaked a ctrl+t marker"
             );
         }
+    }
+
+    // ---- #315 R2: session-chrome shape guards (F6) ----
+
+    #[test]
+    fn ordinary_prose_with_percent_or_model_words_stays_out_of_system() {
+        // Ordinary conversation prose that happens to mention model/context
+        // + a percent must NOT be demoted to session chrome.
+        for line in [
+            "The model achieved 98% accuracy on the benchmark.",
+            "In this context 40% of requests were cached.",
+            "The model answers with 95% confidence, then retries.",
+        ] {
+            let blocks = canonical_blocks(
+                &[line.to_string()],
+                &crate::core::provenance::PromptProvenance::new(),
+                "t",
+                None,
+            );
+            assert_ne!(
+                kinds(&blocks),
+                vec![TranscriptBlockKind::System],
+                "ordinary prose demoted to system: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_session_gauge_rows_stay_system() {
+        // The REAL structured gauge/footer shapes: short rows whose
+        // model/context words are the SESSION SUBJECT (leading), not
+        // prose about a model.
+        for line in [
+            "model context 42% · tokens in flight",
+            "context left 12k",
+            "Model: opus · context 42%",
+        ] {
+            let blocks = canonical_blocks(
+                &[line.to_string()],
+                &crate::core::provenance::PromptProvenance::new(),
+                "t",
+                None,
+            );
+            assert_eq!(
+                kinds(&blocks),
+                vec![TranscriptBlockKind::System],
+                "real gauge row must stay system: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn esc_footer_hints_stay_system_only_in_short_rows() {
+        // Real footer hint (short row) stays system...
+        let blocks = canonical_blocks(
+            &["status: working · esc to interrupt".to_string()],
+            &crate::core::provenance::PromptProvenance::new(),
+            "t",
+            None,
+        );
+        assert_eq!(kinds(&blocks), vec![TranscriptBlockKind::System]);
+        // ...while long prose that merely mentions esc is NOT demoted.
+        let prose = "The wizard said to press esc to cancel the spell, then the \
+                     model answered at length about the remaining context left in the buffer.";
+        let blocks = canonical_blocks(
+            &[prose.to_string()],
+            &crate::core::provenance::PromptProvenance::new(),
+            "t",
+            None,
+        );
+        assert_ne!(
+            kinds(&blocks),
+            vec![TranscriptBlockKind::System],
+            "long prose mentioning esc demoted to system"
+        );
+    }
+
+    // ---- #315 R2: typed-input echo eligibility + window (F1/F2/F3) ----
+
+    fn prov_with(events: &[(&str, &str)]) -> crate::core::provenance::PromptProvenance {
+        let prov = crate::core::provenance::PromptProvenance::new();
+        for (i, (rid, text)) in events.iter().enumerate() {
+            prov.record(crate::core::provenance::PromptEvent::new(
+                rid, "t", text, i as u64,
+            ));
+        }
+        prov
+    }
+
+    #[test]
+    fn decorated_echo_binds_once_and_extra_echoes_stay_unknown() {
+        // One event, transcript echo + duplicate composer echo: exactly one
+        // eligible echo binds (one user block), the extra stays unknown.
+        let prov = prov_with(&[("req-9", "ship it")]);
+        let blocks = canonical_blocks(
+            &[
+                "> ship it".into(),
+                "".into(),
+                "Working on it.".into(),
+                "".into(),
+                "› ship it".into(),
+            ],
+            &prov,
+            "t",
+            None,
+        );
+        let users: Vec<&TranscriptBlock> = blocks
+            .iter()
+            .filter(|b| b.kind == TranscriptBlockKind::User)
+            .collect();
+        assert_eq!(users.len(), 1, "exactly one user block: {blocks:#?}");
+        assert_eq!(users[0].prompt_request_id.as_deref(), Some("req-9"));
+        assert_eq!(users[0].text, "ship it");
+    }
+
+    #[test]
+    fn repeated_identical_prompts_bind_in_ledger_order() {
+        let prov = prov_with(&[("req-A", "continue"), ("req-B", "continue")]);
+        let blocks = canonical_blocks(
+            &["> continue".into(), "".into(), "> continue".into()],
+            &prov,
+            "t",
+            None,
+        );
+        let ids: Vec<Option<&str>> = blocks
+            .iter()
+            .filter(|b| b.kind == TranscriptBlockKind::User)
+            .map(|b| b.prompt_request_id.as_deref())
+            .collect();
+        assert_eq!(ids, vec![Some("req-A"), Some("req-B")]);
+    }
+
+    #[test]
+    fn unprefixed_line_never_binds_even_when_text_matches() {
+        // No typed-input decoration → not an eligible echo, even though the
+        // text equals a recorded prompt (the false-attribution guard).
+        let prov = prov_with(&[("req-old", "yes")]);
+        let blocks = canonical_blocks(&["yes".into(), "".into(), "done".into()], &prov, "t", None);
+        assert!(
+            blocks.iter().all(|b| b.kind != TranscriptBlockKind::User),
+            "unprefixed match promoted to user: {blocks:#?}"
+        );
+    }
+
+    #[test]
+    fn undecorated_line_is_never_an_echo_candidate() {
+        // #315 R2 strict rule: eligibility is STRUCTURAL (a typed-input
+        // decoration must be present), so an undecorated line is never a
+        // candidate — even when it equals the recorded prompt and nothing
+        // else in the pane could claim the binding.
+        let prov = prov_with(&[("req-1", "ship the canonical transcript stream")]);
+        let blocks = canonical_blocks(
+            &["ship the canonical transcript stream".into()],
+            &prov,
+            "t",
+            None,
+        );
+        assert!(
+            blocks.iter().all(|b| b.kind != TranscriptBlockKind::User),
+            "undecorated line promoted to user: {blocks:#?}"
+        );
     }
 }

@@ -397,6 +397,7 @@ fn harness() -> Harness {
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
         issues: issues.clone(),
+        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
         cors_origins: Vec::new(),
     });
     Harness {
@@ -776,11 +777,13 @@ async fn read_tail_result_carries_lines_and_audits_executed() {
     assert_eq!(value["ok"], true);
     assert_eq!(value["result"]["lines"], json!(["line one", "line two"]));
     // #167: blocks ride ADDITIVELY alongside lines. The two agent lines have
-    // no blank separator, so they merge into ONE agent block (raw pane text
-    // has no role hint; the block renderer is the dumb consumer).
+    // no blank separator, so they merge into ONE block (raw pane text has no
+    // role hint; the block renderer is the dumb consumer). #315: with no
+    // recorded Prompt provenance the merged block is `unknown` — raw pane
+    // text is never asserted to be model output.
     assert_eq!(
         value["result"]["blocks"],
-        json!([{ "kind": "agent", "text": "line one\nline two" }]),
+        json!([{ "kind": "unknown", "text": "line one\nline two" }]),
         "read_tail must serve segmented blocks alongside lines"
     );
     let rev = h.store.snapshot().await.rev;

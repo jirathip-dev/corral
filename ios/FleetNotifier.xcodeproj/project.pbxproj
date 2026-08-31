@@ -26,6 +26,7 @@
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
 		C886615F9AD8FA9BF1D80944 /* DestructivePatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */; };
+		D91B2ED1CB3A4A0C607BB72C /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */; };
 		E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5544FDC9B954FE32A7275A43 /* StateStyle.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
 		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
@@ -60,6 +61,7 @@
 		77E397B25B007445181A67AA /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
+		9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestructivePatterns.swift; sourceTree = "<group>"; };
 		AA1B824D203FC54632815108 /* PushPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPayload.swift; sourceTree = "<group>"; };
 		AC7C4F4D9245391F122670D6 /* Biometrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Biometrics.swift; sourceTree = "<group>"; };
@@ -102,6 +104,7 @@
 			children = (
 				7D8334B18E7321E5C5F850E4 /* FleetNotifier */,
 				19046018A86CD11555F070AF /* FleetNotifierTests */,
+				8F5D4BD44556FA11EAE87D0C /* g315-transcript-provenance */,
 				ACC02147A1A8360BA16C8448 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -118,6 +121,14 @@
 				49D01A23F02B422A1C580729 /* TimeInState.swift */,
 			);
 			path = UI;
+			sourceTree = "<group>";
+		};
+		3D98A0F15DD91BB531FD9AAF /* tests */ = {
+			isa = PBXGroup;
+			children = (
+				9DCDE4E2AD0CAC72876C0B28 /* fixtures */,
+			);
+			path = tests;
 			sourceTree = "<group>";
 		};
 		3FDDF36D414905797E00EC32 /* Security */ = {
@@ -171,6 +182,23 @@
 			path = FleetNotifier;
 			sourceTree = "<group>";
 		};
+		8F5D4BD44556FA11EAE87D0C /* g315-transcript-provenance */ = {
+			isa = PBXGroup;
+			children = (
+				3D98A0F15DD91BB531FD9AAF /* tests */,
+			);
+			name = "g315-transcript-provenance";
+			path = ..;
+			sourceTree = "<group>";
+		};
+		9DCDE4E2AD0CAC72876C0B28 /* fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */,
+			);
+			path = fixtures;
+			sourceTree = "<group>";
+		};
 		ACC02147A1A8360BA16C8448 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -217,6 +245,7 @@
 			buildConfigurationList = F65A5933BF9ECD17FFF304B5 /* Build configuration list for PBXNativeTarget "FleetNotifierTests" */;
 			buildPhases = (
 				CD07E81D7D06EFC41C0B9D7D /* Sources */,
+				C4342336193F6893893C8C61 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -294,6 +323,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				21CE07E2350DAFAF99DDC395 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C4342336193F6893893C8C61 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D91B2ED1CB3A4A0C607BB72C /* canonical_stream_golden.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

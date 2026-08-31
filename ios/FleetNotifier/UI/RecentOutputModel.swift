@@ -398,21 +398,17 @@ enum RecentOutputModel {
 
     private static func tailBlocks(from pane: TailPane) -> [TranscriptBlock] {
         if !pane.blocks.isEmpty {
+            // #315: the daemon's canonical blocks are the ONLY semantic
+            // source — kinds and order pass through untouched.
             return pane.blocks
         }
+        // #315: legacy daemon fallback (raw tail lines, no canonical
+        // stream). The old client-side role reclassification
+        // (`›`/`user:`/`$` shape guesses) is REMOVED — lines without
+        // provenance render as unknown terminal content, attributed to
+        // nobody.
         return pane.lines.map { line in
-            TranscriptBlock(kind: kind(for: line), text: line)
-        }
-    }
-
-    private static func kind(for role: String) -> TranscriptBlockKind {
-        switch role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "user", "you", "prompt":
-            return .user
-        case "tool", "system", "command":
-            return .tool
-        default:
-            return .agent
+            TranscriptBlock(kind: .unknown, text: line)
         }
     }
 
@@ -510,11 +506,19 @@ extension RecentOutputRender {
         case .agent: return "Agent: \(block.text)"
         case .tool: return "Tool: \(block.text)"
         case .system: return "System: \(block.text)"
+        // #315: unprovenanced terminal content is named honestly, never
+        // assigned a conversation role.
+        case .unknown: return "Terminal: \(block.text)"
         }
     }
 
     static func disclosureAccessibilityLabel(_ block: TranscriptBlock) -> String {
-        let role = block.kind == .system ? "System" : "Tool"
+        let role: String
+        switch block.kind {
+        case .system: role = "System"
+        case .unknown: role = "Terminal"
+        default: role = "Tool"
+        }
         return "\(role): \(toolSummary(block.text))"
     }
 

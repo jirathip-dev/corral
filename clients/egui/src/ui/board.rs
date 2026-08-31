@@ -199,6 +199,7 @@ pub struct BoardActions<'a> {
 pub fn show(
     ui: &mut Ui,
     fleet: &mut Fleet,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -217,7 +218,7 @@ pub fn show(
     // state migration or a test harness restores an older value.
     let mut view = BoardView::Cards;
     let mut flat = false;
-    show_cards(ui, fleet, &mut view, &mut flat, allowed, actions)
+    show_cards(ui, fleet, &mut view, &mut flat, completed, allowed, actions)
 }
 
 /// Persistent sidebar state helpers are intentionally tiny; every query
@@ -498,6 +499,7 @@ fn show_cards(
     fleet: &mut Fleet,
     view: &mut BoardView,
     flat: &mut bool,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -506,7 +508,7 @@ fn show_cards(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_size(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
-            show_cards_surface(ui, fleet, view, flat, allowed, actions)
+            show_cards_surface(ui, fleet, view, flat, completed, allowed, actions)
         })
         .inner
 }
@@ -516,6 +518,7 @@ fn show_cards_surface(
     fleet: &mut Fleet,
     view: &mut BoardView,
     flat: &mut bool,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -563,7 +566,9 @@ fn show_cards_surface(
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: Hide removes completed agents from selection/detail here too.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let mut clicked = None;
     if visible.is_empty() {
         empty_pane_message(&mut left_ui, &query);
@@ -573,6 +578,7 @@ fn show_cards_surface(
             fleet,
             &visible,
             *flat,
+            completed,
             selected.as_deref(),
             now_millis(),
         );
@@ -605,7 +611,7 @@ pub fn show_master(
     ui: &mut Ui,
     fleet: &mut Fleet,
     group_by_repo: bool,
-    show_idle_collapsed: bool,
+    completed: crate::state::CompletedMode,
 ) -> Option<String> {
     let mut query = search_query(ui.ctx());
     let mut filter = state_filter(ui.ctx());
@@ -613,18 +619,16 @@ pub fn show_master(
     let mut grouped = false;
     toolbar(ui, fleet, &mut cards, &mut grouped, &mut query, &mut filter);
     ui.add_space(2.0);
-    ui.ctx().memory_mut(|memory| {
-        memory.data.insert_temp(
-            egui::Id::new("corral-ui-show-idle-collapsed"),
-            show_idle_collapsed,
-        );
-    });
     let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
         .into_iter()
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: selection resolution must respect Completed mode — Hide removes
+    // completed agents from selection/detail entirely, so a hidden
+    // completed agent can never drive the detail pane.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let clicked = if visible.is_empty() {
         empty_pane_message(ui, &query);
         None
@@ -634,6 +638,7 @@ pub fn show_master(
             fleet,
             &visible,
             !group_by_repo,
+            completed,
             selected.as_deref(),
             now_millis(),
         )
@@ -642,6 +647,26 @@ pub fn show_master(
         fleet.select_agent(id);
     }
     clicked.or(selected)
+}
+
+/// #310: agent IDs that remain selectable under the Completed mode. Hide
+/// removes completed agents from selection/detail entirely; Collapsed and
+/// Show keep them (Collapsed renders them folded inside their group, so a
+/// completed agent is reachable through its group's folded section).
+fn selectable_agent_ids<'a>(
+    fleet: &Fleet,
+    visible: &[&'a str],
+    completed: crate::state::CompletedMode,
+) -> Vec<&'a str> {
+    if completed == crate::state::CompletedMode::Hide {
+        visible
+            .iter()
+            .copied()
+            .filter(|id| !is_completed_agent(fleet, id))
+            .collect()
+    } else {
+        visible.to_vec()
+    }
 }
 
 pub fn show_board_detail_with_options(
@@ -691,6 +716,7 @@ fn master_list(
     fleet: &Fleet,
     visible: &[&str],
     flat: bool,
+    completed: crate::state::CompletedMode,
     selected: Option<&str>,
     now_ms: u64,
 ) -> Option<String> {
@@ -702,28 +728,52 @@ fn master_list(
             let width = ui.available_width();
             master_column_header(ui, width);
             if flat {
-                for section in state_sections(visible, fleet) {
-                    if section.state == crate::theme::AgentStateLike::Blocked {
-                        // A blocked section is only emitted when it has rows;
-                        // this is the zero-state rule's important boundary.
-                        state_section_header(ui, section.state, section.agent_ids.len());
+                if completed == crate::state::CompletedMode::Collapsed {
+                    // #310 r3: flat-list Collapsed keeps BOTH the Idle and
+                    // the distinct Done sections out of the expanded inline
+                    // list and exposes a single approved "Idle / done (N)"
+                    // collapsed affordance. Blocked/Working render inline.
+                    let mut completed_ids: Vec<&str> = Vec::new();
+                    for section in state_sections(visible, fleet) {
+                        match section.state {
+                            crate::theme::AgentStateLike::Idle
+                            | crate::theme::AgentStateLike::Done => {
+                                completed_ids.extend(section.agent_ids.iter().copied());
+                            }
+                            _ => {
+                                if section.state == crate::theme::AgentStateLike::Blocked {
+                                    // A blocked section is only emitted when
+                                    // it has rows; this is the zero-state
+                                    // rule's important boundary.
+                                    state_section_header(
+                                        ui,
+                                        section.state,
+                                        section.agent_ids.len(),
+                                    );
+                                }
+                                for id in &section.agent_ids {
+                                    if let Some(id) =
+                                        master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                    {
+                                        clicked = Some(id);
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if section.state == crate::theme::AgentStateLike::Idle {
-                        let count = section.agent_ids.len();
+                    if !completed_ids.is_empty() {
                         CollapsingHeader::new(
-                            RichText::new(format!("Idle / done ({count}) — expandable"))
-                                .small()
-                                .color(theme::ui::TEXT_MUTED),
+                            RichText::new(format!(
+                                "Idle / done ({}) — expandable",
+                                completed_ids.len()
+                            ))
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
                         )
-                        .id_salt("corral-ui-idle-done")
-                        .default_open(!ui.ctx().memory(|memory| {
-                            memory
-                                .data
-                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
-                                .unwrap_or(true)
-                        }))
+                        .id_salt(("corral-ui-idle-done", completed.label()))
+                        .default_open(false)
                         .show_unindented(ui, |ui| {
-                            for id in &section.agent_ids {
+                            for id in &completed_ids {
                                 if let Some(id) =
                                     master_card(ui, fleet, id, selected == Some(id), now_ms)
                                 {
@@ -731,11 +781,42 @@ fn master_list(
                                 }
                             }
                         });
-                        continue;
                     }
-                    for id in &section.agent_ids {
-                        if let Some(id) = master_card(ui, fleet, id, selected == Some(id), now_ms) {
-                            clicked = Some(id);
+                } else {
+                    for section in state_sections(visible, fleet) {
+                        if completed == crate::state::CompletedMode::Hide
+                            && matches!(
+                                section.state,
+                                crate::theme::AgentStateLike::Idle
+                                    | crate::theme::AgentStateLike::Done
+                            )
+                        {
+                            // #310 Hide: completed agents vanish entirely.
+                            continue;
+                        }
+                        if section.state == crate::theme::AgentStateLike::Blocked {
+                            // A blocked section is only emitted when it has rows;
+                            // this is the zero-state rule's important boundary.
+                            state_section_header(ui, section.state, section.agent_ids.len());
+                        }
+                        if section.state == crate::theme::AgentStateLike::Idle {
+                            // #310 Show (Hide already skipped): completed
+                            // rows render inline like any other row.
+                            for id in &section.agent_ids {
+                                if let Some(id) =
+                                    master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                {
+                                    clicked = Some(id);
+                                }
+                            }
+                            continue;
+                        }
+                        for id in &section.agent_ids {
+                            if let Some(id) =
+                                master_card(ui, fleet, id, selected == Some(id), now_ms)
+                            {
+                                clicked = Some(id);
+                            }
                         }
                     }
                 }
@@ -746,43 +827,100 @@ fn master_list(
                         continue;
                     }
                     let title = group.repo.unwrap_or(NO_REPO_LABEL);
-                    let idle_only = group.agent_ids.iter().all(|id| {
-                        matches!(
-                            fleet.agents.get(*id).map(|agent| agent.state.into()),
-                            Some(crate::theme::AgentStateLike::Idle)
-                                | Some(crate::theme::AgentStateLike::Unknown)
-                                | Some(crate::theme::AgentStateLike::Done)
-                        )
-                    });
-                    CollapsingHeader::new(
-                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
-                            .monospace()
-                            .color(theme::ui::TEXT_STRONG),
-                    )
-                    .id_salt(("corral-ui-repo-group", title))
-                    .default_open(if idle_only {
-                        !ui.ctx().memory(|memory| {
-                            memory
-                                .data
-                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
-                                .unwrap_or(true)
-                        })
-                    } else {
-                        true
-                    })
-                    .show_unindented(ui, |ui| {
-                        for id in &group.agent_ids {
+                    // #310: split each group into active and completed so a
+                    // repo with one working agent never floods with done rows.
+                    let (active, done): (Vec<&str>, Vec<&str>) = group
+                        .agent_ids
+                        .iter()
+                        .partition(|id| !is_completed_agent(fleet, id));
+                    if completed == crate::state::CompletedMode::Hide {
+                        if active.is_empty() {
+                            continue;
+                        }
+                        for id in &active {
                             if let Some(id) =
                                 master_card(ui, fleet, id, selected == Some(id), now_ms)
                             {
                                 clicked = Some(id);
                             }
                         }
+                        continue;
+                    }
+                    if completed == crate::state::CompletedMode::Show {
+                        CollapsingHeader::new(
+                            RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                                .monospace()
+                                .color(theme::ui::TEXT_STRONG),
+                        )
+                        .id_salt(("corral-ui-repo-group", title, completed.label()))
+                        .default_open(true)
+                        .show_unindented(ui, |ui| {
+                            for id in &group.agent_ids {
+                                if let Some(id) =
+                                    master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                {
+                                    clicked = Some(id);
+                                }
+                            }
+                        });
+                        continue;
+                    }
+                    // Collapsed: fold completed rows; keep working rows open.
+                    CollapsingHeader::new(
+                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                            .monospace()
+                            .color(theme::ui::TEXT_STRONG),
+                    )
+                    .id_salt(("corral-ui-repo-group", title, completed.label()))
+                    // Open whenever a working row exists; only an
+                    // all-completed group starts folded.
+                    .default_open(!active.is_empty())
+                    .show_unindented(ui, |ui| {
+                        for id in &active {
+                            if let Some(id) =
+                                master_card(ui, fleet, id, selected == Some(id), now_ms)
+                            {
+                                clicked = Some(id);
+                            }
+                        }
+                        if !done.is_empty() {
+                            CollapsingHeader::new(
+                                RichText::new(format!("Done ({})", done.len()))
+                                    .small()
+                                    .color(theme::ui::TEXT_MUTED),
+                            )
+                            .id_salt(("corral-ui-repo-done", title, completed.label()))
+                            .default_open(false)
+                            .show_unindented(ui, |ui| {
+                                for id in &done {
+                                    if let Some(id) =
+                                        master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                    {
+                                        clicked = Some(id);
+                                    }
+                                }
+                            });
+                        }
                     });
                 }
             }
         });
     clicked
+}
+
+/// #310: a completed agent is one in the Idle / Done / Unknown states
+/// (the same classification the flat `state_sections` folds under Idle).
+fn is_completed_agent(fleet: &Fleet, id: &str) -> bool {
+    let Some(agent) = fleet.agents.get(id) else {
+        return false;
+    };
+    let state: crate::theme::AgentStateLike = agent.state.into();
+    matches!(
+        state,
+        crate::theme::AgentStateLike::Idle
+            | crate::theme::AgentStateLike::Done
+            | crate::theme::AgentStateLike::Unknown
+    )
 }
 
 fn master_column_header(ui: &mut Ui, width: f32) {
@@ -3627,6 +3765,7 @@ mod tests {
                     &fleet,
                     &[agent.agent_id.as_str()],
                     true,
+                    crate::state::CompletedMode::Collapsed,
                     None,
                     now + elapsed_ms,
                     input,
@@ -3735,6 +3874,7 @@ mod tests {
             &fleet,
             &visible,
             true,
+            crate::state::CompletedMode::Collapsed,
             None,
             now_millis(),
             row_test_input(vec![]),
@@ -3748,6 +3888,271 @@ mod tests {
             "idle tail renders as one collapsed expandable section"
         );
         clear_textures(&mut output);
+    }
+
+    /// Build a mixed repo group: one working agent + one done agent in the
+    /// same repo, both visible (the #310 flood scenario).
+    fn mixed_repo_fleet() -> (egui::Context, Fleet, Vec<&'static str>) {
+        let ctx = row_test_context();
+        let mut working = agent_in_repo("herdr:working", Some("corral"));
+        working.state = crate::model::AgentState::Working;
+        working.display_name = Some("working card".into());
+        let mut done = agent_in_repo("herdr:done", Some("corral"));
+        done.state = crate::model::AgentState::Done;
+        done.display_name = Some("done card".into());
+        let mut fleet = Fleet::default();
+        fleet
+            .agents
+            .insert(working.agent_id.clone(), working.clone());
+        fleet.agents.insert(done.agent_id.clone(), done.clone());
+        (ctx, fleet, vec!["herdr:working", "herdr:done"])
+    }
+
+    fn rendered_master_text(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        visible: &[&str],
+        completed: crate::state::CompletedMode,
+    ) -> String {
+        let (_, mut output) = master_list_frame(
+            ctx,
+            fleet,
+            visible,
+            false,
+            completed,
+            None,
+            now_millis(),
+            row_test_input(vec![]),
+        );
+        fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(shape) => {
+                    text.push_str(shape.galley.text());
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut text);
+        }
+        clear_textures(&mut output);
+        text
+    }
+
+    /// #310 Hide: done agents vanish entirely from a mixed repo group —
+    /// one active agent never has to scroll past done rows.
+    #[test]
+    fn completed_hide_omits_done_agents_in_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(text.contains("working card"));
+        assert!(!text.contains("done card"));
+        assert!(!text.contains("Done ("));
+    }
+
+    /// #310 Collapsed: the working row stays open while done rows fold into
+    /// one collapsed "Done (N)" sub-header inside the mixed repo group.
+    #[test]
+    fn completed_collapsed_folds_done_rows_inside_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(text.contains("working card"));
+        assert!(text.contains("Done (1)"), "folded sub-header renders");
+        assert!(
+            !text.contains("done card"),
+            "the folded rows must not render while collapsed"
+        );
+    }
+
+    /// #310 Show: completed rows render inline like any other row.
+    #[test]
+    fn completed_show_renders_done_rows_inline_in_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(text.contains("working card"));
+        assert!(text.contains("done card"));
+        assert!(!text.contains("Done ("), "Show mode has no fold header");
+    }
+
+    /// #310: the tri-state applies immediately — switching the mode on the
+    /// same context flips the grouped rendering on the very next frame (the
+    /// mode-keyed header salts prevent stale remembered open/closed state).
+    #[test]
+    fn completed_mode_applies_immediately_in_grouped_mode() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let collapsed = rendered_master_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(collapsed.contains("working card"));
+        assert!(!collapsed.contains("done card"));
+        let shown = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(
+            shown.contains("done card"),
+            "mode switch to Show must unfold on the next frame"
+        );
+        let hidden =
+            rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(
+            !hidden.contains("done card"),
+            "mode switch to Hide must drop the completed row on the next frame"
+        );
+    }
+
+    /// Run the PRODUCTION selection path (show_master, not master_list):
+    /// returns the resolved detail-pane selection for the given mode.
+    fn show_master_selection(
+        ctx: &egui::Context,
+        fleet: &mut Fleet,
+        completed: crate::state::CompletedMode,
+    ) -> Option<String> {
+        let mut selection = None;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            selection = show_master(ui, fleet, true, completed);
+        });
+        output.textures_delta.clear();
+        selection
+    }
+
+    /// #310 (blocker): Hide removes completed agents from selection/detail
+    /// resolution — a previously selected done agent must fall back to the
+    /// active agent instead of driving the detail pane from a hidden row.
+    #[test]
+    fn completed_hide_removes_hidden_completed_agent_from_selection_resolution() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Hide);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:working"),
+            "Hide must not keep a hidden completed agent as the detail selection"
+        );
+    }
+
+    /// #310 (blocker): Collapsed keeps completed agents selectable through
+    /// their group, and Show keeps them selectable inline.
+    #[test]
+    fn completed_collapsed_and_show_keep_completed_agents_selectable() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected =
+            show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Collapsed);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Collapsed renders the done agent folded inside its group, so it stays selectable"
+        );
+
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Show);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Show renders completed agents inline, so they stay selectable"
+        );
+    }
+
+    /// #310 r3 (blocker 2): flat-list Collapsed must keep DONE rows out of
+    /// the expanded inline list — a distinct Done section may not fall
+    /// through to inline rendering. The approved collapsed affordance
+    /// carries the combined Idle/Done count.
+    #[test]
+    fn completed_collapsed_folds_done_rows_in_flat_mode() {
+        fn flat_text(
+            ctx: &egui::Context,
+            fleet: &Fleet,
+            visible: &[&str],
+            completed: crate::state::CompletedMode,
+        ) -> String {
+            let (_, mut output) = master_list_frame(
+                ctx,
+                fleet,
+                visible,
+                true,
+                completed,
+                None,
+                now_millis(),
+                row_test_input(vec![]),
+            );
+            fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+                match shape {
+                    egui::epaint::Shape::Text(shape) => {
+                        text.push_str(shape.galley.text());
+                        text.push('\n');
+                    }
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = String::new();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut text);
+            }
+            output.textures_delta.clear();
+            text
+        }
+
+        let ctx = row_test_context();
+        let mut working = agent_in_repo("herdr:working", None);
+        working.state = crate::model::AgentState::Working;
+        working.display_name = Some("working card".into());
+        let mut done = agent_in_repo("herdr:done", None);
+        done.state = crate::model::AgentState::Done;
+        done.display_name = Some("done card".into());
+        let mut fleet = Fleet::default();
+        fleet
+            .agents
+            .insert(working.agent_id.clone(), working.clone());
+        fleet.agents.insert(done.agent_id.clone(), done.clone());
+        let visible = ["herdr:working", "herdr:done"];
+
+        // Collapsed: the done card must NOT render inline; the combined
+        // collapsed affordance and the active card do.
+        let collapsed = flat_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(collapsed.contains("working card"));
+        assert!(
+            collapsed.contains("Idle / done (1) — expandable"),
+            "the approved collapsed affordance must carry the done count: {collapsed}"
+        );
+        assert!(
+            !collapsed.contains("done card"),
+            "flat Collapsed must not render done rows inline: {collapsed}"
+        );
+
+        // Show: done renders inline and no collapsed affordance exists.
+        let shown = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(shown.contains("done card"));
+        assert!(!shown.contains("Idle / done ("));
+
+        // Hide: done vanishes entirely.
+        let hidden = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(!hidden.contains("done card"));
+        assert!(!hidden.contains("Idle / done ("));
     }
 
     #[test]
@@ -4185,7 +4590,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(text_rect(&output, "All").is_some());
         assert!(
@@ -4217,7 +4628,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(text_rect(&output, "All").is_some());
         assert!(text_rect(&output, "Recent output").is_some());
@@ -4247,7 +4664,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(
             text_rect(&output, "Recent output").is_some(),
@@ -5074,11 +5497,13 @@ mod tests {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn master_list_frame(
         ctx: &egui::Context,
         fleet: &Fleet,
         visible: &[&str],
         flat: bool,
+        completed: crate::state::CompletedMode,
         selected: Option<&str>,
         now_ms: u64,
         input: egui::RawInput,
@@ -5088,7 +5513,7 @@ mod tests {
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
             ui.set_max_width(width);
-            clicked = master_list(ui, fleet, visible, flat, selected, now_ms);
+            clicked = master_list(ui, fleet, visible, flat, completed, selected, now_ms);
         });
         (clicked, output)
     }

@@ -1191,7 +1191,13 @@ fn device_detail(
     // a fresh key directly. Only a real current-key rejection, a missing
     // admin token, a revoked device, or an in-flight mutation pauses
     // editing, and each disabled state names its precise reason.
-    let caps_enabled = admin_token_configured && !busy && !device.revoked && !state.bad_signature;
+    let caps_enabled = caps_editable(
+        admin_token_configured,
+        busy,
+        device.revoked,
+        state.bad_signature,
+        state.reregistered,
+    );
     if let Some(lock) = edit_lock(
         admin_token_configured,
         busy,
@@ -1350,6 +1356,23 @@ fn edit_lock(
     } else {
         None
     }
+}
+
+/// The REAL capability-toggle enable predicate used by `device_detail`
+/// (#310). `reregistered` is deliberately NOT a lock: an admin-authorized
+/// owner edits a fresh key directly. The parameter is accepted (and
+/// ignored) so the production call site passes the live state and a
+/// regression test can prove the old `&& !reregistered` defect would
+/// strand a fresh key's toggles disabled.
+fn caps_editable(
+    admin_token_configured: bool,
+    busy: bool,
+    revoked: bool,
+    bad_signature: bool,
+    reregistered: bool,
+) -> bool {
+    let _ = reregistered;
+    admin_token_configured && !busy && !revoked && !bad_signature
 }
 
 fn edit_lock_reason(lock: EditLock) -> &'static str {
@@ -1866,14 +1889,29 @@ mod tests {
 
     /// #310: after a re-register the fresh key stays directly editable for
     /// an admin-authorized owner and the Restore strip renders above
-    /// capabilities — `reregistered` is never a lock.
+    /// capabilities — `reregistered` is never a lock. Asserts the REAL
+    /// enable predicate (`caps_editable`, the exact fn `device_detail`
+    /// uses) so the old `&& !reregistered` defect strands a fresh key's
+    /// toggles and this test goes RED.
     #[test]
     fn reregistered_fresh_key_stays_editable_and_restore_sits_before_capabilities() {
-        assert_eq!(edit_lock(true, false, false, false), None);
-        assert_eq!(
-            edit_lock(true, false, false, true),
-            Some(EditLock::BadSignature)
+        // The production enable predicate: admin-authorized fresh key with
+        // `reregistered = true` stays editable; the old defect (an extra
+        // `&& !reregistered`) must make this assertion fail.
+        assert!(
+            caps_editable(true, false, false, false, true),
+            "a fresh reregistered key stays editable for an admin-authorized owner"
         );
+        assert!(
+            caps_editable(true, false, false, false, false),
+            "an ordinary healthy key is editable"
+        );
+        // A real rejection or missing admin token still locks editing,
+        // regardless of reregistered state.
+        assert!(!caps_editable(false, false, false, false, true));
+        assert!(!caps_editable(true, false, false, true, true));
+        assert!(!caps_editable(true, true, false, false, true));
+        assert!(!caps_editable(true, false, true, false, true));
 
         let ctx = egui::Context::default();
         let mut settings = SettingsState::default();

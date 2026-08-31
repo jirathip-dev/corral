@@ -566,7 +566,9 @@ fn show_cards_surface(
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: Hide removes completed agents from selection/detail here too.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let mut clicked = None;
     if visible.is_empty() {
         empty_pane_message(&mut left_ui, &query);
@@ -622,7 +624,11 @@ pub fn show_master(
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: selection resolution must respect Completed mode — Hide removes
+    // completed agents from selection/detail entirely, so a hidden
+    // completed agent can never drive the detail pane.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let clicked = if visible.is_empty() {
         empty_pane_message(ui, &query);
         None
@@ -641,6 +647,26 @@ pub fn show_master(
         fleet.select_agent(id);
     }
     clicked.or(selected)
+}
+
+/// #310: agent IDs that remain selectable under the Completed mode. Hide
+/// removes completed agents from selection/detail entirely; Collapsed and
+/// Show keep them (Collapsed renders them folded inside their group, so a
+/// completed agent is reachable through its group's folded section).
+fn selectable_agent_ids<'a>(
+    fleet: &Fleet,
+    visible: &[&'a str],
+    completed: crate::state::CompletedMode,
+) -> Vec<&'a str> {
+    if completed == crate::state::CompletedMode::Hide {
+        visible
+            .iter()
+            .copied()
+            .filter(|id| !is_completed_agent(fleet, id))
+            .collect()
+    } else {
+        visible.to_vec()
+    }
 }
 
 pub fn show_board_detail_with_options(
@@ -3947,6 +3973,61 @@ mod tests {
         assert!(
             !hidden.contains("done card"),
             "mode switch to Hide must drop the completed row on the next frame"
+        );
+    }
+
+    /// Run the PRODUCTION selection path (show_master, not master_list):
+    /// returns the resolved detail-pane selection for the given mode.
+    fn show_master_selection(
+        ctx: &egui::Context,
+        fleet: &mut Fleet,
+        completed: crate::state::CompletedMode,
+    ) -> Option<String> {
+        let mut selection = None;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            selection = show_master(ui, fleet, true, completed);
+        });
+        output.textures_delta.clear();
+        selection
+    }
+
+    /// #310 (blocker): Hide removes completed agents from selection/detail
+    /// resolution — a previously selected done agent must fall back to the
+    /// active agent instead of driving the detail pane from a hidden row.
+    #[test]
+    fn completed_hide_removes_hidden_completed_agent_from_selection_resolution() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Hide);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:working"),
+            "Hide must not keep a hidden completed agent as the detail selection"
+        );
+    }
+
+    /// #310 (blocker): Collapsed keeps completed agents selectable through
+    /// their group, and Show keeps them selectable inline.
+    #[test]
+    fn completed_collapsed_and_show_keep_completed_agents_selectable() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected =
+            show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Collapsed);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Collapsed renders the done agent folded inside its group, so it stays selectable"
+        );
+
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Show);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Show renders completed agents inline, so they stay selectable"
         );
     }
 

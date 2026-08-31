@@ -42,10 +42,10 @@ enum Tab {
 /// the previous grant set through the host-admin token — zero manual
 /// keychain surgery. States:
 ///
-/// - `None` — identity consistent (steady state, no banner).
-/// - `Mismatch` — detected; recovery requested or still needed (banner
-///   with the one-tap "Re-register + grant" action).
-/// - `InFlight` — re-register / grant restore running (banner spinner).
+/// - `None` — identity consistent (steady state).
+/// - `Mismatch` — recovery needed; only ever set by the USER-initiated
+///   Settings recovery block (Restore saved identity), never at startup.
+/// - `InFlight` — the user-initiated re-register / grant restore is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityRecovery {
     None,
@@ -1427,16 +1427,21 @@ impl CorralApp {
                 .or_else(crate::keys::read_daemon_admin_token);
             self.settings.admin_token_input = admin_token.unwrap_or_default();
         }
-        self.check_identity_recovery();
+        // #310: startup never mutates identity and never auto-re-registers.
+        // A local key-ID mismatch gets a passive notice pointing at
+        // Settings; the recovery block there renders only after an actual
+        // server-side bad_signature rejection.
+        self.passive_identity_mismatch_notice();
     }
 
     // -------------------------------------------------------------------
-    // #249 identity recovery: detect a device key that no longer matches
-    // the registered key_id (rebuild/reinstall wiped or replaced the key
-    // material while config.json kept the old record), then either
-    // auto-recover through the registration token + host-admin token, or
-    // surface the one-tap prompt. Signing is never weakened: there is no
-    // unsigned fallback and no grant path beyond the existing
+    // #249/#310 identity recovery: detect a device key that no longer
+    // matches the registered key_id (rebuild/reinstall wiped or replaced
+    // the key material while config.json kept the old record). Recovery is
+    // USER-INITIATED only: the Settings recovery block renders after an
+    // actual server-side bad_signature rejection, and its Restore /
+    // Re-register actions drive `try_start_recovery` / `register`. There is
+    // no unsigned fallback and no grant path beyond the existing
     // registration-token / admin-token mechanisms.
     // -------------------------------------------------------------------
 
@@ -1452,32 +1457,20 @@ impl CorralApp {
         current != reg.key_id
     }
 
-    /// Detect a mismatch, fail loud once, then start recovery when the
-    /// registration token is available (localhost: same machine, same
-    /// user). Kept idempotent so the startup call and the first
-    /// bad_signature refusal cannot double-fire.
-    fn check_identity_recovery(&mut self) {
-        if self.identity_recovery != IdentityRecovery::None || !self.identity_mismatch() {
+    /// #310: passive, non-mutating notice for a local key-ID mismatch at
+    /// startup. Sets a Settings-visible notice and changes nothing else —
+    /// no IdentityRecovery state, no token read, no re-registration.
+    fn passive_identity_mismatch_notice(&mut self) {
+        if !self.identity_mismatch() {
             return;
         }
-        let reg = self.registration.as_ref().expect("checked above");
-        let current = crate::keys::device_key_id(
-            &self
-                .device_key
-                .as_ref()
-                .expect("checked above")
-                .signing
-                .verifying_key()
-                .to_bytes(),
-        );
-        tracing::warn!(
-            stored_key_id = %reg.key_id,
-            current_key_id = %current,
-            "device identity mismatch (#249): current key differs from the registered key — \
-             restarting the signed drive plane"
-        );
-        self.identity_recovery = IdentityRecovery::Mismatch;
-        let _ = self.try_start_recovery();
+        self.settings.notice = Some((
+            Level::Warn,
+            "Device identity changed: the board's key no longer matches the registered \
+             device. Open Settings → DEVICE & GRANTS to restore or re-register — no \
+             automatic re-registration is performed."
+                .to_string(),
+        ));
     }
 
     /// Re-register the CURRENT key material (never rotates: the fresh key
@@ -1525,7 +1518,7 @@ impl CorralApp {
                             format!(
                                 "device identity changed (#249) — re-register needs the \
                                  registration token: {error}. Paste it in Settings → \
-                                 Devices & Grants, or use the one-tap Re-register + grant."
+                                 DEVICE & GRANTS, then use Restore saved identity."
                             ),
                         ));
                         return false;
@@ -1559,7 +1552,7 @@ impl CorralApp {
         self.restore_grant_set();
     }
 
-    /// A failed recovery leg leaves the banner retryable.
+    /// A failed recovery leg leaves the user-initiated recovery retryable.
     fn mark_recovery_failed(&mut self) {
         if self.identity_recovery == IdentityRecovery::InFlight {
             self.identity_recovery = IdentityRecovery::Mismatch;
@@ -1764,13 +1757,13 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
-                // #249/#310: a bad_signature refusal is the first live
-                // signal that the key material no longer matches the
-                // registered key_id — record the rejection (Settings shows
-                // recovery ONLY after this) and auto-recover when possible.
+                // #249/#310: a bad_signature refusal is the live signal
+                // that the daemon rejected the CURRENT key — record it so
+                // the Settings recovery block renders. Recovery is
+                // user-initiated there (Restore / Re-register); no
+                // automatic re-registration.
                 if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
                     self.settings.grant_admin.bad_signature = true;
-                    self.check_identity_recovery();
                 }
                 if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
                     // A stale tap is a read-model event, not a generic drive
@@ -3003,64 +2996,10 @@ impl Drop for CorralApp {
     }
 }
 
-/// #249 identity-recovery banner — one glance, one tap. `Mismatch` shows
-/// the "Re-register + grant" action (runs the same recovery as the
-/// automatic path: re-register the current key, then re-apply the previous
-/// grant set); `InFlight` shows a spinner. `None` renders nothing.
-fn identity_recovery_banner(ui: &mut egui::Ui, app: &mut CorralApp) {
-    match app.identity_recovery {
-        IdentityRecovery::None => {}
-        IdentityRecovery::InFlight => {
-            egui::Frame::group(ui.style())
-                .fill(theme::ui::PANEL2)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("device identity changed — recovering…")
-                                .color(theme::ui::TEXT_STRONG),
-                        );
-                    });
-                });
-        }
-        IdentityRecovery::Mismatch => {
-            let frame = egui::Frame::group(ui.style())
-                .fill(egui::Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
-                .stroke(egui::Stroke::new(1.0, theme::ui::WARN))
-                .inner_margin(egui::Margin::symmetric(10, 8));
-            frame.show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "Device identity changed (#249): the board's key no longer matches \
-                             the registered device, so signed drives are refused. Re-register \
-                             the current key and re-apply the drive-plane grants with one tap.",
-                        )
-                        .size(11.0)
-                        .color(theme::ui::WARN),
-                    )
-                    .wrap(),
-                );
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("Re-register + grant").strong())
-                                .fill(theme::ui::ACCENT),
-                        )
-                        .clicked()
-                    {
-                        let _ = app.try_start_recovery();
-                    }
-                    if ui.button("open settings").clicked() {
-                        app.tab = Tab::Settings;
-                    }
-                });
-            });
-        }
-    }
-}
-
+/// #310: no workspace-wide identity banner. Recovery guidance lives ONLY
+/// inside the Settings recovery block, and only after an actual current-key
+/// `bad_signature` rejection; a local fingerprint mismatch at startup is a
+/// passive Settings notice, never a mutation or a re-registration prompt.
 fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     let available = ui.available_size();
     let (workspace_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
@@ -3109,7 +3048,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     );
     tab_strip(&mut right_ui, &mut app.tab);
     right_ui.separator();
-    identity_recovery_banner(&mut right_ui, app);
 
     match app.tab {
         Tab::Board => {
@@ -3500,15 +3438,17 @@ mod tests {
         }
     }
 
-    /// #249 auto-recovery through the APP'S REAL WIRING, end to end: the
-    /// startup hook (`apply_fingerprint`) detects the key-vs-registration
-    /// mismatch, auto-kicks the recovery, the re-register and the grant
-    /// restore go through the real account, and the board finishes in the
-    /// recovered state — then a signed read_tail executes. Same journey as
-    /// the (wire-only) `tests/identity_recovery.rs` e2e, but driven through
-    /// `CorralApp` itself against a real axum router on loopback.
+    /// #310: the USER-INITIATED recovery through the APP'S REAL WIRING,
+    /// end to end. Startup (`apply_fingerprint`) detects the key-vs-
+    /// registration mismatch but must NOT auto-recover — the user then
+    /// triggers Restore saved identity (the Settings recovery block's
+    /// action), the re-register and the grant restore go through the real
+    /// account, and the board finishes in the recovered state — then a
+    /// signed read_tail executes. Same journey as the (wire-only)
+    /// `tests/identity_recovery.rs` e2e, but driven through `CorralApp`
+    /// itself against a real axum router on loopback.
     #[test]
-    fn identity_auto_recovery_completes_through_the_app_wiring() {
+    fn user_initiated_identity_recovery_completes_through_the_app_wiring() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3568,9 +3508,29 @@ mod tests {
                 denied: vec![],
             };
 
-            // Start the board: the startup hook detects the mismatch and
-            // auto-recovers in one pass.
+            // Start the board: the startup hook detects the mismatch but
+            // must NOT mutate identity or auto-recover — it only surfaces a
+            // passive notice pointing at Settings.
             app.apply_fingerprint(fingerprint.clone());
+            assert_eq!(
+                app.identity_recovery,
+                IdentityRecovery::None,
+                "startup must not auto-start recovery"
+            );
+            assert!(
+                app.settings
+                    .notice
+                    .as_ref()
+                    .map(|(_, text)| text.contains("Settings"))
+                    .unwrap_or(false),
+                "startup surfaces a passive notice pointing at Settings"
+            );
+
+            // The user triggers the Settings recovery block's "Restore
+            // saved identity" (Request::RecoverIdentity): arm Mismatch and
+            // run the same recovery the request handler runs.
+            app.identity_recovery = IdentityRecovery::Mismatch;
+            assert!(app.try_start_recovery(), "user-initiated recovery starts");
             assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
 
             let deadline = Instant::now() + std::time::Duration::from_secs(15);
@@ -3626,7 +3586,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_detection_ignores_consistent_keys_but_flags_mismatch() {
+    fn startup_identity_mismatch_surfaces_passive_notice_without_mutating_identity() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3643,40 +3603,59 @@ mod tests {
         );
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
 
-        // Consistent: the device key's id matches the registered id.
+        // Consistent: the device key's id matches the registered id — no
+        // notice, no state change.
         let key = fresh_device_key(7);
         let id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
         let (_rt, mut app) = identity_test_app(&id, key);
         assert!(!app.identity_mismatch());
-        app.check_identity_recovery();
+        app.passive_identity_mismatch_notice();
+        assert!(app.settings.notice.is_none());
         assert_eq!(app.identity_recovery, IdentityRecovery::None);
 
-        // Mismatch: a fresh seed under the OLD registered id.
+        // Mismatch: a fresh seed under the OLD registered id. Startup only
+        // surfaces a passive notice pointing at Settings — no
+        // IdentityRecovery state, no token read, no re-registration.
         let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(
             app.identity_mismatch(),
             "fresh key must not match the old registration"
         );
-        // No registration-token file (scratch env): detection flags the
-        // mismatch and surfaces the one-tap prompt instead of auto-running.
-        app.check_identity_recovery();
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        app.passive_identity_mismatch_notice();
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
         assert!(
             app.settings
                 .notice
                 .as_ref()
                 .unwrap()
                 .1
-                .contains("registration token"),
-            "the prompt must explain the missing token: {:?}",
+                .contains("Settings → DEVICE & GRANTS"),
+            "the passive notice must point at Settings: {:?}",
             app.settings.notice
         );
-        assert!(!app.try_start_recovery(), "no token -> no auto-recovery");
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        assert!(
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("no automatic re-registration"),
+            "the passive notice must state no automatic re-registration: {:?}",
+            app.settings.notice
+        );
+        assert!(
+            !app.try_start_recovery(),
+            "startup must never auto-start recovery"
+        );
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(
+            app.settings.grant_admin.pending_restore.is_none(),
+            "no recovery was queued"
+        );
     }
 
     #[test]
-    fn identity_detection_kicks_auto_recovery_when_the_token_exists() {
+    fn startup_never_auto_recovers_even_when_registration_token_exists() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3692,75 +3671,42 @@ mod tests {
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
         let (rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(app.identity_mismatch());
-        app.check_identity_recovery();
-        // The token exists, so the recovery started (InFlight) — re-register
-        // is queued on the app runtime. Drive the current-thread runtime while
-        // draining the apply channel: the daemon at 127.0.0.1:1 refuses
-        // immediately, and the failure leg returns the banner to the
-        // retryable state.
-        assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
-        rt.block_on(async {
-            let deadline = Instant::now() + std::time::Duration::from_secs(10);
-            while app.identity_recovery == IdentityRecovery::InFlight && Instant::now() < deadline {
-                while let Ok(msg) = app.rx_apply.try_recv() {
-                    app.on_apply(msg);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        });
+        // The token EXISTS, yet startup must NOT auto-recover: recovery is
+        // user-initiated in the Settings block only.
+        app.passive_identity_mismatch_notice();
         assert_eq!(
             app.identity_recovery,
-            IdentityRecovery::Mismatch,
-            "a failed register must leave the banner retryable: {:?}",
-            app.toasts
+            IdentityRecovery::None,
+            "startup must not enter the recovery state machine even with a token present"
         );
         assert!(
             app.settings.grant_admin.pending_restore.is_none(),
-            "the captured restore set must be released on the failure leg"
+            "no restore set may be captured at startup"
         );
+        // Drive the runtime briefly: no register may have been dispatched.
+        rt.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(app.settings.notice.as_ref().unwrap().1.contains("Settings"));
     }
 
+    /// #310: no workspace-wide identity banner exists; recovery guidance
+    /// lives only inside the Settings recovery block. The banner surface
+    /// and its one-tap action must not be reachable outside Settings.
     #[test]
-    fn identity_banner_renders_one_tap_recovery_and_resolves_state() {
-        let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
-        app.identity_recovery = IdentityRecovery::Mismatch;
-        let ctx = egui::Context::default();
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 900.0),
-                )),
-                ..Default::default()
-            },
-            |ui| identity_recovery_banner(ui, &mut app),
-        );
-        fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {
-            match shape {
-                egui::epaint::Shape::Text(shape) => {
-                    text.push_str(shape.galley.text());
-                    text.push('\n');
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        rendered_text(shape, text);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut text = String::new();
-        for clipped in &output.shapes {
-            rendered_text(&clipped.shape, &mut text);
-        }
-        output.textures_delta.clear();
+    fn no_workspace_identity_banner_outside_settings() {
+        // Split needles so the assertion's own literals can never match.
+        let banner_fn = format!("fn {banner}", banner = "identity_recovery_banner");
+        let one_tap = format!("Re-register {plus} grant", plus = "+");
+        let source = include_str!("app.rs");
         assert!(
-            text.contains("Re-register + grant"),
-            "one-tap action: {text}"
+            !source.contains(&banner_fn),
+            "the workspace banner function must be gone"
         );
         assert!(
-            text.contains("Device identity changed (#249)"),
-            "banner copy: {text}"
+            !source.contains(&one_tap),
+            "the one-tap banner action must be gone"
         );
     }
 

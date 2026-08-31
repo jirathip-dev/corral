@@ -60,6 +60,11 @@ const TAB_LABELS: [(&str, Tab); 3] = [
 ];
 const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// #314: minimum spacing between automatic visible-agent Recent-output
+/// refreshes. The refresh rides the existing frame cadence and this
+/// cooldown paces it (no per-frame busy loop, no background task).
+const RECENT_OUTPUT_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+
 const SCREENSHOT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
 const SCREENSHOT_MAX_ATTEMPTS: u8 = 3;
 const SCREENSHOT_WAKE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1065,6 +1070,10 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     issues_last_refresh: std::time::Instant,
+    /// #314: when the visible-agent Recent-output refresh last dispatched.
+    /// `None` until the first paced refresh fires (the initial hydration is
+    /// `hydrate_recent_output`'s job, not this pacing gate's).
+    recent_output_last_refresh: Option<std::time::Instant>,
 
     // Tabs.
     tab: Tab,
@@ -1189,6 +1198,8 @@ impl CorralApp {
             // Permit the first Issues visit to fetch immediately; every
             // subsequent attempt records its start time, including errors.
             issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
+            // #314: the paced visible-agent refresh has not fired yet.
+            recent_output_last_refresh: None,
 
             tab: tab_from_env(),
             screenshot_path,
@@ -1730,6 +1741,57 @@ impl CorralApp {
                 DriveIntent::read_tail_since(&agent_id, 50, source_rev, self.fleet.rev)
             })
             .unwrap_or_else(|| DriveIntent::read_tail(&agent_id, self.fleet.rev));
+        self.dispatch_drive_intents(vec![intent]);
+    }
+
+    /// #314: pace the visible agent's Recent-output refresh through the
+    /// existing frame cadence. A cached tail is refreshed with a
+    /// revision-aware request carrying that cache's exact `source_rev`
+    /// (single-flight: while a read_tail for the agent is in flight, no
+    /// duplicate is sent; cooldown: the earliest a following refresh can
+    /// fire is [`RECENT_OUTPUT_REFRESH_COOLDOWN`] after the last one).
+    /// Hidden agents are never eligible — `resolved_selection` comes from
+    /// the visible resolver and this method never enumerates the fleet.
+    /// Only the bounded 50-line page is used; `Load earlier` (200/32 KiB)
+    /// remains the separate explicit action in the board.
+    fn refresh_recent_output(&mut self, resolved_selection: Option<&str>) {
+        let Some(agent_id) = hydration_target(&self.fleet, resolved_selection) else {
+            return;
+        };
+        if !self.ledger.allowed("read_tail")
+            || self.registration.is_none()
+            || self.device_key.is_none()
+        {
+            return;
+        }
+        // Single-flight + revision bookkeeping: a cached tail with no
+        // read_tail drive in flight is the only refreshable shape.
+        let Some(source_rev) = self.fleet.recent_output_refresh_candidate(&agent_id) else {
+            return;
+        };
+        // Cooldown pacing: at most one automatic refresh per window. (The
+        // initial hydration is `hydrate_recent_output`'s job and never
+        // touches this gate.)
+        let now = std::time::Instant::now();
+        if self
+            .recent_output_last_refresh
+            .is_some_and(|last| now.duration_since(last) < RECENT_OUTPUT_REFRESH_COOLDOWN)
+        {
+            return;
+        }
+        self.recent_output_last_refresh = Some(now);
+        // R3 (#314): the automatic refresh re-requests the agent's
+        // REMEMBERED tail-window limit, not literal 50 — an explicit
+        // Load earlier must keep its expanded window across refreshes
+        // (including partial responses), while everyone else stays at the
+        // default 50-line page.
+        let lines = self
+            .fleet
+            .tail_requested_lines
+            .get(&agent_id)
+            .copied()
+            .unwrap_or(50);
+        let intent = DriveIntent::read_tail_since(&agent_id, lines, source_rev, self.fleet.rev);
         self.dispatch_drive_intents(vec![intent]);
     }
 
@@ -2699,6 +2761,25 @@ impl CorralApp {
             };
             let agent_id = intent.target.clone();
             let capability = intent.capability.to_string();
+            // R3 (#314): remember the per-agent REQUESTED tail-window limit
+            // when a real read_tail intent is dispatched. Automatic refreshes
+            // later re-request this limit (the explicit Load earlier's 200
+            // survives; the default 50 stays 50). Clamped to the daemon's
+            // existing 1..=200 page bound; values are monotone per agent
+            // (a refresh never shrinks a remembered expansion).
+            if intent.capability == crate::drive::Capability::ReadTail
+                && let Some(lines) = intent.payload["lines"].as_u64()
+            {
+                let lines = lines.clamp(1, 200) as u32;
+                let requested = self
+                    .fleet
+                    .tail_requested_lines
+                    .entry(intent.target.clone())
+                    .or_insert(lines);
+                if lines > *requested {
+                    *requested = lines;
+                }
+            }
             let tx = tx_drive.clone();
             self.fleet.remember_drive(
                 &intent.target,
@@ -3110,6 +3191,10 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
+            // #314: revision-aware visible-agent refresh, paced through the
+            // same frame cadence (initial hydration stays above; this only
+            // ever re-reads an already-cached tail for the visible agent).
+            app.refresh_recent_output(resolved_selection.as_deref());
         }
         Tab::Issues => {
             app.refresh_issues(false);
@@ -3232,6 +3317,7 @@ mod tests {
 
     use super::*;
     use crate::model::{Agent, AgentState, GhIssueRef, Workspace};
+    use crate::state::DriveState;
     use crate::ui::board::{self, StateFilter};
 
     fn agent(id: &str, state: AgentState, capabilities: &[&str]) -> Agent {
@@ -3302,6 +3388,8 @@ mod tests {
             audit: None,
             audit_loading: false,
             issues_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
+            // #314: the paced visible-agent refresh has not fired yet.
+            recent_output_last_refresh: None,
 
             tab: Tab::Issues,
             screenshot_path: None,
@@ -4726,6 +4814,1141 @@ mod tests {
         assert_eq!(
             fleet.tails["herdr:load-earlier"],
             ["older line one", "older line two"]
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #314: revision-aware visible Recent-output refresh.
+    // ------------------------------------------------------------------
+
+    /// Count helper for the #314 tests: how many read_tail drive entries in
+    /// the agent's (newest-first) history are `Sending`. Note the counting
+    /// shape mirrors the production bookkeeping: a COMPLETED request keeps
+    /// its `Sending` entry as history, so freshness is judged newest-first
+    /// in the production helper (`Fleet::recent_output_refresh_candidate`).
+    fn sending_read_tail_drives(fleet: &Fleet, agent_id: &str) -> usize {
+        fleet
+            .recent_drives
+            .get(agent_id)
+            .map(|drives| {
+                drives
+                    .iter()
+                    .filter(|state| {
+                        matches!(
+                            state,
+                            DriveState::Sending { capability, .. } if capability == "read_tail"
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The NEWEST read_tail drive entry for the agent (newest-first deque,
+    /// same semantics as the board's `latest_read_tail_state`).
+    fn newest_read_tail_drive<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
+        fleet.recent_drives.get(agent_id)?.iter().find(|state| {
+            matches!(
+                state,
+                DriveState::Sending { capability, .. }
+                    | DriveState::Ok { capability, .. }
+                    | DriveState::Failed { capability, .. }
+                    if capability == "read_tail"
+            )
+        })
+    }
+
+    /// The #314 regression, end to end through the app's REAL wire layer:
+    /// initial hydration at source_rev A -> the source advances to B -> the
+    /// NEXT paced visible-agent refresh sends a second read_tail carrying
+    /// the cached `source_rev` A, and the result at B replaces the bounded
+    /// cache. Against the old one-shot cache behavior the second request
+    /// never happens and this test REDs.
+    #[test]
+    fn visible_agent_refreshes_recent_output_through_the_real_drive_plane() {
+        let (runtime, mut app) = read_model_test_app();
+
+        // Canned signed-drive plane: records every POST /drive envelope and
+        // answers read_tail with the currently canned lines/source_rev.
+        // Signature verification is the daemon auth plane's job (covered by
+        // the #249 e2e + conformance suite); this fixture pins the CLIENT
+        // refresh contract.
+        let drives = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned_rev = std::sync::Arc::new(Mutex::new(4u64));
+        let canned_lines = std::sync::Arc::new(Mutex::new(vec!["first window A1".to_string()]));
+        let router_drives = drives.clone();
+        let router_canned_rev = canned_rev.clone();
+        let router_canned_lines = canned_lines.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = router_drives.clone();
+            let canned_rev = router_canned_rev.clone();
+            let canned_lines = router_canned_lines.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope);
+                    let rev = *canned_rev.lock().await;
+                    let lines = canned_lines.lock().await.clone();
+                    let response = serde_json::json!({
+                        "request_id": signed["envelope"]["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.config.host_url = format!("http://{address}");
+
+            // Registered device + read_tail grant, consistent key material
+            // (same seeding shape as identity_test_app, without config IO).
+            let key = fresh_device_key(11);
+            let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+            app.registration = Some(RegistrationRecord {
+                host_fingerprint: "deadbeef00000000".into(),
+                key_id,
+                grants: vec!["read_tail".into()],
+                denied: vec![],
+            });
+            app.host_fingerprint = Some("deadbeef00000000".into());
+            app.device_key = Some(key);
+            app.ledger = GrantLedger {
+                base: vec!["read_tail".into()],
+                denied: vec![],
+            };
+
+            // The visible, selected agent.
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)].into_iter().collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+
+            // Frame 1: initial hydration (daemon still at source_rev 4).
+            let visible = board::visible_agent_ids(&app.fleet, StateFilter::All, "");
+            let resolved =
+                board::resolve_selection(&app.fleet, &visible).map(str::to_string);
+            app.hydrate_recent_output(resolved.as_deref());
+            assert_eq!(
+                sending_read_tail_drives(&app.fleet, "herdr:g314"),
+                1,
+                "initial hydration dispatches one read_tail"
+            );
+
+            async fn pump_until(
+                app: &mut CorralApp,
+                cond: impl Fn(&CorralApp) -> bool,
+            ) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if cond(app) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!(
+                    "#314 condition not met before the deadline; drives={:?} source_revs={:?} tails={:?}",
+                    app.fleet.recent_drives.get("herdr:g314"),
+                    app.fleet.tail_source_revs.get("herdr:g314"),
+                    app.fleet.tails.get("herdr:g314"),
+                );
+            }
+
+            pump_until(&mut app, |app| {
+                app.fleet.tails.contains_key("herdr:g314")
+                    && app.fleet.tail_source_revs.get("herdr:g314") == Some(&4)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["first window A1".to_string()]
+            );
+
+            let drives_after_first = drives.lock().await.len();
+            assert_eq!(drives_after_first, 1);
+            let first = drives.lock().await[0].clone();
+            assert_eq!(first["capability"], "read_tail");
+            assert_eq!(first["target"], "herdr:g314");
+            assert_eq!(first["payload"]["kind"], "read_tail");
+            assert_eq!(
+                first["payload"]["lines"], 50,
+                "the initial hydration is the bounded default 50-line page"
+            );
+            assert!(
+                first["payload"].get("since_rev").is_none(),
+                "the initial hydration has no cached source revision yet"
+            );
+
+            // The source advances to source_rev 5 with new output.
+            *canned_rev.lock().await = 5;
+            *canned_lines.lock().await =
+                vec!["newer window B1".to_string(), "newer window B2".to_string()];
+
+            // The first request is fully settled: the newest read_tail drive
+            // entry is its Ok (the Sending→Ok swap already folded in).
+            pump_until(&mut app, |app| {
+                matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                )
+            })
+            .await;
+
+            // Frame 2: the next eligible visible-agent refresh (cooldown
+            // already elapsed by construction — the gate is reset, exactly
+            // what the frame cadence does once the pacing window passes).
+            app.recent_output_last_refresh = None;
+            let visible = board::visible_agent_ids(&app.fleet, StateFilter::All, "");
+            let resolved =
+                board::resolve_selection(&app.fleet, &visible).map(str::to_string);
+            app.refresh_recent_output(resolved.as_deref());
+
+            // The second request is async; wait for it to land on the wire.
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "#314: a cached tail with a cached source_rev must still refresh \
+                 for the visible agent (the one-shot cache never sent this)"
+            );
+            let second = drives.lock().await[1].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the refresh must carry the CACHED source_rev"
+            );
+            assert_eq!(
+                second["payload"]["lines"], 50,
+                "the automatic refresh stays the bounded 50-line page"
+            );
+
+            // The result at source_rev B replaces the bounded cache.
+            pump_until(&mut app, |app| {
+                app.fleet.tail_source_revs.get("herdr:g314") == Some(&5)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["newer window B1".to_string(), "newer window B2".to_string()],
+                "the refreshed window replaces the cached tail"
+            );
+        });
+    }
+
+    /// Structural guard for the highest seam: the production `Tab::Board`
+    /// arm in `workspace()` must keep the exact ordered wiring
+    /// `dispatch_drive_intents` -> `hydrate_recent_output` ->
+    /// `refresh_recent_output`, all fed the SAME `resolved_selection`. The
+    /// slice is comment-stripped per line, so commenting any call out (or
+    /// deleting it) breaks the match; uniqueness means a duplicate call
+    /// elsewhere in the arm cannot satisfy it either. This complements —
+    /// never replaces — the behavioral frame test below.
+    #[test]
+    fn board_arm_keeps_the_ordered_hydration_then_refresh_wiring() {
+        let source = include_str!("app.rs");
+        let board_arm = source
+            .split("Tab::Board => {")
+            .nth(1)
+            .expect("a Tab::Board arm exists in workspace()")
+            .split("Tab::Issues => {")
+            .next()
+            .expect("the Board arm is bounded by the Issues arm")
+            .to_string();
+        let strip_comments = |line: &str| -> String {
+            let code = match line.find("//") {
+                Some(idx) => &line[..idx],
+                None => line,
+            };
+            code.trim().to_string()
+        };
+        let code_lines: Vec<String> = board_arm
+            .lines()
+            .map(strip_comments)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let count_matches = |needle: &str| {
+            code_lines
+                .iter()
+                .filter(|line| line.contains(needle))
+                .count()
+        };
+        let hydrate = "app.hydrate_recent_output(resolved_selection.as_deref())";
+        let refresh = "app.refresh_recent_output(resolved_selection.as_deref())";
+        let dispatch = "app.dispatch_drive_intents(pending)";
+        assert_eq!(
+            count_matches(dispatch),
+            1,
+            "exactly one dispatch_drive_intents in the Board arm"
+        );
+        assert_eq!(
+            count_matches(hydrate),
+            1,
+            "exactly one initial hydration call in the Board arm"
+        );
+        assert_eq!(
+            count_matches(refresh),
+            1,
+            "exactly one (live, uncommented) #314 refresh call in the Board arm"
+        );
+        let hydrate_idx = code_lines
+            .iter()
+            .position(|line| line.contains(hydrate))
+            .expect("hydration call present");
+        let refresh_idx = code_lines
+            .iter()
+            .position(|line| line.contains(refresh))
+            .expect("refresh call present");
+        assert!(
+            hydrate_idx < refresh_idx,
+            "initial hydration must precede the revision-aware refresh"
+        );
+    }
+
+    /// The highest-seam #314 guard: the REAL production Board-frame path
+    /// (`workspace()`'s `Tab::Board` arm, driven headless through an actual
+    /// egui pass) must itself emit the revision-aware refresh. Removing the
+    /// single production call `app.refresh_recent_output(..)` from that arm
+    /// REDs this test — the direct-method tests cannot catch that.
+    #[test]
+    fn board_frame_drives_the_revision_aware_recent_output_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+
+        // Same canned signed-drive plane as the direct-method test: records
+        // every POST /drive envelope, answers with the canned lines/rev.
+        let drives = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned_rev = std::sync::Arc::new(Mutex::new(4u64));
+        let canned_lines = std::sync::Arc::new(Mutex::new(vec!["first window A1".to_string()]));
+        let router_drives = drives.clone();
+        let router_canned_rev = canned_rev.clone();
+        let router_canned_lines = canned_lines.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = router_drives.clone();
+            let canned_rev = router_canned_rev.clone();
+            let canned_lines = router_canned_lines.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope);
+                    let rev = *canned_rev.lock().await;
+                    let lines = canned_lines.lock().await.clone();
+                    let response = serde_json::json!({
+                        "request_id": signed["envelope"]["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.config.host_url = format!("http://{address}");
+
+            let key = fresh_device_key(17);
+            let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+            app.registration = Some(RegistrationRecord {
+                host_fingerprint: "deadbeef00000000".into(),
+                key_id,
+                grants: vec!["read_tail".into()],
+                denied: vec![],
+            });
+            app.host_fingerprint = Some("deadbeef00000000".into());
+            app.device_key = Some(key);
+            app.ledger = GrantLedger {
+                base: vec!["read_tail".into()],
+                denied: vec![],
+            };
+
+            // The visible, selected agent with no cached tail yet.
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)].into_iter().collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            // The production Board arm is the seam under test.
+            app.tab = Tab::Board;
+
+            // One REAL egui pass through the production frame path. The
+            // test is a logic harness, not a renderer: the pass output
+            // (with its texture deltas) is dropped without a painter, as
+            // egui's own docs do for headless callers.
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+
+            async fn pump_drive_results(
+                app: &mut CorralApp,
+                cond: impl Fn(&CorralApp) -> bool,
+            ) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if cond(app) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!(
+                    "#314 frame condition not met before the deadline; drives={:?} source_revs={:?}",
+                    app.fleet.recent_drives.get("herdr:g314"),
+                    app.fleet.tail_source_revs.get("herdr:g314"),
+                );
+            }
+
+            // Frame 1 through the REAL Board arm: pending intents dispatch +
+            // initial hydration (the refresh call is single-flight blocked).
+            board_frame(&mut app, &ctx);
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tails.contains_key("herdr:g314")
+                    && app.fleet.tail_source_revs.get("herdr:g314") == Some(&4)
+            })
+            .await;
+            assert_eq!(
+                drives.lock().await.len(),
+                1,
+                "the Board frame's hydration produced exactly one request"
+            );
+            assert!(
+                drives.lock().await[0]["payload"]
+                    .get("since_rev")
+                    .is_none(),
+                "the frame's initial hydration has no cached source revision yet"
+            );
+
+            // The source advances; the NEXT production Board frame must send
+            // the revision-aware refresh entirely on its own (no direct
+            // method call from this test).
+            *canned_rev.lock().await = 5;
+            *canned_lines.lock().await =
+                vec!["newer window B1".to_string(), "newer window B2".to_string()];
+            pump_drive_results(&mut app, |app| {
+                matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                )
+            })
+            .await;
+
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "#314: the production Board frame itself must drive the \
+                 revision-aware refresh for the visible agent (removing the \
+                 single refresh call in the Tab::Board arm REDs here)"
+            );
+            let second = drives.lock().await[1].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the frame-driven refresh must carry the CACHED source_rev"
+            );
+            assert_eq!(
+                second["payload"]["lines"], 50,
+                "the frame-driven refresh stays the bounded 50-line page"
+            );
+
+            // The result at source_rev B replaces the bounded cache.
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tail_source_revs.get("herdr:g314") == Some(&5)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["newer window B1".to_string(), "newer window B2".to_string()],
+                "the frame-refreshed window replaces the cached tail"
+            );
+
+            // A further real frame with an unchanged source_rev must settle
+            // with no additional request (no immediate loop through the
+            // production cadence either).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "an unchanged source_rev settles through the real frame path \
+                 without an immediate request loop"
+            );
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // #314 R3: the per-agent REQUESTED tail-window limit survives
+    // automatic refreshes (explicit Load earlier expands the window;
+    // a partial 200-line response must still re-request 200).
+    // ------------------------------------------------------------------
+
+    /// Canned read_tail responses keyed by request shape: the default
+    /// 50-line hydration, an explicit 200-line page (the canned
+    /// `expanded_lines` may hold fewer than 200 entries to model a partial
+    /// response), and any revision-aware refresh. Expanded/refresh
+    /// responses are truncated to the REQUESTED line count, modelling the
+    /// daemon: a since_rev window requested at 50 really does come back
+    /// with ~50 lines even when more output exists.
+    struct R3Canned {
+        hydrate_lines: Vec<String>,
+        expanded_lines: Vec<String>,
+    }
+
+    fn r3_router(
+        drives: std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+        canned: std::sync::Arc<Mutex<R3Canned>>,
+    ) -> Router {
+        Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = drives.clone();
+            let canned = canned.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope.clone());
+                    let payload = &envelope["payload"];
+                    let requested_lines = payload["lines"].as_u64().unwrap_or(50);
+                    let canned = canned.lock().await;
+                    let window = |source: &[String]| {
+                        source
+                            .iter()
+                            .take(requested_lines as usize)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    // The expanded page returns the window at the CACHED
+                    // source_rev 4 (the source has not advanced); a
+                    // revision-aware refresh advances it to 5.
+                    let (rev, lines) = if payload.get("since_rev").is_some() {
+                        (5u64, window(&canned.expanded_lines))
+                    } else if requested_lines >= 200 {
+                        (4u64, window(&canned.expanded_lines))
+                    } else {
+                        (4u64, window(&canned.hydrate_lines))
+                    };
+                    let response = serde_json::json!({
+                        "request_id": envelope["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }))
+    }
+
+    /// Registered device + read_tail grant against the canned plane.
+    fn r3_ready_app(app: &mut CorralApp, address: std::net::SocketAddr) {
+        app.config.host_url = format!("http://{address}");
+        let key = fresh_device_key(19);
+        let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id,
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+    }
+
+    /// Count recorded drive envelopes for one target agent.
+    fn r3_count_for(drives: &[serde_json::Value], target: &str) -> usize {
+        drives
+            .iter()
+            .filter(|d| d["target"] == serde_json::json!(target))
+            .count()
+    }
+
+    /// R3 blocker regression through the REAL production Board frame: the
+    /// operator's explicit Load earlier expands the window to 200, and the
+    /// NEXT automatic revision-aware refresh must request the REMEMBERED
+    /// 200 — not literal 50, which would replace the expanded history with
+    /// a narrow one.
+    #[test]
+    fn load_earlier_window_survives_the_next_automatic_board_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            app.tab = Tab::Board;
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+            async fn pump_tail_cache(app: &mut CorralApp, rev: u64) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if app.fleet.tail_source_revs.get("herdr:g314") == Some(&rev) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!("R3: tail cache never reached rev {rev}");
+            }
+
+            // Frame 1: the bounded default hydration through the arm.
+            board_frame(&mut app, &ctx);
+            pump_tail_cache(&mut app, 4).await;
+            assert_eq!(drives.lock().await.len(), 1);
+            assert_eq!(
+                drives.lock().await[0]["payload"]["lines"],
+                50,
+                "the initial hydration is the default 50-line page"
+            );
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 1);
+
+            // The operator's explicit Load earlier (the board's production
+            // dispatch shape, through the real funnel).
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await[1]["payload"]["lines"],
+                200,
+                "the explicit Load earlier requests the 200-line page"
+            );
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the expanded 200-line window loads into the cache"
+            );
+
+            // Cooldown elapsed: the NEXT REAL Board frame alone must
+            // refresh at the remembered 200-line window.
+            app.recent_output_last_refresh = None;
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let third = drives.lock().await[2].clone();
+            assert_eq!(third["target"], "herdr:g314");
+            assert_eq!(
+                third["payload"]["lines"], 200,
+                "R3: the automatic refresh must request the REMEMBERED \
+                 200-line window, not literal 50"
+            );
+            assert_eq!(
+                third["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the refresh carries the cached source_rev"
+            );
+            pump_tail_cache(&mut app, 5).await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the refreshed window preserves the expanded history"
+            );
+
+            // An unchanged source_rev settles with no IMMEDIATE loop: the
+            // next real frame runs inside the cooldown window and must not
+            // re-request (a poll after a full cooldown is the intended
+            // pacing, not an immediate loop).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles through the real frame \
+                 without an immediate request loop"
+            );
+        });
+    }
+
+    /// A 200-line request may legitimately return FEWER lines today; the
+    /// remembered limit is what was REQUESTED, so future automatic
+    /// refreshes keep asking for 200 and the window can grow as output
+    /// arrives (never shrinking to tails.len() or literal 50).
+    #[test]
+    fn partial_expanded_window_still_refreshes_at_the_requested_200() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..75).map(|i| format!("partial line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+
+            // Initial hydration at the default 50.
+            app.hydrate_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+
+            // The operator expands to the 200-line page; the daemon can
+            // only serve 75 lines for it right now.
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                75,
+                "the 200-line request returned a partial 75-line window"
+            );
+
+            // The next automatic refresh must still REQUEST 200.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let second = drives.lock().await[2].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["lines"], 200,
+                "R3: a partial 200 response must not shrink the requested \
+                 limit — refreshes keep requesting 200 (not 75, not 50)"
+            );
+            assert_eq!(second["payload"]["since_rev"], serde_json::json!(4));
+            // The refresh advances the source; the cache folds at 75 lines.
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&5) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 75);
+
+            // Unchanged rev: no IMMEDIATE request loop (the call runs
+            // inside the cooldown window; a poll after a full cooldown is
+            // the intended pacing).
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles without an immediate loop"
+            );
+        });
+    }
+
+    /// Per-agent isolation: the expanded agent's window must not leak into
+    /// other agents — a global remembered limit would over-expand the
+    /// non-selected agent's refreshes.
+    #[test]
+    fn expanded_agent_refreshes_at_200_while_other_agent_stays_50() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let a = agent("herdr:g314-a", AgentState::Working, &["read_tail"]);
+            let mut b = agent("herdr:g314-b", AgentState::Working, &["read_tail"]);
+            b.seq = 4;
+            app.fleet = Fleet {
+                agents: [(a.agent_id.clone(), a), (b.agent_id.clone(), b)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314-a".into()),
+                ..Default::default()
+            };
+
+            // Hydrate and expand the selected agent A.
+            app.hydrate_recent_output(Some("herdr:g314-a"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-a") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let load = DriveIntent::read_tail_page("herdr:g314-a", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314-a"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314-a"].len(), 200);
+
+            // The operator switches the visible selection to B.
+            app.hydrate_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-b") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-a"), 2);
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-b"), 1);
+
+            // B's automatic refresh stays the default 50-line page: A's
+            // expanded window must not leak into other agents.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while r3_count_for(&drives.lock().await, "herdr:g314-b") < 2
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let b_refresh = drives
+                .lock()
+                .await
+                .iter()
+                .rev()
+                .find(|d| d["target"] == serde_json::json!("herdr:g314-b"))
+                .cloned()
+                .expect("B's refresh landed on the wire");
+            assert_eq!(
+                b_refresh["payload"]["lines"], 50,
+                "R3: the non-expanded agent's refresh stays the default \
+                 50-line page (a global window would leak A's 200)"
+            );
+            assert_eq!(b_refresh["payload"]["since_rev"], serde_json::json!(4));
+            // No prefetch: A sees no further automatic request.
+            assert_eq!(
+                r3_count_for(&drives.lock().await, "herdr:g314-a"),
+                2,
+                "the hidden (non-selected) agent is never auto-refreshed"
+            );
+        });
+    }
+
+    /// Only the visible/selected agent is eligible for automatic refresh.
+    /// A previously-viewed agent keeps its stale cache and never sees an
+    /// automatic read_tail request.
+    #[test]
+    fn hidden_agents_are_never_auto_refreshed_even_when_cached_and_stale() {
+        let (_runtime, mut app) = read_model_test_app();
+        let key = fresh_device_key(13);
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id: "dev_x".into(),
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+
+        let visible = agent("herdr:g314-a", AgentState::Working, &["read_tail"]);
+        let hidden = agent("herdr:g314-b", AgentState::Working, &["read_tail"]);
+        app.fleet = Fleet {
+            agents: [
+                (visible.agent_id.clone(), visible),
+                (hidden.agent_id.clone(), hidden),
+            ]
+            .into_iter()
+            .collect(),
+            rev: Some(9),
+            selected_agent: Some("herdr:g314-a".into()),
+            ..Default::default()
+        };
+        app.fleet
+            .remember_tail_with_rev("herdr:g314-a", vec!["a1".into()], Some(4));
+        app.fleet
+            .remember_tail_with_rev("herdr:g314-b", vec!["stale-b".into()], Some(2));
+
+        let resolved = board::resolve_selection(
+            &app.fleet,
+            &board::visible_agent_ids(&app.fleet, StateFilter::All, ""),
+        );
+        assert_eq!(resolved, Some("herdr:g314-a"));
+        let resolved = resolved.map(str::to_string);
+        app.refresh_recent_output(resolved.as_deref());
+
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314-a"),
+            1,
+            "the visible agent is refreshed"
+        );
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314-b"),
+            0,
+            "the non-selected agent is never prefetched"
+        );
+        assert_eq!(app.fleet.tails["herdr:g314-b"], ["stale-b".to_string()]);
+        assert_eq!(app.fleet.tail_source_revs["herdr:g314-b"], 2);
+    }
+
+    /// One request in flight suppresses duplicates, and an unchanged
+    /// source_rev settles: after the (unchanged) result folds in through the
+    /// real `on_drive` path, subsequent immediate frames dispatch nothing —
+    /// the cooldown holds — until the pacing window elapses.
+    #[test]
+    fn unchanged_tail_settles_without_immediate_request_loop_and_single_flight_holds() {
+        let (_runtime, mut app) = read_model_test_app();
+        let key = fresh_device_key(17);
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id: "dev_x".into(),
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+        let working = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+        app.fleet = Fleet {
+            agents: [(working.agent_id.clone(), working)].into_iter().collect(),
+            rev: Some(7),
+            selected_agent: Some("herdr:g314".into()),
+            ..Default::default()
+        };
+        // A cached tail @ source_rev 4 whose round-trip already completed
+        // (the Ok drive folded) — the steady state after initial hydration.
+        app.fleet
+            .remember_tail_with_rev("herdr:g314", vec!["window".into()], Some(4));
+        app.fleet.remember_drive(
+            "herdr:g314",
+            DriveState::Ok {
+                rev: 4,
+                capability: "read_tail".into(),
+            },
+        );
+
+        // Eligible + due: the refresh dispatches.
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(sending_read_tail_drives(&app.fleet, "herdr:g314"), 1);
+
+        // While it is in flight, further frames must NOT duplicate it.
+        app.refresh_recent_output(Some("herdr:g314"));
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            1,
+            "single-flight: an in-flight refresh suppresses duplicates"
+        );
+
+        // The unchanged result folds in through the real drive path.
+        app.on_drive(DriveMsg {
+            agent_id: "herdr:g314".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Ok {
+                rev: 4,
+                result: Some(serde_json::json!({
+                    "lines": ["window"],
+                    "source_rev": 4
+                })),
+            },
+            identity_generation: 0,
+        });
+        assert_eq!(app.fleet.tail_source_revs["herdr:g314"], 4);
+        assert_eq!(app.fleet.tails["herdr:g314"], ["window".to_string()]);
+
+        // Settled: immediate frames after an unchanged revision dispatch
+        // nothing — no request loop.
+        for _ in 0..3 {
+            app.refresh_recent_output(Some("herdr:g314"));
+        }
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            1,
+            "an unchanged source_rev must settle without an immediate request loop"
+        );
+
+        // Once the pacing window elapses the paced refresh resumes.
+        app.recent_output_last_refresh = Some(
+            Instant::now() - RECENT_OUTPUT_REFRESH_COOLDOWN - std::time::Duration::from_millis(1),
+        );
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            2,
+            "the paced refresh resumes after the cooldown"
         );
     }
 

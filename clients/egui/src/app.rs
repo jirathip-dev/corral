@@ -1819,14 +1819,10 @@ impl CorralApp {
                     Level::Error
                 };
                 self.toast(level, format!("{capability} refused: {failure}"));
-                if failure.suggests_re_registration() {
-                    self.settings.notice = Some((
-                        Level::Warn,
-                        format!(
-                            "{failure} — open Settings → DEVICE & GRANTS to restore or re-register this device."
-                        ),
-                    ));
-                }
+                // #310 r4: re-registration guidance is written ONLY by the
+                // generation-gated writer above — an unguarded duplicate here
+                // let stale-generation refusals plant permanent
+                // Restore/Re-register guidance on the healthy current key.
             }
         }
     }
@@ -3855,6 +3851,72 @@ mod tests {
         assert!(
             app.settings.grant_admin.recovery_notice.is_some(),
             "a stale-generation success must not clear current recovery guidance"
+        );
+    }
+
+    /// #310 r4: the refusal branch had a SECOND, unguarded re-registration
+    /// guidance writer on `settings.notice`. A stale-generation refusal
+    /// arriving after key rotation therefore planted permanent
+    /// Restore/Re-register guidance for the healthy current key — guidance
+    /// no current-generation success or re-registration could reliably
+    /// clear (it never owned `recovery_notice`). Regression: after
+    /// rotation, a stale old-generation refusal that suggests
+    /// re-registration must leave BOTH recovery state and `settings.notice`
+    /// untouched, while an unrelated notice survives.
+    #[test]
+    fn stale_generation_refusal_never_plants_re_registration_guidance() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+
+        // Rotate the identity/generation WITHOUT any stale refusal pending:
+        // after a successful registration the current key is healthy and no
+        // recovery state exists.
+        let old_generation = app.identity_generation;
+        app.handle_register_result(Ok((
+            "dev_rotated".to_string(),
+            vec!["read_tail".to_string()],
+        )));
+        assert_ne!(app.identity_generation, old_generation);
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // An unrelated notice must survive this scenario untouched.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+
+        // A stale old-generation refusal that suggests re-registration.
+        app.on_drive(DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: old_generation,
+        });
+
+        // The stale refusal must not plant ANY recovery guidance.
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "a stale-generation refusal must not set owned recovery guidance"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().map(|(_, text)| text.as_str()),
+            Some("unrelated notice"),
+            "a stale-generation refusal must not write Restore/Re-register guidance into settings.notice"
         );
     }
 

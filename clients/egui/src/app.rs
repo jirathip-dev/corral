@@ -5035,6 +5035,279 @@ mod tests {
         });
     }
 
+    /// Structural guard for the highest seam: the production `Tab::Board`
+    /// arm in `workspace()` must keep the exact ordered wiring
+    /// `dispatch_drive_intents` -> `hydrate_recent_output` ->
+    /// `refresh_recent_output`, all fed the SAME `resolved_selection`. The
+    /// slice is comment-stripped per line, so commenting any call out (or
+    /// deleting it) breaks the match; uniqueness means a duplicate call
+    /// elsewhere in the arm cannot satisfy it either. This complements —
+    /// never replaces — the behavioral frame test below.
+    #[test]
+    fn board_arm_keeps_the_ordered_hydration_then_refresh_wiring() {
+        let source = include_str!("app.rs");
+        let board_arm = source
+            .split("Tab::Board => {")
+            .nth(1)
+            .expect("a Tab::Board arm exists in workspace()")
+            .split("Tab::Issues => {")
+            .next()
+            .expect("the Board arm is bounded by the Issues arm")
+            .to_string();
+        let strip_comments = |line: &str| -> String {
+            let code = match line.find("//") {
+                Some(idx) => &line[..idx],
+                None => line,
+            };
+            code.trim().to_string()
+        };
+        let code_lines: Vec<String> = board_arm
+            .lines()
+            .map(strip_comments)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let count_matches = |needle: &str| {
+            code_lines
+                .iter()
+                .filter(|line| line.contains(needle))
+                .count()
+        };
+        let hydrate = "app.hydrate_recent_output(resolved_selection.as_deref())";
+        let refresh = "app.refresh_recent_output(resolved_selection.as_deref())";
+        let dispatch = "app.dispatch_drive_intents(pending)";
+        assert_eq!(
+            count_matches(dispatch),
+            1,
+            "exactly one dispatch_drive_intents in the Board arm"
+        );
+        assert_eq!(
+            count_matches(hydrate),
+            1,
+            "exactly one initial hydration call in the Board arm"
+        );
+        assert_eq!(
+            count_matches(refresh),
+            1,
+            "exactly one (live, uncommented) #314 refresh call in the Board arm"
+        );
+        let hydrate_idx = code_lines
+            .iter()
+            .position(|line| line.contains(hydrate))
+            .expect("hydration call present");
+        let refresh_idx = code_lines
+            .iter()
+            .position(|line| line.contains(refresh))
+            .expect("refresh call present");
+        assert!(
+            hydrate_idx < refresh_idx,
+            "initial hydration must precede the revision-aware refresh"
+        );
+    }
+
+    /// The highest-seam #314 guard: the REAL production Board-frame path
+    /// (`workspace()`'s `Tab::Board` arm, driven headless through an actual
+    /// egui pass) must itself emit the revision-aware refresh. Removing the
+    /// single production call `app.refresh_recent_output(..)` from that arm
+    /// REDs this test — the direct-method tests cannot catch that.
+    #[test]
+    fn board_frame_drives_the_revision_aware_recent_output_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+
+        // Same canned signed-drive plane as the direct-method test: records
+        // every POST /drive envelope, answers with the canned lines/rev.
+        let drives = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned_rev = std::sync::Arc::new(Mutex::new(4u64));
+        let canned_lines = std::sync::Arc::new(Mutex::new(vec!["first window A1".to_string()]));
+        let router_drives = drives.clone();
+        let router_canned_rev = canned_rev.clone();
+        let router_canned_lines = canned_lines.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = router_drives.clone();
+            let canned_rev = router_canned_rev.clone();
+            let canned_lines = router_canned_lines.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope);
+                    let rev = *canned_rev.lock().await;
+                    let lines = canned_lines.lock().await.clone();
+                    let response = serde_json::json!({
+                        "request_id": signed["envelope"]["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.config.host_url = format!("http://{address}");
+
+            let key = fresh_device_key(17);
+            let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+            app.registration = Some(RegistrationRecord {
+                host_fingerprint: "deadbeef00000000".into(),
+                key_id,
+                grants: vec!["read_tail".into()],
+                denied: vec![],
+            });
+            app.host_fingerprint = Some("deadbeef00000000".into());
+            app.device_key = Some(key);
+            app.ledger = GrantLedger {
+                base: vec!["read_tail".into()],
+                denied: vec![],
+            };
+
+            // The visible, selected agent with no cached tail yet.
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)].into_iter().collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            // The production Board arm is the seam under test.
+            app.tab = Tab::Board;
+
+            // One REAL egui pass through the production frame path. The
+            // test is a logic harness, not a renderer: the pass output
+            // (with its texture deltas) is dropped without a painter, as
+            // egui's own docs do for headless callers.
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+
+            async fn pump_drive_results(
+                app: &mut CorralApp,
+                cond: impl Fn(&CorralApp) -> bool,
+            ) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if cond(app) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!(
+                    "#314 frame condition not met before the deadline; drives={:?} source_revs={:?}",
+                    app.fleet.recent_drives.get("herdr:g314"),
+                    app.fleet.tail_source_revs.get("herdr:g314"),
+                );
+            }
+
+            // Frame 1 through the REAL Board arm: pending intents dispatch +
+            // initial hydration (the refresh call is single-flight blocked).
+            board_frame(&mut app, &ctx);
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tails.contains_key("herdr:g314")
+                    && app.fleet.tail_source_revs.get("herdr:g314") == Some(&4)
+            })
+            .await;
+            assert_eq!(
+                drives.lock().await.len(),
+                1,
+                "the Board frame's hydration produced exactly one request"
+            );
+            assert!(
+                drives.lock().await[0]["payload"]
+                    .get("since_rev")
+                    .is_none(),
+                "the frame's initial hydration has no cached source revision yet"
+            );
+
+            // The source advances; the NEXT production Board frame must send
+            // the revision-aware refresh entirely on its own (no direct
+            // method call from this test).
+            *canned_rev.lock().await = 5;
+            *canned_lines.lock().await =
+                vec!["newer window B1".to_string(), "newer window B2".to_string()];
+            pump_drive_results(&mut app, |app| {
+                matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                )
+            })
+            .await;
+
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "#314: the production Board frame itself must drive the \
+                 revision-aware refresh for the visible agent (removing the \
+                 single refresh call in the Tab::Board arm REDs here)"
+            );
+            let second = drives.lock().await[1].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the frame-driven refresh must carry the CACHED source_rev"
+            );
+            assert_eq!(
+                second["payload"]["lines"], 50,
+                "the frame-driven refresh stays the bounded 50-line page"
+            );
+
+            // The result at source_rev B replaces the bounded cache.
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tail_source_revs.get("herdr:g314") == Some(&5)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["newer window B1".to_string(), "newer window B2".to_string()],
+                "the frame-refreshed window replaces the cached tail"
+            );
+
+            // A further real frame with an unchanged source_rev must settle
+            // with no additional request (no immediate loop through the
+            // production cadence either).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "an unchanged source_rev settles through the real frame path \
+                 without an immediate request loop"
+            );
+        });
+    }
+
     /// Only the visible/selected agent is eligible for automatic refresh.
     /// A previously-viewed agent keeps its stale cache and never sees an
     /// automatic read_tail request.

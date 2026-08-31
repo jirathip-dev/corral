@@ -311,6 +311,43 @@ impl Fleet {
         true
     }
 
+    /// #314: the cached `source_rev` a visible agent's automatic
+    /// Recent-output refresh must carry, if a refresh is eligible right now.
+    /// Eligible = a cached tail exists (so this is a refresh, not the first
+    /// hydration), its cached source revision is known, and no read_tail
+    /// request for the agent is currently in flight. Single-flight is judged
+    /// on the NEWEST read_tail drive entry (newest-first deque, same
+    /// semantics as the board's `latest_read_tail_state`): an older
+    /// `Sending` entry is that request's own history, not an in-flight
+    /// blocker. Hidden agents never reach this: the caller passes only the
+    /// resolved visible selection.
+    pub fn recent_output_refresh_candidate(&self, agent_id: &str) -> Option<u64> {
+        let source_rev = *self.tail_source_revs.get(agent_id)?;
+        if !self.tails.contains_key(agent_id) {
+            return None;
+        }
+        let newest_read_tail_in_flight = self.recent_drives.get(agent_id).is_some_and(|drives| {
+            drives
+                .iter()
+                .find(|state| {
+                    matches!(
+                        state,
+                        DriveState::Sending { capability, .. }
+                            | DriveState::Ok { capability, .. }
+                            | DriveState::Failed { capability, .. }
+                            if capability == "read_tail"
+                    )
+                })
+                .is_some_and(|state| {
+                    matches!(state, DriveState::Sending { capability, .. } if capability == "read_tail")
+                })
+        });
+        if newest_read_tail_in_flight {
+            return None;
+        }
+        Some(source_rev)
+    }
+
     pub fn toggle_expanded(&mut self, agent_id: &str) {
         if self.is_expanded(agent_id) {
             self.expanded.retain(|e| e != agent_id);
@@ -898,5 +935,70 @@ mod tests {
         // Cache dies with the agent (stale-drive removal path).
         fleet.remove_agent("a");
         assert!(!fleet.diffs.contains_key("a"));
+    }
+
+    // ------------------------------------------------------------------
+    // #314: refresh-eligibility bookkeeping (unit seam).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn refresh_candidate_requires_cache_rev_and_no_in_flight_request() {
+        let mut fleet = Fleet::default();
+
+        // No cache at all: not a refresh (the hydration path owns it).
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Cache without a known source revision (old daemon): not eligible.
+        fleet.remember_tail("a", vec!["line".into()]);
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Cache + cached source_rev + nothing in flight: eligible, and the
+        // carried revision is the CACHED one.
+        fleet.remember_tail_with_rev("a", vec!["line".into()], Some(4));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // A read_tail request currently in flight blocks the refresh.
+        fleet.remember_drive(
+            "a",
+            DriveState::Sending {
+                request_id: "req-1".into(),
+                capability: "read_tail".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Once the newest entry is the Ok, the historical Sending entry no
+        // longer blocks (newest-first single-flight semantics).
+        fleet.remember_drive(
+            "a",
+            DriveState::Ok {
+                rev: 4,
+                capability: "read_tail".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // A completed drive for a DIFFERENT capability does not block.
+        fleet.remember_drive(
+            "a",
+            DriveState::Sending {
+                request_id: "req-2".into(),
+                capability: "prompt".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // An updated revision replaces the cached one.
+        fleet.remember_tail_with_rev("a", vec!["newer".into()], Some(5));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(5));
+    }
+
+    #[test]
+    fn removed_agent_drops_the_refresh_candidate() {
+        let mut fleet = Fleet::default();
+        fleet.remember_tail_with_rev("a", vec!["line".into()], Some(4));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+        fleet.remove_agent("a");
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
     }
 }

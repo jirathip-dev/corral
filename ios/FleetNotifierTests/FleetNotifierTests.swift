@@ -4160,27 +4160,31 @@ final class RecentOutputModelTests: XCTestCase {
     /// corral tests/provenance.rs and the egui counterpart in
     /// Fleet::cross_client_generic_snapshot_decodes_identically…). One
     /// fixture, three layers, identical kinds/order.
-    private func canonicalDaemonJSON() -> String {
-        #"""
-        {
-          "lines": ["x"],
-          "blocks": [
-            { "kind": "tool", "text": "$ cargo build\nCompiling corrald v0.1.0" },
-            { "kind": "user", "text": "ship the canonical transcript stream",
-              "prompt_request_id": "req-prompt" },
-            { "kind": "unknown", "text": "Canonical stream wired end to end." },
-            { "kind": "system", "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt" },
-            { "kind": "unknown", "text": "fix the flaky test by hand" }
-          ]
-        }
-        """#
+    private func canonicalDaemonJSON() throws -> String {
+        // #315 R2: the EXACT canonical stream is the daemon-emitted golden
+        // fixture (corral tests/fixtures/canonical_stream_golden.json),
+        // bundled into the test bundle from the committed repo file — a
+        // hand-written copy could silently drift from daemon segmentation.
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "canonical_stream_golden", withExtension: "json"),
+            "the daemon golden fixture must be bundled with the tests")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// The fixture holds the daemon's blocks ARRAY; the read_tail envelope
+    /// (lines + blocks) is wrapped around those exact bytes so the decoded
+    /// blocks are byte-identical to the committed golden fixture.
+    private func canonicalDaemonEnvelopeData() throws -> Data {
+        let fixture = try canonicalDaemonJSON()
+        return Data("{\"lines\":[\"x\"],\"blocks\":\(fixture)}".utf8)
     }
 
     func testCrossClientGenericSnapshotRendersIdenticalKindsAndOrder() throws {
         // AC5 (discriminating): same snapshot + provenance → identical block
         // kinds and order on iOS as on the daemon and egui. User renders
         // exactly once, carrying its provenance request id.
-        let data = Data(canonicalDaemonJSON().utf8)
+        let data = try canonicalDaemonEnvelopeData()
         let value = try JSONDecoder().decode(CodableValue.self, from: data)
         let blocks = try XCTUnwrap(value.tailBlocks)
 

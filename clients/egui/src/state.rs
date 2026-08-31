@@ -772,16 +772,20 @@ mod tests {
         // ui::board::tests::recent_canonical_blocks_render_identically_across_clients;
         // the daemon-side emitter lives in tests/provenance.rs). Identical
         // kinds, identical order, user exactly once.
+        // #315 R2: the blocks array is NOT hand-written here — it is loaded
+        // from the daemon-emitted golden fixture
+        // (tests/fixtures/canonical_stream_golden.json, byte-asserted
+        // against `canonical_blocks` output by the daemon tests), so daemon
+        // segmentation drift fails BOTH client contracts.
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/canonical_stream_golden.json"
+        ))
+        .expect("daemon golden fixture is committed and readable");
         let daemon_result = serde_json::json!({
             "lines": ["x"],
-            "blocks": [
-                { "kind": "tool", "text": "$ cargo build\nCompiling corrald v0.1.0" },
-                { "kind": "user", "text": "ship the canonical transcript stream",
-                  "prompt_request_id": "req-prompt" },
-                { "kind": "unknown", "text": "Canonical stream wired end to end." },
-                { "kind": "system", "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt" },
-                { "kind": "unknown", "text": "fix the flaky test by hand" }
-            ]
+            "blocks": serde_json::from_str::<serde_json::Value>(&fixture)
+                .expect("golden fixture parses as JSON blocks"),
         });
         let blocks = crate::drive::parse_tail_blocks(&daemon_result);
         let kinds: Vec<crate::drive::CanonicalBlockKind> = blocks.iter().map(|b| b.kind).collect();

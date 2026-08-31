@@ -110,6 +110,11 @@ targets:
     platform: iOS
     sources:
       - FleetNotifierTests
+      # #315 R2: the daemon-emitted canonical golden fixture rides in the
+      # test bundle so the cross-client test decodes the COMMITTED repo
+      # file, not a hand-written copy.
+      - path: ../tests/fixtures/canonical_stream_golden.json
+        buildPhase: resources
     dependencies:
       - target: FleetNotifier
     settings:

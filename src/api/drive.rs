@@ -941,8 +941,11 @@ pub async fn drive(
     // #315: a successfully dispatched signed Prompt records the authoritative
     // user provenance for its target. Recorded ONLY on the success path (an
     // echo must never dedupe against a prompt that never dispatched), and
-    // the ledger stores only content identity (SHA-256 + length) — never the
-    // raw text. The replay table already guarantees exactly-once dispatch.
+    // the ledger stores only content identity — the REDACTED text's SHA-256
+    // + length (#315 R2: the read path hashes the redacted echo, so the
+    // recorded identity must cover the same redacted bytes; the raw text,
+    // including any secret, never enters the ledger or any log). The replay
+    // table already guarantees exactly-once dispatch.
     if ok
         && matches!(
             authorized.envelope.capability,

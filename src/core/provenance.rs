@@ -14,8 +14,11 @@
 //! - Identity-only: events store a SHA-256 of the prompt text plus its
 //!   byte length — never the raw text — so the ledger cannot leak prompt
 //!   content, and the read path redacts before hashing anyway.
-//! - No harness/provider/model metadata exists anywhere in this module by
-//!   construction: attribution comes from the signed request, not labels.
+//! - One-to-one (#315 R2): binding echoes to events consumes from a
+//!   per-read WINDOW, not from the ledger itself. A recorded event may back
+//!   at most one echo per read (exactly-once rendering), repeated reads
+//!   stay stable, and identical repeated prompts bind oldest-first so each
+//!   echo carries its own signed request id.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -30,28 +33,35 @@ const LEDGER_CAP: usize = 256;
 /// One successfully dispatched signed Prompt, as recorded by the drive
 /// handler. `text_sha256`/`text_len` identify the echoed text without
 /// carrying it; `request_id` is the signed envelope id clients may audit.
+///
+/// The identity covers the REDACTED dispatch text (#315 R2): the read path
+/// redacts before hashing, so recording the same redacted identity is what
+/// lets a prompt containing a secret keep its provenance. The raw secret
+/// is never stored here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptEvent {
     /// The signed envelope's `request_id`.
     pub request_id: String,
     /// Canonical agent target the prompt was dispatched to.
     pub target: String,
-    /// SHA-256 hex of the exact dispatched text.
+    /// SHA-256 hex of the REDACTED dispatched text.
     pub text_sha256: String,
-    /// Byte length of the exact dispatched text.
+    /// Byte length of the REDACTED dispatched text.
     pub text_len: usize,
     /// Epoch millis when the dispatch succeeded.
     pub ts: u64,
 }
 
 impl PromptEvent {
-    /// Record the identity of dispatched `text` (SHA-256 + byte length).
+    /// Record the identity of dispatched `text` (SHA-256 + byte length) in
+    /// its REDACTED form — the exact bytes a client can ever see echoed.
     pub fn new(request_id: &str, target: &str, text: &str, ts: u64) -> Self {
+        let redacted = crate::core::redact::redact(text);
         Self {
             request_id: request_id.to_string(),
             target: target.to_string(),
-            text_sha256: text_sha256_hex(text),
-            text_len: text.len(),
+            text_sha256: text_sha256_hex(&redacted),
+            text_len: redacted.len(),
             ts,
         }
     }
@@ -120,9 +130,75 @@ impl PromptProvenance {
         }
     }
 
+    /// Bind `echoes` (per cleaned line: the eligible echo candidate for that
+    /// line, or `None`) to recorded events, one-to-one (#315 R2):
+    ///
+    /// - A snapshot of the target's ring is taken first, so the read works
+    ///   over an immutable ledger view and repeated reads see the same
+    ///   events (the ledger itself is never consumed).
+    /// - Events are offered OLDEST FIRST and each binds to at most one
+    ///   echo in this read, so repeated identical prompts keep their own
+    ///   request ids instead of all stamping the newest event.
+    /// - Within one read, at most `window` echoes may bind overall (the
+    ///   trailing window size), bounding any single read's fan-out without
+    ///   globally consuming the ledger.
+    ///
+    /// Returns one [`PromptEvent`] per input slot: the event bound to that
+    /// echo, or `None` when the echo stays unattributed (duplicate beyond
+    /// the one-to-one map, window excess, or no recorded match).
+    pub fn bind_echoes(
+        &self,
+        target: &str,
+        echoes: &[Option<String>],
+        window: usize,
+    ) -> Vec<Option<PromptEvent>> {
+        let mut out: Vec<Option<PromptEvent>> = Vec::with_capacity(echoes.len());
+        let Some(snapshot) = self.snapshot(target) else {
+            out.resize(echoes.len(), None);
+            return out;
+        };
+        // The window bounds the eligible echo slice to the TRAILING `window`
+        // echo slots; earlier eligible echoes in the same read do not bind.
+        let eligible_floor = echoes.len().saturating_sub(window);
+        // Per-read consumption: an event binds to at most one echo of this
+        // read, so identical echoes map to distinct events in ledger order.
+        let mut used = vec![false; snapshot.len()];
+        for (i, echo) in echoes.iter().enumerate() {
+            let Some(text) = echo else {
+                out.push(None);
+                continue;
+            };
+            if i < eligible_floor {
+                out.push(None);
+                continue;
+            }
+            // The oldest not-yet-bound event whose identity matches this
+            // echo — one-to-one, oldest first.
+            let mut bound = None;
+            for (idx, event) in snapshot.iter().enumerate() {
+                if !used[idx] && event.matches_text(text) {
+                    used[idx] = true;
+                    bound = Some(event.clone());
+                    break;
+                }
+            }
+            out.push(bound);
+        }
+        out
+    }
+
+    /// Immutable snapshot of one target's ring, oldest first.
+    fn snapshot(&self, target: &str) -> Option<Vec<PromptEvent>> {
+        let ledger = self.inner.lock().expect("provenance lock poisoned");
+        ledger
+            .per_target
+            .get(target)
+            .map(|ring| ring.iter().cloned().collect())
+    }
+
     /// The recorded prompt for `target` whose dispatched text is `text`
-    /// (the terminal echo match), newest first. Read by the canonical
-    /// block builder to dedupe the echo into exactly one `user` block.
+    /// (newest match, pure read). Kept for diagnostics/tests; the canonical
+    /// block builder binds echoes via [`Self::bind_echoes`].
     pub fn find_by_text(&self, target: &str, text: &str) -> Option<PromptEvent> {
         let ledger = self.inner.lock().expect("provenance lock poisoned");
         ledger
@@ -197,5 +273,105 @@ mod tests {
             !debug.contains("some secret prompt content"),
             "the ledger stores identity (hash+len), never the raw text"
         );
+    }
+
+    // ---- #315 R2: window-scoped one-to-one binding ----
+
+    #[test]
+    fn records_redacted_identity_for_secret_prompts() {
+        let raw = "deploy with token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456";
+        let ledger = PromptProvenance::new();
+        ledger.record(PromptEvent::new("req-s", "herdr:a", raw, 1));
+        // The recorded identity is the REDACTED form — the exact bytes the
+        // read path (which redacts before hashing) will compare against.
+        let redacted = format!("deploy with token {}", crate::core::redact::REDACTED);
+        let echo = ledger.bind_echoes("herdr:a", &[Some(redacted.clone())], 8);
+        assert_eq!(
+            echo.iter()
+                .flatten()
+                .map(|e| e.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["req-s"],
+            "the redacted echo matches the recorded redacted identity"
+        );
+        // ...and the raw form is gone from the ledger entirely.
+        assert!(ledger.find_by_text("herdr:a", raw).is_none());
+        let debug = format!("{ledger:?}");
+        assert!(
+            !debug.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"),
+            "no raw secret in the ledger"
+        );
+    }
+
+    #[test]
+    fn bind_echoes_is_one_to_one_per_read() {
+        let ledger = PromptProvenance::new();
+        ledger.record(PromptEvent::new("req-9", "herdr:a", "ship it", 1));
+        let echoes = vec![
+            Some("ship it".to_string()),
+            None,
+            Some("ship it".to_string()),
+        ];
+        let bound = ledger.bind_echoes("herdr:a", &echoes, 8);
+        assert_eq!(
+            bound[0].as_ref().map(|e| e.request_id.as_str()),
+            Some("req-9")
+        );
+        assert!(
+            bound[2].is_none(),
+            "the second identical echo stays unbound: exactly-once per read"
+        );
+        // A REPEATED read re-binds stably: the ledger was never consumed.
+        let again = ledger.bind_echoes("herdr:a", &echoes, 8);
+        assert_eq!(
+            again[0].as_ref().map(|e| e.request_id.as_str()),
+            Some("req-9")
+        );
+        assert!(again[2].is_none());
+    }
+
+    #[test]
+    fn bind_echoes_offers_events_oldest_first() {
+        let ledger = PromptProvenance::new();
+        ledger.record(PromptEvent::new("req-A", "herdr:a", "continue", 1));
+        ledger.record(PromptEvent::new("req-B", "herdr:a", "continue", 2));
+        let bound = ledger.bind_echoes(
+            "herdr:a",
+            &[Some("continue".into()), Some("continue".into())],
+            8,
+        );
+        assert_eq!(
+            bound
+                .iter()
+                .flatten()
+                .map(|e| e.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["req-A", "req-B"],
+            "identical echoes bind one-to-one in ledger order"
+        );
+    }
+
+    #[test]
+    fn bind_echoes_window_caps_the_eligible_trailing_slice() {
+        let ledger = PromptProvenance::new();
+        ledger.record(PromptEvent::new("req-1", "herdr:a", "go", 1));
+        // Three eligible echoes, window 2: only the trailing two may bind.
+        let bound = ledger.bind_echoes(
+            "herdr:a",
+            &[Some("go".into()), Some("go".into()), Some("go".into())],
+            2,
+        );
+        let ids: Vec<Option<&str>> = bound
+            .iter()
+            .map(|b| b.as_ref().map(|e| e.request_id.as_str()))
+            .collect();
+        assert_eq!(ids, vec![None, Some("req-1"), None]);
+    }
+
+    #[test]
+    fn bind_echoes_without_events_leaves_everything_unbound() {
+        let ledger = PromptProvenance::new();
+        let bound = ledger.bind_echoes("herdr:a", &[Some("x".into())], 8);
+        assert!(bound[0].is_none());
     }
 }

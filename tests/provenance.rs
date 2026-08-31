@@ -277,6 +277,265 @@ async fn prompt_round_trip_renders_exactly_once_as_user() {
     );
 }
 
+/// #315 R2 F1: the realistic TUI shape — the transcript echo AND a duplicate
+/// composer row of the same text. The recorded event must bind to EXACTLY
+/// ONE eligible echo: one `user` block, one occurrence of the text total.
+/// A pure `find_by_text` read would stamp both lines with the same
+/// request id.
+#[tokio::test]
+async fn duplicate_echo_renders_the_prompt_exactly_once() {
+    let h = harness();
+    let mut lines = generic_snapshot_lines();
+    // The composer still holds the same prompt: a second eligible echo.
+    lines.push(String::new());
+    lines.push(format!("› {PROMPT_TEXT}"));
+    h.adapter.knows("herdr:abc").tail(lines);
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-prompt",
+            Capability::Prompt,
+            "herdr:abc",
+            json!({ "kind": "prompt", "text": PROMPT_TEXT }),
+        ),
+    )
+    .await;
+    assert_eq!(value["ok"], true, "prompt dispatch: {value}");
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    let user_blocks: Vec<&Value> = blocks.iter().filter(|b| b["kind"] == "user").collect();
+    assert_eq!(
+        user_blocks.len(),
+        1,
+        "echo + duplicate composer echo must yield exactly one user block: {blocks:?}"
+    );
+    assert_eq!(user_blocks[0]["prompt_request_id"], "req-prompt");
+    // Exactly-once: NO other block carries the prompt's provenance, and the
+    // duplicate composer echo is demoted (unknown) rather than re-stamped.
+    assert!(
+        blocks
+            .iter()
+            .all(|b| b["kind"] != "user" || b["prompt_request_id"] == "req-prompt"),
+        "a second user block must not exist for the duplicate echo: {blocks:?}"
+    );
+    let stamped: Vec<&Value> = blocks
+        .iter()
+        .filter(|b| !b["prompt_request_id"].is_null())
+        .collect();
+    assert_eq!(
+        stamped.len(),
+        1,
+        "the recorded event binds to exactly one echo per read: {blocks:?}"
+    );
+}
+
+/// #315 R2 F2: a prompt recorded long ago plus LATER unprefixed machine
+/// output that happens to equal it must stay unknown — no `user` block, no
+/// request id. Content identity alone is not attribution; the echo must be
+/// a structurally eligible typed-input echo.
+#[tokio::test]
+async fn unprefixed_model_output_matching_an_old_prompt_is_never_user() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(vec![
+        "Should I proceed with the destructive migration?".into(),
+        "yes".into(),
+        "".into(),
+        "done".into(),
+    ]);
+
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-old",
+            Capability::Prompt,
+            "herdr:abc",
+            json!({ "kind": "prompt", "text": "yes" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true, "the prompt dispatched (recorded)");
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    assert!(
+        blocks.iter().all(|b| b["kind"] != "user"),
+        "unprefixed model output equal to an old prompt is never user: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().all(|b| b["prompt_request_id"].is_null()),
+        "no block may carry the old request id: {blocks:?}"
+    );
+}
+
+/// #315 R2 F3: two identical prompts dispatched in order, two eligible
+/// echoes in order — each echo binds to its OWN event in ledger order
+/// (req-A then req-B), never both to the newest.
+#[tokio::test]
+async fn repeated_identical_prompts_keep_their_own_request_ids() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(vec![
+        "> continue".into(),
+        "".into(),
+        "working".into(),
+        "".into(),
+        "> continue".into(),
+    ]);
+
+    for (rid, text) in [("req-A", "continue"), ("req-B", "continue")] {
+        let (_status, value) = post(
+            &h.app,
+            h.body(
+                rid,
+                Capability::Prompt,
+                "herdr:abc",
+                json!({ "kind": "prompt", "text": text }),
+            ),
+        )
+        .await;
+        assert_eq!(value["ok"], true, "{rid} dispatch: {value}");
+    }
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    let user_ids: Vec<&str> = blocks
+        .iter()
+        .filter(|b| b["kind"] == "user")
+        .filter_map(|b| b["prompt_request_id"].as_str())
+        .collect();
+    assert_eq!(
+        user_ids,
+        vec!["req-A", "req-B"],
+        "identical echoes bind one-to-one in ledger order, oldest event first: {blocks:?}"
+    );
+}
+
+/// #315 R2 F5: a dispatched prompt containing a secret records its
+/// REDACTED identity (the read path redacts before hashing, so the record
+/// must cover the same redacted bytes), so the echo still renders exactly
+/// once as redacted `user` with its request id. The raw secret enters
+/// neither blocks nor the ledger.
+#[tokio::test]
+async fn secret_prompt_keeps_provenance_and_never_leaks_raw_text() {
+    let h = harness();
+    // The REAL read pipeline redacts BEFORE segmentation (D9, at the
+    // adapter boundary): the tail carries the redacted echo only. Serving
+    // the raw secret here would bypass that boundary entirely.
+    h.adapter.knows("herdr:abc").tail(vec![
+        format!("> deploy with token {}", corrald::core::redact::REDACTED),
+        "".into(),
+        "deploying".into(),
+    ]);
+
+    let raw = "deploy with token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456";
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-secret",
+            Capability::Prompt,
+            "herdr:abc",
+            json!({ "kind": "prompt", "text": raw }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true, "secret prompt dispatch: {value}");
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let result_json = value["result"].to_string();
+    assert!(
+        !result_json.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"),
+        "the raw secret must never appear in the read result: {result_json}"
+    );
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    let user_blocks: Vec<&Value> = blocks.iter().filter(|b| b["kind"] == "user").collect();
+    assert_eq!(
+        user_blocks.len(),
+        1,
+        "the redacted echo still renders exactly once as user: {blocks:?}"
+    );
+    assert_eq!(user_blocks[0]["prompt_request_id"], "req-secret");
+    assert!(
+        user_blocks[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains(corrald::core::redact::REDACTED),
+        "the rendered user text is the redacted form: {blocks:?}"
+    );
+}
+
+/// #315 R2 F5 (ledger half): the recorded identity covers the REDACTED
+/// dispatch text, never the raw secret — checked directly on the ledger
+/// store that the drive handler feeds.
+#[test]
+fn secret_prompt_record_keeps_only_redacted_identity() {
+    let ledger = corrald::core::provenance::PromptProvenance::new();
+    ledger.record(corrald::core::provenance::PromptEvent::new(
+        "req-s",
+        "herdr:a",
+        "deploy with token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456",
+        1,
+    ));
+    // The redacted echo — the only form a client can ever see — matches.
+    let redacted_echo = format!("deploy with token {}", corrald::core::redact::REDACTED);
+    let bound = ledger.bind_echoes("herdr:a", &[Some(redacted_echo)], 4);
+    assert_eq!(
+        bound
+            .iter()
+            .flatten()
+            .map(|e| e.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["req-s"],
+        "the recorded identity is the redacted form the read path hashes"
+    );
+    // The raw form matches nothing and appears nowhere in the ledger.
+    let raw = "deploy with token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456";
+    assert!(ledger.find_by_text("herdr:a", raw).is_none());
+    let debug = format!("{ledger:?}");
+    assert!(
+        !debug.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"),
+        "no raw secret anywhere in the ledger: {debug}"
+    );
+}
+
 #[tokio::test]
 async fn unprovenanced_direct_input_stays_unknown() {
     let h = harness();

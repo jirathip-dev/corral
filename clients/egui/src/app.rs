@@ -1035,6 +1035,10 @@ pub struct CorralApp {
     host_fingerprint: Option<String>,
     /// #249: key-vs-registration mismatch state (None = consistent).
     identity_recovery: IdentityRecovery,
+    /// #310 r3: identity epoch for drive results. Bumped on every
+    /// successful (re)registration; a drive initiated under an older epoch
+    /// must not set or clear current recovery state when it lands late.
+    identity_generation: u64,
 
     // Config + settings.
     config: PersistedConfig,
@@ -1159,6 +1163,7 @@ impl CorralApp {
             registration: config.registration.clone(),
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config: config.clone(),
             config_path,
             settings: crate::ui::register::SettingsState {
@@ -1559,6 +1564,18 @@ impl CorralApp {
         }
     }
 
+    /// #310 r3: drop the persisted recovery-guidance notice and its
+    /// `settings.notice` twin, but ONLY when the current notice is still
+    /// exactly that guidance — unrelated notices are never deleted.
+    fn clear_recovery_notice(&mut self) {
+        if let Some(previous) = self.settings.grant_admin.recovery_notice.take()
+            && let Some((_, text)) = &self.settings.notice
+            && text == &previous
+        {
+            self.settings.notice = None;
+        }
+    }
+
     fn on_apply(&mut self, msg: ApplyMsg) {
         match msg {
             ApplyMsg::Fingerprint(fp) => self.apply_fingerprint(fp),
@@ -1718,16 +1735,25 @@ impl CorralApp {
 
     fn on_drive(&mut self, msg: DriveMsg) {
         let capability = msg.capability.clone();
+        // #310 r3: recovery-affecting drive results are scoped to the
+        // identity generation that dispatched them. A result from a prior
+        // generation (e.g. an in-flight drive that predates a rotation)
+        // must never set or clear the CURRENT recovery latch/notice.
+        let current_generation = msg.identity_generation == self.identity_generation;
         let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
         self.fleet.remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
             DriveOutcome::Ok { rev, result } => {
                 self.ledger.note_success(&capability);
                 self.persist_ledger();
-                // #310: a successful drive proves the current key is
-                // accepted — any recorded bad_signature rejection is
-                // resolved and the recovery block disappears.
-                self.settings.grant_admin.bad_signature = false;
+                if current_generation {
+                    // #310: a current-generation successful drive proves
+                    // the current key is accepted — clear the bad-signature
+                    // latch AND its persisted recovery guidance (leaving
+                    // unrelated notices untouched).
+                    self.settings.grant_admin.bad_signature = false;
+                    self.clear_recovery_notice();
+                }
                 // If the daemon ever grows a read_tail result, surface it.
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
@@ -1757,13 +1783,23 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
-                // #249/#310: a bad_signature refusal is the live signal
-                // that the daemon rejected the CURRENT key — record it so
-                // the Settings recovery block renders. Recovery is
-                // user-initiated there (Restore / Re-register); no
-                // automatic re-registration.
-                if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
-                    self.settings.grant_admin.bad_signature = true;
+                if current_generation {
+                    // #249/#310: a bad_signature refusal is the live signal
+                    // that the daemon rejected the CURRENT key — record it so
+                    // the Settings recovery block renders. Recovery is
+                    // user-initiated there (Restore / Re-register); no
+                    // automatic re-registration. Stale-generation refusals
+                    // never touch current recovery state.
+                    if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
+                        self.settings.grant_admin.bad_signature = true;
+                    }
+                    if failure.suggests_re_registration() {
+                        let text = format!(
+                            "{failure} — open Settings → DEVICE & GRANTS to restore or re-register this device."
+                        );
+                        self.settings.grant_admin.recovery_notice = Some(text.clone());
+                        self.settings.notice = Some((Level::Warn, text));
+                    }
                 }
                 if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
                     // A stale tap is a read-model event, not a generic drive
@@ -2019,10 +2055,15 @@ impl CorralApp {
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
+                // #310 r3: any successful (re)registration opens a NEW
+                // identity generation — in-flight drives dispatched before
+                // this moment can no longer affect recovery state.
+                self.identity_generation = self.identity_generation.wrapping_add(1);
                 // #310: a successful (re)registration means the daemon
                 // accepted the current key — any recorded bad_signature
-                // rejection is resolved.
+                // rejection and its recovery guidance are resolved.
                 self.settings.grant_admin.bad_signature = false;
+                self.clear_recovery_notice();
                 // A successful (re)registration refreshes the ledger from
                 // the host's CURRENT grant set: any locally-demoted
                 // capability the host re-granted is re-enabled, and a
@@ -2628,6 +2669,7 @@ impl CorralApp {
     fn dispatch_drive_intents(&mut self, pending: Vec<DriveIntent>) {
         let registration = self.registration.clone();
         let signing = self.device_key.as_ref().map(|k| k.signing.clone());
+        let identity_generation = self.identity_generation;
         let client = self.client.clone();
         let host_url = self.config.host_url.clone();
         let tx_drive = self.tx_drive.clone();
@@ -2671,6 +2713,7 @@ impl CorralApp {
                     agent_id,
                     capability,
                     outcome,
+                    identity_generation,
                 });
             });
         }
@@ -3243,6 +3286,7 @@ mod tests {
             registration: None,
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config,
             config_path: PathBuf::from("/tmp/corral-ui-read-model-test.json"),
             settings,
@@ -3314,8 +3358,10 @@ mod tests {
         assert_eq!(loaded.completed_mode, crate::state::CompletedMode::Show);
 
         // New file: the tri-state wins, and persist writes it back.
-        let mut config = PersistedConfig::default();
-        config.completed_mode = crate::state::CompletedMode::Hide;
+        let config = PersistedConfig {
+            completed_mode: crate::state::CompletedMode::Hide,
+            ..Default::default()
+        };
         config.persist(&path);
         let reloaded = PersistedConfig::load(&path);
         assert_eq!(reloaded.completed_mode, crate::state::CompletedMode::Hide);
@@ -3691,8 +3737,8 @@ mod tests {
         assert!(app.settings.notice.as_ref().unwrap().1.contains("Settings"));
     }
 
-    /// #310: no workspace-wide identity banner exists; recovery guidance
-    /// lives only inside the Settings recovery block. The banner surface
+    /// #310 (blocker): no workspace-wide identity banner exists; recovery
+    /// guidance lives only inside the Settings recovery block. The banner surface
     /// and its one-tap action must not be reachable outside Settings.
     #[test]
     fn no_workspace_identity_banner_outside_settings() {
@@ -3707,6 +3753,108 @@ mod tests {
         assert!(
             !source.contains(&one_tap),
             "the one-tap banner action must be gone"
+        );
+    }
+
+    /// #310 r3 (blocker 3): recovery state is identity-generation scoped and
+    /// self-clearing. A current-generation refusal sets the latch + notice; a
+    /// current-generation success clears BOTH without deleting unrelated
+    /// notices; a stale-generation refusal or success arriving after a
+    /// rotation is ignored for current recovery state.
+    #[test]
+    fn recovery_state_is_identity_generation_scoped_and_self_clearing() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+        let epoch = app.identity_generation;
+        let bad_signature = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: generation,
+        };
+        let ok = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Ok {
+                rev: 1,
+                result: Some(serde_json::json!({ "lines": [] })),
+            },
+            identity_generation: generation,
+        };
+
+        // 1) Current-generation bad_signature refusal -> latch + notice.
+        app.on_drive(bad_signature(epoch));
+        assert!(app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_some());
+        assert!(
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("Settings → DEVICE & GRANTS"),
+            "recovery guidance must be persisted: {:?}",
+            app.settings.notice
+        );
+
+        // 2) Current-generation success clears BOTH and leaves an unrelated
+        // notice intact.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+        app.on_drive(ok(epoch));
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "the persisted recovery guidance must be cleared"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().unwrap().1,
+            "unrelated notice",
+            "unrelated notices must survive a recovery-clearing success"
+        );
+
+        // 3) Rotation: a successful (re)registration opens a new generation.
+        let gen_before = app.identity_generation;
+        app.handle_register_result(Ok(("dev_new".to_string(), vec!["read_tail".to_string()])));
+        assert_eq!(
+            app.identity_generation,
+            gen_before.wrapping_add(1),
+            "every successful registration must bump the identity generation"
+        );
+        let old_gen = gen_before;
+
+        // A stale-generation refusal after rotation must NOT set current
+        // recovery state.
+        app.on_drive(bad_signature(old_gen));
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // A stale-generation success must NOT clear current recovery state.
+        app.settings.grant_admin.bad_signature = true;
+        app.settings.grant_admin.recovery_notice = Some("recovery".into());
+        app.on_drive(ok(old_gen));
+        assert!(
+            app.settings.grant_admin.bad_signature,
+            "a stale-generation success must not clear the current latch"
+        );
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_some(),
+            "a stale-generation success must not clear current recovery guidance"
         );
     }
 
@@ -4503,6 +4651,7 @@ mod tests {
                     "lines": ["older line one", "older line two"]
                 })),
             },
+            identity_generation: 0,
         };
 
         CorralApp::apply_read_tail_result(&mut fleet, &msg);

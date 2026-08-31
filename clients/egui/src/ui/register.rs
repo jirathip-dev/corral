@@ -39,6 +39,7 @@ pub struct SettingsState {
     pub grant_admin: GrantAdminState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Connect,
     AutoRegister,
@@ -160,6 +161,11 @@ pub struct GrantAdminState {
     /// rejection. Healthy state never shows re-register guidance; the
     /// recovery block renders only while this is set.
     pub bad_signature: bool,
+    /// #310 r3: the persisted recovery-guidance notice text set on a
+    /// current-generation rejection. A later current-generation success
+    /// clears it (and the matching `settings.notice`) without deleting
+    /// unrelated notices; stale-generation drive results never touch it.
+    pub recovery_notice: Option<String>,
     /// Captured before a THIS-device re-register: `(key_id, grants)` of the
     /// registration being replaced, consumed by the RegisterResult path.
     /// Kept here because the request and its async result are separate
@@ -228,6 +234,7 @@ impl GrantAdminState {
         // A successful re-register means the daemon accepted the fresh key:
         // any recorded bad_signature rejection is resolved.
         self.bad_signature = false;
+        self.recovery_notice = None;
         self.notice = Some((
             Level::Warn,
             format!(
@@ -240,6 +247,7 @@ impl GrantAdminState {
         self.reregistered = false;
         self.restore_grants.clear();
         self.bad_signature = false;
+        self.recovery_notice = None;
         self.notice = Some((
             Level::Info,
             "Restored the previous grant set to this device.".to_string(),
@@ -993,7 +1001,7 @@ fn now_secs() -> u64 {
 /// A mockup-style pill switch (egui has no built-in Switch in 0.36).
 fn toggle_switch(ui: &mut Ui, on: bool, enabled: bool) -> egui::Response {
     let size = egui::vec2(34.0, 18.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter();
     painter.rect_filled(
         rect,
@@ -1027,6 +1035,12 @@ fn toggle_switch(ui: &mut Ui, on: bool, enabled: bool) -> egui::Response {
             theme::ui::MUTED
         },
     );
+    // A real click on an ENABLED switch marks the response changed so the
+    // caller's `resp.changed()` gate can dispatch Request::ToggleGrantCap
+    // (#310 r3). Disabled switches never mark changed.
+    if enabled && response.clicked() {
+        response.mark_changed();
+    }
     response
 }
 
@@ -1861,8 +1875,10 @@ mod tests {
     #[test]
     fn bad_signature_recovery_renders_only_after_an_actual_rejection() {
         let ctx = egui::Context::default();
-        let mut settings = SettingsState::default();
-        settings.admin_token_configured = true;
+        let mut settings = SettingsState {
+            admin_token_configured: true,
+            ..Default::default()
+        };
         settings
             .grant_admin
             .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
@@ -1914,8 +1930,10 @@ mod tests {
         assert!(!caps_editable(true, false, true, false, true));
 
         let ctx = egui::Context::default();
-        let mut settings = SettingsState::default();
-        settings.admin_token_configured = true;
+        let mut settings = SettingsState {
+            admin_token_configured: true,
+            ..Default::default()
+        };
         settings.grant_admin.mark_reregistered(
             vec!["read_tail".to_string(), "prompt".to_string()],
             "dev_old",
@@ -1953,8 +1971,10 @@ mod tests {
         );
 
         let ctx = egui::Context::default();
-        let mut settings = SettingsState::default();
-        settings.admin_token_configured = false;
+        let mut settings = SettingsState {
+            admin_token_configured: false,
+            ..Default::default()
+        };
         settings
             .grant_admin
             .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
@@ -1965,5 +1985,143 @@ mod tests {
         assert!(text
             .contains("Grant editing is locked because no admin token is available. Save an admin token above, then retry."));
         assert!(!text.contains("key_id:"), "details disclosure stays closed");
+    }
+
+    /// #310 r3 (blocker 1): a REAL pointer click on an enabled capability
+    /// switch must mark the response changed and reach the production
+    /// `Request::ToggleGrantCap` path — not just a predicate or labels.
+    #[test]
+    fn capability_switch_click_emits_toggle_request() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsState {
+            admin_token_configured: true,
+            ..Default::default()
+        };
+        settings
+            .grant_admin
+            .set_view(vec![device("dev_test", &["read_tail"])], "dev_test");
+
+        // Locate the first capability switch (the only 34x18 rounded pill)
+        // so the click lands on the real widget.
+        fn find_switch(shape: &egui::epaint::Shape, out: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::epaint::Shape::Rect(rect) => {
+                    let size = rect.rect.size();
+                    if (size.x - 34.0).abs() < 0.5 && (size.y - 18.0).abs() < 0.5 {
+                        out.push(rect.rect);
+                    }
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        find_switch(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut switches = Vec::new();
+        let mut probe = ctx.run_ui(input.clone(), |ui| {
+            settings_pane(
+                ui,
+                &mut settings,
+                SettingsPaneContext {
+                    key_id: "dev_test",
+                    grants: &[String::from("read_tail")],
+                    store: None,
+                    conn: ConnState::Connected,
+                    rev: None,
+                    audit: &None,
+                    audit_loading: false,
+                },
+            );
+        });
+        for clipped in &probe.shapes {
+            find_switch(&clipped.shape, &mut switches);
+        }
+        probe.textures_delta.clear();
+        let pos = switches
+            .first()
+            .expect("an enabled capability switch must render")
+            .center();
+
+        // Press alone must not dispatch the edit request.
+        settings.requested = None;
+        let mut down = ctx.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..input.clone()
+            },
+            |ui| {
+                settings_pane(
+                    ui,
+                    &mut settings,
+                    SettingsPaneContext {
+                        key_id: "dev_test",
+                        grants: &[String::from("read_tail")],
+                        store: None,
+                        conn: ConnState::Connected,
+                        rev: None,
+                        audit: &None,
+                        audit_loading: false,
+                    },
+                );
+            },
+        );
+        down.textures_delta.clear();
+        assert_eq!(settings.requested, None, "a press alone must not dispatch");
+
+        // Release completes the click: the enabled switch marks the
+        // response changed and the production path emits the edit request
+        // for the first capability (prompt).
+        let mut up = ctx.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..input.clone()
+            },
+            |ui| {
+                settings_pane(
+                    ui,
+                    &mut settings,
+                    SettingsPaneContext {
+                        key_id: "dev_test",
+                        grants: &[String::from("read_tail")],
+                        store: None,
+                        conn: ConnState::Connected,
+                        rev: None,
+                        audit: &None,
+                        audit_loading: false,
+                    },
+                );
+            },
+        );
+        up.textures_delta.clear();
+        assert_eq!(
+            settings.requested,
+            Some(Request::ToggleGrantCap("prompt".to_string())),
+            "a real click on an enabled switch must emit Request::ToggleGrantCap"
+        );
     }
 }

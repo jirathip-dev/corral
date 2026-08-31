@@ -443,6 +443,10 @@ pub struct DriveMsg {
     pub agent_id: String,
     pub capability: String,
     pub outcome: DriveOutcome,
+    /// Identity epoch at dispatch time (#310 r3): a drive initiated before
+    /// the current key/registration generation must never set or clear
+    /// current recovery state when its result arrives late.
+    pub identity_generation: u64,
 }
 
 impl DriveMsg {

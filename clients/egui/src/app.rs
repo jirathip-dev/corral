@@ -1780,7 +1780,18 @@ impl CorralApp {
             return;
         }
         self.recent_output_last_refresh = Some(now);
-        let intent = DriveIntent::read_tail_since(&agent_id, 50, source_rev, self.fleet.rev);
+        // R3 (#314): the automatic refresh re-requests the agent's
+        // REMEMBERED tail-window limit, not literal 50 — an explicit
+        // Load earlier must keep its expanded window across refreshes
+        // (including partial responses), while everyone else stays at the
+        // default 50-line page.
+        let lines = self
+            .fleet
+            .tail_requested_lines
+            .get(&agent_id)
+            .copied()
+            .unwrap_or(50);
+        let intent = DriveIntent::read_tail_since(&agent_id, lines, source_rev, self.fleet.rev);
         self.dispatch_drive_intents(vec![intent]);
     }
 
@@ -2750,6 +2761,25 @@ impl CorralApp {
             };
             let agent_id = intent.target.clone();
             let capability = intent.capability.to_string();
+            // R3 (#314): remember the per-agent REQUESTED tail-window limit
+            // when a real read_tail intent is dispatched. Automatic refreshes
+            // later re-request this limit (the explicit Load earlier's 200
+            // survives; the default 50 stays 50). Clamped to the daemon's
+            // existing 1..=200 page bound; values are monotone per agent
+            // (a refresh never shrinks a remembered expansion).
+            if intent.capability == crate::drive::Capability::ReadTail
+                && let Some(lines) = intent.payload["lines"].as_u64()
+            {
+                let lines = lines.clamp(1, 200) as u32;
+                let requested = self
+                    .fleet
+                    .tail_requested_lines
+                    .entry(intent.target.clone())
+                    .or_insert(lines);
+                if lines > *requested {
+                    *requested = lines;
+                }
+            }
             let tx = tx_drive.clone();
             self.fleet.remember_drive(
                 &intent.target,
@@ -5304,6 +5334,469 @@ mod tests {
                 2,
                 "an unchanged source_rev settles through the real frame path \
                  without an immediate request loop"
+            );
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // #314 R3: the per-agent REQUESTED tail-window limit survives
+    // automatic refreshes (explicit Load earlier expands the window;
+    // a partial 200-line response must still re-request 200).
+    // ------------------------------------------------------------------
+
+    /// Canned read_tail responses keyed by request shape: the default
+    /// 50-line hydration, an explicit 200-line page (the canned
+    /// `expanded_lines` may hold fewer than 200 entries to model a partial
+    /// response), and any revision-aware refresh. Expanded/refresh
+    /// responses are truncated to the REQUESTED line count, modelling the
+    /// daemon: a since_rev window requested at 50 really does come back
+    /// with ~50 lines even when more output exists.
+    struct R3Canned {
+        hydrate_lines: Vec<String>,
+        expanded_lines: Vec<String>,
+    }
+
+    fn r3_router(
+        drives: std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+        canned: std::sync::Arc<Mutex<R3Canned>>,
+    ) -> Router {
+        Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = drives.clone();
+            let canned = canned.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope.clone());
+                    let payload = &envelope["payload"];
+                    let requested_lines = payload["lines"].as_u64().unwrap_or(50);
+                    let canned = canned.lock().await;
+                    let window = |source: &[String]| {
+                        source
+                            .iter()
+                            .take(requested_lines as usize)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    // The expanded page returns the window at the CACHED
+                    // source_rev 4 (the source has not advanced); a
+                    // revision-aware refresh advances it to 5.
+                    let (rev, lines) = if payload.get("since_rev").is_some() {
+                        (5u64, window(&canned.expanded_lines))
+                    } else if requested_lines >= 200 {
+                        (4u64, window(&canned.expanded_lines))
+                    } else {
+                        (4u64, window(&canned.hydrate_lines))
+                    };
+                    let response = serde_json::json!({
+                        "request_id": envelope["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }))
+    }
+
+    /// Registered device + read_tail grant against the canned plane.
+    fn r3_ready_app(app: &mut CorralApp, address: std::net::SocketAddr) {
+        app.config.host_url = format!("http://{address}");
+        let key = fresh_device_key(19);
+        let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id,
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+    }
+
+    /// Count recorded drive envelopes for one target agent.
+    fn r3_count_for(drives: &[serde_json::Value], target: &str) -> usize {
+        drives
+            .iter()
+            .filter(|d| d["target"] == serde_json::json!(target))
+            .count()
+    }
+
+    /// R3 blocker regression through the REAL production Board frame: the
+    /// operator's explicit Load earlier expands the window to 200, and the
+    /// NEXT automatic revision-aware refresh must request the REMEMBERED
+    /// 200 — not literal 50, which would replace the expanded history with
+    /// a narrow one.
+    #[test]
+    fn load_earlier_window_survives_the_next_automatic_board_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            app.tab = Tab::Board;
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+            async fn pump_tail_cache(app: &mut CorralApp, rev: u64) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if app.fleet.tail_source_revs.get("herdr:g314") == Some(&rev) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!("R3: tail cache never reached rev {rev}");
+            }
+
+            // Frame 1: the bounded default hydration through the arm.
+            board_frame(&mut app, &ctx);
+            pump_tail_cache(&mut app, 4).await;
+            assert_eq!(drives.lock().await.len(), 1);
+            assert_eq!(
+                drives.lock().await[0]["payload"]["lines"],
+                50,
+                "the initial hydration is the default 50-line page"
+            );
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 1);
+
+            // The operator's explicit Load earlier (the board's production
+            // dispatch shape, through the real funnel).
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await[1]["payload"]["lines"],
+                200,
+                "the explicit Load earlier requests the 200-line page"
+            );
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the expanded 200-line window loads into the cache"
+            );
+
+            // Cooldown elapsed: the NEXT REAL Board frame alone must
+            // refresh at the remembered 200-line window.
+            app.recent_output_last_refresh = None;
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let third = drives.lock().await[2].clone();
+            assert_eq!(third["target"], "herdr:g314");
+            assert_eq!(
+                third["payload"]["lines"], 200,
+                "R3: the automatic refresh must request the REMEMBERED \
+                 200-line window, not literal 50"
+            );
+            assert_eq!(
+                third["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the refresh carries the cached source_rev"
+            );
+            pump_tail_cache(&mut app, 5).await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the refreshed window preserves the expanded history"
+            );
+
+            // An unchanged source_rev settles with no IMMEDIATE loop: the
+            // next real frame runs inside the cooldown window and must not
+            // re-request (a poll after a full cooldown is the intended
+            // pacing, not an immediate loop).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles through the real frame \
+                 without an immediate request loop"
+            );
+        });
+    }
+
+    /// A 200-line request may legitimately return FEWER lines today; the
+    /// remembered limit is what was REQUESTED, so future automatic
+    /// refreshes keep asking for 200 and the window can grow as output
+    /// arrives (never shrinking to tails.len() or literal 50).
+    #[test]
+    fn partial_expanded_window_still_refreshes_at_the_requested_200() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..75).map(|i| format!("partial line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+
+            // Initial hydration at the default 50.
+            app.hydrate_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+
+            // The operator expands to the 200-line page; the daemon can
+            // only serve 75 lines for it right now.
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                75,
+                "the 200-line request returned a partial 75-line window"
+            );
+
+            // The next automatic refresh must still REQUEST 200.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let second = drives.lock().await[2].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["lines"], 200,
+                "R3: a partial 200 response must not shrink the requested \
+                 limit — refreshes keep requesting 200 (not 75, not 50)"
+            );
+            assert_eq!(second["payload"]["since_rev"], serde_json::json!(4));
+            // The refresh advances the source; the cache folds at 75 lines.
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&5) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 75);
+
+            // Unchanged rev: no IMMEDIATE request loop (the call runs
+            // inside the cooldown window; a poll after a full cooldown is
+            // the intended pacing).
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles without an immediate loop"
+            );
+        });
+    }
+
+    /// Per-agent isolation: the expanded agent's window must not leak into
+    /// other agents — a global remembered limit would over-expand the
+    /// non-selected agent's refreshes.
+    #[test]
+    fn expanded_agent_refreshes_at_200_while_other_agent_stays_50() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let a = agent("herdr:g314-a", AgentState::Working, &["read_tail"]);
+            let mut b = agent("herdr:g314-b", AgentState::Working, &["read_tail"]);
+            b.seq = 4;
+            app.fleet = Fleet {
+                agents: [(a.agent_id.clone(), a), (b.agent_id.clone(), b)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314-a".into()),
+                ..Default::default()
+            };
+
+            // Hydrate and expand the selected agent A.
+            app.hydrate_recent_output(Some("herdr:g314-a"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-a") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let load = DriveIntent::read_tail_page("herdr:g314-a", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314-a"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314-a"].len(), 200);
+
+            // The operator switches the visible selection to B.
+            app.hydrate_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-b") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-a"), 2);
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-b"), 1);
+
+            // B's automatic refresh stays the default 50-line page: A's
+            // expanded window must not leak into other agents.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while r3_count_for(&drives.lock().await, "herdr:g314-b") < 2
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let b_refresh = drives
+                .lock()
+                .await
+                .iter()
+                .rev()
+                .find(|d| d["target"] == serde_json::json!("herdr:g314-b"))
+                .cloned()
+                .expect("B's refresh landed on the wire");
+            assert_eq!(
+                b_refresh["payload"]["lines"], 50,
+                "R3: the non-expanded agent's refresh stays the default \
+                 50-line page (a global window would leak A's 200)"
+            );
+            assert_eq!(b_refresh["payload"]["since_rev"], serde_json::json!(4));
+            // No prefetch: A sees no further automatic request.
+            assert_eq!(
+                r3_count_for(&drives.lock().await, "herdr:g314-a"),
+                2,
+                "the hidden (non-selected) agent is never auto-refreshed"
             );
         });
     }

@@ -179,6 +179,15 @@ pub struct Fleet {
     /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
     pub tail_source_revs: HashMap<String, u64>,
+    /// #314 R3: the tail-window limit the CLIENT last requested for the
+    /// agent (default 50; an explicit Load earlier remembers 200 for that
+    /// agent). Automatic revision-aware refreshes re-request this limit so
+    /// the operator's expanded window survives — including when a 200-line
+    /// request currently returns fewer lines (the REQUESTED limit is
+    /// tracked, never `tails[agent].len()`). Values are clamped to the
+    /// daemon's existing 1..=200 page bound; cleared wherever the tails
+    /// themselves are.
+    pub tail_requested_lines: HashMap<String, u32>,
     /// #315: the daemon's CANONICAL semantic blocks for the read window,
     /// cached alongside the legacy `tails` lines. When present the Recent
     /// output view renders these verbatim — the client never re-derives
@@ -223,6 +232,8 @@ impl Fleet {
         let agents = &self.agents;
         self.tails.retain(|id, _| agents.contains_key(id));
         self.tail_blocks.retain(|id, _| agents.contains_key(id));
+        self.tail_requested_lines
+            .retain(|id, _| agents.contains_key(id));
         self.expanded.retain(|id| agents.contains_key(id));
         if self
             .selected_agent
@@ -256,6 +267,7 @@ impl Fleet {
         self.agents.remove(agent_id);
         self.tails.remove(agent_id);
         self.tail_blocks.remove(agent_id);
+        self.tail_requested_lines.remove(agent_id);
         self.diffs.remove(agent_id);
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);

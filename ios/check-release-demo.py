@@ -74,9 +74,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
     # harness scroll (FleetViews layout constant), demo seed long diagnostics
     # + divider-only block + harness-only evidence session (DemoFleet), and
-    # the demo evidence launch args (FleetNotifierApp) — digest re-pinned to
-    # the #330 source set.
-    "46a1f27ed9fc7a0331d7dd06561713a2b1ddd5adc78e8966ebc0086d98905c1b"
+    # the demo evidence launch args (FleetNotifierApp).
+    # #333: DiffPane terminal-state reliability in Models and AppModel, with
+    # bounded/cancellable read_diff; the digest covers the merged source set.
+    "b51c96c8706aa2e29f76cbaa579468a76ba2f24b92c95c751d69c24549e45b69"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

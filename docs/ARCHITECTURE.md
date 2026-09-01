@@ -132,15 +132,12 @@ the watcher/safety overlap is covered by a deterministic regression test.
 The gh plane also publishes the *repo-level* issue set it fetches into a
 read-only `GET /issues` view (`src/api/issues.rs`), which the desktop board's
 Issues tab renders — separate from the per-agent `closingIssuesReferences`
-join in the snapshot. The endpoint retains the union of live agent
-`workspace.repo` values and canonical registry `gh_repo` basenames as empty
-category entries when no issues are cached; fleet-name keys remain for the
-registry-backed start-worktree guard. The write side has one fleet-level
-capability,
-`start_worktree` (#113), routed by `src/api/drive.rs` to
-`src/fleet/worktree.rs` (validate → plan → idempotent create → herdr
-handoff) instead of the per-agent adapter dispatch. GitHub stays READ-ONLY:
-no issue create/edit/close surface exists.
+join in the snapshot. The view is scoped strictly to categories represented by
+current Herdr adapter workspaces; its GitHub-origin poll specs rebuild from
+those owned checkout/worktree facts, and topology changes prune stale issue
+categories. The signed `read_issues` drive arm calls the same projection, so
+both clients receive identical category keys. GitHub stays READ-ONLY: no issue
+create/edit/close surface exists.
 
 The host admin boundary also exposes `GET /grants` (#137): an admin-token
 gated projection of registered device key ids, current grants, revocation,

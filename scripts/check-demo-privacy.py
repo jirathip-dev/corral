@@ -23,7 +23,7 @@ FORBIDDEN = (
     "fleet-operations", "hermes-brain", "herdr-board", "project-hearthwild",
 )
 SYNTHETIC_REPOS = frozenset({
-    "atlas-board", "route-lab", "pixel-garden", "orbit-console",
+    "demo-alpha", "demo-bravo", "demo-charlie", "demo-delta",
 })
 APPROVED_TITLES = frozenset({
     "Demo sample issue: web-board",
@@ -43,12 +43,14 @@ APPROVED_IDENTITIES = frozenset({
 })
 IDENTITY_FIELDS = frozenset({"agent_id", "parent_id", "ref", "del", "approval_id"})
 APPROVED_FIELDS = frozenset({
-    "agent_id", "agents", "ahead", "approval_id", "atlas-board", "attachment",
+    "agent_id", "agents", "ahead", "approval_id", "attachment",
     "behind", "body", "branch", "capabilities", "choices", "ci_status", "color",
-    "del", "deltas", "dirty", "display_name", "generated_at", "host", "issues",
-    "kind", "labels", "name", "number", "orbit-console", "parent_id", "pixel-garden",
-    "pr_number", "prompt", "prompt_hash", "reason", "recent_output", "ref", "repo",
-    "rev", "route-lab", "schema_version", "seq", "snapshot", "source", "state",
+    "del", "deltas", "dirty", "display_name", "demo-alpha", "demo-bravo",
+    "demo-charlie", "demo-delta", "generated_at", "host", "issues",
+    "kind", "labels", "name", "number", "parent_id",
+    "pr_number", "prompt", "prompt_hash", "prompt_request_id", "reason",
+    "recent_output", "recent_output_blocks", "ref", "repo", "rev",
+    "schema_version", "seq", "snapshot", "source", "state", "text",
     "title", "tool", "ts", "upd", "url", "waiting_on", "workspace", "worktree_path",
 })
 
@@ -155,9 +157,9 @@ def self_test(path: Path) -> int:
 
     mutations = (
         ("customer-finance-prod", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("repo", "customer-finance-prod")),
-        ("github.com/acme/private", lambda d: d["issues"]["atlas-board"][0].__setitem__("repo", "github.com/acme/private")),
-        ("sentinel-prefixed live title", lambda d: d["issues"]["atlas-board"][0].__setitem__("title", "Demo sample issue: iOS showcase: automatically refresh GitHub Pages after successful TestFlight upload")),
-        ("string issue number", lambda d: d["issues"]["atlas-board"][0].__setitem__("number", "215")),
+        ("github.com/acme/private", lambda d: d["issues"]["demo-alpha"][0].__setitem__("repo", "github.com/acme/private")),
+        ("sentinel-prefixed live title", lambda d: d["issues"]["demo-alpha"][0].__setitem__("title", "Demo sample issue: iOS showcase: automatically refresh GitHub Pages after successful TestFlight upload")),
+        ("string issue number", lambda d: d["issues"]["demo-alpha"][0].__setitem__("number", "215")),
         ("non-demo attachment ref", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["attachment"].__setitem__("ref", "herdr:real-prod-agent")),
         ("non-demo delta deletion", lambda d: d["deltas"][0].__setitem__("del", ["herdr:real-prod-agent"])),
         ("non-demo parent id", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "herdr:real-prod-agent")),
@@ -166,26 +168,26 @@ def self_test(path: Path) -> int:
         ("non-demo agent map key with slash", lambda d: d["snapshot"]["agents"].__setitem__("herdr:real/prod-agent", d["snapshot"]["agents"].pop("demo:p01:impl"))),
         ("non-demo novel field", lambda d: d.__setitem__("novel_identity", "herdr:real-prod-agent")),
         ("non-demo URL under unknown key", lambda d: d.__setitem__("novel_url", "https://github.com/acme/private")),
-        ("HTTP demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "http://demo.example.invalid/atlas-board/issues/9001")),
-        ("embedded GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://github.com/acme/private for details")),
-        ("FTP URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftp://demo.example.invalid/private")),
-        ("uppercase GitHub URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://github.com/acme/private")),
-        ("wrong-host HTTPS URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://secret.example.com/private")),
-        ("saturated-s wrong-host URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://sass.scss.example/private")),
-        ("bare GitHub host", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See github.com/acme/private")),
-        ("ssh body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ssh://secret.example.com/private")),
-        ("git body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See git://private.example.org/private")),
-        ("ws body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ws://secret.example.com/private")),
-        ("wss body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See wss://private.example.org/private")),
-        ("ftps body", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftps://secret.example.com/private")),
-        ("ssh URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ssh://secret.example.com/private")),
-        ("git URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "git://private.example.org/private")),
-        ("ws URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ws://secret.example.com/private")),
-        ("wss URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "wss://private.example.org/private")),
-        ("ftps URL field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "ftps://secret.example.com/private")),
-        ("ftps partial URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ftps:demo.example.invalid@host")),
-        ("ssh partial URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See ssh:git@server")),
-        ("uppercase wrong host", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://GITHUB.COM/acme/private")),
+        ("HTTP demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "http://demo.example.invalid/demo-alpha/issues/9001")),
+        ("embedded GitHub URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://github.com/acme/private for details")),
+        ("FTP URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftp://demo.example.invalid/private")),
+        ("uppercase GitHub URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://github.com/acme/private")),
+        ("wrong-host HTTPS URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://secret.example.com/private")),
+        ("saturated-s wrong-host URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://sass.scss.example/private")),
+        ("bare GitHub host", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See github.com/acme/private")),
+        ("ssh body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ssh://secret.example.com/private")),
+        ("git body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See git://private.example.org/private")),
+        ("ws body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ws://secret.example.com/private")),
+        ("wss body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See wss://private.example.org/private")),
+        ("ftps body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftps://secret.example.com/private")),
+        ("ssh URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ssh://secret.example.com/private")),
+        ("git URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "git://private.example.org/private")),
+        ("ws URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ws://secret.example.com/private")),
+        ("wss URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "wss://private.example.org/private")),
+        ("ftps URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ftps://secret.example.com/private")),
+        ("ftps partial URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftps:demo.example.invalid@host")),
+        ("ssh partial URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ssh:git@server")),
+        ("uppercase wrong host", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://GITHUB.COM/acme/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -198,15 +200,15 @@ def self_test(path: Path) -> int:
                 return 1
     for name, mutate in (
         ("fixture agent id", lambda d: None),
-        ("fixture URL in approved field", lambda d: d["issues"]["atlas-board"][0].__setitem__("url", "https://demo.example.invalid/atlas-board/issues/9001")),
-        ("ordinary prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
-        ("HTTPS demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://demo.example.invalid/private")),
-        ("uppercase demo origin", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See HTTPS://DEMO.EXAMPLE.INVALID/private")),
-        ("URL followed by whitespace", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private for details")),
-        ("note colon prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "note: this")),
-        ("time colon prose", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "12:30")),
-        ("quoted demo URL", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See 'https://demo.example.invalid/private'")),
-        ("URL before angle bracket", lambda d: d["issues"]["atlas-board"][0].__setitem__("body", "See https://demo.example.invalid/private<")),
+        ("fixture URL in approved field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "https://demo.example.invalid/demo-alpha/issues/9001")),
+        ("ordinary prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
+        ("HTTPS demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://demo.example.invalid/private")),
+        ("uppercase demo origin", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://DEMO.EXAMPLE.INVALID/private")),
+        ("URL followed by whitespace", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://demo.example.invalid/private for details")),
+        ("note colon prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "note: this")),
+        ("time colon prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "12:30")),
+        ("quoted demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See 'https://demo.example.invalid/private'")),
+        ("URL before angle bracket", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://demo.example.invalid/private<")),
     ):
         candidate = json.loads(json.dumps(data))
         mutate(candidate)
@@ -226,7 +228,7 @@ def self_test(path: Path) -> int:
         return 2
     for live_title in gh.stdout.splitlines():
         candidate = json.loads(json.dumps(data))
-        candidate["issues"]["atlas-board"][0]["title"] = live_title
+        candidate["issues"]["demo-alpha"][0]["title"] = live_title
         with tempfile.TemporaryDirectory() as directory:
             mutated = Path(directory) / "demo-fixture.json"
             mutated.write_text(json.dumps(candidate))

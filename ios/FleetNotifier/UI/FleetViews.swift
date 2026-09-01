@@ -1061,6 +1061,14 @@ enum RecentOutputAccessibility {
     static func worktreeLabel(_ value: String) -> String { "Worktree: \(value)" }
 }
 
+/// #316 V3 layout constants for the stacked iOS Recent-output surface.
+enum RecentOutputLayout {
+    /// The conversation viewport is height-capped so Session status, Harness
+    /// activity, and the pinned composer below always stay reachable — the
+    /// stacked mirror of the egui narrow-layout bound.
+    static let conversationViewportHeight: CGFloat = 320
+}
+
 enum RecentOutputPalette {
     static let panelCornerRadius: CGFloat = 8
     /// The approved prototype is a dark-only surface. Explicitly injecting
@@ -1113,6 +1121,9 @@ private struct RecentOutputView: View {
     /// (built by AgentDetailContent, which owns availability + dispatch).
     let toolbar: AnyView?
     @State private var paginationAnchor: String?
+    /// #316 V3: Harness activity is collapsed by default; its content stays
+    /// outside the conversation viewport whether expanded or not.
+    @State private var harnessExpanded = false
 
     private var driveClient: DriveClient {
         model.makeDriveClient()
@@ -1138,7 +1149,7 @@ private struct RecentOutputView: View {
                     .padding(.vertical, 8)
                     .accessibilityLabel(availability.disabledReason ?? "Recent output unavailable")
             } else {
-                metadataBar(snapshot: snapshot)
+                sessionStatus(snapshot: snapshot)
                 historyBar(snapshot: snapshot)
                 content(snapshot: snapshot)
             }
@@ -1194,34 +1205,61 @@ private struct RecentOutputView: View {
         .padding(.bottom, 4)
     }
 
+    /// #316 V3 "Session status": OUTSIDE the conversation, structured
+    /// read-model values only (state/freshness, session identity, tool or
+    /// model metadata, effort, worktree). Unavailable values are omitted —
+    /// nothing is inferred from output prose.
     @ViewBuilder
-    private func metadataBar(snapshot: RecentOutputSnapshot) -> some View {
-        HStack(spacing: 6) {
-            let model = snapshot.render.metadata.model ?? agent.tool
-            metadataChip(model, color: RecentOutputPalette.accent)
-                .accessibilityLabel(RecentOutputAccessibility.modelLabel(model))
-            if let effort = snapshot.render.metadata.effort {
-                metadataChip(effort)
-                    .accessibilityLabel(RecentOutputAccessibility.effortLabel(effort))
-            }
-            if let worktree = snapshot.render.metadata.worktree
-                ?? agent.workspace.worktreePath {
-                Text(worktree)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(RecentOutputPalette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(RecentOutputPalette.panel3,
-                                in: Capsule())
-                    .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
-                    .accessibilityLabel(RecentOutputAccessibility.worktreeLabel(worktree))
+    private func sessionStatus(snapshot: RecentOutputSnapshot) -> some View {
+        let fresh = RecentOutputModel.hasFreshNonErrorTail(tail)
+        let status = RecentSessionStatusModel.status(
+            agent: agent, tail: tail, fresh: fresh,
+            metadata: snapshot.render.metadata)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Session status")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(RecentOutputPalette.muted)
+            // Keep the metadata chips (the already-supported canonical
+            // `model effort · path` extraction) as the value carriers so the
+            // #205/#315 contract is preserved; state/session are new
+            // structured rows.
+            HStack(spacing: 6) {
+                Text(status.state)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(RecentOutputPalette.ink)
+                    .accessibilityLabel("State: \(status.state)")
+                if let session = status.session {
+                    metadataChip(session)
+                        .accessibilityLabel("Session: \(session)")
+                }
+                if let tool = status.tool {
+                    metadataChip(tool, color: RecentOutputPalette.accent)
+                        .accessibilityLabel(RecentOutputAccessibility.modelLabel(tool))
+                }
+                if let effort = status.effort {
+                    metadataChip(effort)
+                        .accessibilityLabel(RecentOutputAccessibility.effortLabel(effort))
+                }
+                if let worktree = status.worktree {
+                    Text(worktree)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(RecentOutputPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(RecentOutputPalette.panel3,
+                                    in: Capsule())
+                        .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
+                        .accessibilityLabel(RecentOutputAccessibility.worktreeLabel(worktree))
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Session status")
     }
 
     private func metadataChip(_ text: String, color: Color = RecentOutputPalette.ink) -> some View {
@@ -1272,16 +1310,27 @@ private struct RecentOutputView: View {
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case .loaded:
+            // #316 V3: the canonical stream is partitioned once through the
+            // production read path; Conversation is a bounded viewport (height
+            // cap) so Harness activity and the pinned composer below always
+            // stay reachable, and the conversation rows/counts come from the
+            // Conversation partition only.
+            let sections = RecentOutputSections.displaySections(from: snapshot.visibleRows)
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(snapshot.identifiedRows.enumerated()), id: \.element.id) {
+                        Text("Conversation")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(RecentOutputPalette.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("Conversation")
+                        ForEach(Array(identifiedConversationRows(sections).enumerated()), id: \.element.id) {
                             index, identified in
                             RecentOutputRowView(
                                 row: identified.row,
                                 model: model,
                                 agent: agent,
-                                previousBlock: previousBlock(in: snapshot.visibleRows, at: index))
+                                previousBlock: previousBlock(in: sections.conversation, at: index))
                         }
                         Color.clear
                             .frame(height: 1)
@@ -1290,7 +1339,7 @@ private struct RecentOutputView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: RecentOutputLayout.conversationViewportHeight)
                 .onAppear {
                     paginationAnchor = nil
                     scrollToBottom(proxy, animated: false)
@@ -1315,7 +1364,46 @@ private struct RecentOutputView: View {
                     }
                 }
             }
+            harnessActivity(sections: sections)
         }
+    }
+
+    /// #316 V3 "Harness activity": canonical System/Unknown blocks, outside
+    /// the conversation viewport, collapsible, order preserved, content
+    /// complete (Diagnostic / Unknown activity identity), never dropped.
+    @ViewBuilder
+    private func harnessActivity(sections: RecentOutputSections) -> some View {
+        if !sections.harness.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                DisclosureGroup(isExpanded: $harnessExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(RecentOutputModel.identifiedRows(
+                            for: sections.harness.map(RecentOutputRow.block))
+                            .enumerated()), id: \.element.id) { index, identified in
+                            if case .block(let block) = identified.row {
+                                RecentBlockRow(
+                                    block: block,
+                                    showSpeaker: true,
+                                    showTimestamp: true)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                } label: {
+                    Text("Harness activity · \(sections.harness.count) outside conversation")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(RecentOutputPalette.muted)
+                }
+                .accessibilityLabel("Harness activity · \(sections.harness.count) outside conversation")
+            }
+        }
+    }
+
+    private func identifiedConversationRows(
+        _ sections: RecentOutputSections
+    ) -> [RecentOutputIdentifiedRow] {
+        RecentOutputModel.identifiedRows(for: sections.conversation.map(RecentOutputRow.block))
     }
 
     @ViewBuilder
@@ -1359,14 +1447,9 @@ private struct RecentOutputView: View {
         }
     }
 
-    private func previousBlock(in rows: [RecentOutputRow], at index: Int) -> TranscriptBlock? {
+    private func previousBlock(in rows: [TranscriptBlock], at index: Int) -> TranscriptBlock? {
         guard index > 0 else { return nil }
-        for position in stride(from: index - 1, through: 0, by: -1) {
-            if case .block(let block) = rows[position] {
-                return block
-            }
-        }
-        return nil
+        return rows[index - 1]
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -1383,7 +1466,15 @@ private struct RecentOutputView: View {
 
     private func loadEarlier(snapshot: RecentOutputSnapshot) {
         guard snapshot.render.canLoadOlder else { return }
-        let anchor = snapshot.identifiedRows.first?.id
+        // Anchor on the first CONVERSATION block row: a history prepend is
+        // measured against the same identified sequence the conversation
+        // renders (the anchor never points into the harness partition).
+        let anchor = RecentOutputModel.identifiedRows(
+            for: RecentOutputSections.partition(snapshot.visibleRows.compactMap { row -> TranscriptBlock? in
+                if case .block(let block) = row { return block }
+                return nil
+            }).conversation.map(RecentOutputRow.block))
+            .first?.id
         guard model.loadEarlierOutput(agentId: agent.agentId) else {
             paginationAnchor = nil
             return
@@ -1689,8 +1780,8 @@ private struct RecentBlockRow: View {
         case .user: return "you"
         case .agent: return "assistant"
         case .tool: return "tool"
-        case .system: return "system"
-        case .unknown: return "terminal"
+        case .system: return "diagnostic"
+        case .unknown: return "unknown activity"
         }
     }
 

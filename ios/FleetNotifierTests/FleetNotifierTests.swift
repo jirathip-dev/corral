@@ -4005,9 +4005,9 @@ final class RecentOutputModelTests: XCTestCase {
         let user = block(.user, "user message")
         let agent = block(.agent, "agent message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(user),
-                       "You: user message")
+                       "You said: user message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(agent),
-                       "Agent: agent message")
+                       "Assistant: agent message")
 
         let tool = block(.tool, "$ cargo test")
         XCTAssertEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
@@ -4112,8 +4112,8 @@ final class RecentOutputModelTests: XCTestCase {
     }
 
     func testRecentOutputMetadataAccessibilityLabelsKeepRolesDistinct() {
-        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-codex-demo"),
-                       "Model: demo-codex-demo")
+        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-model-demo"),
+                       "Model: demo-model-demo")
         XCTAssertEqual(RecentOutputAccessibility.effortLabel("high"),
                        "Effort: high")
         XCTAssertEqual(RecentOutputAccessibility.worktreeLabel("~/worktrees/corral/demo"),
@@ -4208,10 +4208,11 @@ final class RecentOutputModelTests: XCTestCase {
             return XCTFail("unknown block remains a block row")
         }
         XCTAssertEqual(visible.kind, .unknown)
-        // The accessibility label names it honestly instead of guessing.
+        // The accessibility label names it honestly instead of guessing
+        // (#316 V3 locked naming: `Unknown activity`).
         XCTAssertTrue(
-            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Terminal:"),
-            "unknown content is labelled as terminal activity, not a role")
+            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Unknown activity:"),
+            "unknown content is labelled as unknown activity, not a role")
     }
 
     func testLegacyLineFallbackNoLongerGuessesRoles() {
@@ -4239,13 +4240,12 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(
             CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoBefore"]),
             .before)
-        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-output")
+        XCTAssertEqual(DemoFleet.featuredAgentID, "demo-session:recent-output")
     }
 
-    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {
+    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsOmitted() throws {
         let agents = DemoFleet.seed()
         let first = try XCTUnwrap(agents[DemoFleet.featuredAgentID])
-        let second = try XCTUnwrap(agents["herdr:demo-working"])
         let response = DemoFleet.respond(to: .readTail, payload: .null, agent: first, rev: 1)
         guard case .dispatched(let dispatched) = response,
               let result = dispatched.result,
@@ -4256,8 +4256,17 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(storedLines,
                        storedBlocks.flatMap { $0.text.components(separatedBy: .newlines) },
                        "stored legacy lines must be the exact flattening of stored semantic blocks")
-        XCTAssertNotEqual(DemoFleet.model(for: first), DemoFleet.model(for: second))
-        XCTAssertNotEqual(DemoFleet.worktree(for: first), DemoFleet.worktree(for: second))
+        // R4: the demo seed carries NO manufactured `model effort · path`
+        // metadata (every seeded agent has worktreePath == nil), so Session
+        // status omits Model/Effort/Worktree and the Tool chip falls back to
+        // the agent's structured tool field. Unavailable fields are omitted,
+        // never replaced with a path-like fallback.
+        XCTAssertEqual(RecentOutputMetadata.extract(from: storedBlocks),
+                       RecentOutputMetadata(),
+                       "demo blocks must not fabricate model/effort/worktree metadata")
+        XCTAssertTrue(storedBlocks.allSatisfy {
+            !$0.text.contains("·")
+        }, "demo blocks must not contain any metadata-separator line")
         XCTAssertTrue(DemoFleet.monotoneOutput(for: first).contains("Please verify the diff too."))
     }
 #endif
@@ -4993,7 +5002,7 @@ final class IssueBrowserTests: XCTestCase {
     func testDemoIssuesSeedMirrorsApprovedRows() throws {
         let seeded = DemoFleet.seedIssues()
         // Open #267 with a body + comment window + authoritative total.
-        let atlas = try XCTUnwrap(seeded.repos["atlas-board"])
+        let atlas = try XCTUnwrap(seeded.repos["demo-atlas"])
         let issue9007 = try XCTUnwrap(atlas.first { $0.number == 9007 })
         XCTAssertEqual(issue9007.state, "open")
         XCTAssertNotNil(issue9007.body)
@@ -5002,7 +5011,7 @@ final class IssueBrowserTests: XCTestCase {
         // Closed bucket exists (proves the closed filter).
         XCTAssertTrue(atlas.contains { $0.state == "closed" })
         // Repos are the tracked fleets.
-        XCTAssertEqual(Set(seeded.repos.keys), ["atlas-board", "signal-grove", "paper-orchard"])
+        XCTAssertEqual(Set(seeded.repos.keys), ["demo-atlas", "demo-grove", "demo-orchard"])
     }
 
     /// #280: the demo seed must mirror the live wire contract — the daemon
@@ -5012,12 +5021,227 @@ final class IssueBrowserTests: XCTestCase {
     /// same ordering the daemon's CREATED_AT sort produces.
     func testDemoCommentWindowIsNewestFirst() throws {
         let seeded = DemoFleet.seedIssues()
-        let issue9007 = try XCTUnwrap(seeded.repos["atlas-board"]?.first { $0.number == 9007 })
+        let issue9007 = try XCTUnwrap(seeded.repos["demo-atlas"]?.first { $0.number == 9007 })
         let stamps = issue9007.comments.map(\.createdAt)
         XCTAssertFalse(stamps.isEmpty, "the demo comment window is non-empty")
         let rendered = stamps.map { $0 ?? "" }
         XCTAssertEqual(rendered, rendered.sorted(by: >),
                        "demo comments must render newest-first like the live wire")
         XCTAssertEqual(rendered.first, "2026-08-28T15:10:00Z")
+    }
+}
+
+// MARK: - #316 V3 Context split (canonical-kind partition + structured status)
+
+final class ContextSplitV3Tests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String,
+                       at: UInt64? = nil) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text, at: at, truncatedBefore: nil)
+    }
+
+    private func agent(_ id: String, state: AgentState, tool: String = "codex") -> Agent {
+        Agent(agentId: id, source: "herdr", tool: tool, state: state,
+              seq: 1, ts: 1, capabilities: ["read_tail"],
+              waitingOn: nil, workspace: Workspace(),
+              displayName: id, title: nil)
+    }
+
+    /// Locked V3 partition: Conversation keeps canonical User/Agent/Tool;
+    /// System/Unknown move to Harness activity; nothing is lost or
+    /// reclassified, and relative order is preserved in each partition.
+    func testV3PartitionRoutesKindsWithoutLossOrReordering() {
+        let stream = [
+            block(.system, "s1"),
+            block(.user, "u1"),
+            block(.agent, "a1"),
+            block(.unknown, "k1"),
+            block(.tool, "t1"),
+            block(.system, "s2"),
+            block(.unknown, "k2"),
+        ]
+        let sections = RecentOutputSections.partition(stream)
+        XCTAssertEqual(sections.conversation.map(\.text), ["u1", "a1", "t1"])
+        XCTAssertEqual(sections.harness.map(\.text), ["s1", "k1", "s2", "k2"])
+        XCTAssertEqual(sections.total, stream.count,
+                       "the partition drops nothing")
+    }
+
+    /// Every event keeps an explicit accessibility role with the locked V3
+    /// naming; the surface never decides identity by text inspection.
+    func testV3AccessibleRolesAreExplicitAndLocked() {
+        let sections = RecentOutputSections.partition([
+            block(.user, "u"), block(.agent, "a"), block(.tool, "t"),
+            block(.system, "s"), block(.unknown, "k"),
+        ])
+        XCTAssertEqual(sections.context(for: block(.user, "u"))
+            .accessibilityRole(block(.user, "u")), "You said")
+        XCTAssertEqual(sections.context(for: block(.agent, "a"))
+            .accessibilityRole(block(.agent, "a")), "Assistant")
+        XCTAssertEqual(sections.context(for: block(.tool, "t"))
+            .accessibilityRole(block(.tool, "t")), "Tool")
+        XCTAssertEqual(sections.context(for: block(.system, "s"))
+            .accessibilityRole(block(.system, "s")), "Diagnostic")
+        XCTAssertEqual(sections.context(for: block(.unknown, "k"))
+            .accessibilityRole(block(.unknown, "k")), "Unknown activity")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.system, "boom")),
+                       "Diagnostic: boom")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.unknown, "raw")),
+                       "Unknown activity: raw")
+    }
+
+    /// Session status is built ONLY from already-authoritative structured
+    /// values; unavailable values are omitted, never invented from prose.
+    func testV3SessionStatusUsesOnlyStructuredFieldsAndOmitsUnknowns() {
+        let metadata = RecentOutputMetadata(model: "demo-model", effort: "high",
+                                            worktree: nil)
+        let status = RecentSessionStatusModel.status(
+            agent: agent("herdr:x", state: .working),
+            tail: nil, fresh: true, metadata: metadata)
+        XCTAssertEqual(status.state, "Working · live")
+        XCTAssertEqual(status.session, "herdr:x")
+        XCTAssertEqual(status.tool, "demo-model",
+                       "the canonical metadata model wins over the source tool")
+        XCTAssertEqual(status.effort, "high")
+        XCTAssertNil(status.worktree, "no worktree value -> omitted, not guessed")
+
+        let plain = RecentSessionStatusModel.status(
+            agent: agent("herdr:y", state: .idle, tool: "claude"),
+            tail: nil, fresh: false, metadata: RecentOutputMetadata())
+        XCTAssertEqual(plain.state, "Idle")
+        XCTAssertEqual(plain.tool, "claude",
+                       "the structured source tool is already authoritative")
+        XCTAssertNil(plain.effort)
+        XCTAssertNil(plain.worktree)
+    }
+
+    /// The seeded demo fixture exercises the V3 split: canonical System and
+    /// Unknown blocks land in Harness activity, and the conversation keeps
+    /// the user/agent/tool run, deterministically.
+    func testV3DemoSeedCarriesHarnessAndConversationBlocks() throws {
+        let seeded = DemoFleet.seed(rev: 1)
+        let featured = try XCTUnwrap(seeded[DemoFleet.featuredAgentID])
+        let demoBlocks = DemoFleet.recentBlocks(for: featured).map {
+            TranscriptBlock(kind: $0.kind, text: $0.text,
+                            at: nil, truncatedBefore: $0.truncatedBefore)
+        }
+        let sections = RecentOutputSections.partition(demoBlocks)
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown],
+                       "demo harness activity carries one Diagnostic + one Unknown activity")
+        XCTAssertEqual(sections.conversation.map(\.kind),
+                       [.agent, .user, .agent, .tool])
+        XCTAssertFalse(sections.harness.isEmpty)
+    }
+
+    /// Real production wiring: the Recent-output view derives its sections
+    /// through `RecentOutputSections.displaySections(from:)` — the exact read
+    /// path the body calls. If the surface ever renders the unpartitioned
+    /// stream (every block in Conversation), the harness blocks reappear in
+    /// the conversation partition and this fails.
+    func testV3ProductionReadPathPartitionsSnapshotRows() {
+        let visibleRows: [RecentOutputRow] = [
+            .block(block(.agent, "a1")),
+            .block(block(.system, "s1")),
+            .block(block(.user, "u1")),
+            .block(block(.unknown, "k1")),
+            .block(block(.tool, "t1")),
+        ]
+        let sections = RecentOutputSections.displaySections(from: visibleRows)
+        XCTAssertEqual(sections.conversation.map(\.kind), [.agent, .user, .tool])
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown])
+        XCTAssertEqual(sections.total, visibleRows.count,
+                       "the production read path drops nothing")
+        XCTAssertTrue(sections.conversation.allSatisfy { block in
+            sections.context(for: block) == .conversation
+        }, "every conversation block still routes as conversation on the read path")
+    }
+
+    /// R5+R6: the REAL production wiring seam, structurally scoped. The
+    /// model helper test above guards `displaySections` itself, but nothing
+    /// previously bound FleetViews to that helper — a compile-capable
+    /// bypass of the view call site (every block in Conversation, harness
+    /// empty) shipped green. This test reads the bundled production source
+    /// (ios/project.yml preBuildScript → FleetViews.swift.txt, byte-identical
+    /// to the compiled file) and scopes EVERY assertion to the actual
+    /// `RecentOutputView.content(snapshot:)` `.loaded` branch — a decoy
+    /// helper elsewhere in the file carrying the same assignment string
+    /// must not satisfy it. All marker lookups fail closed: unique start,
+    /// unique `case .loaded:`, ordered boundaries, non-empty slices.
+    func testV3ProductionViewWiringBindsFleetViewsToDisplaySections() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "FleetViews.swift", withExtension: "txt"),
+            "FleetViews.swift.txt must be bundled with the tests (project.yml preBuildScript)")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let lines = source.components(separatedBy: .newlines)
+
+        // 1. Uniquely locate the owning function.
+        let contentMarker = "private func content(snapshot: RecentOutputSnapshot) -> some View {"
+        let contentStarts = lines.indices.filter { lines[$0].contains(contentMarker) }
+        XCTAssertEqual(contentStarts.count, 1, "content(snapshot:) marker must be unique")
+        let contentStart = try XCTUnwrap(contentStarts.first)
+
+        // 2. Uniquely locate `case .loaded:` inside that function, and the
+        //    production loaded-branch boundary: the branch's final consumer
+        //    is the `harnessActivity(sections: sections)` call, and the next
+        //    function boundary is `private func harnessActivity`.
+        let loadedMarker = "case .loaded:"
+        let loadedStarts = lines[contentStart...].indices.filter {
+            lines[$0].contains(loadedMarker)
+        }
+        XCTAssertEqual(loadedStarts.count, 1, "case .loaded: must be unique inside content(snapshot:)")
+        let loadedStart = try XCTUnwrap(loadedStarts.first)
+
+        let harnessCallMarker = "harnessActivity(sections: sections)"
+        let harnessCalls = lines[loadedStart...].indices.filter {
+            lines[$0].contains(harnessCallMarker)
+        }
+        XCTAssertEqual(harnessCalls.count, 1,
+                       "harnessActivity(sections: sections) must be unique inside the loaded branch")
+        let harnessCall = try XCTUnwrap(harnessCalls.first)
+
+        let harnessFuncMarker = "private func harnessActivity"
+        let harnessFunc = try XCTUnwrap(
+            lines[harnessCall...].firstIndex(where: { $0.contains(harnessFuncMarker) }),
+            "private func harnessActivity must follow the loaded branch")
+        XCTAssertTrue(harnessFunc > harnessCall,
+                      "function boundary must be ordered after the loaded branch")
+
+        // 3. The loaded-branch prelude (case line through the ScrollViewReader
+        //    opening): exactly one `let sections = ...` assignment, exactly
+        //    through displaySections, and NO direct RecentOutputSections(...)
+        //    constructor/bypass.
+        let scrollReader = try XCTUnwrap(
+            lines[loadedStart...harnessCall].firstIndex(where: {
+                $0.contains("ScrollViewReader { proxy in")
+            }),
+            "loaded branch must open its ScrollViewReader")
+        let prelude = lines[loadedStart...scrollReader]
+
+        let sectionAssignments = prelude.filter { $0.contains("let sections =") }
+        XCTAssertEqual(sectionAssignments.count, 1,
+                       "the loaded-branch prelude must contain exactly one sections assignment")
+        let assignment = try XCTUnwrap(sectionAssignments.first)
+        XCTAssertTrue(
+            assignment.contains(
+                "RecentOutputSections.displaySections(from: snapshot.visibleRows)"),
+            "the loaded-branch assignment must be exactly displaySections(from: snapshot.visibleRows)")
+        XCTAssertFalse(
+            prelude.contains { $0.contains("RecentOutputSections(") },
+            "the loaded-branch prelude must not contain a direct RecentOutputSections( constructor/bypass")
+
+        // 4. The paired render consumers must live in the SAME loaded-branch
+        //    slice (case .loaded: … harnessActivity(sections: sections)),
+        //    not elsewhere in the file.
+        let loadedSlice = lines[loadedStart...harnessCall]
+        XCTAssertFalse(loadedSlice.isEmpty, "the loaded-branch slice must be non-empty")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains("identifiedConversationRows(sections)") },
+            "Conversation must render identifiedConversationRows(sections) inside the loaded branch")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains("previousBlock(in: sections.conversation, at: index)") },
+            "Conversation rows must page against sections.conversation inside the loaded branch")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains(harnessCallMarker) },
+            "Harness activity must consume the same sections object inside the loaded branch")
     }
 }

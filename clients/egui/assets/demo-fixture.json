@@ -815,5 +815,28 @@
     "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")",
     "git diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run",
     "▸ tool status: ok [icon] ⚠️"
+  ],
+  "recent_output_blocks": [
+    {
+      "kind": "tool",
+      "text": "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")\ngit diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run\nrun status: ok [icon] ⚠️"
+    },
+    {
+      "kind": "user",
+      "text": "ship the canonical transcript stream",
+      "prompt_request_id": "req-prompt"
+    },
+    {
+      "kind": "unknown",
+      "text": "Canonical stream wired end to end."
+    },
+    {
+      "kind": "system",
+      "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt"
+    },
+    {
+      "kind": "unknown",
+      "text": "fix the flaky test by hand"
+    }
   ]
 }

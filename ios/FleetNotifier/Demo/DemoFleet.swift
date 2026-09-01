@@ -308,6 +308,16 @@ enum DemoFleet {
                 kind: .agent,
                 text: "def deploy():\n    print(\"ready ✅\")\n    return True",
                 truncatedBefore: nil),
+            // #316 V3: canonical System/Unknown demo blocks so the Harness
+            // activity section, its count, and the Diagnostic / Unknown
+            // activity identity are exercised in demo evidence.
+            RecentBlock(
+                kind: .system,
+                text: "read_tail page truncated to the newest 200 lines.",
+                truncatedBefore: nil),
+            RecentBlock(kind: .unknown,
+                        text: "raw pane line without provenance",
+                        truncatedBefore: nil),
             RecentBlock(
                 kind: .tool,
                 text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}\nrun status: ok [icon] ⚠️",

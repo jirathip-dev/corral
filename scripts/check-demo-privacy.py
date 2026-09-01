@@ -47,8 +47,9 @@ APPROVED_FIELDS = frozenset({
     "behind", "body", "branch", "capabilities", "choices", "ci_status", "color",
     "del", "deltas", "dirty", "display_name", "generated_at", "host", "issues",
     "kind", "labels", "name", "number", "orbit-console", "parent_id", "pixel-garden",
-    "pr_number", "prompt", "prompt_hash", "reason", "recent_output", "ref", "repo",
-    "rev", "route-lab", "schema_version", "seq", "snapshot", "source", "state",
+    "pr_number", "prompt", "prompt_hash", "prompt_request_id", "reason",
+    "recent_output", "recent_output_blocks", "ref", "repo", "rev", "route-lab",
+    "schema_version", "seq", "snapshot", "source", "state", "text",
     "title", "tool", "ts", "upd", "url", "waiting_on", "workspace", "worktree_path",
 })
 

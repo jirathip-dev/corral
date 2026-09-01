@@ -61,7 +61,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
     # #315: re-pinned after the canonical provenance read-model change.
-    "c15c6c6d3bb4e715530d1c95a47b3449a8e1d69512f69fd87e15407b01a77dc2"
+    # #316 V3 context split: canonical-kind partition, structured session
+    # status, and locked accessibility roles updated RecentOutputModel,
+    # FleetViews, and the demo seed; the pin follows the new source set.
+    "182403a93e87b89205903d9fcad338f739f69c88bf9cf13a5f26166d5bba5f8f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -1,0 +1,47 @@
+capture log — issue-316 implementation evidence
+================================================
+
+iOS (v3-context-split-ios-390x844.png)
+  Build:   HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 \
+           xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+           -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/fn-dd316 build
+           -> ** BUILD SUCCEEDED **
+  Install: xcrun simctl install 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 \
+           /tmp/fn-dd316/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+  Launch:  xcrun simctl launch 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 \
+           com.corral.fleetnotifier -corralDemoDetail      (pid 32001)
+  Capture: sleep 7 && xcrun simctl io 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 screenshot <raw>
+  Resize:  sips -z 844 390 <raw> --out v3-context-split-ios-390x844.png   (raw deleted)
+  Result:  PNG 390x844  sha256 b6888d99b1c16a7f59cff89b84524f442f73183e
+
+egui (v3-context-split-egui-1320x860.png)
+  Build:   cd clients/egui && wasm-pack build --target web --out-dir /tmp/g316-wasm-pkg \
+           --out-name corral-web && cp web/index.html /tmp/g316-wasm-pkg/
+  Serve:   cd /tmp/g316-wasm-pkg && python3 -m http.server 8321   (index 200, wasm 200)
+  Seed:    seed.html sets localStorage corral_web_setup_v1={"mode":"demo"} then
+           location.replace('index.html')  (suppresses the first-run setup modal;
+           demo mode + fixture data only, no daemon)
+  Capture: chrome-headless-shell --headless --disable-gpu --no-first-run --hide-scrollbars \
+           --user-data-dir=$(mktemp -d) --window-size=1320,860 --force-device-scale-factor=2 \
+           --virtual-time-budget=60000 --screenshot=<2x> http://127.0.0.1:8321/seed.html
+  Resize:  sips -z 860 1320 <2x> --out v3-context-split-egui-1320x860.png
+  Result:  PNG 1320x860  sha256 9efbb625e9497dc7bab4b4492982bed4d7396c0c
+
+Renderer: machine-cached chrome-headless-shell
+  $HOME/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+  (pre-existing on host; no browser/driver installed by this lane)
+
+Vision self-review (both PNGs, full frame + zoomed crops):
+  iOS  — Session status (Working · live + session/model/worktree chips),
+         Conversation (user bubble, assistant code block, expanded tool diff
+         with +/-/@@ and gutters), "Harness activity · 2 outside conversation",
+         pinned composer. All data synthetic demo fixture.
+  egui — Conversation column (tool disclosure, syntax-colored diff, numbered
+         gutters, "Load earlier"), Session utilities column with Session
+         status grid (State/Session/Tool/Worktree), "Harness activity · 3
+         outside conversation", pinned composer. All data synthetic fixture.
+  Deviation recorded in README.md: egui user-bubble glyphs degrade in this
+  headless path (capture artifact; production rendering proven by executed
+  painted-galley geometry tests on the same code path). Native-daemon
+  capture rejected: the only reachable daemon serves this host's REAL
+  agents/repos — committing that frame would leak real data.

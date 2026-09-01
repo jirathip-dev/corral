@@ -4005,9 +4005,9 @@ final class RecentOutputModelTests: XCTestCase {
         let user = block(.user, "user message")
         let agent = block(.agent, "agent message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(user),
-                       "You: user message")
+                       "You said: user message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(agent),
-                       "Agent: agent message")
+                       "Assistant: agent message")
 
         let tool = block(.tool, "$ cargo test")
         XCTAssertEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
@@ -4208,10 +4208,11 @@ final class RecentOutputModelTests: XCTestCase {
             return XCTFail("unknown block remains a block row")
         }
         XCTAssertEqual(visible.kind, .unknown)
-        // The accessibility label names it honestly instead of guessing.
+        // The accessibility label names it honestly instead of guessing
+        // (#316 V3 locked naming: `Unknown activity`).
         XCTAssertTrue(
-            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Terminal:"),
-            "unknown content is labelled as terminal activity, not a role")
+            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Unknown activity:"),
+            "unknown content is labelled as unknown activity, not a role")
     }
 
     func testLegacyLineFallbackNoLongerGuessesRoles() {
@@ -5019,5 +5020,130 @@ final class IssueBrowserTests: XCTestCase {
         XCTAssertEqual(rendered, rendered.sorted(by: >),
                        "demo comments must render newest-first like the live wire")
         XCTAssertEqual(rendered.first, "2026-08-28T15:10:00Z")
+    }
+}
+
+// MARK: - #316 V3 Context split (canonical-kind partition + structured status)
+
+final class ContextSplitV3Tests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String,
+                       at: UInt64? = nil) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text, at: at, truncatedBefore: nil)
+    }
+
+    private func agent(_ id: String, state: AgentState, tool: String = "codex") -> Agent {
+        Agent(agentId: id, source: "herdr", tool: tool, state: state,
+              seq: 1, ts: 1, capabilities: ["read_tail"],
+              waitingOn: nil, workspace: Workspace(),
+              displayName: id, title: nil)
+    }
+
+    /// Locked V3 partition: Conversation keeps canonical User/Agent/Tool;
+    /// System/Unknown move to Harness activity; nothing is lost or
+    /// reclassified, and relative order is preserved in each partition.
+    func testV3PartitionRoutesKindsWithoutLossOrReordering() {
+        let stream = [
+            block(.system, "s1"),
+            block(.user, "u1"),
+            block(.agent, "a1"),
+            block(.unknown, "k1"),
+            block(.tool, "t1"),
+            block(.system, "s2"),
+            block(.unknown, "k2"),
+        ]
+        let sections = RecentOutputSections.partition(stream)
+        XCTAssertEqual(sections.conversation.map(\.text), ["u1", "a1", "t1"])
+        XCTAssertEqual(sections.harness.map(\.text), ["s1", "k1", "s2", "k2"])
+        XCTAssertEqual(sections.total, stream.count,
+                       "the partition drops nothing")
+    }
+
+    /// Every event keeps an explicit accessibility role with the locked V3
+    /// naming; the surface never decides identity by text inspection.
+    func testV3AccessibleRolesAreExplicitAndLocked() {
+        let sections = RecentOutputSections.partition([
+            block(.user, "u"), block(.agent, "a"), block(.tool, "t"),
+            block(.system, "s"), block(.unknown, "k"),
+        ])
+        XCTAssertEqual(sections.context(for: block(.user, "u"))
+            .accessibilityRole(block(.user, "u")), "You said")
+        XCTAssertEqual(sections.context(for: block(.agent, "a"))
+            .accessibilityRole(block(.agent, "a")), "Assistant")
+        XCTAssertEqual(sections.context(for: block(.tool, "t"))
+            .accessibilityRole(block(.tool, "t")), "Tool")
+        XCTAssertEqual(sections.context(for: block(.system, "s"))
+            .accessibilityRole(block(.system, "s")), "Diagnostic")
+        XCTAssertEqual(sections.context(for: block(.unknown, "k"))
+            .accessibilityRole(block(.unknown, "k")), "Unknown activity")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.system, "boom")),
+                       "Diagnostic: boom")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.unknown, "raw")),
+                       "Unknown activity: raw")
+    }
+
+    /// Session status is built ONLY from already-authoritative structured
+    /// values; unavailable values are omitted, never invented from prose.
+    func testV3SessionStatusUsesOnlyStructuredFieldsAndOmitsUnknowns() {
+        let metadata = RecentOutputMetadata(model: "demo-model", effort: "high",
+                                            worktree: nil)
+        let status = RecentSessionStatusModel.status(
+            agent: agent("herdr:x", state: .working),
+            tail: nil, fresh: true, metadata: metadata)
+        XCTAssertEqual(status.state, "Working · live")
+        XCTAssertEqual(status.session, "herdr:x")
+        XCTAssertEqual(status.tool, "demo-model",
+                       "the canonical metadata model wins over the source tool")
+        XCTAssertEqual(status.effort, "high")
+        XCTAssertNil(status.worktree, "no worktree value -> omitted, not guessed")
+
+        let plain = RecentSessionStatusModel.status(
+            agent: agent("herdr:y", state: .idle, tool: "claude"),
+            tail: nil, fresh: false, metadata: RecentOutputMetadata())
+        XCTAssertEqual(plain.state, "Idle")
+        XCTAssertEqual(plain.tool, "claude",
+                       "the structured source tool is already authoritative")
+        XCTAssertNil(plain.effort)
+        XCTAssertNil(plain.worktree)
+    }
+
+    /// The seeded demo fixture exercises the V3 split: canonical System and
+    /// Unknown blocks land in Harness activity, and the conversation keeps
+    /// the user/agent/tool run, deterministically.
+    func testV3DemoSeedCarriesHarnessAndConversationBlocks() throws {
+        let seeded = DemoFleet.seed(rev: 1)
+        let featured = try XCTUnwrap(seeded[DemoFleet.featuredAgentID])
+        let demoBlocks = DemoFleet.recentBlocks(for: featured).map {
+            TranscriptBlock(kind: $0.kind, text: $0.text,
+                            at: nil, truncatedBefore: $0.truncatedBefore)
+        }
+        let sections = RecentOutputSections.partition(demoBlocks)
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown],
+                       "demo harness activity carries one Diagnostic + one Unknown activity")
+        XCTAssertEqual(sections.conversation.map(\.kind),
+                       [.agent, .user, .agent, .tool])
+        XCTAssertFalse(sections.harness.isEmpty)
+    }
+
+    /// Real production wiring: the Recent-output view derives its sections
+    /// through `RecentOutputSections.displaySections(from:)` — the exact read
+    /// path the body calls. If the surface ever renders the unpartitioned
+    /// stream (every block in Conversation), the harness blocks reappear in
+    /// the conversation partition and this fails.
+    func testV3ProductionReadPathPartitionsSnapshotRows() {
+        let visibleRows: [RecentOutputRow] = [
+            .block(block(.agent, "a1")),
+            .block(block(.system, "s1")),
+            .block(block(.user, "u1")),
+            .block(block(.unknown, "k1")),
+            .block(block(.tool, "t1")),
+        ]
+        let sections = RecentOutputSections.displaySections(from: visibleRows)
+        XCTAssertEqual(sections.conversation.map(\.kind), [.agent, .user, .tool])
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown])
+        XCTAssertEqual(sections.total, visibleRows.count,
+                       "the production read path drops nothing")
+        XCTAssertTrue(sections.conversation.allSatisfy { block in
+            sections.context(for: block) == .conversation
+        }, "every conversation block still routes as conversation on the read path")
     }
 }

@@ -26,7 +26,6 @@
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
 		C886615F9AD8FA9BF1D80944 /* DestructivePatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */; };
-		D91B2ED1CB3A4A0C607BB72C /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */; };
 		E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5544FDC9B954FE32A7275A43 /* StateStyle.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
 		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
@@ -34,6 +33,7 @@
 		EF3EC8BE7904D4B3B6E47091 /* TimeInState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D01A23F02B422A1C580729 /* TimeInState.swift */; };
 		F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */; };
 		F633BB49ACEC0A2CB69B3B35 /* FleetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0642A04325429AB1072D2ADB /* FleetStore.swift */; };
+		FA1BAE19716486D11C0262C3 /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 0CDB055DC7E31FFACFC9FA24 /* canonical_stream_golden.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,6 +50,7 @@
 		0642A04325429AB1072D2ADB /* FleetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetStore.swift; sourceTree = "<group>"; };
 		0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierApp.swift; sourceTree = "<group>"; };
 		0C6D9CFBBF9EDC1179F7E4D4 /* FleetNotifierTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FleetNotifierTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0CDB055DC7E31FFACFC9FA24 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierTests.swift; sourceTree = "<group>"; };
 		35016480CFCFA37666B61976 /* BoardFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilter.swift; sourceTree = "<group>"; };
 		44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorraldClient.swift; sourceTree = "<group>"; };
@@ -61,7 +62,6 @@
 		77E397B25B007445181A67AA /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
-		9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestructivePatterns.swift; sourceTree = "<group>"; };
 		AA1B824D203FC54632815108 /* PushPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPayload.swift; sourceTree = "<group>"; };
 		AC7C4F4D9245391F122670D6 /* Biometrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Biometrics.swift; sourceTree = "<group>"; };
@@ -104,7 +104,7 @@
 			children = (
 				7D8334B18E7321E5C5F850E4 /* FleetNotifier */,
 				19046018A86CD11555F070AF /* FleetNotifierTests */,
-				8F5D4BD44556FA11EAE87D0C /* g315-transcript-provenance */,
+				3F2EAA60176DA4D0B7525984 /* g316-context-split-v3 */,
 				ACC02147A1A8360BA16C8448 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -123,12 +123,13 @@
 			path = UI;
 			sourceTree = "<group>";
 		};
-		3D98A0F15DD91BB531FD9AAF /* tests */ = {
+		3F2EAA60176DA4D0B7525984 /* g316-context-split-v3 */ = {
 			isa = PBXGroup;
 			children = (
-				9DCDE4E2AD0CAC72876C0B28 /* fixtures */,
+				4BF2D197F10634F6AD421564 /* tests */,
 			);
-			path = tests;
+			name = "g316-context-split-v3";
+			path = ..;
 			sourceTree = "<group>";
 		};
 		3FDDF36D414905797E00EC32 /* Security */ = {
@@ -145,6 +146,14 @@
 				4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */,
 			);
 			path = Keychain;
+			sourceTree = "<group>";
+		};
+		4BF2D197F10634F6AD421564 /* tests */ = {
+			isa = PBXGroup;
+			children = (
+				BE0911D7B3C9068FADED6B40 /* fixtures */,
+			);
+			path = tests;
 			sourceTree = "<group>";
 		};
 		4C7DC3E32D4C26F50DC72391 /* Demo */ = {
@@ -182,23 +191,6 @@
 			path = FleetNotifier;
 			sourceTree = "<group>";
 		};
-		8F5D4BD44556FA11EAE87D0C /* g315-transcript-provenance */ = {
-			isa = PBXGroup;
-			children = (
-				3D98A0F15DD91BB531FD9AAF /* tests */,
-			);
-			name = "g315-transcript-provenance";
-			path = ..;
-			sourceTree = "<group>";
-		};
-		9DCDE4E2AD0CAC72876C0B28 /* fixtures */ = {
-			isa = PBXGroup;
-			children = (
-				9200927C2B7DD7BB6DEFF092 /* canonical_stream_golden.json */,
-			);
-			path = fixtures;
-			sourceTree = "<group>";
-		};
 		ACC02147A1A8360BA16C8448 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -206,6 +198,14 @@
 				0C6D9CFBBF9EDC1179F7E4D4 /* FleetNotifierTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BE0911D7B3C9068FADED6B40 /* fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				0CDB055DC7E31FFACFC9FA24 /* canonical_stream_golden.json */,
+			);
+			path = fixtures;
 			sourceTree = "<group>";
 		};
 		C20D3428EE20D1FB4CA7B751 /* Wire */ = {
@@ -330,7 +330,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D91B2ED1CB3A4A0C607BB72C /* canonical_stream_golden.json in Resources */,
+				FA1BAE19716486D11C0262C3 /* canonical_stream_golden.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

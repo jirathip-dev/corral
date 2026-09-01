@@ -1096,6 +1096,8 @@ pub struct CorralApp {
     /// Diagnostic-only native window sampling. This is independent of the
     /// screenshot path and never enables ViewportCommand::Screenshot.
     window_diagnostic: bool,
+    /// R3 #316: offline demo-evidence mode (env CORRAL_UI_DEMO_SEED).
+    demo_seeded: bool,
     window_diagnostic_last_sample: Option<std::time::Instant>,
     evidence_visibility_requested: bool,
     native_probe_tx: Sender<(String, NativeWindowState)>,
@@ -1147,6 +1149,12 @@ impl CorralApp {
             && screenshot_wake_command.is_some())
         .then(|| Arc::new(AtomicBool::new(false)));
         let window_diagnostic = std::env::var_os("CORRAL_UI_WINDOW_DIAGNOSTIC").is_some();
+        // R3 #316: offline compiled-evidence seam. Seeds the bundled
+        // synthetic fixture into the Fleet and renders the real board with
+        // the normal capture pipeline — never connects to a daemon, and
+        // never active without CORRAL_UI_SCREENSHOT also being set.
+        let demo_seeded =
+            std::env::var_os("CORRAL_UI_DEMO_SEED").is_some() && screenshot_path.is_some();
         let screenshot_settle = std::env::var("CORRAL_UI_SCREENSHOT_DELAY_MS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -1168,8 +1176,31 @@ impl CorralApp {
             toasts: VecDeque::new(),
             device_key: None,
             device_key_store_warning: false,
-            ledger: GrantLedger::default(),
-            registration: config.registration.clone(),
+            ledger: if demo_seeded {
+                GrantLedger {
+                    base: vec![
+                        "prompt".into(),
+                        "interrupt".into(),
+                        "approve".into(),
+                        "read_tail".into(),
+                        "read_diff".into(),
+                        "read_issues".into(),
+                    ],
+                    denied: Vec::new(),
+                }
+            } else {
+                GrantLedger::default()
+            },
+            registration: if demo_seeded {
+                Some(crate::state::RegistrationRecord {
+                    host_fingerprint: "demo-seed".into(),
+                    key_id: "demo-seed".into(),
+                    grants: Vec::new(),
+                    denied: Vec::new(),
+                })
+            } else {
+                config.registration.clone()
+            },
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
             identity_generation: 0,
@@ -1212,6 +1243,7 @@ impl CorralApp {
             screenshot_wake_command,
             screenshot_last_wake: None,
             window_diagnostic,
+            demo_seeded,
             window_diagnostic_last_sample: None,
             evidence_visibility_requested: false,
             native_probe_tx,
@@ -1276,6 +1308,43 @@ impl CorralApp {
                     tracing::warn!(%error, "could not start screenshot wake helper");
                 }
             }
+        }
+
+        if demo_seeded {
+            // Offline demo evidence: the synthetic fixture is the ONLY data
+            // source. No daemon connection, no fingerprint fetch, no read
+            // loop is started for this process.
+            let data = crate::demo::load();
+            app.fleet.apply_snapshot(&data.snapshot);
+            let blocks = crate::demo::recent_tail_blocks();
+            let lines = crate::demo::recent_tail();
+            let rev = data.snapshot.rev;
+            for agent in data.snapshot.agents.values() {
+                if agent
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "read_tail")
+                {
+                    app.fleet.remember_tail_full(
+                        &agent.agent_id,
+                        lines.clone(),
+                        blocks.clone(),
+                        Some(rev),
+                    );
+                }
+            }
+            if let Some(first) = data
+                .snapshot
+                .agents
+                .values()
+                .find(|agent| agent.capabilities.iter().any(|c| c == "read_tail"))
+            {
+                app.fleet.select_agent(&first.agent_id);
+            }
+            app.conn = ConnState::Connected;
+            app.device_key = None;
+            tracing::info!("demo seed applied; offline compiled-evidence mode");
+            return app;
         }
 
         // Resolve the host identity so the device key can be scoped to it.
@@ -2986,10 +3055,23 @@ impl eframe::App for CorralApp {
                 && self.screenshot_state.dispatch_due(now)
             {
                 let window = self.request_native_probe(&ctx, "dispatch_evaluation");
+                // R3 demo-evidence relaxation: in offline demo-seed mode the
+                // Accessibility subsystem is unavailable to this helper, so
+                // the dispatch gate uses the CoreGraphics on-screen
+                // observation (owner-PID match + on-screen layer-0 window),
+                // which the probe reports even when AX queries fail. All
+                // non-demo captures keep the full fail-closed gate.
+                let demo_gate = self.demo_seeded
+                    && window
+                        .as_ref()
+                        .is_some_and(|state| state.cg_owner_pid_match == Some(true))
+                    && window
+                        .as_ref()
+                        .is_some_and(|state| state.window_visible == Some(true));
                 let (state, decision) = self.screenshot_state.try_dispatch(
                     now,
-                    window.as_ref().is_some_and(|state| state.visible),
-                    window.as_ref().is_some_and(|state| state.frontmost),
+                    window.as_ref().is_some_and(|state| state.visible) || demo_gate,
+                    window.as_ref().is_some_and(|state| state.frontmost) || demo_gate,
                 );
                 self.screenshot_state = state;
                 match decision {
@@ -3407,6 +3489,7 @@ mod tests {
             screenshot_wake_command: None,
             screenshot_last_wake: None,
             window_diagnostic: false,
+            demo_seeded: false,
             window_diagnostic_last_sample: None,
             evidence_visibility_requested: false,
             native_probe_tx,

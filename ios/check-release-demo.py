@@ -64,7 +64,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #316 V3 context split: canonical-kind partition, structured session
     # status, and locked accessibility roles updated RecentOutputModel,
     # FleetViews, and the demo seed; the pin follows the new source set.
-    "182403a93e87b89205903d9fcad338f739f69c88bf9cf13a5f26166d5bba5f8f"
+    # #316 R3: demo seed neutralized (featured session id, tool names, repos,
+    # worktree fallback, titles) — digest re-pinned to the R3 source set.
+    "45fd517d997818438b61e057df2ee571b57dc024e34e6a914976ec4bade681a0"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

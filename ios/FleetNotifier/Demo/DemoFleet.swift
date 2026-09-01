@@ -10,7 +10,7 @@ enum DemoFleet {
     /// The opt-in detail route used by the reproducible #9005 evidence gate.
     /// Keeping the target in the fixture makes the route deterministic without
     /// changing normal fleet selection behavior.
-    static let featuredAgentID = "herdr:demo-output"
+    static let featuredAgentID = "demo-session:recent-output"
 
     /// #9007: seeded read-only issue browser (mirrors the approved V3 mock's
     /// shape: repos → issues with body + newest-first comment window).
@@ -48,7 +48,7 @@ enum DemoFleet {
             return window
         }
         let atlasBoard267 = issue(
-            "atlas-board", 9007, "open", "iOS issue browser: read-only issue list + detail",
+            "demo-atlas", 9007, "open", "iOS issue browser: read-only issue list + detail",
             labels: [openLabel, IssueLabel(name: "ios", color: "FD8C73")],
             body: "Read-only issues browser (list + detail) for FleetNotifier, modeled on read_tail / read_diff: same read-only grant gating, default-empty, no GitHub mutations from the device.",
             comments: commentWindow(
@@ -58,32 +58,32 @@ enum DemoFleet {
                 ]),
             commentTotal: 38)
         let signalGrove722 = issue(
-            "signal-grove", 9012, "open", "Offline-first read cache for the watch session",
+            "demo-grove", 9012, "open", "Offline-first read cache for the watch session",
             labels: [openLabel], body: "Cache the latest session summary on-device so the watch opens instantly.", commentTotal: 2)
         let paperOrchard108 = issue(
-            "paper-orchard", 9013, "open", "Production chains: re-check gauntlet rollout",
+            "demo-orchard", 9013, "open", "Production chains: re-check gauntlet rollout",
             labels: [IssueLabel(name: "ops", color: "1D76DB")], commentTotal: 0)
         let atlasBoard239 = issue(
-            "atlas-board", 9014, "open", "plugin engine: sidecar plugin API for agent rows",
+            "demo-atlas", 9014, "open", "plugin engine: sidecar plugin API for agent rows",
             labels: [openLabel], commentTotal: 4)
         let atlasBoard232 = issue(
-            "atlas-board", 9015, "open", "Agent worktree diff view (board + iOS)",
+            "demo-atlas", 9015, "open", "Agent worktree diff view (board + iOS)",
             labels: [IssueLabel(name: "docs", color: "0E8A16")], commentTotal: 12)
 
         let atlasBoard164 = issue(
-            "atlas-board", 9016, "open", "UX redesign umbrella (tracker)",
+            "demo-atlas", 9016, "open", "UX redesign umbrella (tracker)",
             labels: [openLabel], commentTotal: 9)
         let atlasBoard843 = issue(
-            "atlas-board", 9017, "open", "native: Send Conditions card tap does nothing",
+            "demo-atlas", 9017, "open", "native: Send Conditions card tap does nothing",
             labels: [bugLabel], commentTotal: 3)
         let atlasBoard168 = issue(
-            "atlas-board", 9018, "closed", "Rate-limit the gh poller on 401 storms",
+            "demo-atlas", 9018, "closed", "Rate-limit the gh poller on 401 storms",
             labels: [bugLabel, infraLabel], commentTotal: 5)
 
         return IssuesBrowserWire(repos: [
-            "atlas-board": [atlasBoard267, atlasBoard239, atlasBoard232, atlasBoard164, atlasBoard843, atlasBoard168],
-            "signal-grove": [signalGrove722],
-            "paper-orchard": [paperOrchard108],
+            "demo-atlas": [atlasBoard267, atlasBoard239, atlasBoard232, atlasBoard164, atlasBoard843, atlasBoard168],
+            "demo-grove": [signalGrove722],
+            "demo-orchard": [paperOrchard108],
         ])
     }
 
@@ -117,103 +117,103 @@ enum DemoFleet {
         }
 
         // Blocked on an approve-tool prompt with a menu (the classic flow).
-        let approvePrompt = "Approve this change to push 2 commits to demo/catalog-v2?"
-        agents["herdr:demo-approve"] = agent("herdr:demo-approve", tool: "codex", state: .blocked,
+        let approvePrompt = "Approve this change to push 2 commits to demo-catalog-v2?"
+        agents["herdr:demo-approve"] = agent("herdr:demo-approve", tool: "tool-one", state: .blocked,
             reason: "waiting for approval",
             waiting: WaitingOn(kind: .approveTool, prompt: approvePrompt,
                                promptHash: hash(approvePrompt),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-approve", promptHash: hash(approvePrompt)),
                                choices: ["y", "n"]),
             capabilities: tail("approve"),
-            displayName: "demo-approve", title: "Push plush catalog v2",
+            displayName: "demo-approve", title: "Push catalog v2",
             // Authoritative closing-issue ref (G23) on the WORKSPACE — the
             // wire location the daemon emits — so the demo `⑂ #N` chip goes
             // through the same read path as live data. The other demo agents
             // exercise the inferred `~#N?` / no-chip paths.
-            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-v2",
-                                 worktreePath: "/demo/worktrees/crystal-garden/feat-plush-v2",
+            workspace: Workspace(repo: "demo-garden", branch: "demo-catalog",
+                                 worktreePath: nil,
                                  prNumber: 9026, ciStatus: .pending, dirty: true, ahead: 3, behind: 0,
-                                 issues: [GhIssueRef(repo: "crystal-garden", number: 9027,
-                                                     state: "open", title: "Plush catalog v2")]),
+                                 issues: [GhIssueRef(repo: "demo-garden", number: 9027,
+                                                     state: "open", title: "Demo sample issue: catalog-v2")]),
             seq: 5, tsOffset: 30)
 
         // Blocked on a menu with explicit choices.
         let menuPrompt = "Select an option:\n1) Ship now\n2) Hold for review\n3) Abort"
-        agents["herdr:demo-menu"] = agent("herdr:demo-menu", tool: "opencode", state: .blocked,
+        agents["herdr:demo-menu"] = agent("herdr:demo-menu", tool: "tool-two", state: .blocked,
             reason: "menu prompt",
             waiting: WaitingOn(kind: .menu, prompt: menuPrompt, promptHash: hash(menuPrompt),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-menu", promptHash: hash(menuPrompt)),
                                choices: ["1", "2", "3"]),
             capabilities: tail("approve"),
             displayName: "demo-menu", title: "Ship or hold the migration",
-            workspace: Workspace(repo: "ledger-lantern", branch: "demo/migration-check",
-                                 worktreePath: "/demo/worktrees/ledger-lantern/fix-migration",
+            workspace: Workspace(repo: "demo-ledger", branch: "demo-migration",
+                                 worktreePath: nil,
                                  prNumber: 9021, ciStatus: .failure, dirty: false, ahead: 8, behind: 2),
             seq: 4, tsOffset: 90)
 
         // Blocked on a free-form question.
         let question = "What should the new branch be named?"
-        agents["herdr:demo-question"] = agent("herdr:demo-question", tool: "claude", state: .blocked,
+        agents["herdr:demo-question"] = agent("herdr:demo-question", tool: "tool-one", state: .blocked,
             reason: "asked a question",
             waiting: WaitingOn(kind: .answerQuestion, prompt: question, promptHash: hash(question),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-question", promptHash: hash(question)),
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-question", title: "Rename tracking branch",
-            workspace: Workspace(repo: "signal-grove", branch: "demo/device-check",
-                                 worktreePath: "/demo/worktrees/signal-grove/native-637",
+            workspace: Workspace(repo: "demo-grove", branch: "demo-device",
+                                 worktreePath: nil,
                                  prNumber: 9022, ciStatus: .success, dirty: true, ahead: 1, behind: 0),
             seq: 3, tsOffset: 240)
 
         // Crash kind: never approvable.
-        agents["herdr:demo-crash"] = agent("herdr:demo-crash", tool: "gemini", state: .blocked,
+        agents["herdr:demo-crash"] = agent("herdr:demo-crash", tool: "tool-two", state: .blocked,
             reason: "agent crashed",
             waiting: WaitingOn(kind: .crash, prompt: "Agent crashed (exit 139).", promptHash: hash("Agent crashed"),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-crash", promptHash: hash("Agent crashed")),
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-crash", title: "Parallel docs sweep",
-            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
-                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-ios",
+                                 worktreePath: nil,
                                  prNumber: 9025, ciStatus: .unknown, dirty: true, ahead: 4, behind: 1),
             seq: 2, tsOffset: 600)
 
         // Working, idle, done.
-        agents["herdr:demo-working"] = agent("herdr:demo-working", tool: "opencode", state: .working,
+        agents["herdr:demo-working"] = agent("herdr:demo-working", tool: "tool-two", state: .working,
             reason: "running the test suite",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-working", title: "Wire canonical bytes unit tests",
-            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
-                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-ios",
+                                 worktreePath: nil,
                                  prNumber: 9025, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
             seq: 9, tsOffset: 20)
 
         // Dedicated recent-output fixture: no approval card consumes the
         // viewport, so the design gate can show assistant/user bubbles, the
         // expanded diff, and the enabled pinned Send control together.
-        agents[featuredAgentID] = agent(featuredAgentID, tool: "codex", state: .working,
+        agents[featuredAgentID] = agent(featuredAgentID, tool: "tool-one", state: .working,
             reason: "streaming a segmented recent output",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-output", title: "Review recent output",
-            workspace: Workspace(repo: "atlas-board", branch: "demo/recent-output",
-                                 worktreePath: "/demo/worktrees/atlas-board/g205-ios-recent-output",
+            workspace: Workspace(repo: "demo-atlas", branch: "demo-recent",
+                                 worktreePath: nil,
                                  prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
             seq: 10, tsOffset: 12)
 
-        agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "claude", state: .idle,
+        agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "tool-one", state: .idle,
             reason: nil, waiting: nil, capabilities: ["read_tail", "prompt"],
-            displayName: "demo-idle", title: "Investigate SSO migration",
-            workspace: Workspace(repo: "ledger-lantern", branch: "demo/embed-sample",
-                                 worktreePath: "/demo/worktrees/ledger-lantern/issue-431",
+            displayName: "demo-idle", title: "Investigate sign-on migration",
+            workspace: Workspace(repo: "demo-ledger", branch: "demo-embed",
+                                 worktreePath: nil,
                                  prNumber: 9023, ciStatus: .success, dirty: false, ahead: 0, behind: 0),
             seq: 8, tsOffset: 1800)
 
-        agents["herdr:demo-done"] = agent("herdr:demo-done", tool: "codex", state: .done,
+        agents["herdr:demo-done"] = agent("herdr:demo-done", tool: "tool-one", state: .done,
             reason: "task complete",
             waiting: nil, capabilities: ["read_tail"],
-            displayName: "demo-done", title: "Update plush catalog",
-            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-sweep",
-                                 worktreePath: "/demo/worktrees/crystal-garden/gauntlet-54",
+            displayName: "demo-done", title: "Update catalog",
+            workspace: Workspace(repo: "demo-garden", branch: "demo-sweep",
+                                 worktreePath: nil,
                                  prNumber: 9024, ciStatus: .success, dirty: false, ahead: 2, behind: 0),
             seq: 7, tsOffset: 3600)
 
@@ -259,27 +259,23 @@ enum DemoFleet {
     /// The demo's metadata is derived from the source tool and agent identity,
     /// rather than copied from one shared sample. That makes each seeded agent
     /// useful for testing badges and keeps the capture route representative.
+    /// (R3 evidence contract: derived model names stay provider-neutral.)
     static func model(for agent: Agent) -> String {
         let slug = agent.agentId.split(separator: ":", maxSplits: 1).last
             .map(String.init)
             ?? "demo"
         let normalized = slug.replacingOccurrences(of: "_", with: "-")
-        switch agent.tool.lowercased() {
-        case "codex": return "demo-codex-\(normalized)"
-        case "claude": return "demo-claude-\(normalized)"
-        case "gemini": return "demo-gemini-\(normalized)"
-        case "opencode": return "demo-opencode-\(normalized)"
-        default: return "demo-\(agent.tool)-\(normalized)"
-        }
+        return "demo-model-\(normalized)"
     }
 
     static func worktree(for agent: Agent) -> String {
         if let worktree = agent.workspace.worktreePath, !worktree.isEmpty {
             return worktree
         }
-        let repo = agent.workspace.repo ?? "demo"
-        let branch = agent.workspace.branch ?? agent.agentId.replacingOccurrences(of: ":", with: "-")
-        return "/demo/worktrees/\(repo)/\(branch)"
+        // R3 evidence contract: the synthetic fallback path is a fixed
+        // neutral session path so demo chips never render repo-, branch-,
+        // or session-identifier-shaped strings.
+        return "/demo/session/recent-output"
     }
 
     static func effort(for agent: Agent) -> String {
@@ -293,8 +289,9 @@ enum DemoFleet {
 
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
         let metadata = "\(model(for: agent)) \(effort(for: agent)) · \(worktree(for: agent))"
-        let file = agent.workspace.repo.map { "src/\($0.replacingOccurrences(of: "-", with: "_"))_view.rs" }
-            ?? "src/recent_output.rs"
+        // R3 evidence contract: the demo diff references a neutral synthetic
+        // file, never a repo-derived filename.
+        let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [
             RecentBlock(

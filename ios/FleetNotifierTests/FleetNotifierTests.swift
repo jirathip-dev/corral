@@ -4112,8 +4112,8 @@ final class RecentOutputModelTests: XCTestCase {
     }
 
     func testRecentOutputMetadataAccessibilityLabelsKeepRolesDistinct() {
-        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-codex-demo"),
-                       "Model: demo-codex-demo")
+        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-model-demo"),
+                       "Model: demo-model-demo")
         XCTAssertEqual(RecentOutputAccessibility.effortLabel("high"),
                        "Effort: high")
         XCTAssertEqual(RecentOutputAccessibility.worktreeLabel("~/worktrees/corral/demo"),
@@ -4240,7 +4240,7 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(
             CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoBefore"]),
             .before)
-        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-output")
+        XCTAssertEqual(DemoFleet.featuredAgentID, "demo-session:recent-output")
     }
 
     func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {
@@ -4258,7 +4258,11 @@ final class RecentOutputModelTests: XCTestCase {
                        storedBlocks.flatMap { $0.text.components(separatedBy: .newlines) },
                        "stored legacy lines must be the exact flattening of stored semantic blocks")
         XCTAssertNotEqual(DemoFleet.model(for: first), DemoFleet.model(for: second))
-        XCTAssertNotEqual(DemoFleet.worktree(for: first), DemoFleet.worktree(for: second))
+        // R3: the demo seed deliberately does NOT invent per-agent worktree
+        // paths (Omit unavailable fields rather than manufacturing them);
+        // the fallback is a single neutral session path.
+        XCTAssertEqual(DemoFleet.worktree(for: first), "/demo/session/recent-output")
+        XCTAssertEqual(DemoFleet.worktree(for: second), "/demo/session/recent-output")
         XCTAssertTrue(DemoFleet.monotoneOutput(for: first).contains("Please verify the diff too."))
     }
 #endif
@@ -4994,7 +4998,7 @@ final class IssueBrowserTests: XCTestCase {
     func testDemoIssuesSeedMirrorsApprovedRows() throws {
         let seeded = DemoFleet.seedIssues()
         // Open #267 with a body + comment window + authoritative total.
-        let atlas = try XCTUnwrap(seeded.repos["atlas-board"])
+        let atlas = try XCTUnwrap(seeded.repos["demo-atlas"])
         let issue9007 = try XCTUnwrap(atlas.first { $0.number == 9007 })
         XCTAssertEqual(issue9007.state, "open")
         XCTAssertNotNil(issue9007.body)
@@ -5003,7 +5007,7 @@ final class IssueBrowserTests: XCTestCase {
         // Closed bucket exists (proves the closed filter).
         XCTAssertTrue(atlas.contains { $0.state == "closed" })
         // Repos are the tracked fleets.
-        XCTAssertEqual(Set(seeded.repos.keys), ["atlas-board", "signal-grove", "paper-orchard"])
+        XCTAssertEqual(Set(seeded.repos.keys), ["demo-atlas", "demo-grove", "demo-orchard"])
     }
 
     /// #280: the demo seed must mirror the live wire contract — the daemon
@@ -5013,7 +5017,7 @@ final class IssueBrowserTests: XCTestCase {
     /// same ordering the daemon's CREATED_AT sort produces.
     func testDemoCommentWindowIsNewestFirst() throws {
         let seeded = DemoFleet.seedIssues()
-        let issue9007 = try XCTUnwrap(seeded.repos["atlas-board"]?.first { $0.number == 9007 })
+        let issue9007 = try XCTUnwrap(seeded.repos["demo-atlas"]?.first { $0.number == 9007 })
         let stamps = issue9007.comments.map(\.createdAt)
         XCTAssertFalse(stamps.isEmpty, "the demo comment window is non-empty")
         let rendered = stamps.map { $0 ?? "" }

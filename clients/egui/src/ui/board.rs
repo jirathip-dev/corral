@@ -109,6 +109,8 @@ const PAUSED_LABEL: &str = "paused";
 const EARLIER_OUTPUT_LABEL: &str = "Earlier output";
 const LOAD_EARLIER_LABEL: &str = "Load earlier";
 const USER_BLOCK_INSET: f32 = 24.0;
+/// Speaker-rail column width shared by every conversation block row.
+const RAIL_WIDTH: f32 = 52.0;
 
 /// #316 V3 Context split: the detail pane's conversation/utility boundary.
 /// Below this width the deterministic stacked fallback replaces the
@@ -1494,9 +1496,14 @@ fn recent_output_surface(
             if available_width >= CONTEXT_SPLIT_MIN_WIDTH {
                 let conversation_width =
                     (available_width - UTILITY_COLUMN_WIDTH - UTILITY_COLUMN_GAP).max(120.0);
+                // R3: the pane height measured here drives the conversation
+                // scroll bound; allocate_ui_with_layout children report a
+                // content-sized height, so the region takes this bound
+                // BEFORE the horizontal split.
+                let pane_height = ui.available_height();
                 ui.horizontal(|ui| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(conversation_width, ui.available_height()),
+                        egui::vec2(conversation_width, pane_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             recent_conversation_region(
@@ -1510,6 +1517,7 @@ fn recent_output_surface(
                                 read_tail_control,
                                 actions,
                                 false,
+                                Some(pane_height),
                             );
                         },
                     );
@@ -1548,6 +1556,7 @@ fn recent_output_surface(
                             read_tail_control,
                             actions,
                             true,
+                            None,
                         );
                         ui.add_space(8.0);
                         recent_utility_region(
@@ -1582,6 +1591,7 @@ fn recent_conversation_region(
     read_tail_control: DriveControlState,
     actions: &mut BoardActions,
     narrow: bool,
+    pane_height: Option<f32>,
 ) {
     ui.horizontal(|ui| {
         ui.label(
@@ -1651,18 +1661,22 @@ fn recent_conversation_region(
     // #316 V3: in the stacked narrow fallback the conversation is a BOUNDED
     // fixed-height window inside the containing scroll, so Session status,
     // Harness activity, and the composer below always remain reachable
-    // through that one scroll (the stack may exceed the fold). Otherwise it
-    // takes all remaining pane height. Width never shrinks.
+    // through that one scroll (the stack may exceed the fold). In the wide
+    // layout the conversation scroll FILLS the remaining pane height
+    // (measurements inside the horizontal split are content-sized and
+    // unusable, so the caller passes the real pane height down).
     let max_height = if narrow {
         NARROW_CONVERSATION_MAX_HEIGHT
-    } else if available_height.is_finite() {
+    } else if let Some(pane) = pane_height {
+        (pane - 150.0).max(200.0)
+    } else if available_height.is_finite() && available_height > 300.0 {
         (available_height - 86.0).max(120.0)
     } else {
-        260.0
+        420.0
     };
     ScrollArea::vertical()
         .id_salt(("corral-ui-recent-output", id))
-        .auto_shrink([false, true])
+        .auto_shrink([false, false])
         .stick_to_bottom(stick_to_bottom)
         .max_height(max_height)
         .show(ui, |ui| {
@@ -2123,6 +2137,17 @@ fn recent_message_lines(ui: &mut Ui, text: &str, font: FontId) {
     }
 }
 
+/// The user bubble's content column (prose or numbered code lines).
+fn recent_user_content(ui: &mut Ui, text: &str) {
+    if recent_block_is_code_or_diff(RecentBlockKind::User, text) {
+        for (number, line) in text.split('\n').enumerate() {
+            recent_code_line(ui, line, number + 1);
+        }
+    } else {
+        recent_message_lines(ui, text, FontId::proportional(12.0));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecentBlockKind {
     User,
@@ -2346,7 +2371,7 @@ fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
         RecentBlockKind::Unknown => ("·", theme::ui::MUTED),
     };
     ui.vertical(|ui| {
-        ui.set_width(52.0);
+        ui.set_width(RAIL_WIDTH);
         ui.label(RichText::new(marker).small().strong().color(color));
         if let Some(label) = recent_speaker_rail_label(kind, show_label) {
             ui.label(RichText::new(label).small().strong().color(color));
@@ -2400,78 +2425,77 @@ fn recent_chat_block(
     if style.inset > 0.0 {
         // In right-to-left layout the frame is anchored to the right edge;
         // limiting its width leaves the prototype's 24px left inset.
+        // R3 fix: allocate a FINITE desired size (0 height = take what the
+        // content needs). The previous infinite-height allocation in this
+        // RTL horizontal parent justified the child into a collapsed-width
+        // column, wrapping labels one glyph per line.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let width = (ui.available_width() - style.inset).max(0.0);
             ui.set_width(width);
             frame.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width() - RAIL_WIDTH, 0.0),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                        recent_user_content(ui, text);
+                    },
+                );
+            });
+        });
+    } else {
+        frame.show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 0.0),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    recent_speaker_rail(ui, kind, show_label);
                     let content_width = ui.available_width();
                     ui.allocate_ui_with_layout(
-                        egui::vec2(content_width, ui.available_height()),
+                        egui::vec2(content_width, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            if recent_block_is_code_or_diff(RecentBlockKind::User, text) {
-                                for (number, line) in text.split('\n').enumerate() {
-                                    recent_code_line(ui, line, number + 1);
-                                }
+                            if recent_block_is_code_or_diff(kind, text) {
+                                CollapsingHeader::new(
+                                    RichText::new(format!("tool  {}", recent_tool_summary(text)))
+                                        .small()
+                                        .strong()
+                                        .color(theme::ui::ACCENT),
+                                )
+                                .id_salt(recent_tool_disclosure_id(position))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.set_max_width((block_width - 40.0).max(40.0));
+                                    egui::Frame::NONE
+                                        .fill(theme::ui::BG)
+                                        .stroke(Stroke::new(1.0, recent_code_line_color()))
+                                        .corner_radius(CornerRadius::same(6))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            for (number, line) in text.split('\n').enumerate() {
+                                                recent_code_line(ui, line, number + 1);
+                                            }
+                                        });
+                                });
+                            } else if style.monospace {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(text)
+                                                .monospace()
+                                                .small()
+                                                .color(theme::ui::MUTED),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
                             } else {
                                 recent_message_lines(ui, text, FontId::proportional(12.0));
                             }
                         },
                     );
-                });
-            });
-        });
-    } else {
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                recent_speaker_rail(ui, kind, show_label);
-                let content_width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(content_width, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        if recent_block_is_code_or_diff(kind, text) {
-                            CollapsingHeader::new(
-                                RichText::new(format!("tool  {}", recent_tool_summary(text)))
-                                    .small()
-                                    .strong()
-                                    .color(theme::ui::ACCENT),
-                            )
-                            .id_salt(recent_tool_disclosure_id(position))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                ui.set_max_width((block_width - 40.0).max(40.0));
-                                egui::Frame::NONE
-                                    .fill(theme::ui::BG)
-                                    .stroke(Stroke::new(1.0, recent_code_line_color()))
-                                    .corner_radius(CornerRadius::same(6))
-                                    .inner_margin(egui::Margin::symmetric(8, 6))
-                                    .show(ui, |ui| {
-                                        for (number, line) in text.split('\n').enumerate() {
-                                            recent_code_line(ui, line, number + 1);
-                                        }
-                                    });
-                            });
-                        } else if style.monospace {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text)
-                                            .monospace()
-                                            .small()
-                                            .color(theme::ui::MUTED),
-                                    )
-                                    .wrap(),
-                                );
-                            });
-                        } else {
-                            recent_message_lines(ui, text, FontId::proportional(12.0));
-                        }
-                    },
-                );
-            });
+                },
+            );
         });
     }
     ui.add_space(4.0);

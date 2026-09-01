@@ -158,6 +158,56 @@ final class AppModel: ObservableObject {
         let storage: DeviceKeyStore.Storage
     }
 
+    private final class TimeoutState<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T?, Never>?
+        private var finished = false
+        private var operationTask: Task<Void, Never>?
+        private var timeoutTask: Task<Void, Never>?
+
+        func install(_ continuation: CheckedContinuation<T?, Never>) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                continuation.resume(returning: nil)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func install(operationTask: Task<Void, Never>,
+                     timeoutTask: Task<Void, Never>) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                operationTask.cancel()
+                timeoutTask.cancel()
+                return
+            }
+            self.operationTask = operationTask
+            self.timeoutTask = timeoutTask
+            lock.unlock()
+        }
+
+        func finish(_ value: T?) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                return
+            }
+            finished = true
+            let continuation = self.continuation
+            self.continuation = nil
+            let operationTask = self.operationTask
+            let timeoutTask = self.timeoutTask
+            lock.unlock()
+            operationTask?.cancel()
+            timeoutTask?.cancel()
+            continuation?.resume(returning: value)
+        }
+    }
+
     @Published var mode: Mode = .needsSetup
     @Published var fleet: FleetStore
     @Published var banner: DriveBanner?
@@ -174,6 +224,7 @@ final class AppModel: ObservableObject {
     /// cancel all of them: retaining only the latest handle lets an earlier
     /// Tail/Prompt/Interrupt finish against the old identity after reset.
     private var driveTasks: [String: Task<Void, Never>] = [:]
+    private var driveTaskKeys: [String: DriveActionKey] = [:]
     @Published private var inFlightDriveKeys: Set<DriveActionKey> = []
     private var lifecycleGeneration = 0
     /// Notification replies, stale-agent snapshot refreshes, and grants
@@ -913,10 +964,16 @@ final class AppModel: ObservableObject {
     func driveReadDiff(agent: Agent, driveClient: DriveClient) {
         guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
+            fleet.foldDiffFailure("Device is not registered.", kind: "unregistered", for: live.agentId)
             banner = .error("unregistered", "Device is not registered.")
             return
         }
-        guard authorize(.readDiff, for: live) else { return }
+        guard authorize(.readDiff, for: live) else {
+            if let banner, banner.isError {
+                fleet.foldDiffFailure(banner.message, kind: banner.kind, for: live.agentId)
+            }
+            return
+        }
         payload_read_diff(offset: 0, driveClient: driveClient, live: live,
                           keyId: keyId, signer: signer)
     }
@@ -925,13 +982,37 @@ final class AppModel: ObservableObject {
     func driveReadDiffNext(agent: Agent, driveClient: DriveClient) {
         guard let live = currentAgent(for: agent.agentId) else { return }
         guard let signer, let keyId else {
+            fleet.foldDiffFailure("Device is not registered.", kind: "unregistered", for: live.agentId)
             banner = .error("unregistered", "Device is not registered.")
             return
         }
-        guard authorize(.readDiff, for: live) else { return }
+        guard authorize(.readDiff, for: live) else {
+            if let banner, banner.isError {
+                fleet.foldDiffFailure(banner.message, kind: banner.kind, for: live.agentId)
+            }
+            return
+        }
         let offset = UInt32(fleet.diffs[live.agentId]?.nextOffset ?? 0)
         payload_read_diff(offset: offset, driveClient: driveClient, live: live,
                           keyId: keyId, signer: signer)
+    }
+
+    /// #333: cancel only the selected diff request when its sheet disappears.
+    /// The task's generation/cancellation guards suppress any late response;
+    /// removing its key lets a reopened sheet start a fresh request.
+    func cancelReadDiff(agentId: String) {
+        let requestIds = driveTaskKeys.compactMap { requestId, key in
+            key.capability == .readDiff && key.target == agentId ? requestId : nil
+        }
+        for requestId in requestIds {
+            driveTasks.removeValue(forKey: requestId)?.cancel()
+            driveTaskKeys.removeValue(forKey: requestId)
+        }
+        let matchingKeys = inFlightDriveKeys.filter {
+            $0.capability == .readDiff && $0.target == agentId
+        }
+        inFlightDriveKeys.subtract(matchingKeys)
+        fleet.cancelDiffFetch(agent: agentId)
     }
 
     private func payload_read_diff(offset: UInt32, driveClient: DriveClient,
@@ -1152,27 +1233,35 @@ final class AppModel: ObservableObject {
 
     /// #167 hard timeout for the Recent-output surface (live tail). A
     /// stalled fetch must fold to error+Retry, never a spinner (#160).
-    private static let recentOutputTimeoutSeconds = 12.0
+    private static let readTimeoutSeconds = 12.0
 
-    /// Race an async operation against a hard timeout. If the operation wins
-    /// we get its value; if the timeout wins we get `nil` (the running task
-    /// is cancelled). The operation must be cancellable (URLSession is).
+    /// Race an async operation against a hard timeout. Cancellation finishes
+    /// the race immediately and cancels both child tasks, so dismissing a
+    /// sheet cannot wait for a transport that ignores cancellation.
     private static func raceTimeout<T: Sendable>(
         seconds: Double,
         _ operation: @escaping @Sendable () async -> T
     ) async -> T? {
-        await withTaskGroup(of: Optional<T>.self) { group in
-            group.addTask { await operation() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
+        let state = TimeoutState<T>()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+                state.install(continuation)
+                let operationTask = Task.detached {
+                    state.finish(await operation())
+                }
+                let timeoutTask = Task.detached {
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                    } catch {
+                        return
+                    }
+                    state.finish(nil)
+                }
+                state.install(operationTask: operationTask, timeoutTask: timeoutTask)
             }
-            for await value in group {
-                group.cancelAll()
-                return value
-            }
-            return nil
-        }
+        }, onCancel: {
+            state.finish(nil)
+        })
     }
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
@@ -1184,17 +1273,19 @@ final class AppModel: ObservableObject {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if self.lifecycleGeneration == context.generation {
+                if self.lifecycleGeneration == context.generation,
+                   self.driveTaskKeys[requestId] == actionKey {
                     self.inFlightDriveKeys.remove(actionKey)
                     self.driveTasks.removeValue(forKey: requestId)
+                    self.driveTaskKeys.removeValue(forKey: requestId)
                 }
             }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             let rev = self.fleet.lastEventId
             let result: DriveResult
-            if capability == .readTail {
-                // #167 hard timeout: a stalled tail must never leave the
-                // Recent-output surface on an infinite spinner.
+            if capability == .readTail || capability == .readDiff {
+                // #167/#333 hard timeout: a stalled read must never leave
+                // either pane on an infinite spinner.
                 let op: @Sendable () async -> DriveResult = {
                     await driveClient.drive(capability: capability, target: target,
                                             payload: payload, rev: rev,
@@ -1203,8 +1294,11 @@ final class AppModel: ObservableObject {
                                             biometrics: biometrics,
                                             forceStepUp: forceStepUp)
                 }
-                result = await Self.raceTimeout(seconds: Self.recentOutputTimeoutSeconds, op)
-                    ?? .refused(.network("Recent output timed out."))
+                let timeoutMessage = capability == .readDiff
+                    ? "Diff timed out."
+                    : "Recent output timed out."
+                result = await Self.raceTimeout(seconds: Self.readTimeoutSeconds, op)
+                    ?? .refused(.network(timeoutMessage))
             } else {
                 result = await driveClient.drive(capability: capability, target: target,
                                                  payload: payload, rev: rev,
@@ -1224,11 +1318,21 @@ final class AppModel: ObservableObject {
                         // the detail view (no hijacking fleet banner).
                         self.fleet.rememberTail(lines, blocks: blocks, sourceRev: response.result?.tailSourceRev ?? response.rev, for: target)
                     } else if capability == .readDiff {
-                        if let page = response.result?.diffPage {
-                            // #232: fold the bounded page (diffstat + files +
-                            // unified lines) into the agent's diff pane.
-                            self.fleet.rememberDiffPage(page, for: target)
+                        guard let result = response.result else {
+                            self.fleet.foldDiffFailure(
+                                "read_diff response missing result.",
+                                kind: "contract_error", for: target)
+                            return
                         }
+                        guard let page = result.diffPage else {
+                            self.fleet.foldDiffFailure(
+                                "read_diff result was not a valid diff page.",
+                                kind: "decode_error", for: target)
+                            return
+                        }
+                        // #232/#333: fold every valid bounded page and end
+                        // loading even when it contains no files or lines.
+                        self.fleet.rememberDiffPage(page, for: target)
                     } else if capability == .readIssues {
                         if let browser = response.result?.issuesBrowser {
                             // #267: fold the read-only browser payload into
@@ -1257,7 +1361,8 @@ final class AppModel: ObservableObject {
                             candidates: []), for: target)
                     } else if capability == .readDiff {
                         self.fleet.foldDiffFailure(
-                            response.error ?? "dispatch refused (ok:false)", for: target)
+                            response.error ?? "dispatch refused (ok:false)",
+                            kind: response.errorKind ?? "dispatch_refused", for: target)
                     } else if capability == .readIssues {
                         self.fleet.foldIssuesFailure(
                             response.error ?? "dispatch refused (ok:false)")
@@ -1278,6 +1383,10 @@ final class AppModel: ObservableObject {
                             kind: kind, message: message, candidates: []), for: target)
                         return
                     }
+                    if capability == .readDiff {
+                        self.fleet.foldDiffFailure(message, kind: kind, status: status, for: target)
+                        return
+                    }
                     // Read-only default: ungranted capabilities are refused
                     // with the typed banner; the UI also explains disabled
                     // controls before this path is reachable.
@@ -1287,7 +1396,12 @@ final class AppModel: ObservableObject {
                         self.fleet.foldTailFailure(TranscriptFailure(
                             kind: "transport", message: message, candidates: []), for: target)
                     } else if capability == .readDiff {
-                        self.fleet.foldDiffFailure(message, for: target)
+                        self.fleet.foldDiffFailure(
+                            message,
+                            kind: message == "Diff timed out."
+                                ? "timeout"
+                                : (message == "unparseable drive response" ? "decode_error" : "transport"),
+                            for: target)
                     } else if capability == .readIssues {
                         self.fleet.foldIssuesFailure(message)
                     } else {
@@ -1299,7 +1413,8 @@ final class AppModel: ObservableObject {
                             kind: "encoding", message: "payload encoding failed",
                             candidates: []), for: target)
                     } else if capability == .readDiff {
-                        self.fleet.foldDiffFailure("payload encoding failed", for: target)
+                        self.fleet.foldDiffFailure(
+                            "payload encoding failed", kind: "encoding", for: target)
                     } else if capability == .readIssues {
                         self.fleet.foldIssuesFailure("payload encoding failed")
                     } else {
@@ -1309,6 +1424,7 @@ final class AppModel: ObservableObject {
             }
         }
         driveTasks[requestId] = task
+        driveTaskKeys[requestId] = actionKey
     }
 
     /// Invalidate the current identity before cancelling handles. Results from
@@ -1323,6 +1439,7 @@ final class AppModel: ObservableObject {
             task.cancel()
         }
         driveTasks.removeAll()
+        driveTaskKeys.removeAll()
         lifecycleTasks.removeAll()
         registrationTaskId = nil
         inFlightDriveKeys.removeAll()

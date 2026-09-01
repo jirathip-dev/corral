@@ -774,13 +774,20 @@ struct DiffPane: Equatable, Sendable {
     var hasMore = false
     var nextOffset: Int?
     var isLoading = false
+    var hasLoaded = false
     var error: String?
+    var errorKind: String?
+    var errorStatus: Int?
 
-    var isEmpty: Bool { lines.isEmpty && files.isEmpty && !isLoading && error == nil }
+    var isEmpty: Bool {
+        hasLoaded && lines.isEmpty && files.isEmpty && !isLoading && error == nil
+    }
 
     mutating func beginFetch() {
         isLoading = true
         error = nil
+        errorKind = nil
+        errorStatus = nil
     }
 
     /// Fold one daemon page. Offset 0 seeds the pane; later pages append at
@@ -788,7 +795,10 @@ struct DiffPane: Equatable, Sendable {
     /// a gap reseeds from the new page instead of interleaving stale lines).
     mutating func apply(_ page: DiffPageWire) {
         isLoading = false
+        hasLoaded = true
         error = nil
+        errorKind = nil
+        errorStatus = nil
         repo = page.repo ?? repo
         branch = page.branch ?? branch
         head = page.head ?? head
@@ -798,7 +808,7 @@ struct DiffPane: Equatable, Sendable {
         total = page.total
         hasMore = page.hasMore
         nextOffset = page.nextOffset
-        if page.offset == 0 && lines.isEmpty {
+        if page.offset == 0 {
             lines = page.lines
         } else if page.offset <= lines.count {
             // Page window may overlap already-known lines (a re-fetch of the
@@ -813,9 +823,12 @@ struct DiffPane: Equatable, Sendable {
         }
     }
 
-    mutating func apply(_ failure: String) {
+    mutating func apply(_ failure: String, kind: String = "dispatch_refused",
+                        status: Int? = nil) {
         isLoading = false
         error = failure
+        errorKind = kind
+        errorStatus = status
     }
 }
 

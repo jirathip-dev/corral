@@ -1,4 +1,5 @@
 import CryptoKit
+import Combine
 import XCTest
 @testable import FleetNotifier
 
@@ -1135,22 +1136,33 @@ private final class DeterministicDriveScript: @unchecked Sendable {
     let defaultResponse: Data
     let responses: [String: Data]
     let gates: [String: DriveRequestGate]
+    let statuses: [String: Int]
+    let cancelOnStop: Bool
 
-    init(response: Data, gate: DriveRequestGate? = nil) {
+    init(response: Data, gate: DriveRequestGate? = nil, cancelOnStop: Bool = true) {
         self.defaultResponse = response
         self.responses = [:]
         self.gates = gate.map { ["/drive": $0] } ?? [:]
+        self.statuses = [:]
+        self.cancelOnStop = cancelOnStop
     }
 
     init(responses: [String: Data], gates: [String: DriveRequestGate] = [:],
-         defaultResponse: Data = Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8)) {
+         defaultResponse: Data = Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8),
+         statuses: [String: Int] = [:], cancelOnStop: Bool = true) {
         self.defaultResponse = defaultResponse
         self.responses = responses
         self.gates = gates
+        self.statuses = statuses
+        self.cancelOnStop = cancelOnStop
     }
 
     func response(for path: String) -> Data {
         responses[path] ?? defaultResponse
+    }
+
+    func status(for path: String) -> Int {
+        statuses[path] ?? 200
     }
 
     func gate(for path: String) -> DriveRequestGate? {
@@ -1318,7 +1330,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             }
             deliveryQueue.async {
                 if canRespond, !self.stopWasRecorded {
-                    let response = HTTPURLResponse(url: url, statusCode: 200,
+                    let response = HTTPURLResponse(url: url, statusCode: script.status(for: url.path),
                                                    httpVersion: "HTTP/1.1",
                                                    headerFields: nil)!
                     self.client?.urlProtocol(self, didReceive: response,
@@ -1338,9 +1350,10 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
         let script = activeScript
         let path = request.url?.path
         deliveryQueue.async {
+            guard let script, script.cancelOnStop else { return }
             guard !self.stopWasRecorded else { return }
             self.stopWasRecorded = true
-            guard let script, let path,
+            guard let path,
                   let gate = script.gate(for: path) else { return }
             script.log.cancelled.increment()
             gate.cancel()
@@ -4868,6 +4881,321 @@ final class ReadPaneOfflineParityTests: XCTestCase {
                        "no stuck spinner: prepareDiffFetch's in-flight flag must be cleared")
         XCTAssertFalse(model.fleet.diffs[live.agentId]?.error?.isEmpty ?? true)
         cancellable.cancel()
+    }
+}
+
+// MARK: - #333 diff terminal-state reliability
+
+@MainActor
+final class DiffReliabilityTests: XCTestCase {
+    private func session(for script: DeterministicDriveScript) -> URLSession {
+        DeterministicDriveURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func makeModel(session: URLSession) throws -> (AppModel, Agent) {
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_diff"]
+        model.hostURL = try XCTUnwrap(URL(string: "http://daemon"))
+        let agent = Agent(agentId: "herdr:diff", state: .working,
+                          capabilities: ["read_diff"], displayName: "herdr:diff")
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [agent.agentId: agent])))
+        return (model, agent)
+    }
+
+    private func client(session: URLSession) throws -> DriveClient {
+        DriveClient(host: try XCTUnwrap(URL(string: "http://daemon")), session: session)
+    }
+
+    private func terminalExpectation(model: AppModel, agentId: String) -> (XCTestExpectation, AnyCancellable) {
+        let landed = expectation(description: "diff pane reaches a terminal state")
+        landed.assertForOverFulfill = false
+        let cancellable = model.fleet.$diffs.sink { diffs in
+            guard let pane = diffs[agentId], !pane.isLoading else { return }
+            if pane.error != nil || pane.isEmpty || !pane.lines.isEmpty || !pane.files.isEmpty {
+                landed.fulfill()
+            }
+        }
+        return (landed, cancellable)
+    }
+
+    func testOffsetZeroRetryReplacesPreviouslyLoadedLines() {
+        var pane = DiffPane()
+        pane.apply(DiffPageWire(
+            repo: "corral", branch: "main", head: "old",
+            stats: DiffStatsWire(files: 1, adds: 1, dels: 0), files: [],
+            filesTruncated: false, offset: 0, lines: ["old"], total: 1,
+            hasMore: false, nextOffset: nil))
+        pane.beginFetch()
+        pane.apply(DiffPageWire(
+            repo: "corral", branch: "main", head: "new",
+            stats: DiffStatsWire(files: 0, adds: 0, dels: 0), files: [],
+            filesTruncated: false, offset: 0, lines: [], total: 0,
+            hasMore: false, nextOffset: nil))
+
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertTrue(pane.isEmpty)
+        XCTAssertEqual(pane.head, "new")
+    }
+
+    func testSuccessfulDiffPageFoldsIntoLoadedPane() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral","branch":"g333-diff-reliability","head":"abc1234","stats":{"files":1,"adds":2,"dels":1},"files":[{"path":"README.md","adds":2,"dels":1}],"files_truncated":false,"offset":0,"lines":["diff --git a/README.md b/README.md","+new","-old"],"total":3,"has_more":false,"next_offset":null}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertNil(pane.error)
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertEqual(pane.lines, ["diff --git a/README.md b/README.md", "+new", "-old"])
+    }
+
+    func testValidEmptyDiffPageLeavesLoadingAndShowsEmptyPane() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral","branch":"g333-diff-reliability","head":"abc1234","stats":{"files":0,"adds":0,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":[],"total":0,"has_more":false,"next_offset":null}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertNil(pane.error)
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertTrue(pane.isEmpty)
+    }
+
+    func testOkTrueMissingDiffResultFoldsContractError() async throws {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "contract_error")
+        XCTAssertNotNil(pane.error)
+    }
+
+    func testOkTrueMalformedDiffPageFoldsDecodeError() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral"}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "decode_error")
+        XCTAssertNotNil(pane.error)
+    }
+
+    func testTypedHTTPRefusalFoldsIntoDiffPane() async throws {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"not_granted","message":"read_diff denied"}"#.utf8)],
+            statuses: ["/drive": 403])
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.error, "read_diff denied")
+        XCTAssertEqual(pane.errorKind, "not_granted")
+        XCTAssertEqual(pane.errorStatus, 403)
+    }
+
+    func testLocalReadDiffGrantRefusalFoldsIntoDiffPane() async throws {
+        let script = DeterministicDriveScript(response: Data(#"{}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        model.grants = []
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "not_granted")
+        XCTAssertTrue(script.log.requests.isEmpty)
+    }
+
+    func testRetryStartsFreshDiffRequestAfterFailure() async throws {
+        let failedScript = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"temporary","message":"try again"}"#.utf8)],
+            statuses: ["/drive": 503])
+        let session = session(for: failedScript)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.error, "try again")
+
+        let successScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"retry","ok":true,"rev":3,"result":{"repo":"corral","branch":"retry","head":"retry","stats":{"files":0,"adds":0,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":["retried response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8))
+        DeterministicDriveURLProtocol.setScript(successScript)
+        let retryLanded = expectation(description: "retry folds a fresh diff page")
+        let retryCancellable = model.fleet.$diffs.sink { diffs in
+            guard let pane = diffs[agent.agentId], !pane.isLoading,
+                  pane.error == nil, pane.lines == ["retried response"] else { return }
+            retryLanded.fulfill()
+        }
+        defer { retryCancellable.cancel() }
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        let freshObserved = await successScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshObserved)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+        await fulfillment(of: [retryLanded], timeout: 2)
+        let retried = await successScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(retried)
+
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["retried response"])
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
+        XCTAssertEqual(model.inFlightDriveCount, 0)
+    }
+
+    func testNeverReturningDiffTransportTimesOutIntoPaneError() async throws {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"late","ok":true,"rev":2}"#.utf8),
+            gate: gate,
+            cancelOnStop: false)
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+        await fulfillment(of: [landed], timeout: 15)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "timeout")
+        XCTAssertEqual(pane.error, "Diff timed out.")
+    }
+
+    func testDismissAndReopenCancelsOldDiffAndSuppressesLateResponse() async throws {
+        let oldGate = DriveRequestGate()
+        let oldScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"old","ok":true,"rev":2,"result":{"repo":"old","branch":"old","head":"old","stats":{"files":1,"adds":1,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":["old response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8),
+            gate: oldGate,
+            cancelOnStop: false)
+        let oldSession = session(for: oldScript)
+        defer {
+            oldGate.release()
+            oldSession.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: oldSession)
+        let oldClient = try client(session: oldSession)
+
+        model.driveReadDiff(agent: agent, driveClient: oldClient)
+        let oldObserved = await oldScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(oldObserved)
+        XCTAssertTrue(model.fleet.diffs[agent.agentId]?.isLoading ?? false)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+
+        model.cancelReadDiff(agentId: agent.agentId)
+        XCTAssertFalse(model.fleet.diffs[agent.agentId]?.isLoading ?? true)
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
+        XCTAssertEqual(model.inFlightDriveCount, 0)
+
+        let freshGate = DriveRequestGate()
+        let freshScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"fresh","ok":true,"rev":3,"result":{"repo":"fresh","branch":"fresh","head":"fresh","stats":{"files":1,"adds":0,"dels":1},"files":[],"files_truncated":false,"offset":0,"lines":["fresh response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8),
+            gate: freshGate,
+            cancelOnStop: false)
+        let freshSession = session(for: freshScript)
+        defer {
+            freshGate.release()
+            freshSession.invalidateAndCancel()
+        }
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: freshSession))
+        let freshObserved = await freshScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshObserved)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+        freshGate.release()
+        let freshCompleted = await freshScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshCompleted)
+        await fulfillment(of: [landed], timeout: 2)
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["fresh response"])
+
+        oldGate.release()
+        let oldCompleted = await oldScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(oldCompleted)
+        await Task.yield()
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["fresh response"])
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
     }
 }
 

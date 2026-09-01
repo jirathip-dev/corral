@@ -3032,11 +3032,17 @@ struct AgentDiffSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        model.cancelReadDiff(agentId: agent.agentId)
+                        dismiss()
+                    }
                 }
             }
         }
         .presentationDetents([.large])
+        .onDisappear {
+            model.cancelReadDiff(agentId: agent.agentId)
+        }
     }
 
     @ViewBuilder
@@ -3078,10 +3084,18 @@ struct AgentDiffSheet: View {
             }
             Section("Diff") {
                 if let error = pane.error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .accessibilityLabel("Diff failed: \(error)")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(diffErrorText(error: error, kind: pane.errorKind,
+                                           status: pane.errorStatus))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Diff failed: \(error)")
+                        Button("Retry") {
+                            model.driveReadDiff(agent: agent,
+                                                driveClient: model.makeDriveClient())
+                        }
+                        .font(.footnote.weight(.semibold))
+                    }
                 }
                 if pane.lines.isEmpty && pane.error == nil {
                     Text("No changes in this worktree.")
@@ -3121,6 +3135,13 @@ struct AgentDiffSheet: View {
         "+\(stats.adds)/−\(stats.dels) · \(stats.files) files"
     }
 
+    private func diffErrorText(error: String, kind: String?, status: Int?) -> String {
+        var text = kind.map { "\($0): " } ?? ""
+        text += error
+        if let status { text += " (HTTP \(status))" }
+        return text
+    }
+
     private func diffColor(_ line: String) -> Color {
         if line.hasPrefix("+") {
             return .green
@@ -3139,7 +3160,7 @@ private extension DiffPane {
     /// failure) should render immediately instead of refetching on every
     /// appear.
     var hasLoadedContent: Bool {
-        !lines.isEmpty || !files.isEmpty || error != nil
+        hasLoaded || !lines.isEmpty || !files.isEmpty || error != nil
     }
 }
 

@@ -70,7 +70,8 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manufactured `model effort · path` line, no path-like fallback) and the
     # demo diff is compacted so the Conversation heading stays in viewport —
     # digest re-pinned to the R4 source set.
-    "4bc5d9d5fc67d7549ec7e9e24b3d78c625a2f928bb27956d5bd44efbd2155dc8"
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states.
+    "dd8a421930c4099ae638fec86cb44f3dbd3454a0288d1c665e90b6d48197b457"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

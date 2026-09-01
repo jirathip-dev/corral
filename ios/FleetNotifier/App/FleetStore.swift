@@ -332,6 +332,13 @@ final class FleetStore: ObservableObject {
         diffs[id] = pane
     }
 
+    /// #333: dismissal detaches a pending diff without clearing its pane.
+    func cancelDiffFetch(agent id: String) {
+        guard agents[id] != nil, var pane = diffs[id] else { return }
+        pane.isLoading = false
+        diffs[id] = pane
+    }
+
     /// #232: fold one daemon page into the pane (seeds at offset 0, appends
     /// subsequent pages; a re-fetch of the same window is idempotent).
     func rememberDiffPage(_ page: DiffPageWire, for id: String) {
@@ -342,10 +349,11 @@ final class FleetStore: ObservableObject {
     }
 
     /// #232: fold a refused/failed diff fetch into the pane.
-    func foldDiffFailure(_ message: String, for id: String) {
+    func foldDiffFailure(_ message: String, kind: String = "dispatch_refused",
+                         status: Int? = nil, for id: String) {
         guard agents[id] != nil else { return }
         var pane = diffs[id] ?? DiffPane()
-        pane.apply(message)
+        pane.apply(message, kind: kind, status: status)
         diffs[id] = pane
     }
 
@@ -531,6 +539,7 @@ final class FleetStore: ObservableObject {
         agents = [:]
         tails = [:]
         tailPanes = [:]
+        diffs = [:]
         lastEventId = nil
         cursorBox.write(nil)
         // A reset abandons the delta base; retaining it would let a later

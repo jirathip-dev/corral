@@ -476,6 +476,7 @@ fn is_system_artifact(line: &str) -> bool {
     if lower.contains("missing environment variable")
         || lower.contains("environment variable")
         || lower.starts_with("error:")
+        || lower.starts_with("stdout >")
         || lower.starts_with("warning:")
     {
         return true;
@@ -1441,10 +1442,39 @@ mod tests {
         let blocks = canonical_blocks(&["stdout > yes".into()], &prov, "t", None);
         assert_eq!(
             kinds(&blocks),
-            vec![TranscriptBlockKind::Unknown],
-            "ordinary machine output must stay Unknown: {blocks:#?}"
+            vec![TranscriptBlockKind::System],
+            "ordinary stdout output must stay System: {blocks:#?}"
         );
         assert!(blocks.iter().all(|block| block.prompt_request_id.is_none()));
+    }
+
+    #[test]
+    fn composer_echo_contract_preserves_build_and_unsupported_shapes() {
+        let build = canonical_blocks(
+            &["build-session > yes".into()],
+            &prov_with(&[("req-build", "yes")]),
+            "t",
+            None,
+        );
+        assert_eq!(kinds(&build), vec![TranscriptBlockKind::User]);
+        assert_eq!(build[0].prompt_request_id.as_deref(), Some("req-build"));
+
+        let unsupported = canonical_blocks(
+            &["corral-wQ-1 ❯ yes".into()],
+            &prov_with(&[("req-unsupported", "yes")]),
+            "t",
+            None,
+        );
+        assert_eq!(
+            kinds(&unsupported),
+            vec![TranscriptBlockKind::Unknown],
+            "an unsupported session label must not unlock User: {unsupported:#?}"
+        );
+        assert!(
+            unsupported
+                .iter()
+                .all(|block| block.prompt_request_id.is_none())
+        );
     }
 
     // ---------------------------------------------------------------------

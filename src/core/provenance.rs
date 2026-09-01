@@ -79,12 +79,14 @@ pub fn text_sha256_hex(text: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Return the one redacted identity used for structured exchange events.
-/// Cleaning removes terminal escapes/overdraw, redaction runs before hashing,
-/// and outer whitespace is presentation rather than exchange content.
+/// Return the one canonical identity used for structured exchange events.
+/// Match the read-tail sequence: redact, remove TUI furniture, replace
+/// unsupported glyphs, then normalize whitespace before hashing.
 pub fn canonical_exchange_text(text: &str) -> String {
-    let cleaned = crate::core::blocks::clean(text);
-    crate::core::redact::redact(cleaned.trim()).into_owned()
+    let redacted = crate::core::redact::redact(text);
+    let furniture = crate::core::blocks::scrub_tui_furniture(&redacted);
+    let icons = crate::core::blocks::scrub_unsupported_glyphs(&furniture);
+    crate::core::blocks::clean(&icons).trim().to_string()
 }
 
 /// Bounded, thread-safe ledger of dispatched prompts, keyed by target.
@@ -241,8 +243,8 @@ pub enum ExchangeRole {
 /// #330: one structured agent-side exchange event as observed by Corral —
 /// the agent's blocked question (herdr `pane.output_matched` →
 /// `waiting_on`). Same identity-only design as [`PromptEvent`]: the ledger
-/// stores SHA-256 + length of the CLEANED, REDACTED text — the exact bytes
-/// a client can ever see echoed in a read window — never the raw question.
+/// stores SHA-256 + length of the canonical read-tail identity —
+/// never the raw question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExchangeEvent {
     /// Structured event identity (the claim's `approval_id` when the agent
@@ -252,18 +254,18 @@ pub struct ExchangeEvent {
     pub target: String,
     /// Authoritative structured role of the event.
     pub role: ExchangeRole,
-    /// SHA-256 hex of the canonical cleaned, redacted, trimmed event text.
+    /// SHA-256 hex of the canonical read-tail event text.
     pub text_sha256: String,
-    /// Byte length of the canonical cleaned, redacted, trimmed event text.
+    /// Byte length of the canonical read-tail event text.
     pub text_len: usize,
     /// Epoch millis when the event was observed.
     pub ts: u64,
 }
 
 impl ExchangeEvent {
-    /// Record the identity of `text` in its CLEANED, REDACTED form — the
-    /// exact canonical identity the read path compares window lines against
-    /// (`canonical_exchange_text` cleans, redacts, and trims before hashing).
+    /// Record `text` in the exact canonical identity the read path compares
+    /// window lines against (`canonical_exchange_text` applies redaction,
+    /// TUI-furniture/icon scrubs, and whitespace normalization).
     pub fn new(id: &str, target: &str, role: ExchangeRole, text: &str, ts: u64) -> Self {
         let canonical = canonical_exchange_text(text);
         Self {
@@ -276,9 +278,8 @@ impl ExchangeEvent {
         }
     }
 
-    /// Whether `text` is this event's text (hash + length identity on the
-    /// canonical cleaned, redacted, trimmed form — never a prose or name
-    /// comparison).
+    /// Whether `text` is this event's canonical identity (hash + length —
+    /// never a prose or name comparison).
     pub fn matches_text(&self, text: &str) -> bool {
         let canonical = canonical_exchange_text(text);
         self.text_len == canonical.len() && self.text_sha256 == text_sha256_hex(&canonical)

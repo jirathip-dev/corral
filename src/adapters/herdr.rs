@@ -2176,6 +2176,7 @@ impl HerdrAdapter {
             .and_then(|r| r.text.clone())
             .unwrap_or_default();
         let waiting_on = classify_waiting_on(&matched, &text);
+        let exchange_text = matched.clone();
         let agent_id_for_claim = agent_id.clone();
         // #330: the structured exchange ledger homed on the shared store —
         // the agent's blocked question is recorded with its authoritative
@@ -2206,7 +2207,7 @@ impl HerdrAdapter {
                         &waiting_on.approval_id,
                         &agent_id_for_claim,
                         role,
-                        &waiting_on.prompt,
+                        &exchange_text,
                         now_millis(),
                     ));
                 }
@@ -3511,6 +3512,73 @@ mod tests {
             Some(crate::core::provenance::ExchangeRole::Tool),
             "an approve-tool question records the Tool role"
         );
+    }
+
+    async fn real_adapter_exchange_blocks(
+        matched_line: &str,
+        read_text: &str,
+    ) -> Vec<crate::core::blocks::TranscriptBlock> {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let agent: AgentInfoWire = serde_json::from_value(fixture_claude()).unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+        let agent_id = "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784";
+        let pane_id = "wQ:p1";
+        let status = StatusChangedWire {
+            pane_id: pane_id.to_string(),
+            agent_status: Some("blocked".to_string()),
+            agent: Some("claude".to_string()),
+            title: Some("Fix Blender acceptance gate and run tests".to_string()),
+            state_labels: HashMap::from([(String::from("waiting_for_input"), String::new())]),
+            state_change_seq: None,
+        };
+        adapter.handle_status_changed(&status, &store).await;
+        let matched = OutputMatchedWire {
+            pane_id: pane_id.to_string(),
+            matched_line: Some(matched_line.to_string()),
+            read: Some(OutputReadWire {
+                text: Some(read_text.to_string()),
+            }),
+        };
+        adapter.handle_output_matched(&matched, &store).await;
+        let lines = bounded_redacted_tail(read_text, 200);
+        crate::core::blocks::canonical_blocks_with_exchange(
+            &lines,
+            &crate::core::provenance::PromptProvenance::new(),
+            &store.exchange(),
+            agent_id,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn exchange_identity_matches_real_read_tail_transforms() {
+        let question = "Should I proceed with the migration?";
+        let rail = format!("│{} {} {}│", "─".repeat(40), question, "─".repeat(40));
+        let redacted = "Should I use sk-ant-r2-fixture?";
+        let cases = vec![
+            ("literal", format!("  {question}"), question.to_string()),
+            ("rail", rail.clone(), rail),
+            (
+                "unsupported-icon",
+                format!("\u{e000} {question}"),
+                format!("\u{e000} {question}"),
+            ),
+            (
+                "whitespace",
+                "Should\tI proceed with the migration?  ".to_string(),
+                "Should    I proceed with the migration?\n".to_string(),
+            ),
+            ("redaction", redacted.to_string(), redacted.to_string()),
+        ];
+        for (name, matched, read) in cases {
+            let blocks = real_adapter_exchange_blocks(&matched, &read).await;
+            assert_eq!(
+                blocks.iter().map(|block| block.kind).collect::<Vec<_>>(),
+                vec![crate::core::blocks::TranscriptBlockKind::Agent],
+                "real adapter exchange identity case {name}: {blocks:#?}"
+            );
+        }
     }
 
     #[test]

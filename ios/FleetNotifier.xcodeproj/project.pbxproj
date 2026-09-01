@@ -244,6 +244,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F65A5933BF9ECD17FFF304B5 /* Build configuration list for PBXNativeTarget "FleetNotifierTests" */;
 			buildPhases = (
+				5F192B1FB1FA20C22EB91780 /* Bundle FleetViews source for the wiring test */,
 				CD07E81D7D06EFC41C0B9D7D /* Sources */,
 				C4342336193F6893893C8C61 /* Resources */,
 			);
@@ -337,6 +338,27 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		5F192B1FB1FA20C22EB91780 /* Bundle FleetViews source for the wiring test */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
+			);
+			name = "Bundle FleetViews source for the wiring test";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\n";
+		};
 		F6207AF155842583C8143257 /* Embed Release source digest */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

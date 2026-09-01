@@ -115,6 +115,23 @@ targets:
       # file, not a hand-written copy.
       - path: ../tests/fixtures/canonical_stream_golden.json
         buildPhase: resources
+    preBuildScripts:
+      # #316 R5: the production Recent-output view source rides in the test
+      # bundle (as .txt — Xcode refuses to Copy Bundle Resources a .swift
+      # file) so the source-wiring regression pins the REAL FleetViews call
+      # site (displaySections from snapshot.visibleRows) and its paired
+      # render uses. A compile-capable bypass of the production seam must
+      # make the focused suite RED.
+      - name: Bundle FleetViews source for the wiring test
+        script: |
+          mkdir -p "$TARGET_BUILD_DIR/$WRAPPER_NAME"
+          cp "$SRCROOT/FleetNotifier/UI/FleetViews.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
+        inputFiles:
+          - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
+        basedOnDependencyAnalysis: false
     dependencies:
       - target: FleetNotifier
     settings:

@@ -5154,4 +5154,50 @@ final class ContextSplitV3Tests: XCTestCase {
             sections.context(for: block) == .conversation
         }, "every conversation block still routes as conversation on the read path")
     }
+
+    /// R5: the REAL production wiring seam. The model helper test above
+    /// guards `displaySections` itself, but nothing previously bound
+    /// FleetViews to that helper — a compile-capable bypass of the view
+    /// call site (every block in Conversation, harness empty) shipped
+    /// green. This test pins the exact production call site AND its paired
+    /// render uses by reading the bundled production source, mirroring the
+    /// golden-fixture `String(contentsOf:)` pattern (FleetNotifierTests
+    /// `canonicalDaemonJSON()`). The production source is bundled via
+    /// ios/project.yml (FleetNotifierTests resources) so the assertion
+    /// reads the committed file, not a hand-written copy.
+    func testV3ProductionViewWiringBindsFleetViewsToDisplaySections() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "FleetViews.swift", withExtension: "txt"),
+            "FleetViews.swift.txt must be bundled with the tests (project.yml resources)")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        // 1. The exact production call-site assignment. A precise
+        //    line-level assertion, not an occurrence count: a decoy helper
+        //    or a test-local definition of "displaySections" must not
+        //    satisfy it.
+        XCTAssertTrue(
+            source.contains(
+                "let sections = RecentOutputSections.displaySections(from: snapshot.visibleRows)"),
+            "FleetViews must derive sections through displaySections at the production call site")
+
+        // 2. Paired render use: Conversation consumes the partitioned
+        //    conversation rows (identified rows + per-row paging anchor),
+        //    and Harness activity consumes the SAME sections' harness.
+        //    A bypass that renders every block in Conversation and leaves
+        //    harness empty removes the displaySections call above AND
+        //    leaves these consumers disconnected from the partition.
+        XCTAssertTrue(
+            source.contains("identifiedConversationRows(sections)"),
+            "Conversation must render identifiedConversationRows(sections)")
+        XCTAssertTrue(
+            source.contains("previousBlock(in: sections.conversation, at: index)"),
+            "Conversation rows must page against sections.conversation")
+        XCTAssertTrue(
+            source.contains("harnessActivity(sections: sections)"),
+            "Harness activity must consume the same sections object")
+        XCTAssertTrue(
+            source.contains("if !sections.harness.isEmpty"),
+            "Harness activity must be gated on sections.harness")
+    }
 }

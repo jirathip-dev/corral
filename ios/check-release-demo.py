@@ -70,9 +70,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manufactured `model effort · path` line, no path-like fallback) and the
     # demo diff is compacted so the Conversation heading stays in viewport —
     # digest re-pinned to the R4 source set.
-    # #333: DiffPane now records loaded/error terminal states and AppModel
-    # bounds/cancels read_diff; digest re-pinned for the diff reliability fix.
-    "bfffc29cf266919557c5a5ef8362af5fe762e5635e137c973cee50865e1b67a8"
+    # #333: DiffPane/DiffFileWire terminal-state coverage in Models.swift,
+    # with AppModel bounds/cancellation for read_diff; digest re-pinned.
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states;
+    # the digest includes the merged #333 and #331 Release source inputs.
+    "3eabcbd125ba4d7a108505bc3e7bbe84db66c3c6c70d5ce04e0d8856584dd822"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -73,7 +73,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #333: DiffPane now records loaded/error terminal states and AppModel
     # bounds/cancels read_diff; digest re-pinned for the diff reliability fix.
     # #327: host build/protocol compatibility identity and Settings warning.
-    "138649f2a6b08e8e10886e7074511ff3862f365538e424f8a04b8c87063970c1"
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states;
+    # digest re-pinned after the merged Release source inputs.
+    "01e5e14320da43f65477e860083ef391b4ef3147a46d67b9a1ab8a2d21c174e5"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

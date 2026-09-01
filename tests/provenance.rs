@@ -110,6 +110,9 @@ struct Harness {
     signing: SigningKey,
     pubkey: [u8; 32],
     app: Router,
+    /// #330: the store carries the structured exchange ledger; tests record
+    /// agent-side events into it exactly like the herdr adapter does.
+    store: Store,
     _dir: tempfile::TempDir,
 }
 
@@ -128,7 +131,7 @@ fn harness() -> Harness {
         .set_grants(&signed.key_id, ALL_CAPABILITIES.to_vec())
         .expect("grants");
     let app = router(AppState {
-        store,
+        store: store.clone(),
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
@@ -142,6 +145,7 @@ fn harness() -> Harness {
         signing,
         pubkey,
         app,
+        store,
         _dir: dir,
     }
 }
@@ -663,6 +667,192 @@ fn daemon_golden_fixture_matches_canonical_blocks() {
     assert_eq!(
         emitted, golden,
         "daemon segmentation drifted from the committed golden fixture \
+         (both client contracts consume exactly this artifact)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #330: the supported live session — a generic, privacy-safe production-path
+// fixture representing a live operator/assistant/tool exchange inside a
+// terminal snapshot (composer echo + chrome + tool run + unprovenanced
+// prose). The canonical stream joins BOTH ledgers (prompt provenance for the
+// operator, the structured exchange ledger for the agent's questions), so a
+// real session renders a non-empty Conversation without any prose guessing.
+// ---------------------------------------------------------------------------
+
+/// The generic live-session snapshot both clients must segment identically.
+/// No harness, provider, or model names anywhere; all content is fictional.
+fn live_session_lines() -> Vec<String> {
+    vec![
+        "──────────────────────────────────────".into(),
+        "orch-session ❯ ship the canonical transcript stream".into(),
+        "".into(),
+        "Canonical stream wired end to end.".into(),
+        "".into(),
+        "Should I proceed with the destructive migration?".into(),
+        "".into(),
+        "$ cargo build".into(),
+        "Compiling corrald v0.1.0".into(),
+        "".into(),
+        "status: working · esc to interrupt".into(),
+        "fix the flaky test by hand".into(),
+    ]
+}
+
+/// Record the structured agent-side events a blocked session produces, the
+/// same way the herdr adapter's `handle_output_matched` does.
+fn record_live_exchange(store: &Store, target: &str) {
+    store
+        .exchange()
+        .record(corrald::core::provenance::ExchangeEvent::new(
+            "herdr:abc:sha256:q",
+            target,
+            corrald::core::provenance::ExchangeRole::Assistant,
+            "Should I proceed with the destructive migration?",
+            2,
+        ));
+}
+
+#[tokio::test]
+async fn live_session_exchange_produces_canonical_conversation_blocks() {
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(live_session_lines());
+
+    // 1. The operator dispatched a prompt through the real drive plane.
+    let (status, value) = post(
+        &h.app,
+        h.body(
+            "req-prompt",
+            Capability::Prompt,
+            "herdr:abc",
+            json!({ "kind": "prompt", "text": "ship the canonical transcript stream" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true, "prompt dispatch: {value}");
+
+    // 2. The agent asked a structured question (output_matched → ledger).
+    record_live_exchange(&h.store, "herdr:abc");
+
+    // 3. Read the tail: the canonical stream must carry the full exchange.
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    let kinds: Vec<&str> = blocks
+        .iter()
+        .map(|b| b["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "system", "user", "unknown", "agent", "tool", "system", "unknown"
+        ],
+        "a supported live session renders the full exchange: {blocks:?}"
+    );
+    // The operator's prompt is exactly-once user with its request id.
+    let user_blocks: Vec<&Value> = blocks.iter().filter(|b| b["kind"] == "user").collect();
+    assert_eq!(user_blocks.len(), 1);
+    assert_eq!(user_blocks[0]["prompt_request_id"], "req-prompt");
+    assert_eq!(
+        user_blocks[0]["text"],
+        "ship the canonical transcript stream"
+    );
+    // The structured question is attributed by the event, never the prose.
+    let agent_blocks: Vec<&Value> = blocks.iter().filter(|b| b["kind"] == "agent").collect();
+    assert_eq!(agent_blocks.len(), 1);
+    assert_eq!(
+        agent_blocks[0]["text"],
+        "Should I proceed with the destructive migration?"
+    );
+}
+
+#[tokio::test]
+async fn live_session_without_structured_role_source_stays_unknown() {
+    // #330 AC7 RED baseline: remove the structured role source (no exchange
+    // event recorded) and the SAME window collapses back to Unknown — the
+    // regression test must fail against a reverted fixture.
+    let h = harness();
+    h.adapter.knows("herdr:abc").tail(live_session_lines());
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-prompt",
+            Capability::Prompt,
+            "herdr:abc",
+            json!({ "kind": "prompt", "text": "ship the canonical transcript stream" }),
+        ),
+    )
+    .await;
+    assert_eq!(value["ok"], true);
+
+    let (_status, value) = post(
+        &h.app,
+        h.body(
+            "req-tail",
+            Capability::ReadTail,
+            "herdr:abc",
+            json!({ "kind": "read_tail", "lines": 200 }),
+        ),
+    )
+    .await;
+    let blocks = value["result"]["blocks"].as_array().expect("blocks array");
+    assert!(
+        blocks.iter().all(|b| b["kind"] != "agent"),
+        "without the structured exchange source the question must stay \
+         unattributed: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().any(|b| b["kind"] == "unknown" && {
+            b["text"] == "Should I proceed with the destructive migration?"
+        }),
+        "the unprovenanced question line stays honestly unknown: {blocks:?}"
+    );
+}
+
+/// #330 AC6: the committed golden fixture for the live session — the SAME
+/// artifact iOS and egui bundle, byte-asserted against the real production
+/// segmenter so daemon drift fails the daemon suite first.
+#[test]
+fn daemon_live_session_golden_fixture_matches_canonical_blocks() {
+    let prov = corrald::core::provenance::PromptProvenance::new();
+    prov.record(corrald::core::provenance::PromptEvent::new(
+        "req-prompt",
+        "herdr:abc",
+        "ship the canonical transcript stream",
+        1,
+    ));
+    let exchange = corrald::core::provenance::ExchangeLedger::new();
+    exchange.record(corrald::core::provenance::ExchangeEvent::new(
+        "herdr:abc:sha256:q",
+        "herdr:abc",
+        corrald::core::provenance::ExchangeRole::Assistant,
+        "Should I proceed with the destructive migration?",
+        2,
+    ));
+    let blocks = corrald::core::blocks::canonical_blocks_with_exchange(
+        &live_session_lines(),
+        &prov,
+        &exchange,
+        "herdr:abc",
+        None,
+    );
+    let emitted = serde_json::to_value(&blocks).expect("blocks serialize");
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/live_session_exchange_golden.json"))
+            .expect("committed live-session golden fixture parses");
+    assert_eq!(
+        emitted, golden,
+        "live-session segmentation drifted from the committed golden fixture \
          (both client contracts consume exactly this artifact)"
     );
 }

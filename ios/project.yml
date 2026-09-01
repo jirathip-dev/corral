@@ -115,6 +115,10 @@ targets:
       # file, not a hand-written copy.
       - path: ../tests/fixtures/canonical_stream_golden.json
         buildPhase: resources
+      # #330 AC6: the live-session golden fixture (conversation + terminal
+      # chrome) — the same daemon-emitted artifact egui consumes.
+      - path: ../tests/fixtures/live_session_exchange_golden.json
+        buildPhase: resources
     preBuildScripts:
       # #316 R5: the production Recent-output view source rides in the test
       # bundle (as .txt — Xcode refuses to Copy Bundle Resources a .swift

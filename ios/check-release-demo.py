@@ -70,7 +70,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manufactured `model effort · path` line, no path-like fallback) and the
     # demo diff is compacted so the Conversation heading stays in viewport —
     # digest re-pinned to the R4 source set.
-    "4bc5d9d5fc67d7549ec7e9e24b3d78c625a2f928bb27956d5bd44efbd2155dc8"
+    # #328/#329/#330: shared divider-vs-content seam + harness event count +
+    # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
+    # harness scroll (FleetViews layout constant), demo seed long diagnostics
+    # + divider-only block + harness-only evidence session (DemoFleet), and
+    # the demo evidence launch args (FleetNotifierApp) — digest re-pinned to
+    # the #330 source set.
+    "46a1f27ed9fc7a0331d7dd06561713a2b1ddd5adc78e8966ebc0086d98905c1b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

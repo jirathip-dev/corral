@@ -618,7 +618,7 @@ fn is_session_chrome(line: &str) -> bool {
 ///    identity — the ledger stores only a hash + length) IS the operator's
 ///    message: emitted exactly once as a `user` block carrying
 ///    `prompt_request_id`, regardless of the echo's terminal shape (`›`,
-///    `>` prefixes, decorations). #315 R2: eligibility requires a
+///    `>`, `❯` prefixes, decorations). #315 R2: eligibility requires a
 ///    typed-input echo — a decoration-prefixed line (`› hello`) or a
 ///    standalone line equal to the recorded text — so machine output that
 ///    merely EQUALS an old prompt (`yes`, `ok`) is never promoted. Binding
@@ -640,6 +640,30 @@ fn is_session_chrome(line: &str) -> bool {
 pub fn canonical_blocks(
     lines: &[String],
     provenance: &crate::core::provenance::PromptProvenance,
+    target: &str,
+    at: Option<u64>,
+) -> Vec<TranscriptBlock> {
+    canonical_blocks_with_exchange(
+        lines,
+        provenance,
+        &crate::core::provenance::ExchangeLedger::new(),
+        target,
+        at,
+    )
+}
+
+/// #330: [`canonical_blocks`] joined against the structured exchange
+/// ledger. A window line whose cleaned, redacted identity equals a recorded
+/// agent-side exchange event (the agent's structured blocked question) is
+/// emitted as the event's authoritative role — `assistant` → `agent`,
+/// `tool` → `tool` — exactly once per read. This is the production seam
+/// that keeps a supported live session's Conversation non-empty: the roles
+/// come from the STRUCTURED source (Corral-observed events), never from
+/// terminal prose, provider, or model names.
+pub fn canonical_blocks_with_exchange(
+    lines: &[String],
+    provenance: &crate::core::provenance::PromptProvenance,
+    exchange: &crate::core::provenance::ExchangeLedger,
     target: &str,
     at: Option<u64>,
 ) -> Vec<TranscriptBlock> {
@@ -672,16 +696,50 @@ pub fn canonical_blocks(
     // echo slot, one-to-one against the ledger's oldest events.
     let echoed: Vec<Option<crate::core::provenance::PromptEvent>> =
         provenance.bind_echoes(target, &eligible, eligible.len());
-    segment_canonical(&cleaned, &echoed, at)
+    // #330: the agent's structured question is plain prose in the terminal
+    // — every non-blank line is a candidate for the exchange ledger, bound
+    // by exact identity (the recorded event text is the same cleaned,
+    // redacted form the window carries).
+    let exchange_candidates: Vec<Option<String>> = cleaned
+        .split('\n')
+        .map(|line| {
+            let candidate = line.trim();
+            (!candidate.is_empty()).then(|| candidate.to_string())
+        })
+        .collect();
+    let bound_exchange =
+        exchange.bind_events(target, &exchange_candidates, exchange_candidates.len());
+    segment_canonical(&cleaned, &echoed, &bound_exchange, at)
 }
 
 /// Strip a typed-input decoration prefix (`›`, `>`, `❯`, `$ `, `!`) so a
-/// terminal echo compares equal to the recorded prompt text.
+/// terminal echo compares equal to the recorded prompt text. #330: also
+/// strips the supported TUI's composer-echo shape — a session label before
+/// the decoration (`orch-session ❯ <text>`), so a recorded prompt binds to
+/// the exact echo a live session paints.
 fn strip_typed_input_prefix(line: &str) -> &str {
     let mut current = line.trim_start();
     for prefix in ["›", ">", "❯", "❮", "🞈"] {
         if let Some(rest) = current.strip_prefix(prefix) {
             current = rest.trim_start();
+        }
+    }
+    if current.len() < line.trim_start().len() {
+        return current;
+    }
+    // #330 composer-echo shape: `<session-label> <decoration> <text>` —
+    // the supported TUI paints submitted input after the session label. A
+    // single non-space token before the decoration is the label; only a
+    // genuine decoration char unlocks the strip.
+    if let Some((label, rest)) = current.split_once(' ')
+        && !label.is_empty()
+        && !label.contains(char::is_whitespace)
+    {
+        let after = rest.trim_start();
+        for prefix in ["›", ">", "❯", "❮", "🞈"] {
+            if let Some(text) = after.strip_prefix(prefix) {
+                return text.trim_start();
+            }
         }
     }
     current
@@ -690,9 +748,14 @@ fn strip_typed_input_prefix(line: &str) -> &str {
 /// The #315 canonical segmentation: identical mechanical cleaning to
 /// [`segment_cleaned`], but line kinds come from recorded Prompt provenance
 /// and shape classification that never guesses an unprovenanced human.
+/// #330: `exchange_events` carries the structured agent-side event bound to
+/// each cleaned line (one slot per line, `None` = unattributed) — a bound
+/// event emits its authoritative role (`assistant` → `agent`, `tool` →
+/// `tool`).
 fn segment_canonical(
     cleaned: &str,
     echoed: &[Option<crate::core::provenance::PromptEvent>],
+    exchange_events: &[Option<crate::core::provenance::ExchangeEvent>],
     at: Option<u64>,
 ) -> Vec<TranscriptBlock> {
     let mut blocks: Vec<TranscriptBlock> = Vec::new();
@@ -722,6 +785,7 @@ fn segment_canonical(
 
     for (line_index, line) in cleaned.split('\n').enumerate() {
         let source_echo = echoed.get(line_index).cloned().flatten();
+        let source_exchange = exchange_events.get(line_index).cloned().flatten();
         if line.is_empty() {
             flush(&mut blocks, &mut current, at, &mut pending_truncated);
             continue;
@@ -735,6 +799,14 @@ fn segment_canonical(
 
         let kind = if source_echo.is_some() {
             TranscriptBlockKind::User
+        } else if let Some(event) = source_exchange.as_ref() {
+            // #330: the structured event's authoritative role — the agent's
+            // question is attributed by the event, never by the line's
+            // prose or the source's identity.
+            match event.role {
+                crate::core::provenance::ExchangeRole::Assistant => TranscriptBlockKind::Agent,
+                crate::core::provenance::ExchangeRole::Tool => TranscriptBlockKind::Tool,
+            }
         } else if is_session_chrome(line) {
             TranscriptBlockKind::System
         } else {
@@ -1354,6 +1426,182 @@ mod tests {
         assert!(
             blocks.iter().all(|b| b.kind != TranscriptBlockKind::User),
             "undecorated line promoted to user: {blocks:#?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // #330: the supported live TUI's composer echo shape. The session TUI
+    // paints submitted input as "<session-label> ❯ <text>" — a typed-input
+    // decoration after the session label. A recorded Corral Prompt whose
+    // text equals the echoed text must bind to exactly that one echo, like a
+    // leading `>`/`›` decoration (this is what keeps a real live session's
+    // Conversation non-empty).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn composer_echo_shape_binds_recorded_prompts_exactly_once() {
+        let prov = prov_with(&[("req-echo", "ship the canonical transcript stream")]);
+        let blocks = canonical_blocks(
+            &[
+                "orch-session ❯ ship the canonical transcript stream".into(),
+                "".into(),
+                "Canonical stream wired end to end.".into(),
+            ],
+            &prov,
+            "t",
+            None,
+        );
+        let users: Vec<&TranscriptBlock> = blocks
+            .iter()
+            .filter(|b| b.kind == TranscriptBlockKind::User)
+            .collect();
+        assert_eq!(
+            users.len(),
+            1,
+            "composer echo binds exactly once: {blocks:#?}"
+        );
+        assert_eq!(users[0].prompt_request_id.as_deref(), Some("req-echo"));
+        assert_eq!(users[0].text, "ship the canonical transcript stream");
+        let echoed_text = blocks
+            .iter()
+            .filter(|b| b.text.contains("ship the canonical transcript stream"))
+            .count();
+        assert_eq!(
+            echoed_text, 1,
+            "the echo is deduplicated against the recorded prompt"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // #330: the authoritative structured-role seam. Corral observes the
+    // agent's STRUCTURED blocked-question events (pane.output_matched →
+    // waiting_on) and records them with authoritative roles (an
+    // approve-tool request is a Tool event, a question/menu is an Assistant
+    // event). The canonical stream joins the terminal snapshot against that
+    // ledger exactly-once, so a supported live session produces Agent/Tool
+    // conversation blocks without any prose inspection.
+    // ---------------------------------------------------------------------
+
+    fn exchange_with(
+        events: &[(&str, &str, crate::core::provenance::ExchangeRole)],
+    ) -> crate::core::provenance::ExchangeLedger {
+        let ledger = crate::core::provenance::ExchangeLedger::new();
+        for (i, (id, text, role)) in events.iter().enumerate() {
+            ledger.record(crate::core::provenance::ExchangeEvent::new(
+                id, "t", *role, text, i as u64,
+            ));
+        }
+        ledger
+    }
+
+    #[test]
+    fn exchange_assistant_event_binds_to_agent_block() {
+        let ledger = exchange_with(&[(
+            "q-1",
+            "Should I proceed with the destructive migration?",
+            crate::core::provenance::ExchangeRole::Assistant,
+        )]);
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &[
+                "Working on the migration.".into(),
+                "".into(),
+                "Should I proceed with the destructive migration?".into(),
+                "".into(),
+                "status: working · esc to interrupt".into(),
+            ],
+            &crate::core::provenance::PromptProvenance::new(),
+            &ledger,
+            "t",
+            None,
+        );
+        assert_eq!(
+            kinds(&blocks),
+            vec![
+                TranscriptBlockKind::Unknown,
+                TranscriptBlockKind::Agent,
+                TranscriptBlockKind::System,
+            ],
+            "the structured assistant question must render as Agent: {blocks:#?}"
+        );
+        assert_eq!(
+            blocks[1].text,
+            "Should I proceed with the destructive migration?"
+        );
+    }
+
+    #[test]
+    fn exchange_tool_event_binds_to_tool_block() {
+        let ledger = exchange_with(&[(
+            "q-2",
+            "Approve this change to push 2 commits to demo-catalog-v2?",
+            crate::core::provenance::ExchangeRole::Tool,
+        )]);
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &["Approve this change to push 2 commits to demo-catalog-v2?".into()],
+            &crate::core::provenance::PromptProvenance::new(),
+            &ledger,
+            "t",
+            None,
+        );
+        assert_eq!(
+            kinds(&blocks),
+            vec![TranscriptBlockKind::Tool],
+            "the structured approve-tool request must render as Tool: {blocks:#?}"
+        );
+    }
+
+    #[test]
+    fn exchange_event_absent_keeps_line_unknown() {
+        // #330 AC7 baseline: with NO structured role source the same window
+        // stays honest Unknown — nothing is guessed from the prose.
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &[
+                "Working on the migration.".into(),
+                "".into(),
+                "Should I proceed with the destructive migration?".into(),
+            ],
+            &crate::core::provenance::PromptProvenance::new(),
+            &crate::core::provenance::ExchangeLedger::new(),
+            "t",
+            None,
+        );
+        assert!(
+            blocks
+                .iter()
+                .all(|b| b.kind == TranscriptBlockKind::Unknown),
+            "without the structured role source nothing may be attributed: {blocks:#?}"
+        );
+    }
+
+    #[test]
+    fn exchange_event_renders_exactly_once_per_read() {
+        // One structured event, the question echoed twice in the window:
+        // exactly one block binds (one-to-one per read), the duplicate stays
+        // unknown — no double attribution.
+        let ledger = exchange_with(&[(
+            "q-1",
+            "Should I proceed with the destructive migration?",
+            crate::core::provenance::ExchangeRole::Assistant,
+        )]);
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &[
+                "Should I proceed with the destructive migration?".into(),
+                "".into(),
+                "Should I proceed with the destructive migration?".into(),
+            ],
+            &crate::core::provenance::PromptProvenance::new(),
+            &ledger,
+            "t",
+            None,
+        );
+        let agents: Vec<&TranscriptBlock> = blocks
+            .iter()
+            .filter(|b| b.kind == TranscriptBlockKind::Agent)
+            .collect();
+        assert_eq!(
+            agents.len(),
+            1,
+            "the structured event binds exactly once per read: {blocks:#?}"
         );
     }
 }

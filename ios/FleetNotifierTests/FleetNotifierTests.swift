@@ -4243,10 +4243,9 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(DemoFleet.featuredAgentID, "demo-session:recent-output")
     }
 
-    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {
+    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsOmitted() throws {
         let agents = DemoFleet.seed()
         let first = try XCTUnwrap(agents[DemoFleet.featuredAgentID])
-        let second = try XCTUnwrap(agents["herdr:demo-working"])
         let response = DemoFleet.respond(to: .readTail, payload: .null, agent: first, rev: 1)
         guard case .dispatched(let dispatched) = response,
               let result = dispatched.result,
@@ -4257,12 +4256,17 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(storedLines,
                        storedBlocks.flatMap { $0.text.components(separatedBy: .newlines) },
                        "stored legacy lines must be the exact flattening of stored semantic blocks")
-        XCTAssertNotEqual(DemoFleet.model(for: first), DemoFleet.model(for: second))
-        // R3: the demo seed deliberately does NOT invent per-agent worktree
-        // paths (Omit unavailable fields rather than manufacturing them);
-        // the fallback is a single neutral session path.
-        XCTAssertEqual(DemoFleet.worktree(for: first), "/demo/session/recent-output")
-        XCTAssertEqual(DemoFleet.worktree(for: second), "/demo/session/recent-output")
+        // R4: the demo seed carries NO manufactured `model effort · path`
+        // metadata (every seeded agent has worktreePath == nil), so Session
+        // status omits Model/Effort/Worktree and the Tool chip falls back to
+        // the agent's structured tool field. Unavailable fields are omitted,
+        // never replaced with a path-like fallback.
+        XCTAssertEqual(RecentOutputMetadata.extract(from: storedBlocks),
+                       RecentOutputMetadata(),
+                       "demo blocks must not fabricate model/effort/worktree metadata")
+        XCTAssertTrue(storedBlocks.allSatisfy {
+            !$0.text.contains("·")
+        }, "demo blocks must not contain any metadata-separator line")
         XCTAssertTrue(DemoFleet.monotoneOutput(for: first).contains("Please verify the diff too."))
     }
 #endif

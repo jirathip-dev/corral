@@ -25,12 +25,18 @@ evidence.
   `sips -z 844 390`.
 - Shows the full V3 stacked order: **Session status** (structured values:
   `Working · live`, session `demo-session:recent-output`, tool `tool-one`;
-  Worktree omitted because the demo session has no worktree — Omit
-  unavailable values rather than inventing), **Conversation** (user bubble
-  "Please verify the diff too.", assistant code block, expanded tool diff
-  with literal +/-/@@ and gutter numbers), collapsible **Harness activity ·
-  2 outside conversation**, and the pinned composer (Reply to agent… / Send)
-  at the bottom.
+  Model/Effort/Worktree omitted — the demo seed carries NO manufactured
+  `model effort · path` metadata, so unavailable structured fields are
+  omitted rather than invented), **Conversation** (complete visible heading;
+  user bubble "Please verify the diff too."; assistant code block; expanded
+  tool diff with literal +/-/@@ and gutter numbers), collapsible
+  **Harness activity · 2 outside conversation**, and the pinned composer
+  (Reply to agent… / Send) at the bottom.
+- R4: the demo diff is compact enough that the full conversation (heading +
+  user + assistant + expanded diff) fits the 320pt conversation viewport at
+  the deterministic bottom-scroll position, so the complete `Conversation`
+  heading is visible and nothing is clipped under Load earlier. No
+  path-like fallback or metadata line exists anywhere in the seed.
 
 ## egui — `v3-context-split-egui-1320x860.png` (1320x860)
 
@@ -83,7 +89,7 @@ rejects every identity mutation and live title.
 
 ```
 8734db6fca21eb159d864560b95abfc546a4c1f5c15a9bcf31ed61a3e7b1448a  v3-context-split-egui-1320x860.png
-fec586acc2db831e8df051485487e79b2e699de723b82db959be93afba31cab9  v3-context-split-ios-390x844.png
+98cbcce925fbce1d9fe47247f59502b6fe9bf1066a273e6efb204ff07ec408d5  v3-context-split-ios-390x844.png
 ```
 
 ## Self-review vs pinned V3 references

@@ -9,10 +9,15 @@ iOS (v3-context-split-ios-390x844.png)
   Install: xcrun simctl install 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 \
            /tmp/fn-dd316/Build/Products/Debug-iphonesimulator/FleetNotifier.app
   Launch:  xcrun simctl launch 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 \
-           com.corral.fleetnotifier -corralDemoDetail      (pid 46399)
+          com.corral.fleetnotifier -corralDemoDetail      (pid 78806)
   Capture: sleep 8 && xcrun simctl io 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 screenshot <raw>
   Resize:  sips -z 844 390 <raw> --out v3-context-split-ios-390x844.png   (raw deleted)
-  Result:  PNG 390x844  sha256 fec586acc2db831e8df051485487e79b2e699de723b82db959be93afba31cab9
+  Result:  PNG 390x844  sha256 98cbcce925fbce1d9fe47247f59502b6fe9bf1066a273e6efb204ff07ec408d5
+  R4:      demo seed carries NO manufactured metadata line (all agents have
+          worktreePath == nil; Model/Effort/Worktree omitted, Tool chip
+          falls back to the structured tool field) and the demo diff is
+          compacted so the complete Conversation heading fits the 320pt
+          viewport at the deterministic bottom-scroll position.
 
 egui (v3-context-split-egui-1320x860.png)  — R3 native demo capture seam
   Build:   cargo build -p corrald-ui --release   (workspace root)
@@ -50,7 +55,8 @@ Vision/OCR self-review (both final PNGs):
   - Deterministic OCR pass: /tmp/g316-probe/ocr.swift (macOS Vision
     VNRecognizeTextRequest, accurate, en-US) — full text in this log below.
   - iOS  — Session status (Working · live / demo-session:recent-output /
-           tool-one; Worktree omitted), Conversation (user bubble "Please
+           tool-one; Model/Effort/Worktree omitted — no metadata line),
+           Conversation (complete heading visible, user bubble "Please
            verify the diff too.", assistant code block, expanded tool diff
            with +/-/@@ and gutters), "Harness activity · 2 outside
            conversation", pinned composer. Zero forbidden identifiers.
@@ -70,12 +76,12 @@ OCR text — v3-context-split-ios-390x844.png (bbox normalized, y from bottom)
   recent output | read_diff: not available for this agent. | • Terminal
   unavailable: attach is not available for this agent. | • Open Devices &
   Grants | Recent output | • paused | Session status | Working • live |
-  demo-session: recent-output | tool-one | ^ Load earlier (100 lines) |
-  (metadata line: demo-model-demo-output high · /demo/session/recent-output) |
-  you | Please verify the diff too. | assistant | 1 def | deploy(): |
-  print("ready | return True | • | git diff -- src/board_view.rs | 2 c0 |
-  -18,2 +18,4 | -const OLD: &str = "plain"; | +pub fn recent_output()→ bool ( |
-  5 + | true | 6 +} | 7 run status: | ok [icon] | Harness activity • 2 outside
+  demo-session:recent-output | tool-one | ^ Load earlier (100 lines) |
+  Conversation | (demo) Snapshot read model is consistent. | assistant |
+  you | Please verify the diff too. | assistant | 1 def deploy(): |
+  print("ready | return True | ") | 1 git diff -- src/board_view.rs |
+  2 @@ -18,2 +18,4 @@ | -const OLD: &str = "plain"; | 4 +pub fn
+  recent_output() → bool { | 5 + | true | 6 +} | Harness activity • 2 outside
   conversation | Please verify the diff too. | Send
 
 OCR text — v3-context-split-egui-1320x860.png (bbox normalized, y from bottom)

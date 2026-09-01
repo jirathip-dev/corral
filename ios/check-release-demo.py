@@ -66,7 +66,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # FleetViews, and the demo seed; the pin follows the new source set.
     # #316 R3: demo seed neutralized (featured session id, tool names, repos,
     # worktree fallback, titles) — digest re-pinned to the R3 source set.
-    "45fd517d997818438b61e057df2ee571b57dc024e34e6a914976ec4bade681a0"
+    # #316 R4: demo seed omits unavailable worktree metadata entirely (no
+    # manufactured `model effort · path` line, no path-like fallback) and the
+    # demo diff is compacted so the Conversation heading stays in viewport —
+    # digest re-pinned to the R4 source set.
+    "4bc5d9d5fc67d7549ec7e9e24b3d78c625a2f928bb27956d5bd44efbd2155dc8"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

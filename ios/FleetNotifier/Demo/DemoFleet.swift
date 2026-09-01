@@ -256,47 +256,20 @@ enum DemoFleet {
         }
     }
 
-    /// The demo's metadata is derived from the source tool and agent identity,
-    /// rather than copied from one shared sample. That makes each seeded agent
-    /// useful for testing badges and keeps the capture route representative.
-    /// (R3 evidence contract: derived model names stay provider-neutral.)
-    static func model(for agent: Agent) -> String {
-        let slug = agent.agentId.split(separator: ":", maxSplits: 1).last
-            .map(String.init)
-            ?? "demo"
-        let normalized = slug.replacingOccurrences(of: "_", with: "-")
-        return "demo-model-\(normalized)"
-    }
-
-    static func worktree(for agent: Agent) -> String {
-        if let worktree = agent.workspace.worktreePath, !worktree.isEmpty {
-            return worktree
-        }
-        // R3 evidence contract: the synthetic fallback path is a fixed
-        // neutral session path so demo chips never render repo-, branch-,
-        // or session-identifier-shaped strings.
-        return "/demo/session/recent-output"
-    }
-
-    static func effort(for agent: Agent) -> String {
-        switch agent.state {
-        case .blocked: return "max"
-        case .working: return "high"
-        case .done: return "medium"
-        case .idle, .unknown: return "low"
-        }
-    }
-
+    /// R4: the demo seed carries NO manufactured metadata line. All seeded
+    /// agents have `workspace.worktreePath == nil`, and the canonical
+    /// `model effort · path` contract only exists when a worktree genuinely
+    /// does — Session status therefore omits Model/Effort/Worktree and the
+    /// Tool chip falls back to the agent's structured tool field.
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        let metadata = "\(model(for: agent)) \(effort(for: agent)) · \(worktree(for: agent))"
-        // R3 evidence contract: the demo diff references a neutral synthetic
+        // R4 evidence contract: the demo diff references a neutral synthetic
         // file, never a repo-derived filename.
         let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [
             RecentBlock(
                 kind: .agent,
-                text: "(demo) Snapshot read model is consistent.\n\(metadata)",
+                text: "(demo) Snapshot read model is consistent.",
                 truncatedBefore: omitted),
             RecentBlock(kind: .user,
                         text: "Please verify the diff too.",
@@ -315,9 +288,14 @@ enum DemoFleet {
             RecentBlock(kind: .unknown,
                         text: "raw pane line without provenance",
                         truncatedBefore: nil),
+            // R4 evidence contract: the demo diff is compact enough that the
+            // whole conversation (heading + user + assistant + expanded diff)
+            // fits the 320pt conversation viewport, so the deterministic
+            // bottom-scroll position shows the complete Conversation heading
+            // unclipped. It still exercises +/-/@@ gutter rendering.
             RecentBlock(
                 kind: .tool,
-                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}\nrun status: ok [icon] ⚠️",
+                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}",
                 truncatedBefore: nil)
         ]
     }

@@ -65,15 +65,19 @@ corral_prepend_update_path "$WORK/absent-brew"
 
 # 6. Missing lib: update-corral.sh must not die under set -e before the log is
 #    set up. Run a copy from a dir with no lib; it should reach its guard and
-#    log a skip (no silent-failure mode). The first guard is "not a source
+#    log an explicit release-required failure (no silent-failure mode). The first guard is "not a source
 #    checkout" because the temp dir is not a git repo.
 mkdir -p "$WORK/update" "$WORK/config"
 cp "$SCRIPT_DIR/update-corral.sh" "$WORK/update/update-corral.sh"
 export HOME="$WORK/home5"
+set +e
 CORRAL_CONFIG_DIR="$WORK/config" bash "$WORK/update/update-corral.sh"
+status=$?
+set -e
+[[ "$status" != 0 ]] || fail "missing lib/source checkout unexpectedly succeeded"
 [[ -f "$WORK/config/corral-update.log" ]] \
   || fail "missing lib produced no log (silent-failure mode)"
-grep -q 'skip:' "$WORK/config/corral-update.log" \
-  || fail "missing lib did not log a skip; log='$(cat "$WORK/config/corral-update.log")'"
+grep -q 'release-required:' "$WORK/config/corral-update.log" \
+  || fail "missing lib did not log release-required; log='$(cat "$WORK/config/corral-update.log")'"
 
 echo "OK: corral launchd PATH derivation (prepend, cargo, resolve, no-op, missing-lib guard)"

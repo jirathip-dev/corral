@@ -1315,6 +1315,7 @@ impl CorralApp {
             // source. No daemon connection, no fingerprint fetch, no read
             // loop is started for this process.
             let data = crate::demo::load();
+            app.settings.host_identity = data.snapshot.build_identity.clone();
             app.fleet.apply_snapshot(&data.snapshot);
             let blocks = crate::demo::recent_tail_blocks();
             let lines = crate::demo::recent_tail();
@@ -1674,6 +1675,7 @@ impl CorralApp {
                 }
                 match event {
                     protocol::SseEvent::Snapshot(snap) => {
+                        self.settings.host_identity = snap.build_identity.clone();
                         self.fleet.apply_snapshot(&snap);
                     }
                     protocol::SseEvent::Delta(delta) => {
@@ -4287,6 +4289,7 @@ mod tests {
             loop_generation: old_loop_generation,
             event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
                 schema_version: 5,
+                build_identity: None,
                 rev: 10,
                 generated_at: 10,
                 agents: BTreeMap::from([(old_agent.agent_id.clone(), old_agent)]),
@@ -4304,6 +4307,7 @@ mod tests {
             loop_generation: old_loop_generation,
             event: protocol::SseEvent::Snapshot(crate::model::Snapshot {
                 schema_version: 5,
+                build_identity: None,
                 rev: 99,
                 generated_at: 99,
                 agents: BTreeMap::from([(obsolete_agent.agent_id.clone(), obsolete_agent)]),

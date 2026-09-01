@@ -95,6 +95,7 @@ Corral is private by default:
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) — run the daemon, register a device, read the fleet
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the read model, signed drive plane, security boundaries
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, grants, remote access from iOS, keychain, audit log
+- [docs/HOST-COMPATIBILITY.md](docs/HOST-COMPATIBILITY.md) — update safety, host identity, rollback, and promotion gates
 - [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, module map, how to add a capability
 - [docs/corral/P4-conformance.md](docs/corral/P4-conformance.md) — the normative wire contract
 

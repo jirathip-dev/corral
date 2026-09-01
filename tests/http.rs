@@ -98,6 +98,20 @@ async fn healthz_ok() {
 }
 
 #[tokio::test]
+async fn version_exposes_build_and_protocol_identity() {
+    let (_store, app) = app().await;
+    let version = get_json(&app, "/version").await;
+    assert_eq!(version["protocol_version"], 1);
+    assert_eq!(version["schema_version"], 5);
+    assert!(
+        version["build_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[tokio::test]
 async fn removed_cost_route_is_not_a_json_fallback() {
     let (_store, app) = app().await;
     let res = app
@@ -139,6 +153,8 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     // v4 (P4 G21): Workspace gained `head_sha` + `head_subject` — versioned
     // strictly.
     assert_eq!(v["schema_version"], 5);
+    assert_eq!(v["build_identity"]["protocol_version"], 1);
+    assert_eq!(v["build_identity"]["schema_version"], 5);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
 }

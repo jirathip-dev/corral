@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, GhIssueRef, Snapshot};
+use crate::model::{BuildIdentity, Delta, GhIssueRef, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
@@ -144,6 +144,23 @@ pub async fn fetch_snapshot(client: &reqwest::Client, base_url: &str) -> Result<
         .map_err(|e| format!("connect: {e}"))?;
     if !response.status().is_success() {
         return Err(format!("GET /snapshot -> {}", response.status()));
+    }
+    response.json().await.map_err(|e| format!("body: {e}"))
+}
+
+pub async fn fetch_version(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<BuildIdentity, String> {
+    let url = format!("{}/version", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GET /version -> {}", response.status()));
     }
     response.json().await.map_err(|e| format!("body: {e}"))
 }

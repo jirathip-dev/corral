@@ -358,10 +358,42 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Build/protocol identity projected by corrald in `/version` and snapshots.
+/// Missing identity means an older host and is intentionally not treated as
+/// compatible by the UI.
+struct BuildIdentity: Codable, Equatable, Sendable {
+    static let supportedProtocolVersion: UInt32 = 1
+    static let minimumSchemaVersion: UInt32 = 5
+
+    var buildId: String
+    var version: String
+    var protocolVersion: UInt32
+    var schemaVersion: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case buildId = "build_id"
+        case version
+        case protocolVersion = "protocol_version"
+        case schemaVersion = "schema_version"
+    }
+
+    var compatibilityWarning: String? {
+        if protocolVersion != Self.supportedProtocolVersion {
+            return "Host protocol \(protocolVersion) is incompatible with this client. Update corrald."
+        }
+        if schemaVersion < Self.minimumSchemaVersion {
+            return "Host snapshot schema \(schemaVersion) is older than this client. Update corrald."
+        }
+        return nil
+    }
+}
+
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a
 /// client's cursor is too old.
 struct Snapshot: Codable, Sendable {
     var schemaVersion: UInt32
+    /// `nil` is an explicit unknown-compatibility state for pre-identity hosts.
+    var buildIdentity: BuildIdentity?
     /// Monotonic cursor; a client's `Last-Event-ID` is compared against this.
     var rev: UInt64
     /// Epoch millis when this snapshot was assembled.
@@ -371,6 +403,7 @@ struct Snapshot: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
+        case buildIdentity = "build_identity"
         case rev
         case generatedAt = "generated_at"
         case agents
@@ -378,11 +411,13 @@ struct Snapshot: Codable, Sendable {
 
     init(
         schemaVersion: UInt32,
+        buildIdentity: BuildIdentity? = nil,
         rev: UInt64,
         generatedAt: UInt64,
         agents: [String: Agent],
     ) {
         self.schemaVersion = schemaVersion
+        self.buildIdentity = buildIdentity
         self.rev = rev
         self.generatedAt = generatedAt
         self.agents = agents
@@ -391,6 +426,7 @@ struct Snapshot: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
+        buildIdentity = try container.decodeIfPresent(BuildIdentity.self, forKey: .buildIdentity)
         rev = try container.decode(UInt64.self, forKey: .rev)
         generatedAt = try container.decode(UInt64.self, forKey: .generatedAt)
         agents = try container.decode([String: Agent].self, forKey: .agents)

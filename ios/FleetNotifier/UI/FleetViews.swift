@@ -2798,6 +2798,21 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Host compatibility") {
+                    if let warning = model.fleet.hostCompatibilityWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("Update corrald before using controls that depend on the host contract.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if let identity = model.fleet.hostIdentity {
+                        Label(
+                            "corrald \(identity.version) · protocol \(identity.protocolVersion) · schema \(identity.schemaVersion)",
+                            systemImage: "checkmark.shield.fill"
+                        )
+                        .foregroundStyle(.green)
+                    }
+                }
                 Section("Device") {
                     LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
                     LabeledContent("Key storage", value: DeviceKeyStore.storageLocation == .keychain ? "Keychain" : "in-app store (⚠️ insecure)")

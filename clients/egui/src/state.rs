@@ -563,6 +563,7 @@ mod tests {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
             schema_version: 5,
+            build_identity: None,
             rev: 10,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -590,6 +591,7 @@ mod tests {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
             schema_version: 5,
+            build_identity: None,
             rev: 20,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -612,6 +614,7 @@ mod tests {
         current.title = Some("newer SSE".into());
         let mut current_snapshot = crate::model::Snapshot {
             schema_version: 3,
+            build_identity: None,
             rev: 20,
             generated_at: 0,
             agents: BTreeMap::new(),
@@ -719,6 +722,7 @@ mod tests {
         let mut fleet = Fleet::default();
         let mut snap = crate::model::Snapshot {
             schema_version: 5,
+            build_identity: None,
             rev: 1,
             generated_at: 0,
             agents: BTreeMap::new(),

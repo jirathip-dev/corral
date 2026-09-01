@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update-corral.sh — pull main, rebuild, restart daemon, relaunch egui client.
+# update-corral.sh — build fetched origin/main, restart daemon, relaunch egui.
 #
 # Run by the com.corral.corrald-update launchd agent (installed by
 # setup-corrald.sh) on a schedule. Idempotent and cheap: exits quickly when
@@ -8,10 +8,10 @@
 # a binary-only change deploys even when the git history did not move.
 #
 # Safety rules (do not weaken):
-#   - Only touches the MAIN checkout when it is clean and on `main`. A dirty
-#     tree or a feature branch means someone is working there: skip this
-#     cycle silently and retry next interval.
-#   - Fast-forward pulls only; never --force, never merge.
+#   - The developer checkout is read-only input. Dirty trees and feature
+#     branches are safe because the fetched revision is archived into a
+#     disposable source checkout before cargo runs.
+#   - Never pull, checkout, reset, clean, or merge the developer checkout.
 #   - The daemon restarts ONLY when the binary it executes changed.
 #   - The egui client is relaunched ONLY when it is running AND its binary
 #     changed (killing a running editor window is a deliberate act — logged).
@@ -24,9 +24,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # runtime PATH that prepends Homebrew's bin and cargo's bin when present; this
 # is the primary fix (takes effect without reinstalling the launchd plist).
 # Only source the lib when it is actually present: if it is ever missing
-# (partial pull, release-bundle drift), fall back to the pre-fix behavior so a
-# launchd run logs the normal skip line instead of dying silently before the
-# log is even set up.
+# (partial install, release-bundle drift), the explicit release-required path
+# below keeps the failure visible instead of silently skipping an update.
 lib_path="$SCRIPT_DIR/lib-corral-update-path.sh"
 # shellcheck disable=SC1090  # sourced path is dynamic (built from $SCRIPT_DIR)
 if [[ -f "$lib_path" ]]; then
@@ -39,6 +38,11 @@ LOG="$CONFIG_DIR/corral-update.log"
 mkdir -p "$CONFIG_DIR"
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z')  $*" >> "$LOG"; }
+
+if ! REPO_DIR="$(cd -P "$REPO_DIR" 2>/dev/null && pwd -P)"; then
+  log "release-required: repository path does not exist; use scripts/install-corral.sh"
+  exit 1
+fi
 
 file_mtime() {  # epoch mtime; 0 when missing/unreadable
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -61,31 +65,21 @@ file_hash() {  # sha256 of a file; empty when missing/unreadable
   fi
 }
 
-cd "$REPO_DIR"
-
-# --- Guards: skip when this is not the actual source checkout ----------------
+# --- Resolve source checkout and fetch the build revision ---------------------
 # `git rev-parse` walks up parent directories, so compare the resolved top
 # level instead. A release copy nested in an unrelated git worktree must not
 # fetch/pull that outer repository and try to cargo-build from the release dir.
 if [[ "$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || true)" != "$REPO_DIR" ]]; then
-  log "skip: not a source checkout; release installs are updated with scripts/install-corral.sh"
-  exit 0
-fi
-if [[ "$(git branch --show-current)" != "main" ]]; then
-  log "skip: not on main (branch=$(git branch --show-current))"
-  exit 0
-fi
-if ! git status --porcelain --untracked-files=no | grep -q .; then
-  : # clean (untracked files like orch briefs are fine)
-else
-  log "skip: working tree dirty — $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') modified file(s)"
-  exit 0
+  log "release-required: updater is not running from a source checkout; use scripts/install-corral.sh"
+  exit 1
 fi
 
-# --- Fetch and decide -------------------------------------------------------
-before="$(git rev-parse HEAD)"
-git fetch origin main -q 2>>"$LOG" || { log "skip: git fetch failed"; exit 0; }
-after="$(git rev-parse origin/main)"
+before="$(git -C "$REPO_DIR" rev-parse HEAD)"
+if ! git -C "$REPO_DIR" fetch origin main -q 2>>"$LOG"; then
+  log "release-required: could not fetch origin/main; use scripts/install-corral.sh with a published release"
+  exit 1
+fi
+after="$(git -C "$REPO_DIR" rev-parse origin/main)"
 if [[ "$before" == "$after" ]]; then
   # No new upstream commits, but do NOT exit here: a binary-only change (a
   # rebuild with a different compiler/feature, or a manual cargo build) still
@@ -93,22 +87,32 @@ if [[ "$before" == "$after" ]]; then
   # executes. The cheap hash-compare below decides "up to date".
   log "no new upstream commits — checking binary drift"
 else
-  log "pulling origin/main: $(git log --oneline "$before..$after" | wc -l | tr -d ' ') new commit(s)"
-  git pull --ff-only origin main 2>>"$LOG" || { log "pull failed — retry next cycle"; exit 0; }
+  log "building origin/main: $(git -C "$REPO_DIR" log --oneline "$before..$after" | wc -l | tr -d ' ') new commit(s)"
+fi
+
+# Build a fetched tree outside the developer checkout. `git archive` excludes
+# dirty and untracked files and leaves the primary worktree's branch, index,
+# and files untouched.
+SOURCE_CHECKOUT="$(mktemp -d "${TMPDIR:-/tmp}/corral-update-source.XXXXXX")"
+cleanup_source() { rm -rf -- "$SOURCE_CHECKOUT"; }
+trap cleanup_source EXIT
+if ! git -C "$REPO_DIR" archive --format=tar "$after" | tar -xf - -C "$SOURCE_CHECKOUT"; then
+  log "release-required: could not materialize origin/main in an isolated checkout"
+  exit 1
 fi
 
 # --- Rebuild ---------------------------------------------------------------
-# Build on every cycle: with nothing to build cargo is a fast no-op, and
-# building is what makes a binary-only change (new toolchain, changed feature
-# set) deployable even when the git history did not move.
-BIN_DIR="$REPO_DIR/target/release"
+BIN_DIR="$SOURCE_CHECKOUT/target/release"
 DAEMON_BIN="$BIN_DIR/corrald"
 UI_BIN="$BIN_DIR/corrald-ui"
-daemon_before_hash="$(file_hash "$DAEMON_BIN")"
-ui_before_mtime="$(file_mtime "$UI_BIN")"
+daemon_before_hash="$(file_hash "$REPO_DIR/target/release/corrald")"
+ui_before_hash="$(file_hash "$REPO_DIR/target/release/corrald-ui")"
 
-log "building (workspace release)..."
-cargo build --release 2>>"$LOG" || { log "build FAILED — keeping old binaries"; exit 0; }
+log "building origin/main in isolated checkout..."
+(cd "$SOURCE_CHECKOUT" && CORRAL_BUILD_ID="$after" cargo build --release) 2>>"$LOG" || {
+  log "release-required: origin/main build FAILED — use scripts/install-corral.sh with a published release"
+  exit 1
+}
 log "build ok"
 daemon_after_hash="$(file_hash "$DAEMON_BIN")"
 
@@ -166,6 +170,7 @@ reinstall_ui() {
 # (ground truth of what launchd re-execs), then the plist file on disk,
 # then the in-repo build output (source mode).
 daemon_changed=0
+deploy_failed=0
 job_loaded=0
 job_line=""
 if job_line="$(launchctl print "gui/$(id -u)/com.corral.corrald" 2>/dev/null)"; then
@@ -178,14 +183,20 @@ fi
 if [[ -z "$deploy_path" ]]; then
   deploy_path="$(plutil -extract ProgramArguments.0 raw "$HOME/Library/LaunchAgents/com.corral.corrald.plist" 2>/dev/null || true)"
 fi
-[[ -n "$deploy_path" ]] || deploy_path="$DAEMON_BIN"
+[[ -n "$deploy_path" ]] || deploy_path="$REPO_DIR/target/release/corrald"
 
-if [[ "$deploy_path" == "$DAEMON_BIN" ]]; then
-  # Source mode: launchd executes the build output directly, so the restart
-  # decision is whether the rebuild changed that file in place.
+if [[ "$deploy_path" == "$REPO_DIR/target/release/corrald" ]]; then
+  # A source-mode plist still points at the primary checkout's ignored target
+  # artifact. Install the isolated build there only after it is complete; no
+  # tracked developer file is changed and no checkout operation is performed.
   if [[ "$daemon_before_hash" != "$daemon_after_hash" ]]; then
-    log "daemon binary changed: $deploy_path"
-    daemon_changed=1
+    if install -m 755 "$DAEMON_BIN" "$deploy_path"; then
+      log "deployed isolated $DAEMON_BIN -> $deploy_path"
+      daemon_changed=1
+    else
+      log "release-required: deploy FAILED: $DAEMON_BIN -> $deploy_path"
+      deploy_failed=1
+    fi
   fi
 elif [[ "$daemon_after_hash" != "$(file_hash "$deploy_path")" ]]; then
   # Release mode: deterministic ship of the freshly built binary into the
@@ -195,7 +206,13 @@ elif [[ "$daemon_after_hash" != "$(file_hash "$deploy_path")" ]]; then
     daemon_changed=1
   else
     log "deploy FAILED: $DAEMON_BIN -> $deploy_path — keeping old binaries"
+    deploy_failed=1
   fi
+fi
+
+if [[ "$deploy_failed" == "1" ]]; then
+  log "release-required: could not install the fetched origin/main artifact"
+  exit 1
 fi
 
 # --- Restart the daemon only when the binary it executes changed ------------
@@ -210,12 +227,12 @@ if [[ "$daemon_changed" == "1" ]]; then
     log "daemon job not loaded — skipped restart (run setup-corrald.sh); restarted=no"
   fi
 else
-  log "up to date ($(git log -1 --format='%h' HEAD)); deploy path $deploy_path; restarted=no"
+  log "up to date ($(git -C "$REPO_DIR" log -1 --format='%h' "$after")); deploy path $deploy_path; restarted=no"
 fi
 
 # --- Relaunch the egui client if it is running and changed -----------------
-if [[ "$(file_mtime "$UI_BIN")" != "$ui_before_mtime" ]]; then
+if [[ "$(file_hash "$UI_BIN")" != "$ui_before_hash" ]]; then
   reinstall_ui
 fi
 
-log "done: $(git log -1 --format='%h %s' HEAD)"
+log "done: $(git -C "$REPO_DIR" log -1 --format='%h %s' "$after")"

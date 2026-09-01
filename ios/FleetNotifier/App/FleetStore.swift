@@ -37,6 +37,9 @@ final class FleetStore: ObservableObject {
     @Published private(set) var diffs: [String: DiffPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
+    /// Identity projected by the last accepted host snapshot. `nil` means
+    /// the host predates the compatibility contract and must be warned about.
+    @Published private(set) var hostIdentity: BuildIdentity?
     /// #267: the read-only issue browser pane (fleet-level; grant-gated by
     /// the device ledger — the UI hides the entry point without the grant).
     @Published private(set) var issuesBrowser = IssuesBrowserPane()
@@ -78,6 +81,13 @@ final class FleetStore: ObservableObject {
     /// fleet emits NO frames (keep-alives are comments, never framed), so
     /// `apply()` would never run to clear a stale `.error` indicator.
     var onConnected: (@MainActor @Sendable () -> Void)?
+
+    var hostCompatibilityWarning: String? {
+        guard let hostIdentity else {
+            return "Host compatibility is unknown — update corrald before using this client."
+        }
+        return hostIdentity.compatibilityWarning
+    }
 
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
@@ -214,6 +224,7 @@ final class FleetStore: ObservableObject {
         case .snapshot(let snapshot):
             let old = agents
             agents = snapshot.agents
+            hostIdentity = snapshot.buildIdentity
             tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)

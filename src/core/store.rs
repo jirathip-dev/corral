@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
-use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
+use super::model::{Agent, BuildIdentity, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
 
 /// How many coalesced delta batches to retain for SSE resume.
@@ -325,6 +325,7 @@ impl Store {
         let inner = self.inner.lock().await;
         Snapshot {
             schema_version: SCHEMA_VERSION,
+            build_identity: BuildIdentity::current(),
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
@@ -379,6 +380,7 @@ impl Store {
     fn snapshot_locked(&self, inner: &Inner) -> Snapshot {
         Snapshot {
             schema_version: SCHEMA_VERSION,
+            build_identity: BuildIdentity::current(),
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),

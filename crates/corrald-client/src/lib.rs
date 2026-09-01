@@ -2,7 +2,7 @@
 //!
 //! A pure client of the **frozen** corrald HTTP surface on main (P3
 //! contract): `GET /snapshot`, `GET /events` (SSE with `Last-Event-ID`
-//! resume), `GET /healthz`, `GET /host-key`, `POST /register`, `POST
+//! resume), `GET /healthz`, `GET /version`, `GET /host-key`, `POST /register`, `POST
 //! /step-up`, `POST /grants`, `GET /audit`, `POST /drive`. It mirrors the
 //! daemon's wire types field-for-field (`src/core/model.rs`,
 //! `src/drive/mod.rs`, `src/auth/step_up.rs`) and signs envelopes over the
@@ -55,7 +55,8 @@ pub use drive::{Capability, DriveEnvelope, DriveResponse, SignedDrive, canonical
 pub use errors::{ApiError, DriveErrorKind};
 pub use keypair::DeviceKeypair;
 pub use model::{
-    Agent, AgentState, CiStatus, Delta, GhIssueRef, Snapshot, WaitingOn, WaitingOnKind, Workspace,
+    Agent, AgentState, BuildIdentity, CiStatus, Delta, GhIssueRef, MINIMUM_SCHEMA_VERSION,
+    SCHEMA_VERSION, SUPPORTED_PROTOCOL_VERSION, Snapshot, WaitingOn, WaitingOnKind, Workspace,
 };
 pub use sse::{SseEvent, SseStream};
 pub use stepup::StepUpRequest;

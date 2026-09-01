@@ -10,6 +10,7 @@ use eframe::egui::{
 };
 
 use crate::keys::KeyStore;
+use crate::model::BuildIdentity;
 use crate::protocol::{GRANT_CAPABILITIES, GrantDevice};
 use crate::state::{CompletedMode, ConnState, Level};
 use crate::theme;
@@ -23,6 +24,10 @@ pub struct SettingsState {
     pub completed_mode: CompletedMode,
     pub stick_to_bottom: bool,
     pub theme: String,
+    /// Identity projected by the last host snapshot. `None` is an explicit
+    /// unknown-compatibility state for older hosts, not a reason to proceed
+    /// silently.
+    pub host_identity: Option<BuildIdentity>,
     pub token_input: String,
     pub admin_token_input: String,
     pub notice: Option<(Level, String)>,
@@ -95,6 +100,7 @@ impl Default for SettingsState {
             completed_mode: CompletedMode::Collapsed,
             stick_to_bottom: true,
             theme: "dark".to_string(),
+            host_identity: None,
             token_input: String::new(),
             admin_token_input: String::new(),
             notice: None,
@@ -691,6 +697,17 @@ fn health_line(ui: &mut Ui, settings: &mut SettingsState, context: &SettingsPane
     } else {
         (false, "Admin token missing")
     };
+    let compatibility_warning =
+        crate::model::host_compatibility_warning(settings.host_identity.as_ref());
+    let (compatibility_ok, compatibility_label) = match (
+        settings.host_identity.as_ref(),
+        compatibility_warning.as_ref(),
+    ) {
+        (Some(_), None) => (true, "Host compatible"),
+        (None, Some(_)) => (false, "Host compatibility unknown"),
+        (Some(_), Some(_)) => (false, "Host incompatible"),
+        (None, None) => (false, "Host compatibility unknown"),
+    };
     egui::Frame::group(ui.style())
         .fill(theme::ui::PANEL2)
         .inner_margin(egui::Margin::symmetric(12, 8))
@@ -699,6 +716,7 @@ fn health_line(ui: &mut Ui, settings: &mut SettingsState, context: &SettingsPane
                 health_item(ui, connected_ok, connected_label);
                 health_item(ui, identity_ok, identity_label);
                 health_item(ui, admin_ok, admin_label);
+                health_item(ui, compatibility_ok, compatibility_label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let details = if settings.health_details_open {
                         "▴ Details"
@@ -710,6 +728,10 @@ fn health_line(ui: &mut Ui, settings: &mut SettingsState, context: &SettingsPane
                     }
                 });
             });
+            if let Some(warning) = compatibility_warning {
+                ui.add_space(4.0);
+                ui.label(RichText::new(warning).color(theme::ui::WARN));
+            }
             if settings.health_details_open {
                 ui.add_space(4.0);
                 ui.separator();
@@ -730,6 +752,10 @@ fn health_line(ui: &mut Ui, settings: &mut SettingsState, context: &SettingsPane
                             context.grants.join(", ")
                         },
                     );
+                    if let Some(identity) = &settings.host_identity {
+                        detail_kv(ui, "host build", &identity.build_id);
+                        detail_kv(ui, "host version", &identity.version);
+                    }
                 });
                 if let Some(KeyStore::File { path }) = context.store {
                     ui.label(

@@ -41,10 +41,13 @@ jobs:
         with:
           toolchain: ${{ steps.pinned.outputs.channel }}
 
+      - name: Verify host compatibility declaration
+        run: python3 scripts/check-host-compatibility.py
+
       - name: Build release binaries
         run: |
           set -euo pipefail
-          cargo build --release
+          CORRAL_BUILD_ID="$GITHUB_SHA" cargo build --release
           test -x target/release/corrald
           test -x target/release/corrald-ui
           echo "Built:"
@@ -70,6 +73,7 @@ jobs:
           cp -R docs/. "$stage/docs/"
           cp LICENSE-APACHE "$stage/LICENSE-APACHE"
           cp LICENSE-MIT "$stage/LICENSE-MIT"
+          cp ios/host-compatibility.json "$stage/host-compatibility.json"
           cp assets/icon/corral-icon-macos.png "$stage/assets/icon/corral-icon-macos.png"
           cp assets/icon/corral-icon-256.png "$stage/assets/icon/corral-icon-256.png"
 
@@ -90,6 +94,7 @@ jobs:
             docs \
             LICENSE-APACHE \
             LICENSE-MIT \
+            host-compatibility.json \
             assets/icon/corral-icon-macos.png \
             assets/icon/corral-icon-256.png
           shasum -a 256 "$bundle" | awk '{print $1}' > "$bundle.sha256"

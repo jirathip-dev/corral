@@ -6,6 +6,7 @@
 //! - `GET /history` — D23: status-transition events from the persistent
 //!   ring, oldest first, `?since=<ts>` / `?limit=<n>` filtered.
 //! - `GET /healthz` — liveness.
+//! - `GET /version` — non-secret build/protocol identity.
 //! - `GET /issues` — read-only repo-level issue view for the
 
 //! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
@@ -58,7 +59,7 @@ use tracing::info;
 
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
-use crate::core::model::Resume;
+use crate::core::model::{BuildIdentity, Resume};
 use crate::core::provenance;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
@@ -143,6 +144,7 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let read = Router::new()
         .route("/healthz", get(healthz))
+        .route("/version", get(version))
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/history", get(history))
@@ -163,6 +165,10 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok\n"
+}
+
+async fn version() -> Json<BuildIdentity> {
+    Json(BuildIdentity::current())
 }
 
 /// `GET /history` query parameters. `since` is epoch millis (inclusive);

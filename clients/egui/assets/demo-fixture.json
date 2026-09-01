@@ -1,6 +1,12 @@
 {
   "snapshot": {
     "schema_version": 5,
+    "build_identity": {
+      "build_id": "demo-host",
+      "version": "0.1.0",
+      "protocol_version": 1,
+      "schema_version": 5
+    },
     "rev": 100,
     "generated_at": 1787788800000,
     "agents": {

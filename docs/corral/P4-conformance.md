@@ -11,7 +11,8 @@ src/drive/mod.rs and src/api/* on main.
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
 | `/healthz` | GET | none | liveness |
-| `/snapshot` | GET | none | full state `{schema_version, rev, generated_at, agents}` |
+| `/version` | GET | none | non-secret host identity `{build_id, version, protocol_version, schema_version}` |
+| `/snapshot` | GET | none | full state `{schema_version, build_identity, rev, generated_at, agents}` |
 | `/events` | GET | none | SSE; resumes from `Last-Event-ID` (snapshot when cursor stale, deltas `{rev, upd, del}` otherwise) |
 | `/host-key` | GET | none | host identity `{algorithm: "X25519", public_key}` |
 | `/register` | POST | registration token in body | `{token, public_key}` → `{key_id, grants, expiry_ts}`; read-only default |

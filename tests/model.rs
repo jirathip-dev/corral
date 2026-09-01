@@ -106,6 +106,7 @@ fn snapshot_is_versioned_flat_keyed_records() {
     agents.insert("herdr:a".to_string(), sample_agent());
     let snap = Snapshot {
         schema_version: SCHEMA_VERSION,
+        build_identity: corrald::core::model::BuildIdentity::current(),
         rev: 12,
         generated_at: 1_755_273_000_000,
         agents,

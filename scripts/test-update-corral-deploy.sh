@@ -9,7 +9,7 @@
 #   2. release-mode same   -> no copy, no kickstart, restarted=no (no forced restart)
 #   3. binary-only change, no new commits -> still deployed + restarted=yes
 #   4. no new commits + identical -> "up to date" only AFTER the drift check
-#   5. source mode (plist == build path) -> rebuild => restarted=yes, no cp
+#   5. source mode (plist == build path) -> isolated rebuild => restarted=yes
 #   6. launchctl print unavailable -> plist-file fallback; restarted=no (job not loaded)
 #
 # Run with one command:
@@ -18,13 +18,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf -- "$WORK"' EXIT
+cleanup() { [[ "${KEEP_WORK:-}" == 1 ]] || rm -rf -- "$WORK"; }
+trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- Stubs -------------------------------------------------------------------
 mkdir -p "$WORK/bin" "$WORK/repo/target/release" "$WORK/home" "$WORK/deploy"
 REPO="$WORK/repo"
+REPO_PHYSICAL="$(cd -P "$REPO" && pwd -P)"
 BUILT="$REPO/target/release/corrald"
 DEPLOY1="$WORK/deploy/corrald"
 DEPLOY2="$WORK/deploy2/corrald"
@@ -52,6 +54,7 @@ case "${args[0]:-}" in
   branch) echo "main" ;;
   status) : ;;                       # clean (no porcelain output)
   fetch|pull) : ;;
+  archive) tar -C "$GIT_STUB_ARCHIVE_ROOT" -cf - . ;;
   log) echo "${GIT_STUB_LOG:-deadbeef fix}" ;;
   *) : ;;
 esac
@@ -106,7 +109,8 @@ run_scenario() {
   for kv in "$@"; do env_args+=("$kv"); done
   env CORRAL_REPO_DIR="$REPO" CORRAL_CONFIG_DIR="$cfg" HOME="$WORK/home" \
     PATH="$WORK/bin:$PATH" \
-    GIT_STUB_TOPLEVEL="$REPO" GIT_STUB_BEFORE="1111111" \
+    GIT_STUB_TOPLEVEL="$REPO_PHYSICAL" GIT_STUB_BEFORE="1111111" \
+    GIT_STUB_ARCHIVE_ROOT="$REPO" \
     LAUNCHCTL_KICKSTART_LOG="$kicks" \
     "${env_args[@]}" \
     bash "$SCRIPT_DIR/update-corral.sh"
@@ -136,8 +140,8 @@ printf 'installed-old' > "$DEPLOY1"
 run_scenario s1 \
   GIT_STUB_AFTER="2222222" GIT_STUB_LOG="deadbeef fix" \
   LAUNCHCTL_PROGRAM="$DEPLOY1"
-assert_log "pulling origin/main: 1 new commit(s)"
-assert_log "deployed $BUILT -> $DEPLOY1"
+assert_log "building origin/main: 1 new commit(s)"
+assert_log "deployed "
 assert_log "restarted=yes"
 assert_kickstart_count 1
 [[ "$(hash_of "$DEPLOY1")" == "$(hash_of "$BUILT")" ]] \
@@ -160,13 +164,13 @@ printf 'manual-rebuild-v2' > "$BUILT"
 printf 'installed-old' > "$DEPLOY1"
 run_scenario s3 \
   GIT_STUB_AFTER="1111111" GIT_STUB_LOG="1111111 fix" \
-  LAUNCHCTL_PROGRAM="$DEPLOY1"
+  LAUNCHCTL_PROGRAM="$DEPLOY1" CARGO_STUB_REWRITE="1"
 assert_log "no new upstream commits — checking binary drift"
-assert_log "deployed $BUILT -> $DEPLOY1"
+assert_log "deployed "
 assert_log "restarted=yes"
 assert_kickstart_count 1
-[[ "$(hash_of "$DEPLOY1")" == "$(hash_of "$BUILT")" ]] \
-  || fail "s3: deploy path binary != built binary"
+[[ "$(hash_of "$DEPLOY1")" != "$(hash_of <(printf 'installed-old'))" ]] \
+  || fail "s3: stale deploy path was not replaced"
 echo "OK s3: binary-only change ships despite no new commits"
 
 # --- Scenario 4: no new commits + identical — "up to date" AFTER the check ----
@@ -185,11 +189,11 @@ printf 'src-v1' > "$BUILT"
 run_scenario s5 \
   GIT_STUB_AFTER="2222222" GIT_STUB_LOG="deadbeef fix" \
   LAUNCHCTL_PROGRAM="$BUILT" CARGO_STUB_REWRITE="1"
-assert_log "daemon binary changed: $BUILT"
+assert_log "deployed "
+assert_log " -> $BUILT"
 assert_log "restarted=yes"
-refute_log "deployed "
 assert_kickstart_count 1
-echo "OK s5: source mode restarts when rebuild changed the binary it executes"
+echo "OK s5: source mode deploys isolated build and restarts"
 
 # --- Scenario 6: launchctl print unavailable -> plist fallback, job not loaded -
 mkdir -p "$WORK/home6/Library/LaunchAgents"
@@ -215,14 +219,16 @@ rm -rf "$WORK/cfg-s6"; mkdir -p "$WORK/cfg-s6"
 : > "$WORK/cfg-s6/kickstarts"
 env CORRAL_REPO_DIR="$REPO" CORRAL_CONFIG_DIR="$WORK/cfg-s6" \
   HOME="$WORK/home6" PATH="$WORK/bin:$PATH" \
-  GIT_STUB_TOPLEVEL="$REPO" GIT_STUB_BEFORE="1111111" GIT_STUB_AFTER="1111111" \
+  GIT_STUB_TOPLEVEL="$REPO_PHYSICAL" GIT_STUB_BEFORE="1111111" GIT_STUB_AFTER="1111111" \
+  GIT_STUB_ARCHIVE_ROOT="$REPO" \
   GIT_STUB_LOG="1111111 fix" \
   LAUNCHCTL_PRINT_OK="0" \
   LAUNCHCTL_KICKSTART_LOG="$WORK/cfg-s6/kickstarts" \
   bash "$SCRIPT_DIR/update-corral.sh"
 SCEN_LOG="$WORK/cfg-s6/corral-update.log"
 SCEN_KICKS="$WORK/cfg-s6/kickstarts"
-assert_log "deployed $BUILT -> $DEPLOY2"
+assert_log "deployed "
+assert_log " -> $DEPLOY2"
 assert_log "daemon job not loaded — skipped restart (run setup-corrald.sh); restarted=no"
 assert_kickstart_count 0
 [[ "$(hash_of "$DEPLOY2")" == "$(hash_of "$BUILT")" ]] \

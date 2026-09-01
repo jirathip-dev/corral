@@ -31,6 +31,36 @@ pub use crate::core::events::GhIssueRef;
 /// v5 (#107): removed the provider-specific spend field from `Agent`.
 pub const SCHEMA_VERSION: u32 = 5;
 
+/// Wire protocol generation shared by the daemon and first-party clients.
+/// Additive snapshot fields keep this generation stable; incompatible wire
+/// changes must bump it and update the compatibility declaration.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Identity advertised by a running daemon. `build_id` is the release commit
+/// when CI supplies `CORRAL_BUILD_ID`, and is deliberately a non-secret
+/// development marker for local builds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildIdentity {
+    pub build_id: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub schema_version: u32,
+}
+
+impl BuildIdentity {
+    pub fn current() -> Self {
+        Self {
+            build_id: option_env!("CORRAL_BUILD_ID")
+                .filter(|id| !id.is_empty())
+                .unwrap_or("development")
+                .to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: SCHEMA_VERSION,
+        }
+    }
+}
+
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
 /// `reason` / `waiting_on`, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +240,9 @@ pub struct Agent {
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub schema_version: u32,
+    /// Build/protocol identity projected with every full snapshot so clients
+    /// do not have to guess which host produced their read model.
+    pub build_identity: BuildIdentity,
     /// Monotonic cursor; a client's `Last-Event-ID` is compared against this.
     pub rev: u64,
     /// Epoch millis when this snapshot was assembled.

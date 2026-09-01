@@ -56,6 +56,9 @@ jobs:
           echo "::error::upload mode must be dispatched from main, not '$GITHUB_REF_NAME'."
           exit 1
 
+      - name: Verify host compatibility declaration
+        run: python3 scripts/check-host-compatibility.py
+
       - name: Install declared Fastlane dependencies
         run: |
           set -euo pipefail

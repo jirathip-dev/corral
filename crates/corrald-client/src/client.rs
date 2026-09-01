@@ -20,7 +20,7 @@ use serde_json::json;
 use crate::drive::{Capability, DriveEnvelope, DriveResponse, SignedDrive};
 use crate::errors::{ApiError, parse_drive_refusal};
 use crate::keypair::DeviceKeypair;
-use crate::model::Snapshot;
+use crate::model::{BuildIdentity, Snapshot};
 use crate::sse::{SseEvent, SseStream};
 use crate::stepup::{StepUpRequest, StepUpToken};
 
@@ -158,6 +158,18 @@ impl CorralClient {
             });
         }
         Ok(())
+    }
+
+    /// GET /version — non-secret host build/protocol identity.
+    pub async fn version(&self) -> Result<BuildIdentity, ApiError> {
+        let response = self.http.get(self.endpoint("version")).send().await?;
+        if !response.status().is_success() {
+            return Err(ApiError::Plain {
+                status: response.status(),
+                error: "version failed".to_string(),
+            });
+        }
+        Ok(response.json().await?)
     }
 
     /// GET /snapshot — full current state with the monotonic `rev`.

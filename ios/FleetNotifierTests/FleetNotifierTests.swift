@@ -3,6 +3,32 @@ import Combine
 import XCTest
 @testable import FleetNotifier
 
+final class HostCompatibilityTests: XCTestCase {
+    func testSnapshotDecodesIdentityAndClassifiesContractBoundaries() throws {
+        let data = try XCTUnwrap(#"{"schema_version":5,"build_identity":{"build_id":"release-sha","version":"0.1.0","protocol_version":1,"schema_version":5},"rev":4,"generated_at":0,"agents":{}}"#.data(using: .utf8))
+        let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+        let identity = try XCTUnwrap(snapshot.buildIdentity)
+        XCTAssertEqual(identity.buildId, "release-sha")
+        XCTAssertNil(identity.compatibilityWarning)
+
+        let old = BuildIdentity(buildId: "old", version: "0.0.1", protocolVersion: 1, schemaVersion: 4)
+        XCTAssertNotNil(old.compatibilityWarning)
+        let unknown = Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0, agents: [:])
+        XCTAssertNil(unknown.buildIdentity)
+    }
+
+    @MainActor
+    func testFleetStoreWarnsOnlyWhenHostIdentityIsUnknownOrIncompatible() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "HostCompatibilityTests"))
+        let store = FleetStore(defaults: defaults)
+        let identity = BuildIdentity(buildId: "release-sha", version: "0.1.0", protocolVersion: 1, schemaVersion: 5)
+        store.apply(.snapshot(Snapshot(schemaVersion: 5, buildIdentity: identity, rev: 1, generatedAt: 0, agents: [:])))
+        XCTAssertNil(store.hostCompatibilityWarning)
+        store.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 2, generatedAt: 0, agents: [:])))
+        XCTAssertTrue(store.hostCompatibilityWarning?.contains("unknown") == true)
+    }
+}
+
 // MARK: - Canonical bytes (byte-for-byte serde_json parity)
 
 final class CanonicalBytesTests: XCTestCase {

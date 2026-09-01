@@ -10,6 +10,34 @@ use serde::{Deserialize, Serialize};
 
 /// Snapshot/delta schema version served by corrald.
 pub const SCHEMA_VERSION: u32 = 5;
+pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+pub const MINIMUM_SCHEMA_VERSION: u32 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildIdentity {
+    pub build_id: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub schema_version: u32,
+}
+
+impl BuildIdentity {
+    pub fn compatibility_warning(&self) -> Option<String> {
+        if self.protocol_version != SUPPORTED_PROTOCOL_VERSION {
+            return Some(format!(
+                "Host protocol {} is incompatible with client protocol {}. Update corrald.",
+                self.protocol_version, SUPPORTED_PROTOCOL_VERSION
+            ));
+        }
+        if self.schema_version < MINIMUM_SCHEMA_VERSION {
+            return Some(format!(
+                "Host snapshot schema {} is older than client schema {}. Update corrald.",
+                self.schema_version, MINIMUM_SCHEMA_VERSION
+            ));
+        }
+        None
+    }
+}
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives
 /// in `reason` / `waiting_on`.
@@ -194,6 +222,8 @@ pub struct Agent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u32,
+    #[serde(default)]
+    pub build_identity: Option<BuildIdentity>,
     pub rev: u64,
     pub generated_at: u64,
     pub agents: BTreeMap<String, Agent>,
@@ -224,6 +254,33 @@ pub fn apply_delta(agents: &mut BTreeMap<String, Agent>, delta: &Delta) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_identity_classifies_contract_boundaries() {
+        let compatible = BuildIdentity {
+            build_id: "release-sha".into(),
+            version: "0.1.0".into(),
+            protocol_version: SUPPORTED_PROTOCOL_VERSION,
+            schema_version: MINIMUM_SCHEMA_VERSION,
+        };
+        assert_eq!(compatible.compatibility_warning(), None);
+        assert!(
+            BuildIdentity {
+                schema_version: MINIMUM_SCHEMA_VERSION - 1,
+                ..compatible.clone()
+            }
+            .compatibility_warning()
+            .is_some()
+        );
+        assert!(
+            BuildIdentity {
+                protocol_version: SUPPORTED_PROTOCOL_VERSION + 1,
+                ..compatible
+            }
+            .compatibility_warning()
+            .is_some()
+        );
+    }
 
     #[test]
     fn workspace_mirrors_the_g23_daemon_fields_tolerantly() {

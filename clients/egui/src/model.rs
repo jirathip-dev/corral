@@ -7,6 +7,44 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+pub const MINIMUM_SCHEMA_VERSION: u32 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildIdentity {
+    pub build_id: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub schema_version: u32,
+}
+
+impl BuildIdentity {
+    pub fn compatibility_warning(&self) -> Option<String> {
+        if self.protocol_version != SUPPORTED_PROTOCOL_VERSION {
+            return Some(format!(
+                "Host protocol {} is incompatible with client protocol {}. Update corrald.",
+                self.protocol_version, SUPPORTED_PROTOCOL_VERSION
+            ));
+        }
+        if self.schema_version < MINIMUM_SCHEMA_VERSION {
+            return Some(format!(
+                "Host snapshot schema {} is older than client schema {}. Update corrald.",
+                self.schema_version, MINIMUM_SCHEMA_VERSION
+            ));
+        }
+        None
+    }
+}
+
+pub fn host_compatibility_warning(identity: Option<&BuildIdentity>) -> Option<String> {
+    match identity {
+        None => Some(
+            "Host compatibility is unknown — update corrald before using this client.".to_string(),
+        ),
+        Some(identity) => identity.compatibility_warning(),
+    }
+}
+
 /// Snapshot/delta schema version (corrald `SCHEMA_VERSION`).
 pub const SCHEMA_VERSION: u32 = 5;
 
@@ -250,6 +288,8 @@ fn shortened_agent_id(agent_id: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u32,
+    #[serde(default)]
+    pub build_identity: Option<BuildIdentity>,
     pub rev: u64,
     pub generated_at: u64,
     pub agents: BTreeMap<String, Agent>,
@@ -298,6 +338,52 @@ pub fn relative_age(epoch_millis: u64, now_millis: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_identity_warns_on_unknown_protocol_or_old_schema() {
+        assert!(
+            host_compatibility_warning(None)
+                .expect("unknown host warning")
+                .contains("unknown")
+        );
+        let compatible = BuildIdentity {
+            build_id: "release-sha".into(),
+            version: "0.1.0".into(),
+            protocol_version: SUPPORTED_PROTOCOL_VERSION,
+            schema_version: MINIMUM_SCHEMA_VERSION,
+        };
+        assert_eq!(compatible.compatibility_warning(), None);
+        let old_schema = BuildIdentity {
+            schema_version: MINIMUM_SCHEMA_VERSION - 1,
+            ..compatible.clone()
+        };
+        assert!(
+            old_schema
+                .compatibility_warning()
+                .expect("old schema warning")
+                .contains("Update corrald")
+        );
+        assert!(
+            host_compatibility_warning(Some(&old_schema))
+                .expect("old schema helper warning")
+                .contains("Update corrald")
+        );
+        let new_protocol = BuildIdentity {
+            protocol_version: SUPPORTED_PROTOCOL_VERSION + 1,
+            ..compatible
+        };
+        assert!(
+            new_protocol
+                .compatibility_warning()
+                .expect("protocol warning")
+                .contains("incompatible")
+        );
+        assert!(
+            host_compatibility_warning(Some(&new_protocol))
+                .expect("protocol helper warning")
+                .contains("incompatible")
+        );
+    }
 
     #[test]
     fn prompt_hash_is_sha256_prefixed_lowercase_hex() {

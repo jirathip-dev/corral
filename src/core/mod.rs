@@ -16,8 +16,8 @@ pub use events::{
 };
 
 pub use model::{
-    Agent, AgentState, Attachment, CAPABILITIES, Change, CiStatus, Delta, Resume, SCHEMA_VERSION,
-    Snapshot, WaitingOn, WaitingOnKind, Workspace,
+    Agent, AgentState, Attachment, BuildIdentity, CAPABILITIES, Change, CiStatus, Delta,
+    PROTOCOL_VERSION, Resume, SCHEMA_VERSION, Snapshot, WaitingOn, WaitingOnKind, Workspace,
 };
 pub use redact::{REDACTED, redact};
 pub use store::Store;

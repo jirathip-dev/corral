@@ -407,12 +407,75 @@ if ! mv -- "$STAGE_DIR" "$RELEASE_DIR"; then
 fi
 STAGE_CLEANED=1
 
+ROLLBACK_DIR="$WORK_DIR/external-rollback"
+mkdir -p "$ROLLBACK_DIR"
+APP_WAS_PRESENT=0
+CONFIG_WAS_PRESENT=0
+backup_file() {
+  local source="$1"
+  local name="$2"
+  if [[ -e "$source" || -L "$source" ]]; then
+    cp -p "$source" "$ROLLBACK_DIR/$name"
+  fi
+}
+restore_file() {
+  local target="$1"
+  local name="$2"
+  rm -f -- "$target"
+  if [[ -e "$ROLLBACK_DIR/$name" || -L "$ROLLBACK_DIR/$name" ]]; then
+    mkdir -p "$(dirname "$target")"
+    cp -p "$ROLLBACK_DIR/$name" "$target"
+  fi
+}
+
+# The release directory swap is atomic, but setup also rewrites launchd
+# plists and the desktop bundle. Keep those paths inside the same transaction
+# so a failed health check cannot leave a new UI/config pointing at an old
+# daemon (or vice versa).
+if [[ -e "$APP_DEST" || -L "$APP_DEST" ]]; then
+  cp -pR "$APP_DEST" "$ROLLBACK_DIR/Corral.app"
+  APP_WAS_PRESENT=1
+fi
+if [[ -e "$CONFIG_DIR" || -L "$CONFIG_DIR" ]]; then
+  cp -pR "$CONFIG_DIR" "$ROLLBACK_DIR/config"
+  CONFIG_WAS_PRESENT=1
+fi
+backup_file "$HOME/Library/LaunchAgents/com.corral.corrald.plist" daemon.plist
+backup_file "$HOME/Library/LaunchAgents/com.corral.corrald-update.plist" update.plist
+backup_file "$HOME/Library/LaunchAgents/com.corral.corrald-rotate.plist" rotate.plist
+
+restore_external_state() {
+  if [[ "$APP_WAS_PRESENT" == "1" ]]; then
+    rm -rf -- "$APP_DEST"
+    mkdir -p "$(dirname "$APP_DEST")"
+    cp -pR "$ROLLBACK_DIR/Corral.app" "$APP_DEST"
+  else
+    rm -rf -- "$APP_DEST"
+  fi
+  restore_file "$HOME/Library/LaunchAgents/com.corral.corrald.plist" daemon.plist
+  restore_file "$HOME/Library/LaunchAgents/com.corral.corrald-update.plist" update.plist
+  restore_file "$HOME/Library/LaunchAgents/com.corral.corrald-rotate.plist" rotate.plist
+  if [[ "$CONFIG_WAS_PRESENT" == "1" ]]; then
+    rm -rf -- "$CONFIG_DIR"
+    mkdir -p "$(dirname "$CONFIG_DIR")"
+    cp -pR "$ROLLBACK_DIR/config" "$CONFIG_DIR"
+  else
+    rm -rf -- "$CONFIG_DIR"
+  fi
+}
+
 echo ">> Installing prebuilt corrald + egui board"
 if ! bash "$RELEASE_DIR/scripts/setup-corrald.sh" \
   --from-release "$RELEASE_DIR/corrald" \
   --bind "$BIND" \
   --port "$PORT"; then
   echo "!! setup failed; restoring previous release" >&2
+  if command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.corral.corrald.plist" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.corral.corrald-update.plist" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.corral.corrald-rotate.plist" 2>/dev/null || true
+  fi
+  restore_external_state
   rm -rf -- "$RELEASE_DIR"
   if [[ -e "$RELEASE_DIR.previous" || -L "$RELEASE_DIR.previous" ]]; then
     if ! mv -- "$RELEASE_DIR.previous" "$RELEASE_DIR"; then
@@ -420,6 +483,15 @@ if ! bash "$RELEASE_DIR/scripts/setup-corrald.sh" \
       exit 1
     fi
     echo "   restored $RELEASE_DIR.previous -> $RELEASE_DIR"
+  fi
+  if command -v launchctl >/dev/null 2>&1; then
+    for plist in \
+      "$HOME/Library/LaunchAgents/com.corral.corrald.plist" \
+      "$HOME/Library/LaunchAgents/com.corral.corrald-update.plist" \
+      "$HOME/Library/LaunchAgents/com.corral.corrald-rotate.plist"; do
+      [[ -f "$plist" ]] || continue
+      launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || true
+    done
   fi
   exit 1
 fi

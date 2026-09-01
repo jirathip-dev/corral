@@ -227,6 +227,7 @@ impl WebCorralApp {
         self.demo = Some(demo::load());
         if let Some(data) = &self.demo {
             self.fleet = Fleet::default();
+            self.settings.host_identity = data.snapshot.build_identity.clone();
             self.fleet.apply_snapshot(&data.snapshot);
             self.fleet.set_issues(Ok(data.issues.clone()));
 
@@ -446,6 +447,7 @@ impl WebCorralApp {
             let message = self.inbox.borrow_mut().pop_front();
             match message {
                 Some(InboxMsg::Snapshot(snapshot)) => {
+                    self.settings.host_identity = snapshot.build_identity.clone();
                     self.fleet.apply_snapshot(&snapshot);
                     self.conn = ConnState::Connected;
                 }

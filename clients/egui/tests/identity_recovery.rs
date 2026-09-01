@@ -193,7 +193,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         matches!(baseline, DriveOutcome::Ok { .. }),
         "baseline signed read_tail must execute: {baseline:?}"
     );
-    println!("step 1 ok: registered {id1} + granted read_tail + signed drive executed");
+    println!("step 1 ok: registered device + granted read_tail + signed drive executed");
 
     // --- 2. reinstall: wipe the board's key material -------------------
     // config.json (registration record: id1 + grants) is NOT touched; the
@@ -204,7 +204,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         "key material file must exist before the wipe"
     );
     std::fs::remove_file(&key_path).expect("wipe key material (simulated reinstall)");
-    println!("step 2 ok: wiped key material at {}", key_path.display());
+    println!("step 2 ok: wiped key material (simulated reinstall)");
 
     // --- 3. "start the board": fresh key, old registration -------------
     let key2 =
@@ -230,7 +230,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         ),
         "pre-fix signed drive must 401 bad_signature: {symptom:?}"
     );
-    println!("step 3 ok: pre-fix symptom reproduced (401 bad_signature on {id1})");
+    println!("step 3 ok: pre-fix symptom reproduced (401 bad_signature)");
 
     // --- 4. recovery: re-register current key + restore grants ---------
     // (the exact sequence the board runs on detection / one-tap prompt)
@@ -254,7 +254,13 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     protocol::set_admin_grants(&client, &base_url, &admin, &id2, &["read_tail".to_string()])
         .await
         .expect("restore the previous grant set");
-    println!("step 4 ok: re-registered {id1} -> {id2} + grants restored (admin token)");
+    let readback = protocol::fetch_admin_grants(&client, &base_url, &admin, Some(&id2))
+        .await
+        .expect("read back the recovered key grants");
+    assert_eq!(readback.devices.len(), 1);
+    assert_eq!(readback.devices[0].key_id, id2);
+    assert_eq!(readback.devices[0].grants, ["read_tail"]);
+    println!("step 4 ok: recovered key registered + grants restored (admin token)");
 
     // --- 5. signed drive plane works immediately again -----------------
     let endpoint2 = DriveEndpoint {
@@ -288,8 +294,6 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     };
     assert_eq!(record.registration.unwrap().key_id, id2);
 
-    println!(
-        "step 5 ok: signed read_tail executes after recovery ({id1} -> {id2}), no bad_signature"
-    );
+    println!("step 5 ok: signed read_tail executes after recovery, no bad_signature");
     println!("E2E PASS: reinstall identity recovery verified end to end");
 }

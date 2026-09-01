@@ -1,0 +1,7 @@
+{
+  "client": "FleetNotifier",
+  "protocol_version": 1,
+  "schema_version": 5,
+  "host_artifact": null,
+  "compatibility_declaration": "This client is compatible with corrald hosts exposing protocol 1 and snapshot schema 5 or newer; a paired host artifact is not required for this promotion."
+}

@@ -519,6 +519,13 @@ private struct AgentDetailContent: View {
                 (model.hostURL != nil && model.keyId != nil && model.signer != nil))
     }
 
+    private var terminalClient: TerminalAttachClient? {
+        guard let signer = model.signer,
+              let keyId = model.keyId,
+              let host = model.hostURL else { return nil }
+        return TerminalAttachClient(host: host, keyId: keyId, signer: signer)
+    }
+
     private var terminalWorktree: CorralWorktree? {
         guard agent.capabilities.contains(Capability.attach.rawValue),
               let path = agent.workspace.worktreePath, !path.isEmpty,
@@ -639,17 +646,7 @@ private struct AgentDetailContent: View {
             AgentDiffSheet(agent: agent, model: model)
         }
         .sheet(isPresented: $terminalPresented) {
-            if let worktree = terminalWorktree,
-               let signer = model.signer,
-               let keyId = model.keyId,
-               let host = model.hostURL {
-                TerminalAttachView(
-                    client: TerminalAttachClient(host: host, keyId: keyId, signer: signer),
-                    worktree: worktree)
-            } else {
-                Text("Terminal unavailable")
-                    .padding()
-            }
+            TerminalAttachView(client: terminalClient, worktree: terminalWorktree)
         }
         .sheet(isPresented: $devicesGrantsPresented) {
             DevicesGrantsView(model: model)

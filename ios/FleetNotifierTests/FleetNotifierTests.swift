@@ -5359,7 +5359,215 @@ final class IssueBrowserTests: XCTestCase {
     }
 }
 
-// MARK: - #316 V3 Context split (canonical-kind partition + structured status)
+// MARK: - #331 Terminal attach lifecycle
+
+private final class ScriptedTerminalSession: @unchecked Sendable, TerminalAttachSession {
+    enum Behavior: Sendable {
+        case failure(TerminalAttachError)
+        case frameAndWait(TerminalFrame)
+    }
+
+    private let lock = NSLock()
+    private var behaviors: [Behavior]
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var closed = false
+    private var closeCountStorage = 0
+    let started = AsyncCount()
+
+    init(_ behaviors: [Behavior]) {
+        self.behaviors = behaviors
+    }
+
+    var closeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return closeCountStorage
+    }
+
+    private func nextBehavior() -> Behavior {
+        lock.lock()
+        defer { lock.unlock() }
+        closed = false
+        return behaviors.isEmpty ? .failure(.network) : behaviors.removeFirst()
+    }
+
+    func connect(worktree _: CorralWorktree,
+                 onFrame: @escaping @Sendable (TerminalFrame) -> Void) async throws {
+        started.increment()
+        let behavior = nextBehavior()
+        switch behavior {
+        case .failure(let error):
+            throw error
+        case .frameAndWait(let frame):
+            onFrame(frame)
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if closed {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+        }
+    }
+
+    func close() {
+        lock.lock()
+        closeCountStorage += 1
+        closed = true
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume()
+    }
+}
+
+@MainActor
+final class TerminalAttachLifecycleRegressionTests: XCTestCase {
+    private func worktree() -> CorralWorktree {
+        CorralWorktree(repo: "corral", branch: "test", path: "/tmp/corral",
+                       workspaceId: "herdr:test", paneId: nil, isPrunable: false,
+                       dirty: false, agentAttached: true, currentFocus: true)
+    }
+
+    func testUnavailableWorktreeIsRejectedBeforeOpeningTheSocket() async {
+        guard let host = URL(string: "http://127.0.0.1:1") else {
+            return XCTFail("test URL must be valid")
+        }
+        let client = TerminalAttachClient(
+            host: host,
+            session: URLSession(configuration: .ephemeral),
+            keyId: "test-key",
+            signer: DeviceSigner(key: Curve25519.Signing.PrivateKey()))
+        let unavailable = CorralWorktree(
+            repo: "corral",
+            branch: "test",
+            path: "",
+            workspaceId: "",
+            paneId: nil,
+            isPrunable: false,
+            dirty: false,
+            agentAttached: false,
+            currentFocus: false)
+
+        do {
+            try await client.connect(worktree: unavailable) { _ in }
+            XCTFail("an unavailable worktree must not start a terminal")
+        } catch let error as LocalizedError {
+            XCTAssertEqual(error.errorDescription, "Terminal worktree is unavailable.")
+        } catch {
+            XCTFail("unexpected terminal error: \(error)")
+        }
+    }
+
+    func testWebSocketURLUsesTheTransportSchemeWithoutChangingTheHost() {
+        guard let http = URL(string: "http://daemon.example:8474/base") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertEqual(TerminalAttachClient.websocketURL(for: http)?.absoluteString,
+                       "ws://daemon.example:8474/base/v1/terminal")
+        guard let https = URL(string: "https://daemon.example/base") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertEqual(TerminalAttachClient.websocketURL(for: https)?.absoluteString,
+                       "wss://daemon.example/base/v1/terminal")
+        guard let file = URL(string: "file:///tmp/daemon") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertNil(TerminalAttachClient.websocketURL(for: file))
+    }
+
+    func testConnectUsesTheNormalizedWebSocketScheme() async {
+        guard let host = URL(string: "http://127.0.0.1:1") else {
+            return XCTFail("test URL must be valid")
+        }
+        let client = TerminalAttachClient(
+            host: host,
+            session: URLSession(configuration: .ephemeral),
+            keyId: "test-key",
+            signer: DeviceSigner(key: Curve25519.Signing.PrivateKey()))
+        do {
+            try await client.connect(worktree: worktree()) { _ in }
+            XCTFail("a refused WebSocket must not report success")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .network)
+        } catch {
+            XCTFail("unexpected terminal error: \(error)")
+        }
+    }
+
+    func testMalformedAndOutOfOrderMessagesAreReportedAtTheClientBoundary() {
+        do {
+            _ = try TerminalAttachClient.parseMessage("not json", afterOpen: false)
+            XCTFail("malformed terminal data must be rejected")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .protocolError("Terminal sent a malformed frame."))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        do {
+            _ = try TerminalAttachClient.parseMessage(
+                #"{"type":"frame","ansi":"screen","cursor_x":1,"cursor_y":2}"#,
+                afterOpen: false)
+            XCTFail("a frame before opened must be rejected")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .protocolError("Terminal frame arrived before handshake."))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(try? TerminalAttachClient.parseMessage(#"{"type":"opened"}"#, afterOpen: false),
+                       .opened)
+    }
+
+    func testProductionTerminalLifecycleSurfacesFailureThenStreamsAndCleansUp() async {
+        let frame = TerminalFrame(type: "frame", ansi: "screen", cursorX: 8, cursorY: 4)
+        let fake = ScriptedTerminalSession([
+            .failure(.server(kind: "terminal_unavailable", message: "Terminal worktree is unavailable.")),
+            .frameAndWait(frame)
+        ])
+        let model = TerminalAttachSessionModel(client: fake, worktree: worktree())
+
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal worktree is unavailable."))
+
+        model.retry()
+        let run = Task { @MainActor in await model.start() }
+        let didStart = await fake.started.waitFor(atLeast: 2)
+        XCTAssertTrue(didStart)
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(model.state, .connected)
+        XCTAssertEqual(model.output, "screen")
+        XCTAssertEqual(model.cursor.0, 8)
+        XCTAssertEqual(model.cursor.1, 4)
+
+        model.stop()
+        await run.value
+        XCTAssertGreaterThanOrEqual(fake.closeCount, 2,
+                                    "retry and dismissal both close the terminal")
+        XCTAssertNotEqual(model.state, .failed("Terminal connection closed."))
+    }
+
+    func testHandshakeFailureIsPresentedAsARecoverableError() async {
+        let fake = ScriptedTerminalSession([.failure(.handshakeTimedOut)])
+        let model = TerminalAttachSessionModel(client: fake, worktree: worktree())
+
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal handshake timed out."))
+        model.stop()
+        XCTAssertEqual(fake.closeCount, 1)
+    }
+
+    func testMissingProductionTerminalInputsBecomeAnInSheetFailureState() async {
+        let model = TerminalAttachSessionModel(client: nil, worktree: nil)
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal worktree is unavailable."))
+    }
+}
 
 final class ContextSplitV3Tests: XCTestCase {
     private func block(_ kind: TranscriptBlockKind, _ text: String,

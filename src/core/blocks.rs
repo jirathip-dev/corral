@@ -698,14 +698,11 @@ pub fn canonical_blocks_with_exchange(
         provenance.bind_echoes(target, &eligible, eligible.len());
     // #330: the agent's structured question is plain prose in the terminal
     // — every non-blank line is a candidate for the exchange ledger, bound
-    // by exact identity (the recorded event text is the same cleaned,
-    // redacted form the window carries).
+    // by the shared cleaned, redacted, trimmed identity.
     let exchange_candidates: Vec<Option<String>> = cleaned
         .split('\n')
-        .map(|line| {
-            let candidate = line.trim();
-            (!candidate.is_empty()).then(|| candidate.to_string())
-        })
+        .map(crate::core::provenance::canonical_exchange_text)
+        .map(|candidate| (!candidate.is_empty()).then_some(candidate))
         .collect();
     let bound_exchange =
         exchange.bind_events(target, &exchange_candidates, exchange_candidates.len());
@@ -729,11 +726,10 @@ fn strip_typed_input_prefix(line: &str) -> &str {
     }
     // #330 composer-echo shape: `<session-label> <decoration> <text>` —
     // the supported TUI paints submitted input after the session label. A
-    // single non-space token before the decoration is the label; only a
-    // genuine decoration char unlocks the strip.
+    // session label is a structured `<token>-session` value; arbitrary output
+    // prefixes such as `stdout` must not unlock prompt provenance.
     if let Some((label, rest)) = current.split_once(' ')
-        && !label.is_empty()
-        && !label.contains(char::is_whitespace)
+        && is_session_label(label)
     {
         let after = rest.trim_start();
         for prefix in ["›", ">", "❯", "❮", "🞈"] {
@@ -743,6 +739,16 @@ fn strip_typed_input_prefix(line: &str) -> &str {
         }
     }
     current
+}
+
+fn is_session_label(label: &str) -> bool {
+    let Some(prefix) = label.strip_suffix("-session") else {
+        return false;
+    };
+    !prefix.is_empty()
+        && prefix.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
 }
 
 /// The #315 canonical segmentation: identical mechanical cleaning to
@@ -1427,6 +1433,18 @@ mod tests {
             blocks.iter().all(|b| b.kind != TranscriptBlockKind::User),
             "undecorated line promoted to user: {blocks:#?}"
         );
+    }
+
+    #[test]
+    fn machine_output_prefix_does_not_unlock_composer_echo() {
+        let prov = prov_with(&[("req-yes", "yes")]);
+        let blocks = canonical_blocks(&["stdout > yes".into()], &prov, "t", None);
+        assert_eq!(
+            kinds(&blocks),
+            vec![TranscriptBlockKind::Unknown],
+            "ordinary machine output must stay Unknown: {blocks:#?}"
+        );
+        assert!(blocks.iter().all(|block| block.prompt_request_id.is_none()));
     }
 
     // ---------------------------------------------------------------------

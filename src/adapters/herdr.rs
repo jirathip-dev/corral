@@ -3435,6 +3435,23 @@ mod tests {
             store.exchange().has_events_for(agent_id),
             "the blocked question must be recorded in the exchange ledger"
         );
+
+        // The real read path trims the window candidate before binding. The
+        // producer fixture deliberately carries the indented matched_line;
+        // the canonical stream must still attribute that question as Agent.
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &["Do you want to proceed?".to_string()],
+            &crate::core::provenance::PromptProvenance::new(),
+            &store.exchange(),
+            agent_id,
+            None,
+        );
+        assert_eq!(
+            blocks.iter().map(|block| block.kind).collect::<Vec<_>>(),
+            vec![crate::core::blocks::TranscriptBlockKind::Agent],
+            "the Herdr matched_line must bind through the canonical read path: {blocks:#?}"
+        );
+
         let bound = store.exchange().bind_events(
             agent_id,
             &[Some("  Do you want to proceed?".to_string())],

@@ -79,6 +79,14 @@ pub fn text_sha256_hex(text: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Return the one redacted identity used for structured exchange events.
+/// Cleaning removes terminal escapes/overdraw, redaction runs before hashing,
+/// and outer whitespace is presentation rather than exchange content.
+pub fn canonical_exchange_text(text: &str) -> String {
+    let cleaned = crate::core::blocks::clean(text);
+    crate::core::redact::redact(cleaned.trim()).into_owned()
+}
+
 /// Bounded, thread-safe ledger of dispatched prompts, keyed by target.
 #[derive(Debug, Default)]
 pub struct PromptProvenance {
@@ -244,9 +252,9 @@ pub struct ExchangeEvent {
     pub target: String,
     /// Authoritative structured role of the event.
     pub role: ExchangeRole,
-    /// SHA-256 hex of the cleaned, redacted event text.
+    /// SHA-256 hex of the canonical cleaned, redacted, trimmed event text.
     pub text_sha256: String,
-    /// Byte length of the cleaned, redacted event text.
+    /// Byte length of the canonical cleaned, redacted, trimmed event text.
     pub text_len: usize,
     /// Epoch millis when the event was observed.
     pub ts: u64,
@@ -254,25 +262,26 @@ pub struct ExchangeEvent {
 
 impl ExchangeEvent {
     /// Record the identity of `text` in its CLEANED, REDACTED form — the
-    /// exact bytes the read path will compare a window line against (the
-    /// window is cleaned by `clean()` and redacted before segmentation).
+    /// exact canonical identity the read path compares window lines against
+    /// (`canonical_exchange_text` cleans, redacts, and trims before hashing).
     pub fn new(id: &str, target: &str, role: ExchangeRole, text: &str, ts: u64) -> Self {
-        let cleaned = crate::core::blocks::clean(text);
-        let redacted = crate::core::redact::redact(&cleaned);
+        let canonical = canonical_exchange_text(text);
         Self {
             id: id.to_string(),
             target: target.to_string(),
             role,
-            text_sha256: text_sha256_hex(&redacted),
-            text_len: redacted.len(),
+            text_sha256: text_sha256_hex(&canonical),
+            text_len: canonical.len(),
             ts,
         }
     }
 
     /// Whether `text` is this event's text (hash + length identity on the
-    /// cleaned, redacted form — never a prose or name comparison).
+    /// canonical cleaned, redacted, trimmed form — never a prose or name
+    /// comparison).
     pub fn matches_text(&self, text: &str) -> bool {
-        self.text_len == text.len() && self.text_sha256 == text_sha256_hex(text)
+        let canonical = canonical_exchange_text(text);
+        self.text_len == canonical.len() && self.text_sha256 == text_sha256_hex(&canonical)
     }
 }
 

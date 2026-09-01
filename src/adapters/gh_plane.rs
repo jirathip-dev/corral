@@ -521,6 +521,29 @@ impl GhPlane {
         }
     }
 
+    /// Test/embedding constructor with production Herdr-scope semantics,
+    /// injected transport, custom cadence, and empty initial specs.
+    ///
+    /// Kept out of ordinary production builds: the daemon uses
+    /// [`Self::with_herdr_scope`] with the real transport and cadence.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_config_and_herdr_scope(
+        store: Arc<Store>,
+        transport: Arc<dyn GhTransport>,
+        token: Option<String>,
+        config: GhPlaneConfig,
+        attribution: WorkspaceAttribution,
+    ) -> Self {
+        Self {
+            store,
+            transport,
+            token,
+            config,
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: Some(attribution),
+        }
+    }
+
     /// Test/embedding constructor with both a custom cadence AND an explicit
     /// spec set (for hermetic explicit-scope tests).
     pub fn with_config_and_specs(

@@ -5155,49 +5155,93 @@ final class ContextSplitV3Tests: XCTestCase {
         }, "every conversation block still routes as conversation on the read path")
     }
 
-    /// R5: the REAL production wiring seam. The model helper test above
-    /// guards `displaySections` itself, but nothing previously bound
-    /// FleetViews to that helper — a compile-capable bypass of the view
-    /// call site (every block in Conversation, harness empty) shipped
-    /// green. This test pins the exact production call site AND its paired
-    /// render uses by reading the bundled production source, mirroring the
-    /// golden-fixture `String(contentsOf:)` pattern (FleetNotifierTests
-    /// `canonicalDaemonJSON()`). The production source is bundled via
-    /// ios/project.yml (FleetNotifierTests resources) so the assertion
-    /// reads the committed file, not a hand-written copy.
+    /// R5+R6: the REAL production wiring seam, structurally scoped. The
+    /// model helper test above guards `displaySections` itself, but nothing
+    /// previously bound FleetViews to that helper — a compile-capable
+    /// bypass of the view call site (every block in Conversation, harness
+    /// empty) shipped green. This test reads the bundled production source
+    /// (ios/project.yml preBuildScript → FleetViews.swift.txt, byte-identical
+    /// to the compiled file) and scopes EVERY assertion to the actual
+    /// `RecentOutputView.content(snapshot:)` `.loaded` branch — a decoy
+    /// helper elsewhere in the file carrying the same assignment string
+    /// must not satisfy it. All marker lookups fail closed: unique start,
+    /// unique `case .loaded:`, ordered boundaries, non-empty slices.
     func testV3ProductionViewWiringBindsFleetViewsToDisplaySections() throws {
         let url = try XCTUnwrap(
             Bundle(for: type(of: self)).url(
                 forResource: "FleetViews.swift", withExtension: "txt"),
-            "FleetViews.swift.txt must be bundled with the tests (project.yml resources)")
+            "FleetViews.swift.txt must be bundled with the tests (project.yml preBuildScript)")
         let source = try String(contentsOf: url, encoding: .utf8)
+        let lines = source.components(separatedBy: .newlines)
 
-        // 1. The exact production call-site assignment. A precise
-        //    line-level assertion, not an occurrence count: a decoy helper
-        //    or a test-local definition of "displaySections" must not
-        //    satisfy it.
-        XCTAssertTrue(
-            source.contains(
-                "let sections = RecentOutputSections.displaySections(from: snapshot.visibleRows)"),
-            "FleetViews must derive sections through displaySections at the production call site")
+        // 1. Uniquely locate the owning function.
+        let contentMarker = "private func content(snapshot: RecentOutputSnapshot) -> some View {"
+        let contentStarts = lines.indices.filter { lines[$0].contains(contentMarker) }
+        XCTAssertEqual(contentStarts.count, 1, "content(snapshot:) marker must be unique")
+        let contentStart = try XCTUnwrap(contentStarts.first)
 
-        // 2. Paired render use: Conversation consumes the partitioned
-        //    conversation rows (identified rows + per-row paging anchor),
-        //    and Harness activity consumes the SAME sections' harness.
-        //    A bypass that renders every block in Conversation and leaves
-        //    harness empty removes the displaySections call above AND
-        //    leaves these consumers disconnected from the partition.
+        // 2. Uniquely locate `case .loaded:` inside that function, and the
+        //    production loaded-branch boundary: the branch's final consumer
+        //    is the `harnessActivity(sections: sections)` call, and the next
+        //    function boundary is `private func harnessActivity`.
+        let loadedMarker = "case .loaded:"
+        let loadedStarts = lines[contentStart...].indices.filter {
+            lines[$0].contains(loadedMarker)
+        }
+        XCTAssertEqual(loadedStarts.count, 1, "case .loaded: must be unique inside content(snapshot:)")
+        let loadedStart = try XCTUnwrap(loadedStarts.first)
+
+        let harnessCallMarker = "harnessActivity(sections: sections)"
+        let harnessCalls = lines[loadedStart...].indices.filter {
+            lines[$0].contains(harnessCallMarker)
+        }
+        XCTAssertEqual(harnessCalls.count, 1,
+                       "harnessActivity(sections: sections) must be unique inside the loaded branch")
+        let harnessCall = try XCTUnwrap(harnessCalls.first)
+
+        let harnessFuncMarker = "private func harnessActivity"
+        let harnessFunc = try XCTUnwrap(
+            lines[harnessCall...].firstIndex(where: { $0.contains(harnessFuncMarker) }),
+            "private func harnessActivity must follow the loaded branch")
+        XCTAssertTrue(harnessFunc > harnessCall,
+                      "function boundary must be ordered after the loaded branch")
+
+        // 3. The loaded-branch prelude (case line through the ScrollViewReader
+        //    opening): exactly one `let sections = ...` assignment, exactly
+        //    through displaySections, and NO direct RecentOutputSections(...)
+        //    constructor/bypass.
+        let scrollReader = try XCTUnwrap(
+            lines[loadedStart...harnessCall].firstIndex(where: {
+                $0.contains("ScrollViewReader { proxy in")
+            }),
+            "loaded branch must open its ScrollViewReader")
+        let prelude = lines[loadedStart...scrollReader]
+
+        let sectionAssignments = prelude.filter { $0.contains("let sections =") }
+        XCTAssertEqual(sectionAssignments.count, 1,
+                       "the loaded-branch prelude must contain exactly one sections assignment")
+        let assignment = try XCTUnwrap(sectionAssignments.first)
         XCTAssertTrue(
-            source.contains("identifiedConversationRows(sections)"),
-            "Conversation must render identifiedConversationRows(sections)")
+            assignment.contains(
+                "RecentOutputSections.displaySections(from: snapshot.visibleRows)"),
+            "the loaded-branch assignment must be exactly displaySections(from: snapshot.visibleRows)")
+        XCTAssertFalse(
+            prelude.contains { $0.contains("RecentOutputSections(") },
+            "the loaded-branch prelude must not contain a direct RecentOutputSections( constructor/bypass")
+
+        // 4. The paired render consumers must live in the SAME loaded-branch
+        //    slice (case .loaded: … harnessActivity(sections: sections)),
+        //    not elsewhere in the file.
+        let loadedSlice = lines[loadedStart...harnessCall]
+        XCTAssertFalse(loadedSlice.isEmpty, "the loaded-branch slice must be non-empty")
         XCTAssertTrue(
-            source.contains("previousBlock(in: sections.conversation, at: index)"),
-            "Conversation rows must page against sections.conversation")
+            loadedSlice.contains { $0.contains("identifiedConversationRows(sections)") },
+            "Conversation must render identifiedConversationRows(sections) inside the loaded branch")
         XCTAssertTrue(
-            source.contains("harnessActivity(sections: sections)"),
-            "Harness activity must consume the same sections object")
+            loadedSlice.contains { $0.contains("previousBlock(in: sections.conversation, at: index)") },
+            "Conversation rows must page against sections.conversation inside the loaded branch")
         XCTAssertTrue(
-            source.contains("if !sections.harness.isEmpty"),
-            "Harness activity must be gated on sections.harness")
+            loadedSlice.contains { $0.contains(harnessCallMarker) },
+            "Harness activity must consume the same sections object inside the loaded branch")
     }
 }

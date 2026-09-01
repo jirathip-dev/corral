@@ -49,7 +49,7 @@ struct StateStyle: Equatable, Sendable {
             return StateStyle(state: .blocked, label: "Needs you", mark: "alert",
                               rank: 0, darkHex: "#F85149", lightHex: "#CF222E")
         case .done:
-            return StateStyle(state: .done, label: "Review", mark: "check",
+            return StateStyle(state: .done, label: "Finished", mark: "check",
                               rank: 1, darkHex: "#D29922", lightHex: "#9A6700")
         case .working:
             return StateStyle(state: .working, label: "Working", mark: "ring",

@@ -74,7 +74,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # with AppModel bounds/cancellation for read_diff; digest re-pinned.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
     # the digest includes the merged #333 and #331 Release source inputs.
-    "3eabcbd125ba4d7a108505bc3e7bbe84db66c3c6c70d5ce04e0d8856584dd822"
+    # #319/#320 grouped R2: ordered status presentation, structured
+    # supervision evidence, and Finished wording updated the board sources.
+    "e9de0866e901c8255cd81080a06a450786dc913814d39f3dedbb041c8c6e760c"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

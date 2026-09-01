@@ -134,7 +134,7 @@ impl AgentStateLike {
     pub fn label(self) -> &'static str {
         match self {
             Self::Blocked => "Needs you",
-            Self::Done => "Review",
+            Self::Done => "Finished",
             Self::Working => "Working",
             Self::Idle => "Idle",
             Self::Unknown => "Unknown",

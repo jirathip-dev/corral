@@ -2593,7 +2593,7 @@ final class TappableControlStateTests: XCTestCase {
     func testExplicitStateTextCoversEveryLifecycleState() {
         XCTAssertEqual(AgentState.working.displayName, "Working")
         XCTAssertEqual(AgentState.idle.displayName, "Idle")
-        XCTAssertEqual(AgentState.done.displayName, "Done")
+        XCTAssertEqual(AgentState.done.displayName, "Finished")
         XCTAssertEqual(AgentState.blocked.displayName, "Blocked")
     }
 }
@@ -5779,5 +5779,67 @@ final class ContextSplitV3Tests: XCTestCase {
         XCTAssertTrue(
             loadedSlice.contains { $0.contains(harnessCallMarker) },
             "Harness activity must consume the same sections object inside the loaded branch")
+    }
+}
+
+final class StatusPresentationRegressionTests: XCTestCase {
+    private func agent(_ id: String, state: AgentState, reason: String? = nil) -> Agent {
+        Agent(agentId: id, state: state, reason: reason, displayName: id)
+    }
+
+    func testActiveDoneOrchestratorNeedsStructuredPollEvidence() throws {
+        let active = agent(
+            "herdr:demo:orch",
+            state: .done,
+            reason: "done: poll every 60s; queued_work=1; current_command=/private/token")
+
+        XCTAssertEqual(BoardModel.presentationGroup(for: active), .supervising)
+        let activity = try XCTUnwrap(BoardModel.supervisionActivity(for: active))
+        XCTAssertEqual(activity.kind, .polling)
+        XCTAssertEqual(activity.intervalSeconds, 60)
+        XCTAssertEqual(activity.queuedWork, 1)
+        XCTAssertEqual(activity.summary, "↻ Polling · every 60s")
+        XCTAssertTrue(activity.accessibilityLabel.contains("Activity: Supervising"))
+        XCTAssertTrue(activity.accessibilityLabel.contains("current command redacted"))
+        XCTAssertFalse(activity.accessibilityLabel.contains("/private/token"))
+    }
+
+    func testRoleAloneAndNonDoneAgentsDoNotBecomeSupervising() {
+        let roleOnly = agent("herdr:demo:orch", state: .done, reason: "task complete")
+        XCTAssertEqual(BoardModel.presentationGroup(for: roleOnly), .finished)
+        XCTAssertNil(BoardModel.supervisionActivity(for: roleOnly))
+
+        let implementer = agent("herdr:demo:impl", state: .done, reason: "done: poll every 60s")
+        XCTAssertEqual(BoardModel.presentationGroup(for: implementer), .finished)
+
+        let working = agent("herdr:demo:orch", state: .working, reason: "working: poll every 60s")
+        XCTAssertEqual(BoardModel.presentationGroup(for: working), .working)
+
+        let arbitraryProse = agent("herdr:demo:orch", state: .done, reason: "polling complete")
+        XCTAssertEqual(BoardModel.presentationGroup(for: arbitraryProse), .finished)
+        XCTAssertNil(BoardModel.supervisionActivity(for: arbitraryProse))
+    }
+
+    func testPresentationSectionsUseApprovedOrderAndCounts() {
+        let agents = [
+            agent("herdr:idle", state: .idle),
+            agent("herdr:done:review", state: .done),
+            agent("herdr:orch", state: .done, reason: "done: watcher every 30s"),
+            agent("herdr:working", state: .working),
+            agent("herdr:blocked", state: .blocked),
+        ]
+
+        let sections = BoardModel.presentationSections(for: agents)
+        XCTAssertEqual(
+            sections.map(\.header),
+            ["Needs you (1)", "Working (1)", "Supervising (1)", "Finished (1)", "Idle (1)"])
+        XCTAssertEqual(sections[2].agents.map(\.id), ["herdr:orch"])
+    }
+
+    func testFinishedLabelPreservesCanonicalMarkAndRank() {
+        let style = StateStyle.style(for: .done)
+        XCTAssertEqual(style.label, "Finished")
+        XCTAssertEqual(style.mark, "check")
+        XCTAssertEqual(style.rank, 1)
     }
 }

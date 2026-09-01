@@ -283,8 +283,11 @@ struct AgentRow: View {
             if let waiting = agent.waitingOn, agent.isBlocked {
                 waitingLine(waiting)
             }
+            if let activity = BoardModel.supervisionActivity(for: agent) {
+                supervisionLine(activity)
+            }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .opacity(isDimmed ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -344,7 +347,9 @@ struct AgentRow: View {
     /// session has no display name (R2-D).
     @ViewBuilder
     private var identityText: some View {
-        Text(agent.displayName ?? agent.agentId)
+        let role = BoardModel.role(for: agent)
+        let identity = agent.displayName ?? agent.agentId
+        Text(role == .unknown ? identity : "\(role.displayName) · \(identity)")
             .font(.caption2.monospaced())
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -394,13 +399,25 @@ struct AgentRow: View {
         }
     }
 
+    @ViewBuilder
+    private func supervisionLine(_ activity: SupervisionActivity) -> some View {
+        Label(activity.summary, systemImage: "arrow.triangle.2.circlepath")
+            .font(.caption2.monospaced())
+            .foregroundStyle(.tint)
+            .lineLimit(1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(activity.accessibilityLabel)
+    }
+
     private var isAccessibilitySize: Bool {
         dynamicTypeSize >= .accessibility1
     }
 
-    /// D28: idle/done rows dim, but their explicit state text remains.
+    /// Finished rows dim, but a supervising orchestrator remains active in
+    /// the presentation even though its canonical state is `done`.
     private var isDimmed: Bool {
-        agent.state == .idle || agent.state == .done
+        agent.state == .idle
+            || (agent.state == .done && BoardModel.supervisionActivity(for: agent) == nil)
     }
 
     private var stateStyle: StateStyle {
@@ -416,8 +433,14 @@ struct AgentRow: View {
 private func rowSummary(_ agent: Agent) -> String {
     var parts: [String] = [
         agent.title ?? agent.displayName ?? agent.agentId,
-        StateStyle.style(for: agent.state).label,
+        "Role: \(BoardModel.role(for: agent).displayName)",
+        "State: \(StateStyle.style(for: agent.state).label)",
     ]
+    if let activity = BoardModel.supervisionActivity(for: agent) {
+        parts.append(activity.accessibilityLabel)
+    } else {
+        parts.append("Activity: none")
+    }
     if let repo = agent.workspace.repo { parts.append(repo) }
     if let branch = agent.workspace.branch { parts.append(branch) }
     return parts.joined(separator: ", ")
@@ -452,6 +475,42 @@ private struct AnswerAccessibilityAction: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+private struct SupervisionEvidenceView: View {
+    let activity: SupervisionActivity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Session status")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("State: Finished")
+                    .font(.caption.weight(.semibold))
+                Text("Activity: Supervising")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
+            Text(activity.summary)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tint)
+            if let queuedWork = activity.queuedWork {
+                Text("Queued work: \(queuedWork)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Text("Current command redacted")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 34)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "Expanded Session status. State: Finished, "
+                + activity.accessibilityLabel)
     }
 }
 
@@ -548,12 +607,7 @@ private struct AgentDetailContent: View {
             VStack(alignment: .leading, spacing: 16) {
                 AgentStateSummary(agent: agent,
                                   stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
-                if let reason = agent.reason, !reason.isEmpty {
-                    Text(reason)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
+                presentationStatus
                 if let diff = availability.first(where: { $0.action == .diff }),
                    !diff.isEnabled {
                     Text(diff.disabledReason ?? "Diff unavailable")
@@ -658,6 +712,38 @@ private struct AgentDetailContent: View {
                 overflowMenu
             }
         }
+    }
+
+    @ViewBuilder
+    private var presentationStatus: some View {
+        let style = StateStyle.style(for: agent.state)
+        let activity = BoardModel.supervisionActivity(for: agent)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("State: \(style.label)")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(style.color)
+            if let activity {
+                Text(activity.summary)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tint)
+                if let queuedWork = activity.queuedWork {
+                    Text("Queued work: \(queuedWork)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Text("Current command redacted")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Activity: none")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "State: \(style.label), "
+                + (activity?.accessibilityLabel ?? "Activity: none"))
     }
 
     /// #308 V1: compact trailing top action group. Interrupt is destructive;
@@ -2040,7 +2126,7 @@ struct IdleDoneHeader: View {
         } label: {
             HStack(spacing: 8) {
                 // #245: lowercase section headers (approved Variant 1).
-                Text("idle / done (\(count))")
+                Text("idle / finished (\(count))")
                 Text(isExpanded ? "Expanded" : "Collapsed")
                     .font(.caption.weight(.regular))
                     .foregroundStyle(.secondary)
@@ -2060,7 +2146,7 @@ struct IdleDoneHeader: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .accessibilityLabel("Idle and done agents")
+        .accessibilityLabel("Idle and finished agents")
         .accessibilityValue("\(count) agents, \(isExpanded ? "Expanded" : "Collapsed")")
         .accessibilityHint(isExpanded ? "Double tap to collapse" : "Double tap to expand")
     }
@@ -2120,8 +2206,8 @@ struct FleetView: View {
                     fleetList(agents: agents)
                 }
             }
-            // D25's "sticky NEEDS YOU": only the plain list style pins
-            // section headers while scrolling (inset-grouped does not).
+            // R2 status sections use the plain list style so each native
+            // status header pins while scrolling.
             .listStyle(.plain)
             // #245 (approved Variant 1): inter-section gaps tightened from
             // the iOS-26 default spacing to the compact 12 pt rhythm.
@@ -2260,6 +2346,7 @@ struct FleetView: View {
     @State private var terminalDemoPresented = false
 #endif
     @State private var viewState = FleetViewState()
+    @State private var expandedSupervisionIds: Set<String> = []
     /// #166 item 5: the active filter chip and the `.searchable` query over
     /// repo / branch / title / issue. Pure logic lives in `BoardFilter`.
     @State private var filterChip: BoardFilterChip = .all
@@ -2300,11 +2387,9 @@ struct FleetView: View {
     }
 #endif
 
-    /// D25 hierarchy: sticky cross-repo NEEDS YOU (always expanded — a
-    /// promotion, not a filter: the same agents also appear in their repo
-    /// section) → repo sections with counts → orphan bucket → collapsed
-    /// IDLE/DONE. Section headers pin while scrolling via the `.plain`
-    /// list style set on the List (inset-grouped headers do not pin).
+    /// R2 status hierarchy: Needs you → Working → Supervising → Finished
+    /// → Idle. Each non-empty group is a native List Section with a pinned
+    /// header and count; query/filter mode remains a flat result section.
     /// The filter-chip row is no longer a header here — it lives in the
     /// List's first pinned section header (`fleetChrome`). The list is a
     /// plain `Group` of Sections so pinned headers and `.swipeActions`
@@ -2330,56 +2415,26 @@ struct FleetView: View {
             }
         } header: {
             pinnedHeader {
-                Text(filterHeaderLabel)
+                Text("\(filterHeaderLabel) (\(filtered.count))")
+                    .accessibilityLabel("\(filterHeaderLabel) (\(filtered.count))")
             }
         }
     }
 
-    /// Normal D25 hierarchy. The `Needs you` section is hidden entirely when
-    /// zero agents are blocked (issue #166 item 7) — no `Needs you (0)`
-    /// header and no "No blocked agents" empty row.
+    /// Normal R2 status hierarchy. Empty groups are omitted so section counts
+    /// describe exactly the rows currently on the board.
     @ViewBuilder
     private func standardSections(agents: [Agent]) -> some View {
-        let sections = BoardModel.sections(agents)
-        // The view consumes the model projection so the zero-state rule is a
-        // model fact (review F5): `needsYouSection` is nil exactly when no
-        // agent is blocked, hiding the header and the (removed) empty row.
-        if BoardModel.needsYouSection(agents) != nil {
+        ForEach(BoardModel.presentationSections(for: agents)) { section in
             Section {
-                ForEach(sections.needsYou) { agent in
+                ForEach(section.agents) { agent in
                     agentRow(agent)
                 }
             } header: {
                 pinnedHeader {
-                    // #245: lowercase section headers (approved Variant 1).
-                    Text("needs you (\(sections.needsYou.count))")
+                    Text(section.header)
+                        .accessibilityLabel(section.header)
                 }
-            }
-        }
-        ForEach(sections.repos, id: \.repo) { group in
-            Section {
-                ForEach(group.agents) { agent in
-                    agentRow(agent)
-                }
-            } header: {
-                // R2-A: pinned headers need an opaque backing or the header
-                // text overlaps scrolling rows at every section boundary.
-                pinnedHeader {
-                    Text("\(group.repo ?? "(no repo)") (\(group.countLabel))")
-                }
-            }
-        }
-        Section {
-            if viewState.idleDoneDisclosure.isExpanded {
-                ForEach(sections.idleDone) { agent in
-                    agentRow(agent)
-                }
-            }
-        } header: {
-            pinnedHeader(fillsInteractiveWidth: true) {
-                IdleDoneHeader(count: sections.idleDone.count,
-                               isExpanded: viewState.idleDoneDisclosure.isExpanded,
-                               onToggle: { viewState.toggleIdleDone() })
             }
         }
     }
@@ -2450,6 +2505,19 @@ struct FleetView: View {
     /// scrolling rows.
     @ViewBuilder
     private func fleetChrome(chips: [BoardFilterChip]) -> some View {
+#if DEBUG
+        if CommandLine.arguments.contains("-corralStatusPresentation") {
+            statusPresentationChrome
+        } else {
+            standardFleetChrome(chips: chips)
+        }
+#else
+        standardFleetChrome(chips: chips)
+#endif
+    }
+
+    @ViewBuilder
+    private func standardFleetChrome(chips: [BoardFilterChip]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.mode == .live {
                 connectionStatusLine
@@ -2458,6 +2526,39 @@ struct FleetView: View {
             refreshHintLine
         }
     }
+
+#if DEBUG
+    /// Compact synthetic R2 capture chrome mirrors the approved status chips
+    /// without changing the live repo-filter controls.
+    @ViewBuilder
+    private var statusPresentationChrome: some View {
+        let sections = BoardModel.presentationSections(for: Array(model.fleet.agents.values))
+        let groups: [PresentationGroup] = [.needsYou, .supervising, .finished]
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text("All \(model.fleet.agents.count)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor, in: Capsule())
+                    .foregroundStyle(Color.white)
+                    .accessibilityLabel("All \(model.fleet.agents.count)")
+                ForEach(groups, id: \.self) { group in
+                    if let section = sections.first(where: { $0.group == group }) {
+                        Text("\(group.rawValue) \(section.agents.count)")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                            .foregroundStyle(Color.primary)
+                            .accessibilityLabel("\(group.rawValue) \(section.agents.count)")
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+#endif
 
     /// #245 (approved Variant 1): the manual refresh button (chrome ⟳ and
     /// toolbar menu item) is removed. The pull gesture is the only refresh
@@ -2517,37 +2618,60 @@ struct FleetView: View {
         }
     }
 
-    /// #166 review F4/F7/N3: the row is a real `NavigationLink` (chevron,
-    /// press highlight, VoiceOver-navigable). The in-row Answer button is a
-    /// `.borderless` Button inside the link's label — the documented List-row
-    /// pattern where it handles its own tap target. No whole-row
-    /// `.contentShape` swallows the button. Answer is offered only when the
-    /// `.prompt` availability gate allows it on this device, and the row's
-    /// VoiceOver summary + custom "Answer" action are applied to the link
-    /// container.
+    /// R2: supervising rows retain their native NavigationLink and gain an
+    /// accessible DisclosureGroup for the structured activity evidence.
+    @ViewBuilder
     private func agentRow(_ agent: Agent) -> some View {
         let answerAvailable = agent.isBlocked && promptAvailable(agent)
         let answerAction: (() -> Void)? = answerAvailable
             ? { answerTarget = AgentAnswerTarget(agentId: agent.agentId) }
             : nil
-        return NavigationLink(value: FleetRoute.agent(agentId: agent.agentId)) {
+        if let activity = BoardModel.supervisionActivity(for: agent) {
+            DisclosureGroup(isExpanded: supervisionBinding(for: agent.agentId)) {
+                SupervisionEvidenceView(activity: activity)
+            } label: {
+                agentNavigationLink(agent, answerAvailable: answerAvailable, answerAction: answerAction)
+            }
+        } else {
+            agentNavigationLink(agent, answerAvailable: answerAvailable, answerAction: answerAction)
+        }
+    }
+
+    @ViewBuilder
+    private func agentNavigationLink(
+        _ agent: Agent,
+        answerAvailable: Bool,
+        answerAction: (() -> Void)?) -> some View {
+        NavigationLink(value: FleetRoute.agent(agentId: agent.agentId)) {
             AgentRow(agent: agent,
                      onAnswer: answerAction,
                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
         }
-            .rowAccessibility(summary: rowSummary(agent), answerAction: answerAction)
-            .accessibilityHint("Double tap to open agent details and actions")
-            .swipeActions(edge: .leading, allowsFullSwipe: answerAvailable) {
-                if answerAvailable {
-                    Button {
-                        answerTarget = AgentAnswerTarget(agentId: agent.agentId)
-                    } label: {
-                        Label("Answer", systemImage: "bubble.left.fill")
-                    }
-                    .tint(.blue)
-                    .accessibilityLabel("Answer the pending question")
+        .rowAccessibility(summary: rowSummary(agent), answerAction: answerAction)
+        .accessibilityHint("Double tap to open agent details and actions")
+        .swipeActions(edge: .leading, allowsFullSwipe: answerAvailable) {
+            if answerAvailable {
+                Button {
+                    answerTarget = AgentAnswerTarget(agentId: agent.agentId)
+                } label: {
+                    Label("Answer", systemImage: "bubble.left.fill")
                 }
+                .tint(.blue)
+                .accessibilityLabel("Answer the pending question")
             }
+        }
+    }
+
+    private func supervisionBinding(for agentId: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedSupervisionIds.contains(agentId) },
+            set: { expanded in
+                if expanded {
+                    expandedSupervisionIds.insert(agentId)
+                } else {
+                    expandedSupervisionIds.remove(agentId)
+                }
+            })
     }
 
     /// #166 review F7: the row Answer affordance (button + leading swipe) is

@@ -1821,8 +1821,9 @@ impl CorralApp {
     /// fire is [`RECENT_OUTPUT_REFRESH_COOLDOWN`] after the last one).
     /// Hidden agents are never eligible — `resolved_selection` comes from
     /// the visible resolver and this method never enumerates the fleet.
-    /// Only the bounded 50-line page is used; `Load earlier` (200/32 KiB)
-    /// remains the separate explicit action in the board.
+    /// Refreshes re-request the remembered per-agent window: default 50
+    /// lines, or an explicit `Load earlier` expansion up to 200 lines,
+    /// bounded by the existing daemon cap.
     fn refresh_recent_output(&mut self, resolved_selection: Option<&str>) {
         let Some(agent_id) = hydration_target(&self.fleet, resolved_selection) else {
             return;

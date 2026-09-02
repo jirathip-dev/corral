@@ -125,12 +125,9 @@ mod tests {
         let kp = DeviceKeypair::generate();
         let envelope = crate::drive::DriveEnvelope {
             request_id: "r-1".to_string(),
-            capability: crate::drive::Capability::Prompt,
+            capability: crate::drive::Capability::ReadTail,
             target: "herdr:pane:wQ:p1".to_string(),
-            payload: crate::drive::DrivePayload::Prompt {
-                text: "go".to_string(),
-            }
-            .to_json(),
+            payload: crate::drive::DrivePayload::ReadTail { lines: Some(50) }.to_json(),
             rev: None,
         };
         let sig = kp.sign_envelope(&envelope);

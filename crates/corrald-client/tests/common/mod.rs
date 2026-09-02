@@ -125,6 +125,7 @@ impl FakeHerdr {
 
     /// Count `agent.prompt` RPCs whose text equals `text` (exactly-one
     /// dispatch assertions).
+    #[allow(dead_code)]
     pub fn count_prompts_with(&self, text: &str) -> usize {
         self.inner
             .commands
@@ -140,6 +141,7 @@ impl FakeHerdr {
     /// Count approve dispatches: an `agent.prompt` to the resolved herdr
     /// target (the agent name, since the fake reports one) whose text is
     /// the validated menu choice.
+    #[allow(dead_code)]
     pub fn count_approves_with(&self, choice: &str) -> usize {
         self.inner
             .commands
@@ -192,6 +194,7 @@ impl FakeHerdr {
     /// `pane.output_matched` — while the agent is blocked, the adapter turns
     /// the matched line into the canonical `waiting_on` record (untrimmed,
     /// redacted; `prompt_hash` over it).
+    #[allow(dead_code)]
     pub async fn set_output_match(&self, pane_id: &str, matched_line: &str, read_text: &str) {
         self.push(
             "pane_output_matched",
@@ -205,6 +208,7 @@ impl FakeHerdr {
     }
 
     /// Set the agent blocked and attach a waiting approval with a menu.
+    #[allow(dead_code)]
     pub async fn wait_for_approval(&self, matched_line: &str, choices_text: &str) {
         self.set_status(AGENT_PANE, "blocked").await;
         // Small settle: the status change must land before the output match.
@@ -556,6 +560,7 @@ pub async fn wait_for_head(
 }
 
 /// Poll `/snapshot` until the agent carries a waiting approval (bounded).
+#[allow(dead_code)]
 pub async fn wait_for_waiting_on(
     client: &corrald_client::CorralClient,
     agent_id: &str,
@@ -602,6 +607,7 @@ pub async fn audit_len(client: &corrald_client::CorralClient, admin: &str) -> us
 
 /// Raw POST /drive, returning status + exact body bytes (byte-identical
 /// replay assertions need the raw response).
+#[allow(dead_code)]
 pub async fn raw_drive(
     base: &str,
     signed: &corrald_client::SignedDrive,

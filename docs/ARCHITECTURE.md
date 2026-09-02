@@ -3,8 +3,8 @@
 `corrald` is a Rust daemon that collapses the herdr agent fleet into a
 snapshot read model (served over HTTP + SSE — loopback by default,
 tailnet/private interfaces allowlisted, never public) and exposes a
-signed, capability-gated write plane (`POST /drive`). Design
-authority: `docs/corral/DECISIONS.md` (D1–D14).
+signed, capability-gated read plane (`POST /drive`, read-only since
+#354). Design authority: `docs/corral/DECISIONS.md` (D1–D14).
 
 ## Stack terminology (model → harness → runtime → control plane)
 
@@ -135,9 +135,9 @@ Issues tab renders — separate from the per-agent `closingIssuesReferences`
 join in the snapshot. The view is scoped strictly to categories represented by
 current Herdr adapter workspaces; its GitHub-origin poll specs rebuild from
 those owned checkout/worktree facts, and topology changes prune stale issue
-categories. The signed `read_issues` drive arm calls the same projection, so
-both clients receive identical category keys. GitHub stays READ-ONLY: no issue
-create/edit/close surface exists.
+categories. GitHub stays READ-ONLY: no issue create/edit/close surface
+exists (the signed `read_issues` drive arm and the `start_worktree` drive
+that consumed a selected issue were removed in #354).
 
 The host admin boundary also exposes `GET /grants` (#137): an admin-token
 gated projection of registered device key ids, current grants, revocation,
@@ -196,14 +196,16 @@ therefore staying in the `(no repo)` orphan bucket. The `GET /fleets` view
 serves the validated identity catalog only — no `fleets.json` projection
 exists.
 
-## Write side: the signed drive plane
+## Signed read plane (`POST /drive`, read-only since #354)
 
 ```
 client (device Ed25519 keypair)           corrald
 ───────────────                           ──────
 signed envelope {key_id, signature,       POST /drive
-  envelope{request_id, capability,          1. parse envelope (unknown
-  target, payload, rev}}                       capability → typed error)
+  envelope{request_id, capability,          1. parse envelope (a removed
+  target, payload, rev}}                       capability name → typed
+                                              400 unknown_capability,
+                                              before the authorizer)
                                            2. DeviceAuthorizer::verify
                                               default deny: unknown key,
                                               revoked, expired, bad
@@ -213,15 +215,10 @@ signed envelope {key_id, signature,       POST /drive
                                            4. replay-table claim keyed
                                               by request_id (idempotent:
                                               exactly-once dispatch)
-                                           5. approve claims: check
-                                              approval_id + exact
-                                              prompt_hash against the
-                                              LIVE prompt
-                                           6. step-up gate for
-                                              destructive payloads
-                                              (X-Step-Up-Token)
-                                           7. dispatch to adapter
-                                           8. audit append (hash-chained)
+                                           5. read dispatch to the
+                                              adapter seam (read_tail /
+                                              read_diff)
+                                           6. audit append (hash-chained)
 ```
 
 - Signatures cover `canonical_envelope_bytes` — the fixed-order JSON
@@ -229,17 +226,13 @@ signed envelope {key_id, signature,       POST /drive
   sharing serialization code. `crates/corrald-client` mirrors the wire
   types field-for-field and signs the identical bytes; the R1–R10
   conformance suite proves both sides against a real corrald.
-- Writes are idempotent by `request_id`: the daemon stores the first
+- Reads are idempotent by `request_id`: the daemon stores the first
   response and serves it byte-identical on retry.
-- Approvals are **claim-based** (D8): `approval_id = <agent_id>:<prompt_hash>`,
-  and the reply's `prompt_hash` must match the agent's current, live
-  prompt hash — the wrong-question race is refused with a typed 409
-  before any dispatch.
 - The daemon never sends keys by coordinates: the adapter resolves the
   canonical `agent_id` to its own transport target.
 - Herdr keeps the canonical agent-to-pane target and its reverse mapping under
   one state lock. A stable session moving panes evicts the old pane, and a
-  disappeared or moved target leaves a stale-agent tombstone. Dispatch
+  disappeared or moved target leaves a stale-agent tombstone. Read dispatch
   observes that tombstone as `stale_agent` (HTTP 409 before replay claim when
   possible; a typed refusal if the adapter loses the race). Desktop and iOS
   clients remove the stale row immediately and refresh their snapshot; the
@@ -253,14 +246,19 @@ signed envelope {key_id, signature,       POST /drive
 
 ## Capabilities
 
-`prompt`, `interrupt`, `approve`, `read_tail` (bounded live tail served as
-segmented blocks on `/drive`), `read_diff` (#232: bounded worktree diff
-page — diffstat + changed-files list + paged unified diff, computed via
-libgit2, never a git subprocess, restricted to herdr-owned worktree paths),
-`kill`, `attach`, and the fleet-level
-`start_worktree` — the closed set
-in `src/drive/mod.rs`. Anything else is refused with a typed error before
-dispatch.
+The #354 read-only cut closed the drive plane to two signed reads:
+
+`read_tail` (bounded live tail served as segmented blocks on `/drive`) and
+`read_diff` (#232: bounded worktree diff page — diffstat + changed-files
+list + paged unified diff, computed via libgit2, never a git subprocess,
+restricted to herdr-owned worktree paths) — the closed set in
+`src/drive/mod.rs`. Every mutating capability (`prompt`, `interrupt`,
+`approve`, `kill`, `attach`, `start_worktree`, `read_issues`) and the
+terminal/attach transport were removed; anything else is refused with a
+typed `400 unknown_capability` before the authorizer, before any adapter
+dispatch, and before the audit log. The step-up gate and the
+claim-based-approval seam existed only for destructive payloads and were
+removed with them.
 
 ## Security model
 
@@ -278,18 +276,16 @@ dispatch.
   state): permitted for lab setups, but prefer tailnet or loopback.
 - **Three credentials, never one** (D13): registration token (routing
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
-  writes; host identity is X25519, published by `GET /host-key`), and
-  per-capability grants (read-only default, promoted by the host via
+  signed reads; host identity is X25519, published by `GET /host-key`),
+  and per-capability grants (read-only default, promoted by the host via
   `POST /grants` with the admin token; host-administration reads use the
   same token on `GET /grants`). Expiry (90 days) + revocation are checked
   on every verify.
-- **Default deny, no auto-approve.** A fresh device has zero grants.
-- **Step-up** for destructive patterns (`rm -rf`, `push --force`,
-  `curl | sh`, `~/.aws`, `~/.ssh`, `.env`): 5-minute single-use token
-  minted by `POST /step-up` only after the device proves key possession.
+- **Default deny, no auto-approve.** A fresh device has zero grants, and
+  only `read_tail` / `read_diff` can ever be granted.
 - **Audit log**: append-only, SHA-256 hash-chained, `0600`; grows only on
-  drive writes (executions + dispatch refusals) — never on GETs or auth
-  failures.
+  signed drive dispatches (executions + dispatch refusals) — never on GETs
+  or auth failures.
 - Key material is persisted `0600` under a `0700` dir; secrets are never
   logged; the release binary exposes no secret accessors.
 
@@ -301,35 +297,33 @@ Four places where data crosses a trust line, and what guards each:
    (agent panes contain whatever an agent printed). Redaction runs at the
    adapter boundary *before* facts enter the store — `sk-ant-*`, `ghp_*`,
    `AKIA*`, high-entropy strings, `.env`-shaped content.
-2. **Device → daemon (writes).** Loopback is not authentication. Every
-   `POST /drive` is Ed25519-signed over a canonical envelope, checked
-   against a registered, unexpired, unrevoked key, then against that key's
-   grants, then against the step-up gate for destructive payloads.
+2. **Device → daemon (signed reads).** Loopback is not authentication.
+   Every `POST /drive` is Ed25519-signed over a canonical envelope,
+   checked against a registered, unexpired, unrevoked key, then against
+   that key's grants. Only the two read capabilities exist, so the drive
+   plane is read-only by construction.
 3. **Daemon → Apple (APNs egress).** This is the only path where fleet
    content leaves the machine. Payloads are re-redacted at build time —
    the adapter's redaction is not trusted to have been sufficient — and
    bounded to the APNs size limit.
-4. **Lock screen → daemon.** A canned reply carries the `prompt_hash` of
-   the notification it came from; the daemon refuses it if the live prompt
-   has moved on. Destructive payloads still require biometric step-up, and
-   the check is server-side — a compromised client cannot skip it.
+4. **Lock screen → daemon.** Removed with the #354 cut: notification
+   replies were approve replies, and the approve capability no longer
+   exists. Notifications are display-only state-change alerts.
 
 ## Clients
 
 - `crates/corrald-client` — shared client layer: typed read model,
-  reconnecting SSE with resume, signed drive with idempotent retries,
-  step-up flow, approval claims. No GUI.
+  reconnecting SSE with resume, signed read drive with idempotent
+  retries. No GUI.
 - `clients/egui` (`corrald-ui`) — desktop fleet board (egui/wgpu), macOS +
-  Linux. Device keys in the OS keychain; auto-register on localhost; drive
-  controls rendered for the canonical capability set; enabled/disabled state
-  and reason derive from `agent.capabilities` plus the grant ledger. Settings
-  hosts the admin-token audit log and grant editor.
-- `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed drive
-  (including Kill/Attach), the single Recent-output surface (live
-  segmented blocks), APNs registration,
-  and canned lock-screen replies bound to `prompt_hash`. Disabled controls
-  name a missing grant or an unadvertised capability. See the README's
-  Status section for what is and is not verified on hardware.
+  Linux. Device keys in the OS keychain; auto-register on localhost; read
+  rows rendered for the canonical capability set; enabled/disabled state
+  and reason derive from `agent.capabilities` plus the grant ledger.
+  Settings hosts the admin-token audit log and grant editor.
+- `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed read
+  drive, the single Recent-output surface (live segmented blocks), APNs
+  registration. Action controls were retired with the #354 cut. See the
+  README's Status section for what is and is not verified on hardware.
 
 ## Layout on main
 
@@ -341,22 +335,22 @@ src/adapters/        herdr (push), git_plane, gh_plane, Adapter trait
 src/core/            canonical model, events (plane channel), store,
                      redaction
 src/integrate/       plane-channel drain folding git/gh facts onto agents
-src/drive/           frozen P3 contract: capabilities, envelope, signing,
+src/drive/           frozen P3 contract: capabilities (ReadTail/ReadDiff
+                     only since #354), envelope, signing,
                      authorizer/audit traits
-src/approve/         claim-based approvals (prompt_hash checks)
-src/auth/            host identity, device registry, authorizer, step-up,
+src/auth/            host identity, device registry, authorizer,
                      hash-chained audit, HTTP routes
-src/api/             router, /snapshot /events /history /healthz,
-                     POST /drive, POST /device-token
+src/api/             router, /snapshot /events /history /issues /healthz,
+                     POST /drive (signed reads), POST /device-token
 src/history/         D23 event ring (rotating JSONL) + D33 daily digest
-src/fleet/           configless: fleet-ops CLI identity path + worktree/switch ops
 src/push/            APNs provider, payload build + redaction, transition
                      notifier
 crates/corrald-client/  shared client layer + R1–R10 conformance suite
-clients/egui/        corrald-ui desktop client (Board, Issues, Audit,
-                     Registry, Settings)
-ios/FleetNotifier/   iOS client: SSE, drive, APNs, lock-screen replies
-tests/               integration tests per module
+clients/egui/        corrald-ui desktop client (Board, Audit, Registry,
+                     Settings; Issues tab read-only)
+ios/FleetNotifier/   iOS client: SSE, signed reads, APNs
+tests/               integration tests per module (incl. the #354
+                     read-only-cut probe in tests/readonly_cut.rs)
 ```
 
 Phase briefs (P1–P4) and the normative wire contract live in

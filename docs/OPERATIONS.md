@@ -95,7 +95,7 @@ the token to a device).
 
 ```sh
 scripts/corrald-grant.sh --list                          # show registered devices + grants
-scripts/corrald-grant.sh --key dev_<id> --caps read_tail,prompt
+scripts/corrald-grant.sh --key dev_<id> --caps read_tail
 scripts/corrald-grant.sh --key dev_<id> --revoke
 ```
 
@@ -226,37 +226,26 @@ Capabilities, grant-gated per device (see "Grants model" below):
   all out of scope). 403 without the grant; every served page is audited
   and redacted like `read_tail`, and the phone app presents it lazily
   (200-line pages).
-- **Interrupt** (`interrupt`): signed `/drive` stop for a live agent.
-- **Kill** (`kill`) and **Attach** (`attach`): signed `/drive` controls.
-  Kill is destructive by capability and takes the same Face ID step-up
-  path as other destructive commands; Attach does not weaken that gate.
-- **Prompt** (`prompt`) and **Approve / Deny / Continue** (`approve`):
-  canned replies answer a waiting agent in-app; the same actions work
-  from the lock-screen notification, validated against the live claim
-  (`prompt_hash` / `stale_approval` refusals surface as typed banners).
-- Disabled controls stay visible and distinguish the two gates: a missing
-  grant says `requires the <cap> grant — ask the host.`, while an agent
-  that does not advertise the capability says `<cap>: not available for
-  this agent.`
-- If a target disappears or moves while a drive is in flight, the daemon
-  returns `stale_agent` (409 before dispatch when observed). The app removes
-  the stale row, shows a refresh banner, and fetches one fresh snapshot; the
-  SSE stream then supplies the authoritative replacement row.
-- Biometric step-up (Face ID) runs in-app for destructive payloads and
-  Kill; the lock-screen path is bounded to non-destructive canned replies.
+- **Read-only since #354**: the mutating drive capabilities (`prompt`,
+  `interrupt`, `approve`, `kill`, `attach`, `start_worktree`,
+  `read_issues`) and the terminal/attach transport were removed from the
+  daemon. A signed drive naming one of them is refused at the capability
+  boundary (`400 unknown_capability`) before the authorizer, before any
+  adapter dispatch, and before the audit log.
+- If a target disappears or moves while a read drive is in flight, the
+  daemon returns `stale_agent` (409 before dispatch when observed). The app
+  removes the stale row, shows a refresh banner, and fetches one fresh
+  snapshot; the SSE stream then supplies the authoritative replacement row.
 
 Promote the phone's key (never hand the admin token to the device):
 
 ```sh
-scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve
+scripts/corrald-grant.sh --key <key_id> --caps read_tail          # recents
+scripts/corrald-grant.sh --key <key_id> --caps read_tail,read_diff # + diff
 ```
 
-`kill` and `attach` are deliberately not in that baseline promotion. Add
-them explicitly only after a host-side grant decision:
-
-```sh
-scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve,kill,attach
-```
+Every other capability name is refused (`400 unknown_capability`) — the
+daemon no longer accepts mutating grants.
 
 Diagnosing a stuck board: since #92 every stream-layer failure sets a
 visible `.error` banner (os.Logger line + dismissible text) instead of
@@ -297,25 +286,26 @@ before expiry.
   device may see fleet state — a plain LAN offers no device auth, prefer
   a tailnet).
 - Drive capabilities are promoted by the host via `POST /grants`
-  (admin token): `prompt`, `interrupt`, `approve`, `read_tail`, `read_diff`
-  (#232: in a device's grant editor it is the "Read the agent's worktree
-  diff" toggle — read-only, audited, default empty like every other
-  grant), `kill`, `attach`, plus the fleet-level `start_worktree`. Default
-  deny; no auto-approve.
+  (admin token). Since the #354 read-only cut only two capabilities
+  exist: `read_tail` (bounded recent output) and `read_diff` (#232: the
+  read-only worktree-diff page — audited, default empty like every other
+  grant). Every removed name (`prompt`, `interrupt`, `approve`, `kill`,
+  `attach`, `start_worktree`, `read_issues`) is refused by the parser
+  (`400 unknown_capability`). Default deny; no auto-approve.
 - `GET /issues` (#113) is part of the credential-free read plane: it
   exposes only the public repo-level issue metadata the gh poller already
   fetches (number, state, title, labels, url) and no per-agent
   transcript/tail content. Same network rule as `/snapshot`/`/events`:
-  serve it only on loopback or a private/tailnet interface. Creating a
-  worktree from an issue is a WRITE and separately requires the
-  `start_worktree` drive grant — this GET never mutates GitHub.
+  serve it only on loopback or a private/tailnet interface. This GET never
+  mutates GitHub (the `start_worktree` drive that consumed it was removed
+  in #354).
 - Grant/replace the whole set (verified):
 
 ```sh
 ADMIN=$(cat <config-dir>/admin-token)
 curl -s -X POST http://127.0.0.1:8474/grants \
-  -H 'Content-Type: application/json' -H "Authorization: Bearer $ADMIN" \
-  -d '{"action":"set_grants","key_id":"dev_...","grants":["prompt","read_tail"]}'
+  -H 'Content-Type: application/json' -H "Authorization: Bearer ***" \
+  -d '{"action":"set_grants","key_id":"dev_...","grants":["read_tail","read_diff"]}'
 # → {"key_id":"dev_...","ok":true}
 ```
 
@@ -329,7 +319,7 @@ curl -s -X POST http://127.0.0.1:8474/grants \
 ```sh
 curl -s -H "Authorization: Bearer $ADMIN" \
   'http://127.0.0.1:8474/grants?key_id=dev_...'
-# → {"ok":true,"devices":[{"key_id":"dev_...","grants":["prompt","read_tail"],"revoked":false,...}]}
+# → {"ok":true,"devices":[{"key_id":"dev_...","grants":["read_tail","read_diff"],"revoked":false,...}]}
 ```
 
 The desktop **Settings → Device grants** editor uses that read surface for
@@ -361,12 +351,11 @@ curl -s -X POST http://127.0.0.1:8474/grants \
 curl -s -X POST http://127.0.0.1:8474/grants-read \
   -H 'Content-Type: application/json' \
   -d '{"key_id":"dev_...","signature":"<sig-b64>","request":{"key_id":"dev_...","request":"grants-read","ts":1780000000}}'
-# → {"ok":true,"key_id":"dev_...","grants":["read_tail","prompt","interrupt","approve"],"expiry_ts":...,"revoked":false}
+# → {"ok":true,"key_id":"dev_...","grants":["read_tail","read_diff"],"expiry_ts":...,"revoked":false}
 ```
 
-Revocation takes effect on the next write — every drive is verified per
-request, there are no long-lived sessions to cut short. A revoked/expired
-key cannot mint step-up tokens either.
+Revocation takes effect on the next drive — every drive is verified per
+request, there are no long-lived sessions to cut short.
 
 ### Rotation
 
@@ -406,8 +395,8 @@ curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
 # {"entries":[...],"head":"<sha256>","valid":true,...}
 ```
 
-- Grows on **drive writes** (executions and typed refusals at dispatch).
-  Authentication failures and step-up failures are never appended.
+- Grows on **drive dispatches** (executions and typed refusals at
+  dispatch). Authentication failures are never appended.
 - `valid` is the live chain-integrity verdict: any tampered or inserted
   line breaks the chain. Known limit: a wholesale truncation of trailing
   entries is not detectable without an external anchor (a W4 follow-up).
@@ -607,50 +596,20 @@ covers a `git worktree add` that registers just after the first scan. This is
 the intentional freshness tradeoff: topology is reconciled before probing,
 while scans never overlap and the event stream is not reset.
 
-## Issue-linked worktrees (#113, slice 1)
+## Repo-level issues view (`GET /issues`, #113)
 
-The desktop UI's Issues tab renders the daemon's read-only
-`GET /issues` view — keyed by repo, scoped to the current Herdr-owned
-workspace repositories (#332) — and can start an issue-linked worktree from
-a selected open issue. The gh poller's specs rebuild from those same live
-workspaces, and topology changes prune stale categories, so every visible
-category is current; the worktree action targets that category key, which
-the daemon re-validates against its live workspace set and cached issues.
-An Issues refresh re-reads this last-known projection — there is no
-fleet-identity fetch to retry.
-The action is gated by confirmation in the UI and the `start_worktree` grant
-on the host:
+The desktop Issues tab renders the daemon's read-only `GET /issues` view —
+keyed by repo, scoped to the current Herdr-owned workspace repositories
+(#332). The gh poller's specs rebuild from those same live workspaces, and
+topology changes prune stale categories, so every visible category is
+current. An Issues refresh re-reads this last-known projection — there is
+no fleet-identity fetch to retry.
 
-- **Issue-linked**: from a selected, open issue. The daemon validates the
-  issue against the SAME fetched set the browser renders, creates exactly one
-  branch/worktree under `<home>/.herdr/worktrees/<repo>`, and
-  carries the issue number in the branch (`issue-<N>-…`). A closed or missing
-  issue is a typed refusal (`issue_closed` / `issue_not_found`) — it never
-  falls through to another action. The current top-level Issues surface does
-  not expose an issue-free worktree control; the daemon's separate free-mode
-  protocol remains available to other explicitly authorized callers.
-
-The git step and the herdr handoff are injectable seams
-(`src/fleet/worktree.rs`). Slice-1 keeps the handoff typed but deferred:
-the worktree/branch is created, the launcher reports `deferred`, and the
-agent-spawn RPC is a later slice. Duplicate taps/retries are idempotent on
-`request_id` — a second request returns `already_started`, never a second
-worktree. `error_kind`s: `unknown_fleet`, `issue_not_found`, `issue_closed`,
-`already_started`, `invalid_name`, `git_failure`, `launch_failure`.
-
-To make the desktop browser able to start worktrees, grant the device the
-capability (read-only default denies it):
-
-```sh
-scripts/corrald-grant.sh --key <key_id> --caps start_worktree
-```
-
-The start-worktree slice is repo-native: the request's `repo` category is
-accepted only when it is a live Herdr workspace repo or a cached issue
-category, and the daemon derives the checkout and worktree facts itself —
-no fleet-ops CLI catalog or identity fetch participates (the superseded #35
-registry surface is documented in `docs/corral/G35-registry.md`). READ-ONLY
-GitHub access is unchanged — this slice never issues a GitHub write.
+Since the #354 read-only cut the view is display-only end to end: the
+`start_worktree` drive (the only consumer of a selected issue) and its
+grant were removed from the daemon along with the other mutating
+capabilities, so `GET /issues` never starts or mutates anything. The
+worktree-starting UI is retired with the client cuts (L2/L3).
 
 ## Security model summary
 
@@ -658,16 +617,16 @@ GitHub access is unchanged — this slice never issues a GitHub write.
   100.64/10, and IPv6 unique-local permitted — #65); `corrald` exits
   if asked to bind a public/routable address.
 - Three credentials, never one: registration token (routing only),
-  per-device Ed25519 keypair (authenticates writes; host identity is
+  per-device Ed25519 keypair (authenticates signed reads; host identity is
   X25519), per-capability grants (read-only default, promoted on host).
-- Claim-based approvals: replies echo `approval_id` + exact
-  `prompt_hash` of the live prompt; mismatch is refused (409
-  `hash_mismatch`) before dispatch — kills the approve-the-wrong-question
-  race.
-- Biometric step-up for destructive payloads (`rm -rf`, `push --force`,
-  `curl | sh`, `~/.aws`, `~/.ssh`, `.env`): 5-minute single-use token via
-  `POST /step-up`, presented as `X-Step-Up-Token`. Deterrent layer, not
-  a security boundary — pattern detection is deliberately conservative.
+  With the #354 cut only the two read capabilities exist, so every
+  authenticated drive is a read; mutating names are refused at the
+  capability boundary before the authorizer.
+- Waiting-agent state (`waiting_on` with `approval_id`/`prompt_hash`) is
+  READ state: the daemon records the blocked question from herdr's output
+  and serves it in the snapshot/SSE stream so clients can display it. The
+  daemon no longer accepts an approve reply — answering a waiting agent is
+  a host-side action outside corrald.
 - Default deny, no auto-approve; secrets redacted at the adapter
   boundary before leaving the machine; key material `0600`/`0700`;
   release binary exposes no secret accessors.
@@ -679,8 +638,8 @@ GitHub access is unchanged — this slice never issues a GitHub write.
 | `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
-| Recent output / prompt / interrupt / Kill / Attach / approve controls missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt,interrupt,approve`; add `kill,attach` explicitly for those two controls. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
-| Recent output / prompt / interrupt / Kill / Attach / approve controls still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the controls still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
+| Recent output / diff rows missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail` (add `read_diff` for the diff page). Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| Recent output / diff rows still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the rows still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
 | `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
@@ -688,10 +647,8 @@ GitHub access is unchanged — this slice never issues a GitHub write.
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |
 | Daemon log storms: repeated `events.subscribe` `REQUEST_TIMEOUT` + re-bootstrap, fd count climbing | herdr replays pane state BEFORE answering `subscribe`; the reader never blocks on event delivery. A full bounded channel is a deterministic resynchronization signal: the reader drains the pending subscribe response, retires the stream, then a successfully subscribed global stream re-bootstraps only after the shared capped outage backoff. Accepted-then-closed global streams use that same ladder, so repeated closes cannot reset to an immediate resubscribe; the ladder resets only after a meaningful stable interval. Connect/subscribe failures use capped exponential backoff (30s maximum) and emit one WARN per outage; each pane retry task owns its live forwarder, cancels it on removal/replacement, and remains active until herdr recovers. A dropped client aborts the reader so no descriptor is leaked (#105/#117) |
 | UI can't connect | client defaults to `http://127.0.0.1:8474`; check the daemon port and that the client config (`$CORRAL_UI_CONFIG_DIR/config.json`) points at the right host |
-| UI drive buttons do nothing / `not_granted` | device has no grant for that capability — promote on the host via `POST /grants` (or Settings → Device grants) |
-| `409 hash_mismatch` on approve | the client's `prompt_hash` does not match the current prompt. Hash the exact untrimmed, redacted prompt string from the snapshot's `waiting_on.prompt` byte-for-byte — never raw pane text |
-| `409 stale_approval` | approval_id refers to an earlier prompt the agent already moved past — fetch the live claim again |
-| `403 step_up_required` | destructive payload needs a fresh `POST /step-up` token (single-use, 5 min) in `X-Step-Up-Token` |
+| UI read rows do nothing / `not_granted` | device has no grant for that capability — promote on the host via `POST /grants` (or Settings → Device grants) |
+| `400 unknown_capability` on a signed drive | the drive names a capability the daemon removed in the #354 cut (`prompt`, `interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) — only `read_tail` and `read_diff` exist |
 | macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
 | repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |
 | `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots); the first failure is WARNed once, retries back off (10s → 60s → 5m), present sources retain their last-known worktrees/topology during a transient Git failure, and immediate `~/Projects` checkouts are refreshed by the 15-minute rediscovery pass |

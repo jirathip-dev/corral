@@ -519,6 +519,13 @@ private struct AgentDetailContent: View {
                 (model.hostURL != nil && model.keyId != nil && model.signer != nil))
     }
 
+    private var terminalClient: TerminalAttachClient? {
+        guard let signer = model.signer,
+              let keyId = model.keyId,
+              let host = model.hostURL else { return nil }
+        return TerminalAttachClient(host: host, keyId: keyId, signer: signer)
+    }
+
     private var terminalWorktree: CorralWorktree? {
         guard agent.capabilities.contains(Capability.attach.rawValue),
               let path = agent.workspace.worktreePath, !path.isEmpty,
@@ -639,17 +646,7 @@ private struct AgentDetailContent: View {
             AgentDiffSheet(agent: agent, model: model)
         }
         .sheet(isPresented: $terminalPresented) {
-            if let worktree = terminalWorktree,
-               let signer = model.signer,
-               let keyId = model.keyId,
-               let host = model.hostURL {
-                TerminalAttachView(
-                    client: TerminalAttachClient(host: host, keyId: keyId, signer: signer),
-                    worktree: worktree)
-            } else {
-                Text("Terminal unavailable")
-                    .padding()
-            }
+            TerminalAttachView(client: terminalClient, worktree: terminalWorktree)
         }
         .sheet(isPresented: $devicesGrantsPresented) {
             DevicesGrantsView(model: model)
@@ -1067,6 +1064,11 @@ enum RecentOutputLayout {
     /// activity, and the pinned composer below always stay reachable — the
     /// stacked mirror of the egui narrow-layout bound.
     static let conversationViewportHeight: CGFloat = 320
+    /// #329: the expanded Harness payload's own vertical scroll owner. The
+    /// bounded viewport keeps the payload inside the Recent-output panel and
+    /// above the pinned composer, and the DisclosureGroup label (the
+    /// collapse control) stays reachable outside the inner scroll.
+    static let harnessViewportHeight: CGFloat = 280
 }
 
 enum RecentOutputPalette {
@@ -1123,7 +1125,17 @@ private struct RecentOutputView: View {
     @State private var paginationAnchor: String?
     /// #316 V3: Harness activity is collapsed by default; its content stays
     /// outside the conversation viewport whether expanded or not.
-    @State private var harnessExpanded = false
+    /// #329 evidence: the DEBUG-only launch arg pre-expands it for simulator
+    /// capture (simctl cannot inject the tap); production always collapses.
+    @State private var harnessExpanded = RecentOutputView.demoHarnessExpandedDefault
+
+    private static var demoHarnessExpandedDefault: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(CorralDemoLaunch.harnessExpandedArgument)
+#else
+        false
+#endif
+    }
 
     private var driveClient: DriveClient {
         model.makeDriveClient()
@@ -1324,13 +1336,27 @@ private struct RecentOutputView: View {
                             .foregroundStyle(RecentOutputPalette.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityLabel("Conversation")
-                        ForEach(Array(identifiedConversationRows(sections).enumerated()), id: \.element.id) {
-                            index, identified in
-                            RecentOutputRowView(
-                                row: identified.row,
-                                model: model,
-                                agent: agent,
-                                previousBlock: previousBlock(in: sections.conversation, at: index))
+                        if sections.hasNoAttributedConversation {
+                            // #330 AC5: a window with fetched content but no
+                            // attributed conversation events shows an explicit
+                            // honest empty state — never an unexplained blank
+                            // region — while Harness activity stays reachable
+                            // below (outside this scroll).
+                            Text(RecentOutputRender.noAttributedConversationMessage)
+                                .font(.caption)
+                                .foregroundStyle(RecentOutputPalette.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
+                                .accessibilityLabel(RecentOutputRender.noAttributedConversationMessage)
+                        } else {
+                            ForEach(Array(identifiedConversationRows(sections).enumerated()), id: \.element.id) {
+                                index, identified in
+                                RecentOutputRowView(
+                                    row: identified.row,
+                                    model: model,
+                                    agent: agent,
+                                    previousBlock: previousBlock(in: sections.conversation, at: index))
+                            }
                         }
                         Color.clear
                             .frame(height: 1)
@@ -1371,31 +1397,54 @@ private struct RecentOutputView: View {
     /// #316 V3 "Harness activity": canonical System/Unknown blocks, outside
     /// the conversation viewport, collapsible, order preserved, content
     /// complete (Diagnostic / Unknown activity identity), never dropped.
+    /// #328: divider-only blocks are presentation separators — rendered as
+    /// thin rules through the shared seam, never Diagnostic cards, and never
+    /// counted toward the `outside conversation` label; a divider-only
+    /// payload hides the section entirely.
+    /// #329: the expanded payload owns a bounded vertical scroll, so a
+    /// multi-screen Diagnostic/Unknown payload stays inside the panel, above
+    /// the pinned composer, and the collapse control stays reachable.
     @ViewBuilder
     private func harnessActivity(sections: RecentOutputSections) -> some View {
-        if !sections.harness.isEmpty {
+        let eventCount = sections.harnessEventCount
+        // #328 AC2: a divider-only payload has no events — the section is
+        // hidden rather than showing dash-only cards.
+        if eventCount > 0 {
             VStack(alignment: .leading, spacing: 0) {
                 DisclosureGroup(isExpanded: $harnessExpanded) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(RecentOutputModel.identifiedRows(
-                            for: sections.harness.map(RecentOutputRow.block))
-                            .enumerated()), id: \.element.id) { index, identified in
-                            if case .block(let block) = identified.row {
-                                RecentBlockRow(
-                                    block: block,
-                                    showSpeaker: true,
-                                    showTimestamp: true)
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(RecentOutputModel.identifiedRows(
+                                for: sections.harness.map(RecentOutputRow.block))
+                                .enumerated()), id: \.element.id) { index, identified in
+                                if case .block(let block) = identified.row {
+                                    if RecentOutputRender.isDividerBlock(block) {
+                                        // #328: presentation separator — a
+                                        // thin rule, never a card, never an
+                                        // event.
+                                        Divider()
+                                            .overlay(RecentOutputPalette.line)
+                                            .padding(.vertical, 2)
+                                            .accessibilityHidden(true)
+                                    } else {
+                                        RecentBlockRow(
+                                            block: block,
+                                            showSpeaker: true,
+                                            showTimestamp: true)
+                                    }
+                                }
                             }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .frame(maxHeight: RecentOutputLayout.harnessViewportHeight)
                 } label: {
-                    Text("Harness activity · \(sections.harness.count) outside conversation")
+                    Text("Harness activity · \(eventCount) outside conversation")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(RecentOutputPalette.muted)
                 }
-                .accessibilityLabel("Harness activity · \(sections.harness.count) outside conversation")
+                .accessibilityLabel("Harness activity · \(eventCount) outside conversation")
             }
         }
     }
@@ -1564,9 +1613,10 @@ private struct RecentOutputRowView: View {
     var body: some View {
         switch row {
         case .block(let block):
-            if RecentOutputRender.isDividerRun(block.text) {
+            if RecentOutputRender.isDividerBlock(block) {
                 // #253 fallback: residual TUI furniture renders as a real
-                // divider (a thin rule), not as dash-run text.
+                // divider (a thin rule), not as dash-run text. #328: this is
+                // the SAME seam the Harness path consults.
                 Divider()
                     .overlay(RecentOutputPalette.line)
                     .padding(.vertical, 2)
@@ -3035,11 +3085,17 @@ struct AgentDiffSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        model.cancelReadDiff(agentId: agent.agentId)
+                        dismiss()
+                    }
                 }
             }
         }
         .presentationDetents([.large])
+        .onDisappear {
+            model.cancelReadDiff(agentId: agent.agentId)
+        }
     }
 
     @ViewBuilder
@@ -3081,10 +3137,18 @@ struct AgentDiffSheet: View {
             }
             Section("Diff") {
                 if let error = pane.error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .accessibilityLabel("Diff failed: \(error)")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(diffErrorText(error: error, kind: pane.errorKind,
+                                           status: pane.errorStatus))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Diff failed: \(error)")
+                        Button("Retry") {
+                            model.driveReadDiff(agent: agent,
+                                                driveClient: model.makeDriveClient())
+                        }
+                        .font(.footnote.weight(.semibold))
+                    }
                 }
                 if pane.lines.isEmpty && pane.error == nil {
                     Text("No changes in this worktree.")
@@ -3124,6 +3188,13 @@ struct AgentDiffSheet: View {
         "+\(stats.adds)/−\(stats.dels) · \(stats.files) files"
     }
 
+    private func diffErrorText(error: String, kind: String?, status: Int?) -> String {
+        var text = kind.map { "\($0): " } ?? ""
+        text += error
+        if let status { text += " (HTTP \(status))" }
+        return text
+    }
+
     private func diffColor(_ line: String) -> Color {
         if line.hasPrefix("+") {
             return .green
@@ -3142,7 +3213,7 @@ private extension DiffPane {
     /// failure) should render immediately instead of refetching on every
     /// appear.
     var hasLoadedContent: Bool {
-        !lines.isEmpty || !files.isEmpty || error != nil
+        hasLoaded || !lines.isEmpty || !files.isEmpty || error != nil
     }
 }
 

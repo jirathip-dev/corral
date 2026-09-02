@@ -4710,7 +4710,12 @@ final class GrantAdminToggleRevertTests: XCTestCase {
         DeviceKeyStore.clearAdminToken()
         XCTAssertNil(DeviceKeyStore.adminToken(),
                      "#332 R4: grant fixtures must start without stored admin credentials")
+        GrantAdminStubURLProtocol.requests = [
+            URLRequest(url: URL(fileURLWithPath: "/r6-fixture-sentinel"))
+        ]
         GrantAdminStubURLProtocol.reset()
+        XCTAssertTrue(GrantAdminStubURLProtocol.recordedRequests().isEmpty,
+                      "#332 R6: grant fixtures must start without recorded requests")
     }
 
     override func tearDown() {

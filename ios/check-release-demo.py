@@ -99,7 +99,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # app source manifest so a test-source mutation cannot be green-on-green.
     # R6: integration's #319/#320 FleetNotifierTests changes are included;
     # the pin follows the merged focused grant test source.
-    "db2d73a0656b6d6dc71231d82191dd3b81782285c7fc7884367167ef8ae36ca3"
+    "6b4bc2095b1a397fac656d0bae4cc83a86544c5891a71dc5758261b292834b8b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

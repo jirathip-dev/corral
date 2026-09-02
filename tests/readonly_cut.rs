@@ -43,12 +43,17 @@ use tower::ServiceExt;
 #[derive(Debug, Default)]
 struct ProbeAdapter {
     dispatches: AtomicUsize,
+    read_tail_calls: AtomicUsize,
     tail: Mutex<Vec<String>>,
 }
 
 impl ProbeAdapter {
     fn dispatch_count(&self) -> usize {
         self.dispatches.load(Ordering::SeqCst)
+    }
+
+    fn read_tail_count(&self) -> usize {
+        self.read_tail_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -79,6 +84,7 @@ impl Adapter for ProbeAdapter {
         _agent_id: &'a str,
         _lines: u32,
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
+        self.read_tail_calls.fetch_add(1, Ordering::SeqCst);
         let tail = self.tail.lock().unwrap().clone();
         Box::pin(async move { Ok(tail) })
     }
@@ -92,7 +98,6 @@ struct Harness {
     adapter: Arc<ProbeAdapter>,
     auth: Arc<AuthPlane>,
     signing: SigningKey,
-    pubkey: [u8; 32],
     app: Router,
     _dir: tempfile::TempDir,
 }
@@ -106,14 +111,27 @@ fn harness() -> Harness {
     let auth = Arc::new(AuthPlane::load_or_create(dir.path().to_path_buf()).expect("auth plane"));
     let (signing, pubkey) = test_support::keypair();
     let token = auth.registry.registration_token();
-    // Register the harness device once; grant EVERY remaining capability so
-    // the RIP probe can prove refusal happens even for a fully granted key.
+    // Register the harness device once; grant every legacy capability so the
+    // pre-cut daemon reaches dispatch instead of stopping at authorization.
     let rec = auth
         .registry
         .register(&token, pubkey, std::time::Duration::from_secs(3600))
         .expect("register");
     auth.registry
-        .set_grants(&rec.key_id, vec![Capability::ReadTail, Capability::ReadDiff])
+        .set_grants(
+            &rec.key_id,
+            vec![
+                Capability::Prompt,
+                Capability::Interrupt,
+                Capability::Approve,
+                Capability::ReadTail,
+                Capability::Kill,
+                Capability::Attach,
+                Capability::StartWorktree,
+                Capability::ReadDiff,
+                Capability::ReadIssues,
+            ],
+        )
         .expect("read grants");
     let app = router(AppState {
         store,
@@ -128,7 +146,6 @@ fn harness() -> Harness {
         adapter,
         auth,
         signing,
-        pubkey,
         app,
         _dir: dir,
     }
@@ -287,7 +304,11 @@ async fn signed_read_tail_still_dispatches_after_the_cut() {
         json!(["hello", "world"]),
         "read_tail must serve the bounded tail"
     );
-    assert_eq!(h.adapter.dispatch_count(), 1, "read_tail dispatches exactly once");
+    assert_eq!(
+        h.adapter.read_tail_count(),
+        1,
+        "read_tail dispatches exactly once"
+    );
 }
 
 #[tokio::test]

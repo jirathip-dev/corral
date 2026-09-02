@@ -35,6 +35,9 @@ fi
 
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 LOG="$CONFIG_DIR/corral-update.log"
+MACOS_APP_DEST="${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
+LINUX_PREFIX="${CORRAL_LINUX_PREFIX:-$HOME/.local}"
+OTHER_PREFIX="${CORRAL_OTHER_PREFIX:-$HOME/.local}"
 mkdir -p "$CONFIG_DIR"
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z')  $*" >> "$LOG"; }
@@ -63,6 +66,14 @@ file_hash() {  # sha256 of a file; empty when missing/unreadable
   else
     echo ""
   fi
+}
+
+ui_deploy_path() {
+  case "$(uname -s)" in
+    Darwin) printf '%s/Contents/MacOS/corrald-ui' "$MACOS_APP_DEST" ;;
+    Linux) printf '%s/bin/corrald-ui' "$LINUX_PREFIX" ;;
+    *) printf '%s/bin/corrald-ui' "$OTHER_PREFIX" ;;
+  esac
 }
 
 # --- Resolve source checkout and fetch the build revision ---------------------
@@ -105,8 +116,9 @@ fi
 BIN_DIR="$SOURCE_CHECKOUT/target/release"
 DAEMON_BIN="$BIN_DIR/corrald"
 UI_BIN="$BIN_DIR/corrald-ui"
+UI_DEPLOY_PATH="$(ui_deploy_path)"
 daemon_before_hash="$(file_hash "$REPO_DIR/target/release/corrald")"
-ui_before_hash="$(file_hash "$REPO_DIR/target/release/corrald-ui")"
+ui_before_hash="$(file_hash "$UI_DEPLOY_PATH")"
 
 log "building origin/main in isolated checkout..."
 (cd "$SOURCE_CHECKOUT" && CORRAL_BUILD_ID="$after" cargo build --release) 2>>"$LOG" || {
@@ -123,43 +135,38 @@ reinstall_ui() {
   local UI_BIN="$BIN_DIR/corrald-ui"
   case "$(uname -s)" in
     Darwin)
-      local APP="/Applications/Corral.app"
-      if [[ -d "$APP" ]]; then
-        cp "$UI_BIN" "$APP/Contents/MacOS/corrald-ui"
-        codesign -s - --force "$APP" 2>/dev/null || true
-        if pgrep -f "$APP/Contents/MacOS/corrald-ui" >/dev/null 2>&1; then
-          pkill -f "$APP/Contents/MacOS/corrald-ui" 2>/dev/null || true
+      if [[ -d "$MACOS_APP_DEST" ]]; then
+        mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
+        cp "$UI_BIN" "$UI_DEPLOY_PATH"
+        codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+        if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
+          pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
           sleep 1
-          nohup "$APP/Contents/MacOS/corrald-ui" >/dev/null 2>&1 &
+          nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
           log "Corral.app relaunched (new binary)"
         else
           log "Corral.app not running — next launch uses the new binary"
         fi
-        return 0
+      else
+        log "Corral.app not installed — skipped UI update (run scripts/install-corral-ui.sh)"
       fi
+      return 0
       ;;
-    Linux)
-      mkdir -p "$HOME/.local/bin"
-      cp "$UI_BIN" "$HOME/.local/bin/corrald-ui"
-      chmod +x "$HOME/.local/bin/corrald-ui"
-      if pgrep -f "$HOME/.local/bin/corrald-ui" >/dev/null 2>&1; then
-        pkill -f "$HOME/.local/bin/corrald-ui" 2>/dev/null || true
+    Linux|*)
+      mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
+      cp "$UI_BIN" "$UI_DEPLOY_PATH"
+      chmod +x "$UI_DEPLOY_PATH"
+      if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
+        pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
         sleep 1
-        nohup "$HOME/.local/bin/corrald-ui" >/dev/null 2>&1 &
+        nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
         log "corrald-ui relaunched (new binary)"
+      else
+        log "corrald-ui not running — next launch uses the new binary"
       fi
       return 0
       ;;
   esac
-  # Fallback: raw binary (works everywhere)
-  if pgrep -f "$UI_BIN" >/dev/null 2>&1; then
-    pkill -f "$UI_BIN" 2>/dev/null || true
-    sleep 1
-    nohup "$UI_BIN" >/dev/null 2>&1 &
-    log "egui client relaunched (new binary)"
-  else
-    log "egui client not running — next launch uses the new binary"
-  fi
 }
 
 # --- Deploy to the path launchd actually executes --------------------------

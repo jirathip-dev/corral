@@ -24,12 +24,24 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- Stubs -------------------------------------------------------------------
-mkdir -p "$WORK/bin" "$WORK/repo/target/release" "$WORK/home" "$WORK/deploy"
+mkdir -p "$WORK/bin" "$WORK/repo/target/release" "$WORK/home" "$WORK/deploy" \
+  "$WORK/ui-app/Corral.app/Contents/MacOS" "$WORK/ui-linux/bin" "$WORK/ui-other/bin"
 REPO="$WORK/repo"
 REPO_PHYSICAL="$(cd -P "$REPO" && pwd -P)"
 BUILT="$REPO/target/release/corrald"
+UI_BUILT="$REPO/target/release/corrald-ui"
+UI_APP="$WORK/ui-app/Corral.app"
+UI_LINUX_PREFIX="$WORK/ui-linux"
+UI_OTHER_PREFIX="$WORK/ui-other"
+case "$(uname -s)" in
+  Darwin) UI_DEPLOY="$UI_APP/Contents/MacOS/corrald-ui" ;;
+  Linux) UI_DEPLOY="$UI_LINUX_PREFIX/bin/corrald-ui" ;;
+  *) UI_DEPLOY="$UI_OTHER_PREFIX/bin/corrald-ui" ;;
+esac
 DEPLOY1="$WORK/deploy/corrald"
 DEPLOY2="$WORK/deploy2/corrald"
+printf 'ui-built' > "$UI_BUILT"
+printf 'ui-installed-old' > "$UI_DEPLOY"
 
 # git stub: script invokes `git -C <dir> ...` and plain `git ...`.
 cat > "$WORK/bin/git" <<'STUB'
@@ -112,6 +124,9 @@ run_scenario() {
     GIT_STUB_TOPLEVEL="$REPO_PHYSICAL" GIT_STUB_BEFORE="1111111" \
     GIT_STUB_ARCHIVE_ROOT="$REPO" \
     LAUNCHCTL_KICKSTART_LOG="$kicks" \
+    CORRAL_MACOS_APP_DEST="$UI_APP" \
+    CORRAL_LINUX_PREFIX="$UI_LINUX_PREFIX" \
+    CORRAL_OTHER_PREFIX="$UI_OTHER_PREFIX" \
     "${env_args[@]}" \
     bash "$SCRIPT_DIR/update-corral.sh"
   SCEN_LOG="$log"
@@ -224,6 +239,9 @@ env CORRAL_REPO_DIR="$REPO" CORRAL_CONFIG_DIR="$WORK/cfg-s6" \
   GIT_STUB_LOG="1111111 fix" \
   LAUNCHCTL_PRINT_OK="0" \
   LAUNCHCTL_KICKSTART_LOG="$WORK/cfg-s6/kickstarts" \
+  CORRAL_MACOS_APP_DEST="$UI_APP" \
+  CORRAL_LINUX_PREFIX="$UI_LINUX_PREFIX" \
+  CORRAL_OTHER_PREFIX="$UI_OTHER_PREFIX" \
   bash "$SCRIPT_DIR/update-corral.sh"
 SCEN_LOG="$WORK/cfg-s6/corral-update.log"
 SCEN_KICKS="$WORK/cfg-s6/kickstarts"

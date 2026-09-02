@@ -9,8 +9,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+UPDATER_SCRIPT="${CORRAL_TEST_UPDATER_SCRIPT:-$SCRIPT_DIR/update-corral.sh}"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/corral-327.XXXXXX")"
+CORRAL_TEST_TMP_ROOT="${TMPDIR:-/tmp}"
+CORRAL_TEST_TMP_ROOT="${CORRAL_TEST_TMP_ROOT%/}"
+export CORRAL_TEST_SANDBOX_ROOT="$WORK" CORRAL_TEST_TMP_ROOT
 cleanup() { [[ "${KEEP_WORK:-}" == 1 ]] || rm -rf -- "$WORK"; }
 trap cleanup EXIT
 
@@ -68,18 +72,107 @@ case "${1:-}" in
   *) exit 0 ;;
 esac
 STUB
-chmod +x "$WORK/bin/cargo" "$WORK/bin/launchctl"
+REAL_CP="$(command -v cp)"
+REAL_SLEEP="$(command -v sleep)"
+cat > "$WORK/bin/cp" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+destination="${@: -1}"
+case "$destination" in
+  /*) destination_path="$destination" ;;
+  *) destination_path="$PWD/$destination" ;;
+esac
+case "$destination_path" in
+  "${CORRAL_TEST_SANDBOX_ROOT:?}"/*|"${CORRAL_TEST_TMP_ROOT:?}/corral-update-source."*/*) ;;
+  *)
+    printf 'refusing non-sandbox copy destination: %s\n' "$destination_path" >&2
+    exit 97
+    ;;
+esac
+if [[ -n "${CORRAL_TEST_UI_PATHS:-}" ]]; then
+  printf 'cp:%s\n' "$destination_path" >> "$CORRAL_TEST_UI_PATHS"
+fi
+if [[ "$destination_path" == "${CORRAL_TEST_UI_DEST:-}" ]]; then
+  printf 'copy\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+fi
+exec "${CORRAL_TEST_REAL_CP:?}" "$@"
+STUB
+cat > "$WORK/bin/codesign" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'codesign:%s\n' "${@: -1}" >> "${CORRAL_TEST_UI_PATHS:?}"
+printf 'codesign\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+STUB
+cat > "$WORK/bin/pgrep" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-f" && "${2:-}" == "${CORRAL_TEST_UI_DEST:?}" && -f "${CORRAL_TEST_CLIENT_ALIVE:?}" ]]; then
+  exit 0
+fi
+exit 1
+STUB
+cat > "$WORK/bin/pkill" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'kill:%s\n' "${2:-}" >> "${CORRAL_TEST_UI_PATHS:?}"
+printf 'kill\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+STUB
+cat > "$WORK/bin/nohup" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'relaunch:%s\n' "${1:-}" >> "${CORRAL_TEST_UI_PATHS:?}"
+printf 'relaunch\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+touch "${CORRAL_TEST_CLIENT_ALIVE:?}"
+STUB
+cat > "$WORK/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$WORK/bin/cargo" "$WORK/bin/launchctl" "$WORK/bin/cp" \
+  "$WORK/bin/codesign" "$WORK/bin/pgrep" "$WORK/bin/pkill" "$WORK/bin/nohup" \
+  "$WORK/bin/sleep"
 
-mkdir -p "$WORK/update-config"
-mkdir -p "$WORK/installed"
-CARGO_PWD_FILE="$WORK/cargo.pwd" \
-LAUNCHCTL_PROGRAM="$WORK/installed/corrald" \
-LAUNCHCTL_KICKS="$WORK/kickstarts" \
-CORRAL_REPO_DIR="$WORK/primary" \
-CORRAL_CONFIG_DIR="$WORK/update-config" \
-HOME="$WORK/home" \
-PATH="$WORK/bin:$PATH" \
-bash "$SCRIPT_DIR/update-corral.sh"
+mkdir -p "$WORK/update-config" "$WORK/installed" \
+  "$WORK/app/Corral.app/Contents/MacOS" "$WORK/linux/bin" "$WORK/other/bin"
+TEST_PLATFORM="$(uname -s)"
+case "$TEST_PLATFORM" in
+  Darwin)
+    TEST_UI_DEST="$WORK/app/Corral.app/Contents/MacOS/corrald-ui"
+    expected_ui_events=4
+    ;;
+  Linux)
+    TEST_UI_DEST="$WORK/linux/bin/corrald-ui"
+    expected_ui_events=3
+    ;;
+  *)
+    TEST_UI_DEST="$WORK/other/bin/corrald-ui"
+    expected_ui_events=3
+    ;;
+esac
+printf 'old-ui\n' > "$TEST_UI_DEST"
+: > "$WORK/ui-events"
+: > "$WORK/ui-paths"
+touch "$WORK/client-alive"
+run_update_cycle() {
+  CARGO_PWD_FILE="$WORK/cargo.pwd" \
+  LAUNCHCTL_PROGRAM="$WORK/installed/corrald" \
+  LAUNCHCTL_KICKS="$WORK/kickstarts" \
+  CORRAL_MACOS_APP_DEST="$WORK/app/Corral.app" \
+  CORRAL_LINUX_PREFIX="$WORK/linux" \
+  CORRAL_OTHER_PREFIX="$WORK/other" \
+  CORRAL_TEST_UI_DEST="$TEST_UI_DEST" \
+  CORRAL_TEST_UI_EVENTS="$WORK/ui-events" \
+  CORRAL_TEST_UI_PATHS="$WORK/ui-paths" \
+  CORRAL_TEST_CLIENT_ALIVE="$WORK/client-alive" \
+  CORRAL_TEST_REAL_CP="$REAL_CP" \
+  CORRAL_REPO_DIR="$WORK/primary" \
+  CORRAL_CONFIG_DIR="$WORK/update-config" \
+  HOME="$WORK/home" \
+  PATH="$WORK/bin:$PATH" \
+  bash "$UPDATER_SCRIPT"
+  "$REAL_SLEEP" 1
+}
+run_update_cycle
 
 update_log="$WORK/update-config/corral-update.log"
 [[ -f "$update_log" ]] || fail "updater did not create a log"
@@ -89,6 +182,39 @@ grep -Fq 'building origin/main' "$update_log" \
   || fail "updater did not record the isolated origin/main build"
 [[ "$(cat "$WORK/installed/corrald")" == "new-host" ]] \
   || fail "new origin/main artifact was not installed"
+[[ "$(cat "$TEST_UI_DEST")" == "new-host" ]] \
+  || fail "changed UI artifact was not installed at the disposable destination"
+[[ "$(wc -l < "$WORK/ui-events" | tr -d ' ')" == "$expected_ui_events" ]] \
+  || fail "first changed cycle did not install and relaunch the UI exactly once"
+grep -Fqx 'copy' "$WORK/ui-events" \
+  || fail "first UI copy did not run"
+grep -Fqx 'kill' "$WORK/ui-events" \
+  || fail "first UI relaunch did not stop the running client"
+grep -Fqx 'relaunch' "$WORK/ui-events" \
+  || fail "first UI change did not relaunch the running client"
+if [[ "$expected_ui_events" == 4 ]]; then
+  grep -Fqx 'codesign' "$WORK/ui-events" \
+    || fail "first macOS UI change did not re-sign the app"
+fi
+grep -Fqx "cp:$TEST_UI_DEST" "$WORK/ui-paths" \
+  || fail "first UI copy did not target the disposable destination"
+! grep -Fq '/Applications/Corral.app' "$WORK/ui-paths" \
+  || fail "updater touched the live macOS app destination"
+! grep -Fq "$WORK/home/.local" "$WORK/ui-paths" \
+  || fail "updater touched the live Linux/other destination"
+[[ "$(wc -l < "$WORK/kickstarts" | tr -d ' ')" == 1 ]] \
+  || fail "updated daemon was not restarted exactly once"
+ui_events_after_first="$(wc -l < "$WORK/ui-events" | tr -d ' ')"
+run_update_cycle
+[[ "$(wc -l < "$WORK/ui-events" | tr -d ' ')" == "$ui_events_after_first" ]] \
+  || fail "identical second cycle rewrote or relaunched the app"
+run_update_cycle
+[[ "$(wc -l < "$WORK/ui-events" | tr -d ' ')" == "$ui_events_after_first" ]] \
+  || fail "identical third cycle rewrote or relaunched the app"
+[[ -f "$WORK/client-alive" ]] \
+  || fail "running client did not remain alive through identical cycles"
+[[ "$(wc -l < "$WORK/kickstarts" | tr -d ' ')" == 1 ]] \
+  || fail "identical UI cycles changed daemon restart behavior"
 [[ "$(cat "$WORK/cargo.pwd")" != "$WORK/primary"* ]] \
   || fail "cargo built inside the developer checkout"
 [[ "$(git -C "$WORK/primary" branch --show-current)" == "$primary_branch" ]] \
@@ -98,9 +224,7 @@ cmp -s "$primary_diff" "$WORK/primary.after.diff" \
   || fail "updater changed the developer worktree"
 [[ "$(cat "$WORK/primary/developer-note")" == "dirty-feature-checkout" ]] \
   || fail "updater removed the developer's untracked file"
-[[ "$(wc -l < "$WORK/kickstarts" | tr -d ' ')" == 1 ]] \
-  || fail "updated daemon was not restarted exactly once"
-printf 'OK dirty feature checkout builds fetched origin/main in isolation\n'
+printf 'OK dirty feature checkout builds fetched origin/main in isolation and identical UI cycles are no-ops\n'
 
 # A release-shaped updater with no source checkout must fail explicitly. An
 # old "skip: ..." success is the indefinite-silent-failure defect.

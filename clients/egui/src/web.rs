@@ -151,6 +151,10 @@ impl WebCorralApp {
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(8.0, 3.0);
         cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
+        // #358: same font chain as the desktop app (app.rs configure_fonts)
+        // — board mark glyphs (idle U+25E6) must resolve instead of
+        // rendering as tofu.
+        cc.egui_ctx.set_fonts(theme::board_font_definitions());
 
         let setup = WebSetup::load().unwrap_or(WebSetup {
             mode: WebMode::Demo,

@@ -213,6 +213,27 @@ pub fn dark_dashboard() -> Visuals {
     v
 }
 
+/// Fonts the board renders with on BOTH surfaces (the desktop app's
+/// `configure_fonts` in app.rs and the wasm app's `WebCorralApp::new` in
+/// web.rs install these): the egui defaults plus the toolkit's built-in
+/// monospace default (Hack) appended to the proportional chain. Mark glyphs
+/// the default proportional trio (Ubuntu-Light/NotoEmoji-Regular/
+/// emoji-icon-font) lacks then resolve from Hack instead of epaint's tofu
+/// replacement U+25A1 — the #358 idle marker U+25E6 is the live case (the
+/// wire never emits `done`, and its U+2713 mark exists in no
+/// toolkit-default font, so it stays out of scope). No bundled font assets:
+/// Hack ships inside egui/epaint itself (epaint_default_fonts), so nothing
+/// from the retired #347 bundle machinery is re-added.
+pub(crate) fn board_font_definitions() -> eframe::egui::FontDefinitions {
+    let mut fonts = eframe::egui::FontDefinitions::default();
+    fonts
+        .families
+        .entry(eframe::egui::FontFamily::Proportional)
+        .or_default()
+        .push("Hack".to_owned());
+    fonts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

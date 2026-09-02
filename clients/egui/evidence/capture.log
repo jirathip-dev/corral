@@ -57,3 +57,42 @@ Vision self-review (both PNGs):
 Drill-in (recents v1) and the first-open setup panel are exercised by the
 crate's unit tests (board_frame hydration/refresh wiring + register/settings
 surface probes) and were not re-shot here (headless shell cannot click).
+
+==================================================================
+#358 re-capture — idle marker U+25E6 tofu fix (2026-09-03)
+==================================================================
+
+The #354-L3 captures above show the pre-fix board: idle chips rendered the
+epaint tofu replacement U+25A1 ("□ idle"; pixel-verified with vision against
+the base PNG). #358 adds the toolkit's built-in Hack font to the end of the
+proportional fallback chain (configure_fonts on desktop, WebCorralApp::new on
+wasm — one shared theme::board_font_definitions), so U+25E6 resolves again.
+
+Rebuild + re-capture used the SAME pipeline as the L3 run above:
+  cd clients/egui
+  RUSTFLAGS="--remap-path-prefix=/Users/jirathip=/build" \
+    wasm-pack build --target web --out-dir pkg --out-name corral-web
+    -> Done in 3m 02s
+  cp web/index.html pkg/  (capture.html recreated as in the L3 run)
+
+Privacy gate (unchanged fixture + fresh pkg):
+  python3 scripts/check-demo-privacy.py clients/egui/assets/demo-fixture.json \
+      clients/egui/pkg
+    -> "privacy scan: 0 forbidden matches"  (exit 0)
+
+Serving + capture: identical commands to the L3 run (http.server 8740 in
+pkg/, chrome-headless-shell one shot per viewport).
+
+Results (re-captured at f06c704 + this fix):
+  board-demo-390x844.png       PNG 390x844   sha256 5724bcbd9325f848605ff68dbdf8d029237c5a4dbbb3ce386fdcf4ecd2b63640
+  board-demo-desktop-1280x800.png  PNG 1280x800  sha256 3425a45ddb97cf231ab2a001d927a3be467d24e9e6ff8ada824eeec5ad2f9ba8
+  (base PNGs: 3bca3e9a... / 45f24af1... — the tofu captures above)
+
+Vision self-review (both PNGs, idle chips):
+  - Every idle chip now reads "° idle" — a small hollow white-bullet circle
+    (U+25E6 resolved from Hack), NOT the U+25A1 hollow-square tofu seen on
+    the base capture. Working stays the larger hollow ring "O working"
+    (emoji-icon-font), blocked "! blocked", unknown "? unknown".
+  - No other glyph/layout changes vs the L3 captures (same board, same
+    rows/sections; only the idle mark glyph changed).
+

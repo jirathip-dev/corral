@@ -18,14 +18,10 @@ surface directly (`docs/corral/P4-conformance.md` is the normative contract).
   so a genuinely dead socket still forces a reconnect.
 - **Master/detail board** — a ~40/60 split. The left pane searches repo /
   branch / title / issue and filters with contract-state chips (All · Needs
-  you · Review · Working · Idle); Cards default to a flat attention-ranked
-  list with `State · relative age` (`<1m`, minutes/hours/days, `—` when the
-  timestamp is unknown) per card and one collapsed `Idle (N)` tail; the age
-  slot is reserved on narrow panes so identity/repo text drops first. The
-  Table keeps its grouped-by-repo default. Empty state buckets never render,
-  and a no-match query reports once in the active view. The right pane owns
-  the selected agent's detail, drive controls, full waiting claim, and
-  Recent output.
+  you · Finished · Working · Idle); Cards use ordered status groups (Needs you
+  → Working → Supervising → Finished → Idle), with explicit State/Activity
+  evidence for supervising orchestrators. The right pane owns the selected
+  agent's detail, drive controls, full waiting claim, and Recent output.
 - **Cards | Table** — cards are the default view. The exact nine-column
   conformance table (drop DRIVE, narrow WAITING ON) remains reachable from
   the toolbar; full drive controls stay in the selected detail pane.

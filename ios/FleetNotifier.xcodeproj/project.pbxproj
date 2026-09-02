@@ -18,16 +18,16 @@
 		51C62A6BD448EC1B61EB78E6 /* LiveVerifyRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB3D0089119DBD19AC4FA0 /* LiveVerifyRunner.swift */; };
 		556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B21EE35CCFE7F224BFA95B8 /* Models.swift */; };
 		60D0DBCBF9FDFE7E67559229 /* TerminalAttach.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFBB50305AE722F644101BD1 /* TerminalAttach.swift */; };
+		62988AB16AF111B606AA9661 /* live_session_exchange_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 3AF684A96DEBDCC8C0EAE930 /* live_session_exchange_golden.json */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
-		6B4BA2612524D54352FF1EBB /* live_session_exchange_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 53B8C3E58A850F236D52027C /* live_session_exchange_golden.json */; };
 		854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */; };
 		8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F933E32D259974E2C207BA96 /* RecentOutputModel.swift */; };
 		925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D352A1E84318BD30D5AF512 /* SSEParser.swift */; };
+		A0A55908926B57BB5A3C4D0D /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 589C80ABA16DF102B764ADFD /* canonical_stream_golden.json */; };
 		AABFBD4F273B58A05D62B845 /* BoardFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35016480CFCFA37666B61976 /* BoardFilter.swift */; };
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
 		C886615F9AD8FA9BF1D80944 /* DestructivePatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7525E50B2EA265D916620A5 /* DestructivePatterns.swift */; };
-		DB26CE85C5B320717CF61D0B /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 7189D5DF797732AEF473E5F0 /* canonical_stream_golden.json */; };
 		E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5544FDC9B954FE32A7275A43 /* StateStyle.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
 		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
@@ -53,14 +53,14 @@
 		0C6D9CFBBF9EDC1179F7E4D4 /* FleetNotifierTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FleetNotifierTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierTests.swift; sourceTree = "<group>"; };
 		35016480CFCFA37666B61976 /* BoardFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilter.swift; sourceTree = "<group>"; };
+		3AF684A96DEBDCC8C0EAE930 /* live_session_exchange_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = live_session_exchange_golden.json; sourceTree = "<group>"; };
 		44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorraldClient.swift; sourceTree = "<group>"; };
 		49D01A23F02B422A1C580729 /* TimeInState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeInState.swift; sourceTree = "<group>"; };
 		4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
-		53B8C3E58A850F236D52027C /* live_session_exchange_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = live_session_exchange_golden.json; sourceTree = "<group>"; };
 		5544FDC9B954FE32A7275A43 /* StateStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStyle.swift; sourceTree = "<group>"; };
+		589C80ABA16DF102B764ADFD /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		5BE93BE3E43A856F09154FE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		6B21EE35CCFE7F224BFA95B8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		7189D5DF797732AEF473E5F0 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		77E397B25B007445181A67AA /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
@@ -92,15 +92,6 @@
 			path = Notifications;
 			sourceTree = "<group>";
 		};
-		1511949B074961479DDF45D1 /* fixtures */ = {
-			isa = PBXGroup;
-			children = (
-				7189D5DF797732AEF473E5F0 /* canonical_stream_golden.json */,
-				53B8C3E58A850F236D52027C /* live_session_exchange_golden.json */,
-			);
-			path = fixtures;
-			sourceTree = "<group>";
-		};
 		19046018A86CD11555F070AF /* FleetNotifierTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -115,7 +106,7 @@
 			children = (
 				7D8334B18E7321E5C5F850E4 /* FleetNotifier */,
 				19046018A86CD11555F070AF /* FleetNotifierTests */,
-				C61960D5E209D4D7BD5C2771 /* g328-g330-recent-output-v3 */,
+				D7923450C1F548908324AB7F /* g319-g320-status-grouped */,
 				ACC02147A1A8360BA16C8448 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -204,19 +195,10 @@
 			path = Wire;
 			sourceTree = "<group>";
 		};
-		C61960D5E209D4D7BD5C2771 /* g328-g330-recent-output-v3 */ = {
+		C4C73D1F5420DCA4B9312284 /* tests */ = {
 			isa = PBXGroup;
 			children = (
-				CDBFEE5C75F2D5135552009C /* tests */,
-			);
-			name = "g328-g330-recent-output-v3";
-			path = ..;
-			sourceTree = "<group>";
-		};
-		CDBFEE5C75F2D5135552009C /* tests */ = {
-			isa = PBXGroup;
-			children = (
-				1511949B074961479DDF45D1 /* fixtures */,
+				ECFE014A956C20C3145AE611 /* fixtures */,
 			);
 			path = tests;
 			sourceTree = "<group>";
@@ -238,6 +220,24 @@
 				6B21EE35CCFE7F224BFA95B8 /* Models.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		D7923450C1F548908324AB7F /* g319-g320-status-grouped */ = {
+			isa = PBXGroup;
+			children = (
+				C4C73D1F5420DCA4B9312284 /* tests */,
+			);
+			name = "g319-g320-status-grouped";
+			path = ..;
+			sourceTree = "<group>";
+		};
+		ECFE014A956C20C3145AE611 /* fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				589C80ABA16DF102B764ADFD /* canonical_stream_golden.json */,
+				3AF684A96DEBDCC8C0EAE930 /* live_session_exchange_golden.json */,
+			);
+			path = fixtures;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -334,8 +334,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				DB26CE85C5B320717CF61D0B /* canonical_stream_golden.json in Resources */,
-				6B4BA2612524D54352FF1EBB /* live_session_exchange_golden.json in Resources */,
+				A0A55908926B57BB5A3C4D0D /* canonical_stream_golden.json in Resources */,
+				62988AB16AF111B606AA9661 /* live_session_exchange_golden.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

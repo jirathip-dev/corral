@@ -87,12 +87,19 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #332 R4: the grant fixture clears stored admin credentials before each
     # test; FleetNotifierTests.swift is pinned separately because it is not a
     # Release source input.
-    "c9c7a5ff1241ac7532ed00dbeba4d6c759085070965c1ede2babd525167b0bbd"
+    # #328/#329/#330: recent-output attribution, divider-vs-content handling,
+    # bounded harness presentation, and empty-Conversation evidence.
+    # #319/#320 grouped R2: ordered status presentation, structured
+    # supervision evidence, and Finished wording updated the board sources.
+    # R6: recomputed over the merged 23-file Release source set.
+    "b71e14332091e51f89d1e2e9f98d826aeb4bf5f07a021f99b5611c262e34d8e3"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
     # app source manifest so a test-source mutation cannot be green-on-green.
-    "2ca9975c1fee1859a7ab49d6b04b077981ffbd1c9a726f3f9c4bf12a81f508e4"
+    # R6: integration's #319/#320 FleetNotifierTests changes are included;
+    # the pin follows the merged focused grant test source.
+    "db2d73a0656b6d6dc71231d82191dd3b81782285c7fc7884367167ef8ae36ca3"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -36,7 +36,8 @@ APPROVED_TITLES = frozenset({
 })
 APPROVED_IDENTITIES = frozenset({
     "demo:p01:impl", "demo:p02:impl", "demo:p03:rev", "demo:p04:fleet",
-    "demo:p05:orch", "demo:p06:rs", "demo:p07:impl",
+    "demo:p05:orch", "demo:p06:rs", "demo:p07:impl", "demo:p07:orch",
+    "demo:p08:impl", "demo:p09:review",
     "demo:p01:impl:sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
     "demo:p02:impl:sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
     "demo:p04:fleet:sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
@@ -45,7 +46,7 @@ IDENTITY_FIELDS = frozenset({"agent_id", "parent_id", "ref", "del", "approval_id
 APPROVED_FIELDS = frozenset({
     "agent_id", "agents", "ahead", "approval_id", "attachment",
     "behind", "body", "branch", "capabilities", "choices", "ci_status", "color",
-    "del", "deltas", "dirty", "display_name", "demo-alpha", "demo-bravo",
+    "del", "deltas", "dirty", "display_name", "fixture_name", "demo-alpha", "demo-bravo",
     "demo-charlie", "demo-delta", "generated_at", "host", "issues",
     "kind", "labels", "name", "number", "parent_id",
     "pr_number", "prompt", "prompt_hash", "prompt_request_id", "reason",

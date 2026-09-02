@@ -90,6 +90,163 @@ private extension Character {
     var isASCIIDigit: Bool { isASCII && isNumber }
 }
 
+// MARK: - Derived status presentation
+
+/// Stable source-identity role used only for derived presentation.
+enum AgentRole: Equatable, Sendable {
+    case orchestrator
+    case implementer
+    case reviewer
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .orchestrator: return "Orchestrator"
+        case .implementer: return "Implementer"
+        case .reviewer: return "Reviewer"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    fileprivate static func fromToken(_ token: Substring) -> AgentRole? {
+        switch token.lowercased() {
+        case "orch", "orchestrator": return .orchestrator
+        case "impl", "implementer": return .implementer
+        case "review", "reviewer", "rev": return .reviewer
+        default: return nil
+        }
+    }
+}
+
+enum SupervisionKind: Equatable, Sendable {
+    case polling
+    case watcher
+}
+
+struct SupervisionActivity: Equatable, Sendable {
+    let kind: SupervisionKind
+    let intervalSeconds: Int?
+    let queuedWork: Int?
+
+    var summary: String {
+        let label = kind == .polling ? "Polling" : "Watcher"
+        if let intervalSeconds {
+            return "↻ \(label) · every \(intervalSeconds)s"
+        }
+        return "↻ \(label)"
+    }
+
+    /// Only derived labels and safe counters are exposed to assistive tech.
+    var accessibilityLabel: String {
+        let label = kind == .polling ? "polling" : "watcher"
+        var value = "Activity: Supervising, \(label)"
+        if let intervalSeconds {
+            value += ", every \(intervalSeconds) seconds"
+        }
+        if let queuedWork {
+            value += ", queued \(queuedWork)"
+        }
+        return value + ", current command redacted"
+    }
+}
+
+enum PresentationGroup: String, CaseIterable, Equatable, Hashable, Sendable {
+    case needsYou = "Needs you"
+    case working = "Working"
+    case supervising = "Supervising"
+    case finished = "Finished"
+    case idle = "Idle"
+}
+
+struct StatusPresentationSection: Identifiable, Equatable {
+    let group: PresentationGroup
+    let agents: [Agent]
+
+    var id: String { group.rawValue }
+    var header: String { "\(group.rawValue) (\(agents.count))" }
+}
+
+private func agentRole(_ agent: Agent) -> AgentRole {
+    for value in [Optional(agent.agentId), agent.displayName].compactMap({ $0 }) {
+        for token in value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            if let role = AgentRole.fromToken(token) {
+                return role
+            }
+        }
+    }
+    return .unknown
+}
+
+private func parseSupervisionActivity(_ reason: String?) -> SupervisionActivity? {
+    guard var payload = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !payload.isEmpty else {
+        return nil
+    }
+    payload = payload.lowercased()
+    for prefix in [
+        "done:", "foreground_command:", "foreground-command:",
+        "current_command:", "current-command:", "pane_label:",
+        "pane-label:", "activity:", "poll:", "polling:",
+        "watch:", "watcher:", "sleep:", "while:",
+    ] {
+        if payload.hasPrefix(prefix) {
+            payload = String(payload.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            break
+        }
+    }
+    guard !payload.isEmpty, !payload.hasPrefix("not "), !payload.contains("inactive") else {
+        return nil
+    }
+
+    let command = payload.split(whereSeparator: { $0 == ";" || $0 == "|" || $0 == "·" }).first.map(String.init) ?? ""
+    let first = command.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+    let commandName = first.split(separator: "/").last.map(String.init) ?? first
+    let remainder = String(command.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
+    let kind: SupervisionKind
+    switch commandName {
+    case "watch", "watcher": kind = .watcher
+    case "poll", "polling", "sleep", "while": kind = .polling
+    default: return nil
+    }
+    let structured: Bool
+    switch commandName {
+    case "sleep", "while":
+        structured = firstNumber(after: ["sleep"], in: payload) != nil
+    case "poll", "polling", "watch", "watcher":
+        structured = remainder.isEmpty
+            || remainder.hasPrefix("every")
+            || remainder.hasPrefix("-n")
+            || remainder.hasPrefix("interval")
+            || remainder.hasPrefix("active")
+            || remainder.hasPrefix("queued")
+            || remainder.hasPrefix("current_command")
+            || remainder.hasPrefix("current-command")
+    default:
+        structured = false
+    }
+    guard structured else { return nil }
+
+    return SupervisionActivity(
+        kind: kind,
+        intervalSeconds: firstNumber(after: ["every", "sleep", "-n"], in: payload),
+        queuedWork: firstNumber(after: ["queued_work", "queued"], in: payload))
+}
+
+private func firstNumber(after markers: [String], in text: String) -> Int? {
+    for marker in markers {
+        guard let range = text.range(of: marker) else { continue }
+        var suffix = text[range.upperBound...]
+        while let first = suffix.first,
+              first == ":" || first == "=" || first == "-" || first.isWhitespace {
+            suffix = suffix.dropFirst()
+        }
+        let digits = suffix.prefix(while: { $0.isNumber })
+        if !digits.isEmpty, let value = Int(digits), value >= 0 {
+            return value
+        }
+    }
+    return nil
+}
+
 // MARK: - Issue chip (line 1 of the D24 row)
 
 /// The line-1 issue chips: the authoritative `⑂ #N` (first `issues` ref,
@@ -280,6 +437,37 @@ enum BoardModel {
         let needsYou: [Agent]
         let repos: [RepoSection]
         let idleDone: [Agent]
+    }
+
+    static func role(for agent: Agent) -> AgentRole {
+        agentRole(agent)
+    }
+
+    static func supervisionActivity(for agent: Agent) -> SupervisionActivity? {
+        guard agent.state == .done, agentRole(agent) == .orchestrator else {
+            return nil
+        }
+        return parseSupervisionActivity(agent.reason)
+    }
+
+    static func presentationGroup(for agent: Agent) -> PresentationGroup {
+        switch agent.state {
+        case .blocked: return .needsYou
+        case .working: return .working
+        case .done:
+            return supervisionActivity(for: agent) == nil ? .finished : .supervising
+        case .idle, .unknown: return .idle
+        }
+    }
+
+    /// Ordered derived sections. Lifecycle state remains unchanged; a done
+    /// orchestrator only moves to `supervising` when activity evidence exists.
+    static func presentationSections(for agents: [Agent]) -> [StatusPresentationSection] {
+        let orderedAgents = ordered(agents)
+        return PresentationGroup.allCases.compactMap { group in
+            let members = orderedAgents.filter { presentationGroup(for: $0) == group }
+            return members.isEmpty ? nil : StatusPresentationSection(group: group, agents: members)
+        }
     }
 
     /// D25 state rank. Delegates to the shared `StateStyle` contract

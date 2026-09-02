@@ -14,7 +14,7 @@ enum AgentState: String, Codable, CaseIterable, Sendable {
         case .idle: return "Idle"
         case .working: return "Working"
         case .blocked: return "Blocked"
-        case .done: return "Done"
+        case .done: return "Finished"
         case .unknown: return "Unknown"
         }
     }

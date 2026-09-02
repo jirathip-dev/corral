@@ -228,6 +228,249 @@ impl Agent {
     pub fn known_issue_numbers(&self) -> BTreeSet<u64> {
         self.issues.iter().map(|i| i.number).collect()
     }
+
+    /// Structured role from the source identity, never from transcript text.
+    pub fn role(&self) -> AgentRole {
+        [Some(self.agent_id.as_str()), self.display_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|value| value.split(|ch: char| !ch.is_ascii_alphanumeric()))
+            .find_map(AgentRole::from_token)
+            .unwrap_or(AgentRole::Unknown)
+    }
+
+    /// Active supervision evidence projected from the adapter's structured
+    /// state-label reason. The raw command is intentionally never returned.
+    pub fn supervision_activity(&self) -> Option<SupervisionActivity> {
+        if self.state != AgentState::Done || self.role() != AgentRole::Orchestrator {
+            return None;
+        }
+        parse_supervision_activity(self.reason.as_deref()?)
+    }
+
+    pub fn presentation_group(&self) -> PresentationGroup {
+        match self.state {
+            AgentState::Blocked => PresentationGroup::NeedsYou,
+            AgentState::Working => PresentationGroup::Working,
+            AgentState::Done => self
+                .supervision_activity()
+                .map_or(PresentationGroup::Finished, |_| {
+                    PresentationGroup::Supervising
+                }),
+            AgentState::Idle | AgentState::Unknown => PresentationGroup::Idle,
+        }
+    }
+}
+
+/// Stable source-identity role used only for derived presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRole {
+    Orchestrator,
+    Implementer,
+    Reviewer,
+    Unknown,
+}
+
+impl AgentRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Orchestrator => "Orchestrator",
+            Self::Implementer => "Implementer",
+            Self::Reviewer => "Reviewer",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        match token.to_ascii_lowercase().as_str() {
+            "orch" | "orchestrator" => Some(Self::Orchestrator),
+            "impl" | "implementer" => Some(Self::Implementer),
+            "review" | "reviewer" | "rev" => Some(Self::Reviewer),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisionKind {
+    Polling,
+    Watcher,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupervisionActivity {
+    pub kind: SupervisionKind,
+    pub interval_seconds: Option<u64>,
+    pub queued_work: Option<u64>,
+}
+
+impl SupervisionActivity {
+    pub fn summary(self) -> String {
+        let label = match self.kind {
+            SupervisionKind::Polling => "Polling",
+            SupervisionKind::Watcher => "Watcher",
+        };
+        match self.interval_seconds {
+            Some(seconds) => format!("↻ {label} · every {seconds}s"),
+            None => format!("↻ {label}"),
+        }
+    }
+
+    /// Accessible text contains only the derived label and safe counters.
+    pub fn accessibility_label(self) -> String {
+        let mut label = match self.kind {
+            SupervisionKind::Polling => "Activity: Supervising, polling".to_string(),
+            SupervisionKind::Watcher => "Activity: Supervising, watcher".to_string(),
+        };
+        if let Some(seconds) = self.interval_seconds {
+            label.push_str(&format!(", every {seconds} seconds"));
+        }
+        if let Some(queued) = self.queued_work {
+            label.push_str(&format!(", queued {queued}"));
+        }
+        label.push_str(", current command redacted");
+        label
+    }
+}
+
+/// Ordered derived presentation groups. These do not alter `AgentState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationGroup {
+    NeedsYou,
+    Working,
+    Supervising,
+    Finished,
+    Idle,
+}
+
+impl PresentationGroup {
+    pub const ORDER: [Self; 5] = [
+        Self::NeedsYou,
+        Self::Working,
+        Self::Supervising,
+        Self::Finished,
+        Self::Idle,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeedsYou => "Needs you",
+            Self::Working => "Working",
+            Self::Supervising => "Supervising",
+            Self::Finished => "Finished",
+            Self::Idle => "Idle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationSection {
+    pub group: PresentationGroup,
+    pub agent_ids: Vec<String>,
+}
+
+impl PresentationSection {
+    pub fn header(&self) -> String {
+        format!("{} ({})", self.group.label(), self.agent_ids.len())
+    }
+}
+
+pub fn presentation_sections(agents: &[Agent]) -> Vec<PresentationSection> {
+    PresentationGroup::ORDER
+        .into_iter()
+        .filter_map(|group| {
+            let agent_ids = agents
+                .iter()
+                .filter(|agent| agent.presentation_group() == group)
+                .map(|agent| agent.agent_id.clone())
+                .collect::<Vec<_>>();
+            (!agent_ids.is_empty()).then_some(PresentationSection { group, agent_ids })
+        })
+        .collect()
+}
+
+fn parse_supervision_activity(reason: &str) -> Option<SupervisionActivity> {
+    let mut payload = reason.trim().to_ascii_lowercase();
+    for prefix in [
+        "done:",
+        "foreground_command:",
+        "foreground-command:",
+        "current_command:",
+        "current-command:",
+        "pane_label:",
+        "pane-label:",
+        "activity:",
+        "poll:",
+        "polling:",
+        "watch:",
+        "watcher:",
+        "sleep:",
+        "while:",
+    ] {
+        if let Some(rest) = payload.strip_prefix(prefix) {
+            payload = rest.trim().to_string();
+            break;
+        }
+    }
+    let lower = payload.as_str();
+    if lower.is_empty() || lower.starts_with("not ") || lower.contains("inactive") {
+        return None;
+    }
+
+    let command = lower
+        .split([';', '|', '·'])
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+    let first = command.split_whitespace().next().unwrap_or_default();
+    let command_name = first.rsplit('/').next().unwrap_or(first);
+    let remainder = command.strip_prefix(first).unwrap_or_default().trim();
+    let kind = if matches!(command_name, "watch" | "watcher") {
+        SupervisionKind::Watcher
+    } else if matches!(command_name, "poll" | "polling" | "sleep" | "while") {
+        SupervisionKind::Polling
+    } else {
+        return None;
+    };
+    let structured = match command_name {
+        "sleep" | "while" => first_number_after(lower, &["sleep"]).is_some(),
+        "poll" | "polling" | "watch" | "watcher" => {
+            remainder.is_empty()
+                || remainder.starts_with("every")
+                || remainder.starts_with("-n")
+                || remainder.starts_with("interval")
+                || remainder.starts_with("active")
+                || remainder.starts_with("queued")
+                || remainder.starts_with("current_command")
+                || remainder.starts_with("current-command")
+        }
+        _ => false,
+    };
+    if !structured {
+        return None;
+    }
+
+    let interval_seconds = first_number_after(lower, &["every", "sleep", "-n"]);
+    let queued_work = first_number_after(lower, &["queued_work", "queued"]);
+    Some(SupervisionActivity {
+        kind,
+        interval_seconds,
+        queued_work,
+    })
+}
+
+fn first_number_after(text: &str, markers: &[&str]) -> Option<u64> {
+    markers.iter().find_map(|marker| {
+        let start = text.find(marker)? + marker.len();
+        let digits = text[start..].trim_start_matches(|ch: char| {
+            ch == ':' || ch == '=' || ch == '-' || ch.is_whitespace()
+        });
+        let end = digits
+            .char_indices()
+            .find(|(_, ch)| !ch.is_ascii_digit())
+            .map_or(digits.len(), |(index, _)| index);
+        (end > 0).then(|| digits[..end].parse().ok()).flatten()
+    })
 }
 
 /// Bounded human-readable agent-id fallback.
@@ -612,5 +855,132 @@ mod tests {
         assert_eq!(agent.display(), agent.row_label());
         agent.title = Some("worktree title".into());
         assert_eq!(agent.display(), agent.row_label());
+    }
+
+    fn presentation_agent(id: &str, state: AgentState, reason: Option<&str>) -> Agent {
+        let mut agent = base_agent(id);
+        agent.state = state;
+        agent.reason = reason.map(str::to_owned);
+        agent.display_name = Some(id.to_owned());
+        agent
+    }
+
+    #[test]
+    fn active_done_orchestrator_poll_is_supervising_with_safe_activity_text() {
+        let agent = presentation_agent(
+            "herdr:demo:orch",
+            AgentState::Done,
+            Some("done: poll every 60s; queued_work=1; current_command=/private/token"),
+        );
+
+        assert_eq!(agent.role(), AgentRole::Orchestrator);
+        assert_eq!(agent.presentation_group(), PresentationGroup::Supervising);
+        let activity = agent
+            .supervision_activity()
+            .expect("structured poll evidence");
+        assert_eq!(activity.kind, SupervisionKind::Polling);
+        assert_eq!(activity.interval_seconds, Some(60));
+        assert_eq!(activity.queued_work, Some(1));
+        assert_eq!(activity.summary(), "↻ Polling · every 60s");
+        assert!(!activity.summary().contains("/private/token"));
+        assert!(
+            activity
+                .accessibility_label()
+                .contains("Activity: Supervising")
+        );
+        assert!(
+            activity
+                .accessibility_label()
+                .contains("current command redacted")
+        );
+        assert!(!activity.accessibility_label().contains("/private/token"));
+    }
+
+    #[test]
+    fn supervision_requires_done_orchestrator_and_active_structured_evidence() {
+        let inactive = presentation_agent("herdr:demo:orch", AgentState::Done, None);
+        assert_eq!(inactive.presentation_group(), PresentationGroup::Finished);
+
+        let implementer = presentation_agent(
+            "herdr:demo:impl",
+            AgentState::Done,
+            Some("done: poll every 60s"),
+        );
+        assert_eq!(implementer.role(), AgentRole::Implementer);
+        assert_eq!(
+            implementer.presentation_group(),
+            PresentationGroup::Finished
+        );
+
+        let reviewer = presentation_agent(
+            "herdr:demo:review",
+            AgentState::Done,
+            Some("done: poll every 60s"),
+        );
+        assert_eq!(reviewer.role(), AgentRole::Reviewer);
+        assert_eq!(reviewer.presentation_group(), PresentationGroup::Finished);
+
+        let not_done = presentation_agent(
+            "herdr:demo:orch",
+            AgentState::Working,
+            Some("working: poll every 60s"),
+        );
+        assert_eq!(not_done.presentation_group(), PresentationGroup::Working);
+
+        let role_only =
+            presentation_agent("herdr:demo:orch", AgentState::Done, Some("task complete"));
+        assert_eq!(role_only.presentation_group(), PresentationGroup::Finished);
+        assert!(role_only.supervision_activity().is_none());
+
+        let arbitrary_prose = presentation_agent(
+            "herdr:demo:orch",
+            AgentState::Done,
+            Some("polling complete"),
+        );
+        assert_eq!(
+            arbitrary_prose.presentation_group(),
+            PresentationGroup::Finished
+        );
+        assert!(arbitrary_prose.supervision_activity().is_none());
+    }
+
+    #[test]
+    fn presentation_sections_are_ordered_and_counted_without_empty_groups() {
+        let agents = vec![
+            presentation_agent("herdr:idle", AgentState::Idle, None),
+            presentation_agent("herdr:done:review", AgentState::Done, None),
+            presentation_agent(
+                "herdr:orch",
+                AgentState::Done,
+                Some("done: watcher every 30s"),
+            ),
+            presentation_agent("herdr:working", AgentState::Working, None),
+            presentation_agent("herdr:blocked", AgentState::Blocked, None),
+        ];
+
+        let sections = presentation_sections(&agents);
+        assert_eq!(
+            sections
+                .iter()
+                .map(PresentationSection::header)
+                .collect::<Vec<_>>(),
+            vec![
+                "Needs you (1)",
+                "Working (1)",
+                "Supervising (1)",
+                "Finished (1)",
+                "Idle (1)"
+            ],
+        );
+        assert_eq!(sections[2].group, PresentationGroup::Supervising);
+        assert_eq!(sections[2].agent_ids, vec!["herdr:orch"]);
+    }
+
+    #[test]
+    fn done_state_uses_finished_wording_without_changing_mark_or_rank() {
+        let state = crate::theme::AgentStateLike::Done;
+        assert_eq!(state.label(), "Finished");
+        assert_eq!(state.mark(), "check");
+        assert_eq!(state.rank(), 1);
     }
 }

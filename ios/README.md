@@ -312,12 +312,15 @@ gone, and the result stays in the detail view. Approvals echo the current
 `approval_id` and `prompt_hash`, and a changed/deleted target is refused
 locally before signed bytes leave the device.
 
-The Idle / done section is collapsed by default. Its header is a full-width,
-44-point disclosure target with visible `Collapsed` / `Expanded` text and the
-same state exposed through VoiceOver. Rows and detail summaries show explicit
-Working, Idle, Done, and Blocked text alongside their color cues. Disabled
-controls retain a plain-language explanation naming the missing agent
-capability or device grant.
+The board uses native status sections in this order: Needs you, Working,
+Supervising, Finished, then Idle. Empty groups are omitted. A done
+orchestrator enters Supervising only when its structured poll/watcher evidence
+is active; its row still says Finished and exposes the redacted activity to
+VoiceOver through an accessible DisclosureGroup. Inactive orchestrators,
+implementers, and reviewers remain Finished. Rows and detail summaries show
+explicit State and Activity text alongside their color cues. Disabled controls
+retain a plain-language explanation naming the missing agent capability or
+device grant.
 
 ## Row and detail actions (#166)
 
@@ -341,12 +344,12 @@ guarded by a confirmation dialog; a read-only device sees a plain-language
 reason for why it is disabled.
 
 A pinned filter-chip row (`All · Needs you · repo₁…repoₙ`) plus a
-`.searchable` field over repo/branch/title/issue mirror the egui search. When
-zero agents are blocked the whole "Needs you" section is hidden — no
-`Needs you (0)` header and no empty-state row.
+`.searchable` field over repo/branch/title/issue mirror the egui search. The
+status section counts are derived from the same filtered agent set, and no
+empty status section is rendered.
 
 The chip row is the List's first pinned section header rather than a
-`.safeAreaInset`: during pull-to-refresh (issue #219) chrome, pinned repo
+`.safeAreaInset`: during pull-to-refresh (issue #219) chrome, pinned status
 headers, and rows translate as one scroll surface — no stranded repo header
 or black gap. Pulling down (or the accessible Refresh button in the chip row
 and the toolbar Refresh fleet item) fetches one authoritative

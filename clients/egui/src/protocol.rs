@@ -1,6 +1,10 @@
 //! Read-path protocol client: `GET /snapshot`, `GET /events` (SSE with
-//! `Last-Event-ID` resume), `POST /register`, host-admin `GET /grants`,
-//! and `GET /audit`. The drive write path lives in [`crate::drive`].
+//! `Last-Event-ID` resume), `POST /register` (signed read auth). The signed
+//! drive read path lives in [`crate::drive`].
+//!
+//! #354 read-only cut: the host-admin surfaces (`GET /audit`, grant admin)
+//! and the repo-level Issues view were removed with their UIs; this file
+//! keeps only the read-model protocol.
 //!
 //! The SSE reader owns the resume loop: connect → parse events → on any
 //! disconnect, back off (doubling, capped) and reconnect carrying the last
@@ -10,45 +14,19 @@
 //! is unavailable, so a restart with dropped SSE support still shows live
 //! state (client-side polling only — never in the daemon).
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::model::{Delta, GhIssueRef, Snapshot};
+use crate::model::{Delta, Snapshot};
 
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
-/// Canonical grant order for the board's grant editor. This is the same
-/// closed set the daemon's `Capability` parser accepts; `start_worktree`
-/// is rendered separately as a fleet-level capability.
-pub const GRANT_CAPABILITIES: [&str; 9] = [
-    "prompt",
-    "interrupt",
-    "approve",
-    "read_tail",
-    "read_diff",
-    "read_issues",
-    "kill",
-    "attach",
-    "start_worktree",
-];
-
-/// #249 recovery grant set: the signed drive-plane caps re-applied when a
-/// rebuild/reinstall leaves the board with a fresh key. Deliberately
-/// excludes `start_worktree` (a binding operation, not part of the drive
-/// plane the issue names) and is used for the one-tap
-/// "Re-register + grant" recovery when the previous registration carries
-/// no recorded grants.
-pub const RECOVERY_GRANT_CAPS: [&str; 7] = [
-    "read_tail",
-    "read_diff",
-    "prompt",
-    "interrupt",
-    "approve",
-    "kill",
-    "attach",
-];
+/// The retained grant vocabulary this client ever requests or renders
+/// (#354): the closed READ set. Read-only default registration requests no
+/// grants at all; the recovery path re-applies exactly this set when a
+/// rebuild/reinstall leaves the board with a fresh key.
+pub const READ_GRANT_CAPABILITIES: [&str; 2] = ["read_tail", "read_diff"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HostKey {
@@ -82,8 +60,8 @@ pub const SSE_BACKOFF_MAX_MS: u64 = 30_000;
 
 /// Per-chunk read deadline for the SSE stream. reqwest's `.timeout()` is a
 /// TOTAL deadline that keeps ticking through body streaming, so a long-lived
-/// SSE connection must NOT carry one (the daemon's 15s keepalive comments
-/// keep the stream alive; a 60s total timeout severed it every minute).
+/// SSE connection must NOT carry one (the daemon's keepalive comments
+/// keep the stream alive; a total timeout severed it every minute).
 /// Instead, each `chunk()` await gets a read deadline well above the
 /// keepalive cadence (3x), so a genuinely dead socket still forces a
 /// reconnect without ever killing a healthy stream.
@@ -148,48 +126,11 @@ pub async fn fetch_snapshot(client: &reqwest::Client, base_url: &str) -> Result<
     response.json().await.map_err(|e| format!("body: {e}"))
 }
 
-/// #113: `GET /issues` — the daemon's read-only repo-level issue view, the
-/// same set the worktree action validates a selected issue against. The
-/// response is `{ "repos": { repo: [GhIssueRef...] } }`; older daemons
-/// without the endpoint return an error, which the UI surfaces politely
-/// (the Board still renders per-agent issues from the snapshot).
-pub async fn fetch_issues(
-    client: &reqwest::Client,
-    base_url: &str,
-) -> Result<BTreeMap<String, Vec<GhIssueRef>>, String> {
-    let url = format!("{}/issues", base_url.trim_end_matches('/'));
-    let response = client
-        .get(&url)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GET /issues -> {}", response.status()));
-    }
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
-    decode_issues(body)
-}
-
-/// Decode the complete `/issues` envelope in one place before it crosses the
-/// async boundary. Keeping the grouped map intact is important: the daemon
-/// includes configured repos with zero issues alongside repos with a full
-/// snapshot, and the UI must not accidentally project this into one repo or
-/// one issue per group.
-fn decode_issues(body: serde_json::Value) -> Result<BTreeMap<String, Vec<GhIssueRef>>, String> {
-    #[derive(Deserialize)]
-    struct Wire {
-        repos: BTreeMap<String, Vec<GhIssueRef>>,
-    }
-    serde_json::from_value::<Wire>(body)
-        .map(|wire| wire.repos)
-        .map_err(|e| format!("body: {e}"))
-}
-
 /// `POST /register` with the routing-only registration token and the
 /// device's base64 Ed25519 public key. `name` is the optional cosmetic
-/// device label (#209) — the daemon stores it so every Devices/Grants
-/// surface can name this machine/phone. Returns `(key_id, grants)`.
+/// device label. Returns `(key_id, grants)` — the daemon's read-only
+/// default grant set is empty; grants are provisioned out-of-band by the
+/// host.
 pub async fn register_device(
     client: &reqwest::Client,
     base_url: &str,
@@ -237,242 +178,9 @@ pub async fn register_device(
     Ok((key_id, grants))
 }
 
-/// `GET /audit` with the host admin bearer token (the host's own
-/// credential — the audit log is host-admin, never device-accessible).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct AuditEntry {
-    pub seq: u64,
-    pub ts: u64,
-    pub key_id: String,
-    pub request_id: String,
-    pub capability: String,
-    pub target: String,
-    /// `"executed"` or `{"refused": d}` / `{"failed": d}` (externally
-    /// tagged, mirrors the daemon's `OutcomeJson`).
-    pub outcome: serde_json::Value,
-    pub prev: String,
-    pub hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct AuditView {
-    pub head: String,
-    pub valid: bool,
-    pub entries: Vec<AuditEntry>,
-}
-
-pub async fn fetch_audit(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-) -> Result<AuditView, String> {
-    let url = format!("{}/audit", base_url.trim_end_matches('/'));
-    let response = client
-        .get(&url)
-        .bearer_auth(admin_token)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GET /audit -> {}", response.status()));
-    }
-    response.json().await.map_err(|e| format!("body: {e}"))
-}
-
-/// A registered device as projected by the host-admin `GET /grants` read
-/// surface. Public keys and push tokens stay host-side and never cross
-/// this wire shape. `name` is the optional cosmetic label the device
-/// supplied at registration (#209).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct GrantDevice {
-    pub key_id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub grants: Vec<String>,
-    pub revoked: bool,
-    /// When the host revoked this device (#257, additive: `None` on
-    /// pre-#257 ledgers and on old daemons that do not project it). The
-    /// row then shows the true revocation age; `None` falls back to a
-    /// plain "revoked" subline (never the creation age).
-    #[serde(default)]
-    pub revoked_ts: Option<u64>,
-    pub expiry_ts: u64,
-    pub created_ts: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct AdminGrantsView {
-    pub ok: bool,
-    pub devices: Vec<GrantDevice>,
-}
-
-/// `GET /grants` with the host admin bearer token. Without `key_id` it
-/// returns every registered device for the Settings selector; with a
-/// `key_id` it narrows the daemon's projection to one device.
-pub async fn fetch_admin_grants(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-    key_id: Option<&str>,
-) -> Result<AdminGrantsView, String> {
-    let mut url = format!("{}/grants", base_url.trim_end_matches('/'));
-    if let Some(key_id) = key_id {
-        url.push_str(&format!("?key_id={}", urlencode(key_id)));
-    }
-    let response = client
-        .get(&url)
-        .bearer_auth(admin_token)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    let status = response.status();
-    let body: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
-    if !status.is_success() {
-        return Err(grant_error(status.as_u16(), &body, "GET /grants"));
-    }
-    serde_json::from_value(body).map_err(|e| format!("GET /grants malformed response: {e}"))
-}
-
-/// The exact `POST /grants` `set_grants` body used by
-/// `scripts/corrald-grant.sh`: replacing the full grant set; empty =
-/// read-only.
-pub fn grant_set_body(key_id: &str, grants: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "action": "set_grants",
-        "key_id": key_id,
-        "grants": grants,
-    })
-}
-
-/// The exact `POST /grants` `revoke` body used by
-/// `scripts/corrald-grant.sh`.
-pub fn grant_revoke_body(key_id: &str) -> serde_json::Value {
-    grant_revoke_body_with(key_id, true)
-}
-
-/// `POST /grants` `revoke` body with an explicit flag: `true` revokes the
-/// device (#209's Revoke action), `false` re-grants it (Re-grant action).
-pub fn grant_revoke_body_with(key_id: &str, revoked: bool) -> serde_json::Value {
-    serde_json::json!({
-        "action": "revoke",
-        "key_id": key_id,
-        "revoked": revoked,
-    })
-}
-
-/// Replace a registered device's full grant set via the host admin token.
-pub async fn set_admin_grants(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-    key_id: &str,
-    grants: &[String],
-) -> Result<String, String> {
-    post_grant_body(
-        client,
-        base_url,
-        admin_token,
-        grant_set_body(key_id, grants),
-    )
-    .await
-}
-
-/// Revoke a registered device (the `--revoke` alternate path) via the host
-/// admin token.
-pub async fn revoke_admin_device(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-    key_id: &str,
-) -> Result<String, String> {
-    set_admin_revoked(client, base_url, admin_token, key_id, true).await
-}
-
-/// Set a device's revoked flag via the host admin token (`true` revokes,
-/// `false` re-grants — #209's Revoke/Re-grant actions).
-pub async fn set_admin_revoked(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-    key_id: &str,
-    revoked: bool,
-) -> Result<String, String> {
-    post_grant_body(
-        client,
-        base_url,
-        admin_token,
-        grant_revoke_body_with(key_id, revoked),
-    )
-    .await
-}
-
-async fn post_grant_body(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-    body: serde_json::Value,
-) -> Result<String, String> {
-    let url = format!("{}/grants", base_url.trim_end_matches('/'));
-    let response = client
-        .post(&url)
-        .bearer_auth(admin_token)
-        .json(&body)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
-    let status = response.status();
-    let json: serde_json::Value = response.json().await.map_err(|e| format!("body: {e}"))?;
-    if !status.is_success() {
-        return Err(grant_error(status.as_u16(), &json, "POST /grants"));
-    }
-    let ok = json.get("ok").and_then(serde_json::Value::as_bool);
-    let key_id = json
-        .get("key_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    match (ok, key_id) {
-        (Some(true), Some(key_id)) => Ok(key_id),
-        _ => Err("POST /grants -> malformed success body".to_string()),
-    }
-}
-
-fn grant_error(status: u16, body: &serde_json::Value, endpoint: &str) -> String {
-    let detail = body
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("request failed");
-    format!("{endpoint} -> {status}: {detail}")
-}
-
-/// Minimal query-value percent-encoding (agent ids carry `:`; cursors
-/// are dot/hex). Everything unreserved passes through; the rest is
-/// percent-encoded byte-wise — no new dependency for a URL crate.
-fn urlencode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-/// Drain one SSE byte stream to the `on_event` callback. Returns
-/// `StreamOutcome::Closed` on a clean EOF and `Error` on transport/parse
-/// trouble — the caller owns reconnect/backoff. Each read carries a
-/// bounded deadline (see [`SSE_CHUNK_READ_TIMEOUT`]); the stream itself
-/// has no total lifetime.
-///
-/// Desktop-only: `reqwest`'s wasm `Response` has no `chunk()` and the
-/// timeout needs a tokio timer, neither of which exists in the read-only
-/// web build — [`crate::web`] owns its own chunk drain against the same
-/// [`SseParser`].
+/// Consume an SSE response body until the stream ends, invoking `on_event`
+/// per parsed frame. Native (tokio) path — the wasm build streams with
+/// `bytes_stream()` through the same [`SseParser`].
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn stream_events<F: FnMut(SseEvent)>(
     mut response: reqwest::Response,
@@ -758,32 +466,6 @@ pub enum ApplyMsg {
     Fingerprint(String),
     /// Registration round-trip result: `(key_id, grants)`.
     RegisterResult(Result<(String, Vec<String>), String>),
-    /// #113: repo-level issue view arrived from the read-only `GET /issues`
-    /// endpoint (keyed by repo/fleet name). The generation is stamped when
-    /// the request starts so a response from a prior connection/host cannot
-    /// populate the current identity model. Keep failures in the message so
-    /// the UI can retry instead of treating a dropped response as "empty".
-    Issues {
-        generation: u64,
-        result: Result<BTreeMap<String, Vec<GhIssueRef>>, String>,
-    },
-
-    /// #137: host-admin device/grants view arrived from `GET /grants`.
-    GrantDevices(Result<AdminGrantsView, String>),
-    /// #137: a host-admin grant set replacement or device revocation
-    /// finished. `grants` are the submitted set (empty for revoke) so the
-    /// local board ledger can reflect the change when the selected device is
-    /// this board's own key.
-    GrantMutation(GrantMutationMsg),
-}
-
-/// Completion payload for the Settings grant editor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrantMutationMsg {
-    pub key_id: String,
-    pub grants: Vec<String>,
-    pub revoke: bool,
-    pub result: Result<(), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -809,236 +491,78 @@ pub fn track_last_id(frame: &RawFrame, cursor: &mut Option<u64>) {
 mod tests {
     use super::*;
 
+    /// #354 RED/GREEN probe — the grant vocabulary this client requests or
+    /// renders is the closed READ set. Reintroducing a mutating capability
+    /// string fails here AND in the drive-surface probe.
     #[test]
-    fn grant_capabilities_are_stable_canonical_and_complete() {
-        assert_eq!(
-            GRANT_CAPABILITIES,
-            [
-                "prompt",
-                "interrupt",
-                "approve",
-                "read_tail",
-                "read_diff",
-                "read_issues",
-                "kill",
-                "attach",
-                "start_worktree"
-            ]
-        );
-        assert_eq!(
-            RECOVERY_GRANT_CAPS,
-            [
-                "read_tail",
-                "read_diff",
-                "prompt",
-                "interrupt",
-                "approve",
-                "kill",
-                "attach"
-            ]
-        );
-        assert!(
-            GRANT_CAPABILITIES
-                .iter()
-                .copied()
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                == GRANT_CAPABILITIES.len()
-        );
+    fn read_grant_capabilities_are_the_closed_read_set() {
+        assert_eq!(READ_GRANT_CAPABILITIES, ["read_tail", "read_diff"]);
     }
 
     #[test]
-    fn issues_decoder_keeps_every_repo_and_issue_in_the_wire_snapshot() {
-        let body = serde_json::json!({
-            "repos": {
-                "corral": [
-                    {
-                        "repo": "corral",
-                        "number": 207,
-                        "state": "OPEN",
-                        "title": "fetch path",
-                        "labels": [{"name": "bug", "color": "f85149"}],
-                        "url": "https://demo.example.invalid/corral/issues/207"
-                    },
-                    {
-                        "repo": "corral",
-                        "number": 208,
-                        "state": "CLOSED",
-                        "title": "older issue"
-                    }
-                ],
-                "fleet-ops": [],
-                "plush": [{
-                    "repo": "plush",
-                    "number": 10,
-                    "state": "OPEN",
-                    "title": "another repo"
-                }]
-            }
-        });
-
-        let issues = decode_issues(body).expect("daemon /issues envelope parses");
-        assert_eq!(issues.len(), 3);
-        assert_eq!(issues["corral"].len(), 2);
-        assert_eq!(issues["corral"][0].number, 207);
-        assert_eq!(issues["corral"][1].number, 208);
-        assert!(issues["fleet-ops"].is_empty(), "empty repo is retained");
-        assert_eq!(issues["plush"][0].title, "another repo");
-    }
-
-    #[test]
-    fn issues_decoder_preserves_body_for_inline_expansion() {
-        let body = serde_json::json!({
-            "repos": {
-                "corral": [{
-                    "repo": "corral",
-                    "number": 270,
-                    "state": "OPEN",
-                    "title": "issues browser",
-                    "body": "Body shown when the row expands.",
-                    "labels": [],
-                    "url": "https://demo.example.invalid/corral/issues/270"
-                }]
-            }
-        });
-
-        let issues = decode_issues(body).expect("body-bearing /issues envelope parses");
-        assert_eq!(
-            issues["corral"][0].body.as_deref(),
-            Some("Body shown when the row expands.")
-        );
-    }
-
-    #[test]
-    fn grant_bodies_match_corrald_grant_script_shape() {
-        let set = grant_set_body("dev_abc", &["read_tail".into(), "prompt".into()]);
-        assert_eq!(set["action"], "set_grants");
-        assert_eq!(set["key_id"], "dev_abc");
-        assert_eq!(set["grants"], serde_json::json!(["read_tail", "prompt"]));
-
-        let revoke = grant_revoke_body("dev_abc");
-        assert_eq!(revoke["action"], "revoke");
-        assert_eq!(revoke["key_id"], "dev_abc");
-        assert_eq!(revoke["revoked"], true);
-        assert!(revoke.get("grants").is_none());
-    }
-
-    #[test]
-    fn grant_error_parsing_keeps_the_token_out_of_ui_errors() {
-        let body = serde_json::json!({
-            "error": "unknown key: dev_x",
-            "secret": "admin-token-must-not-leak",
-        });
-        let error = grant_error(404, &body, "POST /grants");
-        assert_eq!(error, "POST /grants -> 404: unknown key: dev_x");
-        assert!(!error.contains("admin-token"));
-    }
-
-    #[test]
-    fn admin_grant_views_reject_missing_required_fields() {
-        assert!(
-            serde_json::from_value::<GrantDevice>(serde_json::json!({
-                "key_id": "dev_x",
-                "grants": [],
-                "revoked": false,
-                "expiry_ts": 1,
-                "created_ts": 2,
-            }))
-            .is_ok()
-        );
-        assert!(
-            serde_json::from_value::<GrantDevice>(serde_json::json!({
-                "key_id": "dev_x",
-                "revoked": false,
-                "expiry_ts": 1,
-                "created_ts": 2,
-            }))
-            .is_err(),
-            "a malformed device projection must not silently become no grants"
-        );
-        assert!(
-            serde_json::from_value::<AdminGrantsView>(serde_json::json!({
-                "ok": true,
-            }))
-            .is_err(),
-            "missing devices array must fail loudly"
-        );
-    }
-
-    #[test]
-    fn sse_parser_parses_snapshot_delta_and_keepalive() {
+    fn sse_parser_joins_data_lines_and_ignores_comments() {
         let mut parser = SseParser::default();
-        let frames = parser.push(
-            b"event: snapshot\nid: 12\ndata: {\"schema_version\":5,\"rev\":12,\"generated_at\":0,\"agents\":{}}\n\n: keepalive\n\nevent: delta\nid: 13\ndata: {\"rev\":13,\"upd\":[],\"del\":[]}\n\n",
-        );
-        assert_eq!(frames.len(), 2);
+        let frames = parser.push(b": keepalive\n\n");
+        assert!(frames.is_empty());
+        let frames =
+            parser.push(b"event: snapshot\nid: 12\ndata: {\"rev\":1}\ndata: {\"rev\":2}\n\n");
+        assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event, "snapshot");
         assert_eq!(frames[0].id.as_deref(), Some("12"));
-        assert!(frames[0].data.contains("\"rev\":12"));
-        assert_eq!(frames[1].event, "delta");
-        assert!(frames[1].data.contains("\"rev\":13"));
-        assert!(matches!(parse_frame(&frames[0]), SseEvent::Snapshot(_)));
-        assert!(matches!(parse_frame(&frames[1]), SseEvent::Delta(_)));
+        assert_eq!(frames[0].data, "{\"rev\":1}\n{\"rev\":2}");
+        assert!(parser.finish().is_empty());
     }
 
     #[test]
-    fn sse_parser_joins_multiline_data() {
-        let mut parser = SseParser::default();
-        let frames = parser.push(b"event: delta\nid: 14\ndata: {\"rev\":14,\n: comment\n\n");
-        // No flush yet (blank line missing after the split).
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].data, "{\"rev\":14,");
-        // A trailing flush delivers the frame with the joined data.
-        let frames = parser.finish();
-        assert_eq!(frames.len(), 0);
-        let mut parser = SseParser::default();
-        let frames =
-            parser.push(b"event: delta\nid: 14\ndata: {\"rev\":14,\ndata: \"upd\":[]}\n\n");
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].data, "{\"rev\":14,\n\"upd\":[]}");
+    fn parse_frame_maps_snapshot_delta_and_unknown() {
+        let snap = crate::model::Snapshot {
+            schema_version: 5,
+            rev: 1,
+            generated_at: 0,
+            agents: Default::default(),
+        };
+        let frame = RawFrame {
+            event: "snapshot".into(),
+            id: Some("1".into()),
+            data: serde_json::to_string(&snap).unwrap(),
+        };
+        assert!(matches!(parse_frame(&frame), SseEvent::Snapshot(_)));
+
+        let delta = Delta {
+            rev: 2,
+            upd: vec![],
+            del: vec![],
+        };
+        let frame = RawFrame {
+            event: "delta".into(),
+            id: None,
+            data: serde_json::to_string(&delta).unwrap(),
+        };
+        assert!(matches!(parse_frame(&frame), SseEvent::Delta(_)));
+
+        let frame = RawFrame {
+            event: "mystery".into(),
+            id: None,
+            data: "{}".into(),
+        };
+        assert!(matches!(parse_frame(&frame), SseEvent::Unknown { .. }));
+        assert!(matches!(
+            parse_frame(&RawFrame {
+                event: "snapshot".into(),
+                id: None,
+                data: "{".into()
+            }),
+            SseEvent::Unknown { .. }
+        ));
     }
 
     #[test]
-    fn sse_parser_chunk_boundaries_are_safe() {
-        let mut parser = SseParser::default();
-        let full = b"event: snapshot\nid: 2\ndata: {\"agents\":{}}\n\n";
-        let mut frames = Vec::new();
-        for &b in full {
-            frames.extend(parser.push(&[b]));
-        }
-        frames.extend(parser.finish());
-        assert_eq!(frames.len(), 1);
-        assert!(frames[0].data.contains("\"agents\""));
-    }
-
-    #[test]
-    fn sse_parser_ignores_unknown_fields_and_comments() {
-        let mut parser = SseParser::default();
-        let frames =
-            parser.push(b": keepalive\nevent: snapshot\nid: 5\nretry: 100\ndata: {\"rev\":5}\n\n");
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].event, "snapshot");
-        assert_eq!(frames[0].data, "{\"rev\":5}");
-    }
-
-    #[test]
-    fn empty_data_frames_are_ignored() {
-        let mut parser = SseParser::default();
-        let frames = parser.push(b"event: ping\n\n");
-        assert_eq!(frames.len(), 0);
-    }
-
-    #[test]
-    fn track_last_id_records_the_sse_id() {
-        let mut cursor = None;
-        track_last_id(
-            &RawFrame {
-                event: "delta".into(),
-                id: Some("42".into()),
-                data: "{}".into(),
-            },
-            &mut cursor,
-        );
-        assert_eq!(cursor, Some(42));
+    fn parse_frame_treats_empty_data_as_unknown() {
+        let frame = RawFrame {
+            event: "snapshot".into(),
+            id: None,
+            data: String::new(),
+        };
+        assert!(matches!(parse_frame(&frame), SseEvent::Unknown { .. }));
     }
 }

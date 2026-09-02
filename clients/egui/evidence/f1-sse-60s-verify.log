@@ -1,6 +1,0 @@
-== F1 re-verification: one SSE connection lives past 60s ==
-scratch daemon: 127.0.0.1:8576; app connected 09:02:29; observed 75s
-daemon-side 'SSE client joined' count over 75s of continuous uptime: 1 (pre-fix: 2+, reconnect at 60.5s)
-
--- daemon log excerpt --
-2026-08-16T09:02:29.019012Z  INFO corrald::api: SSE client joined with full snapshot rev=34

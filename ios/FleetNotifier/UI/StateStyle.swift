@@ -5,7 +5,9 @@ import SwiftUI
 
 extension UIColor {
     /// `#RRGGBB` → opaque `UIColor`. Hexes come from
-    /// `contracts/state-tokens.json` (single source of truth).
+    /// `contracts/state-tokens.json` (single source of truth for colors and
+    /// marks; the #354 L2 board labels deliberately diverge from that
+    /// contract's display words — see below).
     convenience init(hex: String) {
         let clean = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         let hexString = clean.hasPrefix("#") ? String(clean.dropFirst()) : clean
@@ -30,11 +32,19 @@ extension Color {
 
 // MARK: - StateStyle
 
-/// Read-model styling for one `AgentState`, mirroring
-/// `contracts/state-tokens.json` (label + mark token + light/dark hex).
-/// Both clients consume that contract so the state→color/label vocabulary
-/// can never diverge again. The color is a dynamic `Color(light:dark:)` so
-/// it participates in dark mode and accessibility contrast.
+/// Read-model styling for one `AgentState`.
+///
+/// Colors + glyph marks mirror `contracts/state-tokens.json` (both clients
+/// consume that contract so state→color can never diverge). The LABEL is the
+/// herdr RAW state token verbatim — working / idle / blocked / unknown —
+/// per the #354 spec amendment (09-02): herdr 0.8.2 has NO `done` (finished
+/// Hermes panes fall back to idle), and Corral-invented wording (Needs-you /
+/// Supervising / Finished) is banned on the read-only board. `contracts/
+/// state-tokens.json` itself is shared with the egui client (L3-owned at the
+/// cut base), so this divergence is iOS-local until egui lands its own cut.
+///
+/// Ranks encode the board's attention order: blocked → working → idle →
+/// unknown, with a wire-`done` record ranked with idle (its herdr fallback).
 struct StateStyle: Equatable, Sendable {
     let state: AgentState
     let label: String
@@ -46,20 +56,22 @@ struct StateStyle: Equatable, Sendable {
     static func style(for state: AgentState) -> StateStyle {
         switch state {
         case .blocked:
-            return StateStyle(state: .blocked, label: "Needs you", mark: "alert",
+            return StateStyle(state: .blocked, label: "blocked", mark: "alert",
                               rank: 0, darkHex: "#F85149", lightHex: "#CF222E")
-        case .done:
-            return StateStyle(state: .done, label: "Review", mark: "check",
-                              rank: 1, darkHex: "#D29922", lightHex: "#9A6700")
         case .working:
-            return StateStyle(state: .working, label: "Working", mark: "ring",
-                              rank: 2, darkHex: "#58A6FF", lightHex: "#0969DA")
+            return StateStyle(state: .working, label: "working", mark: "ring",
+                              rank: 1, darkHex: "#58A6FF", lightHex: "#0969DA")
         case .idle:
-            return StateStyle(state: .idle, label: "Idle", mark: "dot",
-                              rank: 3, darkHex: "#8B949E", lightHex: "#6E7781")
+            return StateStyle(state: .idle, label: "idle", mark: "dot",
+                              rank: 2, darkHex: "#8B949E", lightHex: "#6E7781")
+        case .done:
+            // Finished Hermes panes fall back to idle in herdr 0.8.2; a
+            // wire `done` (transitional daemon) ranks + reads as idle.
+            return StateStyle(state: .done, label: "done", mark: "check",
+                              rank: 2, darkHex: "#D29922", lightHex: "#9A6700")
         case .unknown:
-            return StateStyle(state: .unknown, label: "Unknown", mark: "query",
-                              rank: 4, darkHex: "#6E7681", lightHex: "#8C959F")
+            return StateStyle(state: .unknown, label: "unknown", mark: "query",
+                              rank: 3, darkHex: "#6E7681", lightHex: "#8C959F")
         }
     }
 

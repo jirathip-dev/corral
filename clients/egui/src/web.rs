@@ -1,56 +1,40 @@
-//! Read-only web (wasm) board — the #215 web build of the corral fleet
-//! board. It deliberately serves ONLY the daemon's credential-free read
-//! plane (`GET /snapshot`, `GET /events` SSE; plus the read-only
-//! `GET /issues` projection) and can also render a
-//! bundled demo fixture with no daemon at all.
+//! The read-only WASM board (#215, #354 L3, #304): the v2 board renders
+//! `/snapshot` + `/events` SSE (and demo data out of the box). There is NO
+//! signed drive from the browser — the demo board feeds its recents through
+//! the same cache shape the desktop client uses, and live mode explains the
+//! desktop-only read path.
 //!
-//! Boundary (never narrowed, see the issue):
-//!
-//! - No `/drive`, no `/host-key`/`/step-up`, no `keyring`, no
-//!   registration, no grant editor. Every write control is replaced by the
-//!   disabled `read-only (web)` indicator (`BoardActions::read_only`), and
-//!   the drive closure is a no-op.
-//! - The base URL is user-configured (persisted to browser storage,
-//!   default `http://127.0.0.1:8474`) — nothing is compiled into the wasm.
-//! - Setup state (mode + URL) survives a refresh via `localStorage`.
-//!
-//! The live loop is a wasm-local task (`spawn_local`) — there is no tokio
-//! runtime on wasm; the reconnect policy mirrors the desktop
-//! `protocol::spawn_read_loop` (doubling backoff, capped; `Last-Event-ID`
-//! resume via the same `SseParser`).
+//! #354 L3 cut: the Issues tab is gone and the board is the repo-grouped
+//! read-only surface shared with the native client. #304: phone layout uses
+//! the full-width drill-in pattern (board list primary; tapping a row opens
+//! that agent's recents full-width with a Back action) — no permanent empty
+//! detail column.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use eframe::egui::{self, RichText};
 
-use crate::demo::{self, DemoData};
-use crate::model::{Delta, GhIssueRef, Snapshot};
-use crate::protocol::{
-    self, DEFAULT_HOST_URL, SSE_BACKOFF_BASE_MS, SSE_BACKOFF_MAX_MS, SseEvent, SseParser,
-};
-use crate::state::{ConnState, Fleet, Level};
+use crate::demo;
+use crate::drive::CanonicalBlock;
+use crate::model::{Delta, Snapshot};
+use crate::protocol::{self, DEFAULT_HOST_URL, SseParser};
+use crate::state::{ConnState, Fleet};
 use crate::theme;
-use crate::ui::board::{self, BoardActions};
 
-/// localStorage key for the setup state (#215 AC3: state survives refresh).
 const STORAGE_KEY: &str = "corral_web_setup_v1";
-/// Demo tick: one canned SSE frame every this many seconds.
-const DEMO_STEP_INTERVAL: f64 = 3.0;
-/// Issues/fleet-identity refresh cadence while live (mirrors the client's
-/// ISSUES_REFRESH_INTERVAL).
-const REFRESH_INTERVAL_SECS: f64 = 5.0;
+const DEMO_STEP_INTERVAL: f64 = 4.0;
 
+/// Where the board gets its data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WebMode {
-    /// Bundled fixture — works on a static Pages deploy, no daemon.
     Demo,
-    /// Live daemon on the user-configured base URL (loopback local).
     Live,
 }
 
-#[derive(Debug, Clone)]
+/// Persisted setup: mode + daemon base URL (localStorage).
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct WebSetup {
     mode: WebMode,
     base_url: String,
@@ -58,71 +42,56 @@ struct WebSetup {
 
 impl WebSetup {
     fn load() -> Option<Self> {
-        let storage = storage()?;
-        let raw = storage.get_item(STORAGE_KEY).ok()??;
-        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        let mode = match value.get("mode").and_then(|m| m.as_str()) {
-            Some("live") => WebMode::Live,
-            _ => WebMode::Demo,
+        let raw = storage()?.get_item(STORAGE_KEY).ok()??;
+        let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+        let mode = match value.get("mode")?.as_str()? {
+            "demo" => WebMode::Demo,
+            "live" => WebMode::Live,
+            _ => return None,
         };
-        let base_url = value
-            .get("base_url")
-            .and_then(|u| u.as_str())
-            .unwrap_or(DEFAULT_HOST_URL)
-            .to_string();
-        Some(WebSetup { mode, base_url })
+        Some(Self {
+            mode,
+            base_url: value.get("base_url")?.as_str()?.to_string(),
+        })
     }
 
     fn save(&self) {
-        let Some(storage) = storage() else {
-            return;
-        };
-        let mode = match self.mode {
-            WebMode::Demo => "demo",
-            WebMode::Live => "live",
-        };
-        let value = serde_json::json!({ "mode": mode, "base_url": self.base_url });
-        // localStorage quota failures are non-fatal: the app still runs,
-        // it just forgets the setup on the next refresh.
-        let _ = storage.set_item(STORAGE_KEY, &value.to_string());
+        let value = serde_json::json!({
+            "mode": match self.mode { WebMode::Demo => "demo", WebMode::Live => "live" },
+            "base_url": self.base_url,
+        });
+        if let Some(storage) = storage() {
+            let _ = storage.set_item(STORAGE_KEY, &value.to_string());
+        }
     }
 }
 
-/// A transient UI message on the web board. `std::time::Instant` is NOT
-/// available on wasm32-unknown-unknown (`time not implemented on this
-/// platform` — Rust 1.97), so ages ride `performance.now()` millis.
+/// A transient web toast.
 struct WebToast {
     text: String,
-    level: Level,
+    level: crate::state::Level,
     at_ms: f64,
 }
 
-/// Millis since page load (the JS monotonic clock; same clock egui uses).
+/// Milliseconds since the epoch (web clock; std time panics on wasm).
 fn now_ms() -> f64 {
-    web_sys::window()
-        .and_then(|window| window.performance())
-        .map(|performance| performance.now())
-        .unwrap_or(0.0)
+    js_sys::Date::now()
 }
 
-/// Render queued toasts in the top-right corner (mirrors
-/// `crate::ui::toast_area` but with the web's own clock).
 fn toast_area(ctx: &egui::Context, toasts: &mut VecDeque<WebToast>) {
-    const LIFETIME_MS: f64 = 10_000.0;
-    let now = now_ms();
-    toasts.retain(|toast| now - toast.at_ms < LIFETIME_MS);
+    toasts.retain(|t| now_ms() - t.at_ms < 10_000.0);
     if toasts.is_empty() {
         return;
     }
     egui::Area::new(egui::Id::new("corral-web-toasts"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 48.0))
         .show(ctx, |ui| {
-            ui.set_max_width(420.0);
+            ui.set_max_width(360.0);
             for toast in toasts.iter() {
                 let color = match toast.level {
-                    Level::Info => theme::ui::GOOD,
-                    Level::Warn => theme::ui::WARN,
-                    Level::Error => theme::ui::BAD,
+                    crate::state::Level::Info => theme::ui::GOOD,
+                    crate::state::Level::Warn => theme::ui::WARN,
+                    crate::state::Level::Error => theme::ui::BAD,
                 };
                 egui::Frame::popup(ui.style())
                     .fill(theme::ui::PANEL3)
@@ -148,16 +117,8 @@ fn storage() -> Option<web_sys::Storage> {
 enum InboxMsg {
     Snapshot(Snapshot),
     Delta(Delta),
-    Issues(Result<BTreeMap<String, Vec<GhIssueRef>>, String>),
-
     Conn(ConnState),
     Toast(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Board,
-    Issues,
 }
 
 /// The read-only web board.
@@ -172,15 +133,15 @@ pub struct WebCorralApp {
     /// to reopen it (mode/URL changes take effect immediately on apply).
     setup_open: bool,
     inbox: Rc<RefCell<VecDeque<InboxMsg>>>,
-    tab: Tab,
+    /// The agent whose recents drill-in is open (`None` = the board).
+    selected: Option<String>,
     /// Latest live-loop generation; loops check it to yield after a
     /// host/mode switch.
     live_generation: u64,
     current_generation: Rc<std::cell::Cell<u64>>,
-    demo: Option<DemoData>,
+    demo: Option<demo::DemoData>,
     demo_step: usize,
     demo_last: f64,
-    issues_last_refresh: f64,
 }
 
 impl WebCorralApp {
@@ -207,13 +168,12 @@ impl WebCorralApp {
             setup,
             setup_open,
             inbox: Rc::new(RefCell::new(VecDeque::new())),
-            tab: Tab::Board,
+            selected: None,
             live_generation: 0,
             current_generation: Rc::new(std::cell::Cell::new(0)),
             demo: None,
             demo_step: 0,
             demo_last: now_ms(),
-            issues_last_refresh: now_ms(),
         };
         match app.setup.mode {
             WebMode::Demo => app.load_demo(),
@@ -228,37 +188,16 @@ impl WebCorralApp {
         if let Some(data) = &self.demo {
             self.fleet = Fleet::default();
             self.fleet.apply_snapshot(&data.snapshot);
-            self.fleet.set_issues(Ok(data.issues.clone()));
-
+            // The fixture's recents feed the SAME cache shape as live
+            // read_tail results, so the drill-in renders identically.
             for agent in data.snapshot.agents.values() {
-                if agent
-                    .capabilities
-                    .iter()
-                    .any(|capability| capability == "read_tail")
-                {
-                    // #316 V3: the demo feeds the canonical blocks (when the
-                    // fixture carries them) through the exact same cache as
-                    // live results, so the Recent-output surface renders the
-                    // real Conversation / Harness activity split.
+                if agent.can_read_tail() {
                     self.fleet.remember_tail_full(
                         &agent.agent_id,
                         demo::recent_tail(),
                         demo::recent_tail_blocks(),
                         Some(data.snapshot.rev),
                     );
-                }
-            }
-            // Select the fixture's first read_tail agent so the demo board
-            // opens straight onto the V3 Recent-output detail (deterministic:
-            // fixture order, not insertion order).
-            if self.fleet.selected_agent.is_none() {
-                if let Some(first) = data
-                    .snapshot
-                    .agents
-                    .values()
-                    .find(|agent| agent.capabilities.iter().any(|c| c == "read_tail"))
-                {
-                    self.fleet.select_agent(&first.agent_id);
                 }
             }
         }
@@ -289,6 +228,7 @@ impl WebCorralApp {
     /// Start (or restart) the live read loop on a wasm local executor.
     fn start_live(&mut self) {
         self.fleet = Fleet::default();
+        self.selected = None;
         self.conn = ConnState::Connecting;
         self.live_generation += 1;
         let generation = self.live_generation;
@@ -299,7 +239,7 @@ impl WebCorralApp {
         let inbox = self.inbox.clone();
         let ctx = self.ctx.clone();
         let current = self.current_generation.clone();
-        let mut backoff_ms = SSE_BACKOFF_BASE_MS;
+        let mut backoff_ms = protocol::SSE_BACKOFF_BASE_MS;
         // Last-Event-ID cursor: persists across reconnects so the daemon
         // resumes from the newest rev instead of re-sending the world.
         let mut last_rev: Option<u64> = None;
@@ -312,7 +252,7 @@ impl WebCorralApp {
                 // 1) Fresh snapshot first (also the reconnect recovery).
                 match protocol::fetch_snapshot(&client, &base_url).await {
                     Ok(snapshot) => {
-                        backoff_ms = SSE_BACKOFF_BASE_MS;
+                        backoff_ms = protocol::SSE_BACKOFF_BASE_MS;
                         let _ = inbox.borrow_mut().push_back(InboxMsg::Snapshot(snapshot));
                         let _ = inbox
                             .borrow_mut()
@@ -330,8 +270,6 @@ impl WebCorralApp {
                 ctx.request_repaint();
 
                 // 2) Long-lived SSE stream with Last-Event-ID resume.
-                // reqwest's wasm backend streams via `bytes_stream()`
-                // (no `chunk()` there, unlike native).
                 match protocol::open_events(&client, &base_url, last_rev).await {
                     Ok(response) => {
                         use futures_util::StreamExt;
@@ -343,24 +281,21 @@ impl WebCorralApp {
                                     let mut changed = false;
                                     for raw in parser.push(&chunk) {
                                         match protocol::parse_frame(&raw) {
-                                            SseEvent::Snapshot(snapshot) => {
+                                            protocol::SseEvent::Snapshot(snapshot) => {
                                                 last_rev = Some(snapshot.rev);
                                                 let _ = inbox
                                                     .borrow_mut()
                                                     .push_back(InboxMsg::Snapshot(snapshot));
                                                 changed = true;
                                             }
-                                            SseEvent::Delta(delta) => {
+                                            protocol::SseEvent::Delta(delta) => {
                                                 last_rev = Some(delta.rev);
                                                 let _ = inbox
                                                     .borrow_mut()
                                                     .push_back(InboxMsg::Delta(delta));
                                                 changed = true;
                                             }
-                                            // Forward-compatible: ignore event
-                                            // types the read model has no
-                                            // opinion on (same as desktop).
-                                            SseEvent::Unknown { .. } => {}
+                                            protocol::SseEvent::Unknown { .. } => {}
                                         }
                                     }
                                     if changed {
@@ -391,45 +326,13 @@ impl WebCorralApp {
                     .push_back(InboxMsg::Conn(ConnState::Reconnecting { backoff_ms }));
                 ctx.request_repaint();
                 gloo_timers::future::TimeoutFuture::new(backoff_ms as u32).await;
-                backoff_ms = (backoff_ms * 2).min(SSE_BACKOFF_MAX_MS);
+                backoff_ms = (backoff_ms * 2).min(protocol::SSE_BACKOFF_MAX_MS);
             }
-            // A superseded loop (host/mode switch) exits quietly.
         });
         self.ctx.request_repaint();
     }
 
-    /// Periodic refresh of the read-only issues projection while live,
-    /// mirroring the desktop client's cadence. The fleet-identity catalog is
-    /// refreshed from the Issues tab too: it is the only remaining consumer
-    /// (the #269 Fleets tab is gone) and the Issues view needs it to resolve
-    /// repo categories into exact fleet-name drive targets.
-    fn live_ticks(&mut self) {
-        let now = now_ms();
-        if self.tab == Tab::Issues
-            && now - self.issues_last_refresh >= REFRESH_INTERVAL_SECS * 1000.0
-        {
-            self.issues_last_refresh = now;
-            self.request_issues();
-        }
-    }
-
-    fn request_issues(&mut self) {
-        if self.fleet.issues_loading {
-            return;
-        }
-        self.fleet.issues_loading = true;
-        let client = self.client.clone();
-        let base_url = self.setup.base_url.clone();
-        let inbox = self.inbox.clone();
-        let ctx = self.ctx.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = protocol::fetch_issues(&client, &base_url).await;
-            let _ = inbox.borrow_mut().push_back(InboxMsg::Issues(result));
-            ctx.request_repaint();
-        });
-    }
-
-    fn push_toast(&mut self, text: impl Into<String>, level: Level) {
+    fn push_toast(&mut self, text: impl Into<String>, level: crate::state::Level) {
         self.toasts.push_back(WebToast {
             text: text.into(),
             level,
@@ -453,11 +356,15 @@ impl WebCorralApp {
                     self.fleet.apply_delta(&delta);
                     self.conn = ConnState::Connected;
                 }
-                Some(InboxMsg::Issues(result)) => self.fleet.set_issues(result),
-
                 Some(InboxMsg::Conn(conn)) => self.conn = conn,
-                Some(InboxMsg::Toast(text)) => self.push_toast(text, Level::Warn),
+                Some(InboxMsg::Toast(text)) => self.push_toast(text, crate::state::Level::Warn),
                 None => break,
+            }
+        }
+        // A dropped/unknown selection must not strand the drill-in.
+        if let Some(selected) = self.selected.clone() {
+            if !self.fleet.agents.contains_key(&selected) {
+                self.selected = None;
             }
         }
     }
@@ -489,7 +396,7 @@ impl WebCorralApp {
                     .strong()
                     .color(theme::ui::TEXT_STRONG),
             );
-            crate::ui::badge(ui, "read-only (web)", theme::ui::WARN);
+            crate::ui::badge(ui, "read-only", theme::ui::WARN);
             match self.setup.mode {
                 WebMode::Demo => {
                     crate::ui::badge(ui, "demo data", theme::ui::ACCENT);
@@ -509,57 +416,95 @@ impl WebCorralApp {
                 if ui.button("setup").clicked() {
                     self.setup_open = true;
                 }
-                ui.selectable_value(&mut self.tab, Tab::Board, "Board");
-                ui.selectable_value(&mut self.tab, Tab::Issues, "Issues");
             });
         });
         // The read-only boundary is stated where the action would be:
         // always visible, no hover required.
         ui.label(
             RichText::new(
-                "This build serves corrald's read plane only — no /drive, no host-key/step-up, \
-                 no keyring. Writes stay in the desktop client.",
+                "This build serves corrald's read plane only — no signed drive from the \
+                 browser. Recents on the desktop client read through the device-signed \
+                 read_tail path.",
             )
             .small()
             .color(theme::ui::TEXT_MUTED),
         );
     }
 
+    /// The board view (primary) and the recents drill-in (#304 full-width
+    /// pattern: no permanent detail column; Back returns to the board).
     fn content(&mut self, ui: &mut egui::Ui) {
-        let allowed = |_capability: &str| false;
-        match self.tab {
-            Tab::Board => {
-                let mut actions = BoardActions {
-                    drive: &mut |_intent| {
-                        // Unreachable: read_only=true short-circuits every
-                        // control before the drive callback.
-                    },
-                    read_only: true,
-                };
-                board::show(
-                    ui,
-                    &mut self.fleet,
-                    crate::state::CompletedMode::Collapsed,
-                    &allowed,
-                    &mut actions,
-                );
+        let open = self.selected.clone();
+        if let Some(agent_id) = open {
+            self.recents_drill_in(ui, &agent_id);
+        } else {
+            self.board_view(ui);
+        }
+    }
+
+    fn board_view(&mut self, ui: &mut egui::Ui) {
+        let clicked =
+            crate::ui::board::show_board(ui, &self.fleet, self.conn, None, None, true, "web-row");
+        if let Some(agent_id) = clicked {
+            // Demo mode feeds the recents from the fixture; live recents
+            // explain the desktop-only read path inside the drill-in.
+            self.selected = Some(agent_id);
+        }
+        if self.selected.is_none() && !self.fleet.agents.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("tap an agent to read its recent output")
+                    .small()
+                    .color(theme::ui::TEXT_MUTED),
+            );
+        }
+    }
+
+    fn recents_drill_in(&mut self, ui: &mut egui::Ui, agent_id: &str) {
+        if ui.button("← fleet board").clicked() {
+            self.selected = None;
+            return;
+        }
+        ui.separator();
+        let Some(agent) = self.fleet.agents.get(agent_id).cloned() else {
+            self.selected = None;
+            return;
+        };
+        match self.setup.mode {
+            WebMode::Demo => {
+                // The fixture's cached tail renders through the exact same
+                // read-model cache as the desktop client's live results.
+                let lines: &[String] = self
+                    .fleet
+                    .tails
+                    .get(agent_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let blocks: &[CanonicalBlock] = self
+                    .fleet
+                    .tail_blocks
+                    .get(agent_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let rows = crate::ui::board::tail_rows(lines, blocks);
+                let phase =
+                    crate::ui::board::recents_phase(&self.fleet, agent_id, agent.can_read_tail());
+                let mut noop = || {};
+                crate::ui::board::show_recents(ui, &agent, &rows, phase, true, &mut noop);
             }
-            Tab::Issues => {
-                let mut refresh_requested = false;
-                crate::ui::issues::show(ui, &self.fleet, &allowed, &mut |_intent| {}, &mut || {
-                    refresh_requested = true
-                });
-                if refresh_requested {
-                    if self.setup.mode == WebMode::Live {
-                        self.issues_last_refresh = now_ms();
-                        self.request_issues();
-                    } else {
-                        self.push_toast(
-                            "demo data — there is no daemon to refresh from",
-                            Level::Info,
-                        );
-                    }
-                }
+            WebMode::Live => {
+                // No signed drive exists in the browser build (#215): the
+                // live drill-in explains the boundary instead of pretending.
+                crate::ui::board::show_recents(
+                    ui,
+                    &agent,
+                    &[],
+                    crate::ui::board::RecentsPhase::Error(
+                        "live recent output needs the signed desktop client (read_tail)".into(),
+                    ),
+                    false,
+                    &mut || {},
+                );
             }
         }
     }
@@ -569,7 +514,7 @@ impl WebCorralApp {
         let mut mode = self.setup.mode;
         let mut url = self.setup.base_url.clone();
         let mut apply = false;
-        egui::Window::new("corral fleet — read-only (web)")
+        egui::Window::new("corral fleet — read-only")
             .id(egui::Id::new("corral-web-setup"))
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .collapsible(false)
@@ -622,7 +567,6 @@ impl WebCorralApp {
                 }
                 if ui.small_button("cancel").clicked() {
                     self.setup_open = false;
-                    // Keep whatever mode the stored setup last configured.
                 }
             });
         if apply {
@@ -647,16 +591,15 @@ impl eframe::App for WebCorralApp {
         self.drain_inbox();
         match self.setup.mode {
             WebMode::Demo => self.demo_tick(),
-            WebMode::Live => self.live_ticks(),
+            WebMode::Live => {}
         }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain_inbox();
-        match self.setup.mode {
-            WebMode::Demo => self.demo_tick(),
-            WebMode::Live => self.live_ticks(),
+        if self.setup.mode == WebMode::Demo {
+            self.demo_tick();
         }
         // The board always renders (the demo board is populated out of the
         // box); the setup panel only floats above it on first open.
@@ -669,7 +612,7 @@ impl eframe::App for WebCorralApp {
         if self.setup_open {
             self.setup_panel(&ctx);
         }
-        // Keep the live board ticking even while the tab is idle.
+        // Keep the live board ticking even while no input arrives.
         if self.setup.mode == WebMode::Live {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }

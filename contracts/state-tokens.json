@@ -1,7 +1,7 @@
 [
-  {"state":"blocked","rank":0,"label":"Needs you","dark":"#F85149","light":"#CF222E","mark":"alert"},
-  {"state":"done","rank":1,"label":"Review","dark":"#D29922","light":"#9A6700","mark":"check"},
-  {"state":"working","rank":2,"label":"Working","dark":"#58A6FF","light":"#0969DA","mark":"ring"},
-  {"state":"idle","rank":3,"label":"Idle","dark":"#8B949E","light":"#6E7781","mark":"dot"},
-  {"state":"unknown","rank":4,"label":"Unknown","dark":"#6E7681","light":"#8C959F","mark":"query"}
+  {"state":"blocked","rank":0,"label":"blocked","dark":"#F85149","light":"#CF222E","mark":"alert"},
+  {"state":"done","rank":2,"label":"done","dark":"#D29922","light":"#9A6700","mark":"check"},
+  {"state":"working","rank":1,"label":"working","dark":"#58A6FF","light":"#0969DA","mark":"ring"},
+  {"state":"idle","rank":2,"label":"idle","dark":"#8B949E","light":"#6E7781","mark":"dot"},
+  {"state":"unknown","rank":3,"label":"unknown","dark":"#6E7681","light":"#8C959F","mark":"query"}
 ]

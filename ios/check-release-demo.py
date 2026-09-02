@@ -27,6 +27,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from release_source_manifest import (
@@ -37,6 +38,7 @@ from release_source_manifest import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 
 # This binds an inspected executable to the exact Release app source set used
 # for the approved build.  The declared build phase generates the marker from
@@ -79,7 +81,37 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # and AppModel, with bounded/cancellable read_diff.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
     # the digest covers the merged #328/#329/#330, #333, and #331 source set.
-    "d86a471570a0ad08277b435f5056b82e9dc8290fac87316ff9df977dede0156c"
+    # #332 R3: post-integration reconciliation retained the workspace-derived
+    # scope and AC8 parity boundaries while preserving the production Keychain
+    # default and bounded grant-test seam.
+    # #332 R4: the grant fixture clears stored admin credentials before each
+    # test; FleetNotifierTests.swift is pinned separately because it is not a
+    # Release source input.
+    # #328/#329/#330: recent-output attribution, divider-vs-content handling,
+    # bounded harness presentation, and empty-Conversation evidence.
+    # #319/#320 grouped R2: ordered status presentation, structured
+    # supervision evidence, and Finished wording updated the board sources.
+    # R6: recomputed over the merged 23-file Release source set.
+    # #354 L2: the client cut removed Issues/Terminal/Diff/actions/admin —
+    # deleted sources (Biometrics, BoardFilter, DestructivePatterns,
+    # LiveVerifyRunner, TerminalAttach) left the manifest, the remaining
+    # sources were pruned to the read surface, and the digest was
+    # re-pinned over the new 18-file Release source set.
+    # #354 L2 fix: CodableValue.tailSourceRev accepts small Int64-coded
+    # revisions (the single-value decoder prefers Int64) — re-pinned.
+    # #354 L2 gate fix: demo route hooks fully DEBUG-gated in FleetViews —
+    # re-pinned.
+    "0dd3d2485c5ffb8df3fc00541e615c26eba1fb628e936b2150b4976375d2b364"
+)
+APPROVED_TEST_SOURCE_DIGEST = (
+    # #332 R4: pin the focused grant fixture independently from the Release
+    # app source manifest so a test-source mutation cannot be green-on-green.
+    # R6: integration's #319/#320 FleetNotifierTests changes are included;
+    # the pin follows the merged focused grant test source.
+    # #354 L2: the test suite was rebuilt for the read-only client
+    # (removed action/issue/diff/terminal/admin classes; added board,
+    # transition, payload, recents-tail, and wiring tests) — re-pinned.
+    "99b787553d9bfb2877a0069cf1889502f1c4975f4155bf57f380589810e9c302"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -93,44 +125,33 @@ RELEASE_BUILD_OUTPUT = "$(DERIVED_FILE_DIR)/corral-release-source-digest"
 SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/App/FleetNotifierApp.swift": (
         r"-demoMode",
-        r"-liveVerify",
-        r"LiveVerifyRunner",
+        r"-corralDemoDetail",
         r"enterDemo",
     ),
     "ios/FleetNotifier/App/AppModel.swift": (
         r"\.demo\b",
         r"enterDemo",
         r"exitDemo",
-        r"driveDemo",
+        r"driveDemoReadTail",
         r"DemoFleet",
         r"seedDemo",
-        r"upsertDemo",
-        r"\(demo\)",
     ),
     "ios/FleetNotifier/App/FleetStore.swift": (
         r"seedDemo",
         r"upsertDemo",
     ),
-    "ios/FleetNotifier/App/LiveVerifyRunner.swift": (
-        r"-liveVerify",
-        r"liveVerify",
-        r"LiveVerifyRunner",
-    ),
     "ios/FleetNotifier/Demo/DemoFleet.swift": (
         r"DemoFleet",
         r"demo-",
-        r"demo mode",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         r"\.demo\b",
-        r"\(demo\)",
-        r"driveDemo",
         r"enterDemo",
         r"exitDemo",
         r"Demo mode",
         r"Exit demo",
         r"Try demo fleet",
-        r"Seeded fake fleet",
+        r"Seeded fake read-only fleet",
     ),
 }
 
@@ -138,10 +159,6 @@ SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/App/FleetNotifierApp.swift": ("#if DEBUG", "-demoMode"),
     "ios/FleetNotifier/App/AppModel.swift": ("#if DEBUG", "func enterDemo"),
     "ios/FleetNotifier/App/FleetStore.swift": ("#if DEBUG", "func seedDemo"),
-    "ios/FleetNotifier/App/LiveVerifyRunner.swift": (
-        "#if DEBUG",
-        "final class LiveVerifyRunner",
-    ),
     "ios/FleetNotifier/Demo/DemoFleet.swift": ("#if DEBUG", "enum DemoFleet"),
     "ios/FleetNotifier/UI/FleetViews.swift": ("#if DEBUG", "Demo mode"),
 }
@@ -151,48 +168,33 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/App/AppModel.swift": (
         "func register(",
         "func startLive()",
-        "func driveKill(",
-        "func driveAttach(",
-        # #241 removed the transcript surface; #209 added the host-admin
-        # grants surface. These markers pin the Release app to the real
-        # client paths below.
+        # #354 L2: the Release app is the retained read-only client —
+        # registration, live SSE, the grants refresh, the signed read_tail
+        # drive, and the notification deep link.
         "func refreshGrants(",
-        "func loadAdminDevices(",
+        "func driveReadTail(",
+        "func openRecents(",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",
-        "model.driveInterrupt(",
-        "model.driveKill(",
-        "model.driveAttach(",
-        "model.drivePrompt(",
-        "model.loadEarlierOutput(",
-        "model.loadAdminDevices(",
-        "model.driveApprove(",
-        "model.handleCannedAction(",
+        "model.recentsAgentId",
+        "RecentOutputSheet",
     ),
 }
 
 BINARY_FORBIDDEN = (
     "-demoMode",
-    "-liveVerify",
     "Demo mode",
     "Exit demo",
     "Try demo fleet",
-    "Seeded fake fleet",
-    "demo-approve",
-    "demo-menu",
-    "demo-question",
-    "demo-crash",
-    "demo-working",
-    "demo-idle",
-    "demo-done",
+    "Seeded fake read-only fleet",
+    "herdr:demo-",
     "enterDemo",
     "exitDemo",
-    "driveDemo",
+    "driveDemoReadTail",
     "seedDemo",
     "upsertDemo",
     "DemoFleet",
-    "LiveVerifyRunner",
 )
 
 # Whole-module Release optimization may fold URL path literals into Foundation
@@ -226,13 +228,15 @@ UNICODE_LINE_SEPARATOR_SCALARS = frozenset({0x000A, 0x000D, 0x0085, 0x2028, 0x20
 SOURCE_STRING_MARKERS = frozenset(
     {
         "-demoMode",
-        "-liveVerify",
+        "-corralDemoDetail",
         "Demo mode",
         "Exit demo",
         "Try demo fleet",
-        "Seeded fake fleet",
+        "Seeded fake read-only fleet",
         "demo-",
         "demo mode",
+        # Historical literal the unicode/string-view self-test fixtures
+        # still exercise (strings-view membership, not a live source marker).
         r"\(demo\)",
     }
 )
@@ -707,6 +711,22 @@ def _check_release_source_digest(root: Path = ROOT) -> None:
         raise CheckFailure(
             "Release build source digest differs from the expected checkout "
             f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
+        )
+
+
+def _test_source_digest(root: Path = ROOT) -> str:
+    try:
+        return sha256((root / TEST_SOURCE_FILE).read_bytes()).hexdigest()
+    except OSError as error:
+        raise CheckFailure(str(error)) from error
+
+
+def _check_test_source_digest(root: Path = ROOT) -> None:
+    actual_digest = _test_source_digest(root)
+    if actual_digest != APPROVED_TEST_SOURCE_DIGEST:
+        raise CheckFailure(
+            "Grant test source digest differs from the expected checkout "
+            f"(expected {APPROVED_TEST_SOURCE_DIGEST}, got {actual_digest})"
         )
 
 
@@ -1221,9 +1241,9 @@ suffix
         )
 
         unguarded_literal = root / "unguarded-demo-literal.swift"
-        unguarded_literal.write_text('let banner = "(demo)"\n', encoding="utf-8")
+        unguarded_literal.write_text('let banner = "Demo mode"\n', encoding="utf-8")
         _expect_failure(
-            lambda: _check_source(unguarded_literal, (r"\(demo\)",)),
+            lambda: _check_source(unguarded_literal, ("Demo mode",)),
             "unguarded user-facing demo literal",
         )
 
@@ -1487,6 +1507,7 @@ def main() -> int:
             _self_test()
         _check_release_build_phase_configuration()
         _check_release_source_digest()
+        _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

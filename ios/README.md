@@ -1,9 +1,18 @@
-# Corral — iOS app for the corral control plane (fleet board + APNs notifier).
+# Corral — iOS app for the corral control plane (read-only fleet monitor).
 
-The iOS client for corrald: a fleet dashboard that surfaces blocked agents
-with their approval claims, answers them from the lock screen, and drives
-agents through the signed drive plane (D10/D13) — all Swift, no third-party
-SDKs (URLSession + Codable + CryptoKit).
+> **#354 L2 state (2026-09-02):** the client is READ-ONLY. The board shows
+> repo groups with raw herdr state chips (working / idle / blocked /
+> unknown), tapping a row opens the live recent-output tail, and Settings
+> holds connection + notification pairing only. Issues browsing, Terminal,
+> Diff, every action control (answer/prompt/interrupt/kill/attach/
+> start-worktree), and the device/grant admin UI were REMOVED. Sections of
+> this README that still describe those pre-cut surfaces are historical.
+
+The iOS client for corrald: a read-only fleet dashboard that shows what
+every agent is doing (state, repo, branch, time-in-state, pane), streams
+the bounded recent-output tail, and notifies on state changes
+(start / blocked / done) — all Swift, no third-party SDKs (URLSession +
+Codable + CryptoKit). Every read is signed with the device key (D10/D13).
 
 The wire contract is `docs/corral/P4-conformance.md`; the read model mirrors
 `src/core/model.rs` (schema v5). The daemon API is frozen — this app only
@@ -18,16 +27,14 @@ ios/
   FleetNotifier/
     Models/Models.swift          read model + wire response types (snake_case CodingKeys)
     Wire/CanonicalJSON.swift     serde_json-parity encoder (canonical envelope bytes)
-    Wire/DriveClient.swift       register / drive / step-up / typed errors
-    Wire/DestructivePatterns.swift  client mirror of the daemon's step-up gate
+    Wire/DriveClient.swift       register / read_tail drive / device-token / typed errors
     Network/SSEParser.swift      incremental SSE parser
     Network/CorraldClient.swift  snapshot + /events with Last-Event-ID + backoff
     Keychain/DeviceKeyStore.swift  Ed25519 key storage (Keychain + documented fallback)
-    Security/Biometrics.swift    Face ID gate (injectable for tests)
-    Notifications/LocalNotifier.swift  lock-screen canned answers bound to prompt_hash
-    Demo/DemoFleet.swift         Debug-only seeded fleet for local tests
-    App/                          store, app model, SwiftUI entry, live-verify harness
-    UI/                           fleet list, tappable agent detail/actions, claim cards, registration, settings
+    Notifications/LocalNotifier.swift  state-change notifications + deep link
+    Demo/DemoFleet.swift         Debug-only seeded read-only fleet for local tests
+    App/                          store, app model, SwiftUI entry
+    UI/                           read-only board, recents sheet, registration, settings
     FleetNotifierTests/            unit tests (canonical bytes, SSE, claims, controls, step-up, demo)
   check-release-demo.py           source and Release-binary demo boundary gate
   embed-release-source-digest.py  Release build-phase source-digest generator
@@ -254,118 +261,43 @@ material is added to the repository.
   storage location (`key storage: insecureFallback` on this simulator).
 - `DeviceKeyStore.wipe()` (Settings → Reset) removes key + metadata.
 
-## Local notifications + lock-screen answers
+## Local notifications (state changes, #354 L2)
 
-- When an agent transitions to `blocked` with a `waiting_on` (or its
-  `prompt_hash` changes while blocked), a local `UNUserNotification` fires
-  with the claim (`agent_id`, `kind`, `approval_id`, `prompt_hash`,
-  `choices`). Idempotent per `prompt_hash`.
-- Actions: Approve / Deny / Continue, resolved to a `choice` that the
-  claim will accept (`choice ∈ choices[]` for Menu/ApproveTool; free-form
-  for AnswerQuestion; Crash is never approvable). The drive echoes the
-  snapshot's `approval_id` + `prompt_hash` byte-for-byte; a stale or
-  wrong-hash reply is refused with the typed banner (`stale_approval`,
-  `hash_mismatch`, `choice_not_in_menu`).
-- A Herdr target that disappears or migrates returns `stale_agent` as a typed
-  409/refusal. The app removes the stale row, shows a refresh banner, and
-  requests one fresh snapshot; SSE remains the source of truth afterward.
-- A successful `read_tail` stores the daemon-redacted, bounded `result.lines`
-  plus the segmented `result.blocks`, and the agent detail surface renders a
-  single Recent-output pane: the live bounded tail (bottom, auto-loaded and
-  auto-refreshed while open). An empty result is shown as "No output yet".
-  The client applies the same 200-line / 32 KiB bounds and a hard timeout
-  (error + Retry, never a spinner).
-- **APNs hook (out of v1, per D12):** the relay does not exist. The seam is
-  `LocalNotifier.ClaimPayload` — a future relay would register the device
-  token and push exactly that claim dict; the action-execution path
-  (`AppModel.handleCannedAction`) already runs on the delegate and works
-  from a cold launch.
+- When an agent's SSE delta moves it INTO `working` (episode start), INTO
+  `blocked`, or OUT of an active state into `idle` (episode end, the v2
+  "done" — fires ONCE per episode, deduped until the agent starts again), a
+  `UNUserNotification` fires with content title `agent · repo`, body
+  `state · branch`. No badges, no catch-up on foreground.
+- Tapping a notification deep-links to the agent's row with its recents
+  sheet open (`LocalNotifier.onOpenAgent` → `AppModel.openRecents`).
+- The one control is Settings → Notifications (global on/off). There are no
+  per-agent controls and no notification actions.
+- The DEBUG local bridge embeds the same `PushPayload` userInfo shape an
+  APNs push carries (`type`/`agent_id`/`ts` + `aps.alert`), so one handler
+  serves both paths. Real APNs delivery requires the daemon-side
+  provisioning checkpoint (APNs `.p8` + `CORRAL_APNS_*` env) — see the
+  #354 queue mandate; simulator/DEBUG verification uses the local bridge.
 
-## Step-up (Face ID)
+## Read-only board (home)
 
-`DriveClient.drive` mirrors the daemon's destructive-pattern table
-(`DestructivePatterns`, ported verbatim from `src/auth/step_up.rs`) and runs
-Face ID **before** sending a destructive payload, then mints a single-use
-token via `POST /step-up` (signed `StepUpRequest`, freshness `|now-ts|<60s`
-enforced host-side) and retries with `X-Step-Up-Token`. A server-side
-`step_up_required` refusal (mirror mismatch/expired token) triggers the same
-flow reactively — same `request_id`, so an attempt that actually dispatched
-replays instead of double-sending.
+Repo groups with raw status chips; blocked agents pinned on top. Each row:
+agent name, repo, state (raw herdr token: working / idle / blocked /
+unknown), time-in-state, branch, and a small pane reference (debug aid).
+Order inside a repo is the attention order blocked → working → idle →
+unknown, and an idle (finished-fallback) agent STAYS in its repo until a
+newer agent replaces it (last-done-per-repo retention). There is no search
+and no repo filter chip. Live SSE + pull-to-refresh keep the board fresh;
+when the daemon is unreachable the board keeps the last-known fleet under a
+"daemon offline" banner.
 
-## Read-only default (D13)
+Tapping a row opens the recents bottom sheet: LIVE TAIL ONLY (the daemon's
+bounded ≤200-line read_tail, auto-scrolled, refreshed while open; loading /
+empty / error+Retry states included). There is no load-earlier paging, no
+Conversation/Harness partition, and no composer.
 
-Registration returns empty grants. Drive buttons render only when the grant
-AND the agent's `capabilities` both allow them; any refusal surfaces the
-daemon's typed error banner (`not_granted`, `expired`, `revoked`, …).
-
-## Tappable controls and accessibility (#110)
-
-Every visible agent row is a full-width navigation target. Its detail surface
-re-resolves the live fleet record before dispatch and exposes Recent output,
-Prompt, Interrupt, and blocked approval controls. Recent output auto-loads the
-live tail (no tap) and auto-refreshes while the detail view is open. Recent
-output owns one bounded nested scroll, while the composer remains its sibling
-below it; the load-earlier affordance re-requests the tail (the bounded pane
-is the only history — transcript paging was removed by #241). The
-non-jamming `[info] Tail …` fleet banner is
-gone, and the result stays in the detail view. Approvals echo the current
-`approval_id` and `prompt_hash`, and a changed/deleted target is refused
-locally before signed bytes leave the device.
-
-The Idle / done section is collapsed by default. Its header is a full-width,
-44-point disclosure target with visible `Collapsed` / `Expanded` text and the
-same state exposed through VoiceOver. Rows and detail summaries show explicit
-Working, Idle, Done, and Blocked text alongside their color cues. Disabled
-controls retain a plain-language explanation naming the missing agent
-capability or device grant.
-
-## Row and detail actions (#166)
-
-The fleet board is de-crammed: state + tool render as fixed-width badges and
-the row title truncates before them. Every state chip shows a relative
-time-in-state duration (`Needs you · 42m`). The daemon snapshot has no
-state-change timestamp, so the store derives `stateEnteredAt` client-side:
-seeded from the first-seen record's `ts` and re-stamped only when `state`
-actually changes (never on title/reason churn), falling back to `agent.ts`
-for callers without a store. Remaining limitation (documented in
-`TimeInState`): an agent already mid-state at launch is seeded from a later
-`ts`, so its initial duration may be shorter than the true in-state time.
-
-Blocked rows render the pending question inline (≤2 lines) and surface a
-borderless **Answer** affordance (also available as a leading swipe action)
-that opens a focused, keyboard-up prompt field in a sheet reusing the shared
-prompt drafts. The detail surface exposes ONE primary action per state —
-blocked → Answer, working → Interrupt, done → Attach/PR — with the rest in a
-"More" overflow menu. Kill lives in that overflow as a destructive control
-guarded by a confirmation dialog; a read-only device sees a plain-language
-reason for why it is disabled.
-
-A pinned filter-chip row (`All · Needs you · repo₁…repoₙ`) plus a
-`.searchable` field over repo/branch/title/issue mirror the egui search. When
-zero agents are blocked the whole "Needs you" section is hidden — no
-`Needs you (0)` header and no empty-state row.
-
-The chip row is the List's first pinned section header rather than a
-`.safeAreaInset`: during pull-to-refresh (issue #219) chrome, pinned repo
-headers, and rows translate as one scroll surface — no stranded repo header
-or black gap. Pulling down (or the accessible Refresh button in the chip row
-and the toolbar Refresh fleet item) fetches one authoritative
-`GET /snapshot`; refreshes are serialized/coalesced, revision-ordered
-against the SSE stream (`FleetStore.applyRefresh`), never touch the stream
-task, and surface failures in the dismissible banner.
-
-The iOS test target includes coverage for the disclosure transition and the actual
-`NavigationStack` path reconciliation when an agent is deleted, explicit
-lifecycle labels, Recent-output block rendering + 4-state machine, and grant
-explanations. The type-checked deterministic URLProtocol-backed action tests
-cover Prompt, Interrupt, direct approval, notification approval, duplicate
-claim replies, and cancellation of multiple live drives at the demo boundary.
-Held-boundary tests also cover concurrent cold-start notification snapshot
-replies and stale-agent refreshes crossing a demo boundary, plus cancellation
-during biometrics before either `/step-up` or `/drive` is sent.
-
-The URLProtocol harness waits on held gates asynchronously outside
-URLSession's loader thread, so concurrent requests can all start.
+Settings = connection pairing (host/key/grants display + reset) and
+notification pairing (global on/off). The Devices & Grants admin surface is
+gone; grants are provisioned by the host out-of-band on the registry.
 
 The connection-failure suite probes `URLProtocol.startLoading()` separately
 from the FleetStore callback whose timeout it awaits. A failed hosted run
@@ -399,56 +331,31 @@ this repository still makes no physical-device or TestFlight claim. See
 
 ## Demo mode (Debug only)
 
-Debug builds retain the Settings/registration → "Demo fleet" harness: eight
-seeded agents cover every `WaitingOnKind` (ApproveTool/Menu/AnswerQuestion/
-Crash), with choices, workspace/PR/CI columns, and locally answered drives.
-`-demoMode`, the Demo mode/Exit demo controls, the fake fleet, and the local
-demo-drive methods are all compiled only under `#if DEBUG`. Release ignores
-`-demoMode` and presents only the real registration, SSE, and signed-drive
-path. The harness is for local Debug/simulator development and deterministic
-tests; it is not an App Review or TestFlight product path.
+Debug builds retain the Settings/registration → "Demo fleet" harness: a
+seeded READ-ONLY board over fictional repos (working / idle / blocked /
+unknown agents, idle rows kept per repo, an orphan row, attachment pane
+refs) with the featured agent's live-tail fixture behind its recents sheet.
+`-demoMode`, the Demo mode/Exit demo controls, the fake fleet, and the
+local demo read_tail responder are all compiled only under `#if DEBUG`.
+Release ignores `-demoMode` and presents only the real registration, SSE,
+and signed read path. The harness is for local Debug/simulator development
+and deterministic tests; it is not an App Review or TestFlight product
+path, and it contains no approval/action surfaces.
 
-`DemoSeedTests` and the lifecycle/action tests continue to exercise the
-Debug-only fixture. No physical-device or TestFlight result is claimed here.
+`DemoSeedTests` and the fixture tests continue to exercise the Debug-only
+board. No physical-device or TestFlight result is claimed here.
 
 ### Recent-output evidence route
 
-The checked-in Debug build has one opt-in, deterministic detail route for the
-approved Recent-output capture. `-corralDemoDetail` selects the featured
-recent-output agent and its after-state; adding `-corralDemoBefore` selects the
-legacy monotone-output presentation used only for the before frame. The route
-is state-driven, seeds the composer with a non-empty draft, and is compiled
-only under `#if DEBUG`; production and Release builds cannot enter it.
+The checked-in Debug build has one opt-in, deterministic recents route for
+the read-only capture: `-corralDemoDetail` seeds the demo fleet and opens
+the featured agent's recents bottom sheet (simctl cannot inject the tap).
+The route is state-driven and compiled only under `#if DEBUG`; production
+and Release builds cannot enter it.
 
-The dark Recent-output surface intentionally forces SwiftUI's `.dark` color
-scheme so the prototype's charcoal tokens remain coherent even when the
-containing app follows the system appearance. User-role blue is centralized
-as `RecentOutputPalette.userBlue`, and Model/Effort/Worktree chips expose
-their field names to VoiceOver.
-
-From the repository root, regenerate the bundle from committed source through
-the real renderer and the Herdr-owned simulator:
-
-```sh
-CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
-  scripts/design-gate-evidence.sh --issue 205 --surface ios \
-  --prototype docs/design/corral-ux-transcript-chat-prototype.html \
-  --ios-mode demo --ios-launch-arg -corralDemoDetail \
-  --ios-before-launch-arg -corralDemoDetail \
-  --ios-before-launch-arg -corralDemoBefore \
-  --output-root docs/design/evidence --force
-```
-
-(The #205 transcript prototype was retired by #241; the flag above remains
-the documented invocation for the historical evidence record.)
-
-The gate creates its own temporary Chrome profile, uses loopback-only DevTools
-for shutdown, and removes its private staging directory. It never reads or
-modifies the user's Chrome profile, and iOS simulator installation/launch is
-owned by `hermes-sim-task`. The resulting `prototype.png`,
-`ios-before-detail.png`, `live-after.png`, `comparison.png`, `capture.log`,
-and `conformance.md` are all published together with per-file hashes and an
-issue-205 implementation identity; no copied `/tmp` PNG is an input.
+The recents sheet forces SwiftUI's `.dark` color scheme so the charcoal
+tokens remain coherent even when the containing app follows the system
+appearance.
 
 ## Live verification (historical Debug evidence)
 

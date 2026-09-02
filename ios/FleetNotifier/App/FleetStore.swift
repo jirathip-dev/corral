@@ -22,7 +22,21 @@ final class CursorBox: @unchecked Sendable {
 }
 
 /// Fleet read-model store: applies snapshot/delta events from the SSE stream
-/// (R2) and reports newly-blocked agents for local notifications.
+/// (R2) and reports agent state transitions for the notification hooks.
+///
+/// #354 L2 notification transitions (herdr 0.8.2 vocabulary, spec amendment
+/// 09-02):
+/// - started: episode begins — a delta moves the agent INTO `working` from
+///   idle/unknown/done (or first sight). Blocked→working is a resume inside
+///   the same episode and fires nothing.
+/// - blocked: a delta moves the agent INTO `blocked` (deduped while it stays
+///   blocked).
+/// - finished: the episode ends — a delta moves the agent OUT of an active
+///   state into `idle` (working→idle = the v2 "done", fires ONCE per episode,
+///   deduped until the agent starts again). A wire `done` (transitional
+///   daemon) is treated as the same episode end.
+/// Full snapshots (cold start / stale-cursor recovery) seed the shadow state
+/// and NEVER fire — no catch-up storm, no badge-on-foreground.
 @MainActor
 final class FleetStore: ObservableObject {
     @Published private(set) var agents: [String: Agent] = [:]
@@ -30,16 +44,11 @@ final class FleetStore: ObservableObject {
     /// client-side display state, not part of the SSE read model.
     @Published private(set) var tails: [String: [String]] = [:]
     /// #167: per-agent live-tail pane (blocks + four-state machine). The
-    /// daemon now serves `{lines, blocks}` additively; the block renderer
+    /// daemon now serves `{lines, blocks}` additively; the recents sheet
     /// reads this pane, the legacy text surface reads `tails`.
     @Published private(set) var tailPanes: [String: TailPane] = [:]
-    /// #232: per-agent worktree-diff pane (lazy paged daemon pages).
-    @Published private(set) var diffs: [String: DiffPane] = [:]
     @Published private(set) var lastEventId: UInt64?
     @Published private(set) var connectionState: ConnectionState = .disconnected
-    /// #267: the read-only issue browser pane (fleet-level; grant-gated by
-    /// the device ledger — the UI hides the entry point without the grant).
-    @Published private(set) var issuesBrowser = IssuesBrowserPane()
     /// #166 review F2: client-side state-entered wall clock (epoch millis).
     /// Seeded from `agent.ts` at first sight; updated ONLY when `state`
     /// actually changes on a delta/snapshot, never on title/reason churn, so
@@ -54,14 +63,13 @@ final class FleetStore: ObservableObject {
         case error(String)
     }
 
-    /// Called with the newly-blocked agent's id when an agent transitions
-    /// into a blocked waiting state (or its prompt_hash changes while
-    /// blocked) — the local-notification hook.
-    var onNewlyBlocked: (@MainActor @Sendable (String) -> Void)?
-
-    /// Called once when an agent transitions INTO done (not on re-upserts
-    /// while staying done) — the completion-notification hook (D16).
-    var onNewlyDone: (@MainActor @Sendable (String) -> Void)?
+    /// Fired when an agent episode starts (into working; spec "start").
+    var onStarted: (@MainActor @Sendable (String) -> Void)?
+    /// Fired when an agent enters blocked (spec "blocked").
+    var onBlocked: (@MainActor @Sendable (String) -> Void)?
+    /// Fired ONCE when an active agent's episode ends (working→idle; spec
+    /// "done", deduped until the agent starts again).
+    var onFinished: (@MainActor @Sendable (String) -> Void)?
 
     /// Review F2: the decode-failure hook — AppModel routes this into
     /// the dismissible, text-selectable banner so the reason is READABLE
@@ -91,13 +99,12 @@ final class FleetStore: ObservableObject {
     /// user-dismissed banner is not re-asserted forever and the log does
     /// not spam.
     private var lastConnectionErrorReason: String?
-    /// Blocked-transition shadow for the live stream (was a closure-local;
-    /// stored so `ingest` is a plain testable method — review F5).
-    private var streamSeen: [String: WaitingOn] = [:]
     private let cursorBox = CursorBox()
     private let cursorDefaults: UserDefaults
-    /// Shadow of last-seen agent states for done-transition detection.
+    /// Shadow of last-seen agent states for transition detection.
     private var previousStates: [String: AgentState] = [:]
+    /// Agents currently inside a work episode (working or blocked).
+    private var activeAgents: Set<String> = []
 
     init(defaults: UserDefaults = .standard) {
         self.cursorDefaults = defaults
@@ -122,90 +129,22 @@ final class FleetStore: ObservableObject {
     func apply(_ event: FleetEvent) {
         // #166 review F2: every apply path must track `stateEnteredAt`. The
         // snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
-        // path (`apply(_:previous:)`) both converge here, so the client-side
-        // state clock is seeded on first sight and re-stamped on state
-        // change regardless of which entry point delivered the event.
+        // path (`ingest`) both converge here, so the client-side state clock
+        // is seeded on first sight and re-stamped on state change regardless
+        // of which entry point delivered the event.
         apply(withoutDiff: event)
     }
 
     /// Issue #219: authoritative pull/toolbar refresh application.
     /// Same revision ordering as stream frames (`accepts` — a stale
     /// snapshot response cannot reorder a newer delta), plus the
-    /// diff-aware blocked/done tracking stream frames use, so a refresh
-    /// that reveals a newly blocked agent notifies exactly like a frame.
+    /// transition tracking stream frames use, so a refresh that reveals a
+    /// newly started agent behaves exactly like a frame.
     /// The SSE stream task is deliberately NOT touched here: it keeps
     /// running and resumes from the newest accepted revision via the
     /// shared cursor at the next reconnect — no duplicate stream tasks.
     func applyRefresh(_ snapshot: Snapshot) {
-        apply(.snapshot(snapshot), previous: &streamSeen)
-    }
-
-    /// Diff-aware done detection: fire once per transition INTO done
-    /// (staying done re-upserts nothing). Shadowed locally, so a delta
-    /// reconnect cannot double-notify. A full snapshot replay (cold start /
-    /// stale cursor) seeds only the shadow — it must NOT fire a completion
-    /// for every already-done agent (F7: cold-start done storm).
-    private func trackDone(_ event: FleetEvent) {
-        switch event {
-        case .snapshot(let snapshot):
-            for (id, agent) in snapshot.agents {
-                previousStates[id] = agent.state
-            }
-        case .delta(let delta):
-            var transitioned: [String] = []
-            for agent in delta.upd {
-                if agent.state == .done, previousStates[agent.agentId] != .done {
-                    transitioned.append(agent.agentId)
-                }
-                previousStates[agent.agentId] = agent.state
-            }
-            for id in delta.del {
-                previousStates.removeValue(forKey: id)
-            }
-            for id in transitioned {
-                onNewlyDone?(id)
-            }
-        }
-    }
-
-    /// Diff-aware blocking detection: notify when an agent becomes blocked
-    /// on a NEW prompt (state→blocked, or prompt_hash changed while
-    /// blocked). Idempotent per prompt_hash.
-    func apply(_ event: FleetEvent, previous: inout [String: WaitingOn]) {
-        guard accepts(event) else { return }
-        let before = previous
-        switch event {
-        case .snapshot(let snapshot):
-            for (id, agent) in snapshot.agents {
-                previous[id] = agent.waitingOn
-            }
-        case .delta(let delta):
-            for agent in delta.upd {
-                previous[agent.agentId] = agent.waitingOn
-            }
-            for id in delta.del {
-                previous.removeValue(forKey: id)
-            }
-        }
-        switch event {
-        case .snapshot(let snapshot):
-            for (id, agent) in snapshot.agents {
-                guard let waiting = agent.waitingOn else { continue }
-                let wasBlocked = before[id]?.promptHash == waiting.promptHash
-                if !wasBlocked {
-                    onNewlyBlocked?(id)
-                }
-            }
-        case .delta(let delta):
-            for agent in delta.upd {
-                guard let waiting = agent.waitingOn else { continue }
-                let wasBlocked = before[agent.agentId]?.promptHash == waiting.promptHash
-                if !wasBlocked {
-                    onNewlyBlocked?(agent.agentId)
-                }
-            }
-        }
-        apply(withoutDiff: event)
+        apply(.snapshot(snapshot))
     }
 
     private func apply(withoutDiff event: FleetEvent) {
@@ -218,6 +157,7 @@ final class FleetStore: ObservableObject {
             lastEventId = snapshot.rev
             cursorBox.write(snapshot.rev)
             updateStateEnteredAt(old: old, new: snapshot.agents)
+            trackTransitions(.snapshot(snapshot))
         case .delta(let delta):
             var next = agents
             for agent in delta.upd { next[agent.agentId] = agent }
@@ -230,9 +170,81 @@ final class FleetStore: ObservableObject {
             lastEventId = delta.rev
             cursorBox.write(delta.rev)
             updateStateEnteredAt(old: old, new: next)
+            trackTransitions(.delta(delta))
         }
         connectionState = .connected
-        trackDone(event)
+    }
+
+    // MARK: - Notification transition tracking (#354 L2)
+
+    private func trackTransitions(_ event: FleetEvent) {
+        switch event {
+        case .snapshot(let snapshot):
+            // Seed only — a full replay must never fire (cold-start rule).
+            for (id, agent) in snapshot.agents {
+                seedShadow(id, agent.state)
+            }
+        case .delta(let delta):
+            for agent in delta.upd {
+                observe(agent)
+            }
+            for id in delta.del {
+                dropShadow(id)
+            }
+        }
+    }
+
+    private func seedShadow(_ id: String, _ state: AgentState) {
+        previousStates[id] = state
+        if state == .working || state == .blocked {
+            activeAgents.insert(id)
+        } else {
+            activeAgents.remove(id)
+        }
+    }
+
+    private func dropShadow(_ id: String) {
+        previousStates.removeValue(forKey: id)
+        activeAgents.remove(id)
+    }
+
+    private func observe(_ agent: Agent) {
+        let id = agent.agentId
+        let previous = previousStates[id]
+        if let previous, previous == agent.state { return }
+
+        switch agent.state {
+        case .working:
+            // Episode start: first sight, or a return from idle/unknown/done.
+            // Blocked→working is a resume inside the same episode.
+            if previous == nil || !activeAgents.contains(id) {
+                onStarted?(id)
+            }
+            activeAgents.insert(id)
+        case .blocked:
+            // Entering blocked (from anything else, incl. first sight).
+            if previous == nil || previous != .blocked {
+                onBlocked?(id)
+            }
+            activeAgents.insert(id)
+        case .idle:
+            // Episode end: active → idle fires ONCE (wasActive is cleared,
+            // so repeated idle re-upserts never re-fire until a new start).
+            if previous != nil, activeAgents.contains(id) {
+                onFinished?(id)
+            }
+            activeAgents.remove(id)
+        case .done:
+            // Transitional daemon state (herdr 0.8.2 never emits it;
+            // finished panes fall back to idle). Same episode-end treatment.
+            if previous != nil, activeAgents.contains(id) {
+                onFinished?(id)
+            }
+            activeAgents.remove(id)
+        case .unknown:
+            activeAgents.remove(id)
+        }
+        previousStates[id] = agent.state
     }
 
     /// Seed/advance `stateEnteredAt` from a state transition only. An agent
@@ -324,78 +336,17 @@ final class FleetStore: ObservableObject {
         tailPanes[id] = pane
     }
 
-    /// #232: mark a diff fetch in flight (the sheet shows the spinner).
-    func prepareDiffFetch(agent id: String) {
-        guard agents[id] != nil else { return }
-        var pane = diffs[id] ?? DiffPane()
-        pane.beginFetch()
-        diffs[id] = pane
-    }
-
-    /// #333: dismissal detaches a pending diff without clearing its pane.
-    func cancelDiffFetch(agent id: String) {
-        guard agents[id] != nil, var pane = diffs[id] else { return }
-        pane.isLoading = false
-        diffs[id] = pane
-    }
-
-    /// #232: fold one daemon page into the pane (seeds at offset 0, appends
-    /// subsequent pages; a re-fetch of the same window is idempotent).
-    func rememberDiffPage(_ page: DiffPageWire, for id: String) {
-        guard agents[id] != nil else { return }
-        var pane = diffs[id] ?? DiffPane()
-        pane.apply(page)
-        diffs[id] = pane
-    }
-
-    /// #232: fold a refused/failed diff fetch into the pane.
-    func foldDiffFailure(_ message: String, kind: String = "dispatch_refused",
-                         status: Int? = nil, for id: String) {
-        guard agents[id] != nil else { return }
-        var pane = diffs[id] ?? DiffPane()
-        pane.apply(message, kind: kind, status: status)
-        diffs[id] = pane
-    }
-
-    // MARK: - #267 read-only issue browser (fleet-level)
-
-    /// Mark the browser fetch in flight (the loading state machine).
-    func beginIssuesFetch() {
-        issuesBrowser.beginFetch()
-    }
-
-    /// Fold one daemon read_issues payload into the pane.
-    func rememberIssuesBrowser(_ wire: IssuesBrowserWire) {
-        issuesBrowser.apply(wire)
-    }
-
-    /// Fold a refused/failed browser fetch into the pane (inline Retry).
-    func foldIssuesFailure(_ message: String) {
-        issuesBrowser.apply(message)
-    }
-
-    /// Clear the browser pane (reset/registration transitions).
-    func resetIssuesBrowser() {
-        issuesBrowser.reset()
-    }
-
-    /// Remove a target immediately after a typed stale-agent refusal. The
+    /// Remove a target immediately (stale-agent refresh reconciliation). The
     /// subsequent snapshot/SSE update may re-add a current identity, but the
-    /// old row cannot keep rendering usable controls during the refresh.
+    /// old row cannot keep rendering during the refresh.
     func removeAgent(_ id: String) {
         agents.removeValue(forKey: id)
         tails.removeValue(forKey: id)
         tailPanes.removeValue(forKey: id)
-        diffs.removeValue(forKey: id)
         previousStates.removeValue(forKey: id)
-        streamSeen.removeValue(forKey: id)
+        activeAgents.remove(id)
         stateEnteredAt.removeValue(forKey: id)
     }
-
-    // NOTE: the pre-D25 `blockedAgents`/`sortedAgents` accessors were
-    // removed with the board rework — ordering now lives ONLY in
-    // `BoardModel.ordered` (blocked > done > working > idle > unknown),
-    // so no second, contradictory rank can be reached for.
 
     // MARK: - Streaming
 
@@ -412,7 +363,6 @@ final class FleetStore: ObservableObject {
         // daemon would answer deltas-only and the board would stay empty).
         if agents.isEmpty && lastEventId != nil { lastEventId = nil }
         cursorBox.write(lastEventId)
-        streamSeen = [:]
         let generation = connectionGeneration
         // CorraldClient.stream() is a nonisolated async operation on a
         // Sendable value, so its URLSession transport, retry loop, and
@@ -497,7 +447,7 @@ final class FleetStore: ObservableObject {
             }
             switch outcome {
             case .event(let event):
-                self.apply(event, previous: &self.streamSeen)
+                self.apply(event)
             case .ignored:
                 break
             case .failed(let reason):
@@ -539,15 +489,14 @@ final class FleetStore: ObservableObject {
         agents = [:]
         tails = [:]
         tailPanes = [:]
-        diffs = [:]
         lastEventId = nil
         cursorBox.write(nil)
         // A reset abandons the delta base; retaining it would let a later
         // live connection resume from demo or otherwise unrelated state.
         cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
         previousStates = [:]
+        activeAgents = []
         stateEnteredAt = [:]
-        issuesBrowser.reset()
         connectionState = .disconnected
     }
 
@@ -560,6 +509,10 @@ final class FleetStore: ObservableObject {
         lastEventId = rev
         cursorBox.write(rev)
         updateStateEnteredAt(old: old, new: agents)
+        // Seed the transition shadows so demo seeding never fires hooks.
+        for (id, agent) in agents {
+            seedShadow(id, agent.state)
+        }
         connectionState = .disconnected
     }
 
@@ -570,6 +523,7 @@ final class FleetStore: ObservableObject {
         let old = agents
         agents = next
         updateStateEnteredAt(old: old, new: next)
+        observe(agent)
     }
 #endif
 

@@ -1,137 +1,106 @@
 import Foundation
 
-// MARK: - Recent output surface (#205)
+// MARK: - Recent output surface (#205 → #354 L2 recents v1)
 //
-// This file deliberately contains the display contract rather than SwiftUI.
-// The daemon already knows the semantic block boundaries; the model keeps
-// those boundaries intact, removes only metadata lines, and exposes a
-// bounded, testable line/token representation for the view.
+// Recents v1 is LIVE TAIL ONLY: the daemon's bounded read_tail result
+// (≤200 lines) renders as one unpartitioned stream of canonical blocks with
+// auto-scroll. The V3 Conversation/Harness partition, session-status
+// metadata, load-earlier paging, and the composer were removed with the cut;
+// this file keeps the display contract (block rendering helpers) rather than
+// SwiftUI, so the expensive pure work stays unit-testable.
 
-enum RecentOutputPhase: Equatable, Sendable {
-    case loading
-    case empty
-    case error(TranscriptFailure)
-    case loaded
-}
+/// A bounded tail pane mapped to the row sequence the sheet renders.
+enum RecentOutputModel {
+    static let liveTailFreshness: TimeInterval = 15
 
-enum RecentOutputRow: Equatable, Sendable {
-    case block(TranscriptBlock)
-    case loadEarlier(UInt32?)
-    case error(TranscriptFailure)
-    case loading
-
-    /// The content portion of a row identity. The view adds an occurrence
-    /// ordinal so equal lines/blocks never collide in a `ForEach`.
-    fileprivate var contentID: String {
-        switch self {
-        case .block(let block):
-            return "block|\(block.kind.rawValue)|\(block.at ?? 0)|\(block.text)"
-        case .loadEarlier(let count):
-            return "load-earlier|\(count.map(String.init) ?? "none")"
-        case .error(let failure):
-            return "error|\(failure.kind)|\(failure.message)"
-        case .loading:
-            return "loading"
+    static func hasFreshNonErrorTail(_ tail: TailPane?,
+                                     now: Date = Date()) -> Bool {
+        guard let tail,
+              !tail.isEmpty,
+              tail.error == nil,
+              let updatedAt = tail.updatedAt else {
+            return false
         }
-    }
-}
-
-struct RecentOutputIdentifiedRow: Equatable, Sendable, Identifiable {
-    let id: String
-    let row: RecentOutputRow
-}
-
-struct RecentOutputMetadata: Equatable, Sendable {
-    let model: String?
-    let effort: String?
-    let worktree: String?
-
-    init(model: String? = nil, effort: String? = nil, worktree: String? = nil) {
-        self.model = model
-        self.effort = effort
-        self.worktree = worktree
+        let age = now.timeIntervalSince(updatedAt)
+        return age >= 0 && age <= liveTailFreshness
     }
 
-    var isEmpty: Bool {
-        model == nil && effort == nil && worktree == nil
+    static func shouldShowLiveIndicator(isLiveMode: Bool,
+                                        hasFreshNonErrorTail: Bool) -> Bool {
+        isLiveMode && hasFreshNonErrorTail
     }
 
-    /// Extract metadata from both structured blocks and legacy tail lines.
-    /// The wire format's only display metadata marker is the canonical
-    /// `model effort · path` line. Key-looking prose such as `path: ...` is
-    /// still output content and must not be consumed as a badge.
-    static func extract(from blocks: [TranscriptBlock],
-                        fallbackLines: [String] = []) -> RecentOutputMetadata {
-        var found = RecentOutputMetadata()
-        for block in blocks {
-            for line in RecentOutputRender.messageLines(block.text) {
-                found = found.merged(with: parse(line))
+    /// The canonical blocks the sheet renders from a pane: the daemon's
+    /// blocks when present, else legacy raw lines mapped to honest unknown
+    /// content (never reclassified). Empty/whitespace-only blocks and
+    /// adjacent tool/system blocks are merged exactly like the pre-cut
+    /// renderer, so the stream stays compact and stable across fetches.
+    static func tailRows(from pane: TailPane?) -> [TranscriptBlock] {
+        let pane = pane ?? TailPane()
+        let raw: [TranscriptBlock]
+        if !pane.blocks.isEmpty {
+            raw = pane.blocks
+        } else {
+            raw = pane.lines.map { TranscriptBlock(kind: .unknown, text: $0) }
+        }
+        var grouped: [TranscriptBlock] = []
+        for block in raw {
+            let lines = RecentOutputRender.messageLines(block.text)
+            guard lines.contains(where: {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }) else {
+                continue
+            }
+            var visible = block
+            visible.text = lines.joined(separator: "\n")
+            if let last = grouped.last,
+               (last.kind == .tool || last.kind == .system),
+               last.kind == visible.kind {
+                grouped[grouped.count - 1].text += "\n" + visible.text
+            } else {
+                grouped.append(visible)
             }
         }
-        for line in fallbackLines {
-            found = found.merged(with: parse(line))
+        return grouped
+    }
+
+    struct IdentifiedBlock: Equatable, Sendable, Identifiable {
+        let id: String
+        let block: TranscriptBlock
+    }
+
+    /// Occurrence-suffixed identities so equal blocks never collide in a
+    /// `ForEach` (mirrors the pre-cut row identity discipline).
+    static func identifiedBlocks(_ blocks: [TranscriptBlock]) -> [IdentifiedBlock] {
+        var occurrences: [String: Int] = [:]
+        return blocks.map { block in
+            let content = "block|\(block.kind.rawValue)|\(block.at ?? 0)|\(block.text)"
+            let occurrence = occurrences[content, default: 0]
+            occurrences[content] = occurrence + 1
+            return IdentifiedBlock(id: "\(content)|occurrence:\(occurrence)", block: block)
         }
-        return found
     }
 
-    private func merged(with other: RecentOutputMetadata?) -> RecentOutputMetadata {
-        guard let other else { return self }
-        return RecentOutputMetadata(
-            model: model ?? other.model,
-            effort: effort ?? other.effort,
-            worktree: worktree ?? other.worktree)
-    }
-
-    fileprivate static func isMetadataLine(_ line: String) -> Bool {
-        parse(line) != nil
-    }
-
-    fileprivate static func parse(_ line: String) -> RecentOutputMetadata? {
-        let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-
-        let pieces = value.components(separatedBy: "·")
-        guard pieces.count >= 2,
-              let path = pieces.last?.trimmingCharacters(in: .whitespaces),
-              isWorktreePath(path) else {
-            return nil
+    /// The sheet's four-state display phase, derived from the pane.
+    static func phase(for pane: TailPane?) -> Phase {
+        let pane = pane ?? TailPane()
+        if let error = pane.error, pane.isEmpty {
+            return .error(error)
         }
-        let left = pieces.dropLast()
-            .joined(separator: " · ")
-            .trimmingCharacters(in: .whitespaces)
-        let words = left.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard !words.isEmpty else { return nil }
-        let last = String(words.last!).lowercased()
-        let effort = effortValues.contains(last) ? last : nil
-        let modelWords = effort == nil ? words : words.dropLast()
-        let model = modelWords.joined(separator: " ")
-        guard !model.isEmpty, isModelName(model) else { return nil }
-        return RecentOutputMetadata(model: model, effort: effort, worktree: path)
+        if !pane.isEmpty {
+            return .loaded
+        }
+        if pane.loading {
+            return .loading
+        }
+        return .empty
     }
 
-    private static let effortValues: Set<String> = [
-        "minimal", "low", "medium", "high", "max"
-    ]
-
-    private static func isWorktreePath(_ value: String) -> Bool {
-        let lower = value.lowercased()
-        return value.hasPrefix("~")
-            || value.hasPrefix("/")
-            || lower.contains("worktree")
-            || value.contains("/")
-    }
-
-    private static func isModelName(_ value: String) -> Bool {
-        let lower = value.lowercased()
-        return lower.contains("gpt")
-            || lower.contains("claude")
-            || lower.contains("gemini")
-            || lower.contains("sonnet")
-            || lower.contains("opus")
-            || lower.contains("luna")
-            || lower.hasPrefix("o1")
-            || lower.hasPrefix("o3")
-            || lower.hasPrefix("o4")
+    enum Phase: Equatable, Sendable {
+        case loading
+        case empty
+        case error(TranscriptFailure)
+        case loaded
     }
 }
 
@@ -156,453 +125,9 @@ struct RecentCodeLine: Equatable, Sendable {
     let isHighlighted: Bool
 }
 
-struct RecentOutputRender: Equatable, Sendable {
-    let phase: RecentOutputPhase
-    let rows: [RecentOutputRow]
-    let canLoadOlder: Bool
-    let canRetryTail: Bool
-    let metadata: RecentOutputMetadata
-}
-
-enum RecentOutputModel {
-    static let liveTailFreshness: TimeInterval = 15
-
-    static func hasFreshNonErrorTail(_ tail: TailPane?,
-                                     now: Date = Date()) -> Bool {
-        guard let tail,
-              !tail.isEmpty,
-              tail.error == nil,
-              let updatedAt = tail.updatedAt else {
-            return false
-        }
-        let age = now.timeIntervalSince(updatedAt)
-        return age >= 0 && age <= liveTailFreshness
-    }
-
-    static func shouldShowLiveIndicator(isLiveMode: Bool,
-                                        hasFreshNonErrorTail: Bool) -> Bool {
-        isLiveMode && hasFreshNonErrorTail
-    }
-
-    /// A single render/pairing snapshot for one SwiftUI body pass. Keeping
-    /// this pure makes it possible to test the expensive work independently
-    /// of SwiftUI and prevents each child section from rebuilding it.
-    static func snapshot(tail: TailPane?) -> RecentOutputSnapshot {
-        let render = render(tail: tail)
-        let visibleRows = render.rows.filter { row in
-            if case .loadEarlier = row { return false }
-            return true
-        }
-        return RecentOutputSnapshot(
-            render: render,
-            visibleRows: visibleRows,
-            identifiedRows: identifiedRows(for: visibleRows))
-    }
-
-    static func identifiedRows(for rows: [RecentOutputRow]) -> [RecentOutputIdentifiedRow] {
-        var occurrences: [String: Int] = [:]
-        return rows.map { row in
-            let contentID = row.contentID
-            let occurrence = occurrences[contentID, default: 0]
-            occurrences[contentID] = occurrence + 1
-            return RecentOutputIdentifiedRow(
-                id: "\(contentID)|occurrence:\(occurrence)",
-                row: row)
-        }
-    }
-
-    /// Follow the newest block when the surface is first populated or when
-    /// blocks were appended at the tail. A page inserted at the top is
-    /// history loading and must preserve the reader's anchor instead.
-    static func shouldFollowLatest(from oldRows: [RecentOutputRow],
-                                   to newRows: [RecentOutputRow]) -> Bool {
-        let oldIDs = oldRows.compactMap { row -> String? in
-            if case .block = row { return row.contentID }
-            return nil
-        }
-        let newIDs = newRows.compactMap { row -> String? in
-            if case .block = row { return row.contentID }
-            return nil
-        }
-        guard !newIDs.isEmpty else { return false }
-        guard !oldIDs.isEmpty else { return true }
-        guard oldIDs != newIDs else { return false }
-
-        // A real history prepend leaves every previously rendered block as a
-        // suffix. This is the one mutation that must preserve the reader's
-        // position rather than follow the newest tail.
-        if newIDs.count > oldIDs.count,
-           hasSuffix(newIDs, matching: oldIDs) {
-            return false
-        }
-
-        // Normal append and a bounded tail slide both expose the old tail at
-        // the front of the new sequence (the latter only partially).
-        if newIDs.count >= oldIDs.count,
-           hasPrefix(newIDs, matching: oldIDs) {
-            return true
-        }
-
-        // A bounded tail can slide while the previous last block is still
-        // being completed. Compare the old sequence without its last block
-        // with the new sequence without its last block; an exact suffix /
-        // prefix overlap proves that the change is at the tail even when the
-        // overlapping last block itself changed. The scan is linear and uses
-        // one prefix table rather than allocating arrays for each candidate.
-        let oldBeforeLast = max(oldIDs.count - 1, 0)
-        let newBeforeLast = max(newIDs.count - 1, 0)
-        if suffixPrefixOverlapLength(
-            old: oldIDs,
-            oldCount: oldBeforeLast,
-            new: newIDs,
-            newCount: newBeforeLast) > 0 {
-            return true
-        }
-
-        // A one-block stream has no unchanged prefix to overlap, but a
-        // changed sole block is still tail growth rather than a replacement.
-        if oldIDs.count == newIDs.count,
-           oldIDs.count == 1 {
-            return true
-        }
-        return false
-    }
-
-    private static func hasPrefix(_ values: [String], matching prefix: [String]) -> Bool {
-        guard prefix.count <= values.count else { return false }
-        for index in prefix.indices where values[index] != prefix[index] {
-            return false
-        }
-        return true
-    }
-
-    private static func hasSuffix(_ values: [String], matching suffix: [String]) -> Bool {
-        guard suffix.count <= values.count else { return false }
-        let start = values.count - suffix.count
-        for index in suffix.indices where values[start + index] != suffix[index] {
-            return false
-        }
-        return true
-    }
-
-    /// Return the longest suffix of `old[0..<oldCount]` that is also a
-    /// prefix of `new[0..<newCount]` in O(oldCount + newCount) time.
-    private static func suffixPrefixOverlapLength(old: [String],
-                                                  oldCount: Int,
-                                                  new: [String],
-                                                  newCount: Int) -> Int {
-        guard oldCount > 0, newCount > 0 else { return 0 }
-
-        var failure = Array(repeating: 0, count: newCount)
-        var prefixLength = 0
-        var patternIndex = 1
-        while patternIndex < newCount {
-            if new[patternIndex] == new[prefixLength] {
-                prefixLength += 1
-                failure[patternIndex] = prefixLength
-                patternIndex += 1
-            } else if prefixLength > 0 {
-                prefixLength = failure[prefixLength - 1]
-            } else {
-                patternIndex += 1
-            }
-        }
-
-        var matched = 0
-        var textIndex = 0
-        while textIndex < oldCount {
-            while matched > 0 && old[textIndex] != new[matched] {
-                matched = failure[matched - 1]
-            }
-            if old[textIndex] == new[matched] {
-                matched += 1
-            }
-            if matched == newCount, textIndex < oldCount - 1 {
-                matched = failure[matched - 1]
-            }
-            textIndex += 1
-        }
-        return matched
-    }
-
-    /// Keep the top reader anchor only when a successful page really inserted
-    /// older blocks before the existing sequence. A failed/no-op request must
-    /// clear the pending anchor so the next live append can follow the tail.
-    static func shouldPreservePaginationAnchor(_ anchorID: String,
-                                                from oldRows: [RecentOutputRow],
-                                                to newRows: [RecentOutputRow]) -> Bool {
-        let oldBlocks = oldRows.compactMap { row -> String? in
-            if case .block = row { return row.contentID }
-            return nil
-        }
-        let newBlocks = newRows.compactMap { row -> String? in
-            if case .block = row { return row.contentID }
-            return nil
-        }
-        guard newBlocks.count > oldBlocks.count,
-              Array(newBlocks.suffix(oldBlocks.count)) == oldBlocks else {
-            return false
-        }
-        return identifiedRows(for: newRows).contains { $0.id == anchorID }
-    }
-
-    static func render(tail: TailPane?) -> RecentOutputRender {
-        let tail = tail ?? TailPane()
-        var rows: [RecentOutputRow] = []
-
-        let tailRaw = tailBlocks(from: tail)
-        let tailBlocks = visibleBlocks(tailRaw)
-        let hasContent = !tailBlocks.isEmpty
-        let oldestTruncated = tailRaw.first?.truncatedBefore
-
-        // A bounded tail can advertise older content the daemon elided (the
-        // `+N lines` marker lifted from the pane). Keep this one compact
-        // affordance at the top.
-        if let oldestTruncated,
-           !rows.contains(where: { row in
-               if case .loadEarlier = row { return true }
-               return false
-           }) {
-            rows.append(.loadEarlier(oldestTruncated))
-        }
-
-        if tail.loading && tail.isEmpty {
-            rows.append(.loading)
-        }
-        if let tailError = tail.error, tail.isEmpty {
-            rows.append(.error(tailError))
-        }
-        rows.append(contentsOf: tailBlocks.map(RecentOutputRow.block))
-
-        let phase: RecentOutputPhase
-        if let tailError = tail.error, !hasContent {
-            phase = .error(tailError)
-        } else if hasContent {
-            phase = .loaded
-        } else if tail.loading {
-            phase = .loading
-        } else {
-            phase = .empty
-        }
-
-        let metadata = RecentOutputMetadata.extract(
-            from: tailRaw,
-            fallbackLines: tail.lines)
-        return RecentOutputRender(
-            phase: phase,
-            rows: rows,
-            canLoadOlder: oldestTruncated != nil,
-            canRetryTail: !tail.loading && tail.error != nil,
-            metadata: metadata)
-    }
-
-    private static func tailBlocks(from pane: TailPane) -> [TranscriptBlock] {
-        if !pane.blocks.isEmpty {
-            // #315: the daemon's canonical blocks are the ONLY semantic
-            // source — kinds and order pass through untouched.
-            return pane.blocks
-        }
-        // #315: legacy daemon fallback (raw tail lines, no canonical
-        // stream). The old client-side role reclassification
-        // (`›`/`user:`/`$` shape guesses) is REMOVED — lines without
-        // provenance render as unknown terminal content, attributed to
-        // nobody.
-        return pane.lines.map { line in
-            TranscriptBlock(kind: .unknown, text: line)
-        }
-    }
-
-    private static func visibleBlocks(_ blocks: [TranscriptBlock]) -> [TranscriptBlock] {
-        var grouped: [TranscriptBlock] = []
-        for block in blocks {
-            let lines = visibleMessageLines(block.text)
-            guard lines.contains(where: {
-                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }) else {
-                continue
-            }
-            var visible = block
-            visible.text = lines.joined(separator: "\n")
-            if let last = grouped.last,
-               (last.kind == .tool || last.kind == .system),
-               last.kind == visible.kind {
-                grouped[grouped.count - 1].text += "\n" + visible.text
-            } else {
-                grouped.append(visible)
-            }
-        }
-        return grouped
-    }
-
-    private static func visibleMessageLines(_ text: String) -> [String] {
-        let lines = RecentOutputRender.messageLines(text)
-        guard let firstContentIndex = lines.firstIndex(where: {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }) else {
-            return lines
-        }
-        guard let lastContentIndex = lines.lastIndex(where: {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }), firstContentIndex != lastContentIndex,
-                  RecentOutputMetadata.isMetadataLine(lines[lastContentIndex]) else {
-            return lines
-        }
-        return lines.enumerated().compactMap { index, line in
-            index == lastContentIndex ? nil : line
-        }
-    }
-}
-
-struct RecentOutputSnapshot: Equatable, Sendable {
-    let render: RecentOutputRender
-    let visibleRows: [RecentOutputRow]
-    let identifiedRows: [RecentOutputIdentifiedRow]
-}
-
-// MARK: - #316 V3 Context split (pure canonical-kind partition)
-//
-// One canonical daemon stream, two surfaces. Conversation = canonical
-// User/Agent/Tool; Harness activity = canonical System/Unknown, order
-// preserved within each partition, nothing dropped. No text, provider,
-// harness, or model-name inspection exists anywhere in this file — the
-// daemon's kind is the only input.
-
-/// #316 V3: the accessible role of one canonical event. Every event keeps an
-/// explicit role; visible speaker text only appears at semantic transitions.
-enum RecentBlockContext: Equatable, Sendable {
-    case conversation
-    case harness
-
-    /// VoiceOver label role for a canonical event (V3 locked naming).
-    func accessibilityRole(_ block: TranscriptBlock) -> String {
-        switch self {
-        case .conversation:
-            switch block.kind {
-            case .user: return "You said"
-            case .agent: return "Assistant"
-            case .tool: return "Tool"
-            case .system, .unknown: return "Unknown activity"
-            }
-        case .harness:
-            switch block.kind {
-            case .system: return "Diagnostic"
-            default: return "Unknown activity"
-            }
-        }
-    }
-}
-
-/// One partition of the canonical stream. `conversation` keeps User/Agent/Tool
-/// blocks, `harness` keeps System/Unknown; both preserve relative order and
-/// neither drops content. Total is preserved: harness.count ==
-/// total - conversation.count by construction.
-struct RecentOutputSections: Equatable, Sendable {
-    let conversation: [TranscriptBlock]
-    let harness: [TranscriptBlock]
-
-    /// Canonical-kind partition of the daemon's ordered blocks.
-    static func partition(_ blocks: [TranscriptBlock]) -> RecentOutputSections {
-        var conversation: [TranscriptBlock] = []
-        var harness: [TranscriptBlock] = []
-        for block in blocks {
-            switch block.kind {
-            case .user, .agent, .tool:
-                conversation.append(block)
-            case .system, .unknown:
-                harness.append(block)
-            }
-        }
-        return RecentOutputSections(conversation: conversation, harness: harness)
-    }
-
-    /// The production read path: the sections the Recent-output surface
-    /// renders, derived from the snapshot's visible block rows. The view must
-    /// call THIS — bypassing it (e.g. rendering every block as conversation)
-    /// is a V3 wiring regression caught by ContextSplitV3Tests.
-    static func displaySections(from visibleRows: [RecentOutputRow]) -> RecentOutputSections {
-        partition(visibleRows.compactMap { row -> TranscriptBlock? in
-            if case .block(let block) = row { return block }
-            return nil
-        })
-    }
-
-    var total: Int { conversation.count + harness.count }
-
-    /// #328: Harness activity events are the MEANINGFUL (non-divider) blocks.
-    /// Divider-only blocks are presentation separators — they never count
-    /// toward the `outside conversation` count and never render as cards.
-    var harnessEventCount: Int {
-        harness.filter { !RecentOutputRender.isDividerBlock($0) }.count
-    }
-
-    /// #330 AC5: a loaded window with no attributed conversation events
-    /// (only System/Unknown) gets an explicit honest empty state instead of
-    /// an unexplained blank Conversation region — Harness stays reachable.
-    var hasNoAttributedConversation: Bool {
-        conversation.isEmpty && !harness.isEmpty
-    }
-
-    func context(for block: TranscriptBlock) -> RecentBlockContext {
-        switch block.kind {
-        case .user, .agent, .tool: return .conversation
-        case .system, .unknown: return .harness
-        }
-    }
-}
-
-// MARK: - #316 V3 structured Session status
-//
-// Session status renders ONLY already-authoritative structured read-model
-// values. Unavailable values are omitted, never inferred from terminal prose
-// or fabricated.
-
-struct RecentSessionStatus: Equatable, Sendable {
-    let state: String
-    let session: String?
-    let tool: String?
-    let effort: String?
-    let worktree: String?
-}
-
-enum RecentSessionStatusModel {
-    /// Project the structured session status for one agent. `fresh` is the
-    /// already-computed live/paused freshness used by the header indicator.
-    static func status(agent: Agent,
-                       tail: TailPane?,
-                       fresh: Bool,
-                       metadata: RecentOutputMetadata) -> RecentSessionStatus {
-        RecentSessionStatus(
-            state: SessionStatusText.stateLabel(agent: agent, fresh: fresh),
-            session: SessionStatusText.sessionLabel(agent: agent),
-            tool: SessionStatusText.toolLabel(agent: agent, metadata: metadata),
-            effort: metadata.effort,
-            worktree: metadata.worktree ?? agent.workspace.worktreePath)
-    }
-}
-
-/// Shared human-facing text for the structured session-status values (pure so
-/// both the view and tests assert the same strings).
-enum SessionStatusText {
-    static func stateLabel(agent: Agent, fresh: Bool) -> String {
-        let state = agent.state.displayName
-        return fresh ? "\(state) · live" : state
-    }
-
-    static func sessionLabel(agent: Agent) -> String? {
-        let id = agent.agentId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return id.isEmpty ? nil : id
-    }
-
-    static func toolLabel(agent: Agent, metadata: RecentOutputMetadata) -> String? {
-        if let model = metadata.model { return model }
-        let tool = agent.tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tool.isEmpty ? nil : tool
-    }
-}
-
-// MARK: - Pure block and code helpers
-
-extension RecentOutputRender {
+/// Pure block-rendering helpers (row cards, code/diff highlighting,
+/// divider classification, timestamps, accessibility labels).
+enum RecentOutputRender {
     private static func makeTimestampFormatter(timeZone: TimeZone) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -641,17 +166,14 @@ extension RecentOutputRender {
         return String(command.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
     }
 
-    /// #316 V3: accessible role naming is locked (`You said…`, `Assistant`,
-    /// `Tool`, `Diagnostic`, `Unknown activity`); every event keeps an
-    /// explicit role regardless of surface.
+    /// Accessible role naming is locked (`You said…`, `Assistant`, `Tool`,
+    /// `Diagnostic`, `Unknown activity`).
     static func accessibilityLabel(_ block: TranscriptBlock) -> String {
         switch block.kind {
         case .user: return "You said: \(block.text)"
         case .agent: return "Assistant: \(block.text)"
         case .tool: return "Tool: \(block.text)"
         case .system: return "Diagnostic: \(block.text)"
-        // #315: unprovenanced terminal content is named honestly, never
-        // assigned a conversation role.
         case .unknown: return "Unknown activity: \(block.text)"
         }
     }
@@ -823,17 +345,12 @@ extension RecentOutputRender {
         return sawRun
     }
 
-    /// #328: the ONE divider-vs-content classification seam shared by the
-    /// Conversation and Harness render paths — a divider-only block is a
-    /// presentation separator, never an event card. Both paths consult this
-    /// so they cannot drift again.
+    /// The ONE divider-vs-content classification seam shared by every
+    /// render path — a divider-only block is a presentation separator,
+    /// never an event card.
     static func isDividerBlock(_ block: TranscriptBlock) -> Bool {
         isDividerRun(block.text)
     }
-
-    /// #330 AC5: the explicit honest empty state for a loaded window with no
-    /// attributed conversation events (Harness activity stays reachable).
-    static let noAttributedConversationMessage = "No attributed conversation in this window"
 
     private static func isDividerScalar(_ scalar: UnicodeScalar) -> Bool {
         (0x2500...0x259F).contains(scalar.value)

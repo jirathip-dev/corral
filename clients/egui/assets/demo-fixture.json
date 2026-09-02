@@ -1,842 +1,407 @@
 {
+  "fixture_name": "Synthetic #354 L3 read-only fleet board",
   "snapshot": {
     "schema_version": 5,
-    "rev": 100,
-    "generated_at": 1787788800000,
+    "rev": 1000,
+    "generated_at": 1788362746531,
     "agents": {
       "demo:p01:impl": {
         "agent_id": "demo:p01:impl",
         "source": "herdr",
-        "tool": "tool-one",
+        "tool": "claude",
         "state": "working",
         "reason": null,
-        "seq": 7,
-        "ts": 1787788800000,
+        "seq": 1,
+        "ts": 1788362506531,
         "capabilities": [
-          "prompt",
-          "interrupt",
-          "read_tail",
-          "attach"
+          "read_tail"
         ],
-        "waiting_on": null,
-        "parent_id": null,
-        "host": "demo-host",
         "workspace": {
           "repo": "demo-alpha",
-          "branch": "alpha-web",
-          "worktree_path": null,
-          "pr_number": 9001,
-          "ci_status": "success",
-          "dirty": false,
-          "ahead": 1,
-          "behind": 0
+          "branch": "g354-l3-egui-cut"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p01:impl"
         },
         "display_name": "alpha-web",
-        "title": "egui web: read-only board",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-alpha",
-            "number": 9001,
-            "state": "OPEN",
-            "title": "Demo sample issue: web-board",
-            "labels": [
-              {
-                "name": "enhancement",
-                "color": "a2eeef"
-              },
-              {
-                "name": "ready-to-work",
-                "color": "0e8a16"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-alpha/issues/9001"
-          }
-        ]
+        "title": "cut the egui client to read-only"
       },
       "demo:p02:impl": {
         "agent_id": "demo:p02:impl",
         "source": "herdr",
-        "tool": "tool-one",
+        "tool": "claude",
         "state": "blocked",
-        "reason": "waiting for approval",
-        "seq": 12,
-        "ts": 1787788800000,
+        "reason": null,
+        "seq": 1,
+        "ts": 1788358546531,
         "capabilities": [
-          "prompt",
-          "interrupt",
-          "approve",
-          "attach"
+          "read_tail"
         ],
-        "waiting_on": {
-          "kind": "approve_tool",
-          "prompt": "Approve the CORS allowlist change for the Pages demo?",
-          "prompt_hash": "sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
-          "approval_id": "demo:p02:impl:sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8",
-          "choices": [
-            "Yes",
-            "No"
-          ]
-        },
-        "parent_id": null,
-        "host": "demo-host",
         "workspace": {
           "repo": "demo-alpha",
-          "branch": "alpha-cors",
-          "worktree_path": null,
-          "pr_number": 9002,
-          "ci_status": "pending",
-          "dirty": true,
-          "ahead": 2,
-          "behind": 0
+          "branch": "g319-status-tokens"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p02:impl"
         },
-        "display_name": "alpha-cors",
-        "title": "daemon CORS allowlist",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-alpha",
-            "number": 9002,
-            "state": "OPEN",
-            "title": "Demo sample issue: device-grants",
-            "labels": [
-              {
-                "name": "ready-to-work",
-                "color": "0e8a16"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-alpha/issues/9002"
-          }
-        ]
+        "display_name": "alpha-blocked",
+        "title": "status token wording round"
       },
       "demo:p03:rev": {
         "agent_id": "demo:p03:rev",
         "source": "herdr",
-        "tool": "tool-two",
+        "tool": "claude",
         "state": "idle",
         "reason": null,
-        "seq": 3,
-        "ts": 1787788800000,
-        "capabilities": [
-          "prompt",
-          "read_tail"
-        ],
-        "waiting_on": null,
-        "parent_id": null,
-        "host": "demo-host",
+        "seq": 1,
+        "ts": 1788351826531,
+        "capabilities": [],
         "workspace": {
-          "repo": "demo-charlie",
-          "branch": "charlie-partner",
-          "worktree_path": null,
-          "pr_number": 9005,
-          "ci_status": "success",
-          "dirty": false,
-          "ahead": 0,
-          "behind": 0
+          "repo": "demo-alpha",
+          "branch": "review/g354-l3"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p03:rev"
         },
-        "display_name": "charlie-partner",
-        "title": "Partner page: Acme",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-charlie",
-            "number": 9005,
-            "state": "OPEN",
-            "title": "Demo sample issue: partner-collaboration",
-            "labels": [
-              {
-                "name": "content",
-                "color": "d4c5f9"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-charlie/issues/9005"
-          }
-        ]
+        "display_name": "alpha-review",
+        "title": "fresh-head review of the cut"
       },
       "demo:p04:fleet": {
         "agent_id": "demo:p04:fleet",
         "source": "herdr",
-        "tool": "tool-one",
+        "tool": "claude",
         "state": "working",
         "reason": null,
-        "seq": 9,
-        "ts": 1787788800000,
+        "seq": 1,
+        "ts": 1788360226531,
         "capabilities": [
-          "prompt",
-          "interrupt",
-          "read_tail",
-          "attach"
+          "read_tail"
         ],
-        "waiting_on": null,
-        "parent_id": null,
-        "host": "demo-host",
         "workspace": {
-          "repo": "demo-alpha",
-          "branch": "alpha-route",
-          "worktree_path": null,
-          "pr_number": 9003,
-          "ci_status": "pending",
-          "dirty": true,
-          "ahead": 3,
-          "behind": 1
+          "repo": "demo-bravo",
+          "branch": "g327-host-update-compat"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p04:fleet"
         },
-        "display_name": "alpha-route",
-        "title": "fleet gate run",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-alpha",
-            "number": 9003,
-            "state": "OPEN",
-            "title": "Demo sample issue: wasm-gate",
-            "labels": [
-              {
-                "name": "enhancement",
-                "color": "a2eeef"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-alpha/issues/9003"
-          }
-        ]
+        "display_name": "bravo-host",
+        "title": "host update compatibility lane"
       },
       "demo:p05:orch": {
         "agent_id": "demo:p05:orch",
         "source": "herdr",
-        "tool": "tool-one",
-        "state": "done",
+        "tool": "claude",
+        "state": "idle",
         "reason": null,
-        "seq": 21,
-        "ts": 1787788800000,
-        "capabilities": [
-          "prompt",
-          "interrupt",
-          "read_tail",
-          "attach"
-        ],
-        "waiting_on": null,
-        "parent_id": null,
-        "host": "demo-host",
+        "seq": 1,
+        "ts": 1788361186531,
+        "capabilities": [],
         "workspace": {
-          "repo": "demo-bravo",
-          "branch": "bravo-read",
-          "worktree_path": null,
-          "pr_number": 9006,
-          "ci_status": "success",
-          "dirty": false,
-          "ahead": 0,
-          "behind": 0
+          "repo": "demo-charlie",
+          "branch": "main"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p05:orch"
         },
-        "display_name": "bravo-read",
-        "title": "SSE resume after reconnect",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-bravo",
-            "number": 9006,
-            "state": "OPEN",
-            "title": "Demo sample issue: reconnect-loop",
-            "labels": [
-              {
-                "name": "bug",
-                "color": "d73a4a"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-bravo/issues/9006"
-          }
-        ]
+        "display_name": "charlie-orch",
+        "title": "integration watch"
       },
       "demo:p06:rs": {
         "agent_id": "demo:p06:rs",
         "source": "herdr",
-        "tool": "tool-two",
+        "tool": "claude",
         "state": "working",
         "reason": null,
-        "seq": 5,
-        "ts": 1787788800000,
+        "seq": 1,
+        "ts": 1788362206531,
         "capabilities": [
-          "prompt",
           "read_tail"
         ],
-        "waiting_on": {
-          "kind": "answer_question",
-          "prompt": "Which pinning policy for the wasm toolchain?",
-          "prompt_hash": "sha256:ade50c620dcf0d29088cfc962f53d9c7b6e87eb320d779cce01f4f6331177f93",
-          "approval_id": "",
-          "choices": []
-        },
-        "parent_id": null,
-        "host": "demo-host",
         "workspace": {
           "repo": "demo-delta",
-          "branch": "delta-router",
-          "worktree_path": null,
-          "pr_number": 9004,
-          "ci_status": "pending",
-          "dirty": false,
-          "ahead": 1,
-          "behind": 0
+          "branch": "g324-read-rev"
         },
         "attachment": {
           "kind": "pane",
           "ref": "demo:p06:rs"
         },
-        "display_name": "delta-router",
-        "title": "router slices S2–S6",
-        "issues": [
-          {
-            "repo": "demo.example.invalid/demo-delta",
-            "number": 9004,
-            "state": "OPEN",
-            "title": "Demo sample issue: routing-slices",
-            "labels": [
-              {
-                "name": "frontend",
-                "color": "0e8a16"
-              }
-            ],
-            "url": "https://demo.example.invalid/demo-delta/issues/9004"
-          }
-        ]
+        "display_name": "delta-read",
+        "title": "read_tail revision contract"
+      },
+      "demo:p07:impl": {
+        "agent_id": "demo:p07:impl",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "unknown",
+        "reason": null,
+        "seq": 1,
+        "ts": 1788362086531,
+        "capabilities": [],
+        "workspace": {},
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p07:impl"
+        },
+        "display_name": "pane-watch",
+        "title": "unassigned pane observation"
+      },
+      "demo:p08:impl": {
+        "agent_id": "demo:p08:impl",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "working",
+        "reason": null,
+        "seq": 1,
+        "ts": 1788362626531,
+        "capabilities": [
+          "read_tail"
+        ],
+        "workspace": {
+          "repo": "demo-charlie",
+          "branch": "g304-wasm-mobile"
+        },
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p08:impl"
+        },
+        "display_name": "charlie-web",
+        "title": "wasm demo mobile layout"
+      },
+      "demo:p09:review": {
+        "agent_id": "demo:p09:review",
+        "source": "herdr",
+        "tool": "claude",
+        "state": "idle",
+        "reason": null,
+        "seq": 1,
+        "ts": 1788362566531,
+        "capabilities": [],
+        "workspace": {
+          "repo": "demo-bravo",
+          "branch": "review/g354-l2"
+        },
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p09:review"
+        },
+        "display_name": "bravo-review",
+        "title": "l2 ios review parked"
       }
     }
   },
   "deltas": [
     {
-      "rev": 101,
-      "upd": [
-        {
-          "agent_id": "demo:p02:impl",
-          "source": "herdr",
-          "tool": "tool-one",
-          "state": "working",
-          "reason": null,
-          "seq": 13,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "interrupt",
-            "approve",
-            "attach"
-          ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
-          "workspace": {
-            "repo": "demo-alpha",
-            "branch": "alpha-cors",
-            "worktree_path": null,
-            "pr_number": 9002,
-            "ci_status": "pending",
-            "dirty": true,
-            "ahead": 2,
-            "behind": 0
-          },
-          "attachment": {
-            "kind": "pane",
-            "ref": "demo:p02:impl"
-          },
-          "display_name": "alpha-cors",
-          "title": "daemon CORS allowlist",
-          "issues": []
-        }
-      ],
-      "del": []
-    },
-    {
-      "rev": 102,
+      "rev": 1001,
       "upd": [
         {
           "agent_id": "demo:p06:rs",
           "source": "herdr",
-          "tool": "tool-two",
-          "state": "blocked",
-          "reason": "waiting for an answer",
-          "seq": 6,
-          "ts": 1787788800000,
+          "tool": "claude",
+          "state": "idle",
+          "reason": null,
+          "seq": 1,
+          "ts": 1788362745531,
           "capabilities": [
-            "prompt",
             "read_tail"
           ],
-          "waiting_on": {
-            "kind": "answer_question",
-            "prompt": "Which pinning policy for the wasm toolchain?",
-            "prompt_hash": "sha256:ade50c620dcf0d29088cfc962f53d9c7b6e87eb320d779cce01f4f6331177f93",
-            "approval_id": "",
-            "choices": []
-          },
-          "parent_id": null,
-          "host": "demo-host",
           "workspace": {
             "repo": "demo-delta",
-            "branch": "delta-router",
-            "worktree_path": null,
-            "pr_number": 9004,
-            "ci_status": "pending",
-            "dirty": false,
-            "ahead": 1,
-            "behind": 0
+            "branch": "g324-read-rev"
           },
           "attachment": {
             "kind": "pane",
             "ref": "demo:p06:rs"
           },
-          "display_name": "delta-router",
-          "title": "router slices S2–S6",
-          "issues": []
+          "display_name": "delta-read",
+          "title": "read_tail revision contract"
         }
       ],
       "del": []
     },
     {
-      "rev": 103,
+      "rev": 1002,
       "upd": [
         {
-          "agent_id": "demo:p03:rev",
+          "agent_id": "demo:p09:review",
           "source": "herdr",
-          "tool": "tool-two",
+          "tool": "claude",
           "state": "working",
           "reason": null,
-          "seq": 4,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "read_tail"
-          ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
-          "workspace": {
-            "repo": "demo-charlie",
-            "branch": "charlie-partner",
-            "worktree_path": null,
-            "pr_number": 9005,
-            "ci_status": "success",
-            "dirty": false,
-            "ahead": 0,
-            "behind": 0
-          },
-          "attachment": {
-            "kind": "pane",
-            "ref": "demo:p03:rev"
-          },
-          "display_name": "charlie-partner",
-          "title": "Partner page: Acme",
-          "issues": []
-        },
-        {
-          "agent_id": "demo:p01:impl",
-          "source": "herdr",
-          "tool": "tool-one",
-          "state": "blocked",
-          "reason": "waiting for approval",
-          "seq": 8,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "interrupt",
-            "read_tail",
-            "attach"
-          ],
-          "waiting_on": {
-            "kind": "approve_tool",
-            "prompt": "Approve the demo fixture PR for the board?",
-            "prompt_hash": "sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
-            "approval_id": "demo:p01:impl:sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150",
-            "choices": [
-              "Approve",
-              "Reject"
-            ]
-          },
-          "parent_id": null,
-          "host": "demo-host",
-          "workspace": {
-            "repo": "demo-alpha",
-            "branch": "alpha-web",
-            "worktree_path": null,
-            "pr_number": 9001,
-            "ci_status": "success",
-            "dirty": false,
-            "ahead": 1,
-            "behind": 0
-          },
-          "attachment": {
-            "kind": "pane",
-            "ref": "demo:p01:impl"
-          },
-          "display_name": "alpha-web",
-          "title": "egui web: read-only board",
-          "issues": []
-        }
-      ],
-      "del": []
-    },
-    {
-      "rev": 104,
-      "upd": [
-        {
-          "agent_id": "demo:p05:orch",
-          "source": "herdr",
-          "tool": "tool-one",
-          "state": "working",
-          "reason": null,
-          "seq": 22,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "interrupt",
-            "read_tail",
-            "attach"
-          ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
+          "seq": 1,
+          "ts": 1788362745631,
+          "capabilities": [],
           "workspace": {
             "repo": "demo-bravo",
-            "branch": "bravo-read",
-            "worktree_path": null,
-            "pr_number": 9006,
-            "ci_status": "failure",
-            "dirty": true,
-            "ahead": 0,
-            "behind": 2
+            "branch": "review/g354-l2"
           },
           "attachment": {
             "kind": "pane",
-            "ref": "demo:p05:orch"
+            "ref": "demo:p09:review"
           },
-          "display_name": "bravo-read",
-          "title": "SSE resume after reconnect",
-          "issues": []
+          "display_name": "bravo-review",
+          "title": "l2 ios review parked"
         }
       ],
       "del": []
     },
     {
-      "rev": 105,
-      "upd": [
-        {
-          "agent_id": "demo:p01:impl",
-          "source": "herdr",
-          "tool": "tool-one",
-          "state": "working",
-          "reason": null,
-          "seq": 9,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "interrupt",
-            "read_tail",
-            "attach"
-          ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
-          "workspace": {
-            "repo": "demo-alpha",
-            "branch": "alpha-web",
-            "worktree_path": null,
-            "pr_number": 9001,
-            "ci_status": "success",
-            "dirty": false,
-            "ahead": 1,
-            "behind": 0
-          },
-          "attachment": {
-            "kind": "pane",
-            "ref": "demo:p01:impl"
-          },
-          "display_name": "alpha-web",
-          "title": "egui web: read-only board",
-          "issues": []
-        }
-      ],
-      "del": []
-    },
-    {
-      "rev": 106,
+      "rev": 1003,
       "upd": [
         {
           "agent_id": "demo:p02:impl",
           "source": "herdr",
-          "tool": "tool-one",
-          "state": "idle",
+          "tool": "claude",
+          "state": "working",
           "reason": null,
-          "seq": 14,
-          "ts": 1787788800000,
+          "seq": 1,
+          "ts": 1788362745731,
           "capabilities": [
-            "prompt",
-            "interrupt",
-            "approve",
-            "attach"
+            "read_tail"
           ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
           "workspace": {
             "repo": "demo-alpha",
-            "branch": "alpha-cors",
-            "worktree_path": null,
-            "pr_number": 9002,
-            "ci_status": "success",
-            "dirty": false,
-            "ahead": 2,
-            "behind": 0
+            "branch": "g319-status-tokens"
           },
           "attachment": {
             "kind": "pane",
             "ref": "demo:p02:impl"
           },
-          "display_name": "alpha-cors",
-          "title": "daemon CORS allowlist",
-          "issues": []
-        }
-      ],
-      "del": [
-        "demo:p03:rev"
-      ]
-    },
-    {
-      "rev": 107,
-      "upd": [
-        {
-          "agent_id": "demo:p07:impl",
-          "source": "herdr",
-          "tool": "tool-one",
-          "state": "working",
-          "reason": null,
-          "seq": 2,
-          "ts": 1787788800000,
-          "capabilities": [
-            "prompt",
-            "interrupt",
-            "read_tail",
-            "attach"
-          ],
-          "waiting_on": null,
-          "parent_id": null,
-          "host": "demo-host",
-          "workspace": {
-            "repo": "demo-alpha",
-            "branch": "demo/pixel-ios",
-            "worktree_path": null,
-            "pr_number": 9007,
-            "ci_status": "pending",
-            "dirty": false,
-            "ahead": 0,
-            "behind": 0
-          },
-          "attachment": {
-            "kind": "pane",
-            "ref": "demo:p07:impl"
-          },
-          "display_name": "demo/pixel-ios",
-          "title": "iOS demo wiring",
-          "issues": [
-            {
-              "repo": "demo.example.invalid/demo-alpha",
-              "number": 9007,
-              "state": "OPEN",
-              "title": "Demo sample issue: ios-board",
-              "labels": [
-                {
-                  "name": "mobile",
-                  "color": "5319e7"
-                }
-              ],
-              "url": "https://demo.example.invalid/demo-alpha/issues/9007"
-            }
-          ]
+          "display_name": "alpha-blocked",
+          "title": "status token wording round"
         }
       ],
       "del": []
     },
     {
-      "rev": 108,
+      "rev": 1004,
       "upd": [
         {
-          "agent_id": "demo:p04:fleet",
+          "agent_id": "demo:p01:impl",
           "source": "herdr",
-          "tool": "tool-one",
-          "state": "blocked",
-          "reason": "waiting for approval",
-          "seq": 10,
-          "ts": 1787788800000,
+          "tool": "claude",
+          "state": "idle",
+          "reason": null,
+          "seq": 1,
+          "ts": 1788362745831,
           "capabilities": [
-            "prompt",
-            "interrupt",
-            "read_tail",
-            "attach"
+            "read_tail"
           ],
-          "waiting_on": {
-            "kind": "approve_tool",
-            "prompt": "Approve worktree creation for #216?",
-            "prompt_hash": "sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
-            "approval_id": "demo:p04:fleet:sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf",
-            "choices": [
-              "Start worktree",
-              "Cancel"
-            ]
-          },
-          "parent_id": null,
-          "host": "demo-host",
           "workspace": {
             "repo": "demo-alpha",
-            "branch": "alpha-route",
-            "worktree_path": null,
-            "pr_number": 9003,
-            "ci_status": "pending",
-            "dirty": true,
-            "ahead": 3,
-            "behind": 1
+            "branch": "g354-l3-egui-cut"
           },
           "attachment": {
             "kind": "pane",
-            "ref": "demo:p04:fleet"
+            "ref": "demo:p01:impl"
           },
-          "display_name": "alpha-route",
-          "title": "fleet gate run",
-          "issues": []
+          "display_name": "alpha-web",
+          "title": "cut the egui client to read-only"
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 1005,
+      "upd": [
+        {
+          "agent_id": "demo:p05:orch",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "working",
+          "reason": null,
+          "seq": 1,
+          "ts": 1788362745931,
+          "capabilities": [],
+          "workspace": {
+            "repo": "demo-charlie",
+            "branch": "main"
+          },
+          "attachment": {
+            "kind": "pane",
+            "ref": "demo:p05:orch"
+          },
+          "display_name": "charlie-orch",
+          "title": "integration watch"
+        }
+      ],
+      "del": []
+    },
+    {
+      "rev": 1006,
+      "upd": [
+        {
+          "agent_id": "demo:p08:impl",
+          "source": "herdr",
+          "tool": "claude",
+          "state": "idle",
+          "reason": null,
+          "seq": 1,
+          "ts": 1788362746031,
+          "capabilities": [
+            "read_tail"
+          ],
+          "workspace": {
+            "repo": "demo-charlie",
+            "branch": "g304-wasm-mobile"
+          },
+          "attachment": {
+            "kind": "pane",
+            "ref": "demo:p08:impl"
+          },
+          "display_name": "charlie-web",
+          "title": "wasm demo mobile layout"
         }
       ],
       "del": []
     }
   ],
-  "issues": {
-    "demo-alpha": [
-      {
-        "repo": "demo.example.invalid/demo-alpha",
-        "number": 9001,
-        "state": "OPEN",
-        "title": "Demo sample issue: web-board",
-        "labels": [
-          {
-            "name": "enhancement",
-            "color": "a2eeef"
-          },
-          {
-            "name": "ready-to-work",
-            "color": "0e8a16"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-alpha/issues/9001",
-        "body": "Read-only issue browser demo data.\n\nSelect a repository in the rail, then expand an issue row to read its body and metadata."
-      },
-      {
-        "repo": "demo.example.invalid/demo-alpha",
-        "number": 9002,
-        "state": "OPEN",
-        "title": "Demo sample issue: device-grants",
-        "labels": [
-          {
-            "name": "ready-to-work",
-            "color": "0e8a16"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-alpha/issues/9002"
-      },
-      {
-        "repo": "demo.example.invalid/demo-alpha",
-        "number": 9003,
-        "state": "OPEN",
-        "title": "Demo sample issue: wasm-gate",
-        "labels": [
-          {
-            "name": "enhancement",
-            "color": "a2eeef"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-alpha/issues/9003"
-      }
-    ],
-    "demo-delta": [
-      {
-        "repo": "demo.example.invalid/demo-delta",
-        "number": 9004,
-        "state": "OPEN",
-        "title": "Demo sample issue: routing-slices",
-        "labels": [
-          {
-            "name": "frontend",
-            "color": "0e8a16"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-delta/issues/9004"
-      }
-    ],
-    "demo-charlie": [
-      {
-        "repo": "demo.example.invalid/demo-charlie",
-        "number": 9005,
-        "state": "OPEN",
-        "title": "Demo sample issue: partner-collaboration",
-        "labels": [
-          {
-            "name": "content",
-            "color": "d4c5f9"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-charlie/issues/9005"
-      }
-    ],
-    "demo-bravo": [
-      {
-        "repo": "demo.example.invalid/demo-bravo",
-        "number": 9006,
-        "state": "OPEN",
-        "title": "Demo sample issue: reconnect-loop",
-        "labels": [
-          {
-            "name": "bug",
-            "color": "d73a4a"
-          }
-        ],
-        "url": "https://demo.example.invalid/demo-bravo/issues/9006"
-      }
-    ]
-  },
   "recent_output": [
-    "› review the sample board",
-    "Assistant: the fictional snapshot is consistent ✅",
-    "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")",
-    "git diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run",
-    "▸ tool status: ok [icon] ⚠️"
+    "syncing pane state from the live herdr socket",
+    "read snapshot rev 1000: 9 agents across 4 repos",
+    "alpha-web is working on g354-l3-egui-cut",
+    "blocked alpha-blocked is pinned to the top of the board",
+    "bravo-host finished its sync pass; pane is idle",
+    "charlie-web is working on the wasm mobile layout",
+    "delta-read reports the read_tail revision contract green",
+    "pane-watch has no workspace repo; it stays in the orphan bucket",
+    "board refresh completed; last-known board retained",
+    "recents v1 shows the live tail only, auto-scrolled to the newest line",
+    "no load-earlier button, no conversation partition in this build",
+    "settings shows connection only: host url, identity, and recovery"
   ],
   "recent_output_blocks": [
     {
-      "kind": "user",
-      "text": "ship the canonical transcript stream",
-      "prompt_request_id": "req-prompt"
-    },
-    {
       "kind": "agent",
-      "text": "the fictional snapshot is consistent ✅"
+      "text": "syncing pane state from the live herdr socket"
     },
     {
       "kind": "tool",
-      "text": "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")\ngit diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run\nrun status: ok [icon] ⚠️"
+      "text": "corral-status --refresh"
     },
     {
       "kind": "system",
-      "text": "read_tail page truncated to the newest 200 lines."
+      "text": "snapshot rev 1000 applied: 9 agents across 4 repos"
     },
     {
-      "kind": "unknown",
-      "text": "raw pane line without provenance"
+      "kind": "user",
+      "text": "which lanes are still open on the cut?"
+    },
+    {
+      "kind": "agent",
+      "text": "alpha-web is working on g354-l3-egui-cut; bravo-host and charlie-web are active too"
+    },
+    {
+      "kind": "tool",
+      "text": "board refresh completed"
+    },
+    {
+      "kind": "agent",
+      "text": "recents v1 is live tail only: auto-scroll, no load-earlier"
     }
   ]
 }

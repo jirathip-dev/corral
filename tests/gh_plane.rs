@@ -8,27 +8,107 @@
 //! durations and generous margins.
 
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use corrald::adapters::gh_plane::{
-    GhPlane, GhPlaneConfig, GhTransport, TRACKED_REPOS, TrackedRepo,
+    GhPlane, GhPlaneConfig, GhRepoSpec, GhTransport, herdr_workspace_specs,
 };
 use corrald::core::events::{GhRepoState, Plane, PlaneEvent, plane_channel};
+use corrald::core::model::{Agent, AgentState, Change, Workspace};
 use corrald::core::store::Store;
+use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
 use serde_json::{Value, json};
 
 /// Canned GraphQL success body shaped like GitHub's real response.
+#[derive(Clone, Copy)]
+struct TestTrackedRepo {
+    name: &'static str,
+    owner: &'static str,
+    repo: &'static str,
+}
+
+const TEST_TRACKED_REPOS: &[TestTrackedRepo] = &[
+    TestTrackedRepo {
+        name: "sendmeter",
+        owner: "sendmeter",
+        repo: "sendmeter",
+    },
+    TestTrackedRepo {
+        name: "project-hearthwild",
+        owner: "jirathip-k",
+        repo: "project-hearthwild",
+    },
+    TestTrackedRepo {
+        name: "synergy-apps",
+        owner: "synergy-services-cooling-tower",
+        repo: "synergy-apps",
+    },
+    TestTrackedRepo {
+        name: "dotfiles",
+        owner: "jirathip-k",
+        repo: "dotfiles",
+    },
+    TestTrackedRepo {
+        name: "agent-ops",
+        owner: "jirathip-k",
+        repo: "agent-ops",
+    },
+    TestTrackedRepo {
+        name: "herdr-board",
+        owner: "jirathip-k",
+        repo: "herdr-board",
+    },
+    TestTrackedRepo {
+        name: "office-ops",
+        owner: "jirathip-k",
+        repo: "office-ops",
+    },
+    TestTrackedRepo {
+        name: "synergy-services-website",
+        owner: "synergy-services",
+        repo: "synergy-services-website",
+    },
+];
+
+fn test_specs() -> Vec<GhRepoSpec> {
+    TEST_TRACKED_REPOS
+        .iter()
+        .map(|repo| GhRepoSpec {
+            owner: repo.owner.to_string(),
+            name: repo.repo.to_string(),
+            key: repo.name.to_string(),
+            aliases: vec![repo.name.to_string()],
+        })
+        .collect()
+}
+
+fn configured_plane(
+    store: Arc<Store>,
+    mock: Arc<MockTransport>,
+    token: Option<String>,
+    config: GhPlaneConfig,
+) -> Arc<GhPlane> {
+    Arc::new(GhPlane::with_config_and_specs(
+        store,
+        mock,
+        token,
+        config,
+        test_specs(),
+    ))
+}
+
 fn canned_response() -> Value {
     let mut data = serde_json::Map::new();
-    for (i, repo) in TRACKED_REPOS.iter().enumerate() {
+    for (i, repo) in TEST_TRACKED_REPOS.iter().enumerate() {
         data.insert(format!("q{i}"), repo_json(repo));
     }
     json!({ "data": data })
 }
 
-fn repo_json(repo: &TrackedRepo) -> Value {
+fn repo_json(repo: &TestTrackedRepo) -> Value {
     json!({
         "name": repo.repo,
         "defaultBranchRef": { "name": "main" },
@@ -62,6 +142,7 @@ fn repo_json(repo: &TrackedRepo) -> Value {
 struct MockTransport {
     calls: AtomicUsize,
     times: Mutex<Vec<std::time::Instant>>,
+    queries: Mutex<Vec<String>>,
     responses: Mutex<VecDeque<Value>>,
     fallback: Value,
 }
@@ -72,6 +153,7 @@ impl MockTransport {
         Self {
             calls: AtomicUsize::new(0),
             times: Mutex::new(Vec::new()),
+            queries: Mutex::new(Vec::new()),
             responses: Mutex::new(responses.into()),
             fallback,
         }
@@ -84,6 +166,10 @@ impl MockTransport {
     fn call_times(&self) -> Vec<std::time::Instant> {
         self.times.lock().unwrap().clone()
     }
+
+    fn queries(&self) -> Vec<String> {
+        self.queries.lock().unwrap().clone()
+    }
 }
 
 impl GhTransport for MockTransport {
@@ -91,7 +177,7 @@ impl GhTransport for MockTransport {
         &'a self,
         _url: &'a str,
         token: &'a str,
-        _body: Value,
+        body: Value,
     ) -> corrald::adapters::gh_plane::BoxFuture<
         'a,
         Result<Value, corrald::adapters::gh_plane::GhError>,
@@ -99,6 +185,12 @@ impl GhTransport for MockTransport {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.times.lock().unwrap().push(std::time::Instant::now());
+            let query = body
+                .get("query")
+                .and_then(Value::as_str)
+                .expect("mock request has a GraphQL query")
+                .to_string();
+            self.queries.lock().unwrap().push(query);
             assert!(!token.is_empty(), "every request must carry a token");
             let next = self
                 .responses
@@ -118,6 +210,47 @@ fn fast_config() -> GhPlaneConfig {
         wake: Duration::from_millis(10),
         failure_backoff: Duration::from_millis(30),
     }
+}
+
+fn init_git_checkout(path: &Path, origin: &str) {
+    std::fs::create_dir_all(path).unwrap();
+    git2::Repository::init(path)
+        .unwrap()
+        .remote("origin", origin)
+        .unwrap();
+}
+
+fn agent_for(source: &str, id: &str, path: &Path) -> Agent {
+    Agent {
+        agent_id: id.to_string(),
+        source: source.to_string(),
+        tool: "fixture".to_string(),
+        state: AgentState::Idle,
+        reason: None,
+        seq: 1,
+        ts: 0,
+        capabilities: Vec::new(),
+        waiting_on: None,
+        parent_id: None,
+        host: None,
+        workspace: Workspace {
+            worktree_path: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+        attachment: None,
+        display_name: None,
+        title: None,
+    }
+}
+
+fn repo_clause(owner: &str, name: &str) -> String {
+    format!("repository(owner: \"{owner}\", name: \"{name}\")")
+}
+
+fn latest_query_contains(mock: &MockTransport, owner: &str, name: &str) -> bool {
+    mock.queries()
+        .last()
+        .is_some_and(|query| query.contains(&repo_clause(owner, name)))
 }
 
 async fn wait_until(what: &str, timeout: Duration, mut pred: impl FnMut() -> bool) {
@@ -148,17 +281,183 @@ fn drain_gh_events(rx: &mut tokio::sync::mpsc::Receiver<PlaneEvent>) -> Vec<GhRe
 async fn zero_subscribers_never_polls() {
     let store = Arc::new(Store::new());
     let mock = Arc::new(MockTransport::new(vec![canned_response()]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store,
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, _rx) = plane_channel();
     plane.start(sink);
 
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(mock.call_count(), 0, "no SSE subscriber ever -> zero polls");
+}
+
+/// The production-shaped Herdr scope must refresh inside the live run loop:
+/// adding and removing workspace agents changes later GraphQL queries without
+/// restarting the plane.
+#[tokio::test]
+async fn herdr_scope_run_loop_refreshes_additions_and_removals() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let one = temp.path().join("one");
+    let two = temp.path().join("two");
+    init_git_checkout(&one, "https://github.com/fixture-owner/one.git");
+    init_git_checkout(&two, "https://github.com/fixture-owner/two.git");
+
+    let store = Arc::new(Store::new());
+    store
+        .apply(Change::upsert(agent_for("herdr", "owner-one", &one)))
+        .await;
+    let attribution = WorkspaceAttribution::from_roots(
+        [
+            RepoRoot {
+                path: one,
+                repo: "owner-one".to_string(),
+            },
+            RepoRoot {
+                path: two.clone(),
+                repo: "owner-two".to_string(),
+            },
+        ],
+        temp.path().join("worktrees"),
+    );
+    let mock = Arc::new(MockTransport::new(vec![canned_response()]));
+    let plane = Arc::new(GhPlane::with_config_and_herdr_scope(
+        store.clone(),
+        mock.clone(),
+        Some("test-token".to_string()),
+        fast_config(),
+        attribution,
+    ));
+    let (sink, _rx) = plane_channel();
+    let _subscriber = store.subscribe();
+    plane.start(sink);
+
+    wait_until("owner/one query", Duration::from_secs(1), || {
+        latest_query_contains(&mock, "fixture-owner", "one")
+            && !latest_query_contains(&mock, "fixture-owner", "two")
+    })
+    .await;
+
+    store
+        .apply(Change::upsert(agent_for("herdr", "owner-two", &two)))
+        .await;
+    wait_until(
+        "owner/one and owner/two query",
+        Duration::from_secs(2),
+        || {
+            let queries = mock.queries();
+            let Some(query) = queries.last() else {
+                return false;
+            };
+            query.contains(&repo_clause("fixture-owner", "one"))
+                && query.contains(&repo_clause("fixture-owner", "two"))
+        },
+    )
+    .await;
+
+    store.apply(Change::Remove("owner-one".to_string())).await;
+    wait_until("owner/two-only query", Duration::from_secs(2), || {
+        let queries = mock.queries();
+        let Some(query) = queries.last() else {
+            return false;
+        };
+        query.contains(&repo_clause("fixture-owner", "two"))
+            && !query.contains(&repo_clause("fixture-owner", "one"))
+    })
+    .await;
+}
+
+/// A valid GitHub checkout outside the explicit attribution map is not a
+/// Herdr workspace repository and must not enter the production scope.
+#[tokio::test]
+async fn herdr_scope_excludes_unowned_git_checkout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let owned = temp.path().join("owned");
+    let unowned = temp.path().join("unowned");
+    init_git_checkout(&owned, "https://github.com/fixture-owner/owned.git");
+    init_git_checkout(&unowned, "https://github.com/fixture-owner/unowned.git");
+
+    let store = Store::new();
+    store
+        .apply(Change::upsert(agent_for("herdr", "owned-agent", &owned)))
+        .await;
+    store
+        .apply(Change::upsert(agent_for(
+            "herdr",
+            "unowned-agent",
+            &unowned,
+        )))
+        .await;
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: owned,
+            repo: "owned".to_string(),
+        }],
+        temp.path().join("known-worktrees"),
+    );
+
+    let specs = herdr_workspace_specs(&store, &attribution).await;
+    assert_eq!(specs.len(), 1, "only attributed checkout is in scope");
+    assert_eq!(specs[0].slug(), "fixture-owner/owned");
+    assert!(!specs.iter().any(|spec| spec.name == "unowned"));
+}
+
+/// A non-Herdr agent may have a valid attributed checkout, but it is not part
+/// of the Herdr GitHub polling scope.
+#[tokio::test]
+async fn herdr_scope_excludes_non_herdr_agent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let checkout = temp.path().join("codex");
+    init_git_checkout(&checkout, "https://github.com/fixture-owner/codex.git");
+
+    let store = Store::new();
+    store
+        .apply(Change::upsert(agent_for("codex", "codex-agent", &checkout)))
+        .await;
+    let attribution = WorkspaceAttribution::from_roots(
+        [RepoRoot {
+            path: checkout,
+            repo: "codex".to_string(),
+        }],
+        temp.path().join("known-worktrees"),
+    );
+
+    assert!(
+        herdr_workspace_specs(&store, &attribution).await.is_empty(),
+        "non-Herdr source must not populate Herdr specs"
+    );
+}
+
+/// An empty live Herdr store remains SWR-only across multiple foreground
+/// cadence ticks; no empty GraphQL request is issued.
+#[tokio::test]
+async fn empty_live_scope_never_calls_transport() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(Store::new());
+    let mock = Arc::new(MockTransport::new(vec![canned_response()]));
+    let attribution = WorkspaceAttribution::from_roots(
+        std::iter::empty::<RepoRoot>(),
+        temp.path().join("known-worktrees"),
+    );
+    let plane = Arc::new(GhPlane::with_config_and_herdr_scope(
+        store.clone(),
+        mock.clone(),
+        Some("test-token".to_string()),
+        fast_config(),
+        attribution,
+    ));
+    let (sink, _rx) = plane_channel();
+    let _subscriber = store.subscribe();
+    plane.start(sink);
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        mock.call_count(),
+        0,
+        "empty live scope must not poll across two cadence ticks"
+    );
 }
 
 /// SWR fetch: the first-ever subscriber triggers an immediate poll (not one
@@ -168,12 +467,12 @@ async fn zero_subscribers_never_polls() {
 async fn first_subscriber_triggers_immediate_fetch_then_foreground_cadence() {
     let store = Arc::new(Store::new());
     let mock = Arc::new(MockTransport::new(vec![canned_response()]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, _rx) = plane_channel();
     plane.start(sink);
 
@@ -206,12 +505,12 @@ async fn first_subscriber_triggers_immediate_fetch_then_foreground_cadence() {
 async fn background_cadence_after_all_subscribers_disconnect() {
     let store = Arc::new(Store::new());
     let mock = Arc::new(MockTransport::new(vec![canned_response()]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, _rx) = plane_channel();
     plane.start(sink);
 
@@ -248,12 +547,12 @@ async fn background_cadence_after_all_subscribers_disconnect() {
 async fn reconnect_during_background_sleep_triggers_immediate_fetch() {
     let store = Arc::new(Store::new());
     let mock = Arc::new(MockTransport::new(vec![canned_response()]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, _rx) = plane_channel();
     plane.start(sink);
 
@@ -329,12 +628,12 @@ async fn sustained_failures_back_off_then_recover() {
         failing,
         changed,
     ]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
@@ -344,7 +643,7 @@ async fn sustained_failures_back_off_then_recover() {
     .await;
     assert_eq!(
         drain_gh_events(&mut rx).len(),
-        TRACKED_REPOS.len(),
+        TEST_TRACKED_REPOS.len(),
         "initial poll emits all repos"
     );
     wait_until("first failure", Duration::from_secs(2), || {
@@ -445,12 +744,12 @@ async fn maps_all_repos_and_emits_only_changes() {
         canned_response(),
         changed,
     ]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
@@ -462,11 +761,11 @@ async fn maps_all_repos_and_emits_only_changes() {
     let states = drain_gh_events(&mut rx);
     assert_eq!(
         states.len(),
-        TRACKED_REPOS.len(),
+        TEST_TRACKED_REPOS.len(),
         "first poll emits every repo"
     );
     for (i, state) in states.iter().enumerate() {
-        assert_eq!(state.repo, TRACKED_REPOS[i].name);
+        assert_eq!(state.repo, TEST_TRACKED_REPOS[i].name);
         assert_eq!(state.default_branch, "main");
         assert_eq!(
             state.ahead, 0,
@@ -538,12 +837,12 @@ async fn failed_poll_emits_nothing() {
         failing,
         canned_response(),
     ]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
@@ -551,7 +850,7 @@ async fn failed_poll_emits_nothing() {
         mock.call_count() >= 1
     })
     .await;
-    assert_eq!(drain_gh_events(&mut rx).len(), TRACKED_REPOS.len());
+    assert_eq!(drain_gh_events(&mut rx).len(), TEST_TRACKED_REPOS.len());
 
     wait_until("failing poll", Duration::from_secs(2), || {
         mock.call_count() >= 2
@@ -584,12 +883,12 @@ async fn one_bad_repo_does_not_poison_the_round_trip() {
         .unwrap()
         .insert("q3".to_string(), Value::Null);
     let mock = Arc::new(MockTransport::new(vec![response]));
-    let plane = Arc::new(GhPlane::with_config(
+    let plane = configured_plane(
         store.clone(),
         mock.clone(),
         Some("test-token".to_string()),
         fast_config(),
-    ));
+    );
     let (sink, mut rx) = plane_channel();
     plane.start(sink);
 
@@ -601,7 +900,7 @@ async fn one_bad_repo_does_not_poison_the_round_trip() {
         .into_iter()
         .map(|s| s.repo)
         .collect();
-    assert_eq!(names.len(), TRACKED_REPOS.len() - 1);
+    assert_eq!(names.len(), TEST_TRACKED_REPOS.len() - 1);
     assert!(
         !names.contains("dotfiles"),
         "null alias emits nothing for that repo"
@@ -646,13 +945,13 @@ async fn live_round_trip_all_repos() {
     let _subscriber = store.subscribe(); // go live (first SSE client ever)
     // Token resolution (env/`gh auth token`) happens BEFORE the clock starts
     // (F3): the measured time is the round-trip only — start -> first event.
-    let plane = Arc::new(GhPlane::with_token(store, token));
+    let plane = Arc::new(GhPlane::with_token_and_specs(store, token, test_specs()));
     let (sink, mut rx) = plane_channel();
     let started = std::time::Instant::now();
     plane.start(sink);
 
     let mut states: Vec<GhRepoState> = Vec::new();
-    while states.len() < TRACKED_REPOS.len() {
+    while states.len() < TEST_TRACKED_REPOS.len() {
         match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
             Ok(Some(PlaneEvent::Gh(state))) => states.push(state),
             Ok(Some(_)) => {}
@@ -664,7 +963,7 @@ async fn live_round_trip_all_repos() {
     println!(
         "=== gh plane live round-trip: {}/{} repos in {:?} ===",
         states.len(),
-        TRACKED_REPOS.len(),
+        TEST_TRACKED_REPOS.len(),
         elapsed
     );
     for state in &states {
@@ -685,7 +984,7 @@ async fn live_round_trip_all_repos() {
         }
     }
     let names: HashSet<&str> = states.iter().map(|s| s.repo.as_str()).collect();
-    for repo in TRACKED_REPOS {
+    for repo in TEST_TRACKED_REPOS {
         assert!(
             names.contains(repo.name),
             "round-trip missing repo {}",

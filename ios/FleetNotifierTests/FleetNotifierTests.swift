@@ -4707,8 +4707,15 @@ final class GrantAdminToggleRevertTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        DeviceKeyStore.saveAdminToken("admin-tok-256")
+        DeviceKeyStore.clearAdminToken()
+        XCTAssertNil(DeviceKeyStore.adminToken(),
+                     "#332 R4: grant fixtures must start without stored admin credentials")
+        GrantAdminStubURLProtocol.requests = [
+            URLRequest(url: URL(fileURLWithPath: "/r6-fixture-sentinel"))
+        ]
         GrantAdminStubURLProtocol.reset()
+        XCTAssertTrue(GrantAdminStubURLProtocol.recordedRequests().isEmpty,
+                      "#332 R6: grant fixtures must start without recorded requests")
     }
 
     override func tearDown() {
@@ -4724,7 +4731,7 @@ final class GrantAdminToggleRevertTests: XCTestCase {
     }
 
     private func makeModel(session: URLSession) -> AppModel {
-        let model = AppModel(session: session)
+        let model = AppModel(session: session, adminTokenLoader: { "admin-tok-256" })
         model.mode = .live
         model.hostURL = URL(string: "http://grant-daemon")!
         return model

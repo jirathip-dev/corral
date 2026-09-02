@@ -3,7 +3,7 @@
 //! idempotency (sequential + concurrent), read_tail bounds, and audit call
 //! sites (grows on writes, never on auth failures or replay hits).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -648,6 +648,32 @@ async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
     };
     let store2 = store.clone();
     store2
+        .apply(corrald::core::model::Change::upsert(agent))
+        .await;
+}
+
+async fn seed_workspace_repo(store: &Store, repo: &str) {
+    let agent = corrald::core::model::Agent {
+        agent_id: format!("herdr:repo:{repo}"),
+        source: "herdr".to_string(),
+        tool: "opencode".to_string(),
+        state: corrald::core::model::AgentState::Working,
+        reason: None,
+        seq: 1,
+        ts: 1,
+        capabilities: Vec::new(),
+        waiting_on: None,
+        parent_id: None,
+        host: None,
+        workspace: corrald::core::model::Workspace {
+            repo: Some(repo.to_string()),
+            ..Default::default()
+        },
+        attachment: None,
+        display_name: None,
+        title: None,
+    };
+    store
         .apply(corrald::core::model::Change::upsert(agent))
         .await;
 }
@@ -1946,6 +1972,16 @@ async fn read_diff_dispatch_refusal_is_typed_and_audited_refused() {
 #[tokio::test]
 async fn read_issues_result_carries_repos_and_audits_executed() {
     let h = harness();
+    let in_scope = [
+        "fixture-alpha",
+        "fixture-bravo",
+        "corral",
+        "fixture-delta",
+        "fixture-echo",
+    ];
+    for repo in &in_scope {
+        seed_workspace_repo(&h.store, repo).await;
+    }
     h.issues.update(
         "corral",
         vec![corrald::core::events::GhIssueRef {
@@ -1967,7 +2003,20 @@ async fn read_issues_result_carries_repos_and_audits_executed() {
             comment_total: Some(3),
         }],
     );
-
+    h.issues.update(
+        "static-only",
+        vec![corrald::core::events::GhIssueRef {
+            repo: "static-only".to_string(),
+            number: 9001,
+            state: "OPEN".to_string(),
+            title: "unrelated fixture body".to_string(),
+            labels: vec![],
+            url: String::new(),
+            body: Some("must not escape the scoped projection".to_string()),
+            comments: vec![],
+            comment_total: None,
+        }],
+    );
     // Fleet-level: target is the fleet namespace, NOT an agent id.
     let (status, value) = post(
         &h.app,
@@ -1984,6 +2033,11 @@ async fn read_issues_result_carries_repos_and_audits_executed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], true);
     let repos = value["result"]["repos"].as_object().expect("repos object");
+    assert_eq!(
+        repos.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from_iter(in_scope.into_iter().map(str::to_string)),
+        "signed read_issues must use the same five live Herdr categories"
+    );
     let issues = repos["corral"].as_array().expect("corral issues");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0]["number"], 267);
@@ -2038,6 +2092,7 @@ async fn read_issues_without_grant_is_403_not_granted_and_not_audited() {
 #[tokio::test]
 async fn read_issues_replay_returns_stored_response_without_reaudit() {
     let h = harness();
+    seed_workspace_repo(&h.store, "corral").await;
     h.issues.update(
         "corral",
         vec![corrald::core::events::GhIssueRef {

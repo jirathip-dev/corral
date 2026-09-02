@@ -27,6 +27,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from release_source_manifest import (
@@ -37,6 +38,7 @@ from release_source_manifest import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 
 # This binds an inspected executable to the exact Release app source set used
 # for the approved build.  The declared build phase generates the marker from
@@ -77,14 +79,27 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the demo evidence launch args (FleetNotifierApp).
     # #333: DiffPane/DiffFileWire terminal-state reliability in Models.swift
     # and AppModel, with bounded/cancellable read_diff.
-    # #331: terminal attach errors, handshake lifecycle, and cleanup states.
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states;
+    # the digest covers the merged #328/#329/#330, #333, and #331 source set.
+    # #332 R3: post-integration reconciliation retained the workspace-derived
+    # scope and AC8 parity boundaries while preserving the production Keychain
+    # default and bounded grant-test seam.
+    # #332 R4: the grant fixture clears stored admin credentials before each
+    # test; FleetNotifierTests.swift is pinned separately because it is not a
+    # Release source input.
     # #328/#329/#330: recent-output attribution, divider-vs-content handling,
     # bounded harness presentation, and empty-Conversation evidence.
     # #319/#320 grouped R2: ordered status presentation, structured
     # supervision evidence, and Finished wording updated the board sources.
-    # The digest covers the merged #328/#329/#330, #331, #333, and #319/#320
-    # source set.
-    "aa7ecb5c75b4ce6e9899c6f4cca4993343fa64d79b3ad022d96443fb30b08afd"
+    # R6: recomputed over the merged 23-file Release source set.
+    "b71e14332091e51f89d1e2e9f98d826aeb4bf5f07a021f99b5611c262e34d8e3"
+)
+APPROVED_TEST_SOURCE_DIGEST = (
+    # #332 R4: pin the focused grant fixture independently from the Release
+    # app source manifest so a test-source mutation cannot be green-on-green.
+    # R6: integration's #319/#320 FleetNotifierTests changes are included;
+    # the pin follows the merged focused grant test source.
+    "6b4bc2095b1a397fac656d0bae4cc83a86544c5891a71dc5758261b292834b8b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -712,6 +727,22 @@ def _check_release_source_digest(root: Path = ROOT) -> None:
         raise CheckFailure(
             "Release build source digest differs from the expected checkout "
             f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
+        )
+
+
+def _test_source_digest(root: Path = ROOT) -> str:
+    try:
+        return sha256((root / TEST_SOURCE_FILE).read_bytes()).hexdigest()
+    except OSError as error:
+        raise CheckFailure(str(error)) from error
+
+
+def _check_test_source_digest(root: Path = ROOT) -> None:
+    actual_digest = _test_source_digest(root)
+    if actual_digest != APPROVED_TEST_SOURCE_DIGEST:
+        raise CheckFailure(
+            "Grant test source digest differs from the expected checkout "
+            f"(expected {APPROVED_TEST_SOURCE_DIGEST}, got {actual_digest})"
         )
 
 
@@ -1492,6 +1523,7 @@ def main() -> int:
             _self_test()
         _check_release_build_phase_configuration()
         _check_release_source_digest()
+        _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

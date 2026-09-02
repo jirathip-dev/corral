@@ -18,11 +18,12 @@ use crate::core::store::Store;
 pub(crate) async fn live_workspace_repos(store: &Store) -> BTreeSet<String> {
     store
         .matching(|agent| {
-            agent
-                .workspace
-                .repo
-                .as_deref()
-                .is_some_and(|repo| !repo.trim().is_empty())
+            agent.source == "herdr"
+                && agent
+                    .workspace
+                    .repo
+                    .as_deref()
+                    .is_some_and(|repo| !repo.trim().is_empty())
         })
         .await
         .into_iter()

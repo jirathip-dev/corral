@@ -1,0 +1,31 @@
+[
+  {
+    "kind": "system",
+    "text": "──────────────────────────────────────"
+  },
+  {
+    "kind": "user",
+    "text": "ship the canonical transcript stream",
+    "prompt_request_id": "req-prompt"
+  },
+  {
+    "kind": "unknown",
+    "text": "Canonical stream wired end to end."
+  },
+  {
+    "kind": "agent",
+    "text": "Should I proceed with the destructive migration?"
+  },
+  {
+    "kind": "tool",
+    "text": "$ cargo build\nCompiling corrald v0.1.0"
+  },
+  {
+    "kind": "system",
+    "text": "status: working · esc to interrupt"
+  },
+  {
+    "kind": "unknown",
+    "text": "fix the flaky test by hand"
+  }
+]

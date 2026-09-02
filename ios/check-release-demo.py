@@ -72,23 +72,27 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manufactured `model effort · path` line, no path-like fallback) and the
     # demo diff is compacted so the Conversation heading stays in viewport —
     # digest re-pinned to the R4 source set.
-    # #333: DiffPane/DiffFileWire terminal-state coverage in Models.swift,
-    # with AppModel bounds/cancellation for read_diff; digest re-pinned.
+    # #328/#329/#330: shared divider-vs-content seam + harness event count +
+    # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
+    # harness scroll (FleetViews layout constant), demo seed long diagnostics
+    # + divider-only block + harness-only evidence session (DemoFleet), and
+    # the demo evidence launch args (FleetNotifierApp).
+    # #333: DiffPane/DiffFileWire terminal-state reliability in Models.swift
+    # and AppModel, with bounded/cancellable read_diff.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
-    # the digest includes the merged #333 and #331 Release source inputs.
-    # #332 R3: post-integration reconciliation re-pinned the exact merged
-    # Release source set while retaining the #332 workspace-derived scope and
-    # AC8 parity boundaries. The bounded grant-test seam keeps production's
-    # Keychain default and is included in this source digest.
-    # #332 R4: the grant fixture now clears stored admin credentials before
-    # each test; FleetNotifierTests.swift is test-only and is not a Release
-    # source input, so the production-source digest remains stable.
-    "321220fc4e90f3df7920c43aa2f3849c8536d27379bace4173415a27deef1827"
+    # the digest covers the merged #328/#329/#330, #333, and #331 source set.
+    # #332 R3: post-integration reconciliation retained the workspace-derived
+    # scope and AC8 parity boundaries while preserving the production Keychain
+    # default and bounded grant-test seam.
+    # #332 R4: the grant fixture clears stored admin credentials before each
+    # test; FleetNotifierTests.swift is pinned separately because it is not a
+    # Release source input.
+    "c9c7a5ff1241ac7532ed00dbeba4d6c759085070965c1ede2babd525167b0bbd"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
     # app source manifest so a test-source mutation cannot be green-on-green.
-    "a47a139364412c7670afb12b0b60dba874435ccbbd1f9c6efbf6db1a77cf13bc"
+    "2ca9975c1fee1859a7ab49d6b04b077981ffbd1c9a726f3f9c4bf12a81f508e4"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

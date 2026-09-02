@@ -92,14 +92,22 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #319/#320 grouped R2: ordered status presentation, structured
     # supervision evidence, and Finished wording updated the board sources.
     # R6: recomputed over the merged 23-file Release source set.
-    "b71e14332091e51f89d1e2e9f98d826aeb4bf5f07a021f99b5611c262e34d8e3"
+    # #354 L2: the client cut removed Issues/Terminal/Diff/actions/admin —
+    # deleted sources (Biometrics, BoardFilter, DestructivePatterns,
+    # LiveVerifyRunner, TerminalAttach) left the manifest, the remaining
+    # sources were pruned to the read surface, and the digest was
+    # re-pinned over the new 18-file Release source set.
+    "68e3f7180328bcb246317ac6761dfd7378ea5c0717a2f4300dd913b1e9307021"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
     # app source manifest so a test-source mutation cannot be green-on-green.
     # R6: integration's #319/#320 FleetNotifierTests changes are included;
     # the pin follows the merged focused grant test source.
-    "6b4bc2095b1a397fac656d0bae4cc83a86544c5891a71dc5758261b292834b8b"
+    # #354 L2: the test suite was rebuilt for the read-only client
+    # (removed action/issue/diff/terminal/admin classes; added board,
+    # transition, payload, recents-tail, and wiring tests) — re-pinned.
+    "99b787553d9bfb2877a0069cf1889502f1c4975f4155bf57f380589810e9c302"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

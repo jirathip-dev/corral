@@ -241,9 +241,11 @@ Read-only client, grant-gated per device (see "Grants model" below):
   env); simulator/DEBUG verification uses the local notification bridge.
 - **Read-only since #354**: the mutating drive capabilities (`prompt`,
   `interrupt`, `approve`, `kill`, `attach`, `start_worktree`,
-  `read_issues`), the worktree-diff page, and the terminal/attach
-  transport were removed from the daemon and both clients. A signed drive
-  naming a removed capability is refused at the capability boundary
+  `read_issues`) and the terminal/attach transport were removed from the
+  daemon; the worktree-diff page was removed from BOTH CLIENTS (iOS L2,
+  egui L3) while the daemon RETAINS the signed `read_diff` read path
+  (bounded changed-files/diff page — no client dispatches it). A signed
+  drive naming a removed capability is refused at the capability boundary
   (`400 unknown_capability`) before the authorizer, before any adapter
   dispatch, and before the audit log.
 - If a target disappears or moves while a read drive is in flight, the

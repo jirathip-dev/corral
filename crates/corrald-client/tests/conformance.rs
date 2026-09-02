@@ -18,11 +18,9 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    AGENT_ID, AGENT_PANE, FakeAgent, LiveDaemon, audit_len, raw_drive, spawn_live_daemon,
+    AGENT_ID, AGENT_PANE, FakeAgent, LiveDaemon, audit_len, spawn_live_daemon,
     spawn_live_daemon_at, wait_for_agent, wait_for_dispatch_count, wait_for_head,
-    wait_for_waiting_on,
 };
-use corrald_client::approval::{approval_id_for, prompt_hash_of};
 use corrald_client::client::envelope;
 use corrald_client::drive::{DrivePayload, SignedDrive, canonical_envelope_bytes};
 use corrald_client::errors::{ApiError, DriveErrorKind};
@@ -121,12 +119,12 @@ async fn grant(
 fn canonical_envelope_bytes_match_the_daemon_locked_literal() {
     let envelope = corrald_client::DriveEnvelope {
         request_id: "req-1".to_string(),
-        capability: corrald_client::Capability::Prompt,
+        capability: corrald_client::Capability::ReadTail,
         target: "herdr:agent-a".to_string(),
-        payload: json!({ "kind": "prompt", "text": "hi" }),
+        payload: json!({ "kind": "read_tail", "lines": 50 }),
         rev: None,
     };
-    let literal = br#"{"request_id":"req-1","capability":"prompt","target":"herdr:agent-a","payload":{"kind":"prompt","text":"hi"}}"#;
+    let literal = br#"{"request_id":"req-1","capability":"read_tail","target":"herdr:agent-a","payload":{"kind":"read_tail","lines":50}}"#;
     assert_eq!(canonical_envelope_bytes(&envelope), literal);
 }
 
@@ -136,12 +134,12 @@ fn canonical_envelope_bytes_match_the_daemon_locked_literal() {
 fn canonical_bytes_include_rev_in_fixed_position() {
     let envelope = corrald_client::DriveEnvelope {
         request_id: "r".to_string(),
-        capability: corrald_client::Capability::Prompt,
+        capability: corrald_client::Capability::ReadTail,
         target: "t".to_string(),
-        payload: json!({ "kind": "prompt", "text": "go" }),
+        payload: json!({ "kind": "read_tail", "lines": 50 }),
         rev: Some(7),
     };
-    let literal = br#"{"request_id":"r","capability":"prompt","target":"t","payload":{"kind":"prompt","text":"go"},"rev":7}"#;
+    let literal = br#"{"request_id":"r","capability":"read_tail","target":"t","payload":{"kind":"read_tail","lines":50},"rev":7}"#;
     assert_eq!(canonical_envelope_bytes(&envelope), literal);
     // None omits the field entirely.
     let none = corrald_client::DriveEnvelope {
@@ -161,15 +159,15 @@ fn canonical_bytes_include_rev_in_fixed_position() {
 fn payload_bytes_are_key_order_independent() {
     let env1 = corrald_client::DriveEnvelope {
         request_id: "r".into(),
-        capability: corrald_client::Capability::Prompt,
+        capability: corrald_client::Capability::ReadTail,
         target: "t".into(),
-        payload: json!({ "kind": "prompt", "text": "hi" }),
+        payload: json!({ "kind": "read_tail", "lines": 50 }),
         rev: None,
     };
     // Same object, reverse insertion order.
     let mut reversed = serde_json::Map::new();
-    reversed.insert("text".into(), json!("hi"));
-    reversed.insert("kind".into(), json!("prompt"));
+    reversed.insert("lines".into(), json!(50));
+    reversed.insert("kind".into(), json!("read_tail"));
     let env2 = corrald_client::DriveEnvelope {
         payload: serde_json::Value::Object(reversed),
         ..env1.clone()
@@ -388,116 +386,6 @@ async fn r2_read_path_and_sse_resume() {
     println!("R2 pass: rev0={rev0} -> rev={}", snap_after.rev);
 }
 
-/// R3 — Signed drive executes: grant `prompt`, sign an envelope over the
-/// canonical bytes, POST /drive → 200 ok:true, response rev ≥ request rev.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r3_signed_drive_executes() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Prompt],
-    )
-    .await;
-
-    let snap = client.snapshot().await.expect("snapshot");
-    let env = envelope(
-        "r3-1",
-        corrald_client::Capability::Prompt,
-        AGENT_ID,
-        DrivePayload::Prompt {
-            text: "run the test suite".into(),
-        },
-        Some(snap.rev),
-    );
-    let drive = DriveClient::new(client.clone(), keypair);
-    let response = drive.drive(&env, None).await.expect("drive");
-    assert!(response.ok, "executed: {response:?}");
-    assert_eq!(response.request_id, "r3-1");
-    assert!(response.error.is_none());
-    assert!(response.rev >= snap.rev, "response rev >= request rev");
-
-    // Exactly one dispatch reached the (fake) herdr.
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(daemon.herdr.count_prompts_with("run the test suite"), 1);
-    println!("R3 pass: rev={} (request was {})", response.rev, snap.rev);
-}
-
-/// R4 — Tampered refused: same envelope, payload mutated after signing →
-/// 401 bad_signature; zero dispatch.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r4_tampered_envelope_refused() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Prompt],
-    )
-    .await;
-
-    // Sign the original, then mutate the payload AFTER signing.
-    let mut env = envelope(
-        "r4-1",
-        corrald_client::Capability::Prompt,
-        AGENT_ID,
-        DrivePayload::Prompt {
-            text: "continue".into(),
-        },
-        None,
-    );
-    let signature = keypair.sign_envelope(&env);
-    env.payload = DrivePayload::Prompt {
-        text: "continue!".into(),
-    }
-    .to_json();
-    let signed = SignedDrive {
-        key_id: dev.key_id.clone(),
-        signature,
-        envelope: env,
-    };
-
-    let err = client
-        .drive(&signed, None)
-        .await
-        .expect_err("tampered must be refused");
-    match &err {
-        ApiError::Drive(refusal) => {
-            assert_eq!(refusal.status, reqwest::StatusCode::UNAUTHORIZED);
-            assert_eq!(refusal.kind, Some(DriveErrorKind::BadSignature));
-        }
-        other => panic!("expected 401 bad_signature, got {other:?}"),
-    }
-
-    // Zero dispatch.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        daemon.herdr.commands().len(),
-        0,
-        "no dispatch for a bad signature"
-    );
-    println!("R4 pass: 401 bad_signature, zero dispatch");
-}
-
 /// R5 — Read-only denied: fresh device, no grants → 403 not_granted; zero
 /// audit growth.
 #[tokio::test]
@@ -517,11 +405,9 @@ async fn r5_read_only_device_denied() {
 
     let env = envelope(
         "r5-1",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         AGENT_ID,
-        DrivePayload::Prompt {
-            text: "do the thing".into(),
-        },
+        DrivePayload::ReadTail { lines: Some(50) },
         None,
     );
     let drive = DriveClient::new(client.clone(), keypair);
@@ -542,316 +428,8 @@ async fn r5_read_only_device_denied() {
     println!("R5 pass: 403 not_granted, audit {before} -> {after}");
 }
 
-/// R6 — Replay idempotent: same request_id twice → byte-identical
-/// responses, exactly one dispatch.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r6_replay_is_idempotent() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Prompt],
-    )
-    .await;
-
-    let env = envelope(
-        "r6-1",
-        corrald_client::Capability::Prompt,
-        AGENT_ID,
-        DrivePayload::Prompt {
-            text: "replay me".into(),
-        },
-        None,
-    );
-    let signed = SignedDrive {
-        key_id: dev.key_id.clone(),
-        signature: keypair.sign_envelope(&env),
-        envelope: env,
-    };
-
-    // Wire-level: two POSTs with the same signed envelope.
-    let (status1, body1) = raw_drive(&daemon.base, &signed, None).await;
-    let (status2, body2) = raw_drive(&daemon.base, &signed, None).await;
-    assert_eq!(status1, reqwest::StatusCode::OK);
-    assert_eq!(status2, reqwest::StatusCode::OK);
-    assert_eq!(
-        body1, body2,
-        "replay must return the first response byte-identical"
-    );
-    let first: serde_json::Value = serde_json::from_slice(&body1).unwrap();
-    assert_eq!(first["ok"], true);
-    assert_eq!(first["request_id"], "r6-1");
-
-    // Client-side: DriveClient dedupes from its replay table, no third send.
-    let drive = DriveClient::new(client.clone(), keypair);
-    let out1 = drive
-        .drive(&signed.envelope.clone(), None)
-        .await
-        .expect("drive");
-    let out2 = drive
-        .drive(&signed.envelope.clone(), None)
-        .await
-        .expect("drive");
-    assert_eq!(out1, out2);
-    assert_eq!(out1.request_id, "r6-1");
-
-    // Exactly one dispatch across all of the above.
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(
-        daemon.herdr.count_prompts_with("replay me"),
-        1,
-        "exactly one dispatch"
-    );
-    println!("R6 pass: byte-identical replay, 1 dispatch");
-}
-
-/// R7 — Stale hash refused: approve with the current approval_id but a
-/// WRONG prompt_hash → 409 hash_mismatch, zero dispatch, zero audit.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r7_stale_hash_refused() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Approve],
-    )
-    .await;
-
-    daemon
-        .herdr
-        .wait_for_approval("Approve this change? [y/n]", "[y/n]\n1. yes\n2. no\n")
-        .await;
-    let (_snap, waiting_on) = wait_for_waiting_on(&client, AGENT_ID, TIME_BUDGET).await;
-    let approval_id = approval_id_for(AGENT_ID, &waiting_on.prompt_hash);
-
-    // The client's own hash of the snapshot prompt string must equal the
-    // daemon's stored hash — the byte-for-byte untrimmed contract.
-    assert_eq!(
-        prompt_hash_of(&waiting_on.prompt),
-        waiting_on.prompt_hash,
-        "client must hash the EXACT snapshot prompt string"
-    );
-
-    let before = audit_len(&client, &daemon.admin_token).await;
-    let wrong_hash = prompt_hash_of("some other question?");
-    assert_ne!(wrong_hash, waiting_on.prompt_hash);
-    let env = envelope(
-        "r7-1",
-        corrald_client::Capability::Approve,
-        AGENT_ID,
-        DrivePayload::Approve {
-            approval_id: approval_id.clone(),
-            prompt_hash: wrong_hash,
-            choice: "y".into(),
-        },
-        None,
-    );
-    let drive = DriveClient::new(client.clone(), keypair);
-    let err = drive
-        .drive(&env, None)
-        .await
-        .expect_err("wrong hash must be refused");
-    match &err {
-        ApiError::Drive(refusal) => {
-            assert_eq!(refusal.status, reqwest::StatusCode::CONFLICT);
-            assert_eq!(refusal.kind, Some(DriveErrorKind::HashMismatch));
-        }
-        other => panic!("expected 409 hash_mismatch, got {other:?}"),
-    }
-
-    let after = audit_len(&client, &daemon.admin_token).await;
-    assert_eq!(after, before, "hash mismatch is never audited");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(daemon.herdr.count_approves_with("y"), 0, "zero dispatch");
-    println!("R7 pass: 409 hash_mismatch, zero dispatch, audit {before} -> {after}");
-}
-
-/// R8 — Matching approve executes: correct approval_id + prompt_hash +
-/// choice ∈ choices → 200, dispatch exactly once, audit +1.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r8_matching_approve_executes() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Approve],
-    )
-    .await;
-
-    daemon
-        .herdr
-        .wait_for_approval("Approve this change? [y/n]", "[y/n]\n1. yes\n2. no\n")
-        .await;
-    let (_snap, waiting_on) = wait_for_waiting_on(&client, AGENT_ID, TIME_BUDGET).await;
-    assert_eq!(waiting_on.choices, vec!["y".to_string(), "n".to_string()]);
-    let approval_id = approval_id_for(AGENT_ID, &waiting_on.prompt_hash);
-    assert_eq!(
-        waiting_on.approval_id, approval_id,
-        "daemon attaches the same claim id"
-    );
-
-    let before = audit_len(&client, &daemon.admin_token).await;
-    let env = envelope(
-        "r8-1",
-        corrald_client::Capability::Approve,
-        AGENT_ID,
-        DrivePayload::Approve {
-            approval_id,
-            prompt_hash: waiting_on.prompt_hash.clone(),
-            choice: "y".into(),
-        },
-        None,
-    );
-    let drive = DriveClient::new(client.clone(), keypair);
-    let response = drive.drive(&env, None).await.expect("approve executes");
-    assert!(response.ok, "approve must execute: {response:?}");
-    assert_eq!(response.request_id, "r8-1");
-
-    // Exactly one dispatch — the validated choice, to the pane.
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(
-        daemon.herdr.count_approves_with("y"),
-        1,
-        "exactly one approve dispatch"
-    );
-
-    let after = audit_len(&client, &daemon.admin_token).await;
-    assert_eq!(after, before + 1, "the executed approve is audited");
-    println!("R8 pass: 200 ok, 1 dispatch, audit {before} -> {after}");
-}
-
-/// R9 — Step-up: `rm -rf ...` payload without token → 403 step_up_required
-/// (audit 0); mint via /step-up, retry with header → 200, audit +1; token
-/// replay → 401 step_up_failed.
-#[tokio::test]
-#[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn r9_step_up_flow() {
-    let daemon = spawn_live_daemon().await;
-    let client = client_of(&daemon).await;
-    let _ = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
-
-    let keypair = DeviceKeypair::generate();
-    let dev = client
-        .register(&daemon.registration_token, &keypair.public_key_b64())
-        .await
-        .expect("register");
-    grant(
-        &daemon,
-        &client,
-        &dev.key_id,
-        &[corrald_client::Capability::Prompt],
-    )
-    .await;
-
-    let env = envelope(
-        "r9-1",
-        corrald_client::Capability::Prompt,
-        AGENT_ID,
-        DrivePayload::Prompt {
-            text: "rm -rf /tmp/scratch".into(),
-        },
-        None,
-    );
-    let signed = SignedDrive {
-        key_id: dev.key_id.clone(),
-        signature: keypair.sign_envelope(&env),
-        envelope: env,
-    };
-
-    let before = audit_len(&client, &daemon.admin_token).await;
-
-    // (a) No token -> 403 step_up_required, not audited, no dispatch.
-    let drive = DriveClient::new(client.clone(), keypair.clone());
-    let err = drive
-        .drive(&signed.envelope.clone(), None)
-        .await
-        .expect_err("must require step-up");
-    match &err {
-        ApiError::Drive(refusal) => {
-            assert_eq!(refusal.status, reqwest::StatusCode::FORBIDDEN);
-            assert_eq!(refusal.kind, Some(DriveErrorKind::StepUpRequired));
-        }
-        other => panic!("expected 403 step_up_required, got {other:?}"),
-    }
-    assert_eq!(
-        audit_len(&client, &daemon.admin_token).await,
-        before,
-        "step-up refusal not audited"
-    );
-
-    // (b) Mint via /step-up (signed proof of possession) -> retry with header -> 200.
-    let request = StepUpRequest::new(&dev.key_id, "r9-nonce");
-    let signature = keypair.sign_bytes(&canonical_step_up_bytes(&request));
-    let token = client
-        .step_up(&request, &signature)
-        .await
-        .expect("mint step-up token");
-    assert_eq!(token.key_id, dev.key_id);
-    assert_eq!(token.ttl_secs, 300, "5-minute TTL");
-    assert!(!token.token.is_empty());
-
-    let response = drive
-        .drive(&signed.envelope.clone(), Some(&token.token))
-        .await
-        .expect("drive with step-up token");
-    assert!(response.ok, "step-up drive executes: {response:?}");
-    assert_eq!(
-        audit_len(&client, &daemon.admin_token).await,
-        before + 1,
-        "execution audited"
-    );
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-    assert_eq!(daemon.herdr.count_prompts_with("rm -rf /tmp/scratch"), 1);
-
-    // (c) Token replay -> 401 step_up_failed (single-use), not audited.
-    let (status, body) = raw_drive(&daemon.base, &signed, Some(&token.token)).await;
-    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(value["kind"], "step_up_failed");
-    assert_eq!(
-        audit_len(&client, &daemon.admin_token).await,
-        before + 1,
-        "replay not audited"
-    );
-    println!(
-        "R9 pass: 403 -> mint -> 200 -> 401, audit {before} -> {}",
-        before + 1
-    );
-}
-
-/// R10 — Audit grows only on writes: GETs, auth failures, and step-up
-/// failures never grow the log; each executed / refused-at-dispatch drive
-/// does.
+/// R10 — Audit grows only on writes: GETs and auth failures never grow the
+/// log; each executed / refused-at-dispatch read does.
 #[tokio::test]
 #[ignore = "requires a live corrald; run the suite with --ignored"]
 async fn r10_audit_grows_only_on_writes() {
@@ -868,7 +446,7 @@ async fn r10_audit_grows_only_on_writes() {
         &daemon,
         &client,
         &dev.key_id,
-        &[corrald_client::Capability::Prompt],
+        &[corrald_client::Capability::ReadTail],
     )
     .await;
 
@@ -889,18 +467,13 @@ async fn r10_audit_grows_only_on_writes() {
     // Bad signature (tampered after signing).
     let mut env = envelope(
         "r10-tamper",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         AGENT_ID,
-        DrivePayload::Prompt {
-            text: "tampered".into(),
-        },
+        DrivePayload::ReadTail { lines: Some(50) },
         None,
     );
     let signature = keypair.sign_envelope(&env);
-    env.payload = DrivePayload::Prompt {
-        text: "tampered!".into(),
-    }
-    .to_json();
+    env.payload = DrivePayload::ReadTail { lines: Some(1) }.to_json();
     let _ = client
         .drive(
             &SignedDrive {
@@ -919,32 +492,14 @@ async fn r10_audit_grows_only_on_writes() {
         .expect("register read-only device");
     let env_ro = envelope(
         "r10-ro",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         AGENT_ID,
-        DrivePayload::Prompt {
-            text: "nope".into(),
-        },
+        DrivePayload::ReadTail { lines: Some(50) },
         None,
     );
     let _ = DriveClient::new(client.clone(), read_only)
         .drive(&env_ro, None)
         .await;
-    // Step-up required (destructive, no token).
-    let env_destructive = envelope(
-        "r10-dest",
-        corrald_client::Capability::Prompt,
-        AGENT_ID,
-        DrivePayload::Prompt {
-            text: "rm -rf /tmp/x".into(),
-        },
-        None,
-    );
-    let signed_destructive = SignedDrive {
-        key_id: dev.key_id.clone(),
-        signature: keypair.sign_envelope(&env_destructive),
-        envelope: env_destructive,
-    };
-    let _ = client.drive(&signed_destructive, None).await;
     assert_eq!(
         audit_len(&client, &daemon.admin_token).await,
         baseline,
@@ -955,11 +510,9 @@ async fn r10_audit_grows_only_on_writes() {
     // IS audited.
     let env_unknown = envelope(
         "r10-unknown",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         "herdr:no-such-agent",
-        DrivePayload::Prompt {
-            text: "who?".into(),
-        },
+        DrivePayload::ReadTail { lines: Some(50) },
         None,
     );
     let drive = DriveClient::new(client.clone(), keypair.clone());
@@ -977,11 +530,9 @@ async fn r10_audit_grows_only_on_writes() {
     // (d) Executed write -> audited.
     let env_ok = envelope(
         "r10-ok",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         AGENT_ID,
-        DrivePayload::Prompt {
-            text: "audit me".into(),
-        },
+        DrivePayload::ReadTail { lines: Some(50) },
         None,
     );
     let response = drive.drive(&env_ok, None).await.expect("executed drive");
@@ -1002,12 +553,12 @@ async fn r10_audit_grows_only_on_writes() {
     println!("R10 pass: baseline={baseline}, reads/auth 0 growth, writes +2, chain valid");
 }
 
-/// End-to-end chain on ONE daemon: register -> read -> sign -> drive ->
-/// step-up -> approve in a single process (the brief's acceptance chain).
-/// The per-scenario tests above spawn their own daemons for isolation.
+/// End-to-end chain on ONE daemon: register -> read -> sign -> read_tail
+/// drive in a single process (#354 read-only acceptance chain). The
+/// per-scenario tests above spawn their own daemons for isolation.
 #[tokio::test]
 #[ignore = "requires a live corrald; run the suite with --ignored"]
-async fn register_read_sign_drive_step_up_approve() {
+async fn register_read_sign_drive_read_only() {
     let daemon = spawn_live_daemon().await;
     let client = client_of(&daemon).await;
     let snap = wait_for_agent(&client, AGENT_ID, TIME_BUDGET).await;
@@ -1024,53 +575,27 @@ async fn register_read_sign_drive_step_up_approve() {
         &daemon,
         &client,
         &dev.key_id,
-        &[
-            corrald_client::Capability::Prompt,
-            corrald_client::Capability::Approve,
-        ],
+        &[corrald_client::Capability::ReadTail],
     )
     .await;
 
-    // sign + drive
+    // sign + drive (the one response-bearing read)
     let drive = DriveClient::new(client.clone(), keypair);
     let env = envelope(
         "e2e-1",
-        corrald_client::Capability::Prompt,
+        corrald_client::Capability::ReadTail,
         AGENT_ID,
-        DrivePayload::Prompt { text: "go".into() },
+        DrivePayload::ReadTail { lines: Some(50) },
         Some(snap.rev),
     );
-    let response = drive.drive(&env, None).await.expect("signed drive");
+    let response = drive.drive(&env, None).await.expect("signed read");
     assert!(response.ok);
-    assert!(response.rev >= snap.rev);
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 1, TIME_BUDGET).await;
-
-    // step-up + approve: block the agent on a menu, approve it.
-    daemon
-        .herdr
-        .wait_for_approval("Approve this change? [y/n]", "[y/n]\n1. yes\n2. no\n")
-        .await;
-    let (_snap, waiting_on) = wait_for_waiting_on(&client, AGENT_ID, TIME_BUDGET).await;
-    let approve = envelope(
-        "e2e-2",
-        corrald_client::Capability::Approve,
-        AGENT_ID,
-        DrivePayload::Approve {
-            approval_id: approval_id_for(AGENT_ID, &waiting_on.prompt_hash),
-            prompt_hash: waiting_on.prompt_hash,
-            choice: "y".into(),
-        },
-        None,
-    );
-    let response = drive.drive(&approve, None).await.expect("approve");
-    assert!(response.ok);
-    wait_for_dispatch_count(&daemon.herdr, |n| n >= 2, TIME_BUDGET).await;
-    assert_eq!(daemon.herdr.count_approves_with("y"), 1);
+    assert_eq!(response.request_id, "e2e-1");
 
     let audit = client.audit(&daemon.admin_token).await.expect("audit");
     assert!(audit.valid);
     println!(
-        "e2e pass: register -> read -> sign -> drive -> approve, audit={}",
+        "e2e pass: register -> read -> sign -> read_tail, audit={}",
         audit.len()
     );
 }

@@ -1792,8 +1792,9 @@ impl HerdrAdapter {
             reference: pane_id.to_string(),
         });
         if let Some(waiting_on) = agent.waiting_on.as_mut() {
-            waiting_on.approval_id =
-                crate::approve::approval_id_for(agent_id, &waiting_on.prompt_hash);
+            // Stable claim identity (D8): agent + exact prompt hash (the
+            // approve seam is display-only metadata since #354).
+            waiting_on.approval_id = format!("{agent_id}:{}", waiting_on.prompt_hash);
         }
         let seq = self.state.lock().unwrap().next_seq(agent_id);
         agent.seq = seq;
@@ -2198,10 +2199,9 @@ impl HerdrAdapter {
                 let mut waiting_on = waiting_on.clone();
                 // P3 D8: emit the live approval claim — the approval_id is
                 // the stable identity (agent + exact prompt hash) clients
-                // echo back in DrivePayload::Approve. The drive path
-                // re-derives it and never trusts this stored copy.
-                waiting_on.approval_id =
-                    crate::approve::approval_id_for(&agent_id_for_claim, &waiting_on.prompt_hash);
+                // echo back in DrivePayload::Approve (#354: display-only —
+                // the drive path no longer validates it).
+                waiting_on.approval_id = format!("{agent_id_for_claim}:{}", waiting_on.prompt_hash);
                 if let Some(role) = exchange_role {
                     exchange.record(crate::core::provenance::ExchangeEvent::new(
                         &waiting_on.approval_id,
@@ -2459,9 +2459,9 @@ fn reason_from_labels(labels: &HashMap<String, String>) -> Option<String> {
 ///
 /// P3 D8 (W2): the `prompt_hash` MUST cover the EXACT prompt text herdr
 /// emitted — never trimmed — so the claim's hash is byte-identical to what
-/// an approve reply must echo. `prompt` is therefore stored untrimmed too
-/// (redacted only); the approval claim is derived from it by
-/// `crate::approve`.
+/// a reply must reference. `prompt` is therefore stored untrimmed too
+/// (redacted only); the approval_id is agent + prompt hash (#354: the
+/// drive plane's approve validation is gone, this is display metadata).
 ///
 /// F4 (re-review): the kind is classified from the RAW matched line before
 /// redaction, so a secret span swallowing the keyword cannot degrade
@@ -2560,84 +2560,12 @@ impl Adapter for HerdrAdapter {
         agent_id: &'a str,
         command: DriveCommand,
     ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
-        // read_tail is the one capability whose whole point is a response;
-        // the API routes it through Adapter::read_tail. Refusing it here
-        // keeps a discarded-response fallback impossible.
-        if matches!(&command, DriveCommand::ReadTail { .. }) {
-            return Box::pin(async { Err(DriveError::NotImplemented("read_tail")) });
-        }
-        let is_kill = matches!(&command, DriveCommand::Kill);
-        let (target, pane_id, generation) = match self.drive_mapping_with_generation(agent_id) {
-            Ok(mapping) => mapping,
-            Err(error) => return Box::pin(async move { Err(error) }),
-        };
-        let (method, params) = match command {
-            DriveCommand::Prompt { text } => (
-                "agent.prompt",
-                json!({"target": target.clone(), "text": text}),
-            ),
-            DriveCommand::Interrupt => (
-                "agent.send_keys",
-                json!({"target": target.clone(), "keys": ["ctrl-c"]}),
-            ),
-            // read_tail is the one capability whose whole point is a
-            // response — refused above, before target resolution.
-            DriveCommand::ReadTail { .. } => unreachable!(),
-            // Approve mechanism (P3 D8, verified live against herdr 0.7.5):
-            // herdr exposes NO approve-specific RPC (`herdr api schema` lists
-            // agent.prompt / agent.send_keys / pane.send_text / pane.send_input
-            // — nothing approve-shaped), and the pane's approve IS an input
-            // send. `agent.prompt` is herdr's input-send to the agent session
-            // (the same call DriveCommand::Prompt uses); a blocked agent
-            // receives the choice text, exactly as if the human had typed it.
-            // Live-verified: an opencode agent blocked on a y/n menu executed
-            // the choice submitted this way.
-            DriveCommand::Approve { choice } => (
-                "agent.prompt",
-                json!({"target": target.clone(), "text": choice}),
-            ),
-            // Kill closes the mapped pane. Herdr identifies panes only by
-            // pane_id, never by the user-facing agent target, so the RPC
-            // carries the current reverse-mapped pane.
-            DriveCommand::Kill => ("pane.close", json!({"pane_id": pane_id})),
-            // Attach is response-bearing and must be routed through
-            // Adapter::attach; this command handle has no result channel.
-            DriveCommand::Attach => {
-                return Box::pin(async { Err(DriveError::NotImplemented("attach")) });
-            }
-            // read_diff is likewise response-bearing: never dispatched
-            // through the command path (the API routes it via
-            // Adapter::read_diff).
-            DriveCommand::ReadDiff { .. } => {
-                return Box::pin(async { Err(DriveError::NotImplemented("read_diff")) });
-            }
-        };
-        let agent_id = agent_id.to_string();
-        let socket = self.socket_path.clone();
-        let failed_target = target;
-        Box::pin(async move {
-            match rpc_call(&socket, method, params).await {
-                Ok(_) if is_kill => {
-                    if self
-                        .retire_rpc_mapping(&agent_id, &failed_target, generation)
-                        .await
-                    {
-                        Ok(())
-                    } else {
-                        Err(DriveError::StaleAgent(agent_id))
-                    }
-                }
-                Ok(_) => Ok(()),
-                Err(error) => {
-                    let mapped = map_drive_rpc_error(&agent_id, method, error);
-                    if matches!(mapped, DriveError::StaleAgent(_)) {
-                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
-                            .await;
-                    }
-                    Err(mapped)
-                }
-            }
-        })
+        // #354 read-only cut: every mutating command was removed from the
+        // DriveCommand vocabulary; only the response-bearing reads remain,
+        // and the API routes those through read_tail/read_diff. The command
+        // path is therefore structurally empty — nothing to dispatch.
+        let _ = (agent_id, command);
+        Box::pin(async { Err(DriveError::NotImplemented("command path removed by #354")) })
     }
 
     fn read_tail<'a>(
@@ -2763,25 +2691,6 @@ impl Adapter for HerdrAdapter {
                 .map(|line| redact(line).into_owned())
                 .collect();
             Ok(crate::drive::ReadDiffResult { lines, ..result })
-        })
-    }
-
-    fn attach<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Value, DriveError>> {
-        let (target, pane_id, _) = match self.drive_mapping_with_generation(agent_id) {
-            Ok(mapping) => mapping,
-            Err(error) => return Box::pin(async move { Err(error) }),
-        };
-        Box::pin(async move {
-            Ok(json!({
-                "kind": "terminal_ref",
-                "target": target,
-                "pane_id": pane_id,
-                "command": terminal_attach_command(&target),
-                "args": ["herdr", "agent", "attach", "--takeover", target],
-            }))
         })
     }
 
@@ -2917,22 +2826,6 @@ impl HerdrAdapter {
         }
     }
 }
-
-/// Human-ready shell command for the attach handle. The target is
-/// single-quoted so a client that copies the line into a shell cannot split
-/// it into extra arguments; the structured `args` array in the same handle is
-/// the parser-safe form.
-fn terminal_attach_command(target: &str) -> String {
-    format!(
-        "herdr agent attach --takeover {}",
-        shell_single_quote(target)
-    )
-}
-
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 /// Bound + redact + scrub the fetched tail at the adapter boundary, BEFORE
 /// any byte leaves the machine (D9/D5/#253): at most `max_lines` lines
 /// (clamped to [`READ_TAIL_MAX_LINES`]), the redacted text bounded to
@@ -3367,9 +3260,9 @@ mod tests {
         // clients echo in DrivePayload::Approve.
         assert_eq!(
             w.approval_id,
-            crate::approve::approval_id_for(
-                "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784",
-                &w.prompt_hash
+            format!(
+                "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784:{}",
+                w.prompt_hash
             )
         );
         assert!(w.choices.iter().any(|c| c == "Continue"));
@@ -3814,46 +3707,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disappearance_is_typed_stale_for_read_prompt_and_approve() {
-        // Once a known pane disappears, all three controls must refuse before
-        // opening a transport. A stale selection is refreshable; it is not an
-        // unknown id and must not become a generic socket failure.
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        adapter
-            .register_agent_pane("w-stale:p1", "opencode", AgentState::Working, &store)
-            .await;
-        let (sink, _rx) = mpsc::channel(16);
-        adapter
-            .handle_event(
-                ParsedEvent::PaneClosed {
-                    pane_id: "w-stale:p1".to_string(),
-                },
-                sink,
-                &store,
-            )
-            .await;
-        let agent_id = "herdr:pane:w-stale:p1";
-
-        assert!(matches!(
-            adapter.read_tail(agent_id, 10).await,
-            Err(DriveError::StaleAgent(id)) if id == agent_id
-        ));
-        assert!(matches!(
-            adapter
-                .drive(agent_id, DriveCommand::Prompt { text: "hi".into() })
-                .await,
-            Err(DriveError::StaleAgent(id)) if id == agent_id
-        ));
-        assert!(matches!(
-            adapter
-                .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
-                .await,
-            Err(DriveError::StaleAgent(id)) if id == agent_id
-        ));
-    }
-
-    #[tokio::test]
     async fn unknown_state_flows_through_read_path() {
         let store = Store::new();
         let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
@@ -3874,86 +3727,10 @@ mod tests {
         assert!(adapter.knows_agent(&agent.agent_id));
     }
 
-    #[tokio::test]
-    async fn drive_against_unknown_state_agent_is_typed_not_a_crash() {
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        adapter
-            .register_agent_pane("uX:p1", "opencode", AgentState::Unknown, &store)
-            .await;
-        let snap = store.snapshot().await;
-        let agent = snap
-            .agents
-            .get("herdr:pane:uX:p1")
-            .expect("detected agent record");
-        assert_eq!(agent.state, AgentState::Unknown);
-
-        // A tracked pane in Unknown state is drivable (drive gates on the
-        // pane mapping, not the state): the transport outcome is returned,
-        // never hidden in a detached task.
-        let result = adapter
-            .drive(&agent.agent_id, DriveCommand::Prompt { text: "hi".into() })
-            .await;
-        assert!(
-            matches!(result, Err(DriveError::Transport(_))),
-            "drive on an unknown-state agent must expose transport failure: {result:?}"
-        );
-
-        // An agent with no pane mapping gets the typed error.
-        let err = adapter
-            .drive(
-                "herdr:pane:absent",
-                DriveCommand::Prompt { text: "hi".into() },
-            )
-            .await;
-        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "herdr:pane:absent"));
-    }
-
-    #[tokio::test]
-    async fn drive_rejects_unknown_agents() {
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        assert!(!adapter.knows_agent("nope"));
-        let err = adapter
-            .drive("nope", DriveCommand::Prompt { text: "hi".into() })
-            .await;
-        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
-    }
-
-    #[tokio::test]
-    async fn approve_dispatches_via_agent_prompt() {
-        // The pane's approve is an input send; herdr exposes no
-        // approve-shaped RPC, so the choice goes through agent.prompt (the
-        // same input-send the human typing into the pane produces).
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        assert!(!adapter.knows_agent("nope"));
-        let err = adapter
-            .drive("nope", DriveCommand::Approve { choice: "y".into() })
-            .await;
-        assert!(matches!(err, Err(DriveError::UnknownAgent(id)) if id == "nope"));
-    }
-
     // -----------------------------------------------------------------------
     // W2.1 read_tail: the adapter fetches agent.read SYNCHRONOUSLY, redacts
     // (D9) and bounds (D5) the tail before it leaves the machine.
     // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn drive_refuses_read_tail_fallback() {
-        // read_tail is the one capability whose whole point is a response:
-        // the API layer routes it through Adapter::read_tail, and this path
-        // refuses it rather than discarding the result.
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
-        let err = adapter
-            .drive(
-                "herdr:a",
-                DriveCommand::ReadTail {
-                    lines: Some(5),
-                    since_rev: None,
-                },
-            )
-            .await;
-        assert!(matches!(err, Err(DriveError::NotImplemented("read_tail"))));
-    }
 
     #[tokio::test]
     async fn read_tail_rejects_unknown_agents() {
@@ -4468,463 +4245,6 @@ mod tests {
             .expect("read_tail");
         server.await.unwrap();
         assert!(tail.is_empty(), "no output -> clean empty lines");
-    }
-
-    /// Three bounded control operations against one current migrated target.
-    /// This is deliberately a socket-level assertion: resolving only the
-    /// in-memory map would not prove that read_tail, prompt, and approve all
-    /// send the same current target over their production RPC paths.
-    #[tokio::test]
-    async fn optional_name_migration_dispatches_all_controls_to_current_pane() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket_path = dir.path().join("herdr.sock");
-        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
-        let server = tokio::spawn(async move {
-            let mut requests = Vec::new();
-            for _ in 0..3 {
-                let (stream, _) = listener.accept().await.expect("accept");
-                let (read, mut write) = stream.into_split();
-                let mut lines = BufReader::new(read).lines();
-                let line = lines.next_line().await.expect("request").expect("line");
-                let request: Value = serde_json::from_str(&line).expect("json request");
-                let result = if request["method"] == "agent.read" {
-                    json!({"read": {"text": "current tail\n"}})
-                } else {
-                    json!({"ok": true})
-                };
-                let response = json!({"id": request["id"], "result": result}).to_string() + "\n";
-                write
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("response");
-                requests.push(request);
-            }
-            requests
-        });
-
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(socket_path);
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-controls"},
-            "agent_status": "blocked",
-            "name": "old-target",
-            "pane_id": "w-old:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-        let moved: PaneInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-controls"},
-            "agent_status": "blocked",
-            "pane_id": "w-new:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        // Keep this hermetic control socket focused on request/response RPCs;
-        // the production handler would open a pane subscription here.
-        adapter
-            .state
-            .lock()
-            .unwrap()
-            .subscribed_panes
-            .insert("w-new:p1".to_string());
-        let (sink, _rx) = mpsc::channel(16);
-        adapter.handle_pane_updated(&moved, sink, &store).await;
-
-        let agent_id = "herdr:ses-controls";
-        let tail = adapter.read_tail(agent_id, 10).await.expect("read tail");
-        assert_eq!(tail, vec!["current tail"]);
-        adapter
-            .drive(
-                agent_id,
-                DriveCommand::Prompt {
-                    text: "hello".into(),
-                },
-            )
-            .await
-            .expect("prompt dispatch accepted");
-        adapter
-            .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
-            .await
-            .expect("approve dispatch accepted");
-
-        let requests = tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .expect("three RPCs timeout")
-            .expect("server task");
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0]["method"], "agent.read");
-        assert_eq!(requests[0]["params"]["target"], "w-new:p1");
-        assert_eq!(requests[1]["method"], "agent.prompt");
-        assert_eq!(requests[1]["params"]["target"], "w-new:p1");
-        assert_eq!(requests[1]["params"]["text"], "hello");
-        assert_eq!(requests[2]["method"], "agent.prompt");
-        assert_eq!(requests[2]["params"]["target"], "w-new:p1");
-        assert_eq!(requests[2]["params"]["text"], "y");
-    }
-
-    #[tokio::test]
-    async fn kill_closes_current_pane_and_retires_store_row() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket_path = dir.path().join("herdr.sock");
-        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let line = lines.next_line().await.expect("request").expect("line");
-            let request: Value = serde_json::from_str(&line).expect("json request");
-            let response = json!({"id": request["id"], "result": Value::Null}).to_string() + "\n";
-            write
-                .write_all(response.as_bytes())
-                .await
-                .expect("response");
-            request
-        });
-
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(socket_path);
-        adapter.attach_store(store.clone());
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-kill"},
-            "agent_status": "working",
-            "name": "agent-kill",
-            "pane_id": "w-kill:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-
-        let agent_id = "herdr:ses-kill";
-        adapter
-            .drive(agent_id, DriveCommand::Kill)
-            .await
-            .expect("kill dispatched");
-        let request = tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .expect("kill RPC timeout")
-            .expect("server task");
-
-        assert_eq!(request["method"], "pane.close");
-        assert_eq!(request["params"]["pane_id"], "w-kill:p1");
-        assert!(
-            request["params"].get("target").is_none(),
-            "pane.close must use the mapped pane id, not the agent target"
-        );
-        assert!(
-            store.snapshot().await.agents.is_empty(),
-            "successful kill must retire the canonical store row"
-        );
-        assert!(adapter.is_stale_agent(agent_id));
-        assert!(adapter.drive_target(agent_id).is_err());
-    }
-
-    #[tokio::test]
-    async fn kill_pane_not_found_is_stale_and_retires_store_row() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket_path = dir.path().join("herdr.sock");
-        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let line = lines.next_line().await.expect("request").expect("line");
-            let request: Value = serde_json::from_str(&line).expect("json request");
-            let response = json!({
-                "id": request["id"],
-                "error": {"code": "pane_not_found", "message": "pane not found"}
-            })
-            .to_string()
-                + "\n";
-            write
-                .write_all(response.as_bytes())
-                .await
-                .expect("response");
-            request
-        });
-
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(socket_path);
-        adapter.attach_store(store.clone());
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-kill-stale"},
-            "agent_status": "working",
-            "name": "agent-kill-stale",
-            "pane_id": "w-kill-stale:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-
-        let agent_id = "herdr:ses-kill-stale";
-        let result = adapter.drive(agent_id, DriveCommand::Kill).await;
-        assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
-        let request = tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .expect("stale kill RPC timeout")
-            .expect("server task");
-        assert_eq!(request["method"], "pane.close");
-        assert_eq!(request["params"]["pane_id"], "w-kill-stale:p1");
-        assert!(store.snapshot().await.agents.is_empty());
-        assert!(adapter.is_stale_agent(agent_id));
-    }
-
-    #[tokio::test]
-    async fn kill_and_attach_unknown_agents_are_typed_without_connecting() {
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
-        let kill = tokio::time::timeout(
-            Duration::from_secs(1),
-            adapter.drive("herdr:never", DriveCommand::Kill),
-        )
-        .await
-        .expect("unknown kill must return immediately");
-        assert!(matches!(
-            kill,
-            Err(DriveError::UnknownAgent(id)) if id == "herdr:never"
-        ));
-
-        let attach = tokio::time::timeout(Duration::from_secs(1), adapter.attach("herdr:never"))
-            .await
-            .expect("unknown attach must return immediately");
-        assert!(matches!(
-            attach,
-            Err(DriveError::UnknownAgent(id)) if id == "herdr:never"
-        ));
-    }
-
-    #[tokio::test]
-    async fn attach_returns_stable_terminal_ref_for_current_target() {
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-attach"},
-            "agent_status": "working",
-            "name": "agent-attach",
-            "pane_id": "w-attach:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-
-        let handle =
-            tokio::time::timeout(Duration::from_secs(1), adapter.attach("herdr:ses-attach"))
-                .await
-                .expect("attach must not perform an RPC")
-                .expect("attach handle");
-        assert_eq!(handle["kind"], "terminal_ref");
-        assert_eq!(handle["target"], "agent-attach");
-        assert_eq!(handle["pane_id"], "w-attach:p1");
-        assert_eq!(handle["command"], terminal_attach_command("agent-attach"));
-        assert_eq!(
-            handle["args"],
-            json!(["herdr", "agent", "attach", "--takeover", "agent-attach"])
-        );
-    }
-
-    #[tokio::test]
-    async fn attach_dead_target_is_stale_not_unknown() {
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent-herdr.sock"));
-        adapter.attach_store(store.clone());
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-attach-dead"},
-            "agent_status": "working",
-            "name": "agent-attach-dead",
-            "pane_id": "w-attach-dead:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-        let agent_id = "herdr:ses-attach-dead";
-        let generation = adapter
-            .state
-            .lock()
-            .unwrap()
-            .agent_generations
-            .get(agent_id)
-            .copied()
-            .expect("generation");
-        assert!(
-            adapter
-                .retire_rpc_mapping(agent_id, "agent-attach-dead", generation)
-                .await
-        );
-
-        let result = adapter.attach(agent_id).await;
-        assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
-    }
-
-    #[tokio::test]
-    async fn late_kill_success_cannot_retire_newer_mapping() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket_path = dir.path().join("herdr.sock");
-        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
-        let (request_tx, request_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let line = lines.next_line().await.expect("request").expect("line");
-            let request: Value = serde_json::from_str(&line).expect("json request");
-            request_tx.send(()).expect("request observer");
-            release_rx.await.expect("release kill response");
-            let response = json!({"id": request["id"], "result": {"ok": true}}).to_string() + "\n";
-            write
-                .write_all(response.as_bytes())
-                .await
-                .expect("response");
-            request
-        });
-
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(socket_path);
-        adapter.attach_store(store.clone());
-        let first: AgentInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-kill-race"},
-            "agent_status": "working",
-            "name": "same-target",
-            "pane_id": "w-kill-old:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter.apply_agent_info(&first, &store).await;
-
-        let agent_id = "herdr:ses-kill-race";
-        let kill = adapter.drive(agent_id, DriveCommand::Kill);
-        tokio::pin!(kill);
-        tokio::select! {
-            _ = request_rx => {},
-            result = &mut kill => panic!("kill completed before migration: {result:?}"),
-        }
-
-        let moved: PaneInfoWire = serde_json::from_value(json!({
-            "agent": "opencode",
-            "agent_session": {"agent": "opencode", "kind": "id",
-                "source": "herdr:opencode", "value": "ses-kill-race"},
-            "agent_status": "working",
-            "display_agent": "same-target",
-            "pane_id": "w-kill-new:p1",
-            "state_labels": {}
-        }))
-        .unwrap();
-        adapter
-            .state
-            .lock()
-            .unwrap()
-            .subscribed_panes
-            .insert("w-kill-new:p1".to_string());
-        let (sink, _rx) = mpsc::channel(16);
-        adapter.handle_pane_updated(&moved, sink, &store).await;
-        release_tx.send(()).expect("release kill response");
-
-        assert!(matches!(
-            kill.await,
-            Err(DriveError::StaleAgent(id)) if id == agent_id
-        ));
-        server.await.expect("server task");
-        assert_eq!(
-            adapter.drive_target(agent_id).unwrap(),
-            "same-target",
-            "a successful kill of the old pane must not retire the migrated mapping"
-        );
-        assert!(!adapter.is_stale_agent(agent_id));
-        assert!(store.snapshot().await.agents.contains_key(agent_id));
-    }
-
-    #[tokio::test]
-    async fn server_agent_not_found_retires_store_row_for_read_prompt_and_approve() {
-        // This is a local JSON-RPC mock, not a live Herdr proof. It exercises
-        // the production response/error path for all three controls so an
-        // asynchronous server rejection cannot be reported as success.
-        for control in ["read_tail", "prompt", "approve"] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let socket_path = dir.path().join("herdr.sock");
-            let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
-            let server = tokio::spawn(async move {
-                let (stream, _) = listener.accept().await.expect("accept");
-                let (read, mut write) = stream.into_split();
-                let mut lines = BufReader::new(read).lines();
-                let line = lines.next_line().await.expect("request").expect("line");
-                let request: Value = serde_json::from_str(&line).expect("json request");
-                let response = json!({
-                    "id": request["id"],
-                    "error": {"code": "agent_not_found", "message": "agent not found"}
-                })
-                .to_string()
-                    + "\n";
-                write
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("response");
-                request
-            });
-
-            let store = Store::new();
-            let adapter = HerdrAdapter::new(socket_path);
-            adapter.attach_store(store.clone());
-            adapter
-                .register_agent_pane("p1", "opencode", AgentState::Working, &store)
-                .await;
-            let agent_id = "herdr:pane:p1";
-            let result = match control {
-                "read_tail" => adapter.read_tail(agent_id, 10).await.map(|_| ()),
-                "prompt" => {
-                    adapter
-                        .drive(
-                            agent_id,
-                            DriveCommand::Prompt {
-                                text: "hello".into(),
-                            },
-                        )
-                        .await
-                }
-                "approve" => {
-                    adapter
-                        .drive(agent_id, DriveCommand::Approve { choice: "y".into() })
-                        .await
-                }
-                _ => unreachable!(),
-            };
-            assert!(matches!(result, Err(DriveError::StaleAgent(id)) if id == agent_id));
-            let request = tokio::time::timeout(Duration::from_secs(2), server)
-                .await
-                .expect("RPC timeout")
-                .expect("server task");
-            assert_eq!(
-                request["method"].as_str(),
-                Some(match control {
-                    "read_tail" => "agent.read",
-                    _ => "agent.prompt",
-                })
-            );
-            assert!(
-                store.snapshot().await.agents.is_empty(),
-                "{control} RPC stale retires the canonical store row"
-            );
-            assert!(
-                adapter.is_stale_agent(agent_id),
-                "{control} RPC stale leaves a bounded refresh tombstone"
-            );
-            assert!(
-                adapter.drive_target(agent_id).is_err(),
-                "{control} RPC stale leaves no dispatchable control target"
-            );
-        }
     }
 
     #[tokio::test]
@@ -5866,287 +5186,6 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AC2 (P3 verdict gate): the LIVE claim flow against a real blocked herdr
-// agent — the wrong-question race simulation.
-//
-// Gated by env so the normal suite stays hermetic:
-//   CORRAL_AC2=1              enable the live test
-//   CORRAL_AC2_PANE=<pane_id> the pane whose agent must be BLOCKED on a prompt
-//   CORRAL_SOCKET=<path>      optional herdr socket override
-//
-// Exercises the production paths end to end over the real herdr socket:
-// agent.list bootstrap -> claim emission from the pane's REAL output ->
-// claim check (stale hash / stale id refused, correct hash + choice
-// executes) -> approve dispatch -> agent unblocks.
-// ---------------------------------------------------------------------------
-#[cfg(test)]
-mod ac2_live_tests {
-    use super::*;
-    use crate::approve::{ApprovalError, claim_for};
-    use serde_json::json;
-
-    /// Emulate the pane.output_matched match (PROMPT_REGEX over the
-    /// recent_unwrapped window) to obtain the exact matched line the real
-    /// subscription would deliver. herdr unwraps full terminal lines, so a
-    /// question line arrives as one WIDE line whose `?` may sit mid-line
-    /// (right-hand column merged in). The prompt is the last line containing
-    /// both a question mark and a prompt phrase (e.g. the footer "…select…"
-    /// matches phrases but has no `?` and must not win). The chosen line is
-    /// hashed EXACTLY as delivered — untrimmed — which is the D8 contract.
-    fn ac2_matched_line(read_text: &str) -> Option<&str> {
-        let phrases = [
-            "approve",
-            "approval",
-            "permission",
-            "allow this",
-            "confirm",
-            "proceed?",
-            "continue?",
-            "do you want",
-            "should i",
-            "are you sure",
-            "is that",
-            "is this",
-            "waiting for",
-            "select",
-            "choose",
-            "[y/n]",
-            "(y/n)",
-            "yes/no",
-            "please review",
-            "need your input",
-            "your decision",
-        ];
-        let lines: Vec<&str> = read_text.lines().collect();
-        lines
-            .iter()
-            .rev()
-            .find(|line| {
-                let lower = line.trim().to_lowercase();
-                lower.contains('?') && phrases.iter().any(|k| lower.contains(k))
-            })
-            .or_else(|| {
-                lines.iter().rev().find(|line| {
-                    let lower = line.trim().to_lowercase();
-                    phrases.iter().any(|k| lower.contains(k))
-                })
-            })
-            .copied()
-    }
-    fn ac2_env() -> Option<(PathBuf, String)> {
-        if std::env::var("CORRAL_AC2").as_deref() != Ok("1") {
-            return None;
-        }
-        let pane = std::env::var("CORRAL_AC2_PANE").ok()?;
-        let socket = std::env::var("CORRAL_SOCKET")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".config/herdr/herdr.sock")
-            });
-        Some((socket, pane))
-    }
-
-    fn ac2_evidence(name: &str, value: &impl serde::Serialize) {
-        println!(
-            "AC2_EVIDENCE {} {}",
-            name,
-            serde_json::to_string(value).unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn ac2_live_claim_flow() {
-        let Some((socket, pane)) = ac2_env() else {
-            return;
-        };
-
-        // 1. Bootstrap over the real socket: agent.list.
-        let list = rpc_call(&socket, "agent.list", json!({}))
-            .await
-            .expect("agent.list");
-        let list: AgentListWire = serde_json::from_value(list).expect("agent list decode");
-        let info = list
-            .agents
-            .iter()
-            .find(|a| a.pane_id == pane)
-            .expect("CORRAL_AC2_PANE must be in agent.list");
-        assert_eq!(
-            info.agent_status.as_str(),
-            "blocked",
-            "the AC2 agent must be blocked on a prompt before the test runs"
-        );
-        let store = Store::new();
-        let adapter = HerdrAdapter::new(socket.clone());
-        adapter.apply_agent_info(info, &store).await;
-        let agent_id = {
-            let state = adapter.state.lock().unwrap();
-            state
-                .pane_agents
-                .get(&pane)
-                .cloned()
-                .expect("pane registered by bootstrap")
-        };
-        ac2_evidence(
-            "bootstrap-agent",
-            &json!({ "agent_id": agent_id, "pane_id": pane }),
-        );
-
-        // 2. Status change to blocked (mirrors the real event stream).
-        let status = StatusChangedWire {
-            pane_id: pane.clone(),
-            agent_status: Some("blocked".to_string()),
-            agent: info.agent.clone(),
-            title: info.title.clone(),
-            state_labels: info.state_labels.clone(),
-            state_change_seq: None,
-        };
-        adapter.handle_status_changed(&status, &store).await;
-
-        // 3. Real read: the pane's current output window, with the same
-        //    source/lines the output_matched subscription uses.
-        let read: Value = rpc_call(
-            &socket,
-            "agent.read",
-            json!({ "target": pane, "source": "recent_unwrapped", "lines": 40 }),
-        )
-        .await
-        .expect("agent.read");
-        let read_text = read
-            .get("read")
-            .and_then(|r| r.get("text"))
-            .and_then(|t| t.as_str())
-            .expect("agent.read text")
-            .to_string();
-        let matched_line = ac2_matched_line(&read_text).expect("prompt line in read window");
-        let mut hasher = Sha256::new();
-        hasher.update(matched_line.as_bytes());
-        ac2_evidence(
-            "matched-line",
-            &json!({ "line": matched_line, "hash": format!("sha256:{}", hex(&hasher.finalize())) }),
-        );
-        ac2_evidence("read-window", &read_text);
-        let matched = OutputMatchedWire {
-            pane_id: pane.clone(),
-            matched_line: Some(matched_line.to_string()),
-            read: Some(OutputReadWire {
-                text: Some(read_text.clone()),
-            }),
-        };
-        adapter.handle_output_matched(&matched, &store).await;
-
-        // 4. The live claim, emitted by the production path.
-        let agent = store.get(&agent_id).await.expect("agent record");
-        let w = agent
-            .waiting_on
-            .as_ref()
-            .expect("waiting_on set while blocked");
-        let claim = claim_for(&agent_id, w);
-        assert_eq!(
-            claim.approval_id, w.approval_id,
-            "derived claim == stored claim"
-        );
-        assert_eq!(claim.prompt_hash, w.prompt_hash);
-        ac2_evidence("approval-claim", &claim);
-
-        // 5a. Wrong-question race: SAME approval_id, STALE prompt_hash ->
-        //     typed refusal, nothing dispatched.
-        let stale_hash = format!("sha256:{}", "0".repeat(64));
-        let refusal = crate::approve::check_approval_claim(
-            &agent_id,
-            Some(w),
-            &claim.approval_id,
-            &stale_hash,
-            "1",
-        );
-        assert_eq!(refusal, Err(ApprovalError::HashMismatch));
-        ac2_evidence("stale-hash-approve", &format!("{refusal:?}"));
-
-        // 5b. Stale approval identity -> typed refusal.
-        let stale_id = format!("herdr:stale-agent:sha256:{}", "0".repeat(64));
-        let refusal = crate::approve::check_approval_claim(
-            &agent_id,
-            Some(w),
-            &stale_id,
-            &claim.prompt_hash,
-            "1",
-        );
-        assert_eq!(refusal, Err(ApprovalError::StaleApproval));
-        ac2_evidence("stale-id-approve", &format!("{refusal:?}"));
-
-        // 6. Correct hash + choice -> the claim executes and is dispatched
-        //    over the real socket (agent.prompt = the pane's input send).
-        let approved = crate::approve::check_approval_claim(
-            &agent_id,
-            Some(w),
-            &claim.approval_id,
-            &claim.prompt_hash,
-            "1",
-        )
-        .expect("matching claim executes");
-        ac2_evidence("approved", &approved);
-        adapter
-            .drive(
-                &agent_id,
-                DriveCommand::Approve {
-                    choice: approved.choice.clone(),
-                },
-            )
-            .await
-            .expect("approve dispatch accepted");
-
-        // 7. The agent receives the input and leaves blocked (agent.wait is
-        //    herdr's event-driven wait, not polling).
-        let waited: Value = rpc_call(
-            &socket,
-            "agent.wait",
-            json!({ "target": pane, "until": ["working", "done", "idle"], "timeout_ms": 30000 }),
-        )
-        .await
-        .expect("agent.wait");
-        ac2_evidence("agent-after-approve", &waited);
-
-        // 8. Mirror the real status_changed(working) the event stream would
-        //    deliver after the approve: the consumed approval must not stay
-        //    live in the record.
-        let working = StatusChangedWire {
-            pane_id: pane.clone(),
-            agent_status: Some("working".to_string()),
-            agent: info.agent.clone(),
-            title: info.title.clone(),
-            state_labels: HashMap::new(),
-            state_change_seq: None,
-        };
-        adapter.handle_status_changed(&working, &store).await;
-        let after = store
-            .get(&agent_id)
-            .await
-            .expect("agent record after approve");
-        assert!(
-            after.waiting_on.is_none(),
-            "a consumed approval must not stay live in the record"
-        );
-
-        // 9. Evidence: the pane's own output now shows the answered prompt.
-        let read_after: Value = rpc_call(
-            &socket,
-            "agent.read",
-            json!({ "target": pane, "source": "visible", "lines": 30 }),
-        )
-        .await
-        .expect("agent.read after approve");
-        ac2_evidence(
-            "pane-after-approve",
-            &read_after
-                .get("read")
-                .and_then(|r| r.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or_default(),
-        );
-    }
-}
-
 #[cfg(test)]
 mod review_tests {
     use super::*;
@@ -6877,7 +5916,7 @@ mod review_tests {
         );
         assert_eq!(
             migrated.waiting_on.as_ref().map(|w| w.approval_id.as_str()),
-            Some(crate::approve::approval_id_for(migrated_id, &waiting.prompt_hash).as_str())
+            Some(format!("{migrated_id}:{}", waiting.prompt_hash).as_str())
         );
         assert!(snapshot.rev > rev_before, "migration must publish a rev");
 
@@ -6965,7 +6004,7 @@ mod review_tests {
         );
         assert_eq!(
             migrated.waiting_on.as_ref().map(|w| w.approval_id.as_str()),
-            Some(crate::approve::approval_id_for(migrated_id, &waiting.prompt_hash).as_str())
+            Some(format!("{migrated_id}:{}", waiting.prompt_hash).as_str())
         );
         assert!(
             snapshot.rev > rev_before,

@@ -1,7 +1,8 @@
-//! Drive plane (P3 W1): `POST /drive`.
+//! Drive plane (P3 W1, read-only since #354): `POST /drive`.
 //!
-//! The write side of corrald: an authenticated, capability-gated command
-//! endpoint over the P3 contract in [`crate::drive`]. Handler flow:
+//! An authenticated, capability-gated READ endpoint over the P3 contract in
+//! [`crate::drive`]: signed `read_tail` and `read_diff` are the only
+//! capabilities that dispatch. Handler flow:
 //!
 //! 1. Deserialize the signed envelope. `capability` is read as a plain
 //!    string first so unknown capability names surface as the typed
@@ -13,25 +14,21 @@
 //!    is the loopback placeholder). Default deny: a key without the
 //!    capability comes back `NotGranted` and is refused here. Auth failures
 //!    are never audited (AC5: the audit grows only on writes).
-//! 3. Payload parse: [`DrivePayload::parse`] for prompt/read_tail/approve;
-//!    interrupt/kill/attach take no payload (`null` or `{}`). `read_tail`
-//!    lines are clamped to [`READ_TAIL_MAX_LINES`] (D5: 200 lines / 32 KiB).
-//!    The daemon only serves a client request; it does not prefetch or push
-//!    tails (the egui client may make one visible-card request after its own
-//!    capability/grant checks).
+//! 3. Payload parse: [`DrivePayload::parse`] for read_tail/read_diff.
+//!    `read_tail` lines are clamped to [`READ_TAIL_MAX_LINES`] (D5: 200
+//!    lines / 32 KiB). The daemon only serves a client request; it does not
+//!    prefetch or push tails.
 //! 4. Idempotency claim on [`ReplayTable`], keyed by `request_id` (bounded,
 //!    LRU-ish). The claim is atomic with the table lookup: exactly one
 //!    caller ever dispatches for a given id, even under concurrent
 //!    duplicates (the loser gets `409 in_flight` and can retry for the
 //!    stored response). Replays return the first response byte-identical.
-//! 5. Dispatch via [`Adapter::drive`] and await the source outcome. The
-//!    adapter resolves the canonical `agent_id` to its own transport target —
-//!    the daemon never sends keys by coordinates (D8), and W1 never sees pane
-//!    ids. Exception: `read_tail` routes through
+//! 5. Dispatch via the read seams: `read_tail` routes through
 //!    [`Adapter::read_tail`], which returns the redacted, bounded tail so
-//!    the response can carry `result.lines`. `attach` likewise routes through
-//!    [`Adapter::attach`] so the response can carry a terminal handle without
-//!    changing the result-less drive futures used by every other command.
+//!    the response can carry `result.lines`; `read_diff` routes through
+//!    [`Adapter::read_diff`] for the bounded page. The adapter resolves the
+//!    canonical `agent_id` to its own transport target — the daemon never
+//!    sends keys by coordinates (D8), and W1 never sees pane ids.
 //! 6. Audit: [`AuditLog::append`] exactly once per dispatched write —
 //!    success (`Executed`) or typed refusal at dispatch (`Refused` /
 //!    `Failed`). An `append` failure is logged, never allowed to fail the
@@ -60,7 +57,6 @@
 
 use std::collections::hash_map::Entry as HashMapEntry;
 use std::collections::{HashMap, VecDeque};
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -73,10 +69,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
+use super::AppState;
 use crate::adapters::{Adapter, DriveCommand, DriveError};
-use crate::approve::{ApprovalError, check_approval_claim};
 use crate::core::blocks::canonical_blocks_with_exchange;
-use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::{
@@ -84,13 +79,6 @@ use crate::drive::{
     DrivePayload, DriveResponse, PayloadError, READ_TAIL_DEFAULT_LINES, READ_TAIL_MAX_LINES,
     SignedDrive, UnknownCapability,
 };
-use crate::fleet::worktree::FleetIdentity;
-use crate::fleet::worktree::{
-    self, GitCreator, HerdrLauncher, IssueCheck, IssueSummary, WorktreeError, WorktreeOutcome,
-    WorktreeRequest,
-};
-
-use super::AppState;
 
 /// Read-path dispatch stub: refuses every drive command with a typed error.
 /// Used by [`super::AppState::default`] so read-only construction needs no
@@ -286,166 +274,36 @@ struct EnvelopeWire {
     rev: Option<u64>,
 }
 
-/// What the drive handler will dispatch after the claim-check phase.
-///
-/// Approve is special: the command cannot be constructed here because the
-/// claim check (W2) must validate the approval against the store first, and
-/// the validated `choice` (not the raw payload) must be what gets dispatched
-/// so menu membership holds.
-enum PendingCommand {
-    Command(DriveCommand),
-    Approve {
-        approval_id: String,
-        prompt_hash: String,
-        choice: String,
-    },
-    /// #113: a fleet-level worktree start (not an agent drive).
-    Worktree(WorktreeRequest),
-    /// #267: a fleet-level read-only issue browser fetch (not an agent
-    /// drive) — dispatched before the per-agent path like `Worktree`.
-    Issues,
-}
-
 /// Map a verified capability + payload onto the adapter command vocabulary.
-/// Payload-bearing capabilities go through [`DrivePayload::parse`] (typed
-/// mismatch refused); the three command-only capabilities take no payload.
 fn command_for(
     capability: Capability,
     payload: &serde_json::Value,
-    target: &str,
-) -> Result<PendingCommand, PayloadError> {
+) -> Result<DriveCommand, PayloadError> {
     match capability {
-        Capability::Prompt
-        | Capability::ReadTail
-        | Capability::ReadDiff
-        | Capability::ReadIssues
-        | Capability::Approve => {
+        Capability::ReadTail => {
             let parsed = DrivePayload::parse(capability, payload)?;
-            Ok(match parsed {
-                DrivePayload::Prompt { text } => {
-                    PendingCommand::Command(DriveCommand::Prompt { text })
-                }
-                DrivePayload::ReadTail { lines, since_rev } => {
-                    PendingCommand::Command(DriveCommand::ReadTail {
-                        lines: Some(bound_tail_lines(lines)),
-                        since_rev,
-                    })
-                }
-                DrivePayload::ReadDiff {
-                    files,
-                    offset,
-                    lines,
-                } => PendingCommand::Command(DriveCommand::ReadDiff {
-                    query: crate::drive::ReadDiffQuery::clamped(files, offset, lines),
-                }),
-                DrivePayload::ReadIssues => PendingCommand::Issues,
-                DrivePayload::Approve {
-                    approval_id,
-                    prompt_hash,
-                    choice,
-                } => PendingCommand::Approve {
-                    approval_id,
-                    prompt_hash,
-                    choice,
-                },
-                DrivePayload::StartWorktree { .. } => {
-                    unreachable!("start_worktree is dispatched by its own arm")
-                }
+            let DrivePayload::ReadTail { lines, since_rev } = parsed else {
+                unreachable!("DrivePayload::parse returned the wrong variant");
+            };
+            Ok(DriveCommand::ReadTail {
+                lines: Some(bound_tail_lines(lines)),
+                since_rev,
             })
         }
-        Capability::Interrupt | Capability::Kill | Capability::Attach => {
-            if !is_empty_payload(payload) {
-                return Err(PayloadError {
-                    capability,
-                    detail: format!("no payload expected for {}, got {}", capability, payload),
-                });
-            }
-            Ok(match capability {
-                Capability::Interrupt => PendingCommand::Command(DriveCommand::Interrupt),
-                Capability::Kill => PendingCommand::Command(DriveCommand::Kill),
-                Capability::Attach => PendingCommand::Command(DriveCommand::Attach),
-                Capability::Prompt
-                | Capability::ReadTail
-                | Capability::ReadDiff
-                | Capability::ReadIssues
-                | Capability::Approve
-                | Capability::StartWorktree => unreachable!(),
-            })
-        }
-        Capability::StartWorktree => {
+        Capability::ReadDiff => {
             let parsed = DrivePayload::parse(capability, payload)?;
-            let DrivePayload::StartWorktree {
-                mode,
-                repo,
-                number,
-                issue_url,
-                name,
+            let DrivePayload::ReadDiff {
+                files,
+                offset,
+                lines,
             } = parsed
             else {
                 unreachable!("DrivePayload::parse returned the wrong variant");
             };
-            let request = worktree_request(&mode, &repo, number, issue_url, name)?;
-            // #113 review 2: the signed envelope `target` is the repo the
-            // audit will record — it MUST equal the payload `repo` the
-            // worktree is actually created against. A granted client signing
-            // target=A + payload.repo=B must be refused before dispatch so
-            // the audit trail reflects the real repo.
-            if target != request.repo() {
-                return Err(PayloadError {
-                    capability: Capability::StartWorktree,
-                    detail: format!(
-                        "envelope target {target:?} does not match payload repo {:?}",
-                        request.repo()
-                    ),
-                });
-            }
-            Ok(PendingCommand::Worktree(request))
-        }
-    }
-}
-
-/// Convert a `start_worktree` payload into a [`WorktreeRequest`]. An unknown
-/// `kind` or a missing required field is a typed refusal (the client must
-/// resend a well-formed request; nothing is created).
-fn worktree_request(
-    mode: &str,
-    repo: &str,
-    number: Option<u64>,
-    issue_url: Option<String>,
-    name: Option<String>,
-) -> Result<WorktreeRequest, PayloadError> {
-    let validate = |detail: &str| PayloadError {
-        capability: Capability::StartWorktree,
-        detail: detail.to_string(),
-    };
-    if repo.trim().is_empty() {
-        return Err(validate("repo must not be empty"));
-    }
-    match mode {
-        "issue" => {
-            let number = number.ok_or_else(|| validate("issue start needs number"))?;
-            if number == 0 {
-                return Err(validate("issue number must be > 0"));
-            }
-            Ok(WorktreeRequest::Issue {
-                repo: repo.to_string(),
-                number,
-                issue_url: issue_url.unwrap_or_default(),
+            Ok(DriveCommand::ReadDiff {
+                query: crate::drive::ReadDiffQuery::clamped(files, offset, lines),
             })
         }
-        "free" => {
-            let name = name.unwrap_or_default();
-            if name.trim().is_empty() {
-                return Err(validate("free start needs a name"));
-            }
-            Ok(WorktreeRequest::Free {
-                repo: repo.to_string(),
-                name,
-            })
-        }
-        other => Err(validate(&format!(
-            "unknown worktree mode {other:?}; expected \"issue\" or \"free\""
-        ))),
     }
 }
 
@@ -454,10 +312,6 @@ fn bound_tail_lines(lines: Option<u32>) -> u32 {
     lines
         .map(|lines| lines.clamp(1, READ_TAIL_MAX_LINES))
         .unwrap_or(READ_TAIL_DEFAULT_LINES)
-}
-
-fn is_empty_payload(payload: &serde_json::Value) -> bool {
-    payload.is_null() || payload.as_object().is_some_and(|object| object.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -484,24 +338,7 @@ pub enum DriveApiError {
         error: AuthError,
         request_id: Option<String>,
     },
-    /// Destructive payload without a step-up token (W3).
-    StepUpRequired {
-        request_id: Option<String>,
-    },
-    /// Step-up token invalid, spent, expired, or key-bound to another device.
-    StepUpFailed {
-        error: String,
-        request_id: Option<String>,
-    },
-    /// Claim-based approval refusal (W2): typed, never a 500. These refusals
-    /// do NOT occupy the replay slot (parse-before-claim rule) and are NOT
-    /// appended to the audit log (AC5: audit grows only on writes — a refused
-    /// approval never dispatched).
-    Approval {
-        error: ApprovalError,
-        request_id: Option<String>,
-    },
-    /// The store has no record for the target agent (claim-check prerequisite).
+    /// The store has no record for the target agent.
     UnknownAgent {
         agent_id: String,
         request_id: Option<String>,
@@ -561,38 +398,6 @@ impl IntoResponse for DriveApiError {
                 };
                 (status, kind, error.to_string(), request_id)
             }
-            Self::StepUpRequired { request_id } => (
-                StatusCode::FORBIDDEN,
-                "step_up_required",
-                "destructive payload needs a step-up token (POST /step-up, X-Step-Up-Token header)"
-                    .to_string(),
-                request_id,
-            ),
-            Self::StepUpFailed { error, request_id } => (
-                StatusCode::UNAUTHORIZED,
-                "step_up_failed",
-                error,
-                request_id,
-            ),
-            Self::Approval { error, request_id } => {
-                let (status, kind) = match error {
-                    ApprovalError::NoWaitingApproval => {
-                        (StatusCode::CONFLICT, "no_waiting_approval")
-                    }
-                    ApprovalError::StaleApproval => (StatusCode::CONFLICT, "stale_approval"),
-                    // The wrong-question race kill — must be distinct from
-                    // stale so clients can tell "I answered late" from
-                    // "I answered the wrong prompt".
-                    ApprovalError::HashMismatch => (StatusCode::CONFLICT, "hash_mismatch"),
-                    ApprovalError::ChoiceNotInMenu => {
-                        (StatusCode::UNPROCESSABLE_ENTITY, "choice_not_in_menu")
-                    }
-                    ApprovalError::CannotApproveKind(_) => {
-                        (StatusCode::UNPROCESSABLE_ENTITY, "cannot_approve_kind")
-                    }
-                };
-                (status, kind, error.to_string(), request_id)
-            }
             Self::UnknownAgent {
                 agent_id,
                 request_id,
@@ -630,78 +435,8 @@ impl IntoResponse for DriveApiError {
     }
 }
 
-/// Classify the result of each approval store read at the moment it returns.
-/// The initial stale check is only a fast path; a target can disappear while
-/// the async store lookup is in flight, in which case the adapter tombstone
-/// must upgrade `None` from a generic 404 to a refreshable 409.
-fn classify_approval_lookup(
-    adapter: &dyn Adapter,
-    agent_id: &str,
-    request_id: &str,
-    agent: Option<Agent>,
-) -> Result<Agent, DriveApiError> {
-    match agent {
-        Some(agent) => Ok(agent),
-        None if adapter.is_stale_agent(agent_id) => Err(DriveApiError::StaleAgent {
-            agent_id: agent_id.to_string(),
-            request_id: Some(request_id.to_string()),
-        }),
-        None => Err(DriveApiError::UnknownAgent {
-            agent_id: agent_id.to_string(),
-            request_id: Some(request_id.to_string()),
-        }),
-    }
-}
-
-async fn validated_approval_command<F, Fut>(
-    adapter: &dyn Adapter,
-    mut get_agent: F,
-    agent_id: &str,
-    request_id: &str,
-    approval_id: &str,
-    prompt_hash: &str,
-    choice: &str,
-) -> Result<DriveCommand, DriveApiError>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<Agent>>,
-{
-    let agent = classify_approval_lookup(adapter, agent_id, request_id, get_agent().await)?;
-    check_approval_claim(
-        agent_id,
-        agent.waiting_on.as_ref(),
-        approval_id,
-        prompt_hash,
-        choice,
-    )
-    .map_err(|error| DriveApiError::Approval {
-        error,
-        request_id: Some(request_id.to_string()),
-    })?;
-
-    // Re-read immediately before dispatch. Crucially, this read uses the same
-    // tombstone-aware classification as the first read, so disappearance in
-    // either async store window is a refreshable stale conflict.
-    let agent = classify_approval_lookup(adapter, agent_id, request_id, get_agent().await)?;
-    let approved = check_approval_claim(
-        agent_id,
-        agent.waiting_on.as_ref(),
-        approval_id,
-        prompt_hash,
-        choice,
-    )
-    .map_err(|error| DriveApiError::Approval {
-        error,
-        request_id: Some(request_id.to_string()),
-    })?;
-    Ok(DriveCommand::Approve {
-        choice: approved.choice,
-    })
-}
-
 pub async fn drive(
     State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<DriveResponse>, DriveApiError> {
     let wire: SignedDriveWire =
@@ -757,54 +492,14 @@ pub async fn drive(
                 request_id: Some(signed.envelope.request_id.clone()),
             })?;
 
-    // Step-up gate (W3): destructive payloads need a single-use, short-TTL
-    // token minted via POST /step-up. Step-up is part of AUTH — failures
-    // are NOT audited (AC5) and do not occupy the replay slot.
-    if state.auth.step_up.required(&authorized.envelope) {
-        let token = headers
-            .get(crate::auth::http::STEP_UP_HEADER)
-            .and_then(|v| v.to_str().ok());
-        match token {
-            None => {
-                return Err(DriveApiError::StepUpRequired {
-                    request_id: Some(authorized.envelope.request_id.clone()),
-                });
-            }
-            Some(token) => {
-                if let Err(e) = state.auth.step_up.spend(&authorized.key_id, token) {
-                    return Err(DriveApiError::StepUpFailed {
-                        error: e.to_string(),
-                        request_id: Some(authorized.envelope.request_id.clone()),
-                    });
-                }
-            }
-        }
-    }
-
     // Parse BEFORE claiming: a payload error is deterministic and must not
     // occupy the id's slot.
-    let pending = command_for(
-        capability,
-        &authorized.envelope.payload,
-        &authorized.envelope.target,
-    )
-    .map_err(|error| DriveApiError::Payload {
-        error,
-        request_id: Some(authorized.envelope.request_id.clone()),
-    })?;
-
-    // #113: start_worktree is a fleet-level operation, not an agent drive —
-    // it must not run the per-agent (tomestone / approve / adapter) path.
-    // The dispatch handles the replay/audit/write side itself.
-    // #267: read_issues is the same shape — a fleet-level read, not an
-    // agent drive.
-    let pending = match pending {
-        PendingCommand::Worktree(request) => {
-            return dispatch_worktree(&state, &authorized, request).await;
+    let command = command_for(capability, &authorized.envelope.payload).map_err(|error| {
+        DriveApiError::Payload {
+            error,
+            request_id: Some(authorized.envelope.request_id.clone()),
         }
-        PendingCommand::Issues => return dispatch_issues(&state, &authorized).await,
-        other => other,
-    };
+    })?;
 
     // A completed request is an immutable response, even if its target has
     // disappeared since the original dispatch. Peek before any current
@@ -814,9 +509,8 @@ pub async fn drive(
         return Ok(Json(response));
     }
 
-    // A tombstone must win before approve claim validation: the store may
-    // already have removed the blocked row, but the adapter still knows this
-    // was a real target and can give the client a refreshable 409.
+    // A tombstone must win before claiming: the adapter still knows this was
+    // a real target and can give the client a refreshable 409.
     if state.adapter.is_stale_agent(&agent_id) {
         return Err(DriveApiError::StaleAgent {
             agent_id: agent_id.clone(),
@@ -824,39 +518,8 @@ pub async fn drive(
         });
     }
 
-    // Claim check (W2, D8): the approve reply is validated against the
-    // agent's CURRENT waiting approval BEFORE a new replay claim, so a stale
-    // hash / stale approval can never occupy the id's slot or dispatch.
-    // Refusals here are client errors: no replay entry, no audit entry.
-    let command = match pending {
-        PendingCommand::Command(command) => command,
-        PendingCommand::Worktree(_) => {
-            unreachable!("worktree requests are dispatched before the agent path")
-        }
-        PendingCommand::Issues => {
-            unreachable!("read_issues is dispatched before the agent path")
-        }
-        PendingCommand::Approve {
-            approval_id,
-            prompt_hash,
-            choice,
-        } => {
-            let store = state.store.clone();
-            validated_approval_command(
-                state.adapter.as_ref(),
-                || store.get(&agent_id),
-                &agent_id,
-                &authorized.envelope.request_id,
-                &approval_id,
-                &prompt_hash,
-                &choice,
-            )
-            .await?
-        }
-    };
-
     // Re-check immediately before claiming replay state to cover a target
-    // that disappeared while an approve claim was being validated.
+    // that disappeared while the payload was being parsed.
     if state.adapter.is_stale_agent(&agent_id) {
         return Err(DriveApiError::StaleAgent {
             agent_id,
@@ -877,8 +540,7 @@ pub async fn drive(
     let (ok, error, error_kind, outcome, result) = match command {
         // read_tail is the one capability whose whole point is a response:
         // the adapter fetches, redacts (D9) and bounds (D5) the tail and we
-        // carry it back in `result.lines`; other drive commands await their
-        // source RPC through the same outcome-bearing adapter future.
+        // carry it back in `result.lines`.
         DriveCommand::ReadTail { lines, since_rev } => {
             let requested = lines.unwrap_or(READ_TAIL_DEFAULT_LINES);
             match state
@@ -921,11 +583,7 @@ pub async fn drive(
                 Err(e) => drive_refusal(e),
             }
         }
-        DriveCommand::Attach => match state.adapter.attach(&agent_id).await {
-            Ok(handle) => (true, None, None, AuditOutcome::Executed, Some(handle)),
-            Err(e) => drive_refusal(e),
-        },
-        // #232: read_diff is response-bearing like read_tail — the adapter
+        // read_diff is response-bearing like read_tail — the adapter
         // computes the bounded page (changed-files list + diffstat + unified
         // diff), redacts the lines, and we carry it back in `result`.
         DriveCommand::ReadDiff { query } => match state.adapter.read_diff(&agent_id, query).await {
@@ -941,41 +599,7 @@ pub async fn drive(
             ),
             Err(e) => drive_refusal(e),
         },
-        other => match state.adapter.drive(&agent_id, other).await {
-            Ok(()) => (true, None, None, AuditOutcome::Executed, None),
-            Err(e) => drive_refusal(e),
-        },
     };
-
-    // #315: a successfully dispatched signed Prompt records the authoritative
-    // user provenance for its target. Recorded ONLY on the success path (an
-    // echo must never dedupe against a prompt that never dispatched), and
-    // the ledger stores only content identity — the REDACTED text's SHA-256
-    // + length (#315 R2: the read path hashes the redacted echo, so the
-    // recorded identity must cover the same redacted bytes; the raw text,
-    // including any secret, never enters the ledger or any log). The replay
-    // table already guarantees exactly-once dispatch.
-    if ok
-        && matches!(
-            authorized.envelope.capability,
-            crate::drive::Capability::Prompt
-        )
-    {
-        let text = authorized
-            .envelope
-            .payload
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        state
-            .provenance
-            .record(crate::core::provenance::PromptEvent::new(
-                &authorized.envelope.request_id,
-                &agent_id,
-                text,
-                now_millis(),
-            ));
-    }
 
     append_audit(state.auth.audit.as_ref(), &authorized, outcome);
 
@@ -1018,234 +642,6 @@ fn drive_refusal(
     (false, Some(text), error_kind, outcome, None)
 }
 
-/// #113: dispatch a fleet-level worktree start. Reuses the drive plane's
-/// replay idempotency + audit so a duplicate tap/retry is byte-identical and
-/// the write is auditable. The operation is gated upstream by the capability
-/// grant (the authorizer) and by the issue selector's closed/stale guard.
-async fn dispatch_worktree(
-    state: &AppState,
-    authorized: &AuthorizedDrive,
-    request: WorktreeRequest,
-) -> Result<Json<DriveResponse>, DriveApiError> {
-    let request_id = authorized.envelope.request_id.clone();
-
-    // A completed request is immutable — retries return the first response.
-    if let Some(response) = state.replay.completed(&request_id) {
-        return Ok(Json(response));
-    }
-
-    // Claim the id exactly once so concurrent duplicates (two taps of the
-    // same logical action) cannot both dispatch a worktree. The loser gets
-    // a refreshable `409 in_flight` and can retry for the stored response.
-    match state.replay.claim(&request_id) {
-        Claim::Done(response) => return Ok(Json(response)),
-        Claim::Pending => {
-            return Err(DriveApiError::InFlight { request_id });
-        }
-        Claim::Claimed => {}
-    }
-
-    let (ok, error, error_kind, outcome, result) = match worktree_dispatch(state, request).await {
-        Ok(result) => result,
-        Err(error) => {
-            let outcome = worktree_outcome(&error);
-            let kind = worktree_error_kind(&error);
-            (
-                false,
-                Some(error.to_string()),
-                Some(kind.to_string()),
-                outcome,
-                None,
-            )
-        }
-    };
-
-    append_audit(state.auth.audit.as_ref(), authorized, outcome);
-    let rev = state.store.snapshot().await.rev;
-    let response = DriveResponse {
-        request_id,
-        ok,
-        error,
-        error_kind,
-        rev,
-        result,
-    };
-    state
-        .replay
-        .complete(&authorized.envelope.request_id, response.clone());
-    Ok(Json(response))
-}
-
-/// #267: serve the grant-gated read-only issue browser payload. Fleet-level
-/// like `dispatch_worktree` (no agent target): replay idempotency + audit,
-/// then the SHARED issues view (`GET /issues`' exact builder) — one source
-/// for both surfaces, so the iOS browser can never diverge from the board.
-/// Read-only by construction: it is the gh poller's last-known cache.
-async fn dispatch_issues(
-    state: &AppState,
-    authorized: &AuthorizedDrive,
-) -> Result<Json<DriveResponse>, DriveApiError> {
-    let request_id = authorized.envelope.request_id.clone();
-
-    // A completed request is immutable — retries return the first response.
-    if let Some(response) = state.replay.completed(&request_id) {
-        return Ok(Json(response));
-    }
-    match state.replay.claim(&request_id) {
-        Claim::Done(response) => return Ok(Json(response)),
-        Claim::Pending => {
-            return Err(DriveApiError::InFlight { request_id });
-        }
-        Claim::Claimed => {}
-    }
-
-    let view = crate::api::issues::issues_view(state).await;
-    let (ok, error, error_kind, outcome, result) =
-        (true, None, None, AuditOutcome::Executed, Some(view));
-
-    append_audit(state.auth.audit.as_ref(), authorized, outcome);
-    let rev = state.store.snapshot().await.rev;
-    let response = DriveResponse {
-        request_id,
-        ok,
-        error,
-        error_kind,
-        rev,
-        result,
-    };
-    state
-        .replay
-        .complete(&authorized.envelope.request_id, response.clone());
-    Ok(Json(response))
-}
-
-/// The pure worktree dispatch: resolve the fleet, run the stale/closed guard,
-/// and create + hand off. Returns the response tuple (`ok`, `error`,
-/// `error_kind`, `outcome`, `result`).
-async fn worktree_dispatch(
-    state: &AppState,
-    request: WorktreeRequest,
-) -> Result<
-    (
-        bool,
-        Option<String>,
-        Option<String>,
-        AuditOutcome,
-        Option<serde_json::Value>,
-    ),
-    WorktreeError,
-> {
-    let repo = request.repo().to_string();
-    let snapshot = state.issues.snapshot();
-    let known = snapshot.contains_key(&repo)
-        || crate::api::repo::live_workspace_repos(&state.store)
-            .await
-            .contains(&repo);
-    if !known {
-        return Err(WorktreeError::UnknownFleet(repo));
-    }
-    let issue_url = match &request {
-        WorktreeRequest::Issue { number, .. } => snapshot
-            .get(&repo)
-            .and_then(|items| items.iter().find(|issue| issue.number == *number))
-            .map(|issue| issue.url.clone())
-            .unwrap_or_default(),
-        WorktreeRequest::Free { .. } => String::new(),
-    };
-    let request = match request {
-        WorktreeRequest::Issue { repo, number, .. } => WorktreeRequest::Issue {
-            repo,
-            number,
-            issue_url,
-        },
-        free => free,
-    };
-    let issues = snapshot
-        .into_iter()
-        .flat_map(|(repo, items)| {
-            items.into_iter().map(move |issue| IssueSummary {
-                repo: repo.clone(),
-                number: issue.number,
-                state: issue.state,
-            })
-        })
-        .collect::<Vec<_>>();
-    let identity = FleetIdentity {
-        name: repo.clone(),
-        gh_repo: repo.clone(),
-        orch: String::new(),
-        workers: 0,
-        paused: false,
-        local: std::env::var_os("CORRAL_REPO_ROOT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(format!("~/Projects/{repo}"))),
-        worktree_dir: repo,
-    };
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let outcome = worktree::start(
-        &identity,
-        &request,
-        "HEAD",
-        &home,
-        IssueCheck::new(&issues),
-        &GitCreator,
-        &HerdrLauncher,
-    )?;
-    match outcome {
-        WorktreeOutcome::Started {
-            branch,
-            path,
-            handoff,
-        } => {
-            let handoff = match handoff {
-                worktree::Handoff::Launched => "launched",
-                worktree::Handoff::Deferred => "deferred",
-                worktree::Handoff::Failed(msg) => return Err(WorktreeError::Launch(msg)),
-            };
-            Ok((
-                true,
-                None,
-                None,
-                AuditOutcome::Executed,
-                Some(
-                    serde_json::json!({"state":"started","branch":branch,"path":path.to_string_lossy(),"handoff":handoff}),
-                ),
-            ))
-        }
-        WorktreeOutcome::AlreadyStarted { branch, path } => Ok((
-            true,
-            None,
-            None,
-            AuditOutcome::Executed,
-            Some(
-                serde_json::json!({"state":"already_started","branch":branch,"path":path.to_string_lossy()}),
-            ),
-        )),
-    }
-}
-
-/// Stable wire `error_kind` for a typed worktree failure.
-fn worktree_error_kind(error: &WorktreeError) -> &'static str {
-    match error {
-        WorktreeError::UnknownFleet(_) => "unknown_fleet",
-        WorktreeError::IssueNotFound { .. } => "issue_not_found",
-        WorktreeError::IssueClosed { .. } => "issue_closed",
-        WorktreeError::AlreadyStarted { .. } => "already_started",
-        WorktreeError::InvalidName(_) => "invalid_name",
-        WorktreeError::Git(_) => "git_failure",
-        WorktreeError::Launch(_) => "launch_failure",
-    }
-}
-
-/// Audit outcome for a worktree failure: pre-dispatch validation refusals are
-/// `Refused`; a git/launch failure that consumed the id is `Failed`.
-fn worktree_outcome(error: &WorktreeError) -> AuditOutcome {
-    match error {
-        WorktreeError::Git(_) | WorktreeError::Launch(_) => AuditOutcome::Failed(error.to_string()),
-        _ => AuditOutcome::Refused(error.to_string()),
-    }
-}
-
 fn append_audit(audit: &dyn AuditLog, authorized: &AuthorizedDrive, outcome: AuditOutcome) {
     let entry = AuditEntry {
         ts: now_millis(),
@@ -1277,40 +673,13 @@ mod tests {
         assert!(!replay.claim_once("terminal-open-1"));
     }
 
-    #[derive(Debug)]
-    struct TombstonedAdapter;
-
-    impl Adapter for TombstonedAdapter {
-        fn source(&self) -> &'static str {
-            "test"
-        }
-
-        fn start(self: Arc<Self>, _store: Store) {}
-
-        fn drive<'a>(
-            &'a self,
-            _agent_id: &'a str,
-            _command: DriveCommand,
-        ) -> futures::future::BoxFuture<'a, Result<(), DriveError>> {
-            Box::pin(async { Err(DriveError::NotImplemented("test")) })
-        }
-
-        fn knows_agent(&self, _agent_id: &str) -> bool {
-            false
-        }
-
-        fn is_stale_agent(&self, _agent_id: &str) -> bool {
-            true
-        }
-    }
-
     #[test]
     fn wire_envelope_round_trips_to_identical_canonical_bytes() {
         let typed = DriveEnvelope {
             request_id: "r-1".to_string(),
-            capability: Capability::Prompt,
+            capability: Capability::ReadTail,
             target: "herdr:a".to_string(),
-            payload: serde_json::json!({ "kind": "prompt", "text": "go" }),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": 50 }),
             rev: Some(7),
         };
         let wire: SignedDriveWire = serde_json::from_value(json!({
@@ -1344,57 +713,5 @@ mod tests {
         assert_eq!(bound_tail_lines(Some(5)), 5);
         assert_eq!(bound_tail_lines(Some(0)), 1);
         assert_eq!(bound_tail_lines(Some(100_000)), READ_TAIL_MAX_LINES);
-    }
-
-    #[tokio::test]
-    async fn approval_reads_reclassify_second_read_disappearance_as_stale() {
-        let adapter = TombstonedAdapter;
-        let live = Agent {
-            agent_id: "herdr:race".to_string(),
-            source: "herdr".to_string(),
-            tool: "opencode".to_string(),
-            state: crate::core::model::AgentState::Blocked,
-            reason: None,
-            seq: 1,
-            ts: 0,
-            capabilities: Vec::new(),
-            waiting_on: Some(crate::core::model::WaitingOn {
-                kind: crate::core::model::WaitingOnKind::AnswerQuestion,
-                prompt: "continue?".to_string(),
-                prompt_hash: "sha256:x".to_string(),
-                approval_id: "herdr:race:sha256:x".to_string(),
-                choices: Vec::new(),
-            }),
-            parent_id: None,
-            host: None,
-            workspace: Default::default(),
-            attachment: None,
-            display_name: None,
-            title: None,
-        };
-        // Script the actual two approval reads: the first sees the blocked
-        // record; disappearance before the second returns None. This is the
-        // deterministic interleaving at the async store/classification
-        // boundary, without relying on scheduler timing.
-        let reads = Arc::new(Mutex::new(vec![Some(live), None]));
-        let read_source = reads.clone();
-        let result = validated_approval_command(
-            &adapter,
-            move || {
-                let agent = read_source.lock().unwrap().remove(0);
-                async move { agent }
-            },
-            "herdr:race",
-            "req-race",
-            "herdr:race:sha256:x",
-            "sha256:x",
-            "yes",
-        )
-        .await;
-        assert!(matches!(
-            result,
-            Err(DriveApiError::StaleAgent { agent_id, request_id })
-                if agent_id == "herdr:race" && request_id.as_deref() == Some("req-race")
-        ));
     }
 }

@@ -60,31 +60,6 @@
 //!   next verify (there are no long-lived authenticated sessions to cut
 //!   short — every drive is verified per request).
 //!
-//! ## Biometric step-up (destructive patterns)
-//!
-//! Payloads matching a destructive pattern (`rm -rf`, `push --force`,
-//! `curl|sh` and spaced pipe-to-shell forms, `dd of=…` / `dd if=…of=`,
-//! `~/.aws`, `~/.ssh`, `.env`, remote-eval and process-substitution
-//! forms, …) require a step-up proof: a short-lived (5 min), single-use
-//! token minted by `POST /step-up` only after the client proves possession
-//! of the device signing key (signed [`StepUpRequest`], freshness
-//! enforced: `|now - ts| < 60s`). The drive seam then demands
-//! `X-Step-Up-Token: <token>` and binds it to the same `key_id`. No
-//! auto-approve in v1.
-//!
-//! **Honest scope note**: pattern detection canonicalizes the payload
-//! (lowercase, `\s+` → single space, `$HOME` → `~`, quote normalization)
-//! and is deliberately conservative, but it is a **deterrent layer, not a
-//! security boundary** — a determined attacker with full prompt control
-//! can always obfuscate (e.g. `rm$'\x2d\x2dr\x2df'`). The real boundaries
-//! are the per-capability prompt grant, W2's claim-based approval, and the
-//! step-up itself as friction. Patterns live in one table as the W4
-//! extension point.
-//!
-//! Note: `AuthError` is contract-fixed and has no `StepUpRequired` variant
-//! (src/drive/mod.rs is frozen), so step-up is enforced as a **second gate
-//! after `verify()`** — see [`StepUpGate`] and the drive seam in `http.rs`.
-//!
 //! ## Audit log (AC5)
 //!
 //! [`HashChainAuditLog`] appends one hash-chained entry per write and
@@ -108,8 +83,6 @@
 //! - Registration/admin tokens are compared in constant time (`subtle`).
 //! - Key material is persisted 0600 under a 0700 directory, enforced on
 //!   every load path as well as creation (F5).
-//! - Step-up tokens are reaped when expired (mint + spend) and capped at
-//!   [`step_up::MAX_LIVE_TOKENS`] (F3).
 //! - Secret accessors (`test_support`, admin-token getter, host secret) are
 //!   compiled only under `#[cfg(any(test, feature = "test-utils"))]` — the
 //!   release binary exposes none of them (F12).
@@ -119,13 +92,11 @@ pub mod authorizer;
 pub mod host_identity;
 pub mod http;
 pub mod registry;
-pub mod step_up;
 
 pub use audit::HashChainAuditLog;
 pub use authorizer::DeviceAuthorizer;
 pub use host_identity::HostIdentity;
 pub use registry::{DeviceRecord, DeviceRegistry, RegisterError, now_secs};
-pub use step_up::{StepUpError, StepUpGate};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -136,15 +107,11 @@ use zeroize::Zeroize;
 
 use crate::drive::DriveAuthorizer;
 
-/// Registration token (routing only), admin token, step-up tokens: 32
-/// random bytes each.
+/// Registration token (routing only) and admin token: 32 random bytes each.
 const TOKEN_BYTES: usize = 32;
 /// Default device lifetime: 90 days. The host controls TTLs at
 /// registration; clients cannot extend their own validity.
 pub const REGISTRATION_TTL: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 3600);
-/// Step-up tokens live 5 minutes and are single-use.
-pub const STEP_UP_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
 /// Random bytes for token/key material. Panics only if the OS RNG fails
 /// (unrecoverable — there is no safe fallback for key material).
 pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
@@ -171,13 +138,12 @@ pub(crate) fn b64_encode(bytes: &[u8]) -> String {
 }
 
 /// The auth plane wired into `AppState`: host identity, registry,
-/// authorizer, step-up gate, audit log, and the host's admin credential.
+/// authorizer, audit log, and the host's admin credential.
 pub struct AuthPlane {
     pub host: HostIdentity,
     pub registry: Arc<DeviceRegistry>,
     /// The contract trait object W1's `POST /drive` handler calls.
     pub authorizer: Arc<dyn DriveAuthorizer>,
-    pub step_up: Arc<StepUpGate>,
     /// Implements the contract [`AuditLog`] trait (append-only, chained).
     pub audit: Arc<HashChainAuditLog>,
     config_dir: PathBuf,
@@ -193,14 +159,12 @@ impl AuthPlane {
         let registry = Arc::new(DeviceRegistry::load_or_create(&config_dir)?);
         let authorizer: Arc<dyn DriveAuthorizer> =
             Arc::new(DeviceAuthorizer::new(registry.clone()));
-        let step_up = Arc::new(StepUpGate::new());
         let audit = Arc::new(HashChainAuditLog::open(&config_dir)?);
         let admin_token = load_or_create_secret(&config_dir.join("admin-token"))?;
         Ok(Self {
             host,
             registry,
             authorizer,
-            step_up,
             audit,
             config_dir,
             admin_token,
@@ -331,7 +295,6 @@ impl fmt::Debug for AuthPlane {
             .field("host", &self.host)
             .field("config_dir", &self.config_dir)
             .field("registry", &self.registry)
-            .field("step_up", &self.step_up)
             .field("audit", &self.audit)
             .finish_non_exhaustive()
     }
@@ -365,11 +328,12 @@ pub mod test_support {
     }
 
     pub fn envelope(request_id: &str, capability: Capability, text: &str) -> DriveEnvelope {
+        let _ = text;
         DriveEnvelope {
             request_id: request_id.to_string(),
             capability,
             target: "herdr:agent-a".to_string(),
-            payload: serde_json::json!({ "kind": "prompt", "text": text }),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": 50 }),
             rev: None,
         }
     }

@@ -89,18 +89,10 @@ impl TailOnlyAdapter {
     }
 }
 
-/// Every capability; the prompt round trip needs prompt + read_tail.
-const ALL_CAPABILITIES: [Capability; 9] = [
-    Capability::Prompt,
-    Capability::Interrupt,
-    Capability::Approve,
-    Capability::ReadTail,
-    Capability::Kill,
-    Capability::Attach,
-    Capability::StartWorktree,
-    Capability::ReadDiff,
-    Capability::ReadIssues,
-];
+/// Every capability the daemon still serves (#354 read-only cut); the
+/// echo-attribution fixtures record provenance events DIRECTLY (the prompt
+/// dispatch path itself is gone).
+const ALL_CAPABILITIES: [Capability; 2] = [Capability::ReadTail, Capability::ReadDiff];
 
 /// Real W3 auth plane over a temp dir + a registered, fully-granted device,
 /// exactly like tests/drive.rs, so every request is genuinely signed.
@@ -113,6 +105,9 @@ struct Harness {
     /// #330: the store carries the structured exchange ledger; tests record
     /// agent-side events into it exactly like the herdr adapter does.
     store: Store,
+    /// The ledger the fixtures record prompt events into (shared with the
+    /// router state, like the drive handler used to write it).
+    provenance: Arc<corrald::core::provenance::PromptProvenance>,
     _dir: tempfile::TempDir,
 }
 
@@ -124,19 +119,20 @@ fn harness() -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let auth = Arc::new(AuthPlane::load_or_create(dir.path().to_path_buf()).expect("auth plane"));
     let (signing, pubkey) = test_support::keypair();
-    let env = test_support::envelope("bootstrap", Capability::Prompt, "bootstrap");
+    let env = test_support::envelope("bootstrap", Capability::ReadTail, "bootstrap");
     let token = auth.registry.registration_token();
     let signed = test_support::signed(&auth.registry, &token, &signing, pubkey, &env);
     auth.registry
         .set_grants(&signed.key_id, ALL_CAPABILITIES.to_vec())
         .expect("grants");
+    let provenance = Arc::new(corrald::core::provenance::PromptProvenance::new());
     let app = router(AppState {
         store: store.clone(),
         auth: auth.clone(),
         adapter: adapter.clone(),
         replay: Arc::new(ReplayTable::default()),
         issues: Arc::new(corrald::api::issues::IssuesCache::default()),
-        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
+        provenance: provenance.clone(),
         cors_origins: Vec::new(),
     });
     Harness {
@@ -146,11 +142,15 @@ fn harness() -> Harness {
         pubkey,
         app,
         store,
+        provenance,
         _dir: dir,
     }
 }
 
 impl Harness {
+    /// Record a prompt provenance event DIRECTLY (#354: the dispatch path is
+    /// gone) and return a signed `read_tail` request body, so the fixtures
+    /// exercise the same attribution pipeline over the kept read plane.
     fn body(
         &self,
         request_id: &str,
@@ -158,11 +158,31 @@ impl Harness {
         target: &str,
         payload: Value,
     ) -> String {
+        assert_eq!(
+            capability,
+            Capability::ReadTail,
+            "post-cut fixtures only send read_tail over the wire"
+        );
+        // The fixtures carry the prompt text in a `{"kind":"prompt",
+        // "text":...}`-shaped payload; #354 removed that wire kind, so the
+        // text now goes ONLY into the provenance ledger (PromptEvent::new
+        // redacts before hashing) while the signed drive reads the tail.
+        let text = payload
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        self.provenance
+            .record(corrald::core::provenance::PromptEvent::new(
+                request_id,
+                target,
+                text,
+                corrald::core::util::now_millis(),
+            ));
         let envelope = corrald::drive::DriveEnvelope {
             request_id: request_id.to_string(),
             capability,
             target: target.to_string(),
-            payload,
+            payload: serde_json::json!({ "kind": "read_tail", "lines": 200 }),
             rev: None,
         };
         let token = self.auth.registry.registration_token();
@@ -225,7 +245,7 @@ async fn prompt_round_trip_renders_exactly_once_as_user() {
         &h.app,
         h.body(
             "req-prompt",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
             json!({ "kind": "prompt", "text": PROMPT_TEXT }),
         ),
@@ -299,7 +319,7 @@ async fn duplicate_echo_renders_the_prompt_exactly_once() {
         &h.app,
         h.body(
             "req-prompt",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
             json!({ "kind": "prompt", "text": PROMPT_TEXT }),
         ),
@@ -362,9 +382,9 @@ async fn unprefixed_model_output_matching_an_old_prompt_is_never_user() {
         &h.app,
         h.body(
             "req-old",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
-            json!({ "kind": "prompt", "text": "yes" }),
+            json!({ "kind": "read_tail", "lines": 200 }),
         ),
     )
     .await;
@@ -411,7 +431,7 @@ async fn repeated_identical_prompts_keep_their_own_request_ids() {
             &h.app,
             h.body(
                 rid,
-                Capability::Prompt,
+                Capability::ReadTail,
                 "herdr:abc",
                 json!({ "kind": "prompt", "text": text }),
             ),
@@ -465,7 +485,7 @@ async fn secret_prompt_keeps_provenance_and_never_leaks_raw_text() {
         &h.app,
         h.body(
             "req-secret",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
             json!({ "kind": "prompt", "text": raw }),
         ),
@@ -584,7 +604,7 @@ async fn prompt_provenance_is_scoped_per_target() {
         &h.app,
         h.body(
             "req-p",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
             json!({ "kind": "prompt", "text": PROMPT_TEXT }),
         ),
@@ -723,7 +743,7 @@ async fn live_session_exchange_produces_canonical_conversation_blocks() {
         &h.app,
         h.body(
             "req-prompt",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
             json!({ "kind": "prompt", "text": "ship the canonical transcript stream" }),
         ),
@@ -787,9 +807,9 @@ async fn live_session_without_structured_role_source_stays_unknown() {
         &h.app,
         h.body(
             "req-prompt",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:abc",
-            json!({ "kind": "prompt", "text": "ship the canonical transcript stream" }),
+            json!({ "kind": "read_tail", "lines": 200 }),
         ),
     )
     .await;

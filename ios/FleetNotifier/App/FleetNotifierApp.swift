@@ -17,7 +17,8 @@ struct FleetNotifierApp: App {
                     } else if let presentation = CorralDemoLaunch.presentation(
                         arguments: CommandLine.arguments) {
                         model.enterDemo(presentation: presentation,
-                                        detailAgentId: DemoFleet.featuredAgentID)
+                                        detailAgentId: CorralDemoLaunch.detailAgentId(
+                                            arguments: CommandLine.arguments))
                     } else if CorralDemoLaunch.wantsIssues(arguments: CommandLine.arguments) {
                         model.enterDemo()
                         model.demoOpenIssues = true
@@ -62,12 +63,34 @@ enum CorralDemoLaunch {
     /// detail for the detail evidence route).
     static let issuesArgument = "-corralDemoIssues"
     static let detailIssueArgument = "-corralDemoIssuesDetail"
+    /// #330 AC5 evidence: route the detail presentation at the harness-only
+    /// demo session (Conversation shows the honest empty state).
+    static let harnessOnlyArgument = "-corralDemoHarnessOnly"
+    /// #329 evidence: start the Recent-output detail with the Harness
+    /// activity DisclosureGroup already expanded (simctl cannot inject the
+    /// tap; the expansion state itself is the observable boundary).
+    static let harnessExpandedArgument = "-corralDemoHarnessExpanded"
 
     static func presentation(arguments: [String]) -> AppModel.DemoPresentation? {
         guard arguments.contains(detailArgument) || arguments.contains(beforeArgument) else {
             return nil
         }
         return arguments.contains(beforeArgument) ? .before : .after
+    }
+
+    /// The deterministic detail target for the demo route: the harness-only
+    /// session when `-corralDemoHarnessOnly` is present, else the featured
+    /// recent-output session.
+    static func detailAgentId(arguments: [String]) -> String {
+        arguments.contains(harnessOnlyArgument)
+            ? DemoFleet.harnessOnlyAgentID
+            : DemoFleet.featuredAgentID
+    }
+
+    /// Whether the Recent-output harness activity starts expanded (evidence
+    /// capture; no effect on normal launches).
+    static func wantsHarnessExpanded(arguments: [String]) -> Bool {
+        arguments.contains(harnessExpandedArgument)
     }
 
     static func wantsIssues(arguments: [String]) -> Bool {

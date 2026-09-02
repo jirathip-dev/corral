@@ -62,6 +62,13 @@ pub struct Store {
     /// was configured; see [`HistoryRing::open`]).
     history: HistoryRing,
     git_plane_backlog: Arc<AtomicBool>,
+    /// #330: the bounded ledger of STRUCTURED agent-side exchange events
+    /// (the agent's blocked questions, observed via herdr
+    /// `pane.output_matched` → `waiting_on`). Homed on the store so BOTH
+    /// the recording adapter and the read_tail API path reach the SAME
+    /// ledger without any daemon-entrypoint wiring. Roles come from the
+    /// event kind — never from prose, provider, or model names.
+    exchange: Arc<crate::core::provenance::ExchangeLedger>,
 }
 
 impl Default for Store {
@@ -75,6 +82,7 @@ impl Default for Store {
             version,
             history: HistoryRing::in_memory(RotationPolicy::default()),
             git_plane_backlog: Arc::new(AtomicBool::new(false)),
+            exchange: Arc::new(crate::core::provenance::ExchangeLedger::new()),
         }
     }
 }
@@ -101,6 +109,12 @@ impl Store {
 
     pub fn git_plane_backlog(&self) -> Arc<AtomicBool> {
         self.git_plane_backlog.clone()
+    }
+
+    /// #330: the structured exchange ledger shared by the recording adapter
+    /// and the read_tail canonical-block path (both hold this same `Store`).
+    pub fn exchange(&self) -> Arc<crate::core::provenance::ExchangeLedger> {
+        self.exchange.clone()
     }
 
     /// Apply one change. State updates immediately; publishing waits for the

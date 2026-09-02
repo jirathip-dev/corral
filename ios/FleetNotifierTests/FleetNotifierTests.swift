@@ -5678,7 +5678,9 @@ final class ContextSplitV3Tests: XCTestCase {
 
     /// The seeded demo fixture exercises the V3 split: canonical System and
     /// Unknown blocks land in Harness activity, and the conversation keeps
-    /// the user/agent/tool run, deterministically.
+    /// the user/agent/tool run, deterministically. #328: the divider-only
+    /// system block is a presentation separator — it stays in the harness
+    /// partition (never dropped) but never counts as an event.
     func testV3DemoSeedCarriesHarnessAndConversationBlocks() throws {
         let seeded = DemoFleet.seed(rev: 1)
         let featured = try XCTUnwrap(seeded[DemoFleet.featuredAgentID])
@@ -5687,11 +5689,33 @@ final class ContextSplitV3Tests: XCTestCase {
                             at: nil, truncatedBefore: $0.truncatedBefore)
         }
         let sections = RecentOutputSections.partition(demoBlocks)
-        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown],
-                       "demo harness activity carries one Diagnostic + one Unknown activity")
+        XCTAssertEqual(sections.harness.map(\.kind),
+                       [.system, .system, .unknown, .unknown],
+                       "demo harness activity carries two Diagnostics + two Unknown activities")
         XCTAssertEqual(sections.conversation.map(\.kind),
                        [.agent, .user, .agent, .tool])
         XCTAssertFalse(sections.harness.isEmpty)
+        XCTAssertEqual(sections.harnessEventCount, 3,
+                       "the divider-only demo block never inflates the count")
+    }
+
+    /// #330 AC5 evidence: the harness-only demo session has zero attributed
+    /// conversation events — the honest empty state must render — while its
+    /// Harness activity stays fully reachable.
+    func testV3HarnessOnlyDemoSeedFlagsHonestEmptyConversation() throws {
+        let seeded = DemoFleet.seed(rev: 1)
+        let harnessOnly = try XCTUnwrap(seeded[DemoFleet.harnessOnlyAgentID])
+        let blocks = DemoFleet.recentBlocks(for: harnessOnly).map {
+            TranscriptBlock(kind: $0.kind, text: $0.text,
+                            at: nil, truncatedBefore: $0.truncatedBefore)
+        }
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertTrue(sections.conversation.isEmpty)
+        XCTAssertTrue(sections.hasNoAttributedConversation,
+                      "the harness-only window must flag the honest empty state")
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown, .system, .unknown])
+        XCTAssertFalse(sections.harness.isEmpty,
+                       "Harness activity stays reachable alongside the empty state")
     }
 
     /// Real production wiring: the Recent-output view derives its sections
@@ -5805,5 +5829,215 @@ final class ContextSplitV3Tests: XCTestCase {
         XCTAssertTrue(
             loadedSlice.contains { $0.contains(harnessCallMarker) },
             "Harness activity must consume the same sections object inside the loaded branch")
+    }
+
+    // MARK: - #328 divider-only Harness cards
+
+    /// Divider-only System/Unknown blocks are presentation separators: they
+    /// never count toward the Harness activity label (AC1) and a divider-only
+    /// payload leaves the section with zero events (AC2).
+    func testHarnessEventCountExcludesDividerOnlyBlocks() {
+        let sections = RecentOutputSections.partition([
+            block(.system, "────────────────"),
+            block(.system, "Missing env var: OPENROUTER_API_KEY"),
+            block(.unknown, "raw pane line"),
+            block(.unknown, "──────"),
+        ])
+        XCTAssertEqual(sections.harness.count, 4, "the partition itself drops nothing")
+        XCTAssertEqual(sections.harnessEventCount, 2,
+                       "divider-only blocks never inflate the outside-conversation count")
+        XCTAssertTrue(sections.hasNoAttributedConversation,
+                      "a harness-only window legitimately flags the honest empty state")
+    }
+
+    func testDividerOnlyHarnessPayloadHasZeroEvents() {
+        let sections = RecentOutputSections.partition([
+            block(.system, "────────────────"),
+            block(.unknown, "┄┄┄┄┄┄"),
+        ])
+        XCTAssertEqual(sections.harnessEventCount, 0,
+                       "AC2: a divider-only payload has no harness events — the section hides")
+    }
+
+    /// The shared seam: the same classifier the conversation path uses
+    /// (isDividerRun) is exposed as the block-level seam both paths consult.
+    func testSharedDividerSeamClassifiesBlocks() {
+        XCTAssertTrue(RecentOutputRender.isDividerBlock(block(.system, "───")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.system, "let sep = \"────\";")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.unknown, "─── 40% done ───")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.unknown, "raw text")))
+    }
+
+    // MARK: - #330 honest empty Conversation state
+
+    func testNoAttributedConversationStateIsExplicitAndHonest() {
+        // AC5: a window with fetched content but zero attributed conversation
+        // events flags the explicit empty state; conversation-only or mixed
+        // windows never do.
+        XCTAssertTrue(RecentOutputSections.partition([
+            block(.system, "s"), block(.unknown, "k"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([
+            block(.agent, "a"), block(.system, "s"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([
+            block(.agent, "a"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([]).hasNoAttributedConversation)
+        XCTAssertEqual(RecentOutputRender.noAttributedConversationMessage,
+                       "No attributed conversation in this window")
+    }
+
+    // MARK: - #330 live-session golden fixture (cross-client kinds/order)
+
+    /// AC6: the daemon-emitted live-session golden fixture (the same file
+    /// egui consumes) decodes into the identical kinds/order on iOS, and the
+    /// V3 partition yields a NON-EMPTY Conversation plus preserved Harness.
+    func testLiveSessionGoldenFixtureRendersIdenticalKindsAndOrder() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "live_session_exchange_golden", withExtension: "json"),
+            "the daemon live-session golden fixture must be bundled with the tests")
+        let fixture = try String(contentsOf: url, encoding: .utf8)
+        let data = Data("{\"lines\":[\"x\"],\"blocks\":\(fixture)}".utf8)
+        let value = try JSONDecoder().decode(CodableValue.self, from: data)
+        let blocks = try XCTUnwrap(value.tailBlocks)
+
+        XCTAssertEqual(blocks.map(\.kind), [
+            .system, .user, .unknown, .agent, .tool, .system, .unknown,
+        ], "identical kind sequence on every client")
+        let userBlocks = blocks.filter { $0.kind == .user }
+        XCTAssertEqual(userBlocks.count, 1, "the operator prompt is exactly-once user")
+        XCTAssertEqual(userBlocks.first?.promptRequestId, "req-prompt")
+        XCTAssertEqual(userBlocks.first?.text, "ship the canonical transcript stream")
+
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertEqual(sections.conversation.map(\.kind), [.user, .agent, .tool],
+                       "a supported live session renders a NON-EMPTY Conversation")
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown, .system, .unknown],
+                       "Harness content is preserved outside the conversation")
+        XCTAssertEqual(sections.harnessEventCount, 3,
+                       "the leading chrome rail is a presentation divider, not an event")
+        XCTAssertFalse(sections.hasNoAttributedConversation)
+    }
+
+    /// AC7 RED baseline: the SAME fixture reverted to all Unknown must fail
+    /// the non-empty-Conversation contract (asserted here so the mutation
+    /// proof has an in-suite anchor).
+    func testLiveSessionFixtureRevertedToAllUnknownBreaksConversation() {
+        let blocks: [TranscriptBlock] = [
+            block(.unknown, "──────────────────────────────────────"),
+            block(.unknown, "orch-session ❯ ship the canonical transcript stream"),
+            block(.unknown, "Canonical stream wired end to end."),
+            block(.unknown, "Should I proceed with the destructive migration?"),
+            block(.unknown, "$ cargo build"),
+            block(.unknown, "status: working · esc to interrupt"),
+        ]
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertTrue(sections.conversation.isEmpty,
+                      "all-Unknown fixture must empty the conversation (the RED state the production seam fixes)")
+        XCTAssertTrue(sections.hasNoAttributedConversation)
+    }
+}
+
+// MARK: - #328 / #329 / #330 production-wiring regression (decoy-resistant)
+
+/// The view-layer wiring for the three Recent-output defect boundaries,
+/// pinned against the REAL bundled production source (the same
+/// FleetViews.swift.txt the R6 wiring test reads — byte-identical to the
+/// compiled file). Every assertion is scoped to the owning function's slice
+/// and fails closed on missing/duplicated markers, so a compile-capable
+/// bypass of the production call sites (with or without a decoy helper
+/// carrying the same strings elsewhere) turns these tests RED.
+final class RecentOutputDefectWiringTests: XCTestCase {
+
+    private func bundledLines() throws -> [String] {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "FleetViews.swift", withExtension: "txt"),
+            "FleetViews.swift.txt must be bundled with the tests (project.yml preBuildScript)")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        return source.components(separatedBy: .newlines)
+    }
+
+    /// Slice from the first line containing `start` to the first line
+    /// containing `end` AFTER it; both markers must exist and be ordered.
+    private func slice(_ lines: [String], start: String, end: String) throws -> [String] {
+        let startIdx = try XCTUnwrap(
+            lines.firstIndex(where: { $0.contains(start) }),
+            "missing start marker: \(start)")
+        let endIdx = try XCTUnwrap(
+            lines[startIdx...].firstIndex(where: { $0.contains(end) }),
+            "missing end marker after start: \(end)")
+        XCTAssertTrue(endIdx > startIdx, "end marker must follow start marker")
+        return Array(lines[startIdx...endIdx])
+    }
+
+    /// #328 AC4/AC5: Harness activity consumes the SHARED divider seam and
+    /// counts only meaningful events — the exact production call sites a
+    /// bypass would have to skip.
+    func testHarnessActivityUsesSharedDividerSeamAndEventCount() throws {
+        let lines = try bundledLines()
+        let harness = try slice(lines,
+                                start: "private func harnessActivity",
+                                end: "private func identifiedConversationRows")
+
+        // The count is the MEANINGFUL event count, not the raw partition.
+        XCTAssertTrue(harness.contains { $0.contains("sections.harnessEventCount") },
+                      "harnessActivity must compute the meaningful event count")
+        XCTAssertTrue(harness.contains { $0.contains("\\(eventCount) outside conversation") },
+                      "the activity label must render the event count, not the raw harness count")
+        XCTAssertFalse(harness.contains { $0.contains("sections.harness.count) outside conversation") },
+                       "the raw harness count must never reach the label")
+
+        // Divider-only blocks render through the shared seam as separators.
+        XCTAssertTrue(harness.contains { $0.contains("RecentOutputRender.isDividerBlock(block)") },
+                      "harness rows must consult the shared divider seam")
+        let dividerBranches = harness.filter { $0.contains("RecentOutputRender.isDividerBlock(block)") }
+        XCTAssertEqual(dividerBranches.count, 1,
+                       "exactly one seam consult inside the harness row loop")
+
+        // The whole file shares ONE seam: the conversation path uses the
+        // same classifier (two consult sites total: harness + conversation).
+        let seamSites = lines.filter { $0.contains("RecentOutputRender.isDividerBlock(block)") }
+        XCTAssertEqual(seamSites.count, 2,
+                       "conversation and harness must both consult the same seam")
+    }
+
+    /// #329 AC6: the expanded Harness payload owns a BOUNDED vertical scroll
+    /// inside the DisclosureGroup — removing the owning scroll/container
+    /// constraint must fail this test.
+    func testHarnessExpandedPayloadOwnsBoundedVerticalScroll() throws {
+        let lines = try bundledLines()
+        let harness = try slice(lines,
+                                start: "private func harnessActivity",
+                                end: "private func identifiedConversationRows")
+
+        XCTAssertTrue(harness.contains { $0.contains("DisclosureGroup(isExpanded: $harnessExpanded)") },
+                      "the harness payload must stay inside the DisclosureGroup")
+        XCTAssertTrue(harness.contains { $0.contains("ScrollView(.vertical)") },
+                      "the expanded payload must own a vertical scroll")
+        XCTAssertTrue(harness.contains { $0.contains("RecentOutputLayout.harnessViewportHeight") },
+                      "the payload scroll must be bounded by the layout constant")
+        XCTAssertEqual(
+            harness.filter { $0.contains("ScrollView(.vertical)") }.count, 1,
+            "the harness payload must own exactly one scroll")
+    }
+
+    /// #330 AC5: the loaded branch renders the explicit honest empty state
+    /// exactly when the window has no attributed conversation events.
+    func testLoadedBranchRendersHonestEmptyConversationState() throws {
+        let lines = try bundledLines()
+        let loaded = try slice(lines,
+                               start: "case .loaded:",
+                               end: "private func harnessActivity")
+
+        XCTAssertTrue(loaded.contains { $0.contains("sections.hasNoAttributedConversation") },
+                      "the loaded branch must gate on the honest empty-state condition")
+        XCTAssertTrue(loaded.contains { $0.contains("RecentOutputRender.noAttributedConversationMessage") },
+                      "the loaded branch must render the explicit message")
+        XCTAssertEqual(
+            loaded.filter { $0.contains("hasNoAttributedConversation") }.count, 1,
+            "the condition must be consulted exactly once inside the loaded branch")
     }
 }

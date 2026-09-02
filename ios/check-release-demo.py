@@ -73,9 +73,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #333: DiffPane now records loaded/error terminal states and AppModel
     # bounds/cancels read_diff; digest re-pinned for the diff reliability fix.
     # #327: host build/protocol compatibility identity and Settings warning.
+    # #328/#329/#330: shared divider-vs-content seam + harness event count +
+    # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
+    # harness scroll (FleetViews layout constant), demo seed long diagnostics
+    # + divider-only block + harness-only evidence session (DemoFleet), and
+    # the demo evidence launch args (FleetNotifierApp).
+    # #333: DiffPane/DiffFileWire terminal-state reliability in Models.swift
+    # and AppModel, with bounded/cancellable read_diff.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
-    # digest re-pinned after the merged Release source inputs.
-    "01e5e14320da43f65477e860083ef391b4ef3147a46d67b9a1ab8a2d21c174e5"
+    # #327 reconcile: digest re-pinned after merging origin/integration
+    # (promoted #331/#333/#337 batch) into the #327 branch.
+    "103001a13ebf3327290f225c9c202c597da6a8b9b51bceaf1988ea70e9d15e23"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

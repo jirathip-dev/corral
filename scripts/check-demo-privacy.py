@@ -44,14 +44,15 @@ APPROVED_IDENTITIES = frozenset({
 IDENTITY_FIELDS = frozenset({"agent_id", "parent_id", "ref", "del", "approval_id"})
 APPROVED_FIELDS = frozenset({
     "agent_id", "agents", "ahead", "approval_id", "attachment",
-    "behind", "body", "branch", "capabilities", "choices", "ci_status", "color",
+    "behind", "body", "branch", "build_id", "build_identity",
+    "capabilities", "choices", "ci_status", "color",
     "del", "deltas", "dirty", "display_name", "demo-alpha", "demo-bravo",
     "demo-charlie", "demo-delta", "generated_at", "host", "issues",
     "kind", "labels", "name", "number", "parent_id",
-    "pr_number", "prompt", "prompt_hash", "prompt_request_id", "reason",
+    "pr_number", "prompt", "prompt_hash", "prompt_request_id", "protocol_version", "reason",
     "recent_output", "recent_output_blocks", "ref", "repo", "rev",
     "schema_version", "seq", "snapshot", "source", "state", "text",
-    "title", "tool", "ts", "upd", "url", "waiting_on", "workspace", "worktree_path",
+    "title", "tool", "ts", "upd", "url", "version", "waiting_on", "workspace", "worktree_path",
 })
 
 

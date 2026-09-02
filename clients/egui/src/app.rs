@@ -2885,6 +2885,10 @@ fn transcript_font_definitions() -> egui::FontDefinitions {
         "corral-transcript-ascii".into(),
         egui::FontData::from_static(include_bytes!("../assets/Hack-Regular.ttf")).into(),
     );
+    fonts.font_data.insert(
+        "corral-transcript-replacement".into(),
+        egui::FontData::from_static(include_bytes!("../assets/NotoSansMath-Regular.otf")).into(),
+    );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         fonts
             .families
@@ -2901,6 +2905,9 @@ fn transcript_font_definitions() -> egui::FontDefinitions {
             .entry(family.clone())
             .or_default()
             .push("corral-transcript-symbols".into());
+    }
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(1, "corral-transcript-replacement".into());
     }
     fonts
 }
@@ -2948,7 +2955,7 @@ mod font_tests {
                 }
                 for glyph in fixture
                     .chars()
-                    .filter(|c| !c.is_ascii_whitespace() && !matches!(c, '✅' | '⚠' | '\u{fe0f}'))
+                    .filter(|c| !c.is_ascii_whitespace() && *c != '\u{fe0f}')
                 {
                     assert!(
                         fonts.has_glyph(&egui::FontId::proportional(12.0), glyph),

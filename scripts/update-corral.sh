@@ -35,6 +35,7 @@ fi
 
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 LOG="$CONFIG_DIR/corral-update.log"
+UI_STAMP_FILE="$CONFIG_DIR/ui-artifact.sha256"
 MACOS_APP_DEST="${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
 LINUX_PREFIX="${CORRAL_LINUX_PREFIX:-$HOME/.local}"
 OTHER_PREFIX="${CORRAL_OTHER_PREFIX:-$HOME/.local}"
@@ -74,6 +75,23 @@ ui_deploy_path() {
     Linux) printf '%s/bin/corrald-ui' "$LINUX_PREFIX" ;;
     *) printf '%s/bin/corrald-ui' "$OTHER_PREFIX" ;;
   esac
+}
+
+ui_stamp_hash() {
+  # Canonical identity of the last successfully deployed UI source artifact.
+  # codesign rewrites the deployed executable after copy, so the deployed
+  # bytes are never a stable comparison target.
+  [[ -s "$UI_STAMP_FILE" ]] || { echo ""; return 0; }
+  tr -d '[:space:]' < "$UI_STAMP_FILE" 2>/dev/null || true
+}
+
+write_ui_stamp() {
+  local stamp="$1"
+  local tmp
+  tmp="$(mktemp "${UI_STAMP_FILE}.XXXXXX")"
+  printf '%s\n' "$stamp" > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$UI_STAMP_FILE"
 }
 
 # --- Resolve source checkout and fetch the build revision ---------------------
@@ -118,7 +136,7 @@ DAEMON_BIN="$BIN_DIR/corrald"
 UI_BIN="$BIN_DIR/corrald-ui"
 UI_DEPLOY_PATH="$(ui_deploy_path)"
 daemon_before_hash="$(file_hash "$REPO_DIR/target/release/corrald")"
-ui_before_hash="$(file_hash "$UI_DEPLOY_PATH")"
+ui_before_hash="$(ui_stamp_hash)"
 
 log "building origin/main in isolated checkout..."
 (cd "$SOURCE_CHECKOUT" && CORRAL_BUILD_ID="$after" cargo build --release) 2>>"$LOG" || {
@@ -127,34 +145,43 @@ log "building origin/main in isolated checkout..."
 }
 log "build ok"
 daemon_after_hash="$(file_hash "$DAEMON_BIN")"
+ui_after_hash="$(file_hash "$UI_BIN")"
 
 # --- Desktop client: reinstall + relaunch if running -------------------------
 # Mirrors install_desktop_client() in setup-corrald.sh: macOS -> Corral.app
-# bundle, Linux -> ~/.local/bin + .desktop, other -> ~/.local/bin.
+# bundle, Linux -> ~/.local/bin + .desktop, other -> ~/.local/bin. Returns 0
+# after a successful deploy and stamp update; 1 when there was nothing to
+# deploy (app not installed), so the caller never stamps a failed/partial
+# install.
 reinstall_ui() {
   local UI_BIN="$BIN_DIR/corrald-ui"
   case "$(uname -s)" in
     Darwin)
-      if [[ -d "$MACOS_APP_DEST" ]]; then
-        mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
-        cp "$UI_BIN" "$UI_DEPLOY_PATH"
-        codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
-        if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
-          pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
-          sleep 1
-          nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
-          log "Corral.app relaunched (new binary)"
-        else
-          log "Corral.app not running — next launch uses the new binary"
-        fi
-      else
+      if [[ ! -d "$MACOS_APP_DEST" ]]; then
         log "Corral.app not installed — skipped UI update (run scripts/install-corral-ui.sh)"
+        return 1
       fi
-      return 0
+      mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
+      cp "$UI_BIN" "$UI_DEPLOY_PATH" || {
+        log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
+        exit 1
+      }
+      codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+      if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
+        pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
+        sleep 1
+        nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
+        log "Corral.app relaunched (new binary)"
+      else
+        log "Corral.app not running — next launch uses the new binary"
+      fi
       ;;
     Linux|*)
       mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
-      cp "$UI_BIN" "$UI_DEPLOY_PATH"
+      cp "$UI_BIN" "$UI_DEPLOY_PATH" || {
+        log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
+        exit 1
+      }
       chmod +x "$UI_DEPLOY_PATH"
       if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
         pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
@@ -164,9 +191,10 @@ reinstall_ui() {
       else
         log "corrald-ui not running — next launch uses the new binary"
       fi
-      return 0
       ;;
   esac
+  write_ui_stamp "$ui_after_hash"
+  return 0
 }
 
 # --- Deploy to the path launchd actually executes --------------------------
@@ -237,9 +265,13 @@ else
   log "up to date ($(git -C "$REPO_DIR" log -1 --format='%h' "$after")); deploy path $deploy_path; restarted=no"
 fi
 
-# --- Relaunch the egui client if it is running and changed -----------------
-if [[ "$(file_hash "$UI_BIN")" != "$ui_before_hash" ]]; then
-  reinstall_ui
+# --- Relaunch the egui client when the source artifact changed -------------
+# Compare against the pre-sign source stamp: codesign rewrites the deployed
+# executable after copy, so the deployed bytes would look changed forever.
+if [[ "$ui_after_hash" != "$ui_before_hash" ]]; then
+  if ! reinstall_ui; then
+    log "UI artifact changed but was not deployed; canonical stamp not updated"
+  fi
 fi
 
 log "done: $(git -C "$REPO_DIR" log -1 --format='%h %s' "$after")"

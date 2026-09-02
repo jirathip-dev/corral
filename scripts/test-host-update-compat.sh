@@ -92,6 +92,9 @@ esac
 if [[ -n "${CORRAL_TEST_UI_PATHS:-}" ]]; then
   printf 'cp:%s\n' "$destination_path" >> "$CORRAL_TEST_UI_PATHS"
 fi
+if [[ "${CORRAL_TEST_CP_FAIL:-0}" == "1" && "$destination_path" == "${CORRAL_TEST_UI_DEST:-}" ]]; then
+  exit 95
+fi
 if [[ "$destination_path" == "${CORRAL_TEST_UI_DEST:-}" ]]; then
   printf 'copy\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
 fi
@@ -102,6 +105,11 @@ cat > "$WORK/bin/codesign" <<'STUB'
 set -euo pipefail
 printf 'codesign:%s\n' "${@: -1}" >> "${CORRAL_TEST_UI_PATHS:?}"
 printf 'codesign\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+# Faithfully model real codesign: it rewrites the installed executable in
+# place after copy, changing the deployed bytes on every sign.
+if [[ -n "${CORRAL_TEST_UI_DEST:-}" && -f "$CORRAL_TEST_UI_DEST" ]]; then
+  printf 'signed\n' >> "$CORRAL_TEST_UI_DEST"
+fi
 STUB
 cat > "$WORK/bin/pgrep" <<'STUB'
 #!/usr/bin/env bash
@@ -154,6 +162,7 @@ printf 'old-ui\n' > "$TEST_UI_DEST"
 : > "$WORK/ui-paths"
 touch "$WORK/client-alive"
 run_update_cycle() {
+  CORRAL_TEST_CP_FAIL="${CORRAL_TEST_CP_FAIL:-0}" \
   CARGO_PWD_FILE="$WORK/cargo.pwd" \
   LAUNCHCTL_PROGRAM="$WORK/installed/corrald" \
   LAUNCHCTL_KICKS="$WORK/kickstarts" \
@@ -170,7 +179,9 @@ run_update_cycle() {
   HOME="$WORK/home" \
   PATH="$WORK/bin:$PATH" \
   bash "$UPDATER_SCRIPT"
+  local updater_rc=$?
   "$REAL_SLEEP" 1
+  return "$updater_rc"
 }
 run_update_cycle
 
@@ -182,7 +193,7 @@ grep -Fq 'building origin/main' "$update_log" \
   || fail "updater did not record the isolated origin/main build"
 [[ "$(cat "$WORK/installed/corrald")" == "new-host" ]] \
   || fail "new origin/main artifact was not installed"
-[[ "$(cat "$TEST_UI_DEST")" == "new-host" ]] \
+[[ "$(head -1 "$TEST_UI_DEST")" == "new-host" ]] \
   || fail "changed UI artifact was not installed at the disposable destination"
 [[ "$(wc -l < "$WORK/ui-events" | tr -d ' ')" == "$expected_ui_events" ]] \
   || fail "first changed cycle did not install and relaunch the UI exactly once"
@@ -195,6 +206,8 @@ grep -Fqx 'relaunch' "$WORK/ui-events" \
 if [[ "$expected_ui_events" == 4 ]]; then
   grep -Fqx 'codesign' "$WORK/ui-events" \
     || fail "first macOS UI change did not re-sign the app"
+  grep -q '^signed$' "$TEST_UI_DEST" \
+    || fail "macOS codesign did not mutate the installed bundle"
 fi
 grep -Fqx "cp:$TEST_UI_DEST" "$WORK/ui-paths" \
   || fail "first UI copy did not target the disposable destination"
@@ -202,6 +215,16 @@ grep -Fqx "cp:$TEST_UI_DEST" "$WORK/ui-paths" \
   || fail "updater touched the live macOS app destination"
 ! grep -Fq "$WORK/home/.local" "$WORK/ui-paths" \
   || fail "updater touched the live Linux/other destination"
+UI_STAMP="$WORK/update-config/ui-artifact.sha256"
+[[ -f "$UI_STAMP" ]] \
+  || fail "canonical UI stamp was not written after successful deployment"
+expected_stamp="$(printf 'new-host\n' | shasum -a 256 | awk '{print $1}')"
+[[ "$(cat "$UI_STAMP")" == "$expected_stamp" ]] \
+  || fail "canonical UI stamp does not match the pre-sign source artifact"
+stamp_mode="$(if [[ "$TEST_PLATFORM" == "Darwin" ]]; then stat -f %Lp "$UI_STAMP"; else stat -c %a "$UI_STAMP"; fi)"
+[[ "$stamp_mode" == "600" ]] \
+  || fail "canonical UI stamp is not 0600"
+stamp_after_first="$(cat "$UI_STAMP")"
 [[ "$(wc -l < "$WORK/kickstarts" | tr -d ' ')" == 1 ]] \
   || fail "updated daemon was not restarted exactly once"
 ui_events_after_first="$(wc -l < "$WORK/ui-events" | tr -d ' ')"
@@ -213,6 +236,8 @@ run_update_cycle
   || fail "identical third cycle rewrote or relaunched the app"
 [[ -f "$WORK/client-alive" ]] \
   || fail "running client did not remain alive through identical cycles"
+[[ "$(cat "$UI_STAMP")" == "$stamp_after_first" ]] \
+  || fail "identical UI cycles changed the canonical stamp"
 [[ "$(wc -l < "$WORK/kickstarts" | tr -d ' ')" == 1 ]] \
   || fail "identical UI cycles changed daemon restart behavior"
 [[ "$(cat "$WORK/cargo.pwd")" != "$WORK/primary"* ]] \
@@ -225,6 +250,16 @@ cmp -s "$primary_diff" "$WORK/primary.after.diff" \
 [[ "$(cat "$WORK/primary/developer-note")" == "dirty-feature-checkout" ]] \
   || fail "updater removed the developer's untracked file"
 printf 'OK dirty feature checkout builds fetched origin/main in isolation and identical UI cycles are no-ops\n'
+
+# A failed UI deployment must never advance the canonical stamp. The cp stub
+# fails, so the updater must exit non-zero and leave the stamp absent.
+rm -f "$WORK/update-config/ui-artifact.sha256"
+if CORRAL_TEST_CP_FAIL=1 run_update_cycle; then
+  fail "updater succeeded despite a failing UI copy"
+fi
+[[ ! -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "canonical UI stamp was written for a failed deployment"
+printf 'OK failed UI deployment never stamps a partial install\n'
 
 # A release-shaped updater with no source checkout must fail explicitly. An
 # old "skip: ..." success is the indefinite-silent-failure defect.

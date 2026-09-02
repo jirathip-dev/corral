@@ -139,13 +139,13 @@ categories. GitHub stays READ-ONLY: no issue create/edit/close surface
 exists (the signed `read_issues` drive arm and the `start_worktree` drive
 that consumed a selected issue were removed in #354).
 
-The host admin boundary also exposes `GET /grants` (#137): an admin-token
-gated projection of registered device key ids, current grants, revocation,
-and expiry/created timestamps for the desktop Settings grant editor. It
-never returns device public keys or APNs push tokens, and `POST /grants`
-remains the only mutation path. The admin token is sent only to these
-host-side administration endpoints (`GET /grants`, `POST /grants`,
-`GET /audit`) and is never embedded in a device-signed drive flow.
+The host admin boundary is reduced to `GET /audit` since #354: the
+admin-token-gated grant administration surface (`GET /grants` #137,
+`POST /grants`) was removed with the mutating plane — grants are
+provisioned out-of-band on `registry.json` (loaded once at daemon
+start). The admin token is sent only to this host-side administration
+endpoint (`GET /audit`) and is never embedded in a device-signed drive
+flow.
 
 Secrets are redacted once, at the adapter boundary (`src/core/redact.rs`),
 before any bytes leave the machine. The APNs path re-redacts anyway — see
@@ -277,9 +277,10 @@ removed with them.
 - **Three credentials, never one** (D13): registration token (routing
   only, gates `POST /register`), per-device Ed25519 keypair (authenticates
   signed reads; host identity is X25519, published by `GET /host-key`),
-  and per-capability grants (read-only default, promoted by the host via
-  `POST /grants` with the admin token; host-administration reads use the
-  same token on `GET /grants`). Expiry (90 days) + revocation are checked
+  and per-capability grants (read-only default; since #354 they are
+  provisioned out-of-band on `registry.json` — stop the daemon, edit the
+  device's `"grants"` array, restart; the HTTP grant-admin surface is
+  gone). Expiry (90 days) + revocation are checked
   on every verify.
 - **Default deny, no auto-approve.** A fresh device has zero grants, and
   only `read_tail` / `read_diff` can ever be granted.

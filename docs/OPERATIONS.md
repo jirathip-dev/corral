@@ -88,21 +88,26 @@ Prebuilt tagged releases can be installed without a Rust toolchain using
 `scripts/setup-corrald.sh --from-release <binary>` skips the cargo build and
 uses the bundled `corrald` and `corrald-ui` binaries instead.
 
-### `scripts/corrald-grant.sh`
+### Grant provisioning (out-of-band since #354)
 
-Promote/revoke a device's drive capabilities with the admin token (never hand
-the token to a device).
+The host-admin grant surface (`POST /grants`, `GET /grants` and the
+`scripts/corrald-grant.sh` helper) was removed with the mutating plane
+in #354: no HTTP request — even one carrying the admin token — can grant,
+list, or revoke device capabilities any more (the routes are absent:
+404). The registry (`registry.json`, 0600, in the config dir) is the only
+grant store, and it is loaded once at daemon start, so provisioning is:
 
-```sh
-scripts/corrald-grant.sh --list                          # show registered devices + grants
-scripts/corrald-grant.sh --key dev_<id> --caps read_tail
-scripts/corrald-grant.sh --key dev_<id> --revoke
-```
+1. stop `corrald`,
+2. edit `<config-dir>/registry.json` — grant/replace the whole set by
+   editing a device's `"grants"` array (`"read_tail"`, `"read_diff"` —
+   only those two names parse), or revoke by setting `"revoked": true`,
+3. start `corrald` again; the change applies from the first drive after
+   restart.
 
-`CORRAL_BASE` overrides the daemon base URL (default `http://127.0.0.1:8474`).
-The desktop board exposes the same list/grant/revoke operations in
-**Settings → Device grants**; enter (or let the UI read) the same host
-`admin-token`. The CLI remains a supported alternate path.
+Never hand the admin token (or the `registration-token`) to a device.
+The device-facing, signed self-service grants read (`POST /grants-read`,
+#101) is unchanged: a device refreshes its OWN current grants over its
+existing Ed25519 key.
 
 ## Remote access from iOS (Tailscale Serve)
 
@@ -237,15 +242,18 @@ Capabilities, grant-gated per device (see "Grants model" below):
   removes the stale row, shows a refresh banner, and fetches one fresh
   snapshot; the SSE stream then supplies the authoritative replacement row.
 
-Promote the phone's key (never hand the admin token to the device):
+Grant the phone's key out-of-band (never hand the admin token to the
+device); see "Grant provisioning" above:
 
 ```sh
-scripts/corrald-grant.sh --key <key_id> --caps read_tail          # recents
-scripts/corrald-grant.sh --key <key_id> --caps read_tail,read_diff # + diff
+# 1. stop corrald, 2. in <config-dir>/registry.json set the device's
+# grants: "read_tail" for recents, add "read_diff" for the diff page,
+# 3. start corrald again.
 ```
 
 Every other capability name is refused (`400 unknown_capability`) — the
-daemon no longer accepts mutating grants.
+daemon no longer accepts mutating grants, and the HTTP grant admin is
+gone (#354).
 
 Diagnosing a stuck board: since #92 every stream-layer failure sets a
 visible `.error` banner (os.Logger line + dismissible text) instead of
@@ -285,13 +293,14 @@ before expiry.
   itself is the read boundary, so expose it only on networks whose every
   device may see fleet state — a plain LAN offers no device auth, prefer
   a tailnet).
-- Drive capabilities are promoted by the host via `POST /grants`
-  (admin token). Since the #354 read-only cut only two capabilities
-  exist: `read_tail` (bounded recent output) and `read_diff` (#232: the
-  read-only worktree-diff page — audited, default empty like every other
-  grant). Every removed name (`prompt`, `interrupt`, `approve`, `kill`,
-  `attach`, `start_worktree`, `read_issues`) is refused by the parser
-  (`400 unknown_capability`). Default deny; no auto-approve.
+- Drive capabilities are provisioned out-of-band on `registry.json`
+  (the host-admin `POST /grants` surface was removed in #354). Only two
+  capabilities exist: `read_tail` (bounded recent output) and `read_diff`
+  (#232: the read-only worktree-diff page — audited, default empty like
+  every other grant). Every removed name (`prompt`, `interrupt`,
+  `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) is
+  refused by the parser (`400 unknown_capability`). Default deny; no
+  auto-approve.
 - `GET /issues` (#113) is part of the credential-free read plane: it
   exposes only the public repo-level issue metadata the gh poller already
   fetches (number, state, title, labels, url) and no per-agent
@@ -299,48 +308,27 @@ before expiry.
   serve it only on loopback or a private/tailnet interface. This GET never
   mutates GitHub (the `start_worktree` drive that consumed it was removed
   in #354).
-- Grant/replace the whole set (verified):
+- Grant/replace the whole set — out-of-band (verified procedure): stop
+  the daemon, edit the device's `"grants"` array in `<config-dir>/registry.json`
+  (`"read_tail"`, `"read_diff"` — unknown names are refused on load),
+  restart. The registry is loaded once at startup; no HTTP route mutates
+  it (#354).
 
 ```sh
-ADMIN=$(cat <config-dir>/admin-token)
-curl -s -X POST http://127.0.0.1:8474/grants \
-  -H 'Content-Type: application/json' -H "Authorization: Bearer ***" \
-  -d '{"action":"set_grants","key_id":"dev_...","grants":["read_tail","read_diff"]}'
-# → {"key_id":"dev_...","ok":true}
+# <config-dir>/registry.json (0600): "devices" -> "grants"
+#   { ..., "grants": ["read_tail", "read_diff"], "revoked": false, ... }
 ```
 
-- Inspect registered devices/grants for the board's selector (host admin
-  only). The projection contains `key_id`, `grants`, `revoked`,
-  `revoked_ts` (#257, `null` for devices revoked before #257), `expiry_ts`,
-  and `created_ts`; it deliberately omits public keys and APNs
-  push tokens. With no `key_id` it lists every registered device; with
-  `?key_id=<id>` it narrows to one:
-
-```sh
-curl -s -H "Authorization: Bearer $ADMIN" \
-  'http://127.0.0.1:8474/grants?key_id=dev_...'
-# → {"ok":true,"devices":[{"key_id":"dev_...","grants":["read_tail","read_diff"],"revoked":false,...}]}
-```
-
-The desktop **Settings → Device grants** editor uses that read surface for
-its device selector, applies through the same `POST /grants` `set_grants`
-body, and exposes `--revoke` as an explicit button. Checking or unchecking
-capabilities replaces the full set; all unchecked is read-only.
-
-- Revoke (verified):
-
-```sh
-curl -s -X POST http://127.0.0.1:8474/grants \
-  -H 'Content-Type: application/json' -H "Authorization: Bearer $ADMIN" \
-  -d '{"action":"revoke","key_id":"dev_...","revoked":true}'
-```
+- Revoke — out-of-band: stop the daemon, set the device's `"revoked":
+  true` in `<config-dir>/registry.json`, restart.
 
 - Signed self-service grants read (#101): a device can refresh its OWN
   grants via `POST /grants-read` — it signs `{key_id, request, ts}` with
   its existing Ed25519 key (freshness `|now - ts| < 60s`); no admin token,
   no new key material. The response is the key's CURRENT grants + expiry,
-  so a promotion reaches the phone after relaunch/foreground without a
-  device reset. The iOS app calls this on cold launch and on every
+  so out-of-band grant changes reach the phone after the host restarts the
+  daemon and the app relaunches/foregrounds — no device reset. The iOS app
+  calls this on cold launch and on every
   foreground (`scenePhase == .active`); a failed refresh keeps the cached
   grants. Verified:
 
@@ -354,8 +342,9 @@ curl -s -X POST http://127.0.0.1:8474/grants-read \
 # → {"ok":true,"key_id":"dev_...","grants":["read_tail","read_diff"],"expiry_ts":...,"revoked":false}
 ```
 
-Revocation takes effect on the next drive — every drive is verified per
-request, there are no long-lived sessions to cut short.
+Revocation is checked on every drive — per request, no long-lived
+sessions — so once an out-of-band `"revoked": true` has been loaded
+(daemon restart), the very next drive is refused with `revoked`.
 
 ### Rotation
 
@@ -364,7 +353,7 @@ request, there are no long-lived sessions to cut short.
 | Host identity (X25519, `host-key`) | stop daemon, delete `host-key`, restart; new key published by `GET /host-key`; device auth unaffected |
 | Registration token | delete `registration-token`, restart; existing devices keep working, new enrollments need the new token |
 | Admin token | delete `admin-token`, restart |
-| Device keys | re-register before expiry; or revoke via `POST /grants` |
+| Device keys | re-register before expiry; or revoke out-of-band: stop the daemon, set `"revoked": true` in `registry.json`, restart |
 
 ## macOS Keychain how-to (hit live 2026-08-16)
 
@@ -638,8 +627,8 @@ worktree-starting UI is retired with the client cuts (L2/L3).
 | `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
-| Recent output / diff rows missing on the phone | the device key has no grants — promote via `POST /grants` or `scripts/corrald-grant.sh --key <key_id> --caps read_tail` (add `read_diff` for the diff page). Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
-| Recent output / diff rows still missing after a promotion | relaunching or foregrounding the app now refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the rows still don't appear after a foreground refresh, the promotion did not reach this key (check `POST /grants` targeted the right `key_id`) |
+| Recent output / diff rows missing on the phone | the device key has no grants — provision out-of-band: stop the daemon, add `"read_tail"` (and `"read_diff"` for the diff page) to the device's `"grants"` array in `<config-dir>/registry.json`, restart. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| Recent output / diff rows still missing after provisioning | relaunching or foregrounding the app refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the rows still don't appear after a foreground refresh, the grant did not reach this key (check the device's `"grants"` array in `registry.json` after the daemon restart) |
 | `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
@@ -647,7 +636,7 @@ worktree-starting UI is retired with the client cuts (L2/L3).
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |
 | Daemon log storms: repeated `events.subscribe` `REQUEST_TIMEOUT` + re-bootstrap, fd count climbing | herdr replays pane state BEFORE answering `subscribe`; the reader never blocks on event delivery. A full bounded channel is a deterministic resynchronization signal: the reader drains the pending subscribe response, retires the stream, then a successfully subscribed global stream re-bootstraps only after the shared capped outage backoff. Accepted-then-closed global streams use that same ladder, so repeated closes cannot reset to an immediate resubscribe; the ladder resets only after a meaningful stable interval. Connect/subscribe failures use capped exponential backoff (30s maximum) and emit one WARN per outage; each pane retry task owns its live forwarder, cancels it on removal/replacement, and remains active until herdr recovers. A dropped client aborts the reader so no descriptor is leaked (#105/#117) |
 | UI can't connect | client defaults to `http://127.0.0.1:8474`; check the daemon port and that the client config (`$CORRAL_UI_CONFIG_DIR/config.json`) points at the right host |
-| UI read rows do nothing / `not_granted` | device has no grant for that capability — promote on the host via `POST /grants` (or Settings → Device grants) |
+| UI read rows do nothing / `not_granted` | device has no grant for that capability — provision it out-of-band in `<config-dir>/registry.json` (stop the daemon, edit `"grants"`, restart; only `read_tail`/`read_diff` exist) |
 | `400 unknown_capability` on a signed drive | the drive names a capability the daemon removed in the #354 cut (`prompt`, `interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) — only `read_tail` and `read_diff` exist |
 | macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
 | repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |

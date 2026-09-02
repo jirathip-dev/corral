@@ -218,8 +218,8 @@ fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>) {
     });
     let addr = SocketAddr::from((ip, port.unwrap_or(DEFAULT_PORT)));
     // Security baseline (#65): non-public interfaces only. The P3 auth
-    // plane (per-device Ed25519 signatures, grants, step-up, audit) gates
-    // every WRITE on every interface; the credential-free READ plane's
+    // plane (per-device Ed25519 signatures, grants, audit) gates every
+    // signed drive on every interface; the credential-free READ plane's
     // boundary beyond loopback is the bound network itself, which is why
     // public/unspecified binds stay refused — corrald is never an
     // internet-facing service.
@@ -278,7 +278,8 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
     tokio::spawn(async move { coalescer.run_coalescer().await });
 
     // W3 auth plane: host keypair (X25519), device registry, authorizer,
-    // step-up gate, hash-chained audit log, admin token. Config dir is
+    // hash-chained audit log, admin token (audit read only since the #354
+    // grant-admin removal). Config dir is
     // $CORRAL_CONFIG_DIR or ~/.config/corral; all key material is 0600
     // under a 0700 directory (see crate::auth for the rotation story).
     let auth = Arc::new(

@@ -8,22 +8,24 @@
 //! - `GET /healthz` — liveness.
 //! - `GET /issues` — read-only repo-level issue view for the
 
-//! - `POST /drive`  — P3 drive plane (writes): idempotent by `request_id`,
-//!   capability-gated, signed by the device authorizer, step-up-gated for
-//!   destructive payloads (see [`crate::api::drive`]).
+//! - `POST /drive`  — P3 drive plane (read-only since #354): idempotent by
+//!   `request_id`, capability-gated, signed by the device authorizer; only
+//!   the `read_tail` and `read_diff` capabilities dispatch (see
+//!   [`crate::api::drive`]).
 //! - P3 auth surface (W3, [`crate::auth::http`]): `GET /host-key`,
-//!   `POST /register`, `POST /step-up`, `GET /grants` (#137 host-admin
-//!   device/grants projection), `POST /grants`, `GET /audit`.
+//!   `POST /register`, `GET /audit` (host admin). The `/grants`
+//!   grant-admin projection + mutation surface and `POST /step-up` were
+//!   removed in #354 with the mutating drive plane.
 //! - `POST /device-token` — D16 push registration: the device signs a
 //!   [`DeviceTokenRequest`](crate::push::payload::DeviceTokenRequest) with
-//!   its key (same proof-of-possession shape as `/step-up`); the token is
-//!   stored on the registry record (revocable per-device).
+//!   its key (proof-of-possession, same shape as the retired `/step-up`);
+//!   the token is stored on the registry record (revocable per-device).
 //! - `POST /grants-read` — #101: signed self-service grants read. The
 //!   device signs a
 //!   [`GrantsReadRequest`](crate::push::payload::GrantsReadRequest) with its
 //!   key; the daemon verifies exactly like `/device-token` and returns that
-//!   key's CURRENT grants + expiry — host promotions reach the phone without
-//!   a device reset.
+//!   key's CURRENT grants + expiry, so a device can confirm the grants the
+//!   host provisioned out-of-band.
 //!
 //! ## Push notifier arming
 //!

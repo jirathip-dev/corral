@@ -432,10 +432,10 @@ struct FleetView: View {
             guard let agentId, recentsTarget?.agentId != agentId else { return }
             recentsTarget = RecentsTarget(agentId: agentId)
         }
+#if DEBUG
         .onChange(of: model.mode) { _, _ in
             applyDemoRouteIfNeeded()
         }
-#if DEBUG
         .task {
             applyDemoRouteIfNeeded()
         }

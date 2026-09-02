@@ -3656,17 +3656,21 @@ mod tests {
         }
     }
 
-    /// #310: the USER-INITIATED recovery through the APP'S REAL WIRING,
-    /// end to end. Startup (`apply_fingerprint`) detects the key-vs-
+    /// #310 + #354 R1: the USER-INITIATED recovery through the APP'S REAL
+    /// WIRING, end to end, against the read-only daemon (POST /grants
+    /// removed). Startup (`apply_fingerprint`) detects the key-vs-
     /// registration mismatch but must NOT auto-recover — the user then
     /// triggers Restore saved identity (the Settings recovery block's
-    /// action), the re-register and the grant restore go through the real
-    /// account, and the board finishes in the recovered state — then a
-    /// signed read_tail executes. Same journey as the (wire-only)
-    /// `tests/identity_recovery.rs` e2e, but driven through `CorralApp`
-    /// itself against a real axum router on loopback.
+    /// action): the re-register goes through the real account (identity
+    /// recovered onto the fresh key, read-only grant set from the daemon),
+    /// the HTTP grant-restore leg fails CLOSED against the removed route,
+    /// and once the host provisions out-of-band (registry API here = the
+    /// operator's registry.json edit) a signed read_tail executes. Same
+    /// journey as the (wire-only) `tests/identity_recovery.rs` e2e, but
+    /// driven through `CorralApp` itself against a real axum router on
+    /// loopback.
     #[test]
-    fn user_initiated_identity_recovery_completes_through_the_app_wiring() {
+    fn user_initiated_identity_recovery_reregisters_on_the_read_only_daemon() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3678,7 +3682,7 @@ mod tests {
         );
         let state = corrald::api::AppState {
             store: corrald::core::store::Store::new(),
-            auth,
+            auth: auth.clone(),
             adapter: std::sync::Arc::new(TailAdapter),
             replay: Default::default(),
             issues: Default::default(),
@@ -3752,8 +3756,16 @@ mod tests {
             assert!(app.try_start_recovery(), "user-initiated recovery starts");
             assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
 
+            // #354 R1: the daemon no longer serves POST /grants — grants
+            // are provisioned out-of-band on registry.json (loaded at
+            // daemon start). Recovery re-registers the CURRENT key (the
+            // identity leg: the registration record is refreshed onto the
+            // fresh key) and the base UI's HTTP grant-restore leg fails
+            // CLOSED against the removed route. That fail-closed terminal
+            // state is what this wiring test pins until the L3 UI rework
+            // retires the leg.
             let deadline = Instant::now() + std::time::Duration::from_secs(15);
-            while app.identity_recovery != IdentityRecovery::None && Instant::now() < deadline {
+            while app.identity_recovery != IdentityRecovery::Mismatch && Instant::now() < deadline {
                 while let Ok(msg) = app.rx_apply.try_recv() {
                     app.on_apply(msg);
                 }
@@ -3761,9 +3773,21 @@ mod tests {
             }
             assert_eq!(
                 app.identity_recovery,
-                IdentityRecovery::None,
-                "recovery must complete: {:?}",
-                app.settings.notice
+                IdentityRecovery::Mismatch,
+                "HTTP grant-restore must fail closed (R1 removed /grants): {:?}",
+                app.settings.grant_admin.notice
+            );
+            assert!(
+                app.settings
+                    .grant_admin
+                    .notice
+                    .as_ref()
+                    .map(|(_, text)| {
+                        text.contains("grant update failed") || text.contains("404")
+                    })
+                    .unwrap_or(false),
+                "restore/refresh failure notice expected: {:?}",
+                app.settings.grant_admin.notice
             );
 
             let reg = app
@@ -3771,7 +3795,10 @@ mod tests {
                 .clone()
                 .expect("registration after recovery");
             assert_ne!(reg.key_id, "dev_old");
-            assert_eq!(reg.grants, ["read_tail"], "previous grant set restored");
+            // The register response carries the key's CURRENT grants: a
+            // freshly re-registered key is read-only (empty grants) until
+            // the host provisions out-of-band (#354).
+            assert_eq!(reg.grants, Vec::<String>::new(), "fresh key is read-only");
             // The app reloaded the recovered key into its in-memory device
             // key on the register result (handle_register_result) — that is
             // the signing key backing the registered key_id.
@@ -3782,7 +3809,16 @@ mod tests {
                 .signing
                 .clone();
 
-            // Signed drive plane works immediately after recovery.
+            // The host provisions the recovered key out-of-band (the
+            // operator's registry.json edit; the in-process registry is the
+            // same Arc the router authorizes against).
+            auth.registry
+                .set_grants(&reg.key_id, vec![corrald::drive::Capability::ReadTail])
+                .expect("out-of-band grant");
+
+            // Signed drive plane works immediately after recovery: the
+            // daemon's registry — not the app's local ledger — authorizes
+            // the signed read.
             let endpoint = DriveEndpoint {
                 client: app.client.clone(),
                 base_url: base_url.clone(),

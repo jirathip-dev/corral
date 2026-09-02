@@ -1,0 +1,38 @@
+R2 capture log
+
+Approved design source:
+  https://github.com/jirathip-dev/design-output/tree/b968263a622e8cde50dbcad991ad3137f9ec4761/corral/319-320-status-semantics/revision-2-grouped
+
+Native iOS build:
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild -jobs 4 build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/corral-r2-ios-dd CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+  EXIT=0; BUILD SUCCEEDED
+
+Native iOS focused tests:
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild -jobs 4 test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/corral-r2-ios-dd CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -only-testing:FleetNotifierTests/StatusPresentationRegressionTests
+  EXIT=0; Executed 4 tests, with 0 failures
+
+Native iOS capture:
+  xcrun simctl create corral-r2-status-capture-2 com.apple.CoreSimulator.SimDeviceType.iPhone-14 com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0; created simulator was 390 x 844 pt / 1170 x 2532 px
+  xcrun simctl boot <created simulator>; xcrun simctl bootstatus <created simulator> -b
+  EXIT=0
+  xcrun simctl install <created simulator> /tmp/corral-r2-ios-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  xcrun simctl launch <created simulator> com.corral.fleetnotifier -demoMode -corralStatusPresentation
+  EXIT=0
+  xcrun simctl io <created simulator> screenshot --display=1 --type=png ios-r2-status-390x844.png
+  EXIT=0; PNG is 1170 x 2532; created simulator was shut down and deleted
+
+Native egui build:
+  CARGO_BUILD_JOBS=4 cargo build -p corrald-ui --release
+  EXIT=0
+
+Native egui capture attempt:
+  CORRAL_UI_SCREENSHOT=egui-r2-status-1320x860.png CORRAL_UI_SCREENSHOT_DELAY_MS=8000 CORRAL_UI_SCREENSHOT_AGENT=demo:p07:orch CORRAL_UI_DEMO_SEED=1 CORRAL_UI_DISABLE_KEYRING=1 CORRAL_UI_CONFIG_DIR=/tmp/corral-r2-egui-config target/release/corrald-ui
+  EXIT=not captured; the exact-owned frontmost probe stayed fail-closed in this CLI lane
+  External native window probe: the 1320 x 892 CorralR2 window was on-screen.
+  External screencapture: `could not create image from window` and `could not create image from rect`.
+  No HTML/prototype image was renamed or substituted.
+
+Final iOS image SHA-256:
+  de97157a738fa060c016f5ef08a6434e0b67b8b295faf13ced9941116a800c15  ios-r2-status-390x844.png

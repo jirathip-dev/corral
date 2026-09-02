@@ -2,17 +2,18 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
 
-**See every agent. Read everything. Touch nothing.**
+**See every agent. Steer the fleet.**
 
-Corral is a small app that runs on the same machine as your [herdr](https://github.com/herdrdev/herdr) fleet and gives you one place to watch it — from a desktop board or your phone.
+Corral is a small app that runs on the same machine as your [herdr](https://github.com/herdrdev/herdr) fleet and gives you one place to watch and control it — from a desktop board or your phone.
 
-If you run a fleet of coding agents (Claude Code, Codex, OpenCode, and others), herdr handles the spawning and supervising. Corral sits on top and answers the thing you actually want to know:
+If you run a fleet of coding agents (Claude Code, Codex, OpenCode, and others), herdr handles the spawning and supervising. Corral sits on top and answers the two things you actually want to know:
 
-- **What's happening right now?** One live view of every agent, its state, what it's waiting on, its branch, PR, and CI — plus read-only recent output and worktree diffs.
+- **What's happening right now?** One live view of every agent, its state, what it's waiting on, its branch, PR, and CI.
+- **Do something about it.** From your phone — prompt, interrupt, approve, read its output, or stop it. No SSH, no terminal needed.
 
 ```
 herdr socket ─┐                    ┌─ live fleet snapshot + events (SSE)
-git watcher ──┤ → corrald (daemon) → ├─ signed read drive: read_tail · read_diff (read-only since #354)
+git watcher ──┤ → corrald (daemon) → ├─ signed drive: prompt · interrupt · approve · read · kill · attach
               └                    └─ register devices · grants · audit log
 ```
 
@@ -24,17 +25,18 @@ git watcher ──┤ → corrald (daemon) → ├─ signed read drive: read_ta
 ## Features
 
 - **One live view of the fleet** — every agent, its state, what it's blocked on, its repo/branch, PR, and CI, all on one board.
-- **Read from your phone** — recent output and the agent's worktree diff (changed files + paged unified diff, #232), with signed, capability-gated reads. #354 removed the control plane: prompting, interrupting, approving, killing, and attaching are no longer daemon surfaces.
-- **Know what needs you** — blocked agents are surfaced first with the exact question they're waiting on.
-- **Harness-agnostic** — Claude Code, Codex CLI, OpenCode, and others become the same canonical record, so the board works the same no matter which agent is running.
+- **Steer it from your phone** — prompt, interrupt, approve, read output, see the agent's worktree diff (changed files + paged unified diff, #232), kill, or attach an agent, with signed, capability-gated commands.
+- **Know what needs you** — blocked agents are surfaced first with the exact question they're waiting on, so you answer in two taps instead of digging through eight terminals.
+- **Approvals that can't go wrong** — an approve action is bound to the exact prompt's hash, so you can't approve the wrong question.
+- **Harness-agnostic** — Claude Code, Codex CLI, OpenCode, and others become the same canonical record, so the board and controls work the same no matter which agent is running.
 - **Event history + daily digest** — every state change is recorded; query a window or take a per-agent daily summary.
-- **Signed and private by default** — binds to loopback, denies public addresses, and requires per-device grants before any read.
+- **Signed and private by default** — binds to loopback, denies public addresses, and requires per-device grants before any write.
 
 ## Architecture
 
 The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
 
-- **`corrald`** — the daemon. Reads the fleet (herdr + a git watcher) into a live snapshot, serves it over HTTP + SSE, and accepts signed read commands (`read_tail`, `read_diff`).
+- **`corrald`** — the daemon. Reads the fleet (herdr + a git watcher) into a live snapshot, serves it over HTTP + SSE, and accepts signed drive commands.
 - **`corrald-ui`** — the desktop board (egui).
 - **iOS notifier** — the phone app.
 - **Layering** — model → harness → runtime → control plane. Everything is written down in the docs.
@@ -85,7 +87,8 @@ Once it's up, register a device and grant it a capability (defaults to read-only
 
 Corral is private by default:
 - **Loopback by default, public refused** — binds `127.0.0.1`; public IPs and `0.0.0.0` are hard refusals. Over a tailnet/private network, prefer a WireGuard device-authenticated tunnel.
-- **Signed reads, default deny** — every drive command carries an Ed25519 device signature; a registered device has zero grants until the host grants capabilities. The drive plane is read-only since #354; every read lands in a hash-chained audit log.
+- **Signed writes, default deny** — every drive command carries an Ed25519 device signature; a registered device has zero grants until the host grants capabilities. No auto-approve.
+- **Step-up for destructive payloads** — risky operations need a short-lived biometric token. All writes land in a hash-chained audit log.
 
 ## Docs
 

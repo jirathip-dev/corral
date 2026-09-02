@@ -1178,7 +1178,14 @@ impl CorralApp {
             device_key_store_warning: false,
             ledger: if demo_seeded {
                 GrantLedger {
-                    base: vec!["read_tail".into(), "read_diff".into()],
+                    base: vec![
+                        "prompt".into(),
+                        "interrupt".into(),
+                        "approve".into(),
+                        "read_tail".into(),
+                        "read_diff".into(),
+                        "read_issues".into(),
+                    ],
                     denied: Vec::new(),
                 }
             } else {

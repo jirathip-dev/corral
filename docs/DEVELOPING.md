@@ -20,8 +20,8 @@ src/main.rs              binary entrypoint: --socket/--port/--bind parsing
                          (allowlist: loopback/RFC 1918/Tailscale CGNAT/
                          IPv6 ULA — public and 0.0.0.0 refused), auth-plane
                          init, planes supervisor, axum serve
-src/lib.rs               library surface: adapters, api, auth,
-                         core, drive, integrate, push, history
+src/lib.rs               library surface: adapters, api, approve, auth,
+                         core, drive, integrate
 src/adapters/            herdr.rs (event push + trusted catalog refresh),
                          git_plane.rs, gh_plane.rs, mod.rs (Adapter trait)
 src/core/                model.rs (canonical Agent, schema v5),
@@ -30,14 +30,14 @@ src/core/                model.rs (canonical Agent, schema v5),
                          redact.rs (secret redaction at the boundary)
 src/integrate/           plane-channel drain; folds git/gh facts onto
                          agent records
-src/drive/               the P3 wire contract, read-only since #354:
-                         Capability (closed read set: read_tail, read_diff),
-                         DriveEnvelope, SignedDrive,
-                         canonical_envelope_bytes,
+src/drive/               the FROZEN P3 contract: Capability, DriveEnvelope,
+                         SignedDrive, canonical_envelope_bytes,
                          DriveAuthorizer + AuditLog traits
-src/auth/                mod.rs (AuthPlane: registry, authorizer, audit,
-                         tokens), host_identity.rs, registry.rs,
-                         authorizer.rs, audit.rs, http.rs
+src/approve/             claim-based approvals (approval_id, prompt_hash,
+                         choice validation)
+src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
+                         audit, tokens), host_identity.rs, registry.rs,
+                         authorizer.rs, step_up.rs, audit.rs, http.rs
 src/api/                 mod.rs (router: /healthz /snapshot /events
                          /history), drive.rs (POST /drive handler)
 src/history/             mod.rs, ring.rs (D23 persistent event ring),
@@ -208,11 +208,10 @@ Historical verified results on main:
 | `cargo test -p corrald-client` | 12 unit + 4 wire-format pins green; live suite `#[ignore]`d at that baseline |
 
 The R1–R10 conformance scenarios (register, read path + SSE resume,
-signed read executes, tamper refused, read-only denied, replay
-idempotent, and audit growth) run against a **real spawned corrald** with
-a fake herdr unix server — fully self-contained, needs no live fleet.
-Since #354 the drive plane is read-only: the mutating scenarios (stale-hash
-approve, step-up) were removed with the capabilities they exercised.
+signed drive executes, tamper refused, read-only denied, replay
+idempotent, stale-hash refused, matching approve, step-up, and audit growth)
+run against a **real spawned corrald** with a fake herdr unix server —
+fully self-contained, needs no live fleet:
 
 ```sh
 cargo test -p corrald-client -- --ignored
@@ -665,10 +664,6 @@ only state channel — every chip renders a mark plus a label.
 
 ## How to add a capability
 
-The daemon surface is read-only since #354; today the closed set is
-`read_tail` and `read_diff`. Adding a capability means a deliberate
-contract change, not a code-only edit:
-
 1. **Contract** (`src/drive/mod.rs`): add the variant to `Capability`
    plus its `Display`/`FromStr` arms. Additive only — never change an
    existing variant. Add a typed `DrivePayload` variant and its
@@ -682,17 +677,20 @@ contract change, not a code-only edit:
 3. **Dispatch** (`src/adapters/mod.rs`): extend `DriveCommand` and the
    herdr adapter's `drive()` match. Resolve the canonical `agent_id` to
    the transport target; return typed `DriveError`s.
-4. **Approve seam**: N/A since #354 — the approval-claim module was
-   removed with the mutating capabilities.
+4. **Approve seam** (`src/approve/mod.rs`): only if the capability
+   answers a waiting prompt — wire it through `check_approval_claim`.
 5. **Client** (`crates/corrald-client`): mirror the wire type and add a
    scenario to `tests/conformance.rs`.
 6. **Gate**: run all four quality gates, then the live conformance suite
    against a scratch daemon (recipe in `tests/common/mod.rs` —
    `spawn_live_daemon`).
 
-Fleet-level capabilities were removed in #354: `src/fleet/` (and the
-`dispatch_worktree` route) no longer exist, and `start_worktree` is
-refused with the other mutating names (`400 unknown_capability`).
+Fleet-level capabilities (e.g. `start_worktree`, #113) do NOT dispatch
+through the per-agent adapter: `src/api/drive.rs` routes them to
+`dispatch_worktree` before the agent/tombstone/replay-claim path, so a
+worktree start is idempotent on its own `request_id` and audited once. The
+`target` is the fleet/repo name, not an `agent_id`. The client still names
+the capability in `POST /grants` exactly like an agent capability.
 
 ## Testing a scratch daemon by hand
 

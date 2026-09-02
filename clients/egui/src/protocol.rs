@@ -20,16 +20,35 @@ use crate::model::{Delta, GhIssueRef, Snapshot};
 pub const DEFAULT_HOST_URL: &str = "http://127.0.0.1:8474";
 
 /// Canonical grant order for the board's grant editor. This is the same
-/// closed set the daemon's `Capability` parser accepts — read-only since
-/// #354 (the mutating names are refused at the daemon with a typed
-/// `unknown_capability`, so granting them here would be dead weight).
-pub const GRANT_CAPABILITIES: [&str; 2] = ["read_tail", "read_diff"];
+/// closed set the daemon's `Capability` parser accepts; `start_worktree`
+/// is rendered separately as a fleet-level capability.
+pub const GRANT_CAPABILITIES: [&str; 9] = [
+    "prompt",
+    "interrupt",
+    "approve",
+    "read_tail",
+    "read_diff",
+    "read_issues",
+    "kill",
+    "attach",
+    "start_worktree",
+];
 
 /// #249 recovery grant set: the signed drive-plane caps re-applied when a
-/// rebuild/reinstall leaves the board with a fresh key. Read-only since
-/// #354; used for the one-tap "Re-register + grant" recovery when the
-/// previous registration carries no recorded grants.
-pub const RECOVERY_GRANT_CAPS: [&str; 2] = ["read_tail", "read_diff"];
+/// rebuild/reinstall leaves the board with a fresh key. Deliberately
+/// excludes `start_worktree` (a binding operation, not part of the drive
+/// plane the issue names) and is used for the one-tap
+/// "Re-register + grant" recovery when the previous registration carries
+/// no recorded grants.
+pub const RECOVERY_GRANT_CAPS: [&str; 7] = [
+    "read_tail",
+    "read_diff",
+    "prompt",
+    "interrupt",
+    "approve",
+    "kill",
+    "attach",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HostKey {
@@ -793,8 +812,32 @@ mod tests {
 
     #[test]
     fn grant_capabilities_are_stable_canonical_and_complete() {
-        assert_eq!(GRANT_CAPABILITIES, ["read_tail", "read_diff"]);
-        assert_eq!(RECOVERY_GRANT_CAPS, ["read_tail", "read_diff"]);
+        assert_eq!(
+            GRANT_CAPABILITIES,
+            [
+                "prompt",
+                "interrupt",
+                "approve",
+                "read_tail",
+                "read_diff",
+                "read_issues",
+                "kill",
+                "attach",
+                "start_worktree"
+            ]
+        );
+        assert_eq!(
+            RECOVERY_GRANT_CAPS,
+            [
+                "read_tail",
+                "read_diff",
+                "prompt",
+                "interrupt",
+                "approve",
+                "kill",
+                "attach"
+            ]
+        );
         assert!(
             GRANT_CAPABILITIES
                 .iter()

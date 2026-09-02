@@ -237,8 +237,8 @@ struct GhIssueRef: Codable, Equatable, Sendable {
 
 /// #267: the read-only issue browser payload (`{"repos": {<fleet>: [issue]}}`,
 /// served by the grant-gated `/drive read_issues` arm and the board's
-/// `GET /issues`). Repo keys are the fleet/issue-group names the daemon
-/// groups under; empty arrays are informational placeholders.
+/// `GET /issues`). Repo keys are the current daemon-scoped Herdr workspace
+/// identities; empty arrays are informational placeholders.
 struct IssuesBrowserWire: Codable, Equatable, Sendable {
     var repos: [String: [GhIssueRef]]
 

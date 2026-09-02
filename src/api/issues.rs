@@ -20,10 +20,12 @@
 //! authorized; this GET never mutates GitHub.
 //!
 //! Read-only by construction: the cache is written ONLY by the integrator's
-//! [`PlaneEvent::Gh`](crate::core::events::PlaneEvent::Gh) handler; there is
-//! no mutation surface here.
+//! [`PlaneEvent::Gh`](crate::core::events::PlaneEvent::Gh) handler. Since #237
+//! the category set is the LIVE HERDR SNAPSHOT ONLY (no registry-derived
+//! basenames); the integrator prunes categories when that topology changes and
+//! the projection filters independently for a race-safe read.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
@@ -48,6 +50,16 @@ impl IssuesCache {
         self.0.lock().unwrap().clone()
     }
 
+    /// Remove issue categories that no longer belong to a live Herdr
+    /// workspace. The integrator calls this when the store topology changes;
+    /// the API view also filters independently so a stale read cannot leak.
+    pub fn prune_to(&self, live_repos: &BTreeSet<String>) {
+        self.0
+            .lock()
+            .unwrap()
+            .retain(|repo, _| live_repos.contains(repo));
+    }
+
     /// The issue for `repo`/`number`, if currently tracked (used by the
     /// worktree action's stale/closed guard).
     pub fn get(&self, repo: &str, number: u64) -> Option<GhIssueRef> {
@@ -64,11 +76,11 @@ impl IssuesCache {
 /// The map contains:
 /// - live issue-cache keys (the native `workspace.repo` identity under which
 ///   the gh plane grouped them), and
-/// - the live `workspace.repo` category union.
+/// - the live Herdr `workspace.repo` category set.
 ///
 /// Empty arrays are informational placeholders. Neither kind authorizes a
-/// write by itself: what matters is the capability grant and the worktree
-/// dispatch's own fleet-ops CLI identity validation.
+/// write by itself: write paths perform their own capability and identity
+/// validation.
 pub async fn issues(State(state): State<Arc<SuperState>>) -> Json<serde_json::Value> {
     Json(issues_view(&state).await)
 }
@@ -79,9 +91,10 @@ pub async fn issues(State(state): State<Arc<SuperState>>) -> Json<serde_json::Va
 /// two surfaces can never diverge on what the iOS client sees.
 pub async fn issues_view(state: &SuperState) -> serde_json::Value {
     let mut map = state.issues.snapshot();
-    let live_repos = live_workspace_repos(&state.store).await;
+    let live_repos = normalize_categories(live_workspace_repos(&state.store).await);
+    map.retain(|repo, _| live_repos.contains(repo));
 
-    for repo in normalize_categories(live_repos) {
+    for repo in live_repos {
         map.entry(repo).or_default();
     }
     serde_json::json!({ "repos": map })
@@ -90,3 +103,44 @@ pub async fn issues_view(state: &SuperState) -> serde_json::Value {
 /// Thin alias so the handler signature stays readable (the full state type
 /// lives in the parent module).
 pub type SuperState = crate::api::AppState;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::{Agent, AgentState, Workspace};
+
+    #[tokio::test]
+    async fn issues_view_excludes_cached_categories_without_live_herdr_workspace() {
+        let state = SuperState::default();
+        state
+            .store
+            .apply(crate::core::model::Change::upsert(Agent {
+                agent_id: "herdr-live".to_string(),
+                source: "herdr".to_string(),
+                tool: "fixture".to_string(),
+                state: AgentState::Idle,
+                reason: None,
+                seq: 1,
+                ts: 0,
+                capabilities: Vec::new(),
+                waiting_on: None,
+                parent_id: None,
+                host: None,
+                workspace: Workspace {
+                    repo: Some("in-scope".to_string()),
+                    worktree_path: Some("/herdr/in-scope".to_string()),
+                    ..Default::default()
+                },
+                attachment: None,
+                display_name: None,
+                title: None,
+            }))
+            .await;
+        state.issues.update("in-scope", Vec::new());
+        state.issues.update("unrelated", Vec::new());
+
+        let view = issues_view(&state).await;
+        let repos = view["repos"].as_object().expect("repos object");
+        assert_eq!(repos.keys().collect::<Vec<_>>(), vec!["in-scope"]);
+    }
+}

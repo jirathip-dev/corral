@@ -7,15 +7,14 @@
 //!   (the cron/launchd artifact — see `crate::history` for the hook).
 //! - The registry views and mutations belong to the private fleet tool.
 
-use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use corrald::adapters::Adapter;
-use corrald::adapters::gh_plane::{GhPlane, GhRepoSpec};
-use corrald::adapters::git_plane::{GitPlane, LiveRepoSourceDiscovery, RepoSourceDiscovery};
+use corrald::adapters::gh_plane::GhPlane;
+use corrald::adapters::git_plane::{GitPlane, LiveRepoSourceDiscovery};
 use corrald::adapters::herdr::HerdrAdapter;
 use corrald::api::AppState;
 use corrald::api::drive::ReplayTable;
@@ -381,95 +380,6 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
     axum::serve(listener, app).await.expect("axum server");
 }
 
-/// Build gh-plane specs from the same native checkout discovery used by the
-/// git plane, retaining the static set as a fallback. Origin remotes are read
-/// with git2 during plane generation, never while serving an API request.
-fn gh_repo_specs(
-    source_discovery: &LiveRepoSourceDiscovery,
-    fallback_root: &PathBuf,
-) -> Vec<GhRepoSpec> {
-    let mut discovered: Vec<GhRepoSpec> = Vec::new();
-    let mut claimed_discovered_aliases = BTreeSet::new();
-    let mut roots = source_discovery.discover(std::slice::from_ref(fallback_root));
-    roots.sort();
-    for root in roots {
-        let Some((owner, name)) = github_origin(&root) else {
-            continue;
-        };
-        let Some(key) = root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-        else {
-            continue;
-        };
-        let spec = GhRepoSpec {
-            owner,
-            key: key.clone(),
-            name,
-            aliases: vec![key],
-        };
-        let alias = spec.aliases[0].clone();
-        if claimed_discovered_aliases.contains(&alias) {
-            continue;
-        }
-        claimed_discovered_aliases.insert(alias);
-        if let Some(existing) = discovered
-            .iter_mut()
-            .find(|existing| existing.slug() == spec.slug())
-        {
-            for alias in spec.aliases {
-                if !existing.aliases.contains(&alias) {
-                    existing.aliases.push(alias);
-                }
-            }
-        } else {
-            discovered.push(spec);
-        }
-    }
-    let discovered_aliases: BTreeSet<String> = discovered
-        .iter()
-        .flat_map(|spec| spec.aliases.iter().cloned())
-        .collect();
-    let mut specs = Vec::new();
-    for mut fallback in corrald::adapters::gh_plane::tracked_specs() {
-        if let Some(existing) = discovered
-            .iter_mut()
-            .find(|existing| existing.slug() == fallback.slug())
-        {
-            for alias in fallback.aliases {
-                if !discovered_aliases.contains(&alias) && !existing.aliases.contains(&alias) {
-                    existing.aliases.push(alias);
-                }
-            }
-        } else {
-            fallback
-                .aliases
-                .retain(|alias| !discovered_aliases.contains(alias));
-            if !fallback.aliases.is_empty() {
-                specs.push(fallback);
-            }
-        }
-    }
-    specs.extend(discovered);
-    specs
-}
-
-fn github_origin(root: &std::path::Path) -> Option<(String, String)> {
-    let repo = git2::Repository::open(root).ok()?;
-    let url = repo.find_remote("origin").ok()?.url().ok()?.to_string();
-    let path = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("git@github.com:"))
-        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
-    let mut parts = path
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .split('/');
-    let owner = parts.next()?.to_string();
-    let name = parts.next()?.to_string();
-    (parts.next().is_none() && !owner.is_empty() && !name.is_empty()).then_some((owner, name))
-}
-
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr
 /// adapter's reconnect loop. A panicking integrator would drop the plane
 /// channel receiver; both planes then stop on SinkClosed (gh by contract,
@@ -501,9 +411,9 @@ async fn supervise_planes(
             )
             .with_backlog_flag(store.git_plane_backlog()),
         );
-        let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_specs(
+        let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_herdr_scope(
             Arc::new(store.clone()),
-            gh_repo_specs(&source_discovery, &fallback_repo_root),
+            attribution.clone(),
         ));
         let (sink, rx) = plane_channel();
         let integrator =
@@ -531,21 +441,42 @@ async fn supervise_planes(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LiveRepoSourceDiscovery, RepoSourceDiscovery, bind_permitted, gh_repo_specs, github_origin,
-        origin_valid,
-    };
+    use super::{bind_permitted, origin_valid};
+    use corrald::adapters::gh_plane::{github_origin, herdr_workspace_specs};
     use corrald::api::issues::IssuesCache;
     use corrald::core::events::{GhIssueRef, GhRepoState, PlaneEvent, plane_channel};
+    use corrald::core::model::{Agent, AgentState, Change, Workspace};
     use corrald::core::store::Store;
-    use corrald::core::workspace::WorkspaceAttribution;
+    use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
     use corrald::integrate::Integrator;
     use std::net::IpAddr;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().expect("test ip parses")
+    }
+
+    fn herdr_agent(id: &str, path: &std::path::Path) -> Agent {
+        Agent {
+            agent_id: id.to_string(),
+            source: "herdr".to_string(),
+            tool: "fixture".to_string(),
+            state: AgentState::Idle,
+            reason: None,
+            seq: 1,
+            ts: 0,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: Workspace {
+                worktree_path: Some(path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            attachment: None,
+            display_name: None,
+            title: None,
+        }
     }
 
     #[tokio::test]
@@ -570,10 +501,18 @@ mod tests {
             ))
         );
         assert!(checkout.join(".git").exists());
-        let discovery = LiveRepoSourceDiscovery::new(root);
-        assert_eq!(discovery.discover(&[]), vec![checkout.clone()]);
-        let fallback = PathBuf::from("/not-a-repo");
-        let specs = gh_repo_specs(&discovery, &fallback);
+        let store = Store::new();
+        store
+            .apply(Change::upsert(herdr_agent("live", &checkout)))
+            .await;
+        let attribution = WorkspaceAttribution::from_roots(
+            [RepoRoot {
+                path: checkout.clone(),
+                repo: "synergy-costing".to_string(),
+            }],
+            root.join("worktrees"),
+        );
+        let specs = herdr_workspace_specs(&store, &attribution).await;
         let spec = specs
             .iter()
             .find(|spec| spec.aliases.contains(&"synergy-costing".to_string()))
@@ -583,11 +522,8 @@ mod tests {
         assert!(spec.aliases.contains(&"synergy-costing".to_string()));
 
         let issues = Arc::new(IssuesCache::default());
-        let integrator = Integrator::with_issues(
-            Store::new(),
-            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
-            issues.clone(),
-        );
+        let integrator =
+            Integrator::with_issues(store.clone(), attribution.clone(), issues.clone());
         let (sink, receiver) = plane_channel();
         let task = tokio::spawn(integrator.run(receiver));
         sink.send(PlaneEvent::Gh(GhRepoState {
@@ -620,8 +556,8 @@ mod tests {
         std::fs::remove_dir_all(checkout.parent().unwrap()).unwrap();
     }
 
-    #[test]
-    fn same_remote_basename_groups_specs_without_native_key_collisions() {
+    #[tokio::test]
+    async fn same_remote_basename_groups_specs_without_native_key_collisions() {
         let root =
             std::env::temp_dir().join(format!("corral-g207-collision-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -641,8 +577,33 @@ mod tests {
             repository.remote("origin", remote).unwrap();
         }
 
-        let discovery = LiveRepoSourceDiscovery::new(root.clone());
-        let specs = gh_repo_specs(&discovery, &PathBuf::from("/not-a-repo"));
+        let store = Store::new();
+        store
+            .apply(Change::upsert(herdr_agent(
+                "services",
+                &root.join("sendmeter-services"),
+            )))
+            .await;
+        store
+            .apply(Change::upsert(herdr_agent(
+                "jirathip",
+                &root.join("sendmeter-jirathip"),
+            )))
+            .await;
+        let attribution = WorkspaceAttribution::from_roots(
+            [
+                RepoRoot {
+                    path: root.join("sendmeter-services"),
+                    repo: "sendmeter-services".to_string(),
+                },
+                RepoRoot {
+                    path: root.join("sendmeter-jirathip"),
+                    repo: "sendmeter-jirathip".to_string(),
+                },
+            ],
+            root.join("worktrees"),
+        );
+        let specs = herdr_workspace_specs(&store, &attribution).await;
         let matching: Vec<_> = specs
             .iter()
             .filter(|spec| spec.name == "sendmeter")
@@ -666,9 +627,9 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn discovered_alias_replaces_conflicting_static_fallback() {
-        let root = std::env::temp_dir().join(format!("corral-g207-static-{}", std::process::id()));
+    #[tokio::test]
+    async fn scoped_specs_use_only_live_herdr_workspaces() {
+        let root = std::env::temp_dir().join(format!("corral-g332-scope-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         for (directory, remote) in [
@@ -683,22 +644,30 @@ mod tests {
             repository.remote("origin", remote).unwrap();
         }
 
-        let specs = gh_repo_specs(
-            &LiveRepoSourceDiscovery::new(root.clone()),
-            &PathBuf::from("/not-a-repo"),
+        let store = Store::new();
+        store
+            .apply(Change::upsert(herdr_agent(
+                "only-live",
+                &root.join("sendmeter"),
+            )))
+            .await;
+        let attribution = WorkspaceAttribution::from_roots(
+            [
+                RepoRoot {
+                    path: root.join("sendmeter"),
+                    repo: "sendmeter".to_string(),
+                },
+                RepoRoot {
+                    path: root.join("synergy-services-website"),
+                    repo: "synergy-services-website".to_string(),
+                },
+            ],
+            root.join("worktrees"),
         );
-        for (name, slug) in [
-            ("sendmeter", "jirathip-dev/sendmeter"),
-            (
-                "synergy-services-website",
-                "synergy-services-cooling-tower/synergy-services-website",
-            ),
-        ] {
-            let matching: Vec<_> = specs.iter().filter(|spec| spec.name == name).collect();
-            assert_eq!(matching.len(), 1);
-            assert_eq!(matching[0].slug(), slug);
-            assert_eq!(matching[0].aliases, vec![name]);
-        }
+        let specs = herdr_workspace_specs(&store, &attribution).await;
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].slug(), "jirathip-dev/sendmeter");
+        assert_eq!(specs[0].aliases, vec!["sendmeter"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

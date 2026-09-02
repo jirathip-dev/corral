@@ -1,485 +1,47 @@
 import Foundation
 
-// MARK: - Branch-name issue inference (D21, ported from clients/egui/src/infer.rs)
+// MARK: - #354 L2 read-only board (pure projections)
 
-/// Branch-name → issue inference, DISPLAY-ONLY (DECISIONS.md D21).
+/// The v2 board shape, computed as a pure function of the agent set so it is
+/// unit-testable and stable across renders:
 ///
-/// A worktree branch like `issue-431-embed-project-management` hints at issue
-/// 431, but the hint is NOT authoritative: authoritative linkage is the
-/// snapshot's per-agent `issues` (daemon `GhIssueRef`, joined from GitHub's
-/// `closingIssuesReferences` — G23). This parses the branch name, validates
-/// the number against that fetched set, and renders a visually distinct
-/// marker:
-///
-/// - `~#431` — inferred AND present in the fetched issue set;
-/// - `~#431?` — inferred but NOT in the fetched set (flagged, never asserted
-///   as real; a daemon without the G23 join validates against an empty set,
-///   so every inference is flagged).
-///
-/// HARD RULE: inferred numbers are NEVER action-driving. The only public
-/// surface is `InferredIssue.marker` (a display string); drive payload
-/// builders (`CanonicalJSON` / `DriveClient`) take agent_id + waiting-on
-/// claims and have no access to an inferred number — pinned by
-/// `testInferredNumbersNeverReachDrivePayloads`.
-///
-/// Inference is pure + deterministic (branch + fetched set in → marker out),
-/// so rendering is stable across renders and never flickers.
-struct InferredIssue: Equatable {
-    let number: UInt64
-    /// True only when `number` is present in the fetched authoritative set.
-    let known: Bool
-
-    /// The distinct display marker: `~#N` (validated) or `~#N?` (flagged).
-    /// The `~` prefix keeps it visually distinct from the authoritative
-    /// `⑂ #N` refs.
-    var marker: String {
-        known ? "~#\(number)" : "~#\(number)?"
-    }
-}
-
-enum IssueInference {
-    /// Pure branch-name inference + validation against the fetched issue
-    /// set. `nil` when the branch name infers no issue.
-    static func infer(branch: String?, known: Set<UInt64>) -> InferredIssue? {
-        guard let branch, let number = issueNumber(fromBranch: branch) else {
-            return nil
-        }
-        return InferredIssue(number: number, known: known.contains(number))
-    }
-
-    /// Parse `issue-<N>…` / `#<N>…` style branch-name forms (the egui
-    /// grammar in `clients/egui/src/infer.rs`, matched case-by-case):
-    ///
-    /// - `issue-<N>-…`, `issues-<N>…`, `issue/<N>…`, `issues/<N>…` anywhere
-    ///   in the name;
-    /// - `#<N>…` anywhere in the name.
-    ///
-    /// Precedence (F2, documented upstream): the `#<N>` form wins when both
-    /// appear. Returns `nil` for every other shape: no number, number zero,
-    /// leading non-digit after the marker, overflow, or bare numbers with no
-    /// `issue`/`#` marker.
-    static func issueNumber(fromBranch branch: String) -> UInt64? {
-        let name = branch.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.isEmpty {
-            return nil
-        }
-        if let pos = name.firstIndex(of: "#"),
-           let n = leadingNumber(name[name.index(after: pos)...]) {
-            return n
-        }
-        for marker in ["issue-", "issues-", "issue/", "issues/"] {
-            if let range = name.range(of: marker),
-               let n = leadingNumber(name[range.upperBound...]) {
-                return n
-            }
-        }
-        return nil
-    }
-
-    /// Leading decimal digits of `text` as a nonzero `UInt64`.
-    private static func leadingNumber(_ text: Substring) -> UInt64? {
-        let digits = text.prefix(while: \.isASCIIDigit)
-        guard !digits.isEmpty, let n = UInt64(digits), n > 0 else {
-            return nil
-        }
-        return n
-    }
-}
-
-private extension Character {
-    var isASCIIDigit: Bool { isASCII && isNumber }
-}
-
-// MARK: - Derived status presentation
-
-/// Stable source-identity role used only for derived presentation.
-enum AgentRole: Equatable, Sendable {
-    case orchestrator
-    case implementer
-    case reviewer
-    case unknown
-
-    var displayName: String {
-        switch self {
-        case .orchestrator: return "Orchestrator"
-        case .implementer: return "Implementer"
-        case .reviewer: return "Reviewer"
-        case .unknown: return "Unknown"
-        }
-    }
-
-    fileprivate static func fromToken(_ token: Substring) -> AgentRole? {
-        switch token.lowercased() {
-        case "orch", "orchestrator": return .orchestrator
-        case "impl", "implementer": return .implementer
-        case "review", "reviewer", "rev": return .reviewer
-        default: return nil
-        }
-    }
-}
-
-enum SupervisionKind: Equatable, Sendable {
-    case polling
-    case watcher
-}
-
-struct SupervisionActivity: Equatable, Sendable {
-    let kind: SupervisionKind
-    let intervalSeconds: Int?
-    let queuedWork: Int?
-
-    var summary: String {
-        let label = kind == .polling ? "Polling" : "Watcher"
-        if let intervalSeconds {
-            return "↻ \(label) · every \(intervalSeconds)s"
-        }
-        return "↻ \(label)"
-    }
-
-    /// Only derived labels and safe counters are exposed to assistive tech.
-    var accessibilityLabel: String {
-        let label = kind == .polling ? "polling" : "watcher"
-        var value = "Activity: Supervising, \(label)"
-        if let intervalSeconds {
-            value += ", every \(intervalSeconds) seconds"
-        }
-        if let queuedWork {
-            value += ", queued \(queuedWork)"
-        }
-        return value + ", current command redacted"
-    }
-}
-
-enum PresentationGroup: String, CaseIterable, Equatable, Hashable, Sendable {
-    case needsYou = "Needs you"
-    case working = "Working"
-    case supervising = "Supervising"
-    case finished = "Finished"
-    case idle = "Idle"
-}
-
-struct StatusPresentationSection: Identifiable, Equatable {
-    let group: PresentationGroup
-    let agents: [Agent]
-
-    var id: String { group.rawValue }
-    var header: String { "\(group.rawValue) (\(agents.count))" }
-}
-
-private func agentRole(_ agent: Agent) -> AgentRole {
-    for value in [Optional(agent.agentId), agent.displayName].compactMap({ $0 }) {
-        for token in value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
-            if let role = AgentRole.fromToken(token) {
-                return role
-            }
-        }
-    }
-    return .unknown
-}
-
-private func parseSupervisionActivity(_ reason: String?) -> SupervisionActivity? {
-    guard var payload = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !payload.isEmpty else {
-        return nil
-    }
-    payload = payload.lowercased()
-    for prefix in [
-        "done:", "foreground_command:", "foreground-command:",
-        "current_command:", "current-command:", "pane_label:",
-        "pane-label:", "activity:", "poll:", "polling:",
-        "watch:", "watcher:", "sleep:", "while:",
-    ] {
-        if payload.hasPrefix(prefix) {
-            payload = String(payload.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-            break
-        }
-    }
-    guard !payload.isEmpty, !payload.hasPrefix("not "), !payload.contains("inactive") else {
-        return nil
-    }
-
-    let command = payload.split(whereSeparator: { $0 == ";" || $0 == "|" || $0 == "·" }).first.map(String.init) ?? ""
-    let first = command.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-    let commandName = first.split(separator: "/").last.map(String.init) ?? first
-    let remainder = String(command.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
-    let kind: SupervisionKind
-    switch commandName {
-    case "watch", "watcher": kind = .watcher
-    case "poll", "polling", "sleep", "while": kind = .polling
-    default: return nil
-    }
-    let structured: Bool
-    switch commandName {
-    case "sleep", "while":
-        structured = firstNumber(after: ["sleep"], in: payload) != nil
-    case "poll", "polling", "watch", "watcher":
-        structured = remainder.isEmpty
-            || remainder.hasPrefix("every")
-            || remainder.hasPrefix("-n")
-            || remainder.hasPrefix("interval")
-            || remainder.hasPrefix("active")
-            || remainder.hasPrefix("queued")
-            || remainder.hasPrefix("current_command")
-            || remainder.hasPrefix("current-command")
-    default:
-        structured = false
-    }
-    guard structured else { return nil }
-
-    return SupervisionActivity(
-        kind: kind,
-        intervalSeconds: firstNumber(after: ["every", "sleep", "-n"], in: payload),
-        queuedWork: firstNumber(after: ["queued_work", "queued"], in: payload))
-}
-
-private func firstNumber(after markers: [String], in text: String) -> Int? {
-    for marker in markers {
-        guard let range = text.range(of: marker) else { continue }
-        var suffix = text[range.upperBound...]
-        while let first = suffix.first,
-              first == ":" || first == "=" || first == "-" || first.isWhitespace {
-            suffix = suffix.dropFirst()
-        }
-        let digits = suffix.prefix(while: { $0.isNumber })
-        if !digits.isEmpty, let value = Int(digits), value >= 0 {
-            return value
-        }
-    }
-    return nil
-}
-
-// MARK: - Issue chip (line 1 of the D24 row)
-
-/// The line-1 issue chips: the authoritative `⑂ #N` (first `issues` ref,
-/// G23; `+n` when the PR closes more) and, alongside it, the D21 inferred
-/// `~#N` / `~#N?` marker — computed UNCONDITIONALLY against the agent's
-/// authoritative issue set, exactly as the egui board does, so the
-/// validated `~#N` form is reachable. The one redundant case is dropped:
-/// an inference that merely repeats the authoritative chip's own number.
-/// Display-only either way — chip numbers never reach a drive payload.
-enum IssueChip: Equatable {
-    case authoritative(UInt64, more: Int)
-    case inferred(InferredIssue)
-
-    var label: String {
-        switch self {
-        case .authoritative(let number, let more):
-            return more > 0 ? "⑂ #\(number) +\(more)" : "⑂ #\(number)"
-        case .inferred(let inferred):
-            return inferred.marker
-        }
-    }
-
-    /// True for the flagged / unvalidated inferred form (`~#N?`).
-    var isFlagged: Bool {
-        if case .inferred(let inferred) = self { return !inferred.known }
-        return false
-    }
-
-    static func chips(for agent: Agent) -> [IssueChip] {
-        var chips: [IssueChip] = []
-        let issues = agent.workspace.issues
-        if let first = issues.first {
-            chips.append(.authoritative(first.number, more: issues.count - 1))
-        }
-        if let inferred = IssueInference.infer(branch: agent.workspace.branch,
-                                               known: agent.knownIssueNumbers),
-           !(inferred.known && inferred.number == issues.first?.number) {
-            chips.append(.inferred(inferred))
-        }
-        return chips
-    }
-}
-
-// MARK: - Tappable controls and selection
-
-/// A navigation value for the fleet screen's pushed destinations (#267). An
-/// agent detail carries only the opaque, source-stable agent id (the detail
-/// view resolves the current record again before every action); the issues
-/// browser is a fleet-level push (the approved V3 entry point).
-enum FleetRoute: Hashable, Sendable {
-    case agent(agentId: String)
-    case issues
-}
-
-/// State for the Idle/Done disclosure header. The UI owns the animation;
-/// this value owns the testable collapsed → expanded transition.
-struct IdleDoneDisclosure: Equatable, Sendable {
-    var isExpanded = false
-
-    mutating func toggle() {
-        isExpanded.toggle()
-    }
-
-    var stateLabel: String { isExpanded ? "Expanded" : "Collapsed" }
-}
-
-/// The state that FleetView actually binds to for both disclosure and
-/// navigation. Keeping the route array here means deletion reconciliation
-/// mutates the same path that NavigationStack renders, rather than a shadow
-/// selection bookkeeping object that can drift from the visible destination.
-struct FleetViewState: Equatable, Sendable {
-    var idleDoneDisclosure = IdleDoneDisclosure()
-    var navigationPath: [FleetRoute] = []
-
-    mutating func toggleIdleDone() {
-        idleDoneDisclosure.toggle()
-    }
-
-    mutating func setIdleDoneExpanded(_ expanded: Bool) {
-        idleDoneDisclosure.isExpanded = expanded
-    }
-
-    /// Test and non-SwiftUI callers can open the same route value used by the
-    /// row NavigationLink.
-    mutating func open(agentId: String) {
-        navigationPath = [.agent(agentId: agentId)]
-    }
-
-    mutating func openIssues() {
-        navigationPath = [.issues]
-    }
-
-    /// A deleted agent must be removed from the actual NavigationStack path;
-    /// the fleet-level issues route is never agent-scoped.
-    mutating func reconcile(availableAgentIds: Set<String>) {
-        navigationPath.removeAll { route in
-            if case .agent(let agentId) = route {
-                return !availableAgentIds.contains(agentId)
-            }
-            return false
-        }
-    }
-}
-
-/// The actions exposed by the per-agent detail surface. The board renders
-/// only actions that are enabled by both the agent capability and the device
-/// grant; the detail surface also renders disabled explanations.
-enum RowAction: Equatable, Sendable {
-    case approveDeny
-    case prompt
-    case interrupt
-    case tail
-    case diff
-    case terminal
-    case kill
-    case attach
-
-    var label: String {
-        switch self {
-        case .approveDeny: return "Approval"
-        case .prompt: return "Prompt"
-        case .interrupt: return "Interrupt"
-        case .tail: return "Recent output"
-        case .diff: return "Diff"
-        case .terminal: return "Terminal"
-        case .kill: return "Kill"
-        case .attach: return "Attach"
-        }
-    }
-
-    var capability: Capability? {
-        switch self {
-        case .approveDeny: return .approve
-        case .prompt: return .prompt
-        case .interrupt: return .interrupt
-        case .tail: return .readTail
-        case .diff: return .readDiff
-        case .terminal: return .attach
-        case .kill: return .kill
-        case .attach: return .attach
-        }
-    }
-}
-
-struct AgentActionAvailability: Equatable, Sendable {
-    let action: RowAction
-    let isEnabled: Bool
-    let disabledReason: String?
-
-    var label: String { action.label }
-}
-
-// MARK: - D25 hierarchy (sections + within-repo ordering)
-
-/// The D25 board shape, computed as a pure function of the agent set so it
-/// is unit-testable and stable across renders:
-///
-/// - `needsYou` — every blocked agent, cross-repo, ts desc. A PROMOTION,
-///   not a filter: the same agents also appear in their repo section.
+/// - `blocked` — every blocked agent, cross-repo, pinned to the TOP of the
+///   board (attention first). A PROMOTION, not a filter: the same agents
+///   also appear inside their repo section.
 /// - `repos` — one section per `workspace.repo` (named repos sorted by
-///   name), holding the repo's blocked/working/unknown agents; the orphan
-///   bucket (repo = nil) sorts last (D25).
-/// - `idleDone` — every idle/done agent, cross-repo, collapsed by default
-///   in the UI (D25/D28: 2/3 of rows are idle or done at any moment; the
-///   board surfaces active work and tucks the rest away).
+///   name), holding EVERY agent of that repo — working, idle, blocked,
+///   unknown — in attention order. The orphan bucket (repo = nil) sorts
+///   last. A finished (idle-fallback) agent therefore STAYS in its repo
+///   section until the daemon replaces/deletes it: the last-done-per-repo
+///   retention rule. There is no collapsed cross-repo bucket anymore; the
+///   status chip on each row carries the state.
 ///
-/// Within every section the ordering is the D25 rank — blocked > done >
-/// working > idle > unknown — then ts desc, then agent id for determinism.
+/// Within every section the ordering is the v2 attention rank — blocked >
+/// working > idle/done > unknown — then ts desc, then agent id for
+/// determinism.
 enum BoardModel {
-    struct RepoSection: Equatable {
+
+    struct RepoSection: Equatable, Identifiable {
         /// `nil` = the orphan bucket (agents without `workspace.repo`).
         let repo: String?
-        /// The ACTIVE agents shown in the section (idle/done live in the
-        /// collapsed bucket instead).
         let agents: [Agent]
-        /// Every agent of this repo, including its idle/done ones — so the
-        /// header can say "corral (2/8)" instead of under-reporting.
-        let total: Int
 
-        /// Header count label: `2/8` when idle/done agents are tucked away
-        /// in the collapsed bucket, plain `2` when nothing is hidden.
-        var countLabel: String {
-            total > agents.count ? "\(agents.count)/\(total)" : "\(agents.count)"
+        var id: String { repo ?? "\u{FFFC}no-repo" }
+
+        /// Header label: the repo name (data — never transformed) or the
+        /// orphan bucket marker, with the visible agent count.
+        var header: String {
+            "\(repo ?? "no repo") (\(agents.count))"
         }
     }
 
     struct Sections: Equatable {
-        let needsYou: [Agent]
+        /// Cross-repo blocked promotion, pinned above the repo sections.
+        let blocked: [Agent]
         let repos: [RepoSection]
-        let idleDone: [Agent]
     }
 
-    static func role(for agent: Agent) -> AgentRole {
-        agentRole(agent)
-    }
-
-    static func supervisionActivity(for agent: Agent) -> SupervisionActivity? {
-        guard agent.state == .done, agentRole(agent) == .orchestrator else {
-            return nil
-        }
-        return parseSupervisionActivity(agent.reason)
-    }
-
-    static func presentationGroup(for agent: Agent) -> PresentationGroup {
-        switch agent.state {
-        case .blocked: return .needsYou
-        case .working: return .working
-        case .done:
-            return supervisionActivity(for: agent) == nil ? .finished : .supervising
-        case .idle, .unknown: return .idle
-        }
-    }
-
-    /// Ordered derived sections. Lifecycle state remains unchanged; a done
-    /// orchestrator only moves to `supervising` when activity evidence exists.
-    static func presentationSections(for agents: [Agent]) -> [StatusPresentationSection] {
-        let orderedAgents = ordered(agents)
-        return PresentationGroup.allCases.compactMap { group in
-            let members = orderedAgents.filter { presentationGroup(for: $0) == group }
-            return members.isEmpty ? nil : StatusPresentationSection(group: group, agents: members)
-        }
-    }
-
-    /// D25 state rank. Delegates to the shared `StateStyle` contract
-    /// (`contracts/state-tokens.json`) so board ordering can never diverge
-    /// from the state vocabulary again: blocked(0) > done(1) > working(2) >
-    /// idle(3) > unknown(4). This is the approved attention-order, re-pointed
-    /// from the old working-before-done convention (carried finding 8b).
-    static func stateRank(_ state: AgentState) -> Int {
-        StateStyle.style(for: state).rank
-    }
-
-    /// The canonical board ordering: rank, then ts desc, then agent id.
+    /// The canonical board ordering: v2 rank, then ts desc, then agent id.
     static func ordered(_ agents: [Agent]) -> [Agent] {
         agents.sorted { a, b in
             let ra = stateRank(a.state), rb = stateRank(b.state)
@@ -489,24 +51,25 @@ enum BoardModel {
         }
     }
 
-    static func sections(_ agents: [Agent]) -> Sections {
-        let needsYou = ordered(agents.filter(\.isBlocked))
-        let idleDone = ordered(agents.filter { $0.state == .idle || $0.state == .done })
-        let active = agents.filter { $0.state != .idle && $0.state != .done }
+    /// v2 attention rank. Delegates to `StateStyle` (colors/rank contract
+    /// mirroring `contracts/state-tokens.json`) so board ordering can never
+    /// diverge from the state vocabulary again: blocked(0) > working(1) >
+    /// idle/done(2) > unknown(3). A wire `done` ranks with idle — herdr
+    /// finished panes fall back to idle.
+    static func stateRank(_ state: AgentState) -> Int {
+        StateStyle.style(for: state).rank
+    }
 
-        var totalByRepo: [String?: Int] = [:]
-        for agent in agents {
-            totalByRepo[agent.workspace.repo, default: 0] += 1
-        }
+    static func sections(_ agents: [Agent]) -> Sections {
+        let blocked = ordered(agents.filter(\.isBlocked))
+        let orderedAgents = ordered(agents)
+
         var byRepo: [String?: [Agent]] = [:]
-        for agent in active {
+        for agent in orderedAgents {
             byRepo[agent.workspace.repo, default: []].append(agent)
         }
         let repos = byRepo
-            .map {
-                RepoSection(repo: $0.key, agents: ordered($0.value),
-                            total: totalByRepo[$0.key] ?? $0.value.count)
-            }
+            .map { RepoSection(repo: $0.key, agents: $0.value) }
             .sorted { a, b in
                 switch (a.repo, b.repo) {
                 case (let x?, let y?): return x < y
@@ -515,139 +78,15 @@ enum BoardModel {
                 case (.none, .none): return false
                 }
             }
-        return Sections(needsYou: needsYou, repos: repos, idleDone: idleDone)
+        return Sections(blocked: blocked, repos: repos)
     }
 
-    /// Enabled actions for one agent. The per-action detail surface uses
-    /// `actionAvailability` below to explain disabled controls; this helper
-    /// is the compact enabled-only projection used by board-level policy and
-    /// tests.
-    static func rowActions(agent: Agent, grants: Set<Capability>) -> [RowAction] {
-        actionAvailability(agent: agent, grants: grants)
-            .filter { $0.action != .terminal }
-            .filter(\.isEnabled)
-            .map(\.action)
-    }
-
-    /// Full action matrix for the detail surface. Reasons deliberately name
-    /// the missing capability or grant so a read-only device never presents
-    /// an unexplained disabled control.
-    static func actionAvailability(agent: Agent,
-                                   grants: Set<Capability>) -> [AgentActionAvailability] {
-        [
-            availability(.tail, agent: agent, grants: grants),
-            availability(.diff, agent: agent, grants: grants),
-            availability(.prompt, agent: agent, grants: grants),
-            availability(.interrupt, agent: agent, grants: grants),
-            availability(.kill, agent: agent, grants: grants),
-            availability(.attach, agent: agent, grants: grants),
-            availability(.approveDeny, agent: agent, grants: grants),
-        ]
-    }
-
-    private static func availability(_ action: RowAction, agent: Agent,
-                                     grants: Set<Capability>) -> AgentActionAvailability {
-        if action == .approveDeny {
-            guard agent.isBlocked, let waiting = agent.waitingOn else {
-                return AgentActionAvailability(
-                    action: action,
-                    isEnabled: false,
-                    disabledReason: "Approval is available only while this agent is blocked on a live claim.")
-            }
-            if waiting.kind == .crash {
-                return AgentActionAvailability(
-                    action: action,
-                    isEnabled: false,
-                    disabledReason: "Crash states do not accept approval replies.")
-            }
-        }
-
-        if action == .terminal {
-            return terminalAvailability(agent: agent, grants: grants, isRegistered: true)
-        }
-        guard let capability = action.capability else {
-            return AgentActionAvailability(action: action, isEnabled: false,
-                                           disabledReason: "This action is not available for this agent.")
-        }
-        guard agent.capabilities.contains(capability.rawValue) else {
-            return AgentActionAvailability(
-                action: action,
-                isEnabled: false,
-                disabledReason: "\(capability.rawValue): not available for this agent.")
-        }
-        guard grants.contains(capability) else {
-            // Kill gets a plain-language reason (issue #166 item 4): the
-            // sentence names the missing grant too, so the existing
-            // "name the grant" contract tests stay green while a read-only
-            // device says WHY in human terms instead of a bare token.
-            if action == .kill {
-                return AgentActionAvailability(
-                    action: action,
-                    isEnabled: false,
-                    disabledReason: "You don't have permission to kill agents on this host (missing the kill grant — ask the host).")
-            }
-            return AgentActionAvailability(
-                action: action,
-                isEnabled: false,
-                disabledReason: "requires the \(capability.rawValue) grant — ask the host.")
-        }
-        return AgentActionAvailability(action: action, isEnabled: true, disabledReason: nil)
-    }
-
-    static func terminalAvailability(agent: Agent, grants: Set<Capability>,
-                                     isRegistered: Bool) -> AgentActionAvailability {
-        guard isRegistered else {
-            return AgentActionAvailability(action: .terminal, isEnabled: false,
-                                           disabledReason: "Terminal unavailable: device is not registered.")
-        }
-        guard agent.capabilities.contains(Capability.attach.rawValue) else {
-            return AgentActionAvailability(action: .terminal, isEnabled: false,
-                                           disabledReason: "Terminal unavailable: attach is not available for this agent.")
-        }
-        guard grants.contains(.attach) else {
-            return AgentActionAvailability(action: .terminal, isEnabled: false,
-                                           disabledReason: "Terminal unavailable: requires the attach grant.")
-        }
-        guard let path = agent.workspace.worktreePath, !path.isEmpty else {
-            return AgentActionAvailability(action: .terminal, isEnabled: false,
-                                           disabledReason: "Terminal unavailable: worktree_path is missing.")
-        }
-        return AgentActionAvailability(action: .terminal, isEnabled: true, disabledReason: nil)
-    }
-
-    // MARK: - Answer-loop prominence (#166 item 3)
-
-    /// ONE primary action per state, chosen by contract order:
-    /// blocked → answer, working → interrupt, done → attach/PR, and
-    /// idle/unknown → none. Everything else lives in the overflow menu.
-    static func primaryAction(for agent: Agent) -> RowPrimaryAction {
-        switch agent.state {
-        case .blocked: return .answer
-        case .working: return .interrupt
-        case .done: return .attach
-        case .idle, .unknown: return .none
-        }
-    }
-
-    // MARK: - Zero-state rule (#166 item 7)
-
-    /// The cross-repo "Needs you" section is hidden entirely when no agent
-    /// is blocked — no `Needs you (0)` header, no "No blocked agents" empty
-    /// row. Returns `nil` in that case (a testable pure projection the view
-    /// uses to decide whether to render the section at all).
-    static func needsYouSection(_ agents: [Agent]) -> [Agent]? {
-        let blocked = ordered(agents.filter(\.isBlocked))
-        return blocked.isEmpty ? nil : blocked
-    }
-
-    // MARK: - Persistent connection indicator (#166 item review F1)
+    // MARK: - Persistent connection indicator (#166 review F1)
 
     /// The persistent board connection indicator, modeled as a pure function
     /// of the fleet's connection state. It lives in the List's first pinned
-    /// section header — the filter chrome (`fleetChrome`) — and is
-    /// therefore independent of the Needs-you section, the pinned chip row,
-    /// and the active filter/search projection — a stale or connecting board
-    /// is never silently presented as live.
+    /// section header (the board chrome) — a stale or connecting board is
+    /// never silently presented as live.
     static func connectionStatus(for state: FleetStore.ConnectionState) -> FleetConnectionStatus {
         switch state {
         case .connected: return .connected
@@ -678,70 +117,4 @@ enum FleetConnectionStatus: Equatable, Sendable {
 
     /// True when the view should show the small spinner (not text).
     var isSpinner: Bool { self == .connecting }
-}
-
-/// The primary action for the answer loop, rendered as the single prominent
-/// control on the row/detail surface (issue #166 item 3).
-enum RowPrimaryAction: Equatable, Sendable {
-    case answer
-    case interrupt
-    case attach
-    case none
-
-    var label: String {
-        switch self {
-        case .answer: return "Answer"
-        case .interrupt: return "Interrupt"
-        case .attach: return "Attach"
-        case .none: return ""
-        }
-    }
-}
-
-// MARK: - #267 read-only issue browser (pure logic)
-
-/// The open/closed filter (approved V3: open by default). Pure + testable;
-/// the UI renders the two chips from `allCases`.
-enum IssueFilter: String, Equatable, CaseIterable, Sendable {
-    case open
-    case closed
-
-    var label: String { rawValue }
-
-    func stateMatches(_ issue: GhIssueRef) -> Bool {
-        issue.state.lowercased() == rawValue
-    }
-}
-
-/// Pure browser projections (#267) — the list rows (flat newest-first, per
-/// the approved V3) and the lazy comment reveal over the daemon's bounded
-/// newest-first window. The view is a thin shell over these.
-enum IssueBrowser {
-    /// Comments revealed per "Load earlier" tap (the window is
-    /// daemon-bounded at 30; 20 per page per the approved mock's note —
-    /// the client never re-fetches).
-    static let commentChunk = 20
-
-    /// The issues matching the filter, newest number first.
-    static func rows(_ issues: [GhIssueRef], filter: IssueFilter) -> [GhIssueRef] {
-        issues.filter(filter.stateMatches).sorted { $0.number > $1.number }
-    }
-
-    /// The revealed portion of the fetched window (newest-first).
-    static func visibleComments(_ issue: GhIssueRef, revealed: Int) -> [IssueComment] {
-        Array(issue.comments.prefix(max(0, revealed)))
-    }
-
-    /// How many comments are still unloaded, per GitHub's authoritative
-    /// total (absent total = the fetched window is everything).
-    static func earlierCount(_ issue: GhIssueRef, revealed: Int) -> Int {
-        let shown = min(max(0, revealed), issue.comments.count)
-        let total = issue.commentTotal ?? UInt64(issue.comments.count)
-        return Int(total) > shown ? Int(total) - shown : 0
-    }
-
-    /// More of the fetched window left to reveal.
-    static func canRevealMore(_ issue: GhIssueRef, revealed: Int) -> Bool {
-        revealed < issue.comments.count
-    }
 }

@@ -10,20 +10,10 @@ struct FleetNotifierApp: App {
         WindowGroup {
             RootView(model: model)
                 .task {
-                    // Dev-only launch-arg harnesses (see LiveVerifyRunner).
+                    // Dev-only launch-arg harnesses (Debug only).
 #if DEBUG
-                    if CommandLine.arguments.contains("-liveVerify") {
-                        LiveVerifyRunner(model: model).run()
-                    } else if let presentation = CorralDemoLaunch.presentation(
-                        arguments: CommandLine.arguments) {
-                        model.enterDemo(presentation: presentation,
-                                        detailAgentId: CorralDemoLaunch.detailAgentId(
-                                            arguments: CommandLine.arguments))
-                    } else if CorralDemoLaunch.wantsIssues(arguments: CommandLine.arguments) {
-                        model.enterDemo()
-                        model.demoOpenIssues = true
-                        model.demoOpenIssueNumber =
-                            CorralDemoLaunch.issueDetailNumber(arguments: CommandLine.arguments)
+                    if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
+                        model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
                     } else if CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -52,59 +42,19 @@ struct FleetNotifierApp: App {
 }
 
 #if DEBUG
-/// Launch arguments for the permanent, local-only design-gate fixture. The
+/// Launch arguments for the deterministic local design-gate fixture. The
 /// route is opt-in and has no effect on normal Debug launches or any Release
-/// build. `-corralDemoBefore` implies the same detail route in the app task.
+/// build. `-corralDemoDetail` seeds the demo fleet and opens the featured
+/// agent's recents sheet (simulator capture cannot inject the tap).
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
-    static let beforeArgument = "-corralDemoBefore"
-    /// #267: open the read-only issue browser straight into demo (list
-    /// evidence route; `detailIssueNumber` auto-expands one row's inline
-    /// detail for the detail evidence route).
-    static let issuesArgument = "-corralDemoIssues"
-    static let detailIssueArgument = "-corralDemoIssuesDetail"
-    /// #330 AC5 evidence: route the detail presentation at the harness-only
-    /// demo session (Conversation shows the honest empty state).
-    static let harnessOnlyArgument = "-corralDemoHarnessOnly"
-    /// #329 evidence: start the Recent-output detail with the Harness
-    /// activity DisclosureGroup already expanded (simctl cannot inject the
-    /// tap; the expansion state itself is the observable boundary).
-    static let harnessExpandedArgument = "-corralDemoHarnessExpanded"
 
-    static func presentation(arguments: [String]) -> AppModel.DemoPresentation? {
-        guard arguments.contains(detailArgument) || arguments.contains(beforeArgument) else {
-            return nil
-        }
-        return arguments.contains(beforeArgument) ? .before : .after
+    static var detailAgentID: String {
+        DemoFleet.featuredAgentID
     }
 
-    /// The deterministic detail target for the demo route: the harness-only
-    /// session when `-corralDemoHarnessOnly` is present, else the featured
-    /// recent-output session.
-    static func detailAgentId(arguments: [String]) -> String {
-        arguments.contains(harnessOnlyArgument)
-            ? DemoFleet.harnessOnlyAgentID
-            : DemoFleet.featuredAgentID
-    }
-
-    /// Whether the Recent-output harness activity starts expanded (evidence
-    /// capture; no effect on normal launches).
-    static func wantsHarnessExpanded(arguments: [String]) -> Bool {
-        arguments.contains(harnessExpandedArgument)
-    }
-
-    static func wantsIssues(arguments: [String]) -> Bool {
-        arguments.contains(issuesArgument)
-    }
-
-    /// The issue number to auto-expand, when the detail evidence route is
-    /// requested (nil = plain list).
-    static func issueDetailNumber(arguments: [String]) -> UInt64? {
-        guard arguments.contains(detailIssueArgument),
-              let index = arguments.firstIndex(of: detailIssueArgument),
-              arguments.indices.contains(index + 1),
-              let number = UInt64(arguments[index + 1]) else { return nil }
-        return number
+    static func wantsDetail(arguments: [String]) -> Bool {
+        arguments.contains(detailArgument)
     }
 }
 #endif

@@ -7,13 +7,16 @@ import Foundation
 /// serde_json rules mirrored here:
 /// - Compact output: no whitespace anywhere.
 /// - Struct field order is preserved (envelope: request_id, capability,
-///   target, payload, rev; step-up: key_id, purpose, nonce, ts).
+///   target, payload, rev; push/grants requests: key_id, …, ts).
 /// - Object keys are serialized in sorted order — serde_json's `Value` map
 ///   is a BTreeMap, so payload objects sort lexicographically by byte.
 /// - Strings escape only `"`, `\` and control chars < 0x20 (short escapes
 ///   \b \t \n \f \r; everything else as `\u00xx`, lowercase hex). Non-ASCII
 ///   passes through as raw UTF-8.
 /// - Integers serialize as plain decimals; `null` for nil optionals.
+///
+/// #354 L2: only the retained read surface remains — the read_tail payload
+/// builder plus the register / device-token / grants-read signed bodies.
 enum CanonicalJSON {
 
     /// A JSON value that can be emitted deterministically. Payload objects
@@ -35,13 +38,6 @@ enum CanonicalJSON {
 
     // MARK: - Payload shapes (sorted-key objects, kind-tagged)
 
-    /// `{"kind":"prompt","text":...}` (single key set; order irrelevant but
-    /// kept byte-identical to serde's sorted output).
-    static func promptPayload(text: String) -> Value {
-        .object([(key: "kind", value: .string("prompt")),
-                 (key: "text", value: .string(text))])
-    }
-
     /// `{"kind":"read_tail","lines":N}`; `lines: null` when absent (serde
     /// has no skip attr on `lines`, so None serializes as JSON null).
     static func readTailPayload(lines: UInt32?, sinceRev: UInt64? = nil) -> Value {
@@ -51,40 +47,7 @@ enum CanonicalJSON {
         return .object(fields)
     }
 
-    /// #232: `{"kind":"read_diff","files":F,"offset":O,"lines":N}`.
-    /// The daemon clamps files to 1..=128 and lines to 1..=400 and pages by
-    /// the aggregate line offset; the canonical encoder sorts the object
-    /// keys lexicographically (BTreeMap order) as everywhere else.
-    static func readDiffPayload(files: UInt32, offset: UInt32, lines: UInt32) -> Value {
-        .object([(key: "kind", value: .string("read_diff")),
-                 (key: "files", value: .uint(UInt64(files))),
-                 (key: "offset", value: .uint(UInt64(offset))),
-                 (key: "lines", value: .uint(UInt64(lines)))])
-    }
-
-    /// #267: `{"kind":"read_issues"}` — unit payload; the daemon serves the
-    /// same last-known window as the board's `GET /issues` (grant-gated).
-    static func readIssuesPayload() -> Value {
-        .object([(key: "kind", value: .string("read_issues"))])
-    }
-
-    /// Interrupt/kill/attach commands take a JSON null payload in the drive
-    /// contract. Keeping the builder named prevents the UI from accidentally
-    /// inventing a prompt-shaped payload for an interrupt.
-    static func interruptPayload() -> Value { .null }
-    static func killPayload() -> Value { .null }
-    static func attachPayload() -> Value { .null }
-
-    /// `{"approval_id":...,"choice":...,"kind":"approve","prompt_hash":...}`
-    /// — sorted byte order: approval_id < choice < kind < prompt_hash.
-    static func approvePayload(approvalId: String, promptHash: String, choice: String) -> Value {
-        .object([(key: "approval_id", value: .string(approvalId)),
-                 (key: "choice", value: .string(choice)),
-                 (key: "kind", value: .string("approve")),
-                 (key: "prompt_hash", value: .string(promptHash))])
-    }
-
-    // MARK: - Envelope / step-up canonical bytes (fixed struct field order)
+    // MARK: - Envelope canonical bytes (fixed struct field order)
 
     /// `canonical_envelope_bytes` — the exact bytes a signature must cover.
     /// `rev` is omitted when nil (`skip_serializing_if = "Option::is_none"`).
@@ -103,18 +66,6 @@ enum CanonicalJSON {
             json += ",\"rev\":\(rev)"
         }
         json += "}"
-        return Data(json.utf8)
-    }
-
-    /// `canonical_step_up_bytes` — fixed order key_id, purpose, nonce, ts.
-    static func stepUpBytes(keyId: String, purpose: String, nonce: String, ts: UInt64) -> Data {
-        var json = "{\"key_id\":"
-        json += escaped(keyId)
-        json += ",\"purpose\":"
-        json += escaped(purpose)
-        json += ",\"nonce\":"
-        json += escaped(nonce)
-        json += ",\"ts\":\(ts)}"
         return Data(json.utf8)
     }
 
@@ -202,18 +153,6 @@ enum CanonicalJSON {
         json += escaped(publicKeyB64)
         json += ",\"name\":"
         json += escaped(name)
-        json += "}"
-        return Data(json.utf8)
-    }
-
-    /// `{key_id, signature, request}` step-up body.
-    static func stepUpBody(keyId: String, signatureB64: String, requestBytes: Data) -> Data {
-        var json = "{\"key_id\":"
-        json += escaped(keyId)
-        json += ",\"signature\":"
-        json += escaped(signatureB64)
-        json += ",\"request\":"
-        json += String(data: requestBytes, encoding: .utf8) ?? "{}"
         json += "}"
         return Data(json.utf8)
     }

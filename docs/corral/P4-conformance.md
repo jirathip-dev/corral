@@ -35,12 +35,24 @@ DriveEnvelope { request_id: String, capability: "prompt"|"interrupt"|"approve"|"
   order; serde_json::to_vec on the struct).
 - Payloads (tagged):
   - prompt: `{"kind":"prompt","text":String}`
-  - read_tail: `{"kind":"read_tail","lines":Option<u32>}` (clamped 1..=200)
+  - read_tail: `{"kind":"read_tail","lines":Option<u32>,"since_rev":Option<u64>}`
+    (lines clamped 1..=200; `since_rev` is the client's cached
+    per-agent/output-source revision, optional)
   - approve: `{"kind":"approve","approval_id":String,"prompt_hash":String,"choice":String}`
   - interrupt/kill/attach: no payload (`null` or `{}`)
   - start_worktree (fleet-level; `target` is the fleet/repo name, not an agent id):
     - issue-linked: `{"kind":"start_worktree","mode":"issue","repo":String,"number":u64,"issue_url":String}`
     - issue-free: `{"kind":"start_worktree","mode":"free","repo":String,"name":String}`
+- `read_tail` result (`result` on `ok:true`):
+  `{"lines":[String],"blocks":[TranscriptBlock],"source_rev":Option<u64>}`
+  — `source_rev` is the provider's monotonic per-agent/output-source
+  revision (the provider `agent.read` `read.revision`), NOT the fleet
+  snapshot revision carried by the response envelope's `rev`. When the
+  provider reports a revision equal to the cached `since_rev`, `lines` and
+  `blocks` are empty: an explicit unchanged result with no page
+  re-transferred. Legacy providers (`read.revision` 0/absent) return the
+  bounded full page and `source_rev` echoes the request's `since_rev`
+  (see `docs/OPERATIONS.md` "Provider read-tail revision contract (#324)").
 - `start_worktree` result (`result` on `ok:true`):
   - started: `{"state":"started","branch":String,"path":String,"handoff":"launched"|"deferred"}`
   - already-started (idempotent replay): `{"state":"already_started","branch":String,"path":String}`

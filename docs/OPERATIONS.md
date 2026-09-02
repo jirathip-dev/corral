@@ -472,8 +472,41 @@ surface consumes `lines`.
 
 ```sh
 # signed POST /drive with capability read_tail (see the drive plane)
-# → {"ok":true,"rev":42,"result":{"lines":["..."],"blocks":[{"kind":"tool",...}]}}
+# → {"ok":true,"rev":42,"result":{"lines":["..."],"blocks":[{"kind":"tool",...}],"source_rev":59}}
 ```
+
+### Provider read-tail revision contract (#324)
+
+`read_tail` requests may carry a cached source revision and every response
+carries the provider's current one:
+
+- Request payload: `{"kind":"read_tail","lines":Option<u32>,
+  "since_rev":Option<u64>}` — `since_rev` is the client's cached
+  per-agent/output-source revision from a previous response.
+- Response result: `{"lines":[...],"blocks":[...],"source_rev":Option<u64>}`
+  — `source_rev` is the PROVIDER's revision of the agent's
+  `recent_unwrapped` output source. It is monotonic per agent/output source
+  and is never the fleet snapshot revision (the response envelope's `rev`).
+
+Provider semantics (defined for `agent.read`, documented in
+`src/adapters/herdr.rs`): a nonzero `read.revision` means the provider
+tracks revisions. When a request carries `rev` equal to the provider's
+current revision the window is UNCHANGED — the provider returns an empty
+`text` (no page transferred) and Corral returns an explicit empty
+`lines`/`blocks` result with the same `source_rev`. Any other revision
+(first read, advanced output, or a provider wrap/restart that resets the
+counter below the cached value) returns the bounded window plus the
+provider's current revision. `revision` `0`/absent means a legacy provider:
+the bounded full-page fallback applies and `source_rev` echoes the
+client's cached revision (existing behavior).
+
+Upstream blocker, recorded honestly: the live Herdr 0.8.2 provider does NOT
+support revisions. Its socket `agent.read` returns `revision: 0` regardless
+of `rev` (verified for no `rev`, `rev=1`, and `rev=999999` in #324), so the
+incremental path only activates against providers that honor the contract;
+Herdr 0.8.2 keeps the bounded full-page behavior. The regression/probe
+evidence for the incremental path uses a simulated contract-honoring
+provider (`docs/design/evidence/issue-324/`).
 
 ## Worktree diff read path (#232)
 

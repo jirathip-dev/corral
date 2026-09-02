@@ -111,8 +111,9 @@ fn harness() -> Harness {
     let auth = Arc::new(AuthPlane::load_or_create(dir.path().to_path_buf()).expect("auth plane"));
     let (signing, pubkey) = test_support::keypair();
     let token = auth.registry.registration_token();
-    // Register the harness device once; grant every legacy capability so the
-    // pre-cut daemon reaches dispatch instead of stopping at authorization.
+    // Register the harness device once, granting every capability the daemon
+    // still understands. The RIP probe's refusals therefore cannot be blamed
+    // on a missing grant.
     let rec = auth
         .registry
         .register(&token, pubkey, std::time::Duration::from_secs(3600))
@@ -120,17 +121,7 @@ fn harness() -> Harness {
     auth.registry
         .set_grants(
             &rec.key_id,
-            vec![
-                Capability::Prompt,
-                Capability::Interrupt,
-                Capability::Approve,
-                Capability::ReadTail,
-                Capability::Kill,
-                Capability::Attach,
-                Capability::StartWorktree,
-                Capability::ReadDiff,
-                Capability::ReadIssues,
-            ],
+            vec![Capability::ReadTail, Capability::ReadDiff],
         )
         .expect("read grants");
     let app = router(AppState {
@@ -153,26 +144,63 @@ fn harness() -> Harness {
 
 impl Harness {
     /// A genuinely signed drive body for `capability` (signature over the
-    /// canonical envelope bytes with the harness device's key).
+    /// canonical envelope bytes with the harness device's key). `capability`
+    /// stays a raw wire string: after the cut the daemon itself refuses the
+    /// removed names, so the probe must be able to SIGN what no longer
+    /// parses (the signed wire form carries `capability` as a plain string).
     fn signed_body(&self, request_id: &str, capability: &str, payload: Value) -> String {
         let envelope = DriveEnvelope {
             request_id: request_id.to_string(),
-            capability: capability.parse().expect("probe capability parses"),
+            capability: Capability::ReadTail,
             target: "herdr:agent-a".to_string(),
             payload,
             rev: None,
         };
-        let signed = SignedDrive {
-            key_id: self.auth.registry.records()[0].key_id.clone(),
-            signature: test_support::sign(&self.signing, &envelope),
-            envelope,
-        };
+        // The typed envelope can no longer hold a removed capability, but
+        // the WIRE form carries `capability` as a plain string. Build the
+        // signed body as JSON directly: swap the capability string to the
+        // removed name and sign the canonical bytes, so the probe submits
+        // exactly the shape a pre-#354 client would have signed — and the
+        // daemon's typed refusal (not a signature failure) is what the
+        // assertions observe.
+        let mut wire = serde_json::to_value(&envelope).expect("envelope serializes");
+        wire["capability"] = serde_json::Value::String(capability.to_string());
+        // Rebuild the canonical byte vector in the struct's field order:
+        // serde_json::Value maps are alphabetical, which is NOT the field
+        // order a signature covers (request_id, capability, target,
+        // payload, rev — `rev: None` is skipped on both sides).
+        let wire_canonical = serde_json::to_vec(&DriveEnvelopeWireCanonical {
+            request_id: wire["request_id"].as_str().unwrap_or_default().to_string(),
+            capability: wire["capability"].as_str().unwrap_or_default().to_string(),
+            target: wire["target"].as_str().unwrap_or_default().to_string(),
+            payload: wire["payload"].clone(),
+            rev: wire.get("rev").and_then(|value| value.as_u64()),
+        })
+        .expect("wire bytes serialize");
+        let signed = serde_json::json!({
+            "key_id": self.auth.registry.records()[0].key_id.clone(),
+            "signature": test_support::sign_bytes(&self.signing, &wire_canonical),
+            "envelope": wire,
+        });
         serde_json::to_string(&signed).expect("signed body serializes")
     }
 
     fn audit_len(&self) -> usize {
         self.auth.audit.chain().0.len()
     }
+}
+
+/// Field-order mirror of [`DriveEnvelope`] with `capability` as a plain
+/// string — exactly the bytes the daemon's verifier re-serializes from the
+/// envelope it deserializes.
+#[derive(serde::Serialize)]
+struct DriveEnvelopeWireCanonical {
+    request_id: String,
+    capability: String,
+    target: String,
+    payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<u64>,
 }
 
 async fn post(app: &Router, body: String) -> (StatusCode, Value) {
@@ -256,7 +284,8 @@ async fn mutating_drives_are_refused_without_dispatch_or_audit() {
             "{capability}: refusal kind must be unknown_capability (got {value})"
         );
         assert_eq!(
-            value["request_id"], format!("req-{capability}"),
+            value["request_id"],
+            format!("req-{capability}"),
             "{capability}: refusal must carry the request id"
         );
         // The refusal happens before ANY dispatch and before the audit log,
@@ -297,7 +326,11 @@ async fn signed_read_tail_still_dispatches_after_the_cut() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "read_tail stays signed-dispatchable");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "read_tail stays signed-dispatchable"
+    );
     assert_eq!(value["ok"], true, "read_tail response ok: {value}");
     assert_eq!(
         value["result"]["lines"],
@@ -347,7 +380,11 @@ async fn fresh_registration_is_still_read_only_default() {
         serde_json::to_string(&signed).expect("signed body serializes"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "granted fresh device reads: {value}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "granted fresh device reads: {value}"
+    );
     assert_eq!(value["ok"], true);
 }
 

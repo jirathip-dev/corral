@@ -3,8 +3,6 @@
 //! - `GET /host-key`  — host identity (X25519 public key, no path disclosure).
 //! - `POST /register` — device registration: registration token (routing
 //!   only) + device public key → `key_id` + read-only-default grants.
-//! - `POST /step-up`  — biometric step-up token for destructive payloads
-//!   (single-use, 5 min TTL, bound to `key_id`).
 //! - `GET /grants`    — host admin (admin token): registered device keys,
 //!   current grants, and revocation state for the board's grant UI.
 //! - `POST /grants`   — host admin (admin token): grant promotion /
@@ -13,9 +11,9 @@
 //!   integrity verdict.
 //!
 //! `POST /drive` is served by W1's handler (`crate::api::drive`), which
-//! keeps the documented order: parse → `DriveAuthorizer::verify` → step-up
-//! gate (`[`STEP_UP_HEADER`]`) → dispatch → audit append. Auth and step-up
-//! failures are never appended (AC5).
+//! keeps the documented order: parse → `DriveAuthorizer::verify` →
+//! dispatch → audit append. Auth failures are never appended (AC5).
+//! #354: the step-up route is retired with the mutating plane it guarded.
 
 use std::sync::Arc;
 
@@ -27,20 +25,13 @@ use axum::routing::{get, post};
 
 use crate::api::AppState;
 
+use super::b64_decode_array_32;
 use super::registry::RegistryMutationError;
-use super::step_up::{StepUpRequest, canonical_step_up_bytes};
-use super::{STEP_UP_TTL, b64_decode_array_32, decode_b64, now_secs};
-
-pub const STEP_UP_HEADER: &str = "X-Step-Up-Token";
-/// Max accepted skew between a signed step-up request's `ts` and the host
-/// clock (F14) — beyond this the request is treated as stale/replayed.
-pub const STEP_UP_MAX_SKEW_SECS: u64 = 60;
 
 pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/host-key", get(host_key))
         .route("/register", post(register))
-        .route("/step-up", post(step_up))
         .route("/grants", get(admin_grants).post(grants))
         .route("/audit", get(audit))
 }
@@ -182,78 +173,6 @@ async fn register(
             ),
         },
     }
-}
-
-/// POST /step-up {key_id, signature, request} -> {token, expires_ts}.
-///
-/// The signature proves possession of the device key: it covers
-/// [`canonical_step_up_bytes`] of the request. The minted token is
-/// single-use, expires in 5 minutes, and is bound to `key_id`. The
-/// request's `ts` freshness is enforced (F14): `|now - ts| < 60s`.
-/// Revoked/expired keys cannot mint (F9).
-async fn step_up(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let request: StepUpRequest =
-        match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
-            Ok(r) => r,
-            Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed step-up request"),
-        };
-    if request.purpose != "destructive" {
-        return json_err(StatusCode::BAD_REQUEST, "unknown step-up purpose");
-    }
-    // Freshness: reject replayed or stale signed requests (F14).
-    if now_secs().abs_diff(request.ts) > STEP_UP_MAX_SKEW_SECS {
-        return json_err(
-            StatusCode::BAD_REQUEST,
-            "stale step-up request: |now - ts| > 60s",
-        );
-    }
-    let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return json_err(StatusCode::BAD_REQUEST, "missing step-up signature"),
-    };
-    let rec = match state.auth.registry.get(&request.key_id) {
-        Some(r) => r,
-        None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
-    };
-    // A revoked or expired key cannot mint step-up tokens (F9) — mirror
-    // verify()'s validity checks so a dead key cannot mint/exhaust state.
-    if rec.revoked {
-        return json_err(StatusCode::FORBIDDEN, "device key revoked");
-    }
-    if now_secs() >= rec.expiry_ts {
-        return json_err(StatusCode::FORBIDDEN, "device key expired");
-    }
-    let sig = match decode_b64(signature_b64) {
-        Some(s) => match s.try_into() {
-            Ok(sig) => sig,
-            Err(_) => return json_err(StatusCode::BAD_REQUEST, "signature must be 64 bytes"),
-        },
-        None => return json_err(StatusCode::BAD_REQUEST, "signature must be base64"),
-    };
-    let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&rec.public_key) {
-        Ok(pk) => pk,
-        Err(_) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "corrupt registry key"),
-    };
-    let message = canonical_step_up_bytes(&request);
-    if public_key
-        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
-        .is_err()
-    {
-        return json_err(StatusCode::UNAUTHORIZED, "bad step-up signature");
-    }
-    let token = state.auth.step_up.mint(&request.key_id, STEP_UP_TTL);
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "token": token,
-            "key_id": request.key_id,
-            "ttl_secs": STEP_UP_TTL.as_secs(),
-            "expires_ts": now_secs().saturating_add(STEP_UP_TTL.as_secs()),
-        })),
-    )
 }
 
 /// POST /grants — host admin (admin token), the v1 host-side promotion /

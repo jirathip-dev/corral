@@ -68,14 +68,15 @@ private final class DeviceTokenState: @unchecked Sendable {
     }
 }
 
-/// APNs registration (D16): receives the device token from
+/// APNs registration (D16 → #354 L2): receives the device token from
 /// `UIApplication` and enrolls it on the daemon via the signed
-/// `POST /device-token` — the same proof-of-possession shape as /step-up,
-/// so a stolen token alone cannot re-register push on another device.
+/// `POST /device-token` (proof of possession of the device key — a stolen
+/// token alone cannot re-register push on another device).
 ///
 /// Simulator builds have no APNs (`didFailToRegister…` fires): the DEBUG
-/// local-notification bridge (see [`PushBridge`]) takes over so the whole
-/// lock-screen flow is exercisable without certs.
+/// local-notification bridge (see [`PushBridge`]) takes over so the
+/// start/blocked/finished state-change notifications are exercisable
+/// without certs.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Whether this device holds a live APNs token. The DEBUG local bridge
     /// is active ONLY while this is false — a real device must not get
@@ -209,13 +210,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-/// The D16 notification delivery policy:
+/// The D16 → #354 L2 notification delivery policy:
 /// - Release builds: APNs only. The SSE stream is a read path; it never
-///   fires local notifications (a real device gets the push from Apple).
+///   fires local notifications (a real device gets the push from Apple once
+///   the daemon-side APNs provisioning checkpoint is met).
 /// - DEBUG builds: when APNs is NOT registered (simulator — no push
-///   service), the SSE blocked/done deltas fire `UNUserNotificationCenter`
-///   directly — byte-identical payload shape — so the lock-screen canned
-///   replies are exercisable end-to-end without any certificate.
+///   service), the SSE state-transition deltas fire `UNUserNotificationCenter`
+///   directly — byte-identical payload shape — so the state-change
+///   notifications and their deep link are exercisable without any
+///   certificate.
 enum PushBridge {
     static var shouldPresentLocally: Bool {
         #if DEBUG

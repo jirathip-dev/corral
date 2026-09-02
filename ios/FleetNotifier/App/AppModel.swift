@@ -93,8 +93,7 @@ final class IdentityLifecycle: @unchecked Sendable {
 }
 
 /// One typed refusal surfaced to the UI (D13 read-only default enforcement):
-/// `kind` is the daemon's typed error (`not_granted`, `stale_approval`,
-/// `hash_mismatch`, `choice_not_in_menu`, `step_up_required`, …).
+/// `kind` is the daemon's typed error (`not_granted`, `stale_agent`, …).
 struct DriveBanner: Equatable, Sendable {
     var kind: String
     var message: String
@@ -109,18 +108,18 @@ struct DriveBanner: Equatable, Sendable {
     }
 }
 
-/// One logical drive action. The identity is stable across duplicated row
-/// surfaces (for example NEEDS YOU plus its repo section), so a double tap
-/// cannot create two signed request ids for the same operation.
+/// One logical read drive. The identity is stable across duplicated row
+/// surfaces, so a double tap cannot create two signed request ids.
 private struct DriveActionKey: Hashable, Sendable {
     let capability: Capability
     let target: String
     let identity: String
 }
 
-/// App-level orchestration: identity, registration, live connection,
-/// notification hook, and the signed drive flows shared by the UI and the
-/// notification-action path.
+/// App-level orchestration for the READ-ONLY client (#354 L2): identity,
+/// registration, live connection, state-change notification hooks, the
+/// signed read_tail drive shared by the recents sheet, and the deep link
+/// that opens an agent's recents from a notification tap.
 @MainActor
 final class AppModel: ObservableObject {
     enum Mode: Equatable, Sendable {
@@ -215,21 +214,25 @@ final class AppModel: ObservableObject {
     @Published var keyId: String?
     @Published var hostURL: URL?
     @Published var keyStorageWarning: Bool = false
+    /// #354 L2: the deep-link target for a tapped notification — the board
+    /// presents this agent's recents sheet and clears it.
+    @Published var recentsAgentId: String?
+    /// Global notifications on/off (Settings → Notifications pairing).
+    @Published var notificationsEnabled: Bool
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
-    /// Every live drive gets its own task handle. A mode/device boundary must
-    /// cancel all of them: retaining only the latest handle lets an earlier
-    /// Tail/Prompt/Interrupt finish against the old identity after reset.
+    /// Every live read gets its own task handle. A mode/device boundary must
+    /// cancel all of them.
     private var driveTasks: [String: Task<Void, Never>] = [:]
     private var driveTaskKeys: [String: DriveActionKey] = [:]
     @Published private var inFlightDriveKeys: Set<DriveActionKey> = []
     private var lifecycleGeneration = 0
-    /// Notification replies, stale-agent snapshot refreshes, and grants
-    /// refreshes all suspend outside the model. Track every one so a mode or
-    /// identity boundary can cancel the complete set, not just the latest.
+    /// Notification deep links and grants refreshes suspend outside the
+    /// model. Track every one so a mode or identity boundary can cancel the
+    /// complete set, not just the latest.
     private var lifecycleTasks: [UUID: Task<Void, Never>] = [:]
     /// Registration is also lifecycle-owned. A separate id prevents a
     /// canceled registration's cleanup from clearing a newer registration.
@@ -244,7 +247,6 @@ final class AppModel: ObservableObject {
     private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
     private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
     private let wipeIdentity: @Sendable () -> Void
-    private let adminTokenLoader: @Sendable () -> String?
 
     /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
     /// when the REFERENCE is reassigned — it does not forward the child's
@@ -255,23 +257,24 @@ final class AppModel: ObservableObject {
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
 
+    static let notificationsKey = "fleetnotifier.notificationsEnabled"
+
+    /// The device's current read grant set, decoded from the daemon's
+    /// register/grants-read responses. Demo mode (Debug only) treats the
+    /// seeded fleet as fully readable.
     var actionGrants: Set<Capability> {
 #if DEBUG
-        /// Demo mode is local and intentionally exposes the safe action set
-        /// even though no daemon grant exists. Live mode always uses the
-        /// device's signed grants.
         if mode == .demo {
-            return [.prompt, .interrupt, .approve, .readTail, .readIssues, .attach]
+            return [.readTail, .readDiff]
         }
 #endif
         return Set(grants.compactMap(Capability.init(rawValue:)))
     }
 
     /// #166 review F13: single shared DriveClient constructor for the view
-    /// layer's three call sites (detail, Recent output, answer sheet). Uses
-    /// the registered host URL, falling back to the documented localhost
-    /// default, and the default `.shared` URLSession (the injected `session`
-    /// is only for tests).
+    /// layer's read call sites. Uses the registered host URL, falling back
+    /// to the documented localhost default, and the default `.shared`
+    /// URLSession (the injected `session` is only for tests).
     func makeDriveClient() -> DriveClient {
         DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!)
     }
@@ -323,9 +326,6 @@ final class AppModel: ObservableObject {
          },
          wipeIdentity: @escaping @Sendable () -> Void = {
              DeviceKeyStore.wipe()
-         },
-         adminTokenLoader: @escaping @Sendable () -> String? = {
-             DeviceKeyStore.adminToken()
          }) {
         self.session = session
         self.identityLifecycle = identityLifecycle
@@ -334,7 +334,7 @@ final class AppModel: ObservableObject {
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
         self.wipeIdentity = wipeIdentity
-        self.adminTokenLoader = adminTokenLoader
+        self.notificationsEnabled = defaults.object(forKey: Self.notificationsKey) as? Bool ?? true
         self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -454,7 +454,7 @@ final class AppModel: ObservableObject {
                     // toggle. connect() is idempotent, and notification setup
                     // is guarded once per process.
                     self.startLive()
-                    self.banner = .info("Registered \(response.keyId.prefix(12))… read-only until the host grants capabilities (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
+                    self.banner = .info("Registered \(response.keyId.prefix(12))… read-only (grants: \(response.grants.isEmpty ? "none" : response.grants.joined(separator: ", ")))")
                 } catch is CancellationError {
                     return
                 } catch {
@@ -527,120 +527,6 @@ final class AppModel: ObservableObject {
         await task.value
     }
 
-    // MARK: - Device grants (#209, host admin)
-
-    /// Registered devices projected by `GET /grants` (host admin). The
-    /// Devices & Grants surface renders THIS DEVICE vs REMOTE DEVICES from
-    /// this list; matching uses `keyId`.
-    @Published private(set) var adminDevices: [AdminGrantDevice] = []
-    @Published private(set) var grantsLoading = false
-    @Published private(set) var grantsSaving = false
-    @Published private(set) var grantsNotice: String?
-
-    /// The daemon host admin bearer token, Keychain-stored (#209). The
-    /// operator pastes it once; it is only ever sent to the host-admin
-    /// endpoints (`/grants`), never on the signed drive path.
-    var adminToken: String? { adminTokenLoader() }
-
-    var hasAdminToken: Bool { adminToken != nil }
-
-    /// Devices grouped for the #250 surface: THIS DEVICE is the app's own
-    /// registered key, everything else is a remote device.
-    var thisDevice: AdminGrantDevice? {
-        adminDevices.first { $0.keyId == keyId }
-    }
-
-    var remoteDevices: [AdminGrantDevice] {
-        adminDevices.filter { $0.keyId != keyId }
-    }
-
-    /// One-tap load of the Devices & Grants list (the surface's Refresh).
-    func loadAdminDevices() async {
-        guard let hostURL, let adminToken else {
-            grantsNotice = "Admin token required — paste it below to manage device grants."
-            return
-        }
-        grantsLoading = true
-        grantsNotice = nil
-        defer { grantsLoading = false }
-        do {
-            let view = try await DriveClient(host: hostURL, session: session)
-                .fetchAdminGrants(adminToken: adminToken)
-            adminDevices = view.devices.sorted { $0.keyId < $1.keyId }
-        } catch {
-            grantsNotice = error.localizedDescription
-        }
-    }
-
-    /// Apply one capability toggle: replaces the device's full grant set
-    /// through the same admin `POST /grants` path as corrald-grant.sh.
-    func setDeviceCapability(_ capability: String, enabled: Bool, deviceId: String) async {
-        guard let hostURL, let adminToken else {
-            grantsNotice = "Admin token required — paste it below to manage device grants."
-            return
-        }
-        guard let device = adminDevices.first(where: { $0.keyId == deviceId }) else { return }
-        var grants = Set(device.grants)
-        if enabled {
-            grants.insert(capability)
-        } else {
-            grants.remove(capability)
-        }
-        let ordered = Capability.allCases
-            .map(\.rawValue)
-            .filter { grants.contains($0) }
-        grantsSaving = true
-        grantsNotice = nil
-        defer { grantsSaving = false }
-        do {
-            try await DriveClient(host: hostURL, session: session)
-                .setGrants(adminToken: adminToken, keyId: deviceId, grants: ordered)
-            // #256: apply the optimistic toggle to the local view ONLY once
-            // the daemon accepted it — a failed POST keeps the ledger value
-            // (server is fail-closed) and must not flip the local toggle.
-            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
-                adminDevices[index].grants = ordered
-            }
-        } catch {
-            grantsNotice = error.localizedDescription
-        }
-    }
-
-    /// Revoke (or re-grant) a remote device: the grant set is untouched,
-    /// only the revocation flag flips.
-    func setDeviceRevoked(_ deviceId: String, revoked: Bool) async {
-        guard let hostURL, let adminToken else {
-            grantsNotice = "Admin token required — paste it below to manage device grants."
-            return
-        }
-        grantsSaving = true
-        grantsNotice = nil
-        defer { grantsSaving = false }
-        do {
-            try await DriveClient(host: hostURL, session: session)
-                .setRevoked(adminToken: adminToken, keyId: deviceId, revoked: revoked)
-            if let index = adminDevices.firstIndex(where: { $0.keyId == deviceId }) {
-                adminDevices[index].revoked = revoked
-            }
-            if let own = keyId, own == deviceId {
-                grantsNotice = "This device was revoked — its signed drives are refused."
-            }
-        } catch {
-            grantsNotice = error.localizedDescription
-        }
-    }
-
-    func saveAdminToken(_ token: String) {
-        DeviceKeyStore.saveAdminToken(token)
-        grantsNotice = nil
-    }
-
-    func clearAdminToken() {
-        DeviceKeyStore.clearAdminToken()
-        adminDevices = []
-        grantsNotice = nil
-    }
-
     // MARK: - Live connection
 
     /// Issue #219: one pull/toolbar snapshot refresh in flight. Guards
@@ -652,11 +538,16 @@ final class AppModel: ObservableObject {
     func startLive() {
         guard let hostURL else { return }
         let client = CorraldClient(host: hostURL, session: session)
-        fleet.onNewlyBlocked = { [weak self] agentId in
-            self?.notifyBlocked(agentId: agentId)
+        // #354 L2: state-change notification hooks (started / blocked /
+        // finished), fired by FleetStore on SSE deltas.
+        fleet.onStarted = { [weak self] agentId in
+            self?.notifyTransition(.started, agentId: agentId)
         }
-        fleet.onNewlyDone = { [weak self] agentId in
-            self?.notifyDone(agentId: agentId)
+        fleet.onBlocked = { [weak self] agentId in
+            self?.notifyTransition(.blocked, agentId: agentId)
+        }
+        fleet.onFinished = { [weak self] agentId in
+            self?.notifyTransition(.finished, agentId: agentId)
         }
         // #79 review F2: a decode failure lands in the full-width,
         // dismissible, text-selectable banner — readable/copyable on
@@ -696,18 +587,14 @@ final class AppModel: ObservableObject {
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
         notifier = LocalNotifier()
+        notifier?.isEnabled = notificationsEnabled
         // This OS permission request captures no host, key, fleet, or mode;
         // it cannot apply stale lifecycle state after a boundary.
         let notifierForAuthorization = notifier
         Task { await notifierForAuthorization?.requestAuthorization() }
-        notifier?.registerCategories()
-        // R-N1: the reply handler must NOT capture a host-bound client —
-        // after "Reset device identity" + re-registration this closure
-        // survives (once-per-process guard), and a captured client would
-        // send a SIGNED drive to the PREVIOUS host. It resolves the
-        // current hostURL at reply time instead.
-        notifier?.onReply = { [weak self] payload, action in
-            self?.handleNotificationReply(payload: payload, action: action)
+        // #354 L2: notification tap → deep link to the agent row's recents.
+        notifier?.onOpenAgent = { [weak self] agentId in
+            self?.openRecents(for: agentId)
         }
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
@@ -726,7 +613,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Fleet refresh (#219)
 
-    /// Pull-to-refresh / toolbar refresh: ONE authoritative snapshot,
+    /// Pull-to-refresh / foreground refresh: ONE authoritative snapshot,
     /// serialized and coalesced (a second pull while one is in flight is
     /// a no-op — no duplicate stream tasks, no reordering). The result
     /// reconciles through `FleetStore.applyRefresh`, which enforces
@@ -753,200 +640,46 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Notifications (D16)
+    // MARK: - Notifications (#354 L2)
 
-    /// Blocked hook. The local path fires ONLY through the DEBUG bridge
-    /// (`PushBridge`); release builds rely on APNs — the daemon pushes the
-    /// same payload the bridge would have.
-    private func notifyBlocked(agentId: String) {
-        guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else { return }
-        guard PushBridge.shouldPresentLocally else { return }
-        let payload = PushPayload.blocked(agent: agent, waiting: waiting)
-        notifier?.notifyBlocked(payload,
-                                title: agent.displayName ?? agent.agentId,
-                                prompt: waiting.prompt)
-    }
-
-    /// Done hook (completion notification, no reply surface — D16).
-    private func notifyDone(agentId: String) {
+    /// The transition hooks. The LOCAL path fires only through the DEBUG
+    /// bridge (`PushBridge`); release builds rely on APNs — the daemon
+    /// pushes the same payload once the APNs provisioning checkpoint is met.
+    private func notifyTransition(_ type: PushPayload.PushType, agentId: String) {
         guard let agent = fleet.agent(agentId) else { return }
         guard PushBridge.shouldPresentLocally else { return }
-        let payload = PushPayload.done(agentId: agent.agentId)
-        notifier?.notifyDone(payload)
+        let payload = PushPayload.transition(type: type, agent: agent)
+        notifier?.notify(payload)
     }
 
-    /// In-app canned reply (UI row buttons): the LIVE claim is authoritative
-    /// here — the row is rendered from the live agent record. (The lock
-    /// screen uses [`handleNotificationReply`], which binds to the
-    /// notification's OWN prompt_hash instead.)
-    func handleCannedAction(agentId: String, action: CannedChoice.Action,
-                            driveClient: DriveClient,
-                            expectedPromptHash: String? = nil) {
-        guard let agent = fleet.agent(agentId), let waiting = agent.waitingOn else {
-            banner = .error("no_waiting_approval", "The agent is no longer waiting; the claim is stale.")
-            return
-        }
-        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
-            banner = .error("stale_approval",
-                             "This approval is stale: the agent is now waiting on a different prompt.")
-            return
-        }
-        guard let choice = CannedChoice.choice(for: action, kind: waiting.kind, choices: waiting.choices) else {
-            banner = .error("cannot_approve_kind", "This waiting state cannot be answered with \(action.rawValue).")
-            return
-        }
-        driveApprove(agent: agent, choice: choice, driveClient: driveClient,
-                     expectedPromptHash: waiting.promptHash)
+    /// Notification-pairing toggle (Settings). Global on/off only — no
+    /// per-agent controls, no catch-up/badge on foreground.
+    func setNotificationsEnabled(_ enabled: Bool) {
+        notificationsEnabled = enabled
+        defaults.set(enabled, forKey: Self.notificationsKey)
+        notifier?.isEnabled = enabled
     }
 
-    /// The lock-screen reply path: bound to the notification's OWN
-    /// `prompt_hash`. The reply is validated against the LIVE claim before
-    /// any signed bytes leave the phone — a stale notification (agent
-    /// moved on, or the prompt changed) surfaces a typed refusal here, and
-    /// the daemon would refuse it anyway (`stale_approval` /
-    /// `hash_mismatch`). Simple approve/deny/continue replies never carry
-    /// free text, so the lock-screen surface cannot trip the destructive
-    /// step-up gate; destructive drives happen in-app where Face ID runs.
-    func handleNotificationReply(payload: PushPayload, action: CannedChoice.Action,
-                                 driveClient injectedDriveClient: DriveClient? = nil) {
-        let context = lifecycleContext()
-        guard context.mode == .live else { return }
-        let taskId = UUID()
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
-            // R-N1: bind to the CURRENT host at reply time — never a
-            // client captured at startLive() time (it can be stale after
-            // a device reset + re-registration).
-            guard self.isCurrent(context), let hostURL = context.hostURL else { return }
-            let driveClient = injectedDriveClient ?? DriveClient(host: hostURL)
-            let live = await self.resolveLiveAgent(payload: payload, context: context)
-            guard !Task.isCancelled, self.isCurrent(context) else { return }
-            switch NotificationReplyValidator.validate(payload: payload, liveAgent: live) {
-            case .failure(.stale):
-                self.banner = .error("stale_approval",
-                                     "This notification is stale: the agent is no longer waiting on an approval.")
-            case .failure(.hashMismatch):
-                self.banner = .error("hash_mismatch",
-                                     "Stale notification: the agent is now waiting on a different prompt (prompt_hash mismatch).")
-            case .success(let waiting):
-                guard let choice = CannedChoice.choice(for: action, kind: waiting.kind,
-                                                       choices: waiting.choices) else {
-                    self.banner = .error("cannot_approve_kind",
-                                         "This waiting state cannot be answered with \(action.rawValue).")
-                    return
-                }
-                self.driveApproveClaim(payload: payload, choice: choice, driveClient: driveClient)
-            }
+    /// Deep link from a tapped notification: open the agent's row recents.
+    /// Live mode only — setup/demo states have no live agent to show.
+    func openRecents(for agentId: String) {
+        guard mode == .live else { return }
+        guard fleet.agent(agentId) != nil else {
+            banner = .info("This agent is no longer on the fleet — refresh the board.")
+            return
         }
-        lifecycleTasks[taskId] = task
+        recentsAgentId = agentId
     }
 
-    /// Cold-start case: the app may have been killed before the action
-    /// tap, so the fleet store is empty — fetch the live snapshot once and
-    /// re-validate against it.
-    private func resolveLiveAgent(payload: PushPayload,
-                                  context: LifecycleContext) async -> Agent? {
-        guard isCurrent(context) else { return nil }
-        if let agent = fleet.agent(payload.agentId) { return agent }
-        guard let hostURL = context.hostURL else { return nil }
-        let client = CorraldClient(host: hostURL, session: session)
-        guard let snapshot = try? await client.fetchSnapshot() else { return nil }
-        guard !Task.isCancelled, isCurrent(context) else { return nil }
-        fleet.apply(.snapshot(snapshot))
-        return fleet.agent(payload.agentId)
-    }
+    // MARK: - Read drives (read_tail)
 
-    /// Drive the approve with the NOTIFICATION's claim (approval_id +
-    /// prompt_hash from the payload — equal to the live claim post-check;
-    /// the binding stays explicit). Canned approve payloads are never
-    /// destructive, so no biometric step-up is prompted from the lock
-    /// screen (D13); the drive path still enforces it if the daemon
-    /// disagrees.
-    private func driveApproveClaim(payload: PushPayload, choice: String,
-                                   driveClient: DriveClient) {
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard let promptHash = payload.promptHash else {
-            banner = .error("bad_payload", "Notification carried no prompt_hash.")
-            return
-        }
-        guard let live = currentAgent(for: payload.agentId),
-              let waiting = live.waitingOn,
-              live.isBlocked,
-              waiting.promptHash == promptHash else {
-            banner = .error("stale_approval",
-                             "This notification is stale: the agent is no longer waiting on that prompt.")
-            return
-        }
-        guard authorize(.approve, for: live) else { return }
-        let approvalId = payload.approvalId ?? Claim.approvalId(agentId: payload.agentId,
-                                                                promptHash: promptHash)
-        let approvePayload = CanonicalJSON.approvePayload(approvalId: approvalId,
-                                                          promptHash: promptHash,
-                                                          choice: choice)
-        let key = approvalActionKey(agentId: payload.agentId, approvalId: approvalId,
-                                   promptHash: promptHash)
-        guard let requestId = beginDriveAction(key) else { return }
-        drive(capability: .approve, target: payload.agentId, payload: approvePayload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    // MARK: - Drive flows (D8 claims, byte-for-byte from the snapshot)
-
-    /// The approval claim is echoed EXACTLY from the snapshot's `waiting_on`
-    /// (approval_id + prompt_hash); never re-derived from pane text.
-    func driveApprove(agent: Agent, choice: String, driveClient: DriveClient,
-                      expectedPromptHash: String? = nil) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard live.isBlocked, let waiting = live.waitingOn else {
-            banner = .error("no_waiting_approval", "Agent is not waiting on an approval.")
-            return
-        }
-        if waiting.kind == .crash {
-            banner = .error("cannot_approve_kind", "Crash states do not accept approval replies.")
-            return
-        }
-        if let expectedPromptHash, waiting.promptHash != expectedPromptHash {
-            banner = .error("stale_approval",
-                             "This approval is stale: the agent is now waiting on a different prompt.")
-            return
-        }
-        if let renderedWaiting = agent.waitingOn,
-           renderedWaiting.promptHash != waiting.promptHash {
-            banner = .error("stale_approval",
-                             "This approval is stale: the agent is now waiting on a different prompt.")
-            return
-        }
-        guard authorize(.approve, for: live) else { return }
-        let approvalId = waiting.approvalId ?? Claim.approvalId(agentId: agent.agentId, promptHash: waiting.promptHash)
-        let payload = CanonicalJSON.approvePayload(approvalId: approvalId,
-                                                   promptHash: waiting.promptHash,
-                                                   choice: choice)
-        let key = approvalActionKey(agentId: live.agentId, approvalId: approvalId,
-                                   promptHash: waiting.promptHash)
-        guard let requestId = beginDriveAction(key) else { return }
-        drive(capability: .approve, target: agent.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    /// `read_tail` is bounded (D5): 50 lines initially, with explicit paging
-    /// up to the daemon's 200-line cap and no fleet-wide prefetch.
-    /// #167: the currently open iOS detail view auto-loads it (no tap) and
-    /// auto-refreshes while open; this existing iOS policy is unchanged by
-    /// #207. `silent` suppresses the in-flight/again banners so the auto timer
-    /// does not spam the fleet banner.
+    /// `read_tail` is bounded (D5): the daemon's 200-line cap is the whole
+    /// history (recents v1 = LIVE TAIL ONLY). `silent` suppresses the
+    /// in-flight/again banners so the auto timer does not spam the fleet
+    /// banner.
     func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false,
-                       lines: UInt32 = 50) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
+                       lines: UInt32 = 200) {
+        guard let live = fleet.agent(agent.agentId) else { return }
         guard let signer, let keyId else {
             if !silent { banner = .error("unregistered", "Device is not registered.") }
             return
@@ -963,239 +696,18 @@ final class AppModel: ObservableObject {
               actionKey: key, requestId: requestId)
     }
 
-    /// #232: first worktree-diff fetch (page 0). Bounded (128 files,
-    /// 200 lines) and grant/capability-gated like read_tail — no fleet-wide
-    /// prefetch; the sheet loads one agent at a time on an explicit tap.
-    func driveReadDiff(agent: Agent, driveClient: DriveClient) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            fleet.foldDiffFailure("Device is not registered.", kind: "unregistered", for: live.agentId)
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard authorize(.readDiff, for: live) else {
-            if let banner, banner.isError {
-                fleet.foldDiffFailure(banner.message, kind: banner.kind, for: live.agentId)
-            }
-            return
-        }
-        payload_read_diff(offset: 0, driveClient: driveClient, live: live,
-                          keyId: keyId, signer: signer)
-    }
-
-    /// #232: next lazy page at the pane's `nextOffset`.
-    func driveReadDiffNext(agent: Agent, driveClient: DriveClient) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            fleet.foldDiffFailure("Device is not registered.", kind: "unregistered", for: live.agentId)
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard authorize(.readDiff, for: live) else {
-            if let banner, banner.isError {
-                fleet.foldDiffFailure(banner.message, kind: banner.kind, for: live.agentId)
-            }
-            return
-        }
-        let offset = UInt32(fleet.diffs[live.agentId]?.nextOffset ?? 0)
-        payload_read_diff(offset: offset, driveClient: driveClient, live: live,
-                          keyId: keyId, signer: signer)
-    }
-
-    /// #333: cancel only the selected diff request when its sheet disappears.
-    /// The task's generation/cancellation guards suppress any late response;
-    /// removing its key lets a reopened sheet start a fresh request.
-    func cancelReadDiff(agentId: String) {
-        let requestIds = driveTaskKeys.compactMap { requestId, key in
-            key.capability == .readDiff && key.target == agentId ? requestId : nil
-        }
-        for requestId in requestIds {
-            driveTasks.removeValue(forKey: requestId)?.cancel()
-            driveTaskKeys.removeValue(forKey: requestId)
-        }
-        let matchingKeys = inFlightDriveKeys.filter {
-            $0.capability == .readDiff && $0.target == agentId
-        }
-        inFlightDriveKeys.subtract(matchingKeys)
-        fleet.cancelDiffFetch(agent: agentId)
-    }
-
-    private func payload_read_diff(offset: UInt32, driveClient: DriveClient,
-                                   live: Agent, keyId: String, signer: DeviceSigner) {
-        let payload = CanonicalJSON.readDiffPayload(files: 128, offset: offset, lines: 200)
-        let key = DriveActionKey(capability: .readDiff, target: live.agentId,
-                                 identity: "diff-\(offset)")
-        guard let requestId = beginDriveAction(key) else { return }
-        fleet.prepareDiffFetch(agent: live.agentId)
-        drive(capability: .readDiff, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    /// #267: fetch the read-only issue browser payload. FLEET-level (no
-    /// agent target) — gated by the device ledger grant only, signed +
-    /// audited like every read_diff/read_tail read.
-    func driveReadIssues(driveClient: DriveClient) {
-#if DEBUG
-        if mode == .demo {
-            fleet.rememberIssuesBrowser(DemoFleet.seedIssues())
-            return
-        }
-#endif
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard actionGrants.contains(.readIssues) else {
-            banner = .error("not_granted",
-                            "requires the read_issues grant — ask the host.")
-            return
-        }
-        let payload = CanonicalJSON.readIssuesPayload()
-        let key = DriveActionKey(capability: .readIssues, target: "fleet",
-                                 identity: "browser")
-        guard let requestId = beginDriveAction(key) else { return }
-        fleet.beginIssuesFetch()
-        drive(capability: .readIssues, target: "fleet", payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    /// Outcome of `drivePrompt`. The typed result lets the sheet keep a typed
-    /// draft on a real refusal and distinguish it from an in-flight dedup
-    /// (same prompt already sending) without sniffing the global banner's
-    /// `isError` (re-review P5).
-    enum DriveOutcome: Equatable, Sendable {
-        case accepted
-        case alreadyInFlight
-        case refused(String?)
-    }
-
-    /// #166 review F7: returns `.accepted` only when the prompt drive was
-    /// actually started (all local gates passed). A refused dispatch sets the
-    /// banner and returns `.refused(reason)`, so the caller can preserve a
-    /// typed draft instead of clearing/dismissing it on a refusal.
-    @discardableResult
-    func drivePrompt(agent: Agent, text: String, driveClient: DriveClient) -> DriveOutcome {
-        guard let live = currentAgent(for: agent.agentId) else {
-            return .refused(banner?.message ?? "The prompt was not dispatched.")
-        }
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return .refused("Device is not registered.")
-        }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            banner = .error("empty_prompt", "Prompt text cannot be empty.")
-            return .refused("Prompt text cannot be empty.")
-        }
-        guard authorize(.prompt, for: live) else {
-            return .refused(banner?.message)
-        }
-        let payload = CanonicalJSON.promptPayload(text: text)
-        let key = DriveActionKey(capability: .prompt, target: live.agentId, identity: text)
-        guard let requestId = beginDriveAction(key) else {
-            return .alreadyInFlight
-        }
-        drive(capability: .prompt, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-        return .accepted
-    }
-
-    /// Interrupt takes the contract's null payload and is grant/capability
-    /// gated at the same boundary as Tail, Prompt, and Approval.
-    func driveInterrupt(agent: Agent, driveClient: DriveClient) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard authorize(.interrupt, for: live) else { return }
-        let payload = CanonicalJSON.interruptPayload()
-        let key = DriveActionKey(capability: .interrupt, target: live.agentId,
-                                 identity: "interrupt")
-        guard let requestId = beginDriveAction(key) else { return }
-        drive(capability: .interrupt, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    /// `kill` uses the contract's null payload but is destructive by
-    /// capability: force the same biometrics -> `/step-up` -> token path even
-    /// though the null payload does not match `DestructivePatterns`.
-    func driveKill(agent: Agent, driveClient: DriveClient,
-                   biometrics: Biometrics = Biometrics()) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard authorize(.kill, for: live) else { return }
-        let payload = CanonicalJSON.killPayload()
-        let key = DriveActionKey(capability: .kill, target: live.agentId,
-                                 identity: "kill")
-        guard let requestId = beginDriveAction(key) else { return }
-        drive(capability: .kill, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId, forceStepUp: true,
-              biometrics: biometrics)
-    }
-
-    func driveAttach(agent: Agent, driveClient: DriveClient) {
-        guard let live = currentAgent(for: agent.agentId) else { return }
-        guard let signer, let keyId else {
-            banner = .error("unregistered", "Device is not registered.")
-            return
-        }
-        guard authorize(.attach, for: live) else { return }
-        let payload = CanonicalJSON.attachPayload()
-        let key = DriveActionKey(capability: .attach, target: live.agentId,
-                                 identity: "attach")
-        guard let requestId = beginDriveAction(key) else { return }
-        drive(capability: .attach, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    // MARK: - Load earlier (bounded read_tail)
-
-    /// #167: the tappable full-width "Load earlier" divider. The Recent
-    /// output surface is read_tail-only: the daemon's bounded tail is the
-    /// only history, so the action re-requests the tail (fresh 200-line
-    /// window) instead of walking paged history.
-    @discardableResult
-    func loadEarlierOutput(agentId: String, driveClient: DriveClient? = nil) -> Bool {
-        guard let live = fleet.agent(agentId) else {
-            banner = .error("stale_agent",
-                            "This agent was deleted or migrated; refresh the fleet before reading its output.")
-            return false
-        }
-        guard mode == .live else {
-            fleet.foldTailFailure(TranscriptFailure(
-                kind: "demo",
-                message: "Older output is live-only; demo mode does not fetch or fake history.",
-                candidates: []
-            ), for: agentId)
-            return false
-        }
-        let client = driveClient ?? DriveClient(host: hostURL ?? URL(string: "http://127.0.0.1:8474")!,
-                                                session: session)
-        driveReadTail(agent: live, driveClient: client, lines: 200)
-        return true
-    }
-
-    /// Resolve an action's target from the current read model. A detail view
+    /// Resolve a drive's target from the current read model. A recents sheet
     /// may outlive a delta deletion; in that case no signed bytes are built.
     private func currentAgent(for agentId: String) -> Agent? {
         guard let agent = fleet.agent(agentId) else {
-            banner = .error("stale_agent", "This agent was deleted or migrated; refresh the fleet before acting.")
+            banner = .error("stale_agent", "This agent was deleted or migrated; refresh the fleet.")
             return nil
         }
         return agent
     }
 
     /// Both sides of the drive authorization contract must hold locally for
-    /// an actionable control. The daemon remains authoritative and can still
+    /// a read control. The daemon remains authoritative and can still
     /// return a typed refusal, which the common drive path surfaces.
     private func authorize(_ capability: Capability, for agent: Agent,
                            silent: Bool = false) -> Bool {
@@ -1219,21 +731,12 @@ final class AppModel: ObservableObject {
     private func beginDriveAction(_ key: DriveActionKey, silent: Bool = false) -> String? {
         guard !inFlightDriveKeys.contains(key) else {
             if !silent {
-                banner = .info("\(key.capability.displayName) for \(key.target) is already in progress.")
+                banner = .info("\(key.capability.rawValue) for \(key.target) is already in progress.")
             }
             return nil
         }
         inFlightDriveKeys.insert(key)
         return DriveClient.newRequestId()
-    }
-
-    /// Approval identity is the live claim, not the selected choice. Approve
-    /// and Deny must share one in-flight key so two surfaces cannot answer the
-    /// same claim concurrently with different choices.
-    private func approvalActionKey(agentId: String, approvalId: String,
-                                   promptHash: String) -> DriveActionKey {
-        DriveActionKey(capability: .approve, target: agentId,
-                        identity: "\(approvalId)|\(promptHash)")
     }
 
     /// #167 hard timeout for the Recent-output surface (live tail). A
@@ -1271,9 +774,7 @@ final class AppModel: ObservableObject {
 
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                        driveClient: DriveClient, keyId: String, signer: DeviceSigner,
-                       actionKey: DriveActionKey, requestId: String,
-                       forceStepUp: Bool = false,
-                       biometrics: Biometrics = Biometrics()) {
+                       actionKey: DriveActionKey, requestId: String) {
         let context = lifecycleContext()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1287,93 +788,36 @@ final class AppModel: ObservableObject {
             }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             let rev = self.fleet.lastEventId
-            let result: DriveResult
-            if capability == .readTail || capability == .readDiff {
-                // #167/#333 hard timeout: a stalled read must never leave
-                // either pane on an infinite spinner.
-                let op: @Sendable () async -> DriveResult = {
-                    await driveClient.drive(capability: capability, target: target,
-                                            payload: payload, rev: rev,
-                                            requestId: requestId,
-                                            keyId: keyId, signer: signer,
-                                            biometrics: biometrics,
-                                            forceStepUp: forceStepUp)
-                }
-                let timeoutMessage = capability == .readDiff
-                    ? "Diff timed out."
-                    : "Recent output timed out."
-                result = await Self.raceTimeout(seconds: Self.readTimeoutSeconds, op)
-                    ?? .refused(.network(timeoutMessage))
-            } else {
-                result = await driveClient.drive(capability: capability, target: target,
-                                                 payload: payload, rev: rev,
-                                                 requestId: requestId,
-                                                 keyId: keyId, signer: signer,
-                                                 biometrics: biometrics,
-                                                 forceStepUp: forceStepUp)
+            // #167: hard timeout — a stalled read must never leave the
+            // recents pane on an infinite spinner.
+            let op: @Sendable () async -> DriveResult = {
+                await driveClient.drive(capability: capability, target: target,
+                                        payload: payload, rev: rev,
+                                        requestId: requestId,
+                                        keyId: keyId, signer: signer)
             }
+            let result = await Self.raceTimeout(seconds: Self.readTimeoutSeconds, op)
+                ?? .refused(.network("Recent output timed out."))
             guard !Task.isCancelled, self.isCurrent(context) else { return }
             switch result {
             case .dispatched(let response):
                 if response.ok {
-                    if capability == .readTail {
-                        let lines = response.result?.tailLines ?? []
-                        let blocks = response.result?.tailBlocks ?? []
-                        // #167: fold the segmented blocks; the result stays in
-                        // the detail view (no hijacking fleet banner).
-                        self.fleet.rememberTail(lines, blocks: blocks, sourceRev: response.result?.tailSourceRev ?? response.rev, for: target)
-                    } else if capability == .readDiff {
-                        guard let result = response.result else {
-                            self.fleet.foldDiffFailure(
-                                "read_diff response missing result.",
-                                kind: "contract_error", for: target)
-                            return
-                        }
-                        guard let page = result.diffPage else {
-                            self.fleet.foldDiffFailure(
-                                "read_diff result was not a valid diff page.",
-                                kind: "decode_error", for: target)
-                            return
-                        }
-                        // #232/#333: fold every valid bounded page and end
-                        // loading even when it contains no files or lines.
-                        self.fleet.rememberDiffPage(page, for: target)
-                    } else if capability == .readIssues {
-                        if let browser = response.result?.issuesBrowser {
-                            // #267: fold the read-only browser payload into
-                            // the fleet-level pane.
-                            self.fleet.rememberIssuesBrowser(browser)
-                        }
-                    } else if capability == .approve {
-                        self.banner = .info("Approved \(target): rev \(response.rev)")
-                    } else if capability == .prompt {
-                        self.banner = .info("Prompt sent to \(target): rev \(response.rev)")
-                    } else if capability == .interrupt {
-                        self.banner = .info("Interrupted \(target): rev \(response.rev)")
-                    } else if capability == .kill {
-                        self.banner = .info("Killed \(target): rev \(response.rev)")
-                    } else if capability == .attach {
-                        self.banner = .info("Attached \(target): rev \(response.rev)")
-                    }
+                    let lines = response.result?.tailLines ?? []
+                    let blocks = response.result?.tailBlocks ?? []
+                    // Fold the segmented blocks; the result stays in the
+                    // sheet (no hijacking fleet banner).
+                    self.fleet.rememberTail(lines, blocks: blocks,
+                                            sourceRev: response.result?.tailSourceRev ?? response.rev,
+                                            for: target)
                 } else {
                     if response.errorKind == "stale_agent" {
                         self.handleStaleAgent(target,
                                               message: response.error ?? "the agent moved or disappeared")
-                    } else if capability == .readTail {
+                    } else {
                         self.fleet.foldTailFailure(TranscriptFailure(
                             kind: response.errorKind ?? "dispatch_refused",
                             message: response.error ?? "dispatch refused (ok:false)",
                             candidates: []), for: target)
-                    } else if capability == .readDiff {
-                        self.fleet.foldDiffFailure(
-                            response.error ?? "dispatch refused (ok:false)",
-                            kind: response.errorKind ?? "dispatch_refused", for: target)
-                    } else if capability == .readIssues {
-                        self.fleet.foldIssuesFailure(
-                            response.error ?? "dispatch refused (ok:false)")
-                    } else {
-                        self.banner = .error("dispatch_refused",
-                                             response.error ?? "dispatch refused (ok:false)")
                     }
                 }
             case .refused(let error):
@@ -1388,27 +832,14 @@ final class AppModel: ObservableObject {
                             kind: kind, message: message, candidates: []), for: target)
                         return
                     }
-                    if capability == .readDiff {
-                        self.fleet.foldDiffFailure(message, kind: kind, status: status, for: target)
-                        return
-                    }
                     // Read-only default: ungranted capabilities are refused
-                    // with the typed banner; the UI also explains disabled
-                    // controls before this path is reachable.
+                    // with the typed banner.
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
                 case .network(let message):
                     if capability == .readTail {
                         self.fleet.foldTailFailure(TranscriptFailure(
-                            kind: "transport", message: message, candidates: []), for: target)
-                    } else if capability == .readDiff {
-                        self.fleet.foldDiffFailure(
-                            message,
-                            kind: message == "Diff timed out."
-                                ? "timeout"
-                                : (message == "unparseable drive response" ? "decode_error" : "transport"),
-                            for: target)
-                    } else if capability == .readIssues {
-                        self.fleet.foldIssuesFailure(message)
+                            kind: message == "Recent output timed out." ? "timeout" : "transport",
+                            message: message, candidates: []), for: target)
                     } else {
                         self.banner = .error("network", message)
                     }
@@ -1417,11 +848,6 @@ final class AppModel: ObservableObject {
                         self.fleet.foldTailFailure(TranscriptFailure(
                             kind: "encoding", message: "payload encoding failed",
                             candidates: []), for: target)
-                    } else if capability == .readDiff {
-                        self.fleet.foldDiffFailure(
-                            "payload encoding failed", kind: "encoding", for: target)
-                    } else if capability == .readIssues {
-                        self.fleet.foldIssuesFailure("payload encoding failed")
                     } else {
                         self.banner = .error("encoding", "payload encoding failed")
                     }
@@ -1457,7 +883,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Stale target handling is deliberately shared by the HTTP 409 path and
-    /// the narrow 200 dispatch-race path: remove controls immediately, then
+    /// the narrow 200 dispatch-race path: remove the row immediately, then
     /// fetch the current read model once.
     private func handleStaleAgent(_ target: String, message: String) {
         fleet.removeAgent(target)
@@ -1480,31 +906,14 @@ final class AppModel: ObservableObject {
 #if DEBUG
     // MARK: - Demo mode (Debug only)
 
-    /// Presentation state used only by the reproducible design-gate fixture.
-    /// The legacy frame is useful as a before image, while `.after` is the
-    /// approved Recent-output surface. Neither state is compiled into a
-    /// Release app.
-    enum DemoPresentation: String, Equatable, Sendable {
-        case before
-        case after
-    }
-
-    @Published var demoPresentation: DemoPresentation = .after
     @Published var demoDetailAgentId: String?
-    /// #267: launch-arg demo route straight to the issue browser (DEBUG
-    /// evidence route; see `-corralDemoIssues`). `demoOpenIssueNumber`
-    /// auto-expands one row for the inline-detail evidence route.
-    @Published var demoOpenIssues = false
-    @Published var demoOpenIssueNumber: UInt64?
 
-    func enterDemo(presentation: DemoPresentation = .after,
-                   detailAgentId: String? = nil) {
+    func enterDemo(detailAgentId: String? = nil) {
         cancelLifecycleTasks()
         fleet.disconnect()
         fleet.reset()
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
         mode = .demo
-        demoPresentation = presentation
         demoDetailAgentId = detailAgentId
         identityLifecycle.setCurrent(mode: .demo, hostURL: hostURL,
                                     keyId: keyId,
@@ -1518,7 +927,6 @@ final class AppModel: ObservableObject {
         guard mode == .demo else { return }
         cancelLifecycleTasks()
         fleet.reset()
-        demoPresentation = .after
         demoDetailAgentId = nil
 
         guard let identity = persistedLiveIdentity() else {
@@ -1541,49 +949,17 @@ final class AppModel: ObservableObject {
         startLive()
     }
 
-    /// Demo drive: answered locally; approve un-blocks the seeded agent.
-    func driveDemo(capability: Capability, agent: Agent, choice: String? = nil) {
-        var payload: CanonicalJSON.Value = .null
-        switch capability {
-        case .approve:
-            guard let waiting = agent.waitingOn else { return }
-            let approvalId = waiting.approvalId ?? Claim.approvalId(agentId: agent.agentId, promptHash: waiting.promptHash)
-            payload = CanonicalJSON.approvePayload(approvalId: approvalId,
-                                                   promptHash: waiting.promptHash,
-                                                   choice: choice ?? "y")
-        case .readTail:
-            payload = CanonicalJSON.readTailPayload(lines: 200)
-        case .prompt:
-            payload = CanonicalJSON.promptPayload(text: choice ?? "(demo)")
-        default:
-            break
-        }
-        let result = DemoFleet.respond(to: capability, payload: payload, agent: agent,
+    /// Demo read tail: answered locally from the seeded fixture.
+    func driveDemoReadTail(agent: Agent) {
+        let result = DemoFleet.respond(to: .readTail, agent: agent,
                                        rev: (fleet.lastEventId ?? 1) + 1)
         if case .dispatched(let response) = result {
             fleet.seedDemo(agents: fleet.agents, rev: response.rev)
-            if capability == .readTail {
-                fleet.rememberTail(response.result?.tailLines ?? [],
-                                   blocks: response.result?.tailBlocks ?? [],
-                                   for: agent.agentId)
-            }
-            if capability == .approve, agent.isBlocked {
-                simulateUnblock(agentId: agent.agentId)
-            }
-            banner = .info("(demo) \(capability.displayName) \(agent.agentId) → rev \(response.rev)")
+            fleet.rememberTail(response.result?.tailLines ?? [],
+                               blocks: response.result?.tailBlocks ?? [],
+                               for: agent.agentId)
         }
     }
-
-    /// Demo transition: the approval dispatched, the agent resumes work.
-    private func simulateUnblock(agentId: String) {
-        guard var agent = fleet.agent(agentId) else { return }
-        agent.state = .working
-        agent.reason = "approved from the lock screen (demo)"
-        agent.waitingOn = nil
-        agent.ts = UInt64(Date().timeIntervalSince1970 * 1000)
-        fleet.upsertDemo(agent)
-    }
-
 #endif
 
     // MARK: - Identity management
@@ -1601,7 +977,7 @@ final class AppModel: ObservableObject {
         hostURL = nil
         // R-N1: the next registration is (potentially) a NEW host — the
         // notification/APNs half of startLive() must re-run so the APNs
-        // token reaches the new daemon and the reply path re-arms.
+        // token reaches the new daemon and the deep-link path re-arms.
         notificationsConfigured = false
         mode = .needsSetup
         identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,

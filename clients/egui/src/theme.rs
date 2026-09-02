@@ -106,7 +106,8 @@ impl AgentStateLike {
 
     /// Attention-ordered rank (`contracts/state-tokens.json` "rank",
     /// 0 = highest priority). v2 board order: blocked → working → idle →
-    /// unknown; a wire `done` ranks with idle (its herdr fallback).
+    /// unknown; a wire `done` ranks with idle — treated as finished, never
+    /// active/working.
     pub fn rank(self) -> u8 {
         match self {
             Self::Blocked => 0,

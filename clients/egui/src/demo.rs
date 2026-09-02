@@ -14,6 +14,8 @@ use crate::model::{Delta, GhIssueRef, Snapshot};
 /// Everything the demo mode needs to render + animate the board.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct DemoData {
+    /// Explicitly synthetic fixture data; never used by the live read path.
+    pub fixture_name: String,
     pub snapshot: Snapshot,
     /// Canned SSE delta frames applied one every few seconds, wrapped
     /// (revs strictly increase before the wrap so `Fleet::apply_delta`
@@ -92,6 +94,7 @@ mod tests {
     #[test]
     fn fixture_decodes_and_delta_revs_follow_the_snapshot() {
         let demo = load();
+        assert!(demo.fixture_name.starts_with("Synthetic"));
         assert_eq!(demo.snapshot.schema_version, crate::model::SCHEMA_VERSION);
         assert!(
             demo.snapshot.agents.len() >= 5,

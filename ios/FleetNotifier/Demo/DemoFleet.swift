@@ -234,6 +234,58 @@ enum DemoFleet {
                                  prNumber: 9024, ciStatus: .success, dirty: false, ahead: 2, behind: 0),
             seq: 7, tsOffset: 3600)
 
+        // R2 synthetic status-presentation fixture: a done orchestrator with structured
+        // poll evidence remains visibly Finished while its activity is shown
+        // as a redacted subordinate line. The role is identity-derived; the
+        // command text is never rendered.
+        agents["herdr:demo-orch-supervising"] = agent(
+            "herdr:demo-orch-supervising", tool: "tool-two", state: .done,
+            reason: "done: poll every 60s; queued_work=1; current_command=redacted",
+            waiting: nil, capabilities: ["read_tail"],
+            displayName: "orchestrator-qa", title: "Coordinate verification",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-supervision",
+                                 worktreePath: nil, prNumber: 9028, ciStatus: .pending,
+                                 dirty: false, ahead: 0, behind: 0),
+            seq: 11, tsOffset: 6)
+        agents["herdr:demo-finished-impl"] = agent(
+            "herdr:demo-finished-impl", tool: "tool-one", state: .done,
+            reason: "task complete", waiting: nil, capabilities: ["read_tail"],
+            displayName: "implementer-qa", title: "Finish fixture coverage",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-coverage",
+                                 worktreePath: nil, prNumber: 9029, ciStatus: .success,
+                                 dirty: false, ahead: 1, behind: 0),
+            seq: 6, tsOffset: 900)
+        agents["herdr:demo-finished-review"] = agent(
+            "herdr:demo-finished-review", tool: "tool-two", state: .done,
+            reason: "task complete", waiting: nil, capabilities: ["read_tail"],
+            displayName: "reviewer-qa", title: "Review fixture coverage",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-coverage",
+                                 worktreePath: nil, prNumber: 9030, ciStatus: .success,
+                                 dirty: false, ahead: 0, behind: 0),
+            seq: 5, tsOffset: 1200)
+
+        if CommandLine.arguments.contains("-corralStatusPresentation") {
+            // Synthetic R2 capture mode keeps only one row per required
+            // presentation group, so the 390x844 frame shows the complete
+            // hierarchy without changing the normal demo fixture.
+            let statusIDs: Set<String> = [
+                "herdr:demo-approve",
+                "herdr:demo-working",
+                "herdr:demo-orch-supervising",
+                "herdr:demo-finished-impl",
+                "herdr:demo-finished-review",
+            ]
+            var statusAgents = agents.filter { statusIDs.contains($0.key) }
+            if var needsYou = statusAgents["herdr:demo-approve"] {
+                // Keep the synthetic needs-you row compact enough for the
+                // complete phone frame; this capture does not exercise the
+                // separate blocked-claim prompt layout.
+                needsYou.waitingOn = nil
+                needsYou.reason = "needs attention"
+                statusAgents[needsYou.agentId] = needsYou
+            }
+            return statusAgents
+        }
         return agents
     }
 

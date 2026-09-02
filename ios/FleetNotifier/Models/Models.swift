@@ -3,114 +3,41 @@ import Foundation
 // MARK: - Read model (mirror of src/core/model.rs, schema v5)
 
 /// Coarse agent lifecycle state. Deliberately small: per-tool nuance lives in
-/// `reason` / `waitingOn`, not here.
+/// `reason`, not here.
+///
+/// #354 L2: the board shows herdr's RAW state tokens verbatim
+/// (working / idle / blocked / unknown — herdr 0.8.2 has NO done; finished
+/// Hermes panes fall back to idle). `done` is retained only as a wire-decode
+/// case (the daemon's enum still carries it); a live board never shows it.
 enum AgentState: String, Codable, CaseIterable, Sendable {
     case idle, working, blocked, done, unknown
 
-    /// Human-facing state text. The board intentionally renders this beside
-    /// the color cue so state is never communicated by color alone.
+    /// Raw herdr state token, verbatim (spec amendment 09-02: no
+    /// Corral-invented wording — no Needs-you / Supervising / Finished).
     var displayName: String {
-        switch self {
-        case .idle: return "Idle"
-        case .working: return "Working"
-        case .blocked: return "Blocked"
-        case .done: return "Finished"
-        case .unknown: return "Unknown"
-        }
+        rawValue
     }
 
     var accessibilityLabel: String { "State: \(displayName)" }
-}
-
-/// Why an agent is blocked. "Blocked" is not one UI: an approve-tool prompt,
-/// a free-form question, a menu, and a crash each render differently.
-enum WaitingOnKind: String, Codable, CaseIterable, Equatable, Sendable {
-    case approveTool = "approve_tool"
-    case answerQuestion = "answer_question"
-    case menu
-    case crash
 }
 
 enum CiStatus: String, Codable, CaseIterable, Sendable {
     case success, failure, pending, unknown
 }
 
-/// The seven canonical drive capabilities (D7, #267 adds `read_issues`).
-/// UI buttons are rendered from grants + agent capabilities — never
-/// hardcoded per tool.
+/// The retained read capabilities (D7, closed set after the #354 cut). The
+/// daemon's register response may grant only `read_tail` / `read_diff`;
+/// unknown grant strings simply decode to nothing (rawValue init returns
+/// nil and `compactMap` drops them), so an older daemon ledger stays safe.
 enum Capability: String, Codable, CaseIterable, Sendable {
-    case prompt, interrupt, approve, readTail = "read_tail",
-         readDiff = "read_diff", readIssues = "read_issues", kill, attach
-
-    var displayName: String {
-        switch self {
-        case .prompt: return "Prompt"
-        case .interrupt: return "Interrupt"
-        case .approve: return "Approve"
-        case .readTail: return "Tail"
-        case .readDiff: return "Diff"
-        case .readIssues: return "Issues"
-        case .kill: return "Kill"
-        case .attach: return "Attach"
-        }
-    }
-
-    /// Plain-language description shown beside each grant toggle on the
-    /// Devices & Grants surface (#209) — mirrors the approved mockup.
-    var grantDescription: String {
-        switch self {
-        case .prompt: return "Send prompts / steer the agent"
-        case .interrupt: return "Interrupt a running task"
-        case .approve: return "Approve tool calls & awaiting decisions"
-        case .readTail: return "Read live agent output"
-        case .readDiff: return "Read the agent's worktree diff"
-        case .readIssues: return "Read repo issues (list + detail)"
-        case .kill: return "Terminate a task"
-        case .attach: return "Attach to a session & stream events"
-        }
-    }
-}
-
-/// Structured "what is this agent waiting for". `promptHash` lets clients
-/// dedupe across polls; `choices` are populated when the prompt exposes a
-/// menu. The drive path re-derives the claim from agent_id + prompt_hash and
-/// never trusts the stored copy for validation — the client echoes it
-/// byte-for-byte from the snapshot anyway (D8).
-struct WaitingOn: Codable, Equatable, Sendable {
-    var kind: WaitingOnKind
-    var prompt: String
-    var promptHash: String
-    /// Claim identity for the live approval (P3 D8): `"<agent_id>:<prompt_hash>"`.
-    var approvalId: String?
-    var choices: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case kind, prompt
-        case promptHash = "prompt_hash"
-        case approvalId = "approval_id"
-        case choices
-    }
-
-    init(kind: WaitingOnKind, prompt: String, promptHash: String, approvalId: String? = nil, choices: [String] = []) {
-        self.kind = kind
-        self.prompt = prompt
-        self.promptHash = promptHash
-        self.approvalId = approvalId
-        self.choices = choices
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        kind = try c.decode(WaitingOnKind.self, forKey: .kind)
-        prompt = try c.decode(String.self, forKey: .prompt)
-        promptHash = try c.decode(String.self, forKey: .promptHash)
-        approvalId = try c.decodeIfPresent(String.self, forKey: .approvalId)
-        choices = try c.decodeIfPresent([String].self, forKey: .choices) ?? []
-    }
+    case readTail = "read_tail"
+    case readDiff = "read_diff"
 }
 
 /// Git topology + task-centric read-model fields (P2). Every field defaults
-/// so P1-shaped payloads still decode.
+/// so P1-shaped payloads still decode. The `issues` join (G23) was removed
+/// with the Issues browser cut (#354 L2) — unknown wire keys are ignored by
+/// Codable, so snapshots from a transitional daemon still decode.
 struct Workspace: Codable, Equatable, Sendable {
     var repo: String?
     var branch: String?
@@ -120,23 +47,18 @@ struct Workspace: Codable, Equatable, Sendable {
     var dirty: Bool
     var ahead: UInt64
     var behind: UInt64
-    /// Issues the bound PR closes (introduced in schema v4, G23) — this is the wire
-    /// location the daemon emits (`src/core/model.rs` puts `issues` on
-    /// `Workspace`, not on `Agent`; pinned there by `tests/model.rs`).
-    /// Serde-defaulted on the daemon, so absent decodes as empty.
-    var issues: [GhIssueRef]
 
     enum CodingKeys: String, CodingKey {
         case repo, branch
         case worktreePath = "worktree_path"
         case prNumber = "pr_number"
         case ciStatus = "ci_status"
-        case dirty, ahead, behind, issues
+        case dirty, ahead, behind
     }
 
     init(repo: String? = nil, branch: String? = nil, worktreePath: String? = nil,
          prNumber: UInt64? = nil, ciStatus: CiStatus? = nil, dirty: Bool = false,
-         ahead: UInt64 = 0, behind: UInt64 = 0, issues: [GhIssueRef] = []) {
+         ahead: UInt64 = 0, behind: UInt64 = 0) {
         self.repo = repo
         self.branch = branch
         self.worktreePath = worktreePath
@@ -145,7 +67,6 @@ struct Workspace: Codable, Equatable, Sendable {
         self.dirty = dirty
         self.ahead = ahead
         self.behind = behind
-        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -158,100 +79,11 @@ struct Workspace: Codable, Equatable, Sendable {
         dirty = try c.decodeIfPresent(Bool.self, forKey: .dirty) ?? false
         ahead = try c.decodeIfPresent(UInt64.self, forKey: .ahead) ?? 0
         behind = try c.decodeIfPresent(UInt64.self, forKey: .behind) ?? 0
-        issues = try c.decodeIfPresent([GhIssueRef].self, forKey: .issues) ?? []
-    }
-}
-
-/// One GitHub issue label (name + GitHub color, no `#`).
-struct IssueLabel: Codable, Equatable, Hashable, Sendable {
-    var name: String
-    var color: String
-}
-
-/// One GitHub issue comment (#267): display author, body, ISO-8601
-/// `createdAt` verbatim from GitHub.
-struct IssueComment: Codable, Equatable, Hashable, Sendable {
-    var author: String?
-    var body: String
-    var createdAt: String?
-
-    enum CodingKeys: String, CodingKey {
-        case author, body
-        case createdAt = "created_at"
-    }
-}
-
-/// Issue reference joined into the agent model (G23): mirrors corrald's
-/// `GhIssueRef` — the bound PR's authoritative `closingIssuesReferences`.
-/// Authoritative linkage only; branch-name inference lives in BoardModel
-/// and is display-only (D21).
-/// #267: the same wire type is reused for the read-only issue BROWSER
-/// payload (the `repos` map of the `read_issues` drive result), so the
-/// agent-chip path and the browser rows decode one shape. Every field
-/// beyond the original four is `decodeIfPresent`-defaulted: older daemons
-/// (no body/comments) and closing-refs (no body/comments by design) decode
-/// cleanly.
-struct GhIssueRef: Codable, Equatable, Sendable {
-    var repo: String
-    var number: UInt64
-    var state: String
-    var title: String
-    var labels: [IssueLabel]
-    var url: String
-    var body: String?
-    var commentTotal: UInt64?
-    var comments: [IssueComment]
-
-    init(repo: String, number: UInt64, state: String, title: String,
-         labels: [IssueLabel] = [], url: String = "", body: String? = nil,
-         commentTotal: UInt64? = nil, comments: [IssueComment] = []) {
-        self.repo = repo
-        self.number = number
-        self.state = state
-        self.title = title
-        self.labels = labels
-        self.url = url
-        self.body = body
-        self.commentTotal = commentTotal
-        self.comments = comments
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case repo, number, state, title, labels, url, body, comments
-        case commentTotal = "comment_total"
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        repo = try c.decode(String.self, forKey: .repo)
-        number = try c.decode(UInt64.self, forKey: .number)
-        state = try c.decode(String.self, forKey: .state)
-        title = try c.decode(String.self, forKey: .title)
-        labels = try c.decodeIfPresent([IssueLabel].self, forKey: .labels) ?? []
-        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
-        body = try c.decodeIfPresent(String.self, forKey: .body)
-        commentTotal = try c.decodeIfPresent(UInt64.self, forKey: .commentTotal)
-        comments = try c.decodeIfPresent([IssueComment].self, forKey: .comments) ?? []
-    }
-}
-
-/// #267: the read-only issue browser payload (`{"repos": {<fleet>: [issue]}}`,
-/// served by the grant-gated `/drive read_issues` arm and the board's
-/// `GET /issues`). Repo keys are the current daemon-scoped Herdr workspace
-/// identities; empty arrays are informational placeholders.
-struct IssuesBrowserWire: Codable, Equatable, Sendable {
-    var repos: [String: [GhIssueRef]]
-
-    /// All issues across repos, newest-number first (the daemon sorts each
-    /// repo by number; the browser renders one flat list per approved V3).
-    var all: [GhIssueRef] {
-        repos.values.flatMap { $0 }.sorted { l, r in
-            l.number > r.number
-        }
     }
 }
 
 /// Link back to the source's own identity for this agent (e.g. herdr pane).
+/// The small pane reference is the board row's debug aid.
 struct Attachment: Codable, Equatable, Sendable {
     var kind: String
     var reference: String
@@ -280,7 +112,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     /// Wall-clock when this record was last changed (epoch millis).
     var ts: UInt64
     var capabilities: [String]
-    var waitingOn: WaitingOn?
     /// Topology: reviewer belongs to its implementation agent (P2+).
     var parentId: String?
     /// Host public-key identity (D10).
@@ -293,7 +124,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case agentId = "agent_id"
         case source, tool, state, reason, seq, ts, capabilities
-        case waitingOn = "waiting_on"
         case parentId = "parent_id"
         case host, workspace, attachment
         case displayName = "display_name"
@@ -302,7 +132,7 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
 
     init(agentId: String, source: String = "herdr", tool: String = "claude", state: AgentState = .unknown,
          reason: String? = nil, seq: UInt64 = 0, ts: UInt64 = 0, capabilities: [String] = [],
-         waitingOn: WaitingOn? = nil, parentId: String? = nil,
+         parentId: String? = nil,
          host: String? = nil, workspace: Workspace = Workspace(), attachment: Attachment? = nil,
          displayName: String? = nil, title: String? = nil) {
         self.agentId = agentId
@@ -313,7 +143,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         self.seq = seq
         self.ts = ts
         self.capabilities = capabilities
-        self.waitingOn = waitingOn
         self.parentId = parentId
         self.host = host
         self.workspace = workspace
@@ -332,7 +161,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
         seq = try c.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
         ts = try c.decodeIfPresent(UInt64.self, forKey: .ts) ?? 0
         capabilities = try c.decodeIfPresent([String].self, forKey: .capabilities) ?? []
-        waitingOn = try c.decodeIfPresent(WaitingOn.self, forKey: .waitingOn)
         parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
         host = try c.decodeIfPresent(String.self, forKey: .host)
         workspace = try c.decodeIfPresent(Workspace.self, forKey: .workspace) ?? Workspace()
@@ -346,16 +174,6 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     }
 
     var isBlocked: Bool { state == .blocked }
-
-    /// The bound PR's authoritative closing-issue refs (G23), forwarded from
-    /// their wire location on `workspace`.
-    var issues: [GhIssueRef] { workspace.issues }
-
-    /// The authoritative issue-number set the D21 inference validates
-    /// against (mirrors egui's `known_issue_numbers`).
-    var knownIssueNumbers: Set<UInt64> {
-        Set(workspace.issues.map(\.number))
-    }
 }
 
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a
@@ -406,7 +224,7 @@ struct Delta: Codable, Equatable, Sendable {
     var del: [String]
 }
 
-/// Response to a drive write: `{request_id, ok, error?, error_kind?, rev, result?}`.
+/// Response to a drive read: `{request_id, ok, error?, error_kind?, rev, result?}`.
 struct DriveResponse: Codable, Equatable, Sendable {
     var requestId: String
     var ok: Bool
@@ -465,67 +283,6 @@ struct RegisterResponse: Codable, Equatable, Sendable {
     }
 }
 
-/// One registered device projected by the host-admin `GET /grants` read
-/// surface (#209). Public keys and push tokens stay host-side; `name` is
-/// the optional cosmetic label the device supplied at registration.
-struct AdminGrantDevice: Codable, Equatable, Identifiable, Sendable {
-    var id: String { keyId }
-    var keyId: String
-    var name: String?
-    var grants: [String]
-    var revoked: Bool
-    var expiryTs: UInt64
-    var createdTs: UInt64
-
-    enum CodingKeys: String, CodingKey {
-        case keyId = "key_id"
-        case name, grants, revoked
-        case expiryTs = "expiry_ts"
-        case createdTs = "created_ts"
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        keyId = try c.decode(String.self, forKey: .keyId)
-        name = try c.decodeIfPresent(String.self, forKey: .name)
-        grants = try c.decodeIfPresent([String].self, forKey: .grants) ?? []
-        revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
-        expiryTs = try c.decodeIfPresent(UInt64.self, forKey: .expiryTs) ?? 0
-        createdTs = try c.decodeIfPresent(UInt64.self, forKey: .createdTs) ?? 0
-    }
-}
-
-/// The host-admin `GET /grants` envelope (#209).
-struct AdminGrantsView: Codable, Equatable, Sendable {
-    var ok: Bool
-    var devices: [AdminGrantDevice]
-
-    enum CodingKeys: String, CodingKey {
-        case ok, devices
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
-        devices = try c.decodeIfPresent([AdminGrantDevice].self, forKey: .devices) ?? []
-    }
-}
-
-/// `POST /step-up` response: `{token, key_id, ttl_secs, expires_ts}`.
-struct StepUpResponse: Codable, Equatable, Sendable {
-    var token: String
-    var keyId: String
-    var ttlSecs: UInt64
-    var expiresTs: UInt64
-
-    enum CodingKeys: String, CodingKey {
-        case token
-        case keyId = "key_id"
-        case ttlSecs = "ttl_secs"
-        case expiresTs = "expires_ts"
-    }
-}
-
 /// `POST /device-token` response (D16): `{ok, key_id, push_registered}`.
 struct DeviceTokenResponse: Codable, Equatable, Sendable {
     var ok: Bool
@@ -565,8 +322,8 @@ struct GrantsReadResponse: Codable, Equatable, Sendable {
 }
 
 /// JSON value for `DriveResponse.result`. The daemon's read_tail result is
-/// intentionally small and shaped as `{"lines": [String]}`; other result
-/// fields remain opaque to this client.
+/// intentionally small and shaped as `{"lines": [String]}` plus the #167
+/// `blocks` array; other result fields remain opaque to this client.
 enum CodableValue: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
@@ -608,21 +365,6 @@ enum CodableValue: Codable, Equatable, Sendable {
         return try? JSONDecoder().decode([TranscriptBlock].self, from: data)
     }
 
-    /// #232: the daemon's bounded ReadDiffResult — one paged page
-    /// (diffstat + changed-files list + unified diff lines).
-    var diffPage: DiffPageWire? {
-        guard case .object = self else { return nil }
-        guard let data = try? JSONEncoder().encode(self) else { return nil }
-        return try? JSONDecoder().decode(DiffPageWire.self, from: data)
-    }
-
-    /// #267: the daemon's read-only issue browser payload (`{"repos": …}`).
-    var issuesBrowser: IssuesBrowserWire? {
-        guard case .object = self else { return nil }
-        guard let data = try? JSONEncoder().encode(self) else { return nil }
-        return try? JSONDecoder().decode(IssuesBrowserWire.self, from: data)
-    }
-
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
@@ -661,40 +403,27 @@ enum CodableValue: Codable, Equatable, Sendable {
     }
 }
 
-/// The claim identity (D8): `"<agent_id>:<prompt_hash>"`.
-enum Claim {
-    static func approvalId(agentId: String, promptHash: String) -> String {
-        "\(agentId):\(promptHash)"
-    }
-}
-
 /// One daemon block (D7 + #315). `kind` is the client's only vocabulary;
 /// `truncatedBefore` is the count lifted from a `... +N lines` marker that
-/// preceded this block (absent = no marker); `promptRequestId` (#315) is the
-/// signed request id of the recorded Prompt dispatch behind a `user` block
-/// (absent = no provenance).
+/// preceded this block (absent = no marker).
 struct TranscriptBlock: Codable, Equatable, Sendable {
     var kind: TranscriptBlockKind
     var text: String
     /// Epoch millis at block boundary (absent = not labelled).
     var at: UInt64?
     var truncatedBefore: UInt32?
-    /// #315 provenance: the dispatch that vouches for a `user` block.
-    var promptRequestId: String?
 
     enum CodingKeys: String, CodingKey {
         case kind, text, at
         case truncatedBefore = "truncated_before"
-        case promptRequestId = "prompt_request_id"
     }
 
     init(kind: TranscriptBlockKind, text: String, at: UInt64? = nil,
-         truncatedBefore: UInt32? = nil, promptRequestId: String? = nil) {
+         truncatedBefore: UInt32? = nil) {
         self.kind = kind
         self.text = text
         self.at = at
         self.truncatedBefore = truncatedBefore
-        self.promptRequestId = promptRequestId
     }
 
     init(from decoder: Decoder) throws {
@@ -703,7 +432,6 @@ struct TranscriptBlock: Codable, Equatable, Sendable {
         text = try c.decode(String.self, forKey: .text)
         at = try c.decodeIfPresent(UInt64.self, forKey: .at)
         truncatedBefore = try c.decodeIfPresent(UInt32.self, forKey: .truncatedBefore)
-        promptRequestId = try c.decodeIfPresent(String.self, forKey: .promptRequestId)
     }
 }
 
@@ -758,80 +486,6 @@ struct TailPane: Equatable, Sendable {
     }
 }
 
-/// Per-agent worktree-diff state (#232): one bounded page at a time,
-/// accumulated lazily so a large diff never materializes fully in memory.
-/// The sheet presents exactly what the daemon served (paged, redacted,
-/// clamped) — this client never re-bounds.
-struct DiffPane: Equatable, Sendable {
-    var repo: String?
-    var branch: String?
-    var head: String?
-    var stats: DiffStatsWire = DiffStatsWire(files: 0, adds: 0, dels: 0)
-    var files: [DiffFileWire] = []
-    var filesTruncated = false
-    var lines: [String] = []
-    var total = 0
-    var hasMore = false
-    var nextOffset: Int?
-    var isLoading = false
-    var hasLoaded = false
-    var error: String?
-    var errorKind: String?
-    var errorStatus: Int?
-
-    var isEmpty: Bool {
-        hasLoaded && lines.isEmpty && files.isEmpty && !isLoading && error == nil
-    }
-
-    mutating func beginFetch() {
-        isLoading = true
-        error = nil
-        errorKind = nil
-        errorStatus = nil
-    }
-
-    /// Fold one daemon page. Offset 0 seeds the pane; later pages append at
-    /// the page's aggregate offset (a worktree change renumbers offsets, so
-    /// a gap reseeds from the new page instead of interleaving stale lines).
-    mutating func apply(_ page: DiffPageWire) {
-        isLoading = false
-        hasLoaded = true
-        error = nil
-        errorKind = nil
-        errorStatus = nil
-        repo = page.repo ?? repo
-        branch = page.branch ?? branch
-        head = page.head ?? head
-        stats = page.stats
-        files = page.files
-        filesTruncated = page.filesTruncated
-        total = page.total
-        hasMore = page.hasMore
-        nextOffset = page.nextOffset
-        if page.offset == 0 {
-            lines = page.lines
-        } else if page.offset <= lines.count {
-            // Page window may overlap already-known lines (a re-fetch of the
-            // same window is idempotent) — append only the not-yet-known
-            // suffix beyond the accumulated count.
-            let overlap = lines.count - page.offset
-            if overlap < page.lines.count {
-                lines.append(contentsOf: page.lines[overlap...])
-            }
-        } else {
-            lines = page.lines
-        }
-    }
-
-    mutating func apply(_ failure: String, kind: String = "dispatch_refused",
-                        status: Int? = nil) {
-        isLoading = false
-        error = failure
-        errorKind = kind
-        errorStatus = status
-    }
-}
-
 enum TranscriptText {
     static func errorText(_ error: TranscriptFailure) -> String {
         switch error.kind {
@@ -840,80 +494,5 @@ enum TranscriptText {
         default:
             return "\(error.kind): \(error.message)"
         }
-    }
-}
-
-/// #267: the fleet-level read-only issue browser pane — the last fetched
-/// `IssuesBrowserWire` with the four-state machine (idle/loading/loaded/
-/// error), mirroring `DiffPane`. The daemon serves the bounded gh poller
-/// window; the VIEW owns the lazy comment reveal (client-side within the
-/// fetched newest-first window).
-struct IssuesBrowserPane: Equatable, Sendable {
-    var repos: [String: [GhIssueRef]] = [:]
-    var isLoading = false
-    var error: String?
-    var updatedAt: Date?
-
-    var isEmpty: Bool {
-        repos.values.allSatisfy(\.isEmpty) && !isLoading && error == nil
-    }
-
-    mutating func beginFetch() {
-        isLoading = true
-        error = nil
-    }
-
-    mutating func apply(_ wire: IssuesBrowserWire) {
-        isLoading = false
-        error = nil
-        repos = wire.repos
-        updatedAt = Date()
-    }
-
-    mutating func apply(_ failure: String) {
-        isLoading = false
-        error = failure
-        updatedAt = nil
-    }
-
-    mutating func reset() {
-        self = IssuesBrowserPane()
-    }
-}
-
-// MARK: - #232 read_diff wire shapes (mirror corrald::drive::ReadDiffResult)
-
-/// Whole-diff diffstat (all tracked changes vs HEAD).
-struct DiffStatsWire: Codable, Equatable, Sendable {
-    var files: Int
-    var adds: Int
-    var dels: Int
-}
-
-struct DiffFileWire: Codable, Equatable, Sendable {
-    var path: String
-    var adds: Int
-    var dels: Int
-}
-
-/// One bounded read_diff page (daemon-clamped; the client never re-bounds).
-struct DiffPageWire: Codable, Equatable, Sendable {
-    var repo: String?
-    var branch: String?
-    var head: String?
-    var stats: DiffStatsWire
-    var files: [DiffFileWire]
-    var filesTruncated: Bool
-    var offset: Int
-    var lines: [String]
-    var total: Int
-    var hasMore: Bool
-    var nextOffset: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case repo, branch, head, stats, files, offset, lines, total
-        case filesTruncated = "files_truncated"
-        case hasMore = "has_more"
-        case nextOffset = "next_offset"
     }
 }

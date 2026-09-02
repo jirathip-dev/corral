@@ -35,7 +35,6 @@ targets:
           - "$(SRCROOT)/FleetNotifier/App/AppModel.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetStore.swift"
-          - "$(SRCROOT)/FleetNotifier/App/LiveVerifyRunner.swift"
           - "$(SRCROOT)/FleetNotifier/Demo/DemoFleet.swift"
           - "$(SRCROOT)/FleetNotifier/Keychain/DeviceKeyStore.swift"
           - "$(SRCROOT)/FleetNotifier/Models/Models.swift"
@@ -44,16 +43,12 @@ targets:
           - "$(SRCROOT)/FleetNotifier/Notifications/AppDelegate.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/LocalNotifier.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/PushPayload.swift"
-          - "$(SRCROOT)/FleetNotifier/Security/Biometrics.swift"
-          - "$(SRCROOT)/FleetNotifier/UI/BoardFilter.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
-          - "$(SRCROOT)/FleetNotifier/UI/TerminalAttach.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/StateStyle.swift"
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift"
-          - "$(SRCROOT)/FleetNotifier/Wire/DestructivePatterns.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift"
           - "$(SRCROOT)/embed-release-source-digest.py"
           - "$(SRCROOT)/release_source_manifest.py"
@@ -72,7 +67,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and send signed commands."
+        NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and stream agent output."
         NSAppTransportSecurity:
           # Deliberately NO ts.net / insecure-HTTP exception (#80): the
           # build-3 carve-out never worked — iOS forces a TLS upgrade on
@@ -84,8 +79,7 @@ targets:
           # from iOS (Tailscale Serve)". NSAllowsLocalNetworking stays for
           # LAN/loopback dev setups.
           NSAllowsLocalNetworking: YES
-        NSFaceIDUsageDescription: "Face ID step-up is required before destructive commands are sent to agents."
-        NSUserNotificationsUsageDescription: "Corral shows a local notification when an agent blocks, so you can answer from the lock screen."
+        NSUserNotificationsUsageDescription: "Corral shows a notification when a monitored agent starts, blocks, or finishes."
         UIBackgroundModes:
           - remote-notification
     settings:

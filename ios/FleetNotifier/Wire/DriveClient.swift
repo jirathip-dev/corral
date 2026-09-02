@@ -7,11 +7,6 @@ enum DriveError: LocalizedError, Equatable, Sendable {
     case network(String)
     case encoding
 
-    var isStepUpRequired: Bool {
-        if case .server(_, let kind, _, _) = self { return kind == "step_up_required" }
-        return false
-    }
-
     /// F1: `error.localizedDescription` used to fall back to the generic
     /// NSError bridge ("The operation couldn't be completed. (...)") and
     /// DISCARD the payload message — so a non-200 stream failure surfaced
@@ -36,15 +31,17 @@ enum DriveResult: Equatable, Sendable {
     case refused(DriveError)
 }
 
-/// The signed drive plane client (P4-conformance.md R1–R10).
+/// The signed read-plane client (P4-conformance.md R1–R10).
 ///
 /// - `register` — POST /register with the registration token; read-only
-///   default (grants come back empty; the host promotes capabilities).
+///   default (grants come back empty; the host promotes capabilities
+///   out-of-band on the registry after the #354 cut).
+/// - `fetchGrants` — signed POST /grants-read (#101) self-service refresh.
+/// - `registerDeviceToken` — signed POST /device-token (D16 push pairing).
 /// - `drive` — builds the canonical envelope bytes, signs them with the
 ///   device Ed25519 key, POSTs the SignedDrive body. Idempotent by
 ///   `request_id` (the daemon replays stored responses byte-identical).
-/// - Step-up: destructive payloads require Face ID → `POST /step-up` mint →
-///   retry with `X-Step-Up-Token`. Mirrored pre-flight AND reactive on 403.
+///   #354 L2: the only drive this client sends is the retained read_tail.
 struct DriveClient: Sendable {
     private static let cancellationMessage = "drive cancelled"
 
@@ -76,27 +73,11 @@ struct DriveClient: Sendable {
         return (http.statusCode, data)
     }
 
-    private func get(_ url: URL, headers: [String: String] = [:]) async throws -> (Int, Data) {
-        try Task.checkCancellation()
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        for (key, value) in headers {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else {
-            throw DriveError.network("non-HTTP response")
-        }
-        return (http.statusCode, data)
-    }
-
     // MARK: - Registration (R1)
 
     /// `POST /register {token, public_key, name?}` → key_id with EMPTY
-    /// grants (read-only default; the host promotes via /grants). `name`
-    /// is the optional cosmetic device label (#209) stored by the daemon.
+    /// grants (read-only default). `name` is the optional cosmetic device
+    /// label (#209) stored by the daemon.
     func register(token: String, signer: DeviceSigner, name: String? = nil) async throws -> RegisterResponse {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let body: Data
@@ -116,95 +97,12 @@ struct DriveClient: Sendable {
         return try JSONDecoder().decode(RegisterResponse.self, from: data)
     }
 
-    // MARK: - Host admin grants (#209)
-
-    /// `GET /grants` with the host admin bearer token — every registered
-    /// device with its current grant set, revocation state, and cosmetic
-    /// display name. Host-admin only; the token is entered by the operator
-    /// and never leaves the client except on this admin surface.
-    func fetchAdminGrants(adminToken: String) async throws -> AdminGrantsView {
-        let url = host.appendingPathComponent("/grants")
-        let (status, data) = try await get(url, headers: ["Authorization": "Bearer \(adminToken)"])
-        guard status == 200 else {
-            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
-            throw DriveError.server(status: status,
-                                    kind: typed?.kind ?? "grants_list_failed",
-                                    message: typed?.message ?? "GET /grants failed",
-                                    requestId: nil)
-        }
-        return try JSONDecoder().decode(AdminGrantsView.self, from: data)
-    }
-
-    /// `POST /grants` `set_grants` — replace a device's full grant set
-    /// (empty = read-only; default deny).
-    func setGrants(adminToken: String, keyId: String, grants: [String]) async throws {
-        let body: [String: Any] = [
-            "action": "set_grants",
-            "key_id": keyId,
-            "grants": grants,
-        ]
-        let (status, data) = try await post("/grants", body: try JSONSerialization.data(withJSONObject: body),
-                                            headers: ["Authorization": "Bearer \(adminToken)"])
-        guard status == 200 else {
-            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
-            throw DriveError.server(status: status,
-                                    kind: typed?.kind ?? "grants_set_failed",
-                                    message: typed?.message ?? "POST /grants failed",
-                                    requestId: nil)
-        }
-    }
-
-    /// `POST /grants` `revoke` — flip a device's revoked flag (`true`
-    /// revokes, `false` re-grants). The grant set is untouched.
-    func setRevoked(adminToken: String, keyId: String, revoked: Bool) async throws {
-        let body: [String: Any] = [
-            "action": "revoke",
-            "key_id": keyId,
-            "revoked": revoked,
-        ]
-        let (status, data) = try await post("/grants", body: try JSONSerialization.data(withJSONObject: body),
-                                            headers: ["Authorization": "Bearer \(adminToken)"])
-        guard status == 200 else {
-            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
-            throw DriveError.server(status: status,
-                                    kind: typed?.kind ?? "grants_revoke_failed",
-                                    message: typed?.message ?? "POST /grants failed",
-                                    requestId: nil)
-        }
-    }
-
-    // MARK: - Step-up (R9)
-
-    /// `POST /step-up` — signed proof of possession; single-use token.
-    /// The host enforces freshness `|now - ts| < 60s`; this is only a
-    /// device-clock sanity gate (a wildly wrong clock cannot mint).
-    func mintStepUpToken(keyId: String, signer: DeviceSigner) async throws -> StepUpResponse {
-        let deviceNow = Date().timeIntervalSince1970
-        guard deviceNow > 1_600_000_000 else {
-            throw DriveError.network("device clock is not set; step-up mint refused")
-        }
-        let ts = UInt64(deviceNow)
-        let nonce = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }).base64EncodedString()
-        let requestBytes = CanonicalJSON.stepUpBytes(keyId: keyId, purpose: "destructive", nonce: nonce, ts: ts)
-        let signature = try signer.sign(requestBytes).base64EncodedString()
-        let body = CanonicalJSON.stepUpBody(keyId: keyId, signatureB64: signature, requestBytes: requestBytes)
-        let (status, data) = try await post("/step-up", body: body)
-        guard status == 200 else {
-            let typed = try? JSONDecoder().decode(DriveErrorBody.self, from: data)
-            throw DriveError.server(status: status,
-                                    kind: typed?.kind ?? "step_up_failed",
-                                    message: typed?.message ?? "step-up mint failed",
-                                    requestId: typed?.requestId)
-        }
-        return try JSONDecoder().decode(StepUpResponse.self, from: data)
-    }
-
     // MARK: - Push registration (D16)
 
     /// `POST /device-token` — enroll (or clear, with an empty token) this
-    /// device's APNs token on the daemon. Signed proof of possession of
-    /// the device key (same canonical-bytes discipline as /step-up), so a
-    /// stolen token alone cannot re-register push on another device.
+    /// device's APNs token on the daemon. Signed proof of possession of the
+    /// device key (same canonical-bytes discipline as the read requests), so
+    /// a stolen token alone cannot re-register push on another device.
     func registerDeviceToken(_ deviceToken: String, keyId: String,
                              signer: DeviceSigner) async throws -> DeviceTokenResponse {
         let ts = UInt64(Date().timeIntervalSince1970)
@@ -245,24 +143,15 @@ struct DriveClient: Sendable {
         return try JSONDecoder().decode(GrantsReadResponse.self, from: data)
     }
 
-    // MARK: - Drive (R3–R9)
+    // MARK: - Drive (R3–R8)
 
-    /// Sign + send one envelope. `requestId` must be stable per logical
+    /// Sign + send one read envelope. `requestId` must be stable per logical
     /// command (the daemon replays stored responses byte-identical); pass
-    /// the same id when retrying, or omit for a fresh one.
-    ///
-    /// Step-up: when the payload matches the daemon's destructive-pattern
-    /// mirror -- or the caller forces step-up for a capability the daemon
-    /// treats as destructive -- Face ID runs BEFORE the send, then `/step-up`
-    /// mints a token and the drive carries `X-Step-Up-Token`. A server-side
-    /// `step_up_required` refusal (mirror mismatch or an expired token) is
-    /// answered reactively with the same flow — same request_id, so an
-    /// attempt that actually dispatched replays instead of double-sending.
+    /// the same id when retrying, or omit for a fresh one. Read drives never
+    /// require step-up (the whole destructive plane was removed by #354 L1).
     @discardableResult
     func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
-               rev: UInt64?, requestId: String? = nil, keyId: String, signer: DeviceSigner,
-               biometrics: Biometrics = Biometrics(), stepUp: Bool = true,
-               forceStepUp: Bool = false) async -> DriveResult {
+               rev: UInt64?, requestId: String? = nil, keyId: String, signer: DeviceSigner) async -> DriveResult {
         guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         let rid = requestId ?? Self.newRequestId()
         let bytes = CanonicalJSON.envelopeBytes(requestId: rid, capability: capability.rawValue,
@@ -271,63 +160,13 @@ struct DriveClient: Sendable {
             return .refused(.encoding)
         }
         let body = CanonicalJSON.signedDriveBody(keyId: keyId, signatureB64: signature, envelopeBytes: bytes)
-
-        var result: DriveResult
-        if stepUp && (forceStepUp || DestructivePatterns.required(payload)) {
-            let authenticated = await biometrics.authenticate()
-            // Biometrics is an injected async boundary in tests and a
-            // LocalAuthentication boundary in production. Cancellation must
-            // win over a late success before minting any token.
-            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-            guard authenticated else {
-                return .refused(.server(status: 403, kind: "step_up_denied",
-                                        message: "Face ID step-up declined; the destructive command was not sent",
-                                        requestId: rid))
-            }
-            do {
-                let minted = try await mintStepUpToken(keyId: keyId, signer: signer)
-                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-                result = await send(body: body, rid: rid, stepUpToken: minted.token)
-                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-            } catch is CancellationError {
-                return .refused(.network(Self.cancellationMessage))
-            } catch {
-                return .refused(error as? DriveError ?? .network(error.localizedDescription))
-            }
-        } else {
-            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-            result = await send(body: body, rid: rid, stepUpToken: nil)
-        }
-
-        guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-        if stepUp, case .refused(let error) = result, error.isStepUpRequired {
-            let authenticated = await biometrics.authenticate()
-            guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-            guard authenticated else {
-                return .refused(.server(status: 403, kind: "step_up_denied",
-                                        message: "Face ID step-up declined; the destructive command was not sent",
-                                        requestId: rid))
-            }
-            do {
-                let minted = try await mintStepUpToken(keyId: keyId, signer: signer)
-                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-                result = await send(body: body, rid: rid, stepUpToken: minted.token)
-                guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
-            } catch is CancellationError {
-                return .refused(.network(Self.cancellationMessage))
-            } catch {
-                return .refused(error as? DriveError ?? .network(error.localizedDescription))
-            }
-        }
-        return result
+        return await send(body: body, rid: rid)
     }
 
-    private func send(body: Data, rid: String, stepUpToken: String?) async -> DriveResult {
+    private func send(body: Data, rid: String) async -> DriveResult {
         guard !Task.isCancelled else { return .refused(.network(Self.cancellationMessage)) }
         do {
-            var headers: [String: String] = [:]
-            if let stepUpToken { headers["X-Step-Up-Token"] = stepUpToken }
-            let (status, data) = try await post("/drive", body: body, headers: headers)
+            let (status, data) = try await post("/drive", body: body)
             if status == 200 {
                 guard let response = try? JSONDecoder().decode(DriveResponse.self, from: data) else {
                     return .refused(.network("unparseable drive response"))

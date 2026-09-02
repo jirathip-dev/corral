@@ -4724,7 +4724,7 @@ final class GrantAdminToggleRevertTests: XCTestCase {
     }
 
     private func makeModel(session: URLSession) -> AppModel {
-        let model = AppModel(session: session)
+        let model = AppModel(session: session, adminTokenLoader: { "admin-tok-256" })
         model.mode = .live
         model.hostURL = URL(string: "http://grant-daemon")!
         return model

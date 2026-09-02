@@ -244,6 +244,7 @@ final class AppModel: ObservableObject {
     private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
     private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
     private let wipeIdentity: @Sendable () -> Void
+    private let adminTokenLoader: @Sendable () -> String?
 
     /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
     /// when the REFERENCE is reassigned — it does not forward the child's
@@ -322,6 +323,9 @@ final class AppModel: ObservableObject {
          },
          wipeIdentity: @escaping @Sendable () -> Void = {
              DeviceKeyStore.wipe()
+         },
+         adminTokenLoader: @escaping @Sendable () -> String? = {
+             DeviceKeyStore.adminToken()
          }) {
         self.session = session
         self.identityLifecycle = identityLifecycle
@@ -330,6 +334,7 @@ final class AppModel: ObservableObject {
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
         self.wipeIdentity = wipeIdentity
+        self.adminTokenLoader = adminTokenLoader
         self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -535,7 +540,7 @@ final class AppModel: ObservableObject {
     /// The daemon host admin bearer token, Keychain-stored (#209). The
     /// operator pastes it once; it is only ever sent to the host-admin
     /// endpoints (`/grants`), never on the signed drive path.
-    var adminToken: String? { DeviceKeyStore.adminToken() }
+    var adminToken: String? { adminTokenLoader() }
 
     var hasAdminToken: Bool { adminToken != nil }
 

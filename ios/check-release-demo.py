@@ -74,7 +74,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # with AppModel bounds/cancellation for read_diff; digest re-pinned.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
     # the digest includes the merged #333 and #331 Release source inputs.
-    "3eabcbd125ba4d7a108505bc3e7bbe84db66c3c6c70d5ce04e0d8856584dd822"
+    # #332 R3: post-integration reconciliation re-pinned the exact merged
+    # Release source set while retaining the #332 workspace-derived scope and
+    # AC8 parity boundaries. The bounded grant-test seam keeps production's
+    # Keychain default and is included in this source digest.
+    "321220fc4e90f3df7920c43aa2f3849c8536d27379bace4173415a27deef1827"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

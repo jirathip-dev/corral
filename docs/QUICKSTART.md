@@ -81,7 +81,8 @@ curl -s http://127.0.0.1:8474/snapshot
 
 `{"schema_version":5,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
 entry per agent with state (herdr RAW vocabulary: working / idle / blocked
-/ unknown — no "done" from herdr 0.8.2), waiting_on, capabilities, and
+/ unknown; the 0.8.2 wire can also carry `done`, ranked and rendered with
+`idle` on the boards as the finished state), waiting_on, capabilities, and
 workspace facts. Live updates (resume from a `rev` via `Last-Event-ID`):
 
 ```sh

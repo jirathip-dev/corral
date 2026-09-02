@@ -27,7 +27,7 @@ git watcher ──┤ → corrald (daemon) → ┬─ live fleet snapshot + even
 
 ## Features
 
-- **One live view of the fleet** — every agent's state, repo/branch, time-in-state, and a small pane reference, grouped by repo with the raw herdr status vocabulary (working / idle / blocked / unknown — herdr 0.8.2 has no "done"; finished panes fall back to idle).
+- **One live view of the fleet** — every agent's state, repo/branch, time-in-state, and a small pane reference, grouped by repo with the raw herdr status vocabulary (working / idle / blocked / unknown, plus a wire `done` the board treats as finished — ranked and rendered with `idle`, so finished panes never read as active).
 - **Blocked agents surfaced first** — waiting agents are pinned to the top of the board and listed first inside their repo group, with the herdr state chip the fastest visual cue.
 - **Recent output** (`read_tail`) — tap any agent for its bounded live tail (≤200 lines, daemon-capped), segmented into blocks, auto-scrolled.
 - **Event history + daily digest** — every state change is recorded; query a window over HTTP or take a per-agent daily digest offline.

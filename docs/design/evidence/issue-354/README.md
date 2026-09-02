@@ -17,7 +17,8 @@ current behavior, so they describe the merged read-only reality:
   client diff-page how-to and grant-for-diff instructions.
 - `docs/ARCHITECTURE.md` — read-only daemon + v2 board clients (iOS +
   egui/WASM), herdr RAW status vocabulary (working / idle / blocked /
-  unknown — no done; #319/#320 wording gone), recents v1 live-tail, no
+  unknown, plus wire-`done` ranked/rendered with idle; #319/#320 wording
+  gone), recents v1 live-tail, no
   push in egui; removed the #353-class GET /fleets / src/fleet /
   corrald-fleet side-reader claims and the Issues-tab render claims.
 - `docs/QUICKSTART.md` — register → out-of-band grant → signed read_tail
@@ -54,7 +55,7 @@ current behavior, so they describe the merged read-only reality:
 | ARCHITECTURE:323,351 | egui "Settings hosts the admin-token audit log and grant editor"; "(Board, Audit, Registry, Settings; Issues tab read-only)" | egui Settings is connection-only; two tabs (egui README) |
 | QUICKSTART:120-132 | step 5: promote via POST /grants with admin token | host-admin grant surface removed (#354 L1); registry.json out-of-band |
 | QUICKSTART:177,205-226 | corrald-grant.sh --caps ...; Prompt/Interrupt/Kill/Attach/Approve UI bullets; Face ID step-up | removed with the client cut |
-| QUICKSTART:216-227 | board row "issue chips, CI glyph"; order "blocked > done > working > idle" | v2 board: RAW tokens, blocked → working → idle → unknown (L2/L3 READMEs) |
+| QUICKSTART:216-227 | board row "issue chips, CI glyph"; order "blocked > done > working > idle" | v2 board: RAW tokens + wire-`done` ranked with idle; attention order blocked → working → idle(=done) → unknown (L2/L3 READMEs) |
 | DEVELOPING:23,36-40 | lib surface incl. approve; src/approve/; auth step-up + step_up.rs | deleted in #354 L1 (src tree at base) |
 | DEVELOPING:210-229 | R1–R10 approve/step-up conformance arms | surviving arms: R1/R2/R5/R10/R11 + read-only probes (crates/corrald-client/tests/conformance.rs) |
 | DEVELOPING:671-702 | add-capability via POST /grants + approve seam + dispatch_worktree | out-of-band registry; no approve seam; no fleet-level caps (#354) |

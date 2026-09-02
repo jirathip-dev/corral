@@ -13,10 +13,13 @@ interrupt / kill / attach / start_worktree), the grant-admin HTTP
 surface, step-up, the terminal/attach transport, and the Issues browser
 UI were removed in the #354 cut (daemon L1, iOS L2, egui/WASM L3).
 Boards show the **herdr RAW status vocabulary** — working / idle /
-blocked / unknown — with no Corral-invented labels (#319/#320 wording
-is gone; herdr 0.8.2 has no `done`, so a finished pane falls back to
-idle). Recents are a **live-tail only** surface (recents v1), and egui
-has no push path (notifications exist only on iOS).
+blocked / unknown — plus a wire `done` the herdr 0.8.2 socket can carry
+(recorded in the #324 live probe). The board treats `done` as finished:
+it is ranked and rendered with `idle` (idle-equivalent), so finished
+panes never read as active/working. #319/#320's invented grouped wording
+(Working/Supervising/Finished) is gone. Recents are a **live-tail only**
+surface (recents v1), and egui has no push path (notifications exist
+only on iOS).
 
 ## Stack terminology (model → harness → runtime → control plane)
 

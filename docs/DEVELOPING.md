@@ -670,9 +670,10 @@ diverge from the contract: a drift test per client reads the JSON and
 asserts the hexes/labels/ranks/marks stay in sync. Update the contract first,
 then re-point each client and its drift test together. Color is never the
 only state channel — every chip renders a mark plus a label. The labels the
-BOARDS render are the herdr RAW tokens (working / idle / blocked / unknown);
-a wire-`done` record (transitional daemon) ranks and reads as idle, since
-herdr 0.8.2 has no `done`.
+BOARDS render are the herdr RAW tokens (working / idle / blocked / unknown;
+the herdr 0.8.2 wire can also carry `done`, recorded in the #324 live
+probe, which is ranked and rendered with `idle` as the finished state —
+never active/working). #319/#320's grouped wording is banned.
 
 ## How to add a capability
 

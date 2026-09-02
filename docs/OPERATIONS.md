@@ -222,8 +222,10 @@ Read-only client, grant-gated per device (see "Grants model" below):
   store is empty — a cursor is only a valid delta-base for state you
   actually hold (a reset device that resumes deltas-only would otherwise
   never see a snapshot). Board rows use the herdr RAW state vocabulary
-  (working / idle / blocked / unknown; herdr 0.8.2 has no `done`, and a
-  wire-`done` record reads as idle), grouped by repo with blocked agents
+  (working / idle / blocked / unknown; the herdr 0.8.2 wire can also
+  carry `done` — recorded in the #324 live probe — which the board ranks
+  and renders with `idle`, so a wire-`done` record reads as finished,
+  never active), grouped by repo with blocked agents
   pinned to the top; last-known rows persist under an offline banner when
   the daemon is unreachable.
 - **Recent output** (`read_tail`): the only signed drive the app sends —

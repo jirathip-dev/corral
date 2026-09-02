@@ -103,7 +103,13 @@ case "$1" in
   *) exit 0 ;;
 esac
 STUB
-chmod +x "$WORK/bin/launchctl"
+cat > "$WORK/bin/codesign" <<'STUB'
+#!/usr/bin/env bash
+# Deploy scenarios model daemon deploy/stamp logic, not macOS signing; the
+# disposable app dir is not a real bundle, so signing is stubbed successful.
+exit 0
+STUB
+chmod +x "$WORK/bin/launchctl" "$WORK/bin/codesign"
 
 # --- Helpers ------------------------------------------------------------------
 hash_of() { shasum -a 256 "$1" | awk '{print $1}'; }

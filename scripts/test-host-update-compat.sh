@@ -105,6 +105,10 @@ cat > "$WORK/bin/codesign" <<'STUB'
 set -euo pipefail
 printf 'codesign:%s\n' "${@: -1}" >> "${CORRAL_TEST_UI_PATHS:?}"
 printf 'codesign\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+if [[ "${CORRAL_TEST_CODESIGN_FAIL:-0}" == "1" ]]; then
+  printf 'codesign-fail\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+  exit 97
+fi
 # Faithfully model real codesign: it rewrites the installed executable in
 # place after copy, changing the deployed bytes on every sign.
 if [[ -n "${CORRAL_TEST_UI_DEST:-}" && -f "$CORRAL_TEST_UI_DEST" ]]; then
@@ -163,6 +167,7 @@ printf 'old-ui\n' > "$TEST_UI_DEST"
 touch "$WORK/client-alive"
 run_update_cycle() {
   CORRAL_TEST_CP_FAIL="${CORRAL_TEST_CP_FAIL:-0}" \
+  CORRAL_TEST_CODESIGN_FAIL="${CORRAL_TEST_CODESIGN_FAIL:-0}" \
   CARGO_PWD_FILE="$WORK/cargo.pwd" \
   LAUNCHCTL_PROGRAM="$WORK/installed/corrald" \
   LAUNCHCTL_KICKS="$WORK/kickstarts" \
@@ -260,6 +265,28 @@ fi
 [[ ! -f "$WORK/update-config/ui-artifact.sha256" ]] \
   || fail "canonical UI stamp was written for a failed deployment"
 printf 'OK failed UI deployment never stamps a partial install\n'
+
+# A post-copy signing failure must fail closed: previous binary restored,
+# stamp not advanced, and the next cycle retries one safe deployment.
+rm -f "$WORK/update-config/ui-artifact.sha256"
+printf 'old-ui\n' > "$TEST_UI_DEST"
+: > "$WORK/ui-events"
+: > "$WORK/ui-paths"
+if CORRAL_TEST_CODESIGN_FAIL=1 run_update_cycle; then
+  fail "updater succeeded despite a post-copy signing failure"
+fi
+grep -Fq 'release-required: UI signing FAILED' "$update_log" \
+  || fail "signing failure was not reported as release-required"
+[[ "$(cat "$TEST_UI_DEST")" == "old-ui" ]] \
+  || fail "installed binary was not restored after signing failure"
+[[ ! -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "canonical stamp advanced despite signing failure"
+run_update_cycle
+[[ "$(head -1 "$TEST_UI_DEST")" == "new-host" ]] \
+  || fail "next cycle did not retry the deployment after signing failure"
+[[ -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "next cycle did not stamp the retried deployment"
+printf 'OK post-copy signing failure rolls back and the next cycle retries\n'
 
 # A release-shaped updater with no source checkout must fail explicitly. An
 # old "skip: ..." success is the indefinite-silent-failure defect.

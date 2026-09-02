@@ -162,11 +162,27 @@ reinstall_ui() {
         return 1
       fi
       mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
-      cp "$UI_BIN" "$UI_DEPLOY_PATH" || {
+      # Keep the prior working binary so a failed copy or signing can be
+      # rolled back; the app must never be left half-deployed.
+      local ui_backup
+      ui_backup="$(mktemp "${UI_DEPLOY_PATH}.backup.XXXXXX")"
+      cp -p "$UI_DEPLOY_PATH" "$ui_backup" 2>/dev/null || true
+      if ! cp "$UI_BIN" "$UI_DEPLOY_PATH"; then
+        rm -f "$ui_backup"
         log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
         exit 1
-      }
-      codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+      fi
+      if ! codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null; then
+        log "release-required: UI signing FAILED"
+        if [[ -f "$ui_backup" ]]; then
+          mv -f "$ui_backup" "$UI_DEPLOY_PATH"
+          codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+        else
+          rm -f "$ui_backup"
+        fi
+        exit 1
+      fi
+      rm -f "$ui_backup"
       if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
         pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
         sleep 1

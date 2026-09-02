@@ -3137,11 +3137,13 @@ mod tests {
     /// paints the tofu replacement U+25A1 (pixel-verified in the L3 review
     /// evidence).
     ///
-    /// `Done` is deliberately absent: herdr 0.8.2 never emits `done`
-    /// (finished panes fall back to idle, model.rs), so no board chip can
-    /// carry it — and its U+2713 mark exists in no toolkit-default font, so
-    /// asserting it would require re-adding the bundled-font machinery the
-    /// #354 cut retired. The four wire-reachable states are the contract.
+    /// `Done` is deliberately absent from the assertions: done IS
+    /// wire-reachable (the #324 live probe records agent_status `done`
+    /// from live herdr 0.8.2), but its U+2713 mark exists in no
+    /// toolkit-default font, so a done chip would tofu — recorded here as
+    /// KNOWN TOFU pending a follow-up. Asserting it would require
+    /// re-adding the bundled-font machinery the #354 cut retired. The
+    /// four asserted states are the ones this fix renders tofu-free.
     #[test]
     fn state_chip_mark_glyphs_resolve_from_configured_fonts() {
         // Idle first: the #358 regression is the idle chip (U+25E6), and

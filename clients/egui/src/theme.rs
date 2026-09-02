@@ -219,9 +219,12 @@ pub fn dark_dashboard() -> Visuals {
 /// monospace default (Hack) appended to the proportional chain. Mark glyphs
 /// the default proportional trio (Ubuntu-Light/NotoEmoji-Regular/
 /// emoji-icon-font) lacks then resolve from Hack instead of epaint's tofu
-/// replacement U+25A1 — the #358 idle marker U+25E6 is the live case (the
-/// wire never emits `done`, and its U+2713 mark exists in no
-/// toolkit-default font, so it stays out of scope). No bundled font assets:
+/// replacement U+25A1 — the #358 idle marker U+25E6 is the fixed case.
+/// `done` IS wire-reachable (the #324 live probe records agent_status
+/// `done` from live herdr 0.8.2, docs/design/evidence/issue-324/
+/// live-herdr-0.8.2-probe.md) and its U+2713 mark exists in no
+/// toolkit-default font, so the done chip stays KNOWN TOFU — follow-up
+/// needed; this fix is bounded to the idle mark. No bundled font assets:
 /// Hack ships inside egui/epaint itself (epaint_default_fonts), so nothing
 /// from the retired #347 bundle machinery is re-added.
 pub(crate) fn board_font_definitions() -> eframe::egui::FontDefinitions {

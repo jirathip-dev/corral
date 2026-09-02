@@ -478,7 +478,10 @@ async fn register_endpoint_accepts_and_truncates_display_name() {
     let rec = auth.registry.get(&long_key).expect("registered device");
     let name = rec.name.as_deref().unwrap();
     assert_eq!(name.len(), corrald::auth::registry::MAX_DEVICE_NAME_CHARS);
-    assert_eq!(name, "x".repeat(corrald::auth::registry::MAX_DEVICE_NAME_CHARS));
+    assert_eq!(
+        name,
+        "x".repeat(corrald::auth::registry::MAX_DEVICE_NAME_CHARS)
+    );
 }
 
 #[tokio::test]

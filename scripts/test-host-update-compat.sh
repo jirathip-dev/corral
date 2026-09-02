@@ -128,12 +128,25 @@ cat > "$WORK/bin/pkill" <<'STUB'
 set -euo pipefail
 printf 'kill:%s\n' "${2:-}" >> "${CORRAL_TEST_UI_PATHS:?}"
 printf 'kill\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+if [[ "${CORRAL_TEST_RELAUNCH_FAIL:-0}" == "1" ]]; then
+  # The running client is stopped before the broken deploy; its alive
+  # marker is cleared so startup certification observes the crash.
+  rm -f "${CORRAL_TEST_CLIENT_ALIVE:?}"
+fi
 STUB
 cat > "$WORK/bin/nohup" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'relaunch:%s\n' "${1:-}" >> "${CORRAL_TEST_UI_PATHS:?}"
 printf 'relaunch\n' >> "${CORRAL_TEST_UI_EVENTS:?}"
+if [[ "${CORRAL_TEST_RELAUNCH_FAIL:-0}" == "1" \
+      && "$(head -1 "$CORRAL_TEST_UI_DEST" 2>/dev/null)" == "new-host" ]]; then
+  # The freshly deployed binary crashes on launch: it clears the alive
+  # marker and the background launcher exits non-zero. A restored previous
+  # binary (old-ui) launches normally below.
+  rm -f "${CORRAL_TEST_CLIENT_ALIVE:?}"
+  exit 1
+fi
 touch "${CORRAL_TEST_CLIENT_ALIVE:?}"
 STUB
 cat > "$WORK/bin/sleep" <<'STUB'
@@ -168,6 +181,7 @@ touch "$WORK/client-alive"
 run_update_cycle() {
   CORRAL_TEST_CP_FAIL="${CORRAL_TEST_CP_FAIL:-0}" \
   CORRAL_TEST_CODESIGN_FAIL="${CORRAL_TEST_CODESIGN_FAIL:-0}" \
+  CORRAL_TEST_RELAUNCH_FAIL="${CORRAL_TEST_RELAUNCH_FAIL:-0}" \
   CARGO_PWD_FILE="$WORK/cargo.pwd" \
   LAUNCHCTL_PROGRAM="$WORK/installed/corrald" \
   LAUNCHCTL_KICKS="$WORK/kickstarts" \
@@ -287,6 +301,39 @@ run_update_cycle
 [[ -f "$WORK/update-config/ui-artifact.sha256" ]] \
   || fail "next cycle did not stamp the retried deployment"
 printf 'OK post-copy signing failure rolls back and the next cycle retries\n'
+
+# A relaunch that fails to stay alive must roll back and never stamp. The
+# freshly deployed binary crashes on launch (marker cleared, launcher
+# non-zero), the previous binary is restored and relaunches normally, and
+# subsequent cycles retry and fail again until a healthy deployment
+# certifies startup and stamps.
+rm -f "$WORK/update-config/ui-artifact.sha256"
+printf 'old-ui\n' > "$TEST_UI_DEST"
+: > "$WORK/ui-events"
+: > "$WORK/ui-paths"
+touch "$WORK/client-alive"
+if CORRAL_TEST_RELAUNCH_FAIL=1 run_update_cycle; then
+  fail "updater succeeded despite a failed UI relaunch"
+fi
+grep -Fq 'release-required: UI relaunch FAILED — rolled back' "$update_log" \
+  || fail "failed relaunch was not reported as release-required rollback"
+[[ "$(head -1 "$TEST_UI_DEST")" == "old-ui" ]] \
+  || fail "previous binary was not restored after failed relaunch"
+[[ ! -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "canonical stamp advanced despite failed relaunch"
+if CORRAL_TEST_RELAUNCH_FAIL=1 run_update_cycle; then
+  fail "retry succeeded despite the stale broken deployment"
+fi
+[[ "$(head -1 "$TEST_UI_DEST")" == "old-ui" ]] \
+  || fail "retry did not roll back again"
+[[ ! -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "retry advanced the canonical stamp"
+run_update_cycle
+[[ "$(head -1 "$TEST_UI_DEST")" == "new-host" ]] \
+  || fail "healthy cycle did not deploy after the failed relaunch"
+[[ -f "$WORK/update-config/ui-artifact.sha256" ]] \
+  || fail "healthy cycle did not stamp the certified deployment"
+printf 'OK failed UI relaunch rolls back, never stamps, and healthy cycles recover\n'
 
 # A release-shaped updater with no source checkout must fail explicitly. An
 # old "skip: ..." success is the indefinite-silent-failure defect.

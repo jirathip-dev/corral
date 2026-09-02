@@ -155,62 +155,91 @@ ui_after_hash="$(file_hash "$UI_BIN")"
 # install.
 reinstall_ui() {
   local UI_BIN="$BIN_DIR/corrald-ui"
-  case "$(uname -s)" in
-    Darwin)
-      if [[ ! -d "$MACOS_APP_DEST" ]]; then
-        log "Corral.app not installed — skipped UI update (run scripts/install-corral-ui.sh)"
-        return 1
-      fi
-      mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
-      # Keep the prior working binary so a failed copy or signing can be
-      # rolled back; the app must never be left half-deployed.
-      local ui_backup
-      ui_backup="$(mktemp "${UI_DEPLOY_PATH}.backup.XXXXXX")"
-      cp -p "$UI_DEPLOY_PATH" "$ui_backup" 2>/dev/null || true
-      if ! cp "$UI_BIN" "$UI_DEPLOY_PATH"; then
+  local platform ui_backup
+  platform="$(uname -s)"
+  ui_backup=""
+  if [[ "$platform" == "Darwin" && ! -d "$MACOS_APP_DEST" ]]; then
+    log "Corral.app not installed — skipped UI update (run scripts/install-corral-ui.sh)"
+    return 1
+  fi
+  mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
+  # Keep the prior working binary until the new one is deployed, signed,
+  # relaunched, and startup-certified; every failure path rolls back to it,
+  # so the app is never left half-deployed or dead-but-marked-current.
+  ui_backup="$(mktemp "${UI_DEPLOY_PATH}.backup.XXXXXX")"
+  cp -p "$UI_DEPLOY_PATH" "$ui_backup" 2>/dev/null || true
+  if ! cp "$UI_BIN" "$UI_DEPLOY_PATH"; then
+    rm -f "$ui_backup"
+    log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
+    exit 1
+  fi
+  if [[ "$platform" == "Darwin" ]]; then
+    if ! codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null; then
+      log "release-required: UI signing FAILED"
+      if [[ -f "$ui_backup" ]]; then
+        mv -f "$ui_backup" "$UI_DEPLOY_PATH"
+        codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+      else
         rm -f "$ui_backup"
-        log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
-        exit 1
       fi
-      if ! codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null; then
-        log "release-required: UI signing FAILED"
-        if [[ -f "$ui_backup" ]]; then
-          mv -f "$ui_backup" "$UI_DEPLOY_PATH"
-          codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
-        else
-          rm -f "$ui_backup"
-        fi
-        exit 1
-      fi
-      rm -f "$ui_backup"
-      if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
-        pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
-        sleep 1
-        nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
-        log "Corral.app relaunched (new binary)"
-      else
-        log "Corral.app not running — next launch uses the new binary"
-      fi
-      ;;
-    Linux|*)
-      mkdir -p "$(dirname "$UI_DEPLOY_PATH")"
-      cp "$UI_BIN" "$UI_DEPLOY_PATH" || {
-        log "release-required: UI deploy FAILED: $UI_BIN -> $UI_DEPLOY_PATH"
-        exit 1
-      }
-      chmod +x "$UI_DEPLOY_PATH"
-      if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
-        pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
-        sleep 1
-        nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
-        log "corrald-ui relaunched (new binary)"
-      else
-        log "corrald-ui not running — next launch uses the new binary"
-      fi
-      ;;
-  esac
-  write_ui_stamp "$ui_after_hash"
-  return 0
+      exit 1
+    fi
+  else
+    chmod +x "$UI_DEPLOY_PATH"
+  fi
+  if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
+    pkill -f "$UI_DEPLOY_PATH" 2>/dev/null || true
+    sleep 1
+    nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
+    if [[ "$platform" == "Darwin" ]]; then
+      log "Corral.app relaunched (new binary), certifying startup"
+    else
+      log "corrald-ui relaunched (new binary), certifying startup"
+    fi
+  else
+    # App was not running: nothing to certify; next launch uses the new
+    # binary. Deploy + stamp is the established not-running semantics.
+    if [[ "$platform" == "Darwin" ]]; then
+      log "Corral.app not running — next launch uses the new binary"
+    else
+      log "corrald-ui not running — next launch uses the new binary"
+    fi
+    rm -f "$ui_backup"
+    write_ui_stamp "$ui_after_hash"
+    return 0
+  fi
+  # Certify startup before stamping: `cmd &` returns immediately, so a
+  # binary that crashes on launch would otherwise be marked current while
+  # the client stays dead. Poll the running probe for a bounded window.
+  local alive=0
+  for _ in $(seq 1 12); do
+    if pgrep -f "$UI_DEPLOY_PATH" >/dev/null 2>&1; then
+      alive=1
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$alive" == "1" ]]; then
+    log "UI client startup certified (new binary)"
+    rm -f "$ui_backup"
+    write_ui_stamp "$ui_after_hash"
+    return 0
+  fi
+  # The freshly deployed binary did not survive startup: roll back to the
+  # prior working binary, attempt to relaunch it, and fail closed without
+  # advancing the canonical stamp.
+  log "release-required: UI relaunch FAILED — rolled back"
+  if [[ -f "$ui_backup" ]]; then
+    mv -f "$ui_backup" "$UI_DEPLOY_PATH"
+    if [[ "$platform" == "Darwin" ]]; then
+      codesign -s - --force "$MACOS_APP_DEST" 2>/dev/null || true
+    fi
+  else
+    rm -f "$ui_backup"
+  fi
+  nohup "$UI_DEPLOY_PATH" >/dev/null 2>&1 &
+  log "restored previous UI binary relaunched"
+  exit 1
 }
 
 # --- Deploy to the path launchd actually executes --------------------------

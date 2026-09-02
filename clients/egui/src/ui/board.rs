@@ -13,7 +13,7 @@ use eframe::egui::{
 };
 
 use crate::drive::{DriveIntent, DriveOutcome};
-use crate::model::Agent;
+use crate::model::{Agent, PresentationGroup, PresentationSection, presentation_sections};
 use crate::state::DriveState;
 use crate::state::Fleet;
 use crate::theme::{self, ci, kind, state};
@@ -74,6 +74,7 @@ const DEFAULT_CARDS_FLAT: bool = false;
 /// The approved desktop prototype is a true 42/58 master/detail split.
 pub const MASTER_DETAIL_RATIO: (f32, f32) = (0.42, 0.58);
 const MASTER_ROW_HEIGHT: f32 = 34.0;
+const MASTER_ACTIVITY_ROW_HEIGHT: f32 = 50.0;
 const MASTER_HEADER_HEIGHT: f32 = 28.0;
 const MIN_CARDS_WIDTH: f32 = 700.0;
 const MIN_CARDS_HEIGHT: f32 = 420.0;
@@ -589,11 +590,10 @@ fn show_cards_surface(
     if visible.is_empty() {
         empty_pane_message(&mut left_ui, &query);
     } else {
-        clicked = master_list(
+        clicked = presentation_master_list(
             &mut left_ui,
             fleet,
             &visible,
-            *flat,
             completed,
             selected.as_deref(),
             now_millis(),
@@ -620,13 +620,13 @@ fn show_cards_surface(
     clicked.or(selected)
 }
 
-/// Render the persistent repo-grouped master bar used by every workspace tab.
+/// Render the persistent status-grouped master bar used by every workspace tab.
 /// Search and state chips intentionally live here so changing the right-hand
 /// tab never changes the selected fleet context.
 pub fn show_master(
     ui: &mut Ui,
     fleet: &mut Fleet,
-    group_by_repo: bool,
+    _group_by_repo: bool,
     completed: crate::state::CompletedMode,
 ) -> Option<String> {
     let mut query = search_query(ui.ctx());
@@ -649,11 +649,10 @@ pub fn show_master(
         empty_pane_message(ui, &query);
         None
     } else {
-        master_list(
+        presentation_master_list(
             ui,
             fleet,
             &visible,
-            !group_by_repo,
             completed,
             selected.as_deref(),
             now_millis(),
@@ -727,6 +726,7 @@ fn empty_pane_message(ui: &mut Ui, query: &str) {
     });
 }
 
+#[cfg(test)]
 fn master_list(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -747,7 +747,7 @@ fn master_list(
                 if completed == crate::state::CompletedMode::Collapsed {
                     // #310 r3: flat-list Collapsed keeps BOTH the Idle and
                     // the distinct Done sections out of the expanded inline
-                    // list and exposes a single approved "Idle / done (N)"
+                    // list and exposes a single approved "Idle / finished (N)"
                     // collapsed affordance. Blocked/Working render inline.
                     let mut completed_ids: Vec<&str> = Vec::new();
                     for section in state_sections(visible, fleet) {
@@ -780,7 +780,7 @@ fn master_list(
                     if !completed_ids.is_empty() {
                         CollapsingHeader::new(
                             RichText::new(format!(
-                                "Idle / done ({}) — expandable",
+                                "Idle / finished ({}) — expandable",
                                 completed_ids.len()
                             ))
                             .small()
@@ -901,7 +901,7 @@ fn master_list(
                         }
                         if !done.is_empty() {
                             CollapsingHeader::new(
-                                RichText::new(format!("Done ({})", done.len()))
+                                RichText::new(format!("Finished ({})", done.len()))
                                     .small()
                                     .color(theme::ui::TEXT_MUTED),
                             )
@@ -923,19 +923,86 @@ fn master_list(
         });
     clicked
 }
+#[cfg(test)]
+fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count: usize) {
+    let color = theme::state::of(state);
+    ui.horizontal(|ui| {
+        badge(
+            ui,
+            &format!("{} {}", state.mark_glyph(), state.label()),
+            color,
+        );
+        ui.label(
+            RichText::new(format!("({count})"))
+                .small()
+                .monospace()
+                .color(theme::ui::TEXT_MUTED),
+        );
+    });
+}
+fn presentation_master_list(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    visible: &[&str],
+    completed: crate::state::CompletedMode,
+    selected: Option<&str>,
+    now_ms: u64,
+) -> Option<String> {
+    let mut clicked = None;
+    ScrollArea::vertical()
+        .id_salt("corral-ui-presentation-master-list")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            master_column_header(ui, width);
+            let agents: Vec<Agent> = visible
+                .iter()
+                .filter_map(|id| fleet.agents.get(*id))
+                .filter(|agent| {
+                    completed != crate::state::CompletedMode::Hide
+                        || !matches!(
+                            agent.presentation_group(),
+                            PresentationGroup::Finished | PresentationGroup::Idle
+                        )
+                })
+                .cloned()
+                .collect();
+            for section in presentation_sections(&agents) {
+                presentation_section_header(ui, &section);
+                for id in &section.agent_ids {
+                    if let Some(id) =
+                        master_card(ui, fleet, id, selected == Some(id.as_str()), now_ms)
+                    {
+                        clicked = Some(id);
+                    }
+                }
+            }
+        });
+    clicked
+}
 
-/// #310: a completed agent is one in the Idle / Done / Unknown states
-/// (the same classification the flat `state_sections` folds under Idle).
+fn presentation_section_header(ui: &mut Ui, section: &PresentationSection) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(section.header())
+            .small()
+            .monospace()
+            .strong()
+            .color(theme::ui::TEXT_MUTED),
+    );
+    ui.add_space(2.0);
+}
+
+/// #310: a completed agent is one in the Finished or Idle presentation
+/// groups. A supervising orchestrator remains selectable despite its
+/// canonical `done` state.
 fn is_completed_agent(fleet: &Fleet, id: &str) -> bool {
     let Some(agent) = fleet.agents.get(id) else {
         return false;
     };
-    let state: crate::theme::AgentStateLike = agent.state.into();
     matches!(
-        state,
-        crate::theme::AgentStateLike::Idle
-            | crate::theme::AgentStateLike::Done
-            | crate::theme::AgentStateLike::Unknown
+        agent.presentation_group(),
+        PresentationGroup::Finished | PresentationGroup::Idle
     )
 }
 
@@ -1007,23 +1074,6 @@ fn now_millis() -> u64 {
     js_sys::Date::now() as u64
 }
 
-fn state_section_header(ui: &mut Ui, state: crate::theme::AgentStateLike, count: usize) {
-    let color = theme::state::of(state);
-    ui.horizontal(|ui| {
-        badge(
-            ui,
-            &format!("{} {}", state.mark_glyph(), state.label()),
-            color,
-        );
-        ui.label(
-            RichText::new(format!("({count})"))
-                .small()
-                .monospace()
-                .color(theme::ui::TEXT_MUTED),
-        );
-    });
-}
-
 fn master_card(
     ui: &mut Ui,
     fleet: &Fleet,
@@ -1064,9 +1114,10 @@ fn master_card_with_response(
         state.label(),
         crate::model::relative_age(agent.ts, now_ms)
     );
+    let activity = agent.supervision_activity();
+    let row_height = activity.map_or(MASTER_ROW_HEIGHT, |_| MASTER_ACTIVITY_ROW_HEIGHT);
     let width = ui.available_width().max(0.0);
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, MASTER_ROW_HEIGHT), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, row_height), Sense::click());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::ZERO, bg);
     if selected {
@@ -1092,11 +1143,12 @@ fn master_card_with_response(
     }
 
     let state_width = MASTER_STATE_WIDTH;
+    let identity_bottom = activity.map_or(rect.bottom(), |_| rect.top() + 28.0);
     let left_rect = egui::Rect::from_min_max(
         egui::pos2(rect.left() + 12.0, rect.top()),
         egui::pos2(
             (rect.right() - state_width - 8.0).max(rect.left()),
-            rect.bottom(),
+            identity_bottom,
         ),
     );
     let right_rect = egui::Rect::from_min_max(
@@ -1106,43 +1158,65 @@ fn master_card_with_response(
             rect.bottom(),
         ),
     );
-    let mut left_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(left_rect)
-            .id(egui::Id::new(("corral-ui-master-card-left", id)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    let (dot_rect, _) = left_ui.allocate_exact_size(egui::vec2(11.0, 11.0), Sense::hover());
-    match state {
-        crate::theme::AgentStateLike::Working => {
-            left_ui.painter().circle_stroke(
-                dot_rect.center(),
-                5.0,
-                Stroke::new(1.5, state::WORKING),
-            );
+    {
+        let mut left_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .id(egui::Id::new(("corral-ui-master-card-left", id)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let (dot_rect, _) = left_ui.allocate_exact_size(egui::vec2(11.0, 11.0), Sense::hover());
+        match state {
+            crate::theme::AgentStateLike::Working => {
+                left_ui.painter().circle_stroke(
+                    dot_rect.center(),
+                    5.0,
+                    Stroke::new(1.5, state::WORKING),
+                );
+            }
+            crate::theme::AgentStateLike::Idle | crate::theme::AgentStateLike::Unknown => {
+                left_ui
+                    .painter()
+                    .circle_filled(dot_rect.center(), 5.0, state::IDLE);
+            }
+            _ => {
+                left_ui
+                    .painter()
+                    .circle_filled(dot_rect.center(), 5.0, color);
+            }
         }
-        crate::theme::AgentStateLike::Idle | crate::theme::AgentStateLike::Unknown => {
-            left_ui
-                .painter()
-                .circle_filled(dot_rect.center(), 5.0, state::IDLE);
-        }
-        _ => {
-            left_ui
-                .painter()
-                .circle_filled(dot_rect.center(), 5.0, color);
-        }
+        left_ui.add_space(7.0);
+        left_ui.add(
+            egui::Label::new(
+                RichText::new(agent.row_label())
+                    .size(13.0)
+                    .strong()
+                    .color(theme::ui::INK),
+            )
+            .truncate(),
+        );
+        tool_pill(&mut left_ui, &agent.tool);
     }
-    left_ui.add_space(7.0);
-    left_ui.add(
-        egui::Label::new(
-            RichText::new(agent.row_label())
-                .size(13.0)
-                .strong()
-                .color(theme::ui::INK),
-        )
-        .truncate(),
-    );
-    tool_pill(&mut left_ui, &agent.tool);
+    if let Some(activity) = activity {
+        let activity_rect = egui::Rect::from_min_max(
+            egui::pos2(left_rect.left() + 18.0, rect.top() + 28.0),
+            egui::pos2(left_rect.right(), rect.bottom()),
+        );
+        let mut activity_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(activity_rect)
+                .id(egui::Id::new(("corral-ui-master-card-activity", id)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let _ = activity_ui
+            .label(
+                RichText::new(activity.summary())
+                    .small()
+                    .monospace()
+                    .color(theme::ui::ACCENT),
+            )
+            .on_hover_text(activity.accessibility_label());
+    }
 
     let mut right_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -2305,9 +2379,9 @@ fn is_divider_scalar(c: char) -> bool {
 }
 
 /// #316 V3: Session status fields from ALREADY-AUTHORITATIVE structured
-/// read-model values only (agent state, session identity, tool, and the
-/// exact canonical `model effort · path` metadata contract). Unavailable
-/// runtime/context values are omitted — never manufactured from terminal
+/// values (agent state, session identity, role, tool, derived supervision
+/// activity, and the exact canonical `model effort · path` metadata contract).
+/// Unavailable runtime/context values are omitted — never manufactured from
 /// prose, and never derived from provider/model names beyond the existing
 /// supported metadata contract.
 fn recent_session_status(
@@ -2322,6 +2396,14 @@ fn recent_session_status(
         ("Session", agent.agent_id.clone()),
         ("Tool", agent.tool.clone()),
     ];
+    if agent.role() != crate::model::AgentRole::Unknown {
+        fields.push(("Role", agent.role().label().to_string()));
+    }
+    if let Some(activity) = agent.supervision_activity() {
+        fields.push(("Activity", "Supervising".to_string()));
+        fields.push(("Evidence", activity.summary()));
+        fields.push(("Command", "redacted".to_string()));
+    }
     if let Some(model) = model {
         fields.push(("Model", model.to_string()));
     }
@@ -3056,18 +3138,17 @@ fn state_cell(ui: &mut Ui, agent: &Agent) -> egui::Response {
             &format!("{} {}", st.mark_glyph(), st.label()),
             state::of(st),
         );
-        if let Some(reason) = &agent.reason {
-            let truncated: String = reason.chars().take(40).collect();
+        if agent.reason.is_some() {
+            let summary = agent
+                .supervision_activity()
+                .map(|activity| activity.summary())
+                .unwrap_or_else(|| "status details redacted".to_string());
             ui.add_sized(
                 [COL_STATE - 8.0, 30.0],
-                egui::Label::new(
-                    RichText::new(truncated)
-                        .small()
-                        .color(theme::ui::TEXT_MUTED),
-                )
-                .truncate(),
+                egui::Label::new(RichText::new(summary).small().color(theme::ui::TEXT_MUTED))
+                    .truncate(),
             )
-            .on_hover_text(reason);
+            .on_hover_text("Status details redacted");
         }
     })
 }
@@ -4379,7 +4460,7 @@ mod tests {
             "non-idle card renders so the output omission is observable"
         );
         assert!(
-            text_rect(&output, "Idle / done (1) — expandable").is_some(),
+            text_rect(&output, "Idle / finished (1) — expandable").is_some(),
             "idle tail renders as one collapsed expandable section"
         );
         clear_textures(&mut output);
@@ -4449,11 +4530,11 @@ mod tests {
         let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
         assert!(text.contains("working card"));
         assert!(!text.contains("done card"));
-        assert!(!text.contains("Done ("));
+        assert!(!text.contains("Finished ("));
     }
 
     /// #310 Collapsed: the working row stays open while done rows fold into
-    /// one collapsed "Done (N)" sub-header inside the mixed repo group.
+    /// one collapsed "Finished (N)" sub-header inside the mixed repo group.
     #[test]
     fn completed_collapsed_folds_done_rows_inside_mixed_repo_group() {
         let (ctx, fleet, visible) = mixed_repo_fleet();
@@ -4464,7 +4545,7 @@ mod tests {
             crate::state::CompletedMode::Collapsed,
         );
         assert!(text.contains("working card"));
-        assert!(text.contains("Done (1)"), "folded sub-header renders");
+        assert!(text.contains("Finished (1)"), "folded sub-header renders");
         assert!(
             !text.contains("done card"),
             "the folded rows must not render while collapsed"
@@ -4478,7 +4559,7 @@ mod tests {
         let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
         assert!(text.contains("working card"));
         assert!(text.contains("done card"));
-        assert!(!text.contains("Done ("), "Show mode has no fold header");
+        assert!(!text.contains("Finished ("), "Show mode has no fold header");
     }
 
     /// #310: the tri-state applies immediately — switching the mode on the
@@ -4631,7 +4712,7 @@ mod tests {
         );
         assert!(collapsed.contains("working card"));
         assert!(
-            collapsed.contains("Idle / done (1) — expandable"),
+            collapsed.contains("Idle / finished (1) — expandable"),
             "the approved collapsed affordance must carry the done count: {collapsed}"
         );
         assert!(
@@ -4642,12 +4723,12 @@ mod tests {
         // Show: done renders inline and no collapsed affordance exists.
         let shown = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
         assert!(shown.contains("done card"));
-        assert!(!shown.contains("Idle / done ("));
+        assert!(!shown.contains("Idle / finished ("));
 
         // Hide: done vanishes entirely.
         let hidden = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
         assert!(!hidden.contains("done card"));
-        assert!(!hidden.contains("Idle / done ("));
+        assert!(!hidden.contains("Idle / finished ("));
     }
 
     #[test]
@@ -7197,5 +7278,30 @@ mod tests {
         };
         assert_eq!(system.visible_label(), "Diagnostic");
         assert_eq!(unknown.visible_label(), "Unknown activity");
+    }
+
+    #[test]
+    fn status_panel_projects_finished_and_redacted_supervision_fields() {
+        let mut agent = agent_with_caps(&[]);
+        agent.agent_id = "herdr:demo:orch".into();
+        agent.display_name = Some("orchestrator-qa".into());
+        agent.state = crate::model::AgentState::Done;
+        agent.reason =
+            Some("done: poll every 60s; queued_work=1; current_command=/private/token".into());
+        let status = recent_session_status(&agent, None, None, None);
+        assert!(status.fields.contains(&("State", "Finished".into())));
+        assert!(status.fields.contains(&("Activity", "Supervising".into())));
+        assert!(
+            status
+                .fields
+                .contains(&("Evidence", "↻ Polling · every 60s".into()))
+        );
+        assert!(status.fields.contains(&("Command", "redacted".into())));
+        assert!(
+            status
+                .fields
+                .iter()
+                .all(|(_, value)| !value.contains("/private/token"))
+        );
     }
 }

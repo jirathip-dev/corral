@@ -1,4 +1,5 @@
 {
+  "fixture_name": "Synthetic R2 grouped status presentation",
   "snapshot": {
     "schema_version": 5,
     "build_identity": {
@@ -265,6 +266,96 @@
             "url": "https://demo.example.invalid/demo-bravo/issues/9006"
           }
         ]
+      },
+      "demo:p07:orch": {
+        "agent_id": "demo:p07:orch",
+        "source": "herdr",
+        "tool": "tool-one",
+        "state": "done",
+        "reason": "done: poll every 60s; queued_work=1; current_command=redacted",
+        "seq": 11,
+        "ts": 1787788800000,
+        "capabilities": ["read_tail"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "demo-host",
+        "workspace": {
+          "repo": "demo-bravo",
+          "branch": "bravo-supervision",
+          "worktree_path": null,
+          "pr_number": 9007,
+          "ci_status": "pending",
+          "dirty": false,
+          "ahead": 0,
+          "behind": 0
+        },
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p07:orch"
+        },
+        "display_name": "orchestrator-qa",
+        "title": "Coordinate verification",
+        "issues": []
+      },
+      "demo:p08:impl": {
+        "agent_id": "demo:p08:impl",
+        "source": "herdr",
+        "tool": "tool-two",
+        "state": "done",
+        "reason": "task complete",
+        "seq": 10,
+        "ts": 1787788800000,
+        "capabilities": ["read_tail"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "demo-host",
+        "workspace": {
+          "repo": "demo-bravo",
+          "branch": "bravo-coverage",
+          "worktree_path": null,
+          "pr_number": 9008,
+          "ci_status": "success",
+          "dirty": false,
+          "ahead": 0,
+          "behind": 0
+        },
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p08:impl"
+        },
+        "display_name": "implementer-qa",
+        "title": "Finish fixture coverage",
+        "issues": []
+      },
+      "demo:p09:review": {
+        "agent_id": "demo:p09:review",
+        "source": "herdr",
+        "tool": "tool-one",
+        "state": "done",
+        "reason": "task complete",
+        "seq": 8,
+        "ts": 1787788800000,
+        "capabilities": ["read_tail"],
+        "waiting_on": null,
+        "parent_id": null,
+        "host": "demo-host",
+        "workspace": {
+          "repo": "demo-bravo",
+          "branch": "bravo-coverage",
+          "worktree_path": null,
+          "pr_number": 9009,
+          "ci_status": "success",
+          "dirty": false,
+          "ahead": 0,
+          "behind": 0
+        },
+        "attachment": {
+          "kind": "pane",
+          "ref": "demo:p09:review"
+        },
+        "display_name": "reviewer-qa",
+        "title": "Review fixture coverage",
+        "issues": []
       },
       "demo:p06:rs": {
         "agent_id": "demo:p06:rs",

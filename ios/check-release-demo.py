@@ -83,7 +83,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #331: terminal attach errors, handshake lifecycle, and cleanup states;
     # #327 reconcile: digest re-pinned after merging origin/integration
     # (promoted #331/#333/#337 batch) into the #327 branch.
-    "103001a13ebf3327290f225c9c202c597da6a8b9b51bceaf1988ea70e9d15e23"
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states.
+    # #328/#329/#330: recent-output attribution, divider-vs-content handling,
+    # bounded harness presentation, and empty-Conversation evidence.
+    # #319/#320 grouped R2: ordered status presentation, structured
+    # supervision evidence, and Finished wording updated the board sources.
+    # #327 R5 reconcile: union of both attributions; digest re-pinned from
+    # the merged #327 + #331/#333/#337 + #319/#320 source set.
+    "c88b5189bdf45938336e8c99c3775ef95d065690da9671fee8464a2bf767c065"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

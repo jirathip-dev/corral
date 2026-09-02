@@ -16,39 +16,47 @@ the other two. Additive-only: new crates go under `crates/`; `corrald`
 itself is never restructured.
 
 ```
-src/main.rs              binary entrypoint: --socket/--port/--bind parsing
-                         (allowlist: loopback/RFC 1918/Tailscale CGNAT/
+src/main.rs              binary entrypoint: --socket/--port/--bind/--cors-origin
+                         parsing (allowlist: loopback/RFC 1918/Tailscale CGNAT/
                          IPv6 ULA — public and 0.0.0.0 refused), auth-plane
-                         init, planes supervisor, axum serve
-src/lib.rs               library surface: adapters, api, approve, auth,
-                         core, drive, integrate
+                         init, planes supervisor, axum serve; the only
+                         subcommand is `digest` (D33)
+src/lib.rs               library surface: adapters, api, auth, core, drive,
+                         history, integrate, push
 src/adapters/            herdr.rs (event push + trusted catalog refresh),
                          git_plane.rs, gh_plane.rs, mod.rs (Adapter trait)
 src/core/                model.rs (canonical Agent, schema v5),
                          events.rs (Plane trait + channel),
                          store.rs (revisioned store, coalescing, resume),
-                         redact.rs (secret redaction at the boundary)
+                         redact.rs (secret redaction at the boundary),
+                         blocks.rs, provenance.rs, workspace.rs
 src/integrate/           plane-channel drain; folds git/gh facts onto
                          agent records
-src/drive/               the FROZEN P3 contract: Capability, DriveEnvelope,
+src/drive/               the FROZEN P3 contract: Capability (ReadTail /
+                         ReadDiff only since #354), DriveEnvelope,
                          SignedDrive, canonical_envelope_bytes,
                          DriveAuthorizer + AuditLog traits
-src/approve/             claim-based approvals (approval_id, prompt_hash,
-                         choice validation)
-src/auth/                mod.rs (AuthPlane: registry, authorizer, step-up,
-                         audit, tokens), host_identity.rs, registry.rs,
-                         authorizer.rs, step_up.rs, audit.rs, http.rs
+src/auth/                mod.rs (AuthPlane: registry, authorizer, audit,
+                         tokens), host_identity.rs, registry.rs,
+                         authorizer.rs, audit.rs, http.rs
 src/api/                 mod.rs (router: /healthz /snapshot /events
-                         /history), drive.rs (POST /drive handler)
+                         /history /issues), drive.rs (POST /drive —
+                         signed reads only), issues.rs, repo.rs, cors.rs
 src/history/             mod.rs, ring.rs (D23 persistent event ring),
                          digest.rs (D33 `corrald digest`)
-crates/corrald-client/   shared client layer: model, drive, keypair,
-                         stepup, approval, sse, client; tests/conformance.rs
+src/push/                mod.rs, config.rs, payload.rs, provider.rs
+                         (APNs transition notifier; env-armed)
+crates/corrald-client/   shared client layer: model, drive, keypair, sse,
+                         errors, client (approval.rs/stepup.rs remain as
+                         wire mirrors of removed daemon surfaces —
+                         decode-only, no live endpoint);
+                         tests/conformance.rs
 tests/                   auth.rs, drive.rs, http.rs, integration.rs,
                          store.rs, model.rs, redact.rs, git_plane.rs,
-                         gh_plane.rs
+                         gh_plane.rs, history.rs, provenance.rs, push.rs,
+                         readonly_cut.rs (the #354 cut probe), fixtures/
 docs/corral/             P1–P4 briefs (history) + P4-conformance.md
-                         (normative wire contract)
+                         (the frozen pre-cut wire contract record)
 ```
 
 ## Icon assets and packaging
@@ -207,20 +215,22 @@ Historical verified results on main:
 | `cargo test` | all green — 95 lib + 24 + 15 + 8 + 2 + 7 + 11 + 11 + 3 tests |
 | `cargo test -p corrald-client` | 12 unit + 4 wire-format pins green; live suite `#[ignore]`d at that baseline |
 
-The R1–R10 conformance scenarios (register, read path + SSE resume,
-signed drive executes, tamper refused, read-only denied, replay
-idempotent, stale-hash refused, matching approve, step-up, and audit growth)
-run against a **real spawned corrald** with a fake herdr unix server —
-fully self-contained, needs no live fleet:
+The conformance scenarios (R1 register; R2 read path + SSE resume;
+R5 read-only denied; R10 audit grows only on drive dispatches; plus the
+read-only register/read/sign drive probe and SSE edge cases) run against
+a **real spawned corrald** with a fake herdr unix server — fully
+self-contained, needs no live fleet:
 
 ```sh
 cargo test -p corrald-client -- --ignored
 ```
 
-R11 (GitHub PR binding) additionally requires read-only GitHub access and a
-suitable open PR on a tracked repository. Verified locally on 2026-08-25:
-13/13 ignored conformance tests pass. This is the W1 acceptance bar shared by both P4
-clients.
+The #354 cut removed the approve/step-up scenario arms (R3/R4/R6–R9 of
+the pre-cut suite no longer exist; the R-numbering keeps its legacy
+gaps). R11 (GitHub PR binding) additionally requires read-only GitHub
+access and a suitable open PR on a tracked repository; run it with
+`--ignored` against a scratch daemon. The W1 acceptance bar is shared by
+both P4 clients.
 
 ## Design-gate evidence
 
@@ -646,9 +656,8 @@ future findings cannot be silently carried forward as part of this baseline.
 - **Default deny, secrets never logged.** New endpoints default to
   unauthenticated-read or admin-token-gated; key material stays `0600`
   under `0700` dirs.
-- **Typed errors everywhere.** Unknown capability / bad grant /
-  no-waiting-approval etc. are typed refusals with stable HTTP mappings
-  (see `docs/corral/P4-conformance.md`), never 500s.
+- **Typed errors everywhere.** Unknown capability / bad grant / unknown
+  agent etc. are typed refusals with stable HTTP mappings, never 500s.
 
 ## State token contract
 
@@ -660,37 +669,43 @@ The shared state→color/label vocabulary for both clients lives in
 diverge from the contract: a drift test per client reads the JSON and
 asserts the hexes/labels/ranks/marks stay in sync. Update the contract first,
 then re-point each client and its drift test together. Color is never the
-only state channel — every chip renders a mark plus a label.
+only state channel — every chip renders a mark plus a label. The labels the
+BOARDS render are the herdr RAW tokens (working / idle / blocked / unknown);
+a wire-`done` record (transitional daemon) ranks and reads as idle, since
+herdr 0.8.2 has no `done`.
 
 ## How to add a capability
+
+The #354 cut closed the drive plane to signed reads (`read_tail` and the
+daemon-retained `read_diff`); the mutating capability set is frozen shut
+and the accept-list gates (unknown_capability refusal, registry grant
+parse) treat every other name as a typo. A NEW signed-read capability is a
+deliberate contract change — this is the smallest recipe:
 
 1. **Contract** (`src/drive/mod.rs`): add the variant to `Capability`
    plus its `Display`/`FromStr` arms. Additive only — never change an
    existing variant. Add a typed `DrivePayload` variant and its
    `DrivePayload::parse` arm if the capability carries a payload.
-2. **Grants**: the daemon needs nothing extra — `POST /grants` parses
-   capability strings through `Capability::FromStr`, so the new name is
-   grantable by default. Unknown strings fail loudly, so no typo can
-   silently no-op. The desktop grant editor does need its closed-set
-   mirror updated in `clients/egui/src/protocol.rs`
-   (`GRANT_CAPABILITIES`).
+2. **Grants**: there is no `POST /grants` — grants are provisioned
+   out-of-band on `registry.json` (stop the daemon, edit the device's
+   `"grants"` array, restart; names are parsed through
+   `Capability::FromStr`, so the new name is grantable once the variant
+   exists). Unknown strings fail loudly on load, so no typo can silently
+   no-op.
 3. **Dispatch** (`src/adapters/mod.rs`): extend `DriveCommand` and the
    herdr adapter's `drive()` match. Resolve the canonical `agent_id` to
    the transport target; return typed `DriveError`s.
-4. **Approve seam** (`src/approve/mod.rs`): only if the capability
-   answers a waiting prompt — wire it through `check_approval_claim`.
-5. **Client** (`crates/corrald-client`): mirror the wire type and add a
-   scenario to `tests/conformance.rs`.
-6. **Gate**: run all four quality gates, then the live conformance suite
+4. **Clients** (`crates/corrald-client`, `clients/egui`,
+   `ios/FleetNotifier`): mirror the wire type and add a scenario to
+   `crates/corrald-client/tests/conformance.rs`.
+5. **Gate**: run all four quality gates, then the live conformance suite
    against a scratch daemon (recipe in `tests/common/mod.rs` —
    `spawn_live_daemon`).
 
-Fleet-level capabilities (e.g. `start_worktree`, #113) do NOT dispatch
-through the per-agent adapter: `src/api/drive.rs` routes them to
-`dispatch_worktree` before the agent/tombstone/replay-claim path, so a
-worktree start is idempotent on its own `request_id` and audited once. The
-`target` is the fleet/repo name, not an `agent_id`. The client still names
-the capability in `POST /grants` exactly like an agent capability.
+There are no fleet-level capabilities any more: `start_worktree` (the one
+fleet-scoped arm) and its `dispatch_worktree` path were removed in #354,
+so every capability dispatches through the per-agent adapter and targets
+an `agent_id`.
 
 ## Testing a scratch daemon by hand
 

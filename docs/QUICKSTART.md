@@ -1,8 +1,9 @@
 # Corral Quickstart
 
-Get `corrald` running and drive a device end-to-end in ~10 minutes. Every
-command in this guide was run and verified against a throwaway daemon
-(2026-08-16).
+Get `corrald` running and read a device end-to-end in ~10 minutes. Corral
+is a read-only fleet monitor since #354: everything a client can do is a
+signed READ (`read_tail` recents) or a credential-free GET; there is no
+drive/approve/step-up surface anywhere.
 
 ## Prerequisites
 
@@ -30,9 +31,10 @@ Result: `target/release/corrald`.
 
 `corrald` binds loopback by default (`127.0.0.1:8474`); `--bind` also
 accepts tailnet (100.64/10), RFC 1918 private, and IPv6 unique-local
-addresses (#65) — public IPs and `0.0.0.0` are refused. Reads are
-credential-free on whatever interface you bind, so go beyond loopback only
-on a network (ideally a tailnet) whose devices may all see fleet state.
+addresses (#65) — public IPs and `0.0.0.0` are refused. The read plane
+(`/snapshot`, `/events`, `/history`, `/issues`) is credential-free on
+whatever interface you bind, so go beyond loopback only on a network
+(ideally a tailnet) whose devices may all see fleet state.
 (For the iOS client, don't bind beyond loopback at all — front the
 loopback daemon with real TLS via Tailscale Serve, which exposes the
 read plane to the same tailnet-wide audience as a tailnet bind: see
@@ -55,6 +57,7 @@ Flags (`corrald --help`):
 | `--socket`, `-s` | `~/.config/herdr/herdr.sock` | herdr API unix socket |
 | `--port`, `-p` | `8474` | HTTP port |
 | `--bind`, `-b` | `127.0.0.1` | bind address (loopback / tailnet / private / IPv6 ULA; public and 0.0.0.0 refused) |
+| `--cors-origin` | none | exact browser origin allowed to read the credential-free read plane (repeatable; `*` refused) |
 
 Default config dirs: daemon `$HOME/.config/corral`, client
 `$HOME/.config/corral/ui` — override with `CORRAL_CONFIG_DIR` /
@@ -65,8 +68,7 @@ Check it is up:
 ```sh
 curl -s http://127.0.0.1:8474/healthz   # → ok
 curl -s http://127.0.0.1:8474/host-key
-# → {"algorithm":"X25519","public_key":"...","note":"host identity is an
-#    X25519 key; device writes are signed with per-device Ed25519 keys"}
+# → {"algorithm":"X25519","public_key":"...","note":"..."}
 ```
 
 ## 3. Read the fleet
@@ -78,8 +80,9 @@ curl -s http://127.0.0.1:8474/snapshot
 ```
 
 `{"schema_version":5,"rev":<n>,"generated_at":<ms>,"agents":{...}}` — one
-entry per agent with state, waiting_on, capabilities, and workspace
-facts. Live updates (resume from a `rev` via `Last-Event-ID`):
+entry per agent with state (herdr RAW vocabulary: working / idle / blocked
+/ unknown — no "done" from herdr 0.8.2), waiting_on, capabilities, and
+workspace facts. Live updates (resume from a `rev` via `Last-Event-ID`):
 
 ```sh
 curl -sN http://127.0.0.1:8474/events
@@ -104,34 +107,36 @@ Result (verified):
 ```json
 {"algorithm":"Ed25519","expiry_ts":...,"grants":[],
  "key_id":"dev_0b1a066ae2c26abe4830241d68ebfc33",
- "note":"default grants are empty (read-only): drive capabilities are promoted by the host",
+ "note":"default grants are empty (read-only); the #354 daemon is read-only and grant administration over HTTP was removed",
  "revoked":false}
 ```
 
-A new device is **read-only**: `grants` is empty. The read plane needs no
-grants; every drive capability must be granted by the host.
+A new device is **read-only**: `grants` is empty, and the only capability
+names that can ever be granted are the signed reads (`read_tail`, plus the
+daemon-retained `read_diff`). There is no HTTP grant route.
 
 > The desktop client (`corrald-ui`, P4 W2) auto-registers on localhost —
 > it reads the daemon's `registration-token` file for the same user, so
 > no curl is needed. See the UI section below.
 
-## 5. Grant a capability
+## 5. Grant the read capability (out-of-band)
 
-The host promotes capabilities with its `admin-token` (read it from the
-config dir; never hand it to devices). The desktop UI's **Settings →
-Device grants** provides the same action with the same host-admin boundary:
+Grant administration is out-of-band since #354 — the host-admin `POST
+/grants` route and `scripts/corrald-grant.sh` are gone. The registry
+(`registry.json`, 0600, in the config dir) is loaded once at daemon start:
 
 ```sh
-ADMIN=$(cat /tmp/corral-dev/admin-token)
-curl -s -X POST http://127.0.0.1:8474/grants \
-  -H 'Content-Type: application/json' -H "Authorization: Bearer $ADMIN" \
-  -d '{"action":"set_grants","key_id":"dev_0b1a066ae2c26abe4830241d68ebfc33","grants":["read_tail"]}'
-# → {"key_id":"dev_...","ok":true}
+# 1. stop corrald
+# 2. edit <config-dir>/registry.json — set the device's "grants" array:
+#      { ..., "grants": ["read_tail"], "revoked": false, ... }
+# 3. start corrald again
 ```
 
-Revoke anytime with `{"action":"revoke","key_id":"...","revoked":true}`.
+`read_tail` unlocks the Recent-output (recents) surface — the only signed
+drive any client sends. Revoke by setting `"revoked": true` the same way.
+Never hand the `admin-token` (or the `registration-token`) to a device.
 
-## 6. Drive (signed)
+## 6. Drive (signed read)
 
 A drive command is the envelope signed with the device key. The signature
 covers the exact canonical JSON bytes (fixed field order). Sign with the
@@ -149,16 +154,20 @@ curl -s -w '\nHTTP %{http_code}\n' -X POST http://127.0.0.1:8474/drive \
 Without the grant the daemon refuses (verified): `403`
 `{"kind":"not_granted","message":"capability not granted: read_tail",...}`
 and the audit log stays untouched. With the grant, the command dispatches
-to the adapter (unknown agents are refused at dispatch with `200
-{"ok":false,"error":"unknown agent: ..."}` and **are** audited).
+to the adapter and returns the bounded tail (`lines` + segmented `blocks`
++ `source_rev`; unknown agents are refused at dispatch with `200
+{"ok":false,"error":"unknown agent: ..."}` and **are** audited). Naming a
+removed capability (`prompt`, `interrupt`, `approve`, `kill`, `attach`,
+`start_worktree`, `read_issues`) is refused with `400 unknown_capability`
+before the authorizer.
 
 ## 7. Read the audit log
 
-The hash-chained log grows only on drive writes — never on reads or auth
-failures. Only the host admin can read it:
+The hash-chained log grows only on signed drive dispatches (the reads) —
+never on GETs or auth failures. Only the host admin can read it:
 
 ```sh
-curl -s -H "Authorization: Bearer $ADMIN" http://127.0.0.1:8474/audit
+curl -s -H "Authorization: Bearer ***" http://127.0.0.1:8474/audit
 ```
 
 `{"entries":[...],"head":"<sha256>","valid":true,"note":"..."}` — each
@@ -172,11 +181,17 @@ On `main` as the `clients/egui` workspace member:
 cargo run -p corrald-ui --release
 ```
 
-A dark-dashboard fleet board speaking corrald's HTTP/SSE surface directly,
-with signed drive controls, keychain-stored device keys (macOS), a host
-audit view, and the Settings device-grant editor. It **auto-registers on localhost**
-by reading the daemon's `registration-token` for the same user, so steps 4
-and 5 above are only needed for other clients.
+A dark-dashboard **read-only** fleet board speaking corrald's HTTP/SSE
+surface directly: Board (repo groups with raw herdr state chips; blocked
+pinned top; rows = name/repo/state/time-in-state/branch + pane ref) and
+Settings (connection only). Tapping a row opens the recents v1 live tail
+via the signed `read_tail` drive (device keys in the macOS Keychain /
+0600 file fallback). There is no Issues tab, no audit pane, no grant
+editor, and no drive/approval UI. It **auto-registers on localhost** by
+reading the daemon's `registration-token` for the same user, so steps 4
+and 5 above are only needed for other clients. The WASM build (`#215`,
+mobile layout per `#304`) renders the same read-only board from a bundled
+synthetic fixture — no signing, no keyring, no `/drive`.
 
 macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
 [OPERATIONS.md](OPERATIONS.md) has the how-to.
@@ -184,11 +199,15 @@ macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
 ## 9. The iOS app (FleetNotifier)
 
 SwiftUI client (`ios/` in this repo, bundle `com.corral.fleetnotifier`) that
-speaks the same HTTP/SSE surface as the desktop UI: live fleet board,
-per-agent workspace lines, and signed drive controls. Release/distribution
-builds use only the real registration, SSE, and signed-drive path; the
-Debug-only seeded demo is not a TestFlight or App Review path. This guide does
-not claim physical-device or TestFlight verification.
+speaks the same HTTP/SSE surface: read-only board (repo groups, raw state
+chips, blocked pinned top, last-known rows under an offline banner), the
+recents v1 live tail via signed `read_tail`, and state-change notifications
+(start / blocked / episode-end-to-idle; global on/off in Settings). Real
+APNs delivery awaits the host-side provisioning checkpoint; simulator/DEBUG
+verification uses the local notification bridge. Release/distribution
+builds use only the real registration, SSE, and signed-read path; the
+Debug-only seeded demo is not a TestFlight or App Review path. This guide
+does not claim physical-device or TestFlight verification.
 
 Registering from the phone is steps 4 and 5 above, with two phone-specific
 rules:
@@ -198,33 +217,20 @@ rules:
   hostname — see "Remote access from iOS (Tailscale Serve)" in
   OPERATIONS.md.
 - **A fresh registration is read-only** (`grants: []`), and registration is
-  idempotent per device key — re-registering never upgrades grants. Promote
-  the phone's key with step 5:
-
-```sh
-scripts/corrald-grant.sh --key <phone-key-id> --caps read_tail,prompt,interrupt,approve
-```
-
-The baseline phone promotion intentionally stops at the safe read/reply
-set. Add `kill,attach` explicitly only when the host has approved those
-controls; `read_tail` also unlocks the iOS Recent-output surface.
+  idempotent per device key — re-registering never upgrades grants. Give
+  the phone's key `read_tail` out-of-band (step 5) to unlock recents.
 
 What the app shows:
 
-- **Live board** from the `/events` SSE stream: agent rows ordered
-  blocked > done > working > idle, each with state, title/session,
-  repo·branch·worktree, issue chips, CI glyph, tool.
-- **Recent output** (`read_tail`): bounded live tail (segmented blocks) via
-  signed `/drive` — the only output surface; live at the bottom, scroll up
-  for the bounded window.
-- **Prompt** (`prompt`): free-text prompt to an agent.
-- **Interrupt** (`interrupt`), **Kill** (`kill`), and **Attach**
-  (`attach`): signed write controls; Kill uses Face ID step-up.
-- **Approve / Deny / Continue** (`approve`): canned replies to a waiting
-  agent, including from the lock-screen notification.
-- Controls stay visible when disabled. A missing grant reads
-  `requires the <cap> grant — ask the host.`; an unadvertised capability
-  reads `<cap>: not available for this agent.`
+- **Live board** from the `/events` SSE stream: repo groups; raw herdr
+  state chips (working / idle / blocked / unknown); rows show
+  name, repo, state, time-in-state, branch, and a small pane ref.
+- **Recent output** (`read_tail`): bounded live tail (≤200 lines,
+  segmented blocks) via signed `/drive` — live tail only, no load-earlier.
+- **Notifications**: on working-entry, blocked, and episode end (active →
+  idle, once per episode); tap deep-links to the row with recents open.
+- **Settings**: connection + notification pairing only. No action
+  controls, no Issues/Terminal/Diff UI, no device/grant admin.
 
 Board never renders but the daemon is healthy? Every stream-layer failure
 now surfaces as a dismissible banner instead of a silent spinner (the
@@ -237,5 +243,4 @@ OPERATIONS.md has the full checklist.
 - One-shot setup (build + launchd + first run):
   `scripts/setup-corrald.sh` — see [OPERATIONS.md](OPERATIONS.md#one-shot-setup)
 - Security model and device lifecycle: [OPERATIONS.md](OPERATIONS.md)
-- Wire contract for client authors: [corral/P4-conformance.md](corral/P4-conformance.md)
 - Hacking on the daemon: [DEVELOPING.md](DEVELOPING.md)

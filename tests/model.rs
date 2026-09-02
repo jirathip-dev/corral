@@ -74,18 +74,7 @@ fn attachment_holds_pane_ref_not_agent_id() {
 #[test]
 fn capability_contract_is_exact() {
     let agent = sample_agent();
-    assert_eq!(
-        agent.capabilities,
-        vec![
-            "prompt",
-            "interrupt",
-            "approve",
-            "read_tail",
-            "read_diff",
-            "kill",
-            "attach"
-        ]
-    );
+    assert_eq!(agent.capabilities, vec!["read_tail", "read_diff"]);
 }
 
 #[test]

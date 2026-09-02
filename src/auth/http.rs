@@ -3,45 +3,34 @@
 //! - `GET /host-key`  — host identity (X25519 public key, no path disclosure).
 //! - `POST /register` — device registration: registration token (routing
 //!   only) + device public key → `key_id` + read-only-default grants.
-//! - `POST /step-up`  — biometric step-up token for destructive payloads
-//!   (single-use, 5 min TTL, bound to `key_id`).
-//! - `GET /grants`    — host admin (admin token): registered device keys,
-//!   current grants, and revocation state for the board's grant UI.
-//! - `POST /grants`   — host admin (admin token): grant promotion /
-//!   revocation / expiry.
 //! - `GET /audit`     — host admin: the hash-chained audit log with
 //!   integrity verdict.
 //!
 //! `POST /drive` is served by W1's handler (`crate::api::drive`), which
-//! keeps the documented order: parse → `DriveAuthorizer::verify` → step-up
-//! gate (`[`STEP_UP_HEADER`]`) → dispatch → audit append. Auth and step-up
-//! failures are never appended (AC5).
+//! keeps the documented order: parse → `DriveAuthorizer::verify` →
+//! dispatch → audit append. Auth failures are never appended (AC5).
+//! #354: the step-up route and the `/grants` grant-admin surface (GET
+//! projection + POST set_grants/revoke) are retired with the mutating
+//! plane they administered — the daemon now only serves signed reads, and
+//! per-device grants are provisioned out-of-band (registry file), never
+//! over HTTP.
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use axum::routing::{get, post};
 
 use crate::api::AppState;
 
-use super::registry::RegistryMutationError;
-use super::step_up::{StepUpRequest, canonical_step_up_bytes};
-use super::{STEP_UP_TTL, b64_decode_array_32, decode_b64, now_secs};
-
-pub const STEP_UP_HEADER: &str = "X-Step-Up-Token";
-/// Max accepted skew between a signed step-up request's `ts` and the host
-/// clock (F14) — beyond this the request is treated as stale/replayed.
-pub const STEP_UP_MAX_SKEW_SECS: u64 = 60;
+use super::b64_decode_array_32;
 
 pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/host-key", get(host_key))
         .route("/register", post(register))
-        .route("/step-up", post(step_up))
-        .route("/grants", get(admin_grants).post(grants))
         .route("/audit", get(audit))
 }
 
@@ -59,69 +48,13 @@ fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Va
     (status, Json(serde_json::json!({ "error": error })))
 }
 
-#[derive(serde::Deserialize)]
-struct AdminGrantsQuery {
-    key_id: Option<String>,
-}
-
-/// GET /grants — host admin (admin token), the board's narrow read
-/// surface for grant management. Without a query it lists registered
-/// devices (key id, grants, revocation, expiry — never the public key or
-/// APNs token); with `?key_id=<id>` it narrows to one device so unknown
-/// keys fail loudly instead of being treated as an empty grant set.
-async fn admin_grants(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Query(query): Query<AdminGrantsQuery>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    if !state.auth.check_admin(&headers) {
-        return json_err(StatusCode::UNAUTHORIZED, "admin token required");
-    }
-    if query.key_id.as_deref() == Some("") {
-        return json_err(StatusCode::BAD_REQUEST, "key_id must not be empty");
-    }
-    let devices = match query.key_id.as_deref() {
-        Some(key_id) => match state.auth.registry.get(key_id) {
-            Some(rec) => vec![admin_device_view(&rec)],
-            None => return json_err(StatusCode::NOT_FOUND, &format!("unknown key: {key_id}")),
-        },
-        None => state
-            .auth
-            .registry
-            .records()
-            .iter()
-            .map(admin_device_view)
-            .collect(),
-    };
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "ok": true,
-            "devices": devices,
-            "note": "host admin read for the desktop grant UI; does not expose public keys or push tokens",
-        })),
-    )
-}
-
-fn admin_device_view(rec: &super::registry::DeviceRecord) -> serde_json::Value {
-    serde_json::json!({
-        "key_id": rec.key_id,
-        "name": rec.name,
-        "grants": rec.grants,
-        "revoked": rec.revoked,
-        "revoked_ts": rec.revoked_ts,
-        "expiry_ts": rec.expiry_ts,
-        "created_ts": rec.created_ts,
-    })
-}
-
 /// POST /register {token, public_key, name?} -> {key_id, grants, expiry_ts}.
 ///
 /// `name` is an optional human-readable device label (#209, purely
 /// cosmetic — never used for auth): trimmed, control characters rejected,
 /// truncated to 64 chars. Clients send their own device name (egui: local
-/// hostname; iOS: UIDevice name) so the host-admin Devices/Grants surface
-/// can show which machine/phone holds which key.
+/// hostname; iOS: UIDevice name) so the host can show which machine/phone
+/// holds which key.
 async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
@@ -161,7 +94,7 @@ async fn register(
                 "expiry_ts": rec.expiry_ts,
                 "revoked": rec.revoked,
                 "algorithm": "Ed25519",
-                "note": "default grants are empty (read-only): drive capabilities are promoted by the host",
+                "note": "default grants are empty (read-only); the #354 daemon is read-only and grant administration over HTTP was removed",
             })),
         ),
         Err(e) => match e {
@@ -177,162 +110,6 @@ async fn register(
                 "name must be a non-empty string without control characters",
             ),
             super::RegisterError::Persist(err) => json_err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("registry persist failed: {err}"),
-            ),
-        },
-    }
-}
-
-/// POST /step-up {key_id, signature, request} -> {token, expires_ts}.
-///
-/// The signature proves possession of the device key: it covers
-/// [`canonical_step_up_bytes`] of the request. The minted token is
-/// single-use, expires in 5 minutes, and is bound to `key_id`. The
-/// request's `ts` freshness is enforced (F14): `|now - ts| < 60s`.
-/// Revoked/expired keys cannot mint (F9).
-async fn step_up(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let request: StepUpRequest =
-        match serde_json::from_value(body.get("request").cloned().unwrap_or_default()) {
-            Ok(r) => r,
-            Err(_) => return json_err(StatusCode::BAD_REQUEST, "malformed step-up request"),
-        };
-    if request.purpose != "destructive" {
-        return json_err(StatusCode::BAD_REQUEST, "unknown step-up purpose");
-    }
-    // Freshness: reject replayed or stale signed requests (F14).
-    if now_secs().abs_diff(request.ts) > STEP_UP_MAX_SKEW_SECS {
-        return json_err(
-            StatusCode::BAD_REQUEST,
-            "stale step-up request: |now - ts| > 60s",
-        );
-    }
-    let signature_b64 = match body.get("signature").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return json_err(StatusCode::BAD_REQUEST, "missing step-up signature"),
-    };
-    let rec = match state.auth.registry.get(&request.key_id) {
-        Some(r) => r,
-        None => return json_err(StatusCode::NOT_FOUND, "unknown device key"),
-    };
-    // A revoked or expired key cannot mint step-up tokens (F9) — mirror
-    // verify()'s validity checks so a dead key cannot mint/exhaust state.
-    if rec.revoked {
-        return json_err(StatusCode::FORBIDDEN, "device key revoked");
-    }
-    if now_secs() >= rec.expiry_ts {
-        return json_err(StatusCode::FORBIDDEN, "device key expired");
-    }
-    let sig = match decode_b64(signature_b64) {
-        Some(s) => match s.try_into() {
-            Ok(sig) => sig,
-            Err(_) => return json_err(StatusCode::BAD_REQUEST, "signature must be 64 bytes"),
-        },
-        None => return json_err(StatusCode::BAD_REQUEST, "signature must be base64"),
-    };
-    let public_key = match ed25519_dalek::VerifyingKey::from_bytes(&rec.public_key) {
-        Ok(pk) => pk,
-        Err(_) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "corrupt registry key"),
-    };
-    let message = canonical_step_up_bytes(&request);
-    if public_key
-        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
-        .is_err()
-    {
-        return json_err(StatusCode::UNAUTHORIZED, "bad step-up signature");
-    }
-    let token = state.auth.step_up.mint(&request.key_id, STEP_UP_TTL);
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "token": token,
-            "key_id": request.key_id,
-            "ttl_secs": STEP_UP_TTL.as_secs(),
-            "expires_ts": now_secs().saturating_add(STEP_UP_TTL.as_secs()),
-        })),
-    )
-}
-
-/// POST /grants — host admin (admin token), the v1 host-side promotion /
-/// revocation mechanism.
-///
-/// Bodies:
-/// - `{"action":"set_grants","key_id":"...","grants":["prompt", ...]}`
-///   replaces the grant set (empty = read-only; default deny).
-/// - `{"action":"revoke","key_id":"...","revoked":true|false}` flips the
-///   revocation flag (checked on every verify).
-async fn grants(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    if !state.auth.check_admin(&headers) {
-        return json_err(StatusCode::UNAUTHORIZED, "admin token required");
-    }
-    let action = body.get("action").and_then(|v| v.as_str());
-    let key_id = body.get("key_id").and_then(|v| v.as_str());
-    let Some(key_id) = key_id else {
-        return json_err(StatusCode::BAD_REQUEST, "missing key_id");
-    };
-    let result = match action {
-        Some("set_grants") => {
-            // Strict parse (F10): every element must be a known capability
-            // string — a typo'd grant must fail loudly, never silently
-            // produce an empty/partial set.
-            let Some(list) = body.get("grants").and_then(|v| v.as_array()) else {
-                return json_err(
-                    StatusCode::BAD_REQUEST,
-                    "grants must be an array of capability strings",
-                );
-            };
-            let mut grants = Vec::with_capacity(list.len());
-            for g in list {
-                let Some(s) = g.as_str() else {
-                    return json_err(
-                        StatusCode::BAD_REQUEST,
-                        "grants must contain only capability strings",
-                    );
-                };
-                match s.parse() {
-                    Ok(cap) => grants.push(cap),
-                    Err(_) => {
-                        return json_err(
-                            StatusCode::BAD_REQUEST,
-                            &format!("unknown capability string: {s}"),
-                        );
-                    }
-                }
-            }
-            state.auth.registry.set_grants(key_id, grants)
-        }
-        Some("revoke") => {
-            let revoked = body
-                .get("revoked")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            state.auth.registry.set_revoked(key_id, revoked)
-        }
-        other => {
-            return json_err(
-                StatusCode::BAD_REQUEST,
-                &format!("unknown action: {other:?}"),
-            );
-        }
-    };
-    match result {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "ok": true, "key_id": key_id })),
-        ),
-        Err(e) => match e {
-            // F8: unknown key vs persist failure are distinct, typed paths.
-            RegistryMutationError::UnknownKey(k) => {
-                json_err(StatusCode::NOT_FOUND, &format!("unknown key: {k}"))
-            }
-            RegistryMutationError::Persist(err) => json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("registry persist failed: {err}"),
             ),

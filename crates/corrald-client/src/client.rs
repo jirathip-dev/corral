@@ -624,22 +624,16 @@ mod tests {
     fn envelope_builder_produces_typed_payload() {
         let env = envelope(
             "r-1",
-            Capability::Approve,
+            Capability::ReadTail,
             "herdr:pane:wQ:p1",
-            DrivePayload::Approve {
-                approval_id: "a".into(),
-                prompt_hash: "sha256:bb".into(),
-                choice: "y".into(),
-            },
+            DrivePayload::ReadTail { lines: Some(50) },
             Some(3),
         );
         assert_eq!(
             env.payload,
             serde_json::json!({
-                "kind": "approve",
-                "approval_id": "a",
-                "prompt_hash": "sha256:bb",
-                "choice": "y"
+                "kind": "read_tail",
+                "lines": 50
             })
         );
     }

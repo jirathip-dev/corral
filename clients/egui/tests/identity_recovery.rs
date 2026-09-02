@@ -11,7 +11,8 @@
 //!
 //! The journey:
 //!   1. Register a board identity (persistent key in a scratch
-//!      `CORRAL_UI_CONFIG_DIR`), grant `read_tail`, verify a signed
+//!      `CORRAL_UI_CONFIG_DIR`), provision `read_tail` out-of-band on the
+//!      registry (#354 R1: the HTTP grant admin is gone), verify a signed
 //!      read_tail drive executes.
 //!   2. Simulate the reinstall: wipe the board's key material file (the
 //!      disabled-keyring file store is exactly the mode a missing OS
@@ -21,8 +22,8 @@
 //!      registered key_id (the pre-fix behaviour) the daemon refuses with
 //!      401 bad_signature — the #249 symptom.
 //!   4. The recovery path (what the board now runs automatically):
-//!      re-register the CURRENT key via the registration token, then
-//!      restore the previous grant set through the host-admin token —
+//!      re-register the CURRENT key via the registration token, then the
+//!      host restores the previous grant set out-of-band on the registry —
 //!      zero manual keychain surgery.
 //!   5. The signed drive plane works immediately again and no
 //!      bad_signature appears.
@@ -127,7 +128,7 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     let auth = Arc::new(AuthPlane::load_or_create(daemon_dir.clone()).expect("scratch auth plane"));
     let state = AppState {
         store: Store::new(),
-        auth,
+        auth: auth.clone(),
         adapter: Arc::new(TailAdapter),
         replay: Default::default(),
         issues: Default::default(),
@@ -153,8 +154,6 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     let fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
     let token = corrald_ui::keys::read_daemon_registration_token()
         .expect("registration token from the scratch daemon dir");
-    let admin = corrald_ui::keys::read_daemon_admin_token()
-        .expect("admin token from the scratch daemon dir");
 
     // --- 1. original board identity: register + grant + drive ----------
     let key1 = corrald_ui::keys::load_or_create_key(&fingerprint).expect("original key");
@@ -176,9 +175,13 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         grants.is_empty(),
         "fresh device starts read-only: {grants:?}"
     );
-    protocol::set_admin_grants(&client, &base_url, &admin, &id1, &["read_tail".to_string()])
-        .await
-        .expect("grant read_tail to the original key");
+    // #354 R1: the HTTP grant admin is gone — grants are provisioned
+    // out-of-band on the registry (the operator's registry.json edit;
+    // the in-process registry is the same Arc the router authorizes
+    // against).
+    auth.registry
+        .set_grants(&id1, vec![corrald::drive::Capability::ReadTail])
+        .expect("out-of-band grant for the original key");
 
     let endpoint1 = DriveEndpoint {
         client: client.clone(),
@@ -232,8 +235,10 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     );
     println!("step 3 ok: pre-fix symptom reproduced (401 bad_signature on {id1})");
 
-    // --- 4. recovery: re-register current key + restore grants ---------
-    // (the exact sequence the board runs on detection / one-tap prompt)
+    // --- 4. recovery: re-register current key --------------------------
+    // (the exact sequence the board runs on detection / one-tap prompt);
+    // grant restoration is out-of-band since #354 — the host provisions
+    // the re-registered key on the registry.
     let (recovered_id, recovered_grants) = protocol::register_device(
         &client,
         &base_url,
@@ -251,10 +256,12 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
         recovered_grants.is_empty(),
         "a freshly re-registered device starts read-only: {recovered_grants:?}"
     );
-    protocol::set_admin_grants(&client, &base_url, &admin, &id2, &["read_tail".to_string()])
-        .await
-        .expect("restore the previous grant set");
-    println!("step 4 ok: re-registered {id1} -> {id2} + grants restored (admin token)");
+    auth.registry
+        .set_grants(&id2, vec![corrald::drive::Capability::ReadTail])
+        .expect("out-of-band restore of the previous grant set");
+    println!(
+        "step 4 ok: re-registered {id1} -> {id2} + grants restored (out-of-band registry provisioning)"
+    );
 
     // --- 5. signed drive plane works immediately again -----------------
     let endpoint2 = DriveEndpoint {
@@ -275,13 +282,15 @@ async fn identity_recovery_restores_the_signed_drive_plane_after_reinstall() {
     }
 
     // The recovered registration record matches the persisted shape the
-    // board writes to config.json.
+    // board writes to config.json: the register response's grant set is
+    // read-only for a freshly re-registered key — the out-of-band host
+    // grant lands on a later refresh/grants-read (#354 R1).
     let record = PersistedConfig {
         host_url: Some(base_url.clone()),
         registration: Some(corrald_ui::state::RegistrationRecord {
             host_fingerprint: fingerprint.clone(),
             key_id: id2.clone(),
-            grants: vec!["read_tail".to_string()],
+            grants: vec![],
             denied: vec![],
         }),
         ..Default::default()

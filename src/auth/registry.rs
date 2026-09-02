@@ -2,11 +2,12 @@
 //! and revocation, persisted as `registry.json` (0600) in the config dir.
 //!
 //! Default deny: a freshly registered device has NO drive grants (the read
-//! plane — `/healthz`, `/snapshot`, `/events`, `/history` — is
-//! credential-free; its boundary is the bound interface's network, #65).
-//! Drive capabilities are promoted by the host via `POST /grants`
-//! (admin token). Registration is gated by the routing-only registration
-//! token (constant-time compare).
+//! plane — `/healthz`, `/snapshot`, `/events`, `/history`, `GET /issues` —
+//! is credential-free; its boundary is the bound interface's network,
+//! #65). Since #354 the daemon is read-only and the HTTP grant-admin
+//! surface (`POST /grants` / `GET /grants`) is removed: per-device grant
+//! changes are out-of-band edits to `registry.json` only. Registration is
+//! gated by the routing-only registration token (constant-time compare).
 //!
 //! Registry state is versioned (schema_version 1, additive-only) and
 //! persisted atomically on every mutation. Corrupt state fails fast at
@@ -338,9 +339,10 @@ impl DeviceRegistry {
             .cloned()
     }
 
-    /// Replace the grant set (host promotion/demotion). Empty = read-only.
-    /// Persist failures propagate (F8): a disk error must not panic while
-    /// holding the registry lock (that would poison it for every verify).
+    /// Replace the grant set (out-of-band provisioning; the HTTP grant
+    /// admin was removed in #354). Empty = read-only. Persist failures
+    /// propagate (F8): a disk error must not panic while holding the
+    /// registry lock (that would poison it for every verify).
     pub fn set_grants(
         &self,
         key_id: &str,

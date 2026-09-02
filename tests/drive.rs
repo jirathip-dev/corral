@@ -1,9 +1,11 @@
-//! `POST /drive` tests (P3 W1): envelope → command mapping, typed refusals
+//! `POST /drive` tests (#354 read-only cut): the kept read plane —
+//! envelope → command mapping for read_tail/read_diff, typed refusals
 //! (unknown capability / bad payload / unknown agent / auth), replay
-//! idempotency (sequential + concurrent), read_tail bounds, and audit call
-//! sites (grows on writes, never on auth failures or replay hits).
+//! idempotency, and audit call sites (grows on writes, never on auth
+//! failures or replay hits). Mutating capabilities are refused at the
+//! capability boundary — covered end to end by tests/readonly_cut.rs.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -54,8 +56,6 @@ struct RecordingAdapter {
     tail: Mutex<Option<Vec<String>>>,
     /// The lines argument each read_tail call received.
     tail_requests: Mutex<Vec<u32>>,
-    /// attach handle served back on success (used when `known`).
-    attach_results: Mutex<Option<Value>>,
     /// #232: read_diff result served back (None = NoWorktree refusal), and
     /// the queries each read_diff call received.
     diff_results: Mutex<Option<Value>>,
@@ -76,7 +76,6 @@ impl Default for RecordingAdapter {
             started: Arc::new(tokio::sync::Notify::new()),
             tail: Mutex::new(None),
             tail_requests: Mutex::new(Vec::new()),
-            attach_results: Mutex::new(None),
             diff_results: Mutex::new(None),
             diff_requests: Mutex::new(Vec::new()),
             diff_refusal: Mutex::new(None),
@@ -100,22 +99,8 @@ impl RecordingAdapter {
         self
     }
 
-    fn stale_after_initial_check(&self, agent_id: &str) -> &Self {
-        self.stale(agent_id);
-        self.deferred_stale
-            .lock()
-            .unwrap()
-            .insert(agent_id.to_string());
-        self
-    }
-
     fn tail(&self, lines: Vec<String>) -> &Self {
         *self.tail.lock().unwrap() = Some(lines);
-        self
-    }
-
-    fn attach_result(&self, handle: Value) -> &Self {
-        *self.attach_results.lock().unwrap() = Some(handle);
         self
     }
 
@@ -240,57 +225,10 @@ impl Adapter for RecordingAdapter {
         };
         Box::pin(future)
     }
-
-    fn attach<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Value, DriveError>> {
-        let agent_id = agent_id.to_string();
-        Box::pin(async move {
-            self.dispatches.fetch_add(1, Ordering::SeqCst);
-            self.commands
-                .lock()
-                .unwrap()
-                .push((agent_id.clone(), DriveCommand::Attach));
-            match *self.mode.lock().unwrap() {
-                Mode::Ok => {
-                    if self.known.lock().unwrap().contains(&agent_id) {
-                        Ok(self
-                            .attach_results
-                            .lock()
-                            .unwrap()
-                            .clone()
-                            .unwrap_or_else(|| {
-                                json!({
-                                    "kind": "terminal_ref",
-                                    "target": agent_id,
-                                    "pane_id": "p1",
-                                    "command": format!("herdr agent attach --takeover {agent_id}"),
-                                })
-                            }))
-                    } else {
-                        Err(DriveError::UnknownAgent(agent_id))
-                    }
-                }
-                Mode::NotImplemented => Err(DriveError::NotImplemented("test-command")),
-                Mode::Transport => Err(DriveError::Transport("boom".to_string())),
-            }
-        })
-    }
 }
 
 /// Every capability the drive tests exercise, granted to the harness device.
-const ALL_CAPABILITIES: [Capability; 9] = [
-    Capability::Prompt,
-    Capability::Interrupt,
-    Capability::Approve,
-    Capability::ReadTail,
-    Capability::Kill,
-    Capability::Attach,
-    Capability::StartWorktree,
-    Capability::ReadDiff,
-    Capability::ReadIssues,
-];
+const ALL_CAPABILITIES: [Capability; 2] = [Capability::ReadTail, Capability::ReadDiff];
 
 /// Real W3 auth plane over a temp dir + a registered, fully-granted device.
 /// Every `body()` request is genuinely signed by that device — no stubs.
@@ -302,9 +240,6 @@ struct Harness {
     pubkey: [u8; 32],
     key_id: String,
     app: Router,
-    /// #267: the shared issue cache the router serves (GET /issues and the
-    /// /drive read_issues arm) — kept so tests can seed last-known issues.
-    issues: Arc<corrald::api::issues::IssuesCache>,
     _dir: tempfile::TempDir,
 }
 
@@ -313,7 +248,7 @@ impl Harness {
     /// its pubkey and key_id.
     fn register_other_device(&self, grants: &[Capability]) -> (SigningKey, [u8; 32], String) {
         let (signing, pubkey) = test_support::keypair();
-        let env = test_support::envelope("bootstrap-other", Capability::Prompt, "bootstrap");
+        let env = test_support::envelope("bootstrap-other", Capability::ReadTail, "bootstrap");
         let token = self.auth.registry.registration_token();
         let signed = test_support::signed(&self.auth.registry, &token, &signing, pubkey, &env);
         self.auth
@@ -382,7 +317,7 @@ fn harness() -> Harness {
 
     // Register the harness device once (idempotent) and grant everything.
     let (signing, pubkey) = test_support::keypair();
-    let env = test_support::envelope("bootstrap", Capability::Prompt, "bootstrap");
+    let env = test_support::envelope("bootstrap", Capability::ReadTail, "bootstrap");
     let token = auth.registry.registration_token();
     let signed = test_support::signed(&auth.registry, &token, &signing, pubkey, &env);
     let key_id = signed.key_id.clone();
@@ -408,13 +343,12 @@ fn harness() -> Harness {
         pubkey,
         key_id,
         app,
-        issues,
         _dir: dir,
     }
 }
 
-fn prompt_payload(text: &str) -> Value {
-    json!({ "kind": "prompt", "text": text })
+fn read_tail_payload(_text: &str) -> Value {
+    json!({ "kind": "read_tail", "lines": 200 })
 }
 
 async fn post(app: &Router, body: String) -> (StatusCode, Value) {
@@ -437,341 +371,6 @@ async fn post(app: &Router, body: String) -> (StatusCode, Value) {
 // ---------------------------------------------------------------------------
 // Envelope -> command mapping
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn prompt_dispatches_with_typed_command_and_current_rev() {
-    let h = harness();
-    h.adapter.knows("herdr:abc");
-
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-1",
-            Capability::Prompt,
-            "herdr:abc",
-            prompt_payload("continue"),
-            Some(3),
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["ok"], true);
-    assert_eq!(value["request_id"], "req-1");
-    let rev = h.store.snapshot().await.rev;
-    assert_eq!(
-        value["rev"].as_u64(),
-        Some(rev),
-        "response carries the store rev"
-    );
-    assert_eq!(
-        h.adapter.commands(),
-        vec![(
-            "herdr:abc".to_string(),
-            DriveCommand::Prompt {
-                text: "continue".to_string()
-            }
-        )]
-    );
-    assert_eq!(h.adapter.dispatch_count(), 1);
-}
-
-#[tokio::test]
-async fn command_only_capabilities_need_no_payload() {
-    for (capability, command, cap) in [
-        ("interrupt", DriveCommand::Interrupt, Capability::Interrupt),
-        ("kill", DriveCommand::Kill, Capability::Kill),
-        ("attach", DriveCommand::Attach, Capability::Attach),
-    ] {
-        let h = harness();
-        h.adapter.knows("herdr:a");
-        let (status, value) = post(&h.app, h.body("req", cap, "herdr:a", Value::Null, None)).await;
-        assert_eq!(status, StatusCode::OK, "{capability}");
-        assert_eq!(value["ok"], true, "{capability}");
-        let commands = h.adapter.commands();
-        assert_eq!(commands.len(), 1, "{capability}");
-        assert_eq!(commands[0].1, command, "{capability}");
-    }
-}
-
-#[tokio::test]
-async fn command_only_capability_with_payload_is_refused() {
-    let h = harness();
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req",
-            Capability::Interrupt,
-            "herdr:a",
-            json!({ "kind": "interrupt" }),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(value["kind"], "payload");
-    assert!(
-        value["message"]
-            .as_str()
-            .unwrap()
-            .contains("no payload expected")
-    );
-    assert_eq!(h.adapter.dispatch_count(), 0);
-}
-
-#[tokio::test]
-async fn attach_result_carries_handle_audits_executed_and_replays() {
-    let h = harness();
-    let handle = json!({
-        "kind": "terminal_ref",
-        "target": "agent-one",
-        "pane_id": "w1:p1",
-        "command": "herdr agent attach --takeover agent-one",
-        "args": ["herdr", "agent", "attach", "--takeover", "agent-one"],
-    });
-    h.adapter.knows("herdr:abc").attach_result(handle.clone());
-
-    let body = h.body(
-        "req-attach",
-        Capability::Attach,
-        "herdr:abc",
-        Value::Null,
-        None,
-    );
-    let (first_status, first) = post(&h.app, body.clone()).await;
-    assert_eq!(first_status, StatusCode::OK);
-    assert_eq!(first["ok"], true);
-    assert_eq!(first["result"], handle);
-    assert_eq!(
-        h.adapter.commands(),
-        vec![("herdr:abc".to_string(), DriveCommand::Attach)]
-    );
-    let entries = h.audit_entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].capability, "attach");
-    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
-
-    let (second_status, second) = post(&h.app, body).await;
-    assert_eq!(second_status, StatusCode::OK);
-    assert_eq!(
-        second, first,
-        "attach replay is byte-identical and never re-dispatches"
-    );
-    assert_eq!(h.adapter.dispatch_count(), 1);
-    assert_eq!(h.audit_entries().len(), 1, "replay does not re-audit");
-}
-
-#[tokio::test]
-async fn attach_unknown_agent_is_typed_refusal_and_audited() {
-    let h = harness();
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-attach-ghost",
-            Capability::Attach,
-            "herdr:ghost",
-            Value::Null,
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["ok"], false);
-    assert_eq!(value["error"], "unknown agent: herdr:ghost");
-    assert_eq!(value["error_kind"], "unknown_agent");
-    assert!(value.get("result").is_none());
-    assert_eq!(
-        h.adapter.commands(),
-        vec![("herdr:ghost".to_string(), DriveCommand::Attach)]
-    );
-    let entries = h.audit_entries();
-    assert_eq!(entries.len(), 1);
-    assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
-}
-
-#[tokio::test]
-async fn approve_maps_to_approve_command() {
-    let h = harness();
-    h.adapter.knows("herdr:a");
-    let (status, _) = post(
-        &h.app,
-        h.body(
-            "req",
-            Capability::Approve,
-            "herdr:a",
-            json!({ "kind": "approve", "approval_id": "ap-1", "prompt_hash": "sha256:x", "choice": "y" }),
-            None,
-        ),
-    )
-    .await;
-    // W2 claim check: the store has no record for the target (and thus no
-    // waiting approval) → typed 404, never a dispatch.
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(h.adapter.commands().is_empty());
-}
-
-// ---------------------------------------------------------------------------
-// Claim-based approvals (W2 wiring): the handler must validate the claim
-// against the store BEFORE dispatching, refuse stale hashes with a typed
-// error (no replay slot, no dispatch, no audit), and dispatch the validated
-// choice exactly once on a matching claim.
-// ---------------------------------------------------------------------------
-
-const W2_AGENT: &str = "herdr:ses-live";
-const W2_HASH: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-async fn seed_blocked_agent(store: &Store, prompt: &str, choices: Vec<String>) {
-    let approval_id = format!("{W2_AGENT}:{W2_HASH}");
-    let agent = corrald::core::model::Agent {
-        agent_id: W2_AGENT.to_string(),
-        source: "herdr".to_string(),
-        tool: "opencode".to_string(),
-        state: corrald::core::model::AgentState::Blocked,
-        reason: Some("waiting_for_input".to_string()),
-        seq: 1,
-        ts: 1,
-        capabilities: Vec::new(),
-        waiting_on: Some(corrald::core::model::WaitingOn {
-            kind: corrald::core::model::WaitingOnKind::AnswerQuestion,
-            prompt: prompt.to_string(),
-            prompt_hash: W2_HASH.to_string(),
-            approval_id,
-            choices,
-        }),
-        parent_id: None,
-        host: None,
-        workspace: Default::default(),
-        attachment: None,
-        display_name: None,
-        title: None,
-    };
-    let store2 = store.clone();
-    store2
-        .apply(corrald::core::model::Change::upsert(agent))
-        .await;
-}
-
-async fn seed_workspace_repo(store: &Store, repo: &str) {
-    let agent = corrald::core::model::Agent {
-        agent_id: format!("herdr:repo:{repo}"),
-        source: "herdr".to_string(),
-        tool: "opencode".to_string(),
-        state: corrald::core::model::AgentState::Working,
-        reason: None,
-        seq: 1,
-        ts: 1,
-        capabilities: Vec::new(),
-        waiting_on: None,
-        parent_id: None,
-        host: None,
-        workspace: corrald::core::model::Workspace {
-            repo: Some(repo.to_string()),
-            ..Default::default()
-        },
-        attachment: None,
-        display_name: None,
-        title: None,
-    };
-    store
-        .apply(corrald::core::model::Change::upsert(agent))
-        .await;
-}
-
-#[tokio::test]
-async fn approve_with_stale_hash_is_refused_without_dispatch_or_audit() {
-    let h = harness();
-    h.adapter.knows(W2_AGENT);
-    seed_blocked_agent(&h.store, "Do you want to proceed?", vec![]).await;
-
-    // Approval id matches, but the prompt_hash is stale (wrong question).
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-stale",
-            Capability::Approve,
-            W2_AGENT,
-            json!({
-                "kind": "approve",
-                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-                "prompt_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                "choice": "yes"
-            }),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(
-        value["kind"], "hash_mismatch",
-        "wrong-question race must be typed distinctly"
-    );
-    assert!(
-        h.adapter.commands().is_empty(),
-        "stale hash must not dispatch"
-    );
-    assert_eq!(
-        h.audit_entries().len(),
-        0,
-        "refused approval is not a write (AC5)"
-    );
-}
-
-#[tokio::test]
-async fn approve_with_matching_claim_dispatches_validated_choice_exactly_once() {
-    let h = harness();
-    h.adapter.knows(W2_AGENT);
-    seed_blocked_agent(
-        &h.store,
-        "Do you want to proceed?",
-        vec!["yes".into(), "no".into()],
-    )
-    .await;
-
-    let body = json!({
-        "kind": "approve",
-        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-        "prompt_hash": W2_HASH,
-        "choice": "yes"
-    });
-    let (status, _) = post(
-        &h.app,
-        h.body("req-ok", Capability::Approve, W2_AGENT, body, None),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        h.adapter.commands(),
-        vec![(
-            W2_AGENT.to_string(),
-            DriveCommand::Approve {
-                choice: "yes".to_string()
-            }
-        )],
-        "validated choice must dispatch exactly once"
-    );
-    assert_eq!(
-        h.audit_entries().len(),
-        1,
-        "executed approval is one write (AC5)"
-    );
-
-    // Replay of the same request_id returns the stored response, no double
-    // send.
-    let body = json!({
-        "kind": "approve",
-        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-        "prompt_hash": W2_HASH,
-        "choice": "yes"
-    });
-    let (status, _) = post(
-        &h.app,
-        h.body("req-ok", Capability::Approve, W2_AGENT, body, None),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(h.adapter.commands().len(), 1, "replay must not double-send");
-}
 
 // ---------------------------------------------------------------------------
 // read_tail result path (P4 W2.1): DriveResponse.result carries the lines
@@ -972,16 +571,15 @@ async fn stale_agent_is_typed_conflict_before_dispatch() {
 
     for (request_id, capability, payload) in [
         (
-            "req-stale-prompt",
-            Capability::Prompt,
-            prompt_payload("hello"),
-        ),
-        (
             "req-stale-tail",
             Capability::ReadTail,
             json!({ "kind": "read_tail", "lines": 10 }),
         ),
-        ("req-stale-attach", Capability::Attach, Value::Null),
+        (
+            "req-stale-diff",
+            Capability::ReadDiff,
+            json!({ "kind": "read_diff" }),
+        ),
     ] {
         let (status, value) = post(
             &h.app,
@@ -1000,83 +598,15 @@ async fn stale_agent_is_typed_conflict_before_dispatch() {
 }
 
 #[tokio::test]
-async fn stale_approve_is_conflict_before_current_claim_validation() {
-    let h = harness();
-    // The live store has already dropped the blocked row, but the adapter
-    // still remembers its canonical id as a stale Herdr target. The stale
-    // classification must win over the approval lookup's generic 404.
-    h.adapter.stale(W2_AGENT);
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-stale-approve",
-            Capability::Approve,
-            W2_AGENT,
-            json!({
-                "kind": "approve",
-                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-                "prompt_hash": W2_HASH,
-                "choice": "yes"
-            }),
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(value["kind"], "stale_agent");
-    assert_eq!(value["request_id"], "req-stale-approve");
-    assert_eq!(h.adapter.dispatch_count(), 0);
-    assert!(h.audit_entries().is_empty());
-}
-
-#[tokio::test]
-async fn approve_missing_row_after_initial_stale_check_is_reclassified_stale() {
-    let h = harness();
-    h.adapter.stale_after_initial_check(W2_AGENT);
-    seed_blocked_agent(&h.store, "Do you want to proceed?", vec!["yes".into()]).await;
-    h.store
-        .apply(corrald::core::model::Change::Remove(W2_AGENT.to_string()))
-        .await;
-
-    // The first adapter check intentionally says "not stale"; the row is
-    // already gone by the time the first approval store.get runs, and the
-    // classification check must observe the tombstone instead of returning a
-    // generic 404.
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-approve-first-read-race",
-            Capability::Approve,
-            W2_AGENT,
-            json!({
-                "kind": "approve",
-                "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-                "prompt_hash": W2_HASH,
-                "choice": "yes"
-            }),
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(value["kind"], "stale_agent");
-    assert_eq!(value["request_id"], "req-approve-first-read-race");
-    assert_eq!(h.adapter.dispatch_count(), 0);
-    assert!(h.audit_entries().is_empty());
-}
-
-#[tokio::test]
 async fn completed_request_replays_after_target_becomes_stale() {
     let h = harness();
     let target = "herdr:replay";
     h.adapter.knows(target);
     let body = h.body(
         "req-replay-after-stale",
-        Capability::Prompt,
+        Capability::ReadTail,
         target,
-        prompt_payload("hello"),
+        read_tail_payload("hello"),
         None,
     );
 
@@ -1111,7 +641,7 @@ async fn unknown_capability_is_typed_refusal() {
                 "request_id": "req",
                 "capability": "sudo",
                 "target": "herdr:a",
-                "payload": prompt_payload("x"),
+                "payload": read_tail_payload("x"),
             }
         })
         .to_string(),
@@ -1132,9 +662,9 @@ async fn payload_kind_mismatch_is_typed_refusal() {
         &h.app,
         h.body(
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            json!({ "kind": "read_tail" }),
+            json!({ "kind": "read_diff" }),
             None,
         ),
     )
@@ -1145,7 +675,7 @@ async fn payload_kind_mismatch_is_typed_refusal() {
         value["message"]
             .as_str()
             .unwrap()
-            .contains("bad payload for prompt")
+            .contains("bad payload for read_tail")
     );
     assert_eq!(h.adapter.dispatch_count(), 0);
     assert_eq!(h.audit_entries().len(), 0);
@@ -1165,7 +695,13 @@ async fn empty_request_id_or_target_is_bad_request() {
     let h = harness();
     let (status, value) = post(
         &h.app,
-        h.body("", Capability::Prompt, "herdr:a", prompt_payload("x"), None),
+        h.body(
+            "",
+            Capability::ReadTail,
+            "herdr:a",
+            read_tail_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1173,7 +709,13 @@ async fn empty_request_id_or_target_is_bad_request() {
 
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Prompt, "", prompt_payload("x"), None),
+        h.body(
+            "req",
+            Capability::ReadTail,
+            "",
+            read_tail_payload("x"),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1188,9 +730,9 @@ async fn unknown_agent_is_typed_refusal_at_dispatch() {
         &h.app,
         h.body(
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:ghost",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1219,9 +761,9 @@ async fn not_implemented_and_transport_are_typed() {
         &h.app,
         h.body(
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1238,7 +780,13 @@ async fn not_implemented_and_transport_are_typed() {
     h.adapter.mode(Mode::Transport);
     let (status, value) = post(
         &h.app,
-        h.body("req", Capability::Interrupt, "herdr:a", Value::Null, None),
+        h.body(
+            "req",
+            Capability::ReadTail,
+            "herdr:a",
+            json!({ "kind": "read_tail" }),
+            None,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1248,74 +796,6 @@ async fn not_implemented_and_transport_are_typed() {
         &h.audit_entries()[0].outcome,
         AuditOutcome::Failed(_)
     ));
-}
-
-#[tokio::test]
-async fn awaited_prompt_and_approve_refusals_are_cached_as_failures() {
-    let h = harness();
-    h.adapter.knows(W2_AGENT).mode(Mode::Transport);
-    seed_blocked_agent(&h.store, "Continue?", vec!["y".into()]).await;
-
-    let (status, prompt_failure) = post(
-        &h.app,
-        h.body(
-            "req-prompt-failure",
-            Capability::Prompt,
-            W2_AGENT,
-            prompt_payload("hello"),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(prompt_failure["ok"], false);
-    assert_eq!(prompt_failure["error"], "transport error: boom");
-    assert_eq!(h.audit_entries().len(), 1, "RPC refusal is audited once");
-
-    let (status, replayed) = post(
-        &h.app,
-        h.body(
-            "req-prompt-failure",
-            Capability::Prompt,
-            W2_AGENT,
-            prompt_payload("hello"),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(replayed, prompt_failure, "failure replay is byte-identical");
-    assert_eq!(
-        h.adapter.dispatch_count(),
-        1,
-        "prompt retry does not redispatch"
-    );
-
-    let approve_payload = json!({
-        "kind": "approve",
-        "approval_id": format!("{W2_AGENT}:{W2_HASH}"),
-        "prompt_hash": W2_HASH,
-        "choice": "y"
-    });
-    let (status, approve_failure) = post(
-        &h.app,
-        h.body(
-            "req-approve-failure",
-            Capability::Approve,
-            W2_AGENT,
-            approve_payload,
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(approve_failure["ok"], false);
-    assert_eq!(approve_failure["error"], "transport error: boom");
-    assert_eq!(
-        h.audit_entries().len(),
-        2,
-        "approve RPC refusal is audited once"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1330,9 +810,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
         &h.app,
         h.body(
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("go"),
+            read_tail_payload("go"),
             None,
         ),
     )
@@ -1349,9 +829,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
             "signature": "",
             "envelope": {
                 "request_id": "req",
-                "capability": "prompt",
+                "capability": "read_tail",
                 "target": "herdr:a",
-                "payload": prompt_payload("x"),
+                "payload": read_tail_payload("x"),
             }
         })
         .to_string(),
@@ -1370,13 +850,13 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
     let h = harness();
     let body = h.body(
         "req",
-        Capability::Prompt,
+        Capability::ReadTail,
         "herdr:a",
-        prompt_payload("go"),
+        read_tail_payload("go"),
         None,
     );
     let mut tampered: Value = serde_json::from_str(&body).unwrap();
-    tampered["envelope"]["payload"]["text"] = json!("go AND rm -rf /");
+    tampered["envelope"]["payload"]["lines"] = json!(1);
     let (status, value) = post(&h.app, tampered.to_string()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(value["kind"], "bad_signature");
@@ -1392,9 +872,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
             "signature": "AAAA",
             "envelope": {
                 "request_id": "req",
-                "capability": "prompt",
+                "capability": "read_tail",
                 "target": "herdr:a",
-                "payload": prompt_payload("x"),
+                "payload": read_tail_payload("x"),
             }
         })
         .to_string(),
@@ -1417,9 +897,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
             &other_signing,
             other_pubkey,
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1449,9 +929,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
             &other_signing,
             pubkey_other,
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1469,9 +949,9 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
             &other_signing,
             other_pubkey,
             "req",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1487,107 +967,18 @@ async fn valid_signature_passes_and_invalid_is_typed_auth_error() {
 }
 
 #[tokio::test]
-async fn step_up_gate_blocks_destructive_payloads_and_recovers_with_token() {
-    // F2 (W3 review): the step-up gate must be spliced into the REAL drive
-    // handler — destructive payload without a token → 403 step_up_required,
-    // audit 0; with a minted token → executes, audit 1.
-    let h = harness();
-    h.adapter.knows("herdr:a");
-
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-destr",
-            Capability::Prompt,
-            "herdr:a",
-            prompt_payload("rm -rf /tmp/x"),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(value["kind"], "step_up_required");
-    assert_eq!(h.adapter.dispatch_count(), 0, "no dispatch without step-up");
-    assert_eq!(
-        h.audit_entries().len(),
-        0,
-        "step-up failures are not audited (AC5)"
-    );
-
-    // Mint a token for the harness device and retry with the header.
-    let token = h
-        .auth
-        .step_up
-        .mint(&h.key_id, std::time::Duration::from_secs(300));
-    let res = h
-        .app
-        .clone()
-        .oneshot(
-            Request::post("/drive")
-                .header("content-type", "application/json")
-                .header("X-Step-Up-Token", token.clone())
-                .body(Body::from(h.body(
-                    "req-destr3",
-                    Capability::Prompt,
-                    "herdr:a",
-                    prompt_payload("rm -rf /tmp/x"),
-                    None,
-                )))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::OK,
-        "minted token unlocks the destructive payload"
-    );
-    assert_eq!(h.adapter.dispatch_count(), 1, "exactly one dispatch");
-    assert_eq!(
-        h.audit_entries().len(),
-        1,
-        "executed write is audited exactly once"
-    );
-
-    // Token replay is refused (single-use).
-    let res = h
-        .app
-        .clone()
-        .oneshot(
-            Request::post("/drive")
-                .header("content-type", "application/json")
-                .header("X-Step-Up-Token", token)
-                .body(Body::from(h.body(
-                    "req-destr4",
-                    Capability::Prompt,
-                    "herdr:a",
-                    prompt_payload("rm -rf /tmp/x"),
-                    None,
-                )))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::UNAUTHORIZED,
-        "replayed step-up token refused"
-    );
-}
-
-#[tokio::test]
-async fn audit_grows_only_on_writes() {
+async fn audit_grows_only_on_signed_drive_dispatches() {
     // Auth failure: no audit.
     let h = harness();
     let body = h.body(
         "r1",
-        Capability::Prompt,
+        Capability::ReadTail,
         "herdr:a",
-        prompt_payload("x"),
+        read_tail_payload("x"),
         None,
     );
     let mut tampered: Value = serde_json::from_str(&body).unwrap();
-    tampered["envelope"]["payload"]["text"] = json!("tampered");
+    tampered["envelope"]["payload"]["lines"] = json!(1);
     let (status, _) = post(&h.app, tampered.to_string()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(h.audit_entries().len(), 0);
@@ -1598,9 +989,9 @@ async fn audit_grows_only_on_writes() {
         &h.app,
         h.body(
             "r2",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            json!({ "kind": "read_tail" }),
+            json!({ "kind": "read_diff" }),
             None,
         ),
     )
@@ -1615,9 +1006,9 @@ async fn audit_grows_only_on_writes() {
         &h.app,
         h.body(
             "r3",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("go"),
+            read_tail_payload("go"),
             None,
         ),
     )
@@ -1625,7 +1016,7 @@ async fn audit_grows_only_on_writes() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].request_id, "r3");
-    assert_eq!(entries[0].capability, "prompt");
+    assert_eq!(entries[0].capability, "read_tail");
     assert_eq!(entries[0].target, "herdr:a");
     assert_eq!(entries[0].key_id, h.key_id.as_str());
     assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
@@ -1637,9 +1028,9 @@ async fn audit_grows_only_on_writes() {
         &h.app,
         h.body(
             "r4",
-            Capability::Prompt,
+            Capability::ReadTail,
             "herdr:a",
-            prompt_payload("x"),
+            read_tail_payload("x"),
             None,
         ),
     )
@@ -1647,133 +1038,6 @@ async fn audit_grows_only_on_writes() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
-}
-
-/// #113: `start_worktree` is capability-gated like every write — a device
-/// WITHOUT the grant is refused 403 `not_granted` before ANY worktree is
-/// touched (read-only default).
-#[tokio::test]
-async fn start_worktree_needs_the_capability_grant() {
-    let h = harness();
-    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
-    let payload = json!({
-        "kind": "start_worktree",
-        "mode": "issue",
-        "repo": "corral",
-        "number": 113,
-        "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
-    });
-    let (status, value) = post(
-        &h.app,
-        h.body_from(
-            &other_signing,
-            other_pubkey,
-            "wt-1",
-            Capability::StartWorktree,
-            "corral",
-            payload,
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(value["kind"], "not_granted");
-    assert_eq!(h.adapter.dispatch_count(), 0);
-    assert_eq!(
-        h.audit_entries().len(),
-        0,
-        "auth failures are never audited"
-    );
-}
-
-/// #113: the `start_worktree` payload maps into a typed `WorktreeRequest`
-/// (issue-linked vs issue-free) so a malformed request is refused before any
-/// filesystem work. This is the pre-dispatch parse seam.
-#[tokio::test]
-async fn start_worktree_payload_maps_to_issue_or_free_request() {
-    // A well-formed issue-linked payload is accepted by the parse seam.
-    let issue_payload = json!({
-        "kind": "start_worktree",
-        "mode": "issue",
-        "repo": "corral",
-        "number": 113,
-        "issue_url": "https://github.com/jirathip-dev/corral/issues/113",
-    });
-    let parsed = corrald::drive::DrivePayload::parse(Capability::StartWorktree, &issue_payload)
-        .expect("issue payload parses");
-    assert_eq!(
-        parsed,
-        corrald::drive::DrivePayload::StartWorktree {
-            mode: "issue".into(),
-            repo: "corral".into(),
-            number: Some(113),
-            issue_url: Some("https://github.com/jirathip-dev/corral/issues/113".into()),
-            name: None,
-        }
-    );
-
-    // A free payload is accepted; an empty free name is a typed refusal.
-    let free_payload =
-        json!({ "kind": "start_worktree", "mode": "free", "repo": "corral", "name": "explore" });
-    assert!(matches!(
-        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &free_payload),
-        Ok(corrald::drive::DrivePayload::StartWorktree { mode, name: Some(_), .. }) if mode == "free"
-    ));
-    // A free payload with an empty name still parses at the serde layer; the
-    // non-empty-name validation is the pre-dispatch `command_for` seam (see
-    // the drive.rs unit test).
-    let bad_free =
-        json!({ "kind": "start_worktree", "mode": "free", "repo": "corral", "name": "" });
-    assert!(matches!(
-        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &bad_free),
-        Ok(corrald::drive::DrivePayload::StartWorktree { name: Some(name), .. }) if name.is_empty()
-    ));
-
-    // An unknown mode is refused at the serde layer (no matching variant).
-    let bad_mode = json!({ "kind": "start_worktree", "mode": "chaos", "repo": "corral" });
-    assert!(
-        corrald::drive::DrivePayload::parse(Capability::StartWorktree, &bad_mode).is_err(),
-        "unknown mode is a typed refusal"
-    );
-}
-
-/// #113 review 2: the signed envelope `target` is the repo the audit will
-/// record. A granted client must not sign target=A + payload.repo=B, because
-/// that would create a worktree on B while the audit says A. The handler must
-/// refuse with a typed payload error BEFORE any dispatch.
-#[tokio::test]
-async fn start_worktree_refuses_target_payload_repo_mismatch() {
-    let h = harness();
-    let payload = json!({
-        "kind": "start_worktree",
-        "mode": "issue",
-        "repo": "plush",
-        "number": 5,
-        "issue_url": "https://github.com/jirathip-dev/plush-meadow/issues/5",
-    });
-    // Sign for target "corral" but request repo "plush": mismatch.
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "wt-mismatch",
-            Capability::StartWorktree,
-            "corral",
-            payload,
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(value["kind"], "payload");
-    assert_eq!(
-        h.adapter.dispatch_count(),
-        0,
-        "nothing dispatches on a mismatch"
-    );
-    assert!(
-        h.audit_entries().is_empty(),
-        "payload refusals are not audited"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1962,177 +1226,4 @@ async fn read_diff_dispatch_refusal_is_typed_and_audited_refused() {
     let entries = h.audit_entries();
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].outcome, AuditOutcome::Refused(_)));
-}
-
-// read_issues (#267): the fleet-level read-only browser payload. Mirrors
-// read_diff's grant gate (403 not_granted, default-empty) and audit, but is
-// dispatched BEFORE the per-agent path (like start_worktree) because
-// issues are fleet-level, not per-agent.
-
-#[tokio::test]
-async fn read_issues_result_carries_repos_and_audits_executed() {
-    let h = harness();
-    let in_scope = [
-        "fixture-alpha",
-        "fixture-bravo",
-        "corral",
-        "fixture-delta",
-        "fixture-echo",
-    ];
-    for repo in &in_scope {
-        seed_workspace_repo(&h.store, repo).await;
-    }
-    h.issues.update(
-        "corral",
-        vec![corrald::core::events::GhIssueRef {
-            repo: "corral".to_string(),
-            number: 267,
-            state: "OPEN".to_string(),
-            title: "iOS issue browser".to_string(),
-            labels: vec![corrald::core::events::GhIssueLabel {
-                name: "enhancement".to_string(),
-                color: "5319E7".to_string(),
-            }],
-            url: "https://github.com/jirathip-dev/corral/issues/267".to_string(),
-            body: Some("Read-only browser.".to_string()),
-            comments: vec![corrald::core::events::GhIssueComment {
-                author: "jirathip-k".to_string(),
-                body: "LGTM".to_string(),
-                created_at: "2026-08-28T08:00:00Z".to_string(),
-            }],
-            comment_total: Some(3),
-        }],
-    );
-    h.issues.update(
-        "static-only",
-        vec![corrald::core::events::GhIssueRef {
-            repo: "static-only".to_string(),
-            number: 9001,
-            state: "OPEN".to_string(),
-            title: "unrelated fixture body".to_string(),
-            labels: vec![],
-            url: String::new(),
-            body: Some("must not escape the scoped projection".to_string()),
-            comments: vec![],
-            comment_total: None,
-        }],
-    );
-    // Fleet-level: target is the fleet namespace, NOT an agent id.
-    let (status, value) = post(
-        &h.app,
-        h.body(
-            "req-issues",
-            Capability::ReadIssues,
-            "fleet",
-            json!({ "kind": "read_issues" }),
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["ok"], true);
-    let repos = value["result"]["repos"].as_object().expect("repos object");
-    assert_eq!(
-        repos.keys().cloned().collect::<BTreeSet<_>>(),
-        BTreeSet::from_iter(in_scope.into_iter().map(str::to_string)),
-        "signed read_issues must use the same five live Herdr categories"
-    );
-    let issues = repos["corral"].as_array().expect("corral issues");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0]["number"], 267);
-    assert_eq!(issues[0]["title"], "iOS issue browser");
-    assert_eq!(issues[0]["body"], "Read-only browser.");
-    assert_eq!(issues[0]["comment_total"], 3);
-    assert_eq!(issues[0]["comments"][0]["author"], "jirathip-k");
-    assert_eq!(issues[0]["labels"][0]["name"], "enhancement");
-
-    // No adapter dispatch: the payload is the shared cache view.
-    assert_eq!(h.adapter.dispatch_count(), 0);
-    assert!(h.adapter.commands().is_empty());
-
-    // Audited as Executed, like read_diff's response-bearing seam.
-    let entries = h.audit_entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].capability, "read_issues");
-    assert_eq!(entries[0].target, "fleet");
-    assert!(matches!(&entries[0].outcome, AuditOutcome::Executed));
-}
-
-#[tokio::test]
-async fn read_issues_without_grant_is_403_not_granted_and_not_audited() {
-    let h = harness();
-    let (other_signing, other_pubkey, _other_key) = h.register_other_device(&[]);
-
-    let (status, value) = post(
-        &h.app,
-        h.body_from(
-            &other_signing,
-            other_pubkey,
-            "req-issues-nogrant",
-            Capability::ReadIssues,
-            "fleet",
-            json!({ "kind": "read_issues" }),
-            None,
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(value["kind"], "not_granted");
-    // Default-empty: no dispatch, no audit.
-    assert!(h.audit_entries().is_empty());
-    assert_eq!(h.adapter.dispatch_count(), 0);
-}
-
-// #280: direct replay-idempotency proof for dispatch_issues — mirrors the
-// start_worktree replay test (tests/worktree.rs:230-246). The same signed
-// request id returns the stored first response (no second dispatch, no
-// second audit entry), so a duplicate tap/retry stays byte-identical.
-#[tokio::test]
-async fn read_issues_replay_returns_stored_response_without_reaudit() {
-    let h = harness();
-    seed_workspace_repo(&h.store, "corral").await;
-    h.issues.update(
-        "corral",
-        vec![corrald::core::events::GhIssueRef {
-            repo: "corral".to_string(),
-            number: 267,
-            state: "OPEN".to_string(),
-            title: "iOS issue browser".to_string(),
-            labels: vec![],
-            url: "https://github.com/jirathip-dev/corral/issues/267".to_string(),
-            body: None,
-            comments: vec![],
-            comment_total: None,
-        }],
-    );
-
-    let request_body = || {
-        h.body(
-            "req-issues-replay",
-            Capability::ReadIssues,
-            "fleet",
-            json!({ "kind": "read_issues" }),
-            None,
-        )
-    };
-
-    let (first_status, first) = post(&h.app, request_body()).await;
-    assert_eq!(first_status, StatusCode::OK);
-    assert_eq!(first["ok"], true);
-    assert_eq!(first["request_id"], "req-issues-replay");
-    assert_eq!(first["result"]["repos"]["corral"][0]["number"], 267);
-
-    let (replay_status, replay) = post(&h.app, request_body()).await;
-    assert_eq!(replay_status, StatusCode::OK);
-    assert_eq!(
-        replay, first,
-        "the replay returns the stored first response byte-identical"
-    );
-
-    // Only the FIRST dispatch is audited; the replay hit appends nothing.
-    let entries = h.audit_entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].request_id, "req-issues-replay");
 }

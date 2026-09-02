@@ -7,7 +7,10 @@
 //! 2. A device registered with my keypair and signed by my code passes
 //!    the daemon's `DeviceAuthorizer::verify` (and fails when tampered /
 //!    ungranted).
-//! 3. My step-up request bytes match the daemon's canonical step-up bytes.
+//! 3. My typed refusal classification matches the daemon's error table.
+//!
+//! #354: the daemon is read-only; the mutating names are gone from the
+//! shared capability set, so conformance pins the kept read capability.
 
 use corrald::auth::test_support as daemon_support;
 use corrald::drive::{DriveAuthorizer as _, DriveEnvelope as DaemonEnvelope};
@@ -18,7 +21,7 @@ use corrald::drive::{DriveAuthorizer as _, DriveEnvelope as DaemonEnvelope};
 fn canonical_envelope_bytes_match_the_daemon() {
     let daemon_env = daemon_support::envelope(
         "req-conformance-1",
-        corrald::drive::Capability::Prompt,
+        corrald::drive::Capability::ReadTail,
         "continue the work",
     );
     let daemon_bytes = corrald::drive::canonical_envelope_bytes(&daemon_env);
@@ -35,9 +38,9 @@ fn canonical_envelope_bytes_match_the_daemon() {
     // Round trip the other way too: my envelope -> daemon parse -> daemon bytes.
     let mine_env = corrald_ui::drive::DriveEnvelope {
         request_id: "req-conformance-2".into(),
-        capability: corrald_ui::drive::Capability::Interrupt,
+        capability: corrald_ui::drive::Capability::ReadTail,
         target: "herdr:agent-a".into(),
-        payload: serde_json::Value::Null,
+        payload: serde_json::json!({ "kind": "read_tail", "lines": 50 }),
         rev: None,
     };
     let mine_bytes = corrald_ui::drive::canonical_envelope_bytes(&mine_env);
@@ -134,48 +137,6 @@ fn my_signed_drive_passes_the_daemon_authorizer() {
         authorizer.verify(&to_daemon_signed(&stranger)),
         Err(corrald::drive::AuthError::UnknownKey)
     ));
-}
-
-/// My step-up request serializes to the daemon's canonical step-up bytes.
-#[test]
-fn step_up_request_bytes_match_the_daemon() {
-    let mine = corrald_ui::drive::StepUpRequest {
-        key_id: "dev_x".into(),
-        purpose: "destructive".into(),
-        nonce: "n1".into(),
-        ts: 1_700_000_000,
-    };
-    let mine_bytes = corrald_ui::drive::canonical_step_up_bytes(&mine);
-
-    // The daemon parses my bytes into ITS StepUpRequest type...
-    let theirs: corrald::auth::step_up::StepUpRequest =
-        serde_json::from_slice(&mine_bytes).expect("my step-up bytes decode daemon-side");
-    assert_eq!(theirs.key_id, "dev_x");
-    assert_eq!(theirs.purpose, "destructive");
-    // ...and canonicalizes to the same bytes.
-    assert_eq!(
-        corrald::auth::step_up::canonical_step_up_bytes(&theirs),
-        mine_bytes
-    );
-
-    // A signature I produce over my canonical bytes verifies against the
-    // daemon's canonical form.
-    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-    let sig = corrald_ui::drive::sign_step_up(&signing, &mine);
-    use base64::Engine as _;
-    let sig_bytes: [u8; 64] = base64::engine::general_purpose::STANDARD
-        .decode(&sig)
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-    signing
-        .verifying_key()
-        .verify_strict(
-            &corrald::auth::step_up::canonical_step_up_bytes(&theirs),
-            &sig,
-        )
-        .expect("my step-up signature verifies over the daemon's canonical bytes");
 }
 
 /// My typed refusal classification matches the conformance error table

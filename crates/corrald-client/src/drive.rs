@@ -16,29 +16,21 @@ use serde::{Deserialize, Serialize};
 pub const READ_TAIL_MAX_LINES: u32 = 200;
 pub const READ_TAIL_MAX_BYTES: usize = 32 * 1024;
 
-/// The canonical drive capabilities (D7, #232 adds read_diff).
+/// The canonical drive capabilities, cut to the read-only set (#354):
+/// the removed mutating names parse as `UnknownCapability` exactly like on
+/// the daemon (wire-level mirror of `corrald::drive::Capability`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
-    Prompt,
-    Interrupt,
-    Approve,
     ReadTail,
     ReadDiff,
-    Kill,
-    Attach,
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Prompt => "prompt",
-            Self::Interrupt => "interrupt",
-            Self::Approve => "approve",
             Self::ReadTail => "read_tail",
             Self::ReadDiff => "read_diff",
-            Self::Kill => "kill",
-            Self::Attach => "attach",
         })
     }
 }
@@ -48,13 +40,8 @@ impl FromStr for Capability {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "prompt" => Ok(Self::Prompt),
-            "interrupt" => Ok(Self::Interrupt),
-            "approve" => Ok(Self::Approve),
             "read_tail" => Ok(Self::ReadTail),
             "read_diff" => Ok(Self::ReadDiff),
-            "kill" => Ok(Self::Kill),
-            "attach" => Ok(Self::Attach),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -77,18 +64,13 @@ impl std::error::Error for UnknownCapability {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DrivePayload {
-    Prompt {
-        text: String,
-    },
     ReadTail {
         lines: Option<u32>,
     },
-    /// Claim-based approval reply (D8): echo the exact `prompt_hash` of the
-    /// snapshot's `waiting_on.prompt`.
-    Approve {
-        approval_id: String,
-        prompt_hash: String,
-        choice: String,
+    ReadDiff {
+        files: Option<u32>,
+        offset: Option<u32>,
+        lines: Option<u32>,
     },
 }
 

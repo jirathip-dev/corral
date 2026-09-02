@@ -45,45 +45,24 @@ pub const READ_DIFF_DEFAULT_LINES: u32 = 200;
 pub const READ_DIFF_MAX_LINES: u32 = 400;
 pub const READ_DIFF_MAX_BYTES: usize = 64 * 1024;
 
-/// The canonical drive capabilities (D7). Server refuses anything not
-/// in this set with a typed error, before dispatch.
+/// The canonical drive capabilities (D7), cut to the read-only set (#354).
+/// Server refuses anything not in this set with a typed error, before
+/// dispatch — the removed mutating names parse as `UnknownCapability`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
-    Prompt,
-    Interrupt,
-    Approve,
     ReadTail,
-    Kill,
-    Attach,
-    /// #113: start an issue-linked or issue-free worktree. A fleet-level
-    /// operation (not an agent drive); the `target` carries the fleet name.
-    StartWorktree,
     /// #232: read an agent's worktree diff (changed-files list + unified
     /// diff + diffstat). Read-only; mirrored from `read_tail` (auth, audit,
     /// refusal kinds) with the same per-device default-deny grant.
     ReadDiff,
-    /// #267: read the repo-level issue browser payload (fleet-level, like
-    /// `start_worktree` — NOT an agent drive). Serves the same
-    /// last-known issue set as `GET /issues` (the gh poller's window:
-    /// number/state/title/labels/url + body + newest-first comments), so
-    /// the iOS browser is grant-gated + audited like `read_diff` while the
-    /// egui board keeps its unauthenticated read surface. Default-empty.
-    ReadIssues,
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Prompt => "prompt",
-            Self::Interrupt => "interrupt",
-            Self::Approve => "approve",
             Self::ReadTail => "read_tail",
-            Self::Kill => "kill",
-            Self::Attach => "attach",
-            Self::StartWorktree => "start_worktree",
             Self::ReadDiff => "read_diff",
-            Self::ReadIssues => "read_issues",
         })
     }
 }
@@ -93,15 +72,8 @@ impl FromStr for Capability {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "prompt" => Ok(Self::Prompt),
-            "interrupt" => Ok(Self::Interrupt),
-            "approve" => Ok(Self::Approve),
             "read_tail" => Ok(Self::ReadTail),
-            "kill" => Ok(Self::Kill),
-            "attach" => Ok(Self::Attach),
-            "start_worktree" => Ok(Self::StartWorktree),
             "read_diff" => Ok(Self::ReadDiff),
-            "read_issues" => Ok(Self::ReadIssues),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -124,9 +96,6 @@ impl std::error::Error for UnknownCapability {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DrivePayload {
-    /// Free-form text to send to the agent (W2 uses this for approval
-    /// choices only when a prompt is waiting).
-    Prompt { text: String },
     ReadTail {
         lines: Option<u32>,
         #[serde(default)]
@@ -143,35 +112,6 @@ pub enum DrivePayload {
         #[serde(default)]
         lines: Option<u32>,
     },
-    /// #267: read the read-only issue browser payload. No parameters: the
-    /// daemon serves the same last-known window as `GET /issues` (the gh
-    /// poller's bounded set) — the client never selects or mutates.
-    ReadIssues,
-    /// Claim-based approval reply (D8): the client echoes the exact
-    /// `prompt_hash` it is answering. The host refuses when the current
-    /// prompt's hash differs — this kills the wrong-question race.
-    Approve {
-        approval_id: String,
-        prompt_hash: String,
-        choice: String,
-    },
-    /// #113: start a worktree. `kind` is `"issue"` (issue-linked; carries
-    /// `number`/`issue_url`) or `"free"` (issue-free; carries `name`). The
-    /// daemon NEVER fabricates an issue number and NEVER falls through from
-    /// a failed issue lookup to the free path.
-    StartWorktree {
-        /// `"issue"` (issue-linked) or `"free"` (issue-free). Named `mode`
-        /// because the enum's own serde tag is `kind` — the two discriminators
-        /// cannot share a key at the same level.
-        mode: String,
-        repo: String,
-        #[serde(default)]
-        number: Option<u64>,
-        #[serde(default)]
-        issue_url: Option<String>,
-        #[serde(default)]
-        name: Option<String>,
-    },
 }
 
 impl DrivePayload {
@@ -185,26 +125,9 @@ impl DrivePayload {
             capability,
             detail: e.to_string(),
         })?;
-        // #113: `mode` is a plain string on the wire so we can refuse an
-        // unknown discriminator with a typed error (serde would otherwise
-        // accept it and fail later, after the payload already consumed the
-        // request id slot).
-        if let Self::StartWorktree { mode, .. } = &typed
-            && mode != "issue"
-            && mode != "free"
-        {
-            return Err(PayloadError {
-                capability,
-                detail: format!("unknown worktree mode {mode:?}; expected \"issue\" or \"free\""),
-            });
-        }
         match (&typed, capability) {
-            (Self::Prompt { .. }, Capability::Prompt)
-            | (Self::ReadTail { .. }, Capability::ReadTail)
-            | (Self::ReadDiff { .. }, Capability::ReadDiff)
-            | (Self::ReadIssues, Capability::ReadIssues)
-            | (Self::Approve { .. }, Capability::Approve)
-            | (Self::StartWorktree { .. }, Capability::StartWorktree) => Ok(typed),
+            (Self::ReadTail { .. }, Capability::ReadTail)
+            | (Self::ReadDiff { .. }, Capability::ReadDiff) => Ok(typed),
             _ => Err(PayloadError {
                 capability,
                 detail: "payload kind does not match capability".to_string(),
@@ -451,17 +374,7 @@ mod tests {
 
     #[test]
     fn capability_round_trips_and_parses() {
-        for cap in [
-            Capability::Prompt,
-            Capability::Interrupt,
-            Capability::Approve,
-            Capability::ReadTail,
-            Capability::Kill,
-            Capability::Attach,
-            Capability::StartWorktree,
-            Capability::ReadDiff,
-            Capability::ReadIssues,
-        ] {
+        for cap in [Capability::ReadTail, Capability::ReadDiff] {
             let s = cap.to_string();
             assert_eq!(s.parse::<Capability>().unwrap(), cap);
             let wire = serde_json::to_string(&cap).unwrap();
@@ -470,42 +383,32 @@ mod tests {
         assert_eq!(Capability::from_str("sudo").unwrap_err().0, "sudo");
     }
 
-    /// #267 RED guard (rev-g232 lesson): the issue browser capability is
-    /// carved into the payload path as the string `"read_issues"` — this
-    /// guard reds when the FromStr/Display arm or the enum entry drifts so
-    /// the iOS constant is never green-on-green with a daemon that cannot
-    /// parse it. Read-ONLY: the payload shape is asserted to stay empty, so
-    /// a future write-bearing field must be an explicit decision.
+    /// #354 cut guard: the removed mutating capability names no longer
+    /// parse — they come back as `UnknownCapability` at the wire boundary
+    /// (the HTTP probe in tests/readonly_cut.rs pins the refusal end to end).
     #[test]
-    fn read_issues_is_canonical_and_payload_is_read_only_empty() {
-        assert_eq!(Capability::ReadIssues.to_string(), "read_issues");
-        assert_eq!(
-            "read_issues".parse::<Capability>().unwrap(),
-            Capability::ReadIssues
-        );
-        let parsed = DrivePayload::parse(
-            Capability::ReadIssues,
-            &serde_json::json!({ "kind": "read_issues" }),
-        )
-        .unwrap();
-        assert_eq!(parsed, DrivePayload::ReadIssues);
-        // The variant is a UNIT payload: it carries no fields at all, so a
-        // write cannot ride it (serde ignores unknown keys, so an extra
-        // `mutate` key still parses — but there is no written field in the
-        // typed shape; a writer would need this enum to grow one).
-        assert!(
-            matches!(DrivePayload::ReadIssues, DrivePayload::ReadIssues),
-            "unit payload — structurally no data"
-        );
+    fn removed_mutating_capabilities_no_longer_parse() {
+        for name in [
+            "prompt",
+            "interrupt",
+            "approve",
+            "kill",
+            "attach",
+            "start_worktree",
+            "read_issues",
+        ] {
+            let err = name.parse::<Capability>().unwrap_err();
+            assert_eq!(err.0, name, "{name} must surface as UnknownCapability");
+        }
     }
 
     #[test]
     fn canonical_bytes_are_deterministic() {
         let e = DriveEnvelope {
             request_id: "req-1".to_string(),
-            capability: Capability::Prompt,
+            capability: Capability::ReadTail,
             target: "herdr:abc".to_string(),
-            payload: serde_json::json!({ "text": "continue" }),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": 50 }),
             rev: Some(7),
         };
         let a = canonical_envelope_bytes(&e);
@@ -518,15 +421,10 @@ mod tests {
 
     #[test]
     fn payload_parse_rejects_mismatched_kinds() {
-        let ok = serde_json::json!({ "kind": "prompt", "text": "go" });
-        assert_eq!(
-            DrivePayload::parse(Capability::Prompt, &ok).unwrap(),
-            DrivePayload::Prompt { text: "go".into() }
-        );
-        let wrong = serde_json::json!({ "kind": "prompt", "text": "go" });
+        let wrong = serde_json::json!({ "kind": "read_tail", "lines": 50 });
         assert!(
-            DrivePayload::parse(Capability::ReadTail, &wrong).is_err(),
-            "prompt payload for read_tail must be refused"
+            DrivePayload::parse(Capability::ReadDiff, &wrong).is_err(),
+            "read_tail payload for read_diff must be refused"
         );
         let diff =
             serde_json::json!({ "kind": "read_diff", "files": 10, "offset": 40, "lines": 50 });
@@ -547,25 +445,12 @@ mod tests {
                 lines: None
             }
         );
+        let removed = serde_json::json!({ "kind": "prompt", "text": "go" });
+        let err = DrivePayload::parse(Capability::ReadTail, &removed).unwrap_err();
         assert!(
-            DrivePayload::parse(Capability::Prompt, &diff_bare).is_err(),
-            "read_diff payload for prompt must be refused"
+            err.detail.contains("prompt"),
+            "a removed payload kind must surface as a typed payload refusal (got: {})",
+            err.detail
         );
-        let approve = serde_json::json!({
-            "kind": "approve",
-            "approval_id": "ap-1",
-            "prompt_hash": "sha256:abc",
-            "choice": "y"
-        });
-        assert_eq!(
-            DrivePayload::parse(Capability::Approve, &approve).unwrap(),
-            DrivePayload::Approve {
-                approval_id: "ap-1".into(),
-                prompt_hash: "sha256:abc".into(),
-                choice: "y".into()
-            }
-        );
-        let bad = serde_json::json!({ "kind": "interrupt" });
-        assert!(DrivePayload::parse(Capability::Interrupt, &bad).is_err());
     }
 }

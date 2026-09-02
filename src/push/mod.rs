@@ -322,7 +322,10 @@ impl Notifier {
                 if is_new {
                     if let Some(waiting) = agent.waiting_on.as_ref() {
                         let approval_id = if waiting.approval_id.is_empty() {
-                            crate::approve::approval_id_for(&agent.agent_id, &waiting.prompt_hash)
+                            // Stable claim identity (D8): agent + exact prompt
+                            // being approved (mirrors the removed drive plane's
+                            // approve seam — notifications are display-only).
+                            format!("{}:{}", agent.agent_id, waiting.prompt_hash)
                         } else {
                             waiting.approval_id.clone()
                         };

@@ -159,21 +159,15 @@ pub struct Attachment {
 }
 
 /// Capabilities the client renders buttons from — never hardcoded per tool.
-/// The daemon stamps every herdr agent with this set (default-READ); each
-/// capability is still grant-gated at /drive, and `read_diff` is a
-/// read-only capability. Keep in sync with `crate::drive::Capability`:
-/// the advertisement test below fails if this constant ever omits a
-/// capability the parser accepts (the clients' gating reads THIS set, so
-/// an omission silently disables the button in production).
-pub const CAPABILITIES: [&str; 7] = [
-    "prompt",
-    "interrupt",
-    "approve",
-    "read_tail",
-    "read_diff",
-    "kill",
-    "attach",
-];
+/// The daemon stamps every herdr agent with this set. Since the #354
+/// read-only cut, only the two signed reads are advertised: every mutating
+/// capability was removed from the daemon, so advertising one would show a
+/// button the daemon can never dispatch. Keep in sync with
+/// `crate::drive::Capability`: the advertisement test below fails if this
+/// constant ever omits a capability the parser accepts (the clients' gating
+/// reads THIS set, so an omission silently disables the button in
+/// production).
+pub const CAPABILITIES: [&str; 2] = ["read_tail", "read_diff"];
 
 /// Canonical agent record. Flat keyed record in snapshot/delta payloads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

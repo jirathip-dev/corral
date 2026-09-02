@@ -319,7 +319,7 @@ if [[ -n "$FROM_RELEASE" ]]; then
   echo "   - board:           open ${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
 else
   echo "   - client (egui):   cargo run -p corrald-ui --release   (auto-registers on localhost)"
-  echo "   - device grant:    scripts/corrald-grant.sh --key <key_id> --caps read_tail,prompt"
+  echo "   - device grants:   out-of-band in $CONFIG_DIR/registry.json (stop daemon, edit \"grants\", restart; see docs/OPERATIONS.md) — no grant HTTP surface since #354"
 fi
 echo "   - view config:     ls -la $CONFIG_DIR"
 echo "   - logs:            tail -f $LOG"

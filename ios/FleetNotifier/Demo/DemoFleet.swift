@@ -12,6 +12,11 @@ enum DemoFleet {
     /// changing normal fleet selection behavior.
     static let featuredAgentID = "demo-session:recent-output"
 
+    /// #330 AC5 evidence route: a session whose recent window carries ONLY
+    /// unprovenanced terminal chrome — the honest empty-Conversation state
+    /// (with Harness activity still reachable) renders here.
+    static let harnessOnlyAgentID = "demo-session:harness-only"
+
     /// #9007: seeded read-only issue browser (mirrors the approved V3 mock's
     /// shape: repos → issues with body + newest-first comment window).
     /// Issue lists use deterministic fictional repositories; comment text is
@@ -200,6 +205,18 @@ enum DemoFleet {
                                  prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
             seq: 10, tsOffset: 12)
 
+        // #330 AC5 evidence: a session whose recent window has NO attributed
+        // conversation events (all System/Unknown) — the honest empty
+        // Conversation state renders here while Harness stays reachable.
+        agents[harnessOnlyAgentID] = agent(harnessOnlyAgentID, tool: "tool-one", state: .working,
+            reason: "terminal chrome only in this window",
+            waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
+            displayName: "demo-harness-only", title: "Unattributed window",
+            workspace: Workspace(repo: "demo-atlas", branch: "demo-recent",
+                                 worktreePath: nil,
+                                 prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
+            seq: 11, tsOffset: 6)
+
         agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "tool-one", state: .idle,
             reason: nil, waiting: nil, capabilities: ["read_tail", "prompt"],
             displayName: "demo-idle", title: "Investigate sign-on migration",
@@ -314,6 +331,27 @@ enum DemoFleet {
     /// does — Session status therefore omits Model/Effort/Worktree and the
     /// Tool chip falls back to the agent's structured tool field.
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
+        if agent.agentId == harnessOnlyAgentID {
+            // #330 AC5 evidence: no attributed conversation events — every
+            // block is System/Unknown (terminal chrome + unprovenanced
+            // prose), so the Conversation region must show the honest empty
+            // state while Harness activity stays reachable.
+            return [
+                RecentBlock(kind: .system,
+                            text: "──────────────────────────────────────",
+                            truncatedBefore: nil),
+                RecentBlock(kind: .unknown,
+                            text: "status: working · esc to interrupt",
+                            truncatedBefore: nil),
+                RecentBlock(
+                    kind: .system,
+                    text: "read_tail page truncated to the newest 200 lines.",
+                    truncatedBefore: nil),
+                RecentBlock(kind: .unknown,
+                            text: "raw pane line without provenance",
+                            truncatedBefore: nil),
+            ]
+        }
         // R4 evidence contract: the demo diff references a neutral synthetic
         // file, never a repo-derived filename.
         let file = "src/board_view.rs"
@@ -333,13 +371,57 @@ enum DemoFleet {
             // #316 V3: canonical System/Unknown demo blocks so the Harness
             // activity section, its count, and the Diagnostic / Unknown
             // activity identity are exercised in demo evidence.
+            // #329: the diagnostic payload is deliberately LONG (multi-screen
+            // at 390x844) so the expanded harness region's bounded scroll is
+            // observable in evidence; the collapse control stays reachable
+            // above it.
             RecentBlock(
                 kind: .system,
-                text: "read_tail page truncated to the newest 200 lines.",
+                text: """
+                read_tail page truncated to the newest 200 lines.
+                The full pane tail was longer than the bounded window, so the
+                daemon served the most recent lines only. This diagnostic
+                block exists to show that a long system payload scrolls
+                inside the harness region instead of overflowing the panel.
+                It continues across several lines so the expanded content
+                exceeds the bounded viewport and the vertical scroll owner
+                becomes visible: first line of the long diagnostic, second
+                line of the long diagnostic, third line of the long
+                diagnostic, fourth line of the long diagnostic, fifth line
+                of the long diagnostic, sixth line of the long diagnostic,
+                seventh line of the long diagnostic, eighth line of the long
+                diagnostic, ninth line of the long diagnostic, and finally
+                the tenth line of the long diagnostic payload.
+                """,
+                truncatedBefore: nil),
+            // #328 evidence: divider-only TUI furniture — a presentation
+            // separator, never a Diagnostic card and never counted.
+            RecentBlock(
+                kind: .system,
+                text: "──────────────────────────────────────",
                 truncatedBefore: nil),
             RecentBlock(kind: .unknown,
                         text: "raw pane line without provenance",
                         truncatedBefore: nil),
+            RecentBlock(
+                kind: .unknown,
+                text: """
+                Unprovenanced terminal material that no structured event can
+                vouch for: a human typed some of this straight into the
+                pane, and part of it is machine output that the daemon could
+                not attribute. It therefore stays honestly Unknown and lives
+                under Harness activity rather than pretending to be a
+                conversation message. Like the diagnostic above, this block
+                is long on purpose so the expanded harness scroll is
+                observable: second line of the long unknown payload, third
+                line of the long unknown payload, fourth line of the long
+                unknown payload, fifth line of the long unknown payload,
+                sixth line of the long unknown payload, seventh line of the
+                long unknown payload, eighth line of the long unknown
+                payload, ninth line of the long unknown payload, and the
+                tenth line of the long unknown payload.
+                """,
+                truncatedBefore: nil),
             // R4 evidence contract: the demo diff is compact enough that the
             // whole conversation (heading + user + assistant + expanded diff)
             // fits the 320pt conversation viewport, so the deterministic

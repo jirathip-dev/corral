@@ -75,7 +75,7 @@ use tracing::warn;
 
 use crate::adapters::{Adapter, DriveCommand, DriveError};
 use crate::approve::{ApprovalError, check_approval_claim};
-use crate::core::blocks::canonical_blocks;
+use crate::core::blocks::canonical_blocks_with_exchange;
 use crate::core::model::Agent;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
@@ -898,7 +898,16 @@ pub async fn drive(
                     // `user` block, session chrome is demoted, and
                     // unprovenanced input stays `unknown`. `lines` is
                     // unchanged (backward compatibility).
-                    let blocks = canonical_blocks(&lines, &state.provenance, &agent_id, None);
+                    // #330: the structured exchange ledger joins the same
+                    // window, so the agent's recorded blocked questions
+                    // render as authoritative `agent`/`tool` blocks.
+                    let blocks = canonical_blocks_with_exchange(
+                        &lines,
+                        &state.provenance,
+                        &state.store.exchange(),
+                        &agent_id,
+                        None,
+                    );
                     (
                         true,
                         None,

@@ -79,6 +79,16 @@ pub fn text_sha256_hex(text: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Return the one canonical identity used for structured exchange events.
+/// Match the read-tail sequence: redact, remove TUI furniture, replace
+/// unsupported glyphs, then normalize whitespace before hashing.
+pub fn canonical_exchange_text(text: &str) -> String {
+    let redacted = crate::core::redact::redact(text);
+    let furniture = crate::core::blocks::scrub_tui_furniture(&redacted);
+    let icons = crate::core::blocks::scrub_unsupported_glyphs(&furniture);
+    crate::core::blocks::clean(&icons).trim().to_string()
+}
+
 /// Bounded, thread-safe ledger of dispatched prompts, keyed by target.
 #[derive(Debug, Default)]
 pub struct PromptProvenance {
@@ -211,6 +221,184 @@ impl PromptProvenance {
     /// Whether any prompt is recorded for `target` (diagnostics/tests).
     pub fn has_events_for(&self, target: &str) -> bool {
         let ledger = self.inner.lock().expect("provenance lock poisoned");
+        ledger
+            .per_target
+            .get(target)
+            .is_some_and(|ring| !ring.is_empty())
+    }
+}
+
+/// #330: the authoritative structured role for a recorded exchange event.
+/// Roles come from the STRUCTURED source (a Corral Prompt dispatch for
+/// `user`; herdr's `pane.output_matched` classification for the agent's
+/// blocked question), never from terminal prose, provider, or model names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExchangeRole {
+    /// The agent asked the operator a question (answer_question / menu).
+    Assistant,
+    /// The agent requested a tool approval (approve_tool).
+    Tool,
+}
+
+/// #330: one structured agent-side exchange event as observed by Corral —
+/// the agent's blocked question (herdr `pane.output_matched` →
+/// `waiting_on`). Same identity-only design as [`PromptEvent`]: the ledger
+/// stores SHA-256 + length of the canonical read-tail identity —
+/// never the raw question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeEvent {
+    /// Structured event identity (the claim's `approval_id` when the agent
+    /// is blocked on a question).
+    pub id: String,
+    /// Canonical agent target the event belongs to.
+    pub target: String,
+    /// Authoritative structured role of the event.
+    pub role: ExchangeRole,
+    /// SHA-256 hex of the canonical read-tail event text.
+    pub text_sha256: String,
+    /// Byte length of the canonical read-tail event text.
+    pub text_len: usize,
+    /// Epoch millis when the event was observed.
+    pub ts: u64,
+}
+
+impl ExchangeEvent {
+    /// Record `text` in the exact canonical identity the read path compares
+    /// window lines against (`canonical_exchange_text` applies redaction,
+    /// TUI-furniture/icon scrubs, and whitespace normalization).
+    pub fn new(id: &str, target: &str, role: ExchangeRole, text: &str, ts: u64) -> Self {
+        let canonical = canonical_exchange_text(text);
+        Self {
+            id: id.to_string(),
+            target: target.to_string(),
+            role,
+            text_sha256: text_sha256_hex(&canonical),
+            text_len: canonical.len(),
+            ts,
+        }
+    }
+
+    /// Whether `text` is this event's canonical identity (hash + length —
+    /// never a prose or name comparison).
+    pub fn matches_text(&self, text: &str) -> bool {
+        let canonical = canonical_exchange_text(text);
+        self.text_len == canonical.len() && self.text_sha256 == text_sha256_hex(&canonical)
+    }
+}
+
+/// #330: bounded, thread-safe ledger of structured agent-side exchange
+/// events, keyed by target — the assistant/tool half of the canonical
+/// role/provenance seam ([`PromptProvenance`] is the user half). Same
+/// bounds and one-to-one per-read binding semantics as the prompt ledger.
+#[derive(Debug, Default)]
+pub struct ExchangeLedger {
+    inner: Mutex<ExchangeLedgerInner>,
+}
+
+#[derive(Debug, Default)]
+struct ExchangeLedgerInner {
+    /// Per-target ring (oldest first) so a target's events only ever match
+    /// that target's own windows.
+    per_target: HashMap<String, VecDeque<ExchangeEvent>>,
+    /// Total events retained across all targets (the eviction bound).
+    total: usize,
+}
+
+impl ExchangeLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one observed structured event (adapter boundary, exactly once
+    /// per `pane.output_matched` push). Bounded identically to the prompt
+    /// ledger: the globally oldest event is evicted first.
+    pub fn record(&self, event: ExchangeEvent) {
+        let mut ledger = self.inner.lock().expect("exchange ledger lock poisoned");
+        let ring = ledger.per_target.entry(event.target.clone()).or_default();
+        ring.push_back(event);
+        ledger.total += 1;
+        while ledger.total > LEDGER_CAP {
+            let oldest_key = ledger
+                .per_target
+                .iter()
+                .min_by_key(|(_, ring)| ring.front().map(|e| e.ts).unwrap_or(u64::MAX))
+                .map(|(target, _)| target.clone());
+            match oldest_key {
+                Some(target) => {
+                    if let Some(ring) = ledger.per_target.get_mut(&target) {
+                        ring.pop_front();
+                        if ring.is_empty() {
+                            ledger.per_target.remove(&target);
+                        }
+                        ledger.total -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Bind structured events to a read window's candidate lines, one-to-one
+    /// (#315 R2 semantics, mirroring [`PromptProvenance::bind_echoes`]):
+    /// - an immutable per-target snapshot is taken first (repeated reads
+    ///   stay stable; the ledger is never consumed);
+    /// - events are offered OLDEST FIRST and each binds to at most one
+    ///   candidate in this read;
+    /// - at most `window` trailing candidates may bind overall.
+    ///
+    /// Returns one event per input slot: the event bound to that candidate,
+    /// or `None` when the line stays unattributed. Every non-blank line is
+    /// a candidate — the agent's structured question is plain prose in the
+    /// terminal, so there is no decoration to require; identity is exact.
+    pub fn bind_events(
+        &self,
+        target: &str,
+        candidates: &[Option<String>],
+        window: usize,
+    ) -> Vec<Option<ExchangeEvent>> {
+        let mut out: Vec<Option<ExchangeEvent>> = Vec::with_capacity(candidates.len());
+        let Some(snapshot) = self.snapshot(target) else {
+            out.resize(candidates.len(), None);
+            return out;
+        };
+        let eligible_floor = candidates.len().saturating_sub(window);
+        let mut used = vec![false; snapshot.len()];
+        for (i, candidate) in candidates.iter().enumerate() {
+            let Some(text) = candidate else {
+                out.push(None);
+                continue;
+            };
+            if i < eligible_floor {
+                out.push(None);
+                continue;
+            }
+            let mut bound = None;
+            for (idx, event) in snapshot.iter().enumerate() {
+                if !used[idx] && event.matches_text(text) {
+                    used[idx] = true;
+                    bound = Some(event.clone());
+                    break;
+                }
+            }
+            out.push(bound);
+        }
+        out
+    }
+
+    /// Immutable snapshot of one target's ring, oldest first.
+    fn snapshot(&self, target: &str) -> Option<Vec<ExchangeEvent>> {
+        let ledger = self.inner.lock().expect("exchange ledger lock poisoned");
+        ledger
+            .per_target
+            .get(target)
+            .map(|ring| ring.iter().cloned().collect())
+    }
+
+    /// Whether any event is recorded for `target` (diagnostics/tests).
+    pub fn has_events_for(&self, target: &str) -> bool {
+        let ledger = self.inner.lock().expect("exchange ledger lock poisoned");
         ledger
             .per_target
             .get(target)

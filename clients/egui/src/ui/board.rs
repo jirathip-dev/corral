@@ -1920,9 +1920,16 @@ fn recent_session_status_panel(
 /// #316: collapsible Harness activity. Canonical System and Unknown events
 /// render here with explicit `Diagnostic` / `Unknown activity` identity —
 /// retained in relative order, never silently dropped, never counted as
-/// conversation rows.
+/// conversation rows. #328: divider-only blocks are presentation separators:
+/// they do not inflate the activity count, render as thin rules instead of
+/// Diagnostic cards, and a divider-only payload hides the section entirely.
 fn recent_harness_activity_panel(ui: &mut Ui, agent: &Agent, entries: &[HarnessEntry]) {
-    let header = format!("Harness activity · {} outside conversation", entries.len());
+    let event_count = entries.iter().filter(|entry| !entry.is_divider).count();
+    if event_count == 0 && !entries.is_empty() {
+        // #328 AC2: divider-only payload — the section is empty of events.
+        return;
+    }
+    let header = format!("Harness activity · {event_count} outside conversation");
     CollapsingHeader::new(
         RichText::new(header)
             .small()
@@ -1932,7 +1939,7 @@ fn recent_harness_activity_panel(ui: &mut Ui, agent: &Agent, entries: &[HarnessE
     .id_salt((HARNESS_OPEN_ID, &agent.agent_id))
     .default_open(false)
     .show(ui, |ui| {
-        if entries.is_empty() {
+        if event_count == 0 {
             ui.label(
                 RichText::new("No harness activity.")
                     .small()
@@ -1940,7 +1947,11 @@ fn recent_harness_activity_panel(ui: &mut Ui, agent: &Agent, entries: &[HarnessE
             );
         }
         for entry in entries {
-            recent_harness_row(ui, entry);
+            if entry.is_divider {
+                ui.separator();
+            } else {
+                recent_harness_row(ui, entry);
+            }
         }
     });
 }
@@ -2274,6 +2285,10 @@ enum ConversationContext {
 struct HarnessEntry {
     kind: RecentBlockKind,
     text: String,
+    /// #328: a divider-only block (residual TUI furniture) is a PRESENTATION
+    /// separator, not a Harness event — it never counts toward the activity
+    /// count and renders as a thin rule, never a Diagnostic card.
+    is_divider: bool,
 }
 
 impl HarnessEntry {
@@ -2312,6 +2327,9 @@ impl ConversationPartition {
 
 /// #316 V3: partition the canonical stream WITHOUT touching it. Kinds come
 /// from the daemon; this only routes each position to its V3 surface.
+/// #328: divider-only System/Unknown blocks are PRESENTATION separators —
+/// they stay in the harness region (order preserved) but are flagged so the
+/// count excludes them and they render as thin rules, never dash cards.
 fn partition_canonical_positions(blocks: &[crate::drive::CanonicalBlock]) -> ConversationPartition {
     let mut partition = ConversationPartition {
         total: blocks.len(),
@@ -2329,11 +2347,35 @@ fn partition_canonical_positions(blocks: &[crate::drive::CanonicalBlock]) -> Con
                 HarnessEntry {
                     kind,
                     text: block.text.clone(),
+                    is_divider: recent_is_divider_run(&block.text),
                 },
             )),
         }
     }
     partition
+}
+
+/// #328: the shared divider-vs-content classification seam (mirrors the iOS
+/// `RecentOutputRender.isDividerRun`): every non-empty line's non-whitespace
+/// characters must be box-drawing/block glyphs (U+2500–U+259F). Content
+/// lines that merely contain a run (`let sep = "────";`) stay content.
+fn recent_is_divider_run(text: &str) -> bool {
+    let mut saw_run = false;
+    for line in text.split('\n') {
+        let scalars: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if scalars.is_empty() {
+            continue;
+        }
+        if scalars.len() < 2 || !scalars.iter().all(|c| is_divider_scalar(*c)) {
+            return false;
+        }
+        saw_run = true;
+    }
+    saw_run
+}
+
+fn is_divider_scalar(c: char) -> bool {
+    (0x2500..=0x259F).contains(&(c as u32))
 }
 
 /// #316 V3: Session status fields from ALREADY-AUTHORITATIVE structured
@@ -6676,6 +6718,127 @@ mod tests {
     }
 
     #[test]
+    fn v3_harness_divider_only_blocks_are_presentation_separators_not_events() {
+        // #328: divider-only System/Unknown blocks are flagged as
+        // presentation separators — they must not inflate the Harness
+        // activity count, and a divider-only payload leaves zero events.
+        let stream = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::System, "──────"),
+            canonical_block(
+                crate::drive::CanonicalBlockKind::System,
+                "Missing env var: OPENROUTER_API_KEY",
+            ),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "raw pane line"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "──────"),
+        ];
+        let partition = partition_canonical_positions(&stream);
+        let entries: Vec<&HarnessEntry> = partition
+            .harness_entries
+            .iter()
+            .map(|(_, entry)| entry)
+            .collect();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.is_divider)
+                .collect::<Vec<_>>(),
+            vec![true, false, false, true],
+            "divider-only blocks are flagged by the shared seam"
+        );
+        let event_count = entries.iter().filter(|entry| !entry.is_divider).count();
+        assert_eq!(event_count, 2, "the count equals meaningful events only");
+        assert_eq!(
+            entries[1].text, "Missing env var: OPENROUTER_API_KEY",
+            "real diagnostic content is never dropped"
+        );
+
+        // AC2: divider-only payload — zero events, the section hides.
+        let only_dividers = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::System, "──────"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "┄┄┄┄┄┄"),
+        ];
+        let partition = partition_canonical_positions(&only_dividers);
+        let events = partition
+            .harness_entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_divider)
+            .count();
+        assert_eq!(events, 0, "divider-only payload has no harness events");
+    }
+
+    #[test]
+    fn v3_live_session_golden_fixture_decodes_identically_across_clients() {
+        // #330 AC4/AC6: the SAME committed live-session golden fixture the
+        // daemon emits and iOS bundles decodes into the identical canonical
+        // kinds/order here, and the V3 partition matches iOS's
+        // Conversation (User/Agent/Tool) / Harness (System/Unknown) split.
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/live_session_exchange_golden.json"
+        ))
+        .expect("live-session golden fixture is committed and readable");
+        let daemon_result = serde_json::json!({
+            "lines": ["x"],
+            "blocks": serde_json::from_str::<serde_json::Value>(&fixture)
+                .expect("golden fixture parses as JSON blocks"),
+        });
+        let blocks = crate::drive::parse_tail_blocks(&daemon_result);
+        let kinds: Vec<crate::drive::CanonicalBlockKind> = blocks.iter().map(|b| b.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::Agent,
+                crate::drive::CanonicalBlockKind::Tool,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "identical kind sequence on every client"
+        );
+        let partition = partition_canonical_positions(&blocks);
+        let conversation: Vec<crate::drive::CanonicalBlockKind> = partition
+            .conversation_positions
+            .iter()
+            .map(|&position| blocks[position].kind)
+            .collect();
+        assert_eq!(
+            conversation,
+            vec![
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Agent,
+                crate::drive::CanonicalBlockKind::Tool,
+            ],
+            "Conversation keeps the canonical User/Agent/Tool run"
+        );
+        let harness: Vec<crate::drive::CanonicalBlockKind> = partition
+            .harness_entries
+            .iter()
+            .map(|(position, _)| blocks[*position].kind)
+            .collect();
+        assert_eq!(
+            harness,
+            vec![
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "Harness keeps the System/Unknown run, dividers flagged separately"
+        );
+        assert_eq!(
+            partition
+                .harness_entries
+                .iter()
+                .filter(|(_, entry)| entry.is_divider)
+                .count(),
+            1,
+            "the leading chrome rail is flagged as a presentation divider"
+        );
+    }
+
+    #[test]
     fn v3_session_status_and_composer_are_structurally_outside_the_conversation() {
         let agent = agent_with_caps(&["read_tail", "prompt"]);
         let mut fleet = Fleet {
@@ -7106,10 +7269,12 @@ mod tests {
         let system = HarnessEntry {
             kind: RecentBlockKind::System,
             text: "esc to interrupt".into(),
+            is_divider: false,
         };
         let unknown = HarnessEntry {
             kind: RecentBlockKind::Unknown,
             text: "typed by hand".into(),
+            is_divider: false,
         };
         assert_eq!(system.visible_label(), "Diagnostic");
         assert_eq!(unknown.visible_label(), "Unknown activity");

@@ -70,13 +70,21 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manufactured `model effort · path` line, no path-like fallback) and the
     # demo diff is compacted so the Conversation heading stays in viewport —
     # digest re-pinned to the R4 source set.
-    # #333: DiffPane/DiffFileWire terminal-state coverage in Models.swift,
-    # with AppModel bounds/cancellation for read_diff; digest re-pinned.
-    # #331: terminal attach errors, handshake lifecycle, and cleanup states;
-    # the digest includes the merged #333 and #331 Release source inputs.
+    # #328/#329/#330: shared divider-vs-content seam + harness event count +
+    # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
+    # harness scroll (FleetViews layout constant), demo seed long diagnostics
+    # + divider-only block + harness-only evidence session (DemoFleet), and
+    # the demo evidence launch args (FleetNotifierApp).
+    # #333: DiffPane/DiffFileWire terminal-state reliability in Models.swift
+    # and AppModel, with bounded/cancellable read_diff.
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states.
+    # #328/#329/#330: recent-output attribution, divider-vs-content handling,
+    # bounded harness presentation, and empty-Conversation evidence.
     # #319/#320 grouped R2: ordered status presentation, structured
     # supervision evidence, and Finished wording updated the board sources.
-    "e9de0866e901c8255cd81080a06a450786dc913814d39f3dedbb041c8c6e760c"
+    # The digest covers the merged #328/#329/#330, #331, #333, and #319/#320
+    # source set.
+    "aa7ecb5c75b4ce6e9899c6f4cca4993343fa64d79b3ad022d96443fb30b08afd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

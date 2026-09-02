@@ -765,19 +765,14 @@ fn health_item(ui: &mut Ui, ok: bool, label: &str) {
 }
 
 /// Plain-language capability descriptions for the Devices & Grants
-/// master/detail surface (#209/#250).
+/// master/detail surface (#209/#250). Read-only since #354: legacy
+/// mutating grants may still appear on old daemons' devices, described
+/// generically.
 fn capability_description(capability: &str) -> &'static str {
     match capability {
         "read_tail" => "Read live agent output",
         "read_diff" => "Read the agent's worktree diff (files, diffstat, paged diff)",
-        "read_issues" => "Read repo issues (list + detail)",
-        "prompt" => "Send prompts / steer the agent",
-        "interrupt" => "Interrupt a running task",
-        "approve" => "Approve tool calls & awaiting decisions",
-        "kill" => "Terminate a task",
-        "attach" => "Attach to a session & stream events",
-        "start_worktree" => "Start a worktree from a bound issue",
-        _ => "Drive capability",
+        _ => "Legacy capability (removed from the read-only daemon)",
     }
 }
 
@@ -1581,19 +1576,20 @@ mod tests {
 
     #[test]
     fn grant_draft_toggles_and_keeps_canonical_order() {
-        let mut draft =
-            GrantDraft::for_device(&device("dev_a", &["start_worktree", "prompt", "attach"]));
-        assert_eq!(draft.granted(), ["prompt", "attach", "start_worktree"]);
-        draft.toggle("kill");
-        draft.toggle("start_worktree");
-        assert_eq!(draft.granted(), ["prompt", "kill", "attach"]);
-        draft.toggle("prompt");
-        assert_eq!(draft.granted(), ["kill", "attach"]);
+        let mut draft = GrantDraft::for_device(&device("dev_a", &["read_diff", "read_tail"]));
+        assert_eq!(draft.granted(), ["read_tail", "read_diff"]);
+        draft.toggle("read_diff");
+        assert_eq!(draft.granted(), ["read_tail"]);
+        draft.toggle("read_diff");
+        assert_eq!(draft.granted(), ["read_tail", "read_diff"]);
+        draft.toggle("read_tail");
+        draft.toggle("read_diff");
+        assert_eq!(draft.granted(), [] as [&str; 0]);
     }
 
     #[test]
     fn grant_key_selection_prefers_current_then_own_then_first() {
-        let devices = vec![device("dev_a", &[]), device("dev_b", &["prompt"])];
+        let devices = vec![device("dev_a", &[]), device("dev_b", &["read_tail"])];
         assert_eq!(
             choose_grant_key(&devices, "dev_b", "dev_a"),
             Some("dev_b".to_string())
@@ -1618,8 +1614,8 @@ mod tests {
         );
         assert_eq!(state.draft.selected_key, "dev_b");
         assert_eq!(state.draft.granted(), ["read_tail"]);
-        state.draft.toggle("start_worktree");
-        assert_eq!(state.draft.granted(), ["read_tail", "start_worktree"]);
+        state.draft.toggle("read_diff");
+        assert_eq!(state.draft.granted(), ["read_tail", "read_diff"]);
 
         state.set_error("transport failed".to_string());
         assert!(state.view.as_ref().unwrap().is_err());
@@ -1689,7 +1685,7 @@ mod tests {
     fn devgrants_reregister_keeps_restore_set_and_restored_clears_it() {
         let mut state = GrantAdminState::default();
         state.mark_reregistered(
-            vec!["read_tail".to_string(), "prompt".to_string()],
+            vec!["read_tail".to_string(), "read_diff".to_string()],
             "dev_old",
             "dev_new",
         );
@@ -1722,6 +1718,11 @@ mod tests {
                 "explicit text for {capability}"
             );
         }
+        assert_ne!(
+            capability_description("kill"),
+            "Drive capability",
+            "legacy mutating grants still get a described, non-generic fallback"
+        );
     }
 
     fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {
@@ -1935,7 +1936,7 @@ mod tests {
             ..Default::default()
         };
         settings.grant_admin.mark_reregistered(
-            vec!["read_tail".to_string(), "prompt".to_string()],
+            vec!["read_tail".to_string(), "read_diff".to_string()],
             "dev_old",
             "dev_new",
         );
@@ -1947,7 +1948,7 @@ mod tests {
         assert!(text.contains("Restore 2 previous grants"));
         assert!(text.contains("grant this fresh key directly below"));
         assert!(text.contains("CAPABILITIES"));
-        assert!(text.contains("0 of 9 granted"));
+        assert!(text.contains("0 of 2 granted"));
         assert!(!text.contains("BAD-SIGNATURE REJECTION"));
     }
 
@@ -2120,7 +2121,7 @@ mod tests {
         up.textures_delta.clear();
         assert_eq!(
             settings.requested,
-            Some(Request::ToggleGrantCap("prompt".to_string())),
+            Some(Request::ToggleGrantCap("read_tail".to_string())),
             "a real click on an enabled switch must emit Request::ToggleGrantCap"
         );
     }

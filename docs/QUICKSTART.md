@@ -202,12 +202,13 @@ rules:
   the phone's key with step 5:
 
 ```sh
-scripts/corrald-grant.sh --key <phone-key-id> --caps read_tail,prompt,interrupt,approve
+scripts/corrald-grant.sh --key <phone-key-id> --caps read_tail,read_diff
 ```
 
-The baseline phone promotion intentionally stops at the safe read/reply
-set. Add `kill,attach` explicitly only when the host has approved those
-controls; `read_tail` also unlocks the iOS Recent-output surface.
+The daemon is read-only since #354: `read_tail` unlocks Recent output,
+`read_diff` the worktree diff. The old control capabilities (`prompt`,
+`interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`)
+are refused with a typed `400 unknown_capability`.
 
 What the app shows:
 
@@ -215,16 +216,9 @@ What the app shows:
   blocked > done > working > idle, each with state, title/session,
   repo·branch·worktree, issue chips, CI glyph, tool.
 - **Recent output** (`read_tail`): bounded live tail (segmented blocks) via
-  signed `/drive` — the only output surface; live at the bottom, scroll up
-  for the bounded window.
-- **Prompt** (`prompt`): free-text prompt to an agent.
-- **Interrupt** (`interrupt`), **Kill** (`kill`), and **Attach**
-  (`attach`): signed write controls; Kill uses Face ID step-up.
-- **Approve / Deny / Continue** (`approve`): canned replies to a waiting
-  agent, including from the lock-screen notification.
-- Controls stay visible when disabled. A missing grant reads
-  `requires the <cap> grant — ask the host.`; an unadvertised capability
-  reads `<cap>: not available for this agent.`
+  signed `/drive`; live at the bottom, scroll up for the bounded window.
+- **Worktree diff** (`read_diff`): changed files + paged unified diff,
+  served from the same signed drive seam.
 
 Board never renders but the daemon is healthy? Every stream-layer failure
 now surfaces as a dismissible banner instead of a silent spinner (the

@@ -304,9 +304,88 @@ async fn mutating_drives_are_refused_without_dispatch_or_audit() {
 }
 
 // ---------------------------------------------------------------------------
-// GREEN probes: the kept read-only surface stays intact
+// Grant-admin RIP probe (R1): the /grants admin surface is route-absent
 // ---------------------------------------------------------------------------
 
+#[tokio::test]
+async fn grant_admin_surface_is_route_absent_even_for_admin_tokens() {
+    // R1 (#354 review): the host-admin grant-mutation surface must be gone
+    // with the mutating plane — a request carrying a VALID admin token
+    // still gets 404 (route not found), never a grant write or projection.
+    let h = harness();
+    let admin = corrald::auth::admin_token_for_test(&h.auth);
+    let key_id = h.auth.registry.records()[0].key_id.clone();
+    let bearer = format!("Bearer {admin}");
+
+    for (label, body) in [
+        (
+            "set_grants",
+            serde_json::json!({
+                "action": "set_grants",
+                "key_id": key_id.clone(),
+                "grants": ["read_tail"],
+            })
+            .to_string(),
+        ),
+        (
+            "revoke",
+            serde_json::json!({
+                "action": "revoke",
+                "key_id": key_id.clone(),
+                "revoked": true,
+            })
+            .to_string(),
+        ),
+    ] {
+        let res = h
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/grants")
+                    .header("content-type", "application/json")
+                    .header("authorization", &bearer)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "{label}: POST /grants must be route-absent for an admin token"
+        );
+    }
+
+    let res = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/grants")
+                .header("authorization", &bearer)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "GET /grants must be route-absent for an admin token"
+    );
+
+    // The device's grants are unchanged: the admin request never mutated
+    // anything (still the harness's seeded read grant set).
+    let rec = h.auth.registry.get(&key_id).expect("registered device");
+    assert_eq!(
+        rec.grants,
+        vec![Capability::ReadTail, Capability::ReadDiff],
+        "no grant mutation may ride a dead route"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// GREEN probes: the kept read-only surface stays intact
+// ---------------------------------------------------------------------------
 #[tokio::test]
 async fn signed_read_tail_still_dispatches_after_the_cut() {
     let h = harness();

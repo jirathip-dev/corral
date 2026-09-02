@@ -4,10 +4,11 @@
 //! - tamper/unknown/expired/revoked rejection;
 //! - read-only default deny (AC3);
 //! - hash-chained audit integrity + growth-on-writes-only (AC5);
-//! - full HTTP surface: /host-key, /register, /grants, /audit, and the
-//!   /drive auth seam (AC1), including a spawned-daemon live test.
+//! - full HTTP surface: /host-key, /register, /audit, and the /drive auth
+//!   seam (AC1), including a spawned-daemon live test.
 //!
-//! #354: step-up and the mutating capability surface are removed.
+//! #354: step-up, the mutating capability surface, and the /grants admin
+//! surface are removed (route-absent probes included).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -274,6 +275,18 @@ fn host_identity_published_as_x25519_not_hostname() {
 
 // ---------------------------------------------------------------- HTTP surface
 
+/// Bounded readiness wait for a spawned daemon (no polling loops beyond
+/// readiness).
+async fn wait_for_daemon(client: &reqwest::Client, base: &str) -> bool {
+    for _ in 0..100 {
+        if client.get(format!("{base}/healthz")).send().await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
 async fn http_app() -> (Arc<AuthPlane>, tempfile::TempDir, axum::Router) {
     let store = Store::new();
     let coalescer = store.clone();
@@ -406,14 +419,13 @@ async fn register_endpoint_gates_on_token_and_returns_grants() {
 }
 
 #[tokio::test]
-async fn register_endpoint_accepts_display_name_and_grants_projects_it() {
+async fn register_endpoint_accepts_and_truncates_display_name() {
     let (auth, _dir, app) = http_app().await;
-    let admin = corrald::auth::admin_token_for_test(&auth);
     let token = auth.registry.registration_token();
     let (_, pubkey) = keypair();
     let pubkey_b64 = corrald::auth::test_support::public_b64(&pubkey);
 
-    // Register with a display name -> accepted, stored, projected.
+    // Register with a display name -> accepted, stored trimmed.
     let res = app
         .clone()
         .oneshot(post(
@@ -431,33 +443,11 @@ async fn register_endpoint_accepts_display_name_and_grants_projects_it() {
     let key_id = v["key_id"].as_str().unwrap().to_string();
     assert_eq!(v["grants"].as_array().unwrap().len(), 0);
 
-    let res = app
-        .clone()
-        .oneshot(get_admin(&format!("/grants?key_id={key_id}"), &admin))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let v = read_json(res).await;
-    // Trimmed at the registry boundary (#209 display labels are cosmetic).
-    assert_eq!(v["devices"][0]["name"], "iPhone 15 Pro");
-
-    // Name is cosmetic only: never projected in place of the key id, and
-    // untouched by grant mutations.
-    assert_eq!(v["devices"][0]["key_id"], key_id);
-    let res = app
-        .clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants",
-                "key_id": key_id,
-                "grants": ["read_tail"],
-            }),
-            &admin,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
+    // The registry stores the trimmed label (#209 display labels are
+    // cosmetic; the /grants admin projection that used to serve it was
+    // removed in #354).
+    let rec = auth.registry.get(&key_id).expect("registered device");
+    assert_eq!(rec.name.as_deref(), Some("iPhone 15 Pro"));
 
     // Malformed names fail loudly (F10): non-string, empty, control chars.
     for bad in [
@@ -485,22 +475,14 @@ async fn register_endpoint_accepts_display_name_and_grants_projects_it() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let long_key = read_json(res).await["key_id"].as_str().unwrap().to_string();
-    let res = app
-        .clone()
-        .oneshot(get_admin(&format!("/grants?key_id={long_key}"), &admin))
-        .await
-        .unwrap();
-    let v = read_json(res).await;
-    let name = v["devices"][0]["name"].as_str().unwrap();
+    let rec = auth.registry.get(&long_key).expect("registered device");
+    let name = rec.name.as_deref().unwrap();
     assert_eq!(name.len(), corrald::auth::registry::MAX_DEVICE_NAME_CHARS);
-    assert_eq!(
-        name,
-        "x".repeat(corrald::auth::registry::MAX_DEVICE_NAME_CHARS)
-    );
+    assert_eq!(name, "x".repeat(corrald::auth::registry::MAX_DEVICE_NAME_CHARS));
 }
 
 #[tokio::test]
-async fn audit_and_grants_require_admin_token() {
+async fn audit_requires_admin_token_and_grants_surface_is_route_absent() {
     let (auth, _dir, app) = http_app().await;
     let admin = corrald::auth::admin_token_for_test(&auth);
 
@@ -530,7 +512,8 @@ async fn audit_and_grants_require_admin_token() {
     assert_eq!(v["entries"].as_array().unwrap().len(), 0);
     assert_eq!(v["valid"], true);
 
-    // Grants without admin -> 401.
+    // The /grants admin surface is gone (#354): even a valid admin token
+    // gets 404 for the mutation and the projection.
     let res = app
         .clone()
         .oneshot(post(
@@ -541,8 +524,7 @@ async fn audit_and_grants_require_admin_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    // Unknown key with admin -> 404.
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
     let res = app
         .clone()
         .oneshot(post_admin(
@@ -555,95 +537,12 @@ async fn audit_and_grants_require_admin_token() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn admin_grants_read_lists_filters_and_refuses_unknown_keys() {
-    let (auth, _dir, app) = http_app().await;
-    let admin = corrald::auth::admin_token_for_test(&auth);
-    let reg_token = auth.registry.registration_token();
-
-    let (_, pubkey1) = keypair();
-    let rec1 = auth
-        .registry
-        .register(&reg_token, pubkey1, Duration::from_secs(3600))
-        .unwrap();
-    auth.registry
-        .set_grants(
-            &rec1.key_id,
-            vec![Capability::ReadTail, Capability::ReadDiff],
-        )
-        .unwrap();
-
-    let (_, pubkey2) = keypair();
-    let rec2 = auth
-        .registry
-        .register(&reg_token, pubkey2, Duration::from_secs(3600))
-        .unwrap();
-    auth.registry
-        .set_device_token(&rec2.key_id, Some(&"a".repeat(64)))
-        .unwrap();
-    auth.registry.set_revoked(&rec2.key_id, true).unwrap();
-
-    // Unauthorized / wrong token -> 401, no device projection.
-    let res = app.clone().oneshot(get("/grants")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    let res = app
-        .clone()
-        .oneshot(get_admin("/grants", "wrong"))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-
-    // The full list is sorted by key id and projects only host-admin fields.
     let res = app
         .clone()
         .oneshot(get_admin("/grants", &admin))
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let v = read_json(res).await;
-    assert_eq!(v["ok"], true);
-    let devices = v["devices"].as_array().unwrap();
-    assert_eq!(devices.len(), 2);
-    let first = &devices[0];
-    assert!(first.get("key_id").is_some());
-    assert!(first.get("grants").is_some());
-    assert!(first.get("revoked").is_some());
-    assert!(first.get("expiry_ts").is_some());
-    assert!(first.get("created_ts").is_some());
-    assert!(
-        first.get("public_key").is_none(),
-        "admin read leaks public keys"
-    );
-    assert!(
-        first.get("device_token").is_none(),
-        "admin read leaks push tokens"
-    );
-
-    // Filtering returns the selected record, including revocation state.
-    let uri = format!("/grants?key_id={}", rec2.key_id);
-    let res = app.clone().oneshot(get_admin(&uri, &admin)).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let v = read_json(res).await;
-    assert_eq!(v["devices"].as_array().unwrap().len(), 1);
-    assert_eq!(v["devices"][0]["key_id"], rec2.key_id);
-    assert_eq!(v["devices"][0]["revoked"], true);
-    assert_eq!(v["devices"][0]["grants"].as_array().unwrap().len(), 0);
-
-    // Unknown key -> distinct 404; malformed empty filter -> 400.
-    let res = app
-        .clone()
-        .oneshot(get_admin("/grants?key_id=dev_unknown", &admin))
-        .await
-        .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    let res = app
-        .clone()
-        .oneshot(get_admin("/grants?key_id=", &admin))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -690,19 +589,11 @@ async fn drive_seam_full_flow_ac1_and_ac3_over_http() {
     let v = read_json(res).await;
     assert_eq!(v["kind"], "not_granted");
 
-    // Promote via admin grants endpoint -> drive executes.
-    let res = app
-        .clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants", "key_id": key_id, "grants": ["read_tail"],
-            }),
-            &admin,
-        ))
-        .await
+    // Promote via the registry API (the /grants HTTP surface was removed
+    // in #354; provisioning is out-of-band) -> drive executes.
+    auth.registry
+        .set_grants(&key_id, vec![Capability::ReadTail])
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
 
     let res = app
         .clone()
@@ -743,7 +634,6 @@ async fn drive_seam_full_flow_ac1_and_ac3_over_http() {
 #[tokio::test]
 async fn revoke_takes_effect_immediately_on_next_drive() {
     let (auth, _dir, app) = http_app().await;
-    let admin = corrald::auth::admin_token_for_test(&auth);
     let reg_token = auth.registry.registration_token();
 
     let (signing, pubkey) = keypair();
@@ -759,15 +649,8 @@ async fn revoke_takes_effect_immediately_on_next_drive() {
         .await
         .unwrap();
     let key_id = read_json(res).await["key_id"].as_str().unwrap().to_string();
-    app.clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants", "key_id": key_id, "grants": ["read_tail"],
-            }),
-            &admin,
-        ))
-        .await
+    auth.registry
+        .set_grants(&key_id, vec![Capability::ReadTail])
         .unwrap();
 
     let env = serde_json::json!({
@@ -790,17 +673,9 @@ async fn revoke_takes_effect_immediately_on_next_drive() {
         StatusCode::OK
     );
 
-    // Revoke -> next drive refused, immediately.
-    app.clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "revoke", "key_id": key_id,
-            }),
-            &admin,
-        ))
-        .await
-        .unwrap();
+    // Revoke (registry API, out-of-band since #354) -> next drive refused,
+    // immediately.
+    auth.registry.set_revoked(&key_id, true).unwrap();
     let res = app
         .clone()
         .oneshot(post("/drive", serde_json::to_value(&sd).unwrap()))
@@ -808,79 +683,6 @@ async fn revoke_takes_effect_immediately_on_next_drive() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
     assert_eq!(read_json(res).await["kind"], "revoked");
-}
-
-/// F10: /grants refuses unknown capability strings instead of silently
-/// dropping them.
-#[tokio::test]
-async fn f10_grants_refuses_unknown_capability() {
-    let (auth, _dir, app) = http_app().await;
-    let admin = corrald::auth::admin_token_for_test(&auth);
-    let reg_token = auth.registry.registration_token();
-    let (_, pubkey) = keypair();
-    let res = app
-        .clone()
-        .oneshot(post(
-            "/register",
-            serde_json::json!({
-                "token": reg_token,
-                "public_key": corrald::auth::test_support::public_b64(&pubkey),
-            }),
-        ))
-        .await
-        .unwrap();
-    let key_id = read_json(res).await["key_id"].as_str().unwrap().to_string();
-
-    let res = app
-        .clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants", "key_id": key_id, "grants": ["promt"],
-            }),
-            &admin,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::BAD_REQUEST,
-        "typo'd capability must be refused"
-    );
-    assert!(
-        read_json(res).await["error"]
-            .as_str()
-            .unwrap()
-            .contains("promt")
-    );
-
-    // Non-string element also refused.
-    let res = app
-        .clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants", "key_id": key_id, "grants": [42],
-            }),
-            &admin,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-
-    // Valid grant still works.
-    let res = app
-        .clone()
-        .oneshot(post_admin(
-            "/grants",
-            serde_json::json!({
-                "action": "set_grants", "key_id": key_id, "grants": ["read_tail"],
-            }),
-            &admin,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
 }
 
 /// F11: GET /host-key must not disclose the config-dir path.
@@ -950,31 +752,26 @@ async fn live_daemon_self_test() {
     let dir = tempfile::tempdir().unwrap();
     let port = 18400u16 + (std::process::id() as u16) % 1000;
 
-    let mut child = Command::new(&bin)
-        .env("CORRAL_CONFIG_DIR", dir.path())
-        .env("CORRAL_REPO_ROOT", dir.path())
-        .env("CORRAL_WORKTREES_ROOT", dir.path())
-        .arg("--port")
-        .arg(port.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
+    let spawn_daemon = || -> std::process::Child {
+        Command::new(&bin)
+            .env("CORRAL_CONFIG_DIR", dir.path())
+            .env("CORRAL_REPO_ROOT", dir.path())
+            .env("CORRAL_WORKTREES_ROOT", dir.path())
+            .arg("--port")
+            .arg(port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn daemon")
+    };
 
     let base = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();
-    // Wait for the daemon (bounded; no polling loops beyond readiness).
-    let ready = async {
-        for _ in 0..100 {
-            if client.get(format!("{base}/healthz")).send().await.is_ok() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        false
-    }
-    .await;
-    assert!(ready, "daemon did not come up");
+    let mut child = spawn_daemon();
+    assert!(
+        wait_for_daemon(&client, &base).await,
+        "daemon did not come up"
+    );
 
     // Load host-side credentials from the scratch config dir.
     let auth = AuthPlane::load_or_create(dir.path().to_path_buf()).unwrap();
@@ -1027,18 +824,24 @@ async fn live_daemon_self_test() {
         "not_granted"
     );
 
-    // 4. Promote (admin) -> signed drive accepted by auth (AC1). The real
-    // herdr adapter refuses the synthetic target as unknown — that typed
-    // dispatch refusal is still a write attempt: audited, ok:false, 200.
-    client
-        .post(format!("{base}/grants"))
-        .header("Authorization", format!("Bearer {admin}"))
-        .json(
-            &serde_json::json!({ "action": "set_grants", "key_id": key_id, "grants": ["read_tail"] }),
-        )
-        .send()
-        .await
+    // 4. Provision read_tail out-of-band (the /grants HTTP surface was
+    // removed in #354): registry writes apply on daemon restart, so stop
+    // the daemon, grant on the reloaded registry file, and respawn.
+    child.kill().expect("kill daemon");
+    let _ = child.wait();
+    let auth = AuthPlane::load_or_create(dir.path().to_path_buf()).unwrap();
+    auth.registry
+        .set_grants(&key_id, vec![Capability::ReadTail])
         .unwrap();
+    child = spawn_daemon();
+    assert!(
+        wait_for_daemon(&client, &base).await,
+        "daemon did not come up after restart"
+    );
+
+    // The signed drive is accepted by auth (AC1). The real herdr adapter
+    // refuses the synthetic target as unknown — that typed dispatch
+    // refusal is still a write attempt: audited, ok:false, 200.
     let res = client
         .post(format!("{base}/drive"))
         .json(&sd)

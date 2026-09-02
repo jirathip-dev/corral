@@ -37,44 +37,6 @@ pub mod state {
     }
 }
 
-/// Waiting-on kind badge colors — four distinct hues.
-pub mod kind {
-    use super::Color32;
-
-    pub const APPROVE_TOOL: Color32 = Color32::from_rgb(0xbc, 0x8c, 0xff);
-    pub const ANSWER_QUESTION: Color32 = Color32::from_rgb(0xe3, 0xb3, 0x41);
-    pub const MENU: Color32 = Color32::from_rgb(0x39, 0xc5, 0xcf);
-    pub const CRASH: Color32 = Color32::from_rgb(0xff, 0x7b, 0x72);
-
-    pub fn of(kind: super::WaitingOnKindLike) -> Color32 {
-        match kind {
-            super::WaitingOnKindLike::ApproveTool => APPROVE_TOOL,
-            super::WaitingOnKindLike::AnswerQuestion => ANSWER_QUESTION,
-            super::WaitingOnKindLike::Menu => MENU,
-            super::WaitingOnKindLike::Crash => CRASH,
-        }
-    }
-}
-
-/// CI verdict colors.
-pub mod ci {
-    use super::Color32;
-
-    pub const SUCCESS: Color32 = Color32::from_rgb(0x3f, 0xb9, 0x50);
-    pub const FAILURE: Color32 = Color32::from_rgb(0xf8, 0x51, 0x49);
-    pub const PENDING: Color32 = Color32::from_rgb(0xe3, 0xb3, 0x41);
-    pub const UNKNOWN: Color32 = Color32::from_rgb(0x6e, 0x76, 0x81);
-
-    pub fn of(kind: super::CiStatusLike) -> Color32 {
-        match kind {
-            super::CiStatusLike::Success => SUCCESS,
-            super::CiStatusLike::Failure => FAILURE,
-            super::CiStatusLike::Pending => PENDING,
-            super::CiStatusLike::Unknown => UNKNOWN,
-        }
-    }
-}
-
 /// Accent + semantic colors shared across views.
 pub mod ui {
     use super::Color32;
@@ -130,26 +92,28 @@ impl From<crate::model::AgentState> for AgentStateLike {
 }
 
 impl AgentStateLike {
-    /// Contract-facing user label (`contracts/state-tokens.json` "label").
+    /// Raw herdr state token label (`contracts/state-tokens.json` "label",
+    /// #354 v2: no Corral-invented wording).
     pub fn label(self) -> &'static str {
         match self {
-            Self::Blocked => "Needs you",
-            Self::Done => "Finished",
-            Self::Working => "Working",
-            Self::Idle => "Idle",
-            Self::Unknown => "Unknown",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+            Self::Working => "working",
+            Self::Idle => "idle",
+            Self::Unknown => "unknown",
         }
     }
 
     /// Attention-ordered rank (`contracts/state-tokens.json` "rank",
-    /// 0 = highest priority). Distinct from any legacy raw-enum order.
+    /// 0 = highest priority). v2 board order: blocked → working → idle →
+    /// unknown; a wire `done` ranks with idle (its herdr fallback).
     pub fn rank(self) -> u8 {
         match self {
             Self::Blocked => 0,
-            Self::Done => 1,
-            Self::Working => 2,
-            Self::Idle => 3,
-            Self::Unknown => 4,
+            Self::Working => 1,
+            Self::Idle => 2,
+            Self::Done => 2,
+            Self::Unknown => 3,
         }
     }
 
@@ -172,44 +136,6 @@ impl AgentStateLike {
             Self::Working => "\u{25CB}",
             Self::Idle => "\u{25E6}",
             Self::Unknown => "?",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitingOnKindLike {
-    ApproveTool,
-    AnswerQuestion,
-    Menu,
-    Crash,
-}
-
-impl From<crate::model::WaitingOnKind> for WaitingOnKindLike {
-    fn from(k: crate::model::WaitingOnKind) -> Self {
-        match k {
-            crate::model::WaitingOnKind::ApproveTool => Self::ApproveTool,
-            crate::model::WaitingOnKind::AnswerQuestion => Self::AnswerQuestion,
-            crate::model::WaitingOnKind::Menu => Self::Menu,
-            crate::model::WaitingOnKind::Crash => Self::Crash,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CiStatusLike {
-    Success,
-    Failure,
-    Pending,
-    Unknown,
-}
-
-impl From<crate::model::CiStatus> for CiStatusLike {
-    fn from(s: crate::model::CiStatus) -> Self {
-        match s {
-            crate::model::CiStatus::Success => Self::Success,
-            crate::model::CiStatus::Failure => Self::Failure,
-            crate::model::CiStatus::Pending => Self::Pending,
-            crate::model::CiStatus::Unknown => Self::Unknown,
         }
     }
 }
@@ -290,10 +216,10 @@ pub fn dark_dashboard() -> Visuals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AgentState, CiStatus, WaitingOnKind};
+    use crate::model::AgentState;
 
     #[test]
-    fn every_state_kind_and_ci_has_a_color() {
+    fn every_state_has_a_distinct_color() {
         let states = [
             AgentState::Idle,
             AgentState::Working,
@@ -304,34 +230,6 @@ mod tests {
         let colors: Vec<_> = states.iter().map(|s| state::of((*s).into())).collect();
         let distinct: std::collections::HashSet<_> = colors.iter().collect();
         assert_eq!(distinct.len(), states.len(), "states must render distinct");
-
-        let kinds = [
-            WaitingOnKind::ApproveTool,
-            WaitingOnKind::AnswerQuestion,
-            WaitingOnKind::Menu,
-            WaitingOnKind::Crash,
-        ];
-        let colors: Vec<_> = kinds.iter().map(|k| kind::of((*k).into())).collect();
-        let distinct: std::collections::HashSet<_> = colors.iter().collect();
-        assert_eq!(
-            distinct.len(),
-            kinds.len(),
-            "waiting-on kinds must render distinct"
-        );
-
-        let cis = [
-            CiStatus::Success,
-            CiStatus::Failure,
-            CiStatus::Pending,
-            CiStatus::Unknown,
-        ];
-        let colors: Vec<_> = cis.iter().map(|c| ci::of((*c).into())).collect();
-        let distinct: std::collections::HashSet<_> = colors.iter().collect();
-        assert_eq!(
-            distinct.len(),
-            cis.len(),
-            "CI statuses must render distinct"
-        );
     }
 
     #[test]

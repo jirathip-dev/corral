@@ -528,6 +528,20 @@ struct RecentOutputSections: Equatable, Sendable {
 
     var total: Int { conversation.count + harness.count }
 
+    /// #328: Harness activity events are the MEANINGFUL (non-divider) blocks.
+    /// Divider-only blocks are presentation separators — they never count
+    /// toward the `outside conversation` count and never render as cards.
+    var harnessEventCount: Int {
+        harness.filter { !RecentOutputRender.isDividerBlock($0) }.count
+    }
+
+    /// #330 AC5: a loaded window with no attributed conversation events
+    /// (only System/Unknown) gets an explicit honest empty state instead of
+    /// an unexplained blank Conversation region — Harness stays reachable.
+    var hasNoAttributedConversation: Bool {
+        conversation.isEmpty && !harness.isEmpty
+    }
+
     func context(for block: TranscriptBlock) -> RecentBlockContext {
         switch block.kind {
         case .user, .agent, .tool: return .conversation
@@ -808,6 +822,18 @@ extension RecentOutputRender {
         }
         return sawRun
     }
+
+    /// #328: the ONE divider-vs-content classification seam shared by the
+    /// Conversation and Harness render paths — a divider-only block is a
+    /// presentation separator, never an event card. Both paths consult this
+    /// so they cannot drift again.
+    static func isDividerBlock(_ block: TranscriptBlock) -> Bool {
+        isDividerRun(block.text)
+    }
+
+    /// #330 AC5: the explicit honest empty state for a loaded window with no
+    /// attributed conversation events (Harness activity stays reachable).
+    static let noAttributedConversationMessage = "No attributed conversation in this window"
 
     private static func isDividerScalar(_ scalar: UnicodeScalar) -> Bool {
         (0x2500...0x259F).contains(scalar.value)

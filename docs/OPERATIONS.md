@@ -99,8 +99,9 @@ grant store, and it is loaded once at daemon start, so provisioning is:
 
 1. stop `corrald`,
 2. edit `<config-dir>/registry.json` — grant/replace the whole set by
-   editing a device's `"grants"` array (`"read_tail"`, `"read_diff"` —
-   only those two names parse), or revoke by setting `"revoked": true`,
+   editing a device's `"grants"` array (`"read_tail"` is the capability
+   clients use; `"read_diff"` also parses as a daemon-retained read — no
+   other name parses), or revoke by setting `"revoked": true`,
 3. start `corrald` again; the change applies from the first drive after
    restart.
 
@@ -208,35 +209,47 @@ Include the `https://` scheme — the app assumes `http://` when the
 scheme is omitted, which lands on the ATS error above. This repository's
 local gate does not claim physical-device or TestFlight verification. When a
 Release build is distributed, its only product path is the real registration,
-`/events` SSE stream, and signed drive plane; the Debug-only seeded demo is
+`/events` SSE stream, and signed read drives; the Debug-only seeded demo is
 not part of that build. Validate the Release artifact with
 `ios/check-release-demo.py` before any later hardware or TestFlight pass.
 
 ### The FleetNotifier app (iOS)
 
-Capabilities, grant-gated per device (see "Grants model" below):
+Read-only client, grant-gated per device (see "Grants model" below):
 
 - **Live board** from the `/events` SSE stream, resuming from a
   persisted `Last-Event-ID` cursor. A stale cursor is dropped when the
   store is empty — a cursor is only a valid delta-base for state you
   actually hold (a reset device that resumes deltas-only would otherwise
-  never see a snapshot).
-- **Recent output** (`read_tail`): bounded live tail served via signed
-  `/drive`, segmented in `corrald` into blocks (user / agent / tool / system);
-  clients render the blocks without re-segmenting.
-- **Worktree diff** (`read_diff`, #232): bounded diff page — diffstat,
-  changed-files list, and a paged unified diff — computed via libgit2 from
-  the agent's herdr-owned worktree (paths come from snapshot state, never
-  from the client; untracked files, non-herdr paths, and repo history are
-  all out of scope). 403 without the grant; every served page is audited
-  and redacted like `read_tail`, and the phone app presents it lazily
-  (200-line pages).
+  never see a snapshot). Board rows use the herdr RAW state vocabulary
+  (working / idle / blocked / unknown; the herdr 0.8.2 wire can also
+  carry `done` — recorded in the #324 live probe — which the board ranks
+  and renders with `idle`, so a wire-`done` record reads as finished,
+  never active), grouped by repo with blocked agents
+  pinned to the top; last-known rows persist under an offline banner when
+  the daemon is unreachable.
+- **Recent output** (`read_tail`): the only signed drive the app sends —
+  bounded live tail (≤200 lines, daemon-capped), segmented in `corrald`
+  into blocks (user / agent / tool / system); the app renders the blocks
+  without re-segmenting. Live tail only: no load-earlier, no conversation
+  partition.
+- **State-change notifications**: local notifications on `working` entry
+  (episode start), `blocked`, and episode end (`working`/active → `idle`,
+  the "done" transition — fires once per episode, deduped). Content is
+  `agent · repo` / `state · branch`; tapping deep-links to the row with
+  recents open; the only control is a global on/off in Settings. Real APNs
+  delivery is wired but not provisioned: it needs the daemon-side APNs
+  provisioning checkpoint (a `.p8` auth key from Guy + `CORRAL_APNS_*`
+  env); simulator/DEBUG verification uses the local notification bridge.
 - **Read-only since #354**: the mutating drive capabilities (`prompt`,
   `interrupt`, `approve`, `kill`, `attach`, `start_worktree`,
   `read_issues`) and the terminal/attach transport were removed from the
-  daemon. A signed drive naming one of them is refused at the capability
-  boundary (`400 unknown_capability`) before the authorizer, before any
-  adapter dispatch, and before the audit log.
+  daemon; the worktree-diff page was removed from BOTH CLIENTS (iOS L2,
+  egui L3) while the daemon RETAINS the signed `read_diff` read path
+  (bounded changed-files/diff page — no client dispatches it). A signed
+  drive naming a removed capability is refused at the capability boundary
+  (`400 unknown_capability`) before the authorizer, before any adapter
+  dispatch, and before the audit log.
 - If a target disappears or moves while a read drive is in flight, the
   daemon returns `stale_agent` (409 before dispatch when observed). The app
   removes the stale row, shows a refresh banner, and fetches one fresh
@@ -247,7 +260,7 @@ device); see "Grant provisioning" above:
 
 ```sh
 # 1. stop corrald, 2. in <config-dir>/registry.json set the device's
-# grants: "read_tail" for recents, add "read_diff" for the diff page,
+# grants: ["read_tail"] for recents (the only drive the app sends),
 # 3. start corrald again.
 ```
 
@@ -294,10 +307,12 @@ before expiry.
   device may see fleet state — a plain LAN offers no device auth, prefer
   a tailnet).
 - Drive capabilities are provisioned out-of-band on `registry.json`
-  (the host-admin `POST /grants` surface was removed in #354). Only two
-  capabilities exist: `read_tail` (bounded recent output) and `read_diff`
-  (#232: the read-only worktree-diff page — audited, default empty like
-  every other grant). Every removed name (`prompt`, `interrupt`,
+  (the host-admin `POST /grants` surface was removed in #354). The only
+  capability names that parse are the two signed reads: `read_tail`
+  (bounded recent output — the capability every client uses) and
+  `read_diff` (#232: bounded worktree-diff read, retained daemon-side,
+  no client dispatches it after the client cuts). Grants default empty,
+  like every other grant. Every removed name (`prompt`, `interrupt`,
   `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) is
   refused by the parser (`400 unknown_capability`). Default deny; no
   auto-approve.
@@ -316,7 +331,8 @@ before expiry.
 
 ```sh
 # <config-dir>/registry.json (0600): "devices" -> "grants"
-#   { ..., "grants": ["read_tail", "read_diff"], "revoked": false, ... }
+#   { ..., "grants": ["read_tail"], "revoked": false, ... }
+# ("read_diff" also parses for a daemon-retained read no client uses)
 ```
 
 - Revoke — out-of-band: stop the daemon, set the device's `"revoked":
@@ -339,7 +355,7 @@ before expiry.
 curl -s -X POST http://127.0.0.1:8474/grants-read \
   -H 'Content-Type: application/json' \
   -d '{"key_id":"dev_...","signature":"<sig-b64>","request":{"key_id":"dev_...","request":"grants-read","ts":1780000000}}'
-# → {"ok":true,"key_id":"dev_...","grants":["read_tail","read_diff"],"expiry_ts":...,"revoked":false}
+# → {"ok":true,"key_id":"dev_...","grants":["read_tail"],"expiry_ts":...,"revoked":false}
 ```
 
 Revocation is checked on every drive — per request, no long-lived
@@ -466,9 +482,9 @@ one agent pane, segmented server-side into wire blocks (user / agent /
 tool / system) served ADDITIVELY as `{"lines": [...], "blocks": [...]}`
 on the signed `POST /drive` response. It is an on-demand VIEW fetch —
 never pushed (D5 stays intact). Both the desktop egui board and the iOS
-FleetNotifier app render the Recent-output surface from this one
-payload: the block renderer consumes `blocks` and the legacy text
-surface consumes `lines`.
+FleetNotifier app render the Recent-output surface from this one payload:
+clients consume the segmented `blocks` (with the legacy `lines` field as
+the backward-compatible text view).
 
 ```sh
 # signed POST /drive with capability read_tail (see the drive plane)
@@ -508,30 +524,40 @@ Herdr 0.8.2 keeps the bounded full-page behavior. The regression/probe
 evidence for the incremental path uses a simulated contract-honoring
 provider (`docs/design/evidence/issue-324/`).
 
-## Worktree diff read path (#232)
+### The closed capability set (read-only since #354)
 
-`read_diff` returns a bounded diff page for one agent's herdr-owned
-worktree: `{repo, branch, head, stats:{files,adds,dels},
-files:[{path,adds,dels}], files_truncated, offset, lines:[...], total,
-has_more, next_offset}`. The daemon computes it via libgit2 (never a git
-subprocess), clamps `files` to 1..=128 and `lines` to 1..=400 (default
-200), redacts every line at the adapter boundary, and pages by aggregate
-line offset — a client walks `next_offset` until `has_more` is false.
-Only herdr-owned worktree paths from snapshot state are readable; untracked
-files, other repos, and non-worktree paths are refused with
-`no_worktree` (`ok:false`).
+The signed `/drive` surface accepts exactly two capability names —
+`read_tail` (above, used by every client for recents) and `read_diff`
+(bounded worktree-diff read, #232). `read_diff` is retained daemon-side
+and its grant still parses, but no client dispatches it after the #354
+client cuts: the iOS Diff page was removed in L2 and egui keeps `read_diff`
+only as a wire-decode case (L3). Every other name — `prompt`, `interrupt`,
+`approve`, `kill`, `attach`, `start_worktree`, `read_issues` — is refused
+with `400 unknown_capability` before the authorizer, before dispatch, and
+before the audit log.
 
-```sh
-# signed POST /drive with capability read_diff files/offset/lines
-# → {"ok":true,"rev":43,"result":{"repo":"corral","branch":"g232/read-diff",
-#    "stats":{"files":2,"adds":12,"dels":5},"files":[...],"has_more":true,...}}
-```
+## Read-only API reference
 
-Errors are the drive plane's typed refusals (auth, grant, unknown agent,
-transport); the audit log records one `read_tail` drive entry per served
-request. The paged `GET /transcript` history surface (session binding,
-opaque cursors, and the `$CORRAL_*_DIR` store-location overrides) was
-removed in #241 — the bounded tail is the only output a client can read.
+What a client can do against a live daemon (routes verified against
+`src/api/mod.rs` and `src/auth/http.rs` at the #354 cut):
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /healthz` | none | liveness (`ok`) |
+| `GET /host-key` | none | host X25519 identity |
+| `POST /register` | registration token (routing only) | enroll a device Ed25519 key; response grants are empty (read-only default) |
+| `GET /snapshot` | none (credential-free read) | full fleet snapshot, monotonic `rev` |
+| `GET /events` | none (credential-free read) | SSE stream; resumes from `Last-Event-ID` |
+| `GET /history` | none (credential-free read) | D23 event-ring window (`?since=<ms>&limit=`) |
+| `GET /issues` | none (credential-free read) | repo-level issue metadata view (#113; no client UI renders it after L2/L3) |
+| `POST /drive` | device signature | signed read drive: `read_tail` (all clients) / `read_diff` (daemon-retained; no client dispatches it) |
+| `POST /grants-read` | device signature | device refreshes its OWN grants (#101) |
+| `POST /device-token` | device signature | APNs device-token registration (daemon push path) |
+| `GET /audit` | admin Bearer token | hash-chained audit log (host-side read) |
+
+There is no `/grants` admin route, no `/step-up`, no `/fleets`, and no
+mutating drive arm; the daemon CLI is `corrald` (serve) plus
+`corrald digest` (D33, offline) only.
 
 ## Fleet operations — configless (#237)
 
@@ -561,9 +587,10 @@ watch/reap/prune` with `--registry`) is superseded — those commands were
 the corral-owned read/write path that configless removes. Pane/worktree
 cleanup uses `herdr` directly (`herdr pane close`, `herdr worktree
 remove`, `git worktree prune`) and `fleet-watch` remains the fleet-ops
-watcher. The core board exposes only the `Board`, `Issues`, and `Settings`
-tabs; it has no Fleets tab. Fleet-ops surfaces (registry views, watch,
-re-arm) live in the fleet-ops tooling itself — the `herdr-fleet` CLI and
+watcher. The core board exposes only the `Board` and `Settings` tabs; it
+has no Issues or Fleets tab (the Issues tab was removed with the #354
+client cut). Fleet-ops surfaces (registry views, watch, re-arm) live in the
+fleet-ops tooling itself — the `herdr-fleet` CLI and
 `fleet-watch` — never in corrald's daemon or core UI.
 
 ## Workspace/repo attribution
@@ -620,18 +647,16 @@ while scans never overlap and the event stream is not reset.
 
 ## Repo-level issues view (`GET /issues`, #113)
 
-The desktop Issues tab renders the daemon's read-only `GET /issues` view —
-keyed by repo, scoped to the current Herdr-owned workspace repositories
-(#332). The gh poller's specs rebuild from those same live workspaces, and
-topology changes prune stale categories, so every visible category is
-current. An Issues refresh re-reads this last-known projection — there is
-no fleet-identity fetch to retry.
-
-Since the #354 read-only cut the view is display-only end to end: the
-`start_worktree` drive (the only consumer of a selected issue) and its
-grant were removed from the daemon along with the other mutating
-capabilities, so `GET /issues` never starts or mutates anything. The
-worktree-starting UI is retired with the client cuts (L2/L3).
+The daemon continues to serve the read-only `GET /issues` view — keyed by
+repo, scoped to the current Herdr-owned workspace repositories (#332). The
+gh poller's specs rebuild from those same live workspaces, and topology
+changes prune stale categories, so every visible category is current. The
+view is display-only end to end: the `start_worktree` drive (the only
+consumer of a selected issue) and its grant were removed from the daemon
+along with the other mutating capabilities in #354, so `GET /issues` never
+starts or mutates anything. Since the #354 client cuts (L2 iOS, L3 egui)
+no bundled client renders an Issues tab — the route remains a
+credential-free read endpoint for read-only clients and scripts.
 
 ## Security model summary
 
@@ -644,11 +669,13 @@ worktree-starting UI is retired with the client cuts (L2/L3).
   With the #354 cut only the two read capabilities exist, so every
   authenticated drive is a read; mutating names are refused at the
   capability boundary before the authorizer.
-- Waiting-agent state (`waiting_on` with `approval_id`/`prompt_hash`) is
-  READ state: the daemon records the blocked question from herdr's output
-  and serves it in the snapshot/SSE stream so clients can display it. The
-  daemon no longer accepts an approve reply — answering a waiting agent is
-  a host-side action outside corrald.
+- Waiting-agent state (`waiting_on`, still carrying `approval_id` /
+  `prompt_hash` from the pre-cut schema) is READ state: the daemon
+  records the blocked question from herdr's output and serves it in the
+  snapshot/SSE stream. The clients surface the blocked STATE (chip +
+  pin-to-top), not an answer flow — the daemon no longer accepts an
+  approve reply; answering a waiting agent is a host-side action outside
+  corrald.
 - Default deny, no auto-approve; secrets redacted at the adapter
   boundary before leaving the machine; key material `0600`/`0700`;
   release binary exposes no secret accessors.
@@ -660,8 +687,8 @@ worktree-starting UI is retired with the client cuts (L2/L3).
 | `App Transport Security policy requires the use of a secure connection` (iOS) | the app is pointed at a plain-HTTP tailnet bind — iOS treats 100.64/10 as public internet. Use Tailscale Serve: see "Remote access from iOS" above |
 | `A TLS error caused the secure connection to fail` (iOS) | a ts.net ATS exception can't fix plain HTTP (iOS forces TLS on MagicDNS). Use Tailscale Serve with real certs: see "Remote access from iOS" above |
 | Board spins forever with no banner (builds ≤ 4) | pre-#92/#90 defects: `URLSession.bytes.lines` drops SSE frame terminators (zero frames ever complete) and the nested-`ObservableObject` board never re-rendered. Rebuild ≥ build 5; current builds show a typed `.error` banner, not a spinner |
-| Recent output / diff rows missing on the phone | the device key has no grants — provision out-of-band: stop the daemon, add `"read_tail"` (and `"read_diff"` for the diff page) to the device's `"grants"` array in `<config-dir>/registry.json`, restart. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
-| Recent output / diff rows still missing after provisioning | relaunching or foregrounding the app refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the rows still don't appear after a foreground refresh, the grant did not reach this key (check the device's `"grants"` array in `registry.json` after the daemon restart) |
+| Recent output rows missing on the phone | the device key has no `read_tail` grant — provision out-of-band: stop the daemon, add `"read_tail"` to the device's `"grants"` array in `<config-dir>/registry.json`, restart. Registration is idempotent per key and never upgrades grants; resetting the device mints a NEW read-only key |
+| Recent output rows still missing after provisioning | relaunching or foregrounding the app refreshes grants from the daemon (`POST /grants-read`, signed — no device reset needed). If the rows still don't appear after a foreground refresh, the grant did not reach this key (check the device's `"grants"` array in `registry.json` after the daemon restart) |
 | `[register_failed]` with a bare host | the app assumes `http://` when the scheme is omitted — include `https://` (see "Remote access from iOS" above) |
 | `refusing to bind <addr>` | `--bind` must be loopback, private (RFC 1918), Tailscale/CGNAT 100.64/10, or IPv6 unique-local — public IPs and 0.0.0.0 are hard refusals |
 | Daemon won't start, `auth plane init failed` | corrupt key material in the config dir — the daemon fails fast rather than silently re-keying. Inspect/remove the offending file (or start with a fresh `CORRAL_CONFIG_DIR`) |
@@ -669,8 +696,8 @@ worktree-starting UI is retired with the client cuts (L2/L3).
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |
 | Daemon log storms: repeated `events.subscribe` `REQUEST_TIMEOUT` + re-bootstrap, fd count climbing | herdr replays pane state BEFORE answering `subscribe`; the reader never blocks on event delivery. A full bounded channel is a deterministic resynchronization signal: the reader drains the pending subscribe response, retires the stream, then a successfully subscribed global stream re-bootstraps only after the shared capped outage backoff. Accepted-then-closed global streams use that same ladder, so repeated closes cannot reset to an immediate resubscribe; the ladder resets only after a meaningful stable interval. Connect/subscribe failures use capped exponential backoff (30s maximum) and emit one WARN per outage; each pane retry task owns its live forwarder, cancels it on removal/replacement, and remains active until herdr recovers. A dropped client aborts the reader so no descriptor is leaked (#105/#117) |
 | UI can't connect | client defaults to `http://127.0.0.1:8474`; check the daemon port and that the client config (`$CORRAL_UI_CONFIG_DIR/config.json`) points at the right host |
-| UI read rows do nothing / `not_granted` | device has no grant for that capability — provision it out-of-band in `<config-dir>/registry.json` (stop the daemon, edit `"grants"`, restart; only `read_tail`/`read_diff` exist) |
-| `400 unknown_capability` on a signed drive | the drive names a capability the daemon removed in the #354 cut (`prompt`, `interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) — only `read_tail` and `read_diff` exist |
+| UI read rows do nothing / `not_granted` | device has no grant for that capability — provision it out-of-band in `<config-dir>/registry.json` (stop the daemon, edit `"grants"`, restart; `read_tail` is the capability clients use) |
+| `400 unknown_capability` on a signed drive | the drive names a capability the daemon removed in the #354 cut (`prompt`, `interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) — the remaining signed-read set is `read_tail` (client recents) and the daemon-retained `read_diff` |
 | macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
 | repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |
 | `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots); the first failure is WARNed once, retries back off (10s → 60s → 5m), present sources retain their last-known worktrees/topology during a transient Git failure, and immediate `~/Projects` checkouts are refreshed by the 15-minute rediscovery pass |

@@ -8,18 +8,38 @@ upload, and `upload` performs the existing TestFlight lane first. Only a
 successful `upload` dispatched from `main` can publish Pages; a failed upload
 or a capture-only run cannot publish.
 
-The public capture allowlist is deliberately small and literal in
-`scripts/ios-showcase.py`: `board`, `detail`, `issues`, and `issue-detail`.
-Each is launched through an existing Debug-only route and captured with
-`xcrun simctl screenshot`; no iOS UI is recreated for the web gallery. The
-capture job shares the upload macOS job, so it does not buy a second macOS
-runner. The `capture` mode makes a failed capture visible and retryable
+The showcase pipeline is TestFlight-gated: the #354 read-only cut queue
+holds TestFlight (no main promotion until the cut outcome is approved), so
+no new capture has been published since the cut.
+
+### Capture routes after the #354 L2 client cut
+
+The public capture allowlist lives in `scripts/ios-showcase.py`. Before the
+#354 L2 cut it launched four Debug routes (`board`, `detail`, `issues`,
+`issue-detail`); the L2 client removed the Issues UI, so the app's
+Debug-only demo routes are now exactly two:
+
+- `-demoMode` — the read-only board (repo groups, raw herdr state chips).
+- `-corralDemoDetail` — the same board with the featured agent's recents
+  sheet open (the deterministic evidence route; see ios/README.md).
+
+`scripts/ios-showcase.py` still enumerates the pre-cut `issues` /
+`issue-detail` entries with their old launch arguments; those arguments no
+longer resolve to an Issues surface in the L2 app, so a capture run must
+trim the allowlist to `board` and `detail` first. That script change is a
+pipeline change (not docs) and lands with the pipeline lane that resumes
+captures after TestFlight is approved.
+
+Each capture is launched through an existing Debug-only route and captured
+with `xcrun simctl screenshot`; no iOS UI is recreated for the web gallery.
+The capture job shares the upload macOS job, so it does not buy a second
+macOS runner. The `capture` mode makes a failed capture visible and retryable
 without another TestFlight build.
 
-Before artifact handoff, the same script requires exactly four PNGs,
+Before artifact handoff, the same script requires the allowlisted PNGs,
 `metadata.json`, and `index.html`. It verifies PNG signatures, chunk CRCs,
-IDAT decompression, and 390×844 dimensions, then scans every artifact file for
-private paths, tokens, key material, device UUIDs, and other denylisted
+IDAT decompression, and 390×844 dimensions, then scans every artifact file
+for private paths, tokens, key material, device UUIDs, and other denylisted
 identifiers. Any failure is nonzero and the artifact is not uploaded.
 
 The generated static gallery records the exact source commit SHA, UTC capture

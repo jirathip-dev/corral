@@ -347,9 +347,14 @@ enum CodableValue: Codable, Equatable, Sendable {
     }
 
     var tailSourceRev: UInt64? {
-        guard case .object(let object) = self,
-              case .uint(let rev) = object["source_rev"] else { return nil }
-        return rev
+        guard case .object(let object) = self else { return nil }
+        switch object["source_rev"] {
+        case .uint(let rev): return rev
+        // Small integers decode as Int64 (the single-value decoder tries
+        // Int64 before UInt64); the daemon's revisions are well below 2^63.
+        case .int(let rev) where rev >= 0: return UInt64(rev)
+        default: return nil
+        }
     }
 
     /// #167: the `blocks` array the daemon now serves ADDITIVELY alongside

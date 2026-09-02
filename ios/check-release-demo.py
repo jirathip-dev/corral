@@ -97,7 +97,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # LiveVerifyRunner, TerminalAttach) left the manifest, the remaining
     # sources were pruned to the read surface, and the digest was
     # re-pinned over the new 18-file Release source set.
-    "68e3f7180328bcb246317ac6761dfd7378ea5c0717a2f4300dd913b1e9307021"
+    # #354 L2 fix: CodableValue.tailSourceRev accepts small Int64-coded
+    # revisions (the single-value decoder prefers Int64) — re-pinned.
+    "a816166eefceef06211cc5b0b97935a7dbe8d328de97b742fa9589a7ce090a81"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release

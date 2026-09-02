@@ -42,10 +42,10 @@ enum Tab {
 /// the previous grant set through the host-admin token — zero manual
 /// keychain surgery. States:
 ///
-/// - `None` — identity consistent (steady state, no banner).
-/// - `Mismatch` — detected; recovery requested or still needed (banner
-///   with the one-tap "Re-register + grant" action).
-/// - `InFlight` — re-register / grant restore running (banner spinner).
+/// - `None` — identity consistent (steady state).
+/// - `Mismatch` — recovery needed; only ever set by the USER-initiated
+///   Settings recovery block (Restore saved identity), never at startup.
+/// - `InFlight` — the user-initiated re-register / grant restore is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityRecovery {
     None,
@@ -59,6 +59,11 @@ const TAB_LABELS: [(&str, Tab); 3] = [
     ("Settings", Tab::Settings),
 ];
 const ISSUES_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// #314: minimum spacing between automatic visible-agent Recent-output
+/// refreshes. The refresh rides the existing frame cadence and this
+/// cooldown paces it (no per-frame busy loop, no background task).
+const RECENT_OUTPUT_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 const SCREENSHOT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
 const SCREENSHOT_MAX_ATTEMPTS: u8 = 3;
@@ -946,7 +951,8 @@ struct PersistedConfig {
     registration: Option<RegistrationRecord>,
     auto_reconnect: bool,
     group_by_repo: bool,
-    show_idle_collapsed: bool,
+    /// #310 tri-state Completed agents mode (replaces `show_idle_collapsed`).
+    completed_mode: crate::state::CompletedMode,
     stick_to_bottom: bool,
     theme: String,
 }
@@ -958,7 +964,7 @@ impl Default for PersistedConfig {
             registration: None,
             auto_reconnect: true,
             group_by_repo: true,
-            show_idle_collapsed: true,
+            completed_mode: crate::state::CompletedMode::Collapsed,
             stick_to_bottom: true,
             theme: "dark".to_string(),
         }
@@ -977,7 +983,11 @@ impl PersistedConfig {
                 registration: c.registration,
                 auto_reconnect: c.auto_reconnect.unwrap_or(true),
                 group_by_repo: c.group_by_repo.unwrap_or(true),
-                show_idle_collapsed: c.show_idle_collapsed.unwrap_or(true),
+                completed_mode: c.completed_mode.unwrap_or_else(|| {
+                    crate::state::CompletedMode::from_legacy_show_idle_collapsed(
+                        c.show_idle_collapsed.unwrap_or(true),
+                    )
+                }),
                 stick_to_bottom: c.stick_to_bottom.unwrap_or(true),
                 theme: c
                     .theme
@@ -995,7 +1005,10 @@ impl PersistedConfig {
             registration: self.registration.clone(),
             auto_reconnect: Some(self.auto_reconnect),
             group_by_repo: Some(self.group_by_repo),
-            show_idle_collapsed: Some(self.show_idle_collapsed),
+            // Keep the legacy boolean truthful for older readers; #310
+            // readers prefer `completed_mode`.
+            show_idle_collapsed: Some(self.completed_mode.legacy_show_idle_collapsed()),
+            completed_mode: Some(self.completed_mode),
             stick_to_bottom: Some(self.stick_to_bottom),
             theme: Some(self.theme.clone()),
         };
@@ -1027,6 +1040,10 @@ pub struct CorralApp {
     host_fingerprint: Option<String>,
     /// #249: key-vs-registration mismatch state (None = consistent).
     identity_recovery: IdentityRecovery,
+    /// #310 r3: identity epoch for drive results. Bumped on every
+    /// successful (re)registration; a drive initiated under an older epoch
+    /// must not set or clear current recovery state when it lands late.
+    identity_generation: u64,
 
     // Config + settings.
     config: PersistedConfig,
@@ -1053,6 +1070,10 @@ pub struct CorralApp {
     audit: Option<Result<crate::protocol::AuditView, String>>,
     audit_loading: bool,
     issues_last_refresh: std::time::Instant,
+    /// #314: when the visible-agent Recent-output refresh last dispatched.
+    /// `None` until the first paced refresh fires (the initial hydration is
+    /// `hydrate_recent_output`'s job, not this pacing gate's).
+    recent_output_last_refresh: Option<std::time::Instant>,
 
     // Tabs.
     tab: Tab,
@@ -1075,6 +1096,8 @@ pub struct CorralApp {
     /// Diagnostic-only native window sampling. This is independent of the
     /// screenshot path and never enables ViewportCommand::Screenshot.
     window_diagnostic: bool,
+    /// R3 #316: offline demo-evidence mode (env CORRAL_UI_DEMO_SEED).
+    demo_seeded: bool,
     window_diagnostic_last_sample: Option<std::time::Instant>,
     evidence_visibility_requested: bool,
     native_probe_tx: Sender<(String, NativeWindowState)>,
@@ -1126,6 +1149,12 @@ impl CorralApp {
             && screenshot_wake_command.is_some())
         .then(|| Arc::new(AtomicBool::new(false)));
         let window_diagnostic = std::env::var_os("CORRAL_UI_WINDOW_DIAGNOSTIC").is_some();
+        // R3 #316: offline compiled-evidence seam. Seeds the bundled
+        // synthetic fixture into the Fleet and renders the real board with
+        // the normal capture pipeline — never connects to a daemon, and
+        // never active without CORRAL_UI_SCREENSHOT also being set.
+        let demo_seeded =
+            std::env::var_os("CORRAL_UI_DEMO_SEED").is_some() && screenshot_path.is_some();
         let screenshot_settle = std::env::var("CORRAL_UI_SCREENSHOT_DELAY_MS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -1147,17 +1176,41 @@ impl CorralApp {
             toasts: VecDeque::new(),
             device_key: None,
             device_key_store_warning: false,
-            ledger: GrantLedger::default(),
-            registration: config.registration.clone(),
+            ledger: if demo_seeded {
+                GrantLedger {
+                    base: vec![
+                        "prompt".into(),
+                        "interrupt".into(),
+                        "approve".into(),
+                        "read_tail".into(),
+                        "read_diff".into(),
+                        "read_issues".into(),
+                    ],
+                    denied: Vec::new(),
+                }
+            } else {
+                GrantLedger::default()
+            },
+            registration: if demo_seeded {
+                Some(crate::state::RegistrationRecord {
+                    host_fingerprint: "demo-seed".into(),
+                    key_id: "demo-seed".into(),
+                    grants: Vec::new(),
+                    denied: Vec::new(),
+                })
+            } else {
+                config.registration.clone()
+            },
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config: config.clone(),
             config_path,
             settings: crate::ui::register::SettingsState {
                 host_url: host_url.clone(),
                 auto_reconnect: config.auto_reconnect,
                 group_by_repo: config.group_by_repo,
-                show_idle_collapsed: config.show_idle_collapsed,
+                completed_mode: config.completed_mode,
                 stick_to_bottom: config.stick_to_bottom,
                 theme: config.theme.clone(),
                 ..Default::default()
@@ -1176,6 +1229,8 @@ impl CorralApp {
             // Permit the first Issues visit to fetch immediately; every
             // subsequent attempt records its start time, including errors.
             issues_last_refresh: std::time::Instant::now() - ISSUES_REFRESH_INTERVAL,
+            // #314: the paced visible-agent refresh has not fired yet.
+            recent_output_last_refresh: None,
 
             tab: tab_from_env(),
             screenshot_path,
@@ -1188,6 +1243,7 @@ impl CorralApp {
             screenshot_wake_command,
             screenshot_last_wake: None,
             window_diagnostic,
+            demo_seeded,
             window_diagnostic_last_sample: None,
             evidence_visibility_requested: false,
             native_probe_tx,
@@ -1252,6 +1308,43 @@ impl CorralApp {
                     tracing::warn!(%error, "could not start screenshot wake helper");
                 }
             }
+        }
+
+        if demo_seeded {
+            // Offline demo evidence: the synthetic fixture is the ONLY data
+            // source. No daemon connection, no fingerprint fetch, no read
+            // loop is started for this process.
+            let data = crate::demo::load();
+            app.fleet.apply_snapshot(&data.snapshot);
+            let blocks = crate::demo::recent_tail_blocks();
+            let lines = crate::demo::recent_tail();
+            let rev = data.snapshot.rev;
+            for agent in data.snapshot.agents.values() {
+                if agent
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "read_tail")
+                {
+                    app.fleet.remember_tail_full(
+                        &agent.agent_id,
+                        lines.clone(),
+                        blocks.clone(),
+                        Some(rev),
+                    );
+                }
+            }
+            if let Some(first) = data
+                .snapshot
+                .agents
+                .values()
+                .find(|agent| agent.capabilities.iter().any(|c| c == "read_tail"))
+            {
+                app.fleet.select_agent(&first.agent_id);
+            }
+            app.conn = ConnState::Connected;
+            app.device_key = None;
+            tracing::info!("demo seed applied; offline compiled-evidence mode");
+            return app;
         }
 
         // Resolve the host identity so the device key can be scoped to it.
@@ -1419,16 +1512,21 @@ impl CorralApp {
                 .or_else(crate::keys::read_daemon_admin_token);
             self.settings.admin_token_input = admin_token.unwrap_or_default();
         }
-        self.check_identity_recovery();
+        // #310: startup never mutates identity and never auto-re-registers.
+        // A local key-ID mismatch gets a passive notice pointing at
+        // Settings; the recovery block there renders only after an actual
+        // server-side bad_signature rejection.
+        self.passive_identity_mismatch_notice();
     }
 
     // -------------------------------------------------------------------
-    // #249 identity recovery: detect a device key that no longer matches
-    // the registered key_id (rebuild/reinstall wiped or replaced the key
-    // material while config.json kept the old record), then either
-    // auto-recover through the registration token + host-admin token, or
-    // surface the one-tap prompt. Signing is never weakened: there is no
-    // unsigned fallback and no grant path beyond the existing
+    // #249/#310 identity recovery: detect a device key that no longer
+    // matches the registered key_id (rebuild/reinstall wiped or replaced
+    // the key material while config.json kept the old record). Recovery is
+    // USER-INITIATED only: the Settings recovery block renders after an
+    // actual server-side bad_signature rejection, and its Restore /
+    // Re-register actions drive `try_start_recovery` / `register`. There is
+    // no unsigned fallback and no grant path beyond the existing
     // registration-token / admin-token mechanisms.
     // -------------------------------------------------------------------
 
@@ -1444,32 +1542,20 @@ impl CorralApp {
         current != reg.key_id
     }
 
-    /// Detect a mismatch, fail loud once, then start recovery when the
-    /// registration token is available (localhost: same machine, same
-    /// user). Kept idempotent so the startup call and the first
-    /// bad_signature refusal cannot double-fire.
-    fn check_identity_recovery(&mut self) {
-        if self.identity_recovery != IdentityRecovery::None || !self.identity_mismatch() {
+    /// #310: passive, non-mutating notice for a local key-ID mismatch at
+    /// startup. Sets a Settings-visible notice and changes nothing else —
+    /// no IdentityRecovery state, no token read, no re-registration.
+    fn passive_identity_mismatch_notice(&mut self) {
+        if !self.identity_mismatch() {
             return;
         }
-        let reg = self.registration.as_ref().expect("checked above");
-        let current = crate::keys::device_key_id(
-            &self
-                .device_key
-                .as_ref()
-                .expect("checked above")
-                .signing
-                .verifying_key()
-                .to_bytes(),
-        );
-        tracing::warn!(
-            stored_key_id = %reg.key_id,
-            current_key_id = %current,
-            "device identity mismatch (#249): current key differs from the registered key — \
-             restarting the signed drive plane"
-        );
-        self.identity_recovery = IdentityRecovery::Mismatch;
-        let _ = self.try_start_recovery();
+        self.settings.notice = Some((
+            Level::Warn,
+            "Device identity changed: the board's key no longer matches the registered \
+             device. Open Settings → DEVICE & GRANTS to restore or re-register — no \
+             automatic re-registration is performed."
+                .to_string(),
+        ));
     }
 
     /// Re-register the CURRENT key material (never rotates: the fresh key
@@ -1517,7 +1603,7 @@ impl CorralApp {
                             format!(
                                 "device identity changed (#249) — re-register needs the \
                                  registration token: {error}. Paste it in Settings → \
-                                 Devices & Grants, or use the one-tap Re-register + grant."
+                                 DEVICE & GRANTS, then use Restore saved identity."
                             ),
                         ));
                         return false;
@@ -1551,10 +1637,22 @@ impl CorralApp {
         self.restore_grant_set();
     }
 
-    /// A failed recovery leg leaves the banner retryable.
+    /// A failed recovery leg leaves the user-initiated recovery retryable.
     fn mark_recovery_failed(&mut self) {
         if self.identity_recovery == IdentityRecovery::InFlight {
             self.identity_recovery = IdentityRecovery::Mismatch;
+        }
+    }
+
+    /// #310 r3: drop the persisted recovery-guidance notice and its
+    /// `settings.notice` twin, but ONLY when the current notice is still
+    /// exactly that guidance — unrelated notices are never deleted.
+    fn clear_recovery_notice(&mut self) {
+        if let Some(previous) = self.settings.grant_admin.recovery_notice.take()
+            && let Some((_, text)) = &self.settings.notice
+            && text == &previous
+        {
+            self.settings.notice = None;
         }
     }
 
@@ -1715,14 +1813,78 @@ impl CorralApp {
         self.dispatch_drive_intents(vec![intent]);
     }
 
+    /// #314: pace the visible agent's Recent-output refresh through the
+    /// existing frame cadence. A cached tail is refreshed with a
+    /// revision-aware request carrying that cache's exact `source_rev`
+    /// (single-flight: while a read_tail for the agent is in flight, no
+    /// duplicate is sent; cooldown: the earliest a following refresh can
+    /// fire is [`RECENT_OUTPUT_REFRESH_COOLDOWN`] after the last one).
+    /// Hidden agents are never eligible — `resolved_selection` comes from
+    /// the visible resolver and this method never enumerates the fleet.
+    /// Only the bounded 50-line page is used; `Load earlier` (200/32 KiB)
+    /// remains the separate explicit action in the board.
+    fn refresh_recent_output(&mut self, resolved_selection: Option<&str>) {
+        let Some(agent_id) = hydration_target(&self.fleet, resolved_selection) else {
+            return;
+        };
+        if !self.ledger.allowed("read_tail")
+            || self.registration.is_none()
+            || self.device_key.is_none()
+        {
+            return;
+        }
+        // Single-flight + revision bookkeeping: a cached tail with no
+        // read_tail drive in flight is the only refreshable shape.
+        let Some(source_rev) = self.fleet.recent_output_refresh_candidate(&agent_id) else {
+            return;
+        };
+        // Cooldown pacing: at most one automatic refresh per window. (The
+        // initial hydration is `hydrate_recent_output`'s job and never
+        // touches this gate.)
+        let now = std::time::Instant::now();
+        if self
+            .recent_output_last_refresh
+            .is_some_and(|last| now.duration_since(last) < RECENT_OUTPUT_REFRESH_COOLDOWN)
+        {
+            return;
+        }
+        self.recent_output_last_refresh = Some(now);
+        // R3 (#314): the automatic refresh re-requests the agent's
+        // REMEMBERED tail-window limit, not literal 50 — an explicit
+        // Load earlier must keep its expanded window across refreshes
+        // (including partial responses), while everyone else stays at the
+        // default 50-line page.
+        let lines = self
+            .fleet
+            .tail_requested_lines
+            .get(&agent_id)
+            .copied()
+            .unwrap_or(50);
+        let intent = DriveIntent::read_tail_since(&agent_id, lines, source_rev, self.fleet.rev);
+        self.dispatch_drive_intents(vec![intent]);
+    }
+
     fn on_drive(&mut self, msg: DriveMsg) {
         let capability = msg.capability.clone();
+        // #310 r3: recovery-affecting drive results are scoped to the
+        // identity generation that dispatched them. A result from a prior
+        // generation (e.g. an in-flight drive that predates a rotation)
+        // must never set or clear the CURRENT recovery latch/notice.
+        let current_generation = msg.identity_generation == self.identity_generation;
         let state = crate::ui::board::classify_drive_state(&msg.outcome, &msg.capability);
         self.fleet.remember_drive(&msg.agent_id, state.clone());
         match &msg.outcome {
             DriveOutcome::Ok { rev, result } => {
                 self.ledger.note_success(&capability);
                 self.persist_ledger();
+                if current_generation {
+                    // #310: a current-generation successful drive proves
+                    // the current key is accepted — clear the bad-signature
+                    // latch AND its persisted recovery guidance (leaving
+                    // unrelated notices untouched).
+                    self.settings.grant_admin.bad_signature = false;
+                    self.clear_recovery_notice();
+                }
                 // If the daemon ever grows a read_tail result, surface it.
                 if capability == "read_tail" {
                     self.remember_tail_result(&msg);
@@ -1752,11 +1914,23 @@ impl CorralApp {
             DriveOutcome::Refused(failure) => {
                 self.ledger.note_refusal(failure);
                 self.persist_ledger();
-                // #249: a bad_signature refusal is the first live signal
-                // that the key material no longer matches the registered
-                // key_id — detect and auto-recover (or surface the prompt).
-                if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
-                    self.check_identity_recovery();
+                if current_generation {
+                    // #249/#310: a bad_signature refusal is the live signal
+                    // that the daemon rejected the CURRENT key — record it so
+                    // the Settings recovery block renders. Recovery is
+                    // user-initiated there (Restore / Re-register); no
+                    // automatic re-registration. Stale-generation refusals
+                    // never touch current recovery state.
+                    if matches!(failure, crate::drive::DriveFailure::BadSignature(_)) {
+                        self.settings.grant_admin.bad_signature = true;
+                    }
+                    if failure.suggests_re_registration() {
+                        let text = format!(
+                            "{failure} — open Settings → DEVICE & GRANTS to restore or re-register this device."
+                        );
+                        self.settings.grant_admin.recovery_notice = Some(text.clone());
+                        self.settings.notice = Some((Level::Warn, text));
+                    }
                 }
                 if matches!(failure, crate::drive::DriveFailure::StaleAgent(_)) {
                     // A stale tap is a read-model event, not a generic drive
@@ -1776,14 +1950,10 @@ impl CorralApp {
                     Level::Error
                 };
                 self.toast(level, format!("{capability} refused: {failure}"));
-                if failure.suggests_re_registration() {
-                    self.settings.notice = Some((
-                        Level::Warn,
-                        format!(
-                            "{failure} — re-register this device (Settings → Devices & Grants → THIS device card → Re-register)."
-                        ),
-                    ));
-                }
+                // #310 r4: re-registration guidance is written ONLY by the
+                // generation-gated writer above — an unguarded duplicate here
+                // let stale-generation refusals plant permanent
+                // Restore/Re-register guidance on the healthy current key.
             }
         }
     }
@@ -1841,16 +2011,20 @@ impl CorralApp {
             return;
         };
         let lines = crate::drive::parse_tail_lines(result);
+        // #315: the canonical semantic blocks ride additively; when present
+        // the Recent output view renders THEM (never re-classified lines).
+        let blocks = crate::drive::parse_tail_blocks(result);
         tracing::info!(
             agent_id = %msg.agent_id,
             lines = lines.len(),
+            blocks = blocks.len(),
             "read_tail result applied to screenshot/detail cache"
         );
         let source_rev = crate::drive::parse_tail_source_rev(result).or(match msg.outcome {
             DriveOutcome::Ok { rev, .. } => Some(rev),
             DriveOutcome::Refused(_) => None,
         });
-        fleet.remember_tail_with_rev(&msg.agent_id, lines, source_rev);
+        fleet.remember_tail_full(&msg.agent_id, lines, blocks, source_rev);
     }
 
     /// #232 read_diff content path: the daemon's `DriveResponse.result`
@@ -2012,6 +2186,15 @@ impl CorralApp {
         match result {
             Ok((key_id, grants)) => {
                 let fp = self.host_fingerprint.clone().unwrap_or_default();
+                // #310 r3: any successful (re)registration opens a NEW
+                // identity generation — in-flight drives dispatched before
+                // this moment can no longer affect recovery state.
+                self.identity_generation = self.identity_generation.wrapping_add(1);
+                // #310: a successful (re)registration means the daemon
+                // accepted the current key — any recorded bad_signature
+                // rejection and its recovery guidance are resolved.
+                self.settings.grant_admin.bad_signature = false;
+                self.clear_recovery_notice();
                 // A successful (re)registration refreshes the ledger from
                 // the host's CURRENT grant set: any locally-demoted
                 // capability the host re-granted is re-enabled, and a
@@ -2462,16 +2645,15 @@ impl CorralApp {
                     }
                 }
             }
-            crate::ui::register::Request::ReRegister => {
-                match crate::keys::read_daemon_registration_token() {
-                    Ok(token) => self.register(token, true),
-                    Err(e) => {
-                        self.settings.notice = Some((
-                            Level::Error,
-                            format!("re-register needs the token: {e} (paste it above)"),
-                        ));
-                    }
+            crate::ui::register::Request::RecoverIdentity => {
+                // #310 "Restore saved identity": re-register the CURRENT
+                // key material and re-apply its recorded grant set — never
+                // mints a fresh key. Only offered after an actual
+                // bad_signature rejection.
+                if self.identity_recovery == IdentityRecovery::None {
+                    self.identity_recovery = IdentityRecovery::Mismatch;
                 }
+                let _ = self.try_start_recovery();
             }
             crate::ui::register::Request::RefreshGrants => {
                 // Re-register the SAME device key: the daemon returns the
@@ -2576,7 +2758,7 @@ impl CorralApp {
                 self.config.host_url = url.clone();
                 self.config.auto_reconnect = self.settings.auto_reconnect;
                 self.config.group_by_repo = self.settings.group_by_repo;
-                self.config.show_idle_collapsed = self.settings.show_idle_collapsed;
+                self.config.completed_mode = self.settings.completed_mode;
                 self.config.stick_to_bottom = self.settings.stick_to_bottom;
                 // The approved #206 surface currently ships one theme. Keep
                 // the persisted compatibility key truthful instead of
@@ -2618,6 +2800,7 @@ impl CorralApp {
     fn dispatch_drive_intents(&mut self, pending: Vec<DriveIntent>) {
         let registration = self.registration.clone();
         let signing = self.device_key.as_ref().map(|k| k.signing.clone());
+        let identity_generation = self.identity_generation;
         let client = self.client.clone();
         let host_url = self.config.host_url.clone();
         let tx_drive = self.tx_drive.clone();
@@ -2647,6 +2830,25 @@ impl CorralApp {
             };
             let agent_id = intent.target.clone();
             let capability = intent.capability.to_string();
+            // R3 (#314): remember the per-agent REQUESTED tail-window limit
+            // when a real read_tail intent is dispatched. Automatic refreshes
+            // later re-request this limit (the explicit Load earlier's 200
+            // survives; the default 50 stays 50). Clamped to the daemon's
+            // existing 1..=200 page bound; values are monotone per agent
+            // (a refresh never shrinks a remembered expansion).
+            if intent.capability == crate::drive::Capability::ReadTail
+                && let Some(lines) = intent.payload["lines"].as_u64()
+            {
+                let lines = lines.clamp(1, 200) as u32;
+                let requested = self
+                    .fleet
+                    .tail_requested_lines
+                    .entry(intent.target.clone())
+                    .or_insert(lines);
+                if lines > *requested {
+                    *requested = lines;
+                }
+            }
             let tx = tx_drive.clone();
             self.fleet.remember_drive(
                 &intent.target,
@@ -2661,6 +2863,7 @@ impl CorralApp {
                     agent_id,
                     capability,
                     outcome,
+                    identity_generation,
                 });
             });
         }
@@ -2936,10 +3139,23 @@ impl eframe::App for CorralApp {
                 && self.screenshot_state.dispatch_due(now)
             {
                 let window = self.request_native_probe(&ctx, "dispatch_evaluation");
+                // R3 demo-evidence relaxation: in offline demo-seed mode the
+                // Accessibility subsystem is unavailable to this helper, so
+                // the dispatch gate uses the CoreGraphics on-screen
+                // observation (owner-PID match + on-screen layer-0 window),
+                // which the probe reports even when AX queries fail. All
+                // non-demo captures keep the full fail-closed gate.
+                let demo_gate = self.demo_seeded
+                    && window
+                        .as_ref()
+                        .is_some_and(|state| state.cg_owner_pid_match == Some(true))
+                    && window
+                        .as_ref()
+                        .is_some_and(|state| state.window_visible == Some(true));
                 let (state, decision) = self.screenshot_state.try_dispatch(
                     now,
-                    window.as_ref().is_some_and(|state| state.visible),
-                    window.as_ref().is_some_and(|state| state.frontmost),
+                    window.as_ref().is_some_and(|state| state.visible) || demo_gate,
+                    window.as_ref().is_some_and(|state| state.frontmost) || demo_gate,
                 );
                 self.screenshot_state = state;
                 match decision {
@@ -3070,64 +3286,10 @@ impl Drop for CorralApp {
     }
 }
 
-/// #249 identity-recovery banner — one glance, one tap. `Mismatch` shows
-/// the "Re-register + grant" action (runs the same recovery as the
-/// automatic path: re-register the current key, then re-apply the previous
-/// grant set); `InFlight` shows a spinner. `None` renders nothing.
-fn identity_recovery_banner(ui: &mut egui::Ui, app: &mut CorralApp) {
-    match app.identity_recovery {
-        IdentityRecovery::None => {}
-        IdentityRecovery::InFlight => {
-            egui::Frame::group(ui.style())
-                .fill(theme::ui::PANEL2)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("device identity changed — recovering…")
-                                .color(theme::ui::TEXT_STRONG),
-                        );
-                    });
-                });
-        }
-        IdentityRecovery::Mismatch => {
-            let frame = egui::Frame::group(ui.style())
-                .fill(egui::Color32::from_rgba_unmultiplied(0xe3, 0xb3, 0x41, 10))
-                .stroke(egui::Stroke::new(1.0, theme::ui::WARN))
-                .inner_margin(egui::Margin::symmetric(10, 8));
-            frame.show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "Device identity changed (#249): the board's key no longer matches \
-                             the registered device, so signed drives are refused. Re-register \
-                             the current key and re-apply the drive-plane grants with one tap.",
-                        )
-                        .size(11.0)
-                        .color(theme::ui::WARN),
-                    )
-                    .wrap(),
-                );
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("Re-register + grant").strong())
-                                .fill(theme::ui::ACCENT),
-                        )
-                        .clicked()
-                    {
-                        let _ = app.try_start_recovery();
-                    }
-                    if ui.button("open settings").clicked() {
-                        app.tab = Tab::Settings;
-                    }
-                });
-            });
-        }
-    }
-}
-
+/// #310: no workspace-wide identity banner. Recovery guidance lives ONLY
+/// inside the Settings recovery block, and only after an actual current-key
+/// `bad_signature` rejection; a local fingerprint mismatch at startup is a
+/// passive Settings notice, never a mutation or a re-registration prompt.
 fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     let available = ui.available_size();
     let (workspace_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
@@ -3165,7 +3327,7 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
         &mut left_ui,
         &mut app.fleet,
         app.settings.group_by_repo,
-        app.settings.show_idle_collapsed,
+        app.settings.completed_mode,
     );
 
     let mut right_ui = ui.new_child(
@@ -3176,7 +3338,6 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
     );
     tab_strip(&mut right_ui, &mut app.tab);
     right_ui.separator();
-    identity_recovery_banner(&mut right_ui, app);
 
     match app.tab {
         Tab::Board => {
@@ -3196,6 +3357,10 @@ fn workspace(ui: &mut egui::Ui, app: &mut CorralApp, ctx: &egui::Context) {
             );
             app.dispatch_drive_intents(pending);
             app.hydrate_recent_output(resolved_selection.as_deref());
+            // #314: revision-aware visible-agent refresh, paced through the
+            // same frame cadence (initial hydration stays above; this only
+            // ever re-reads an already-cached tail for the visible agent).
+            app.refresh_recent_output(resolved_selection.as_deref());
         }
         Tab::Issues => {
             app.refresh_issues(false);
@@ -3318,6 +3483,7 @@ mod tests {
 
     use super::*;
     use crate::model::{Agent, AgentState, GhIssueRef, Workspace};
+    use crate::state::DriveState;
     use crate::ui::board::{self, StateFilter};
 
     fn agent(id: &str, state: AgentState, capabilities: &[&str]) -> Agent {
@@ -3372,6 +3538,7 @@ mod tests {
             registration: None,
             host_fingerprint: None,
             identity_recovery: IdentityRecovery::None,
+            identity_generation: 0,
             config,
             config_path: PathBuf::from("/tmp/corral-ui-read-model-test.json"),
             settings,
@@ -3387,6 +3554,8 @@ mod tests {
             audit: None,
             audit_loading: false,
             issues_last_refresh: Instant::now() - ISSUES_REFRESH_INTERVAL,
+            // #314: the paced visible-agent refresh has not fired yet.
+            recent_output_last_refresh: None,
 
             tab: Tab::Issues,
             screenshot_path: None,
@@ -3404,6 +3573,7 @@ mod tests {
             screenshot_wake_command: None,
             screenshot_last_wake: None,
             window_diagnostic: false,
+            demo_seeded: false,
             window_diagnostic_last_sample: None,
             evidence_visibility_requested: false,
             native_probe_tx,
@@ -3411,6 +3581,55 @@ mod tests {
             native_probe_in_flight: false,
         };
         (runtime, app)
+    }
+
+    /// #310: `completed_mode` survives a config save/reload round-trip, and
+    /// the legacy `show_idle_collapsed` boolean migrates (true→Collapsed,
+    /// false→Show) when the new field is absent.
+    #[test]
+    fn completed_mode_persists_round_trip_and_migrates_legacy_boolean() {
+        let dir =
+            std::env::temp_dir().join(format!("corral-ui-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("config.json");
+
+        // Legacy file: only the boolean exists → Collapsed (true) / Show (false).
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":true}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(
+            loaded.completed_mode,
+            crate::state::CompletedMode::Collapsed
+        );
+        std::fs::write(
+            &path,
+            r#"{"host_url":"http://127.0.0.1:8474","show_idle_collapsed":false}"#,
+        )
+        .unwrap();
+        let loaded = PersistedConfig::load(&path);
+        assert_eq!(loaded.completed_mode, crate::state::CompletedMode::Show);
+
+        // New file: the tri-state wins, and persist writes it back.
+        let config = PersistedConfig {
+            completed_mode: crate::state::CompletedMode::Hide,
+            ..Default::default()
+        };
+        config.persist(&path);
+        let reloaded = PersistedConfig::load(&path);
+        assert_eq!(reloaded.completed_mode, crate::state::CompletedMode::Hide);
+        let wire: crate::state::PersistedConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(wire.completed_mode, Some(crate::state::CompletedMode::Hide));
+        assert_eq!(
+            wire.show_idle_collapsed,
+            Some(true),
+            "Hide folds completed rows, so the legacy boolean reads collapsed=true"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// #249 test app: a registered device whose key material was replaced
@@ -3520,15 +3739,17 @@ mod tests {
         }
     }
 
-    /// #249 auto-recovery through the APP'S REAL WIRING, end to end: the
-    /// startup hook (`apply_fingerprint`) detects the key-vs-registration
-    /// mismatch, auto-kicks the recovery, the re-register and the grant
-    /// restore go through the real account, and the board finishes in the
-    /// recovered state — then a signed read_tail executes. Same journey as
-    /// the (wire-only) `tests/identity_recovery.rs` e2e, but driven through
-    /// `CorralApp` itself against a real axum router on loopback.
+    /// #310: the USER-INITIATED recovery through the APP'S REAL WIRING,
+    /// end to end. Startup (`apply_fingerprint`) detects the key-vs-
+    /// registration mismatch but must NOT auto-recover — the user then
+    /// triggers Restore saved identity (the Settings recovery block's
+    /// action), the re-register and the grant restore go through the real
+    /// account, and the board finishes in the recovered state — then a
+    /// signed read_tail executes. Same journey as the (wire-only)
+    /// `tests/identity_recovery.rs` e2e, but driven through `CorralApp`
+    /// itself against a real axum router on loopback.
     #[test]
-    fn identity_auto_recovery_completes_through_the_app_wiring() {
+    fn user_initiated_identity_recovery_completes_through_the_app_wiring() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3544,6 +3765,7 @@ mod tests {
             adapter: std::sync::Arc::new(TailAdapter),
             replay: Default::default(),
             issues: Default::default(),
+            provenance: std::sync::Arc::new(corrald::core::provenance::PromptProvenance::new()),
             cors_origins: Vec::new(),
         };
         let _cfg_guard = EnvRestore::set("CORRAL_CONFIG_DIR", daemon_dir.display().to_string());
@@ -3588,9 +3810,29 @@ mod tests {
                 denied: vec![],
             };
 
-            // Start the board: the startup hook detects the mismatch and
-            // auto-recovers in one pass.
+            // Start the board: the startup hook detects the mismatch but
+            // must NOT mutate identity or auto-recover — it only surfaces a
+            // passive notice pointing at Settings.
             app.apply_fingerprint(fingerprint.clone());
+            assert_eq!(
+                app.identity_recovery,
+                IdentityRecovery::None,
+                "startup must not auto-start recovery"
+            );
+            assert!(
+                app.settings
+                    .notice
+                    .as_ref()
+                    .map(|(_, text)| text.contains("Settings"))
+                    .unwrap_or(false),
+                "startup surfaces a passive notice pointing at Settings"
+            );
+
+            // The user triggers the Settings recovery block's "Restore
+            // saved identity" (Request::RecoverIdentity): arm Mismatch and
+            // run the same recovery the request handler runs.
+            app.identity_recovery = IdentityRecovery::Mismatch;
+            assert!(app.try_start_recovery(), "user-initiated recovery starts");
             assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
 
             let deadline = Instant::now() + std::time::Duration::from_secs(15);
@@ -3646,7 +3888,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_detection_ignores_consistent_keys_but_flags_mismatch() {
+    fn startup_identity_mismatch_surfaces_passive_notice_without_mutating_identity() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3663,40 +3905,59 @@ mod tests {
         );
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
 
-        // Consistent: the device key's id matches the registered id.
+        // Consistent: the device key's id matches the registered id — no
+        // notice, no state change.
         let key = fresh_device_key(7);
         let id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
         let (_rt, mut app) = identity_test_app(&id, key);
         assert!(!app.identity_mismatch());
-        app.check_identity_recovery();
+        app.passive_identity_mismatch_notice();
+        assert!(app.settings.notice.is_none());
         assert_eq!(app.identity_recovery, IdentityRecovery::None);
 
-        // Mismatch: a fresh seed under the OLD registered id.
+        // Mismatch: a fresh seed under the OLD registered id. Startup only
+        // surfaces a passive notice pointing at Settings — no
+        // IdentityRecovery state, no token read, no re-registration.
         let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(
             app.identity_mismatch(),
             "fresh key must not match the old registration"
         );
-        // No registration-token file (scratch env): detection flags the
-        // mismatch and surfaces the one-tap prompt instead of auto-running.
-        app.check_identity_recovery();
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        app.passive_identity_mismatch_notice();
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
         assert!(
             app.settings
                 .notice
                 .as_ref()
                 .unwrap()
                 .1
-                .contains("registration token"),
-            "the prompt must explain the missing token: {:?}",
+                .contains("Settings → DEVICE & GRANTS"),
+            "the passive notice must point at Settings: {:?}",
             app.settings.notice
         );
-        assert!(!app.try_start_recovery(), "no token -> no auto-recovery");
-        assert_eq!(app.identity_recovery, IdentityRecovery::Mismatch);
+        assert!(
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("no automatic re-registration"),
+            "the passive notice must state no automatic re-registration: {:?}",
+            app.settings.notice
+        );
+        assert!(
+            !app.try_start_recovery(),
+            "startup must never auto-start recovery"
+        );
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(
+            app.settings.grant_admin.pending_restore.is_none(),
+            "no recovery was queued"
+        );
     }
 
     #[test]
-    fn identity_detection_kicks_auto_recovery_when_the_token_exists() {
+    fn startup_never_auto_recovers_even_when_registration_token_exists() {
         let _lock = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3712,75 +3973,210 @@ mod tests {
         let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
         let (rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
         assert!(app.identity_mismatch());
-        app.check_identity_recovery();
-        // The token exists, so the recovery started (InFlight) — re-register
-        // is queued on the app runtime. Drive the current-thread runtime while
-        // draining the apply channel: the daemon at 127.0.0.1:1 refuses
-        // immediately, and the failure leg returns the banner to the
-        // retryable state.
-        assert_eq!(app.identity_recovery, IdentityRecovery::InFlight);
-        rt.block_on(async {
-            let deadline = Instant::now() + std::time::Duration::from_secs(10);
-            while app.identity_recovery == IdentityRecovery::InFlight && Instant::now() < deadline {
-                while let Ok(msg) = app.rx_apply.try_recv() {
-                    app.on_apply(msg);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        });
+        // The token EXISTS, yet startup must NOT auto-recover: recovery is
+        // user-initiated in the Settings block only.
+        app.passive_identity_mismatch_notice();
         assert_eq!(
             app.identity_recovery,
-            IdentityRecovery::Mismatch,
-            "a failed register must leave the banner retryable: {:?}",
-            app.toasts
+            IdentityRecovery::None,
+            "startup must not enter the recovery state machine even with a token present"
         );
         assert!(
             app.settings.grant_admin.pending_restore.is_none(),
-            "the captured restore set must be released on the failure leg"
+            "no restore set may be captured at startup"
+        );
+        // Drive the runtime briefly: no register may have been dispatched.
+        rt.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
+        assert_eq!(app.identity_recovery, IdentityRecovery::None);
+        assert!(app.settings.notice.as_ref().unwrap().1.contains("Settings"));
+    }
+
+    /// #310 (blocker): no workspace-wide identity banner exists; recovery
+    /// guidance lives only inside the Settings recovery block. The banner surface
+    /// and its one-tap action must not be reachable outside Settings.
+    #[test]
+    fn no_workspace_identity_banner_outside_settings() {
+        // Split needles so the assertion's own literals can never match.
+        let banner_fn = format!("fn {banner}", banner = "identity_recovery_banner");
+        let one_tap = format!("Re-register {plus} grant", plus = "+");
+        let source = include_str!("app.rs");
+        assert!(
+            !source.contains(&banner_fn),
+            "the workspace banner function must be gone"
+        );
+        assert!(
+            !source.contains(&one_tap),
+            "the one-tap banner action must be gone"
         );
     }
 
+    /// #310 r3 (blocker 3): recovery state is identity-generation scoped and
+    /// self-clearing. A current-generation refusal sets the latch + notice; a
+    /// current-generation success clears BOTH without deleting unrelated
+    /// notices; a stale-generation refusal or success arriving after a
+    /// rotation is ignored for current recovery state.
     #[test]
-    fn identity_banner_renders_one_tap_recovery_and_resolves_state() {
-        let (_rt, mut app) = identity_test_app("dev_deadbeef", fresh_device_key(9));
-        app.identity_recovery = IdentityRecovery::Mismatch;
-        let ctx = egui::Context::default();
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 900.0),
-                )),
-                ..Default::default()
+    fn recovery_state_is_identity_generation_scoped_and_self_clearing() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+        let epoch = app.identity_generation;
+        let bad_signature = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: generation,
+        };
+        let ok = |generation| DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Ok {
+                rev: 1,
+                result: Some(serde_json::json!({ "lines": [] })),
             },
-            |ui| identity_recovery_banner(ui, &mut app),
-        );
-        fn rendered_text(shape: &egui::epaint::Shape, text: &mut String) {
-            match shape {
-                egui::epaint::Shape::Text(shape) => {
-                    text.push_str(shape.galley.text());
-                    text.push('\n');
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        rendered_text(shape, text);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut text = String::new();
-        for clipped in &output.shapes {
-            rendered_text(&clipped.shape, &mut text);
-        }
-        output.textures_delta.clear();
+            identity_generation: generation,
+        };
+
+        // 1) Current-generation bad_signature refusal -> latch + notice.
+        app.on_drive(bad_signature(epoch));
+        assert!(app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_some());
         assert!(
-            text.contains("Re-register + grant"),
-            "one-tap action: {text}"
+            app.settings
+                .notice
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("Settings → DEVICE & GRANTS"),
+            "recovery guidance must be persisted: {:?}",
+            app.settings.notice
+        );
+
+        // 2) Current-generation success clears BOTH and leaves an unrelated
+        // notice intact.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+        app.on_drive(ok(epoch));
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "the persisted recovery guidance must be cleared"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().unwrap().1,
+            "unrelated notice",
+            "unrelated notices must survive a recovery-clearing success"
+        );
+
+        // 3) Rotation: a successful (re)registration opens a new generation.
+        let gen_before = app.identity_generation;
+        app.handle_register_result(Ok(("dev_new".to_string(), vec!["read_tail".to_string()])));
+        assert_eq!(
+            app.identity_generation,
+            gen_before.wrapping_add(1),
+            "every successful registration must bump the identity generation"
+        );
+        let old_gen = gen_before;
+
+        // A stale-generation refusal after rotation must NOT set current
+        // recovery state.
+        app.on_drive(bad_signature(old_gen));
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // A stale-generation success must NOT clear current recovery state.
+        app.settings.grant_admin.bad_signature = true;
+        app.settings.grant_admin.recovery_notice = Some("recovery".into());
+        app.on_drive(ok(old_gen));
+        assert!(
+            app.settings.grant_admin.bad_signature,
+            "a stale-generation success must not clear the current latch"
         );
         assert!(
-            text.contains("Device identity changed (#249)"),
-            "banner copy: {text}"
+            app.settings.grant_admin.recovery_notice.is_some(),
+            "a stale-generation success must not clear current recovery guidance"
+        );
+    }
+
+    /// #310 r4: the refusal branch had a SECOND, unguarded re-registration
+    /// guidance writer on `settings.notice`. A stale-generation refusal
+    /// arriving after key rotation therefore planted permanent
+    /// Restore/Re-register guidance for the healthy current key — guidance
+    /// no current-generation success or re-registration could reliably
+    /// clear (it never owned `recovery_notice`). Regression: after
+    /// rotation, a stale old-generation refusal that suggests
+    /// re-registration must leave BOTH recovery state and `settings.notice`
+    /// untouched, while an unrelated notice survives.
+    #[test]
+    fn stale_generation_refusal_never_plants_re_registration_guidance() {
+        let _lock = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _cfg_guard = EnvRestore::set(
+            "CORRAL_CONFIG_DIR",
+            scratch_dir("recoveryscope").display().to_string(),
+        );
+        let _ui_guard = EnvRestore::set(
+            "CORRAL_UI_CONFIG_DIR",
+            scratch_dir("ui").display().to_string(),
+        );
+        let _keyring_guard = EnvRestore::set("CORRAL_UI_DISABLE_KEYRING", "1");
+        let (_rt, mut app) = read_model_test_app();
+
+        // Rotate the identity/generation WITHOUT any stale refusal pending:
+        // after a successful registration the current key is healthy and no
+        // recovery state exists.
+        let old_generation = app.identity_generation;
+        app.handle_register_result(Ok((
+            "dev_rotated".to_string(),
+            vec!["read_tail".to_string()],
+        )));
+        assert_ne!(app.identity_generation, old_generation);
+        assert!(!app.settings.grant_admin.bad_signature);
+        assert!(app.settings.grant_admin.recovery_notice.is_none());
+
+        // An unrelated notice must survive this scenario untouched.
+        app.settings.notice = Some((Level::Info, "unrelated notice".into()));
+
+        // A stale old-generation refusal that suggests re-registration.
+        app.on_drive(DriveMsg {
+            agent_id: "herdr:a".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Refused(crate::drive::DriveFailure::BadSignature(
+                "stale key".into(),
+            )),
+            identity_generation: old_generation,
+        });
+
+        // The stale refusal must not plant ANY recovery guidance.
+        assert!(
+            !app.settings.grant_admin.bad_signature,
+            "a stale-generation refusal must not set the current latch"
+        );
+        assert!(
+            app.settings.grant_admin.recovery_notice.is_none(),
+            "a stale-generation refusal must not set owned recovery guidance"
+        );
+        assert_eq!(
+            app.settings.notice.as_ref().map(|(_, text)| text.as_str()),
+            Some("unrelated notice"),
+            "a stale-generation refusal must not write Restore/Re-register guidance into settings.notice"
         );
     }
 
@@ -4577,6 +4973,7 @@ mod tests {
                     "lines": ["older line one", "older line two"]
                 })),
             },
+            identity_generation: 0,
         };
 
         CorralApp::apply_read_tail_result(&mut fleet, &msg);
@@ -4584,6 +4981,1141 @@ mod tests {
         assert_eq!(
             fleet.tails["herdr:load-earlier"],
             ["older line one", "older line two"]
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #314: revision-aware visible Recent-output refresh.
+    // ------------------------------------------------------------------
+
+    /// Count helper for the #314 tests: how many read_tail drive entries in
+    /// the agent's (newest-first) history are `Sending`. Note the counting
+    /// shape mirrors the production bookkeeping: a COMPLETED request keeps
+    /// its `Sending` entry as history, so freshness is judged newest-first
+    /// in the production helper (`Fleet::recent_output_refresh_candidate`).
+    fn sending_read_tail_drives(fleet: &Fleet, agent_id: &str) -> usize {
+        fleet
+            .recent_drives
+            .get(agent_id)
+            .map(|drives| {
+                drives
+                    .iter()
+                    .filter(|state| {
+                        matches!(
+                            state,
+                            DriveState::Sending { capability, .. } if capability == "read_tail"
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The NEWEST read_tail drive entry for the agent (newest-first deque,
+    /// same semantics as the board's `latest_read_tail_state`).
+    fn newest_read_tail_drive<'a>(fleet: &'a Fleet, agent_id: &str) -> Option<&'a DriveState> {
+        fleet.recent_drives.get(agent_id)?.iter().find(|state| {
+            matches!(
+                state,
+                DriveState::Sending { capability, .. }
+                    | DriveState::Ok { capability, .. }
+                    | DriveState::Failed { capability, .. }
+                    if capability == "read_tail"
+            )
+        })
+    }
+
+    /// The #314 regression, end to end through the app's REAL wire layer:
+    /// initial hydration at source_rev A -> the source advances to B -> the
+    /// NEXT paced visible-agent refresh sends a second read_tail carrying
+    /// the cached `source_rev` A, and the result at B replaces the bounded
+    /// cache. Against the old one-shot cache behavior the second request
+    /// never happens and this test REDs.
+    #[test]
+    fn visible_agent_refreshes_recent_output_through_the_real_drive_plane() {
+        let (runtime, mut app) = read_model_test_app();
+
+        // Canned signed-drive plane: records every POST /drive envelope and
+        // answers read_tail with the currently canned lines/source_rev.
+        // Signature verification is the daemon auth plane's job (covered by
+        // the #249 e2e + conformance suite); this fixture pins the CLIENT
+        // refresh contract.
+        let drives = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned_rev = std::sync::Arc::new(Mutex::new(4u64));
+        let canned_lines = std::sync::Arc::new(Mutex::new(vec!["first window A1".to_string()]));
+        let router_drives = drives.clone();
+        let router_canned_rev = canned_rev.clone();
+        let router_canned_lines = canned_lines.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = router_drives.clone();
+            let canned_rev = router_canned_rev.clone();
+            let canned_lines = router_canned_lines.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope);
+                    let rev = *canned_rev.lock().await;
+                    let lines = canned_lines.lock().await.clone();
+                    let response = serde_json::json!({
+                        "request_id": signed["envelope"]["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.config.host_url = format!("http://{address}");
+
+            // Registered device + read_tail grant, consistent key material
+            // (same seeding shape as identity_test_app, without config IO).
+            let key = fresh_device_key(11);
+            let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+            app.registration = Some(RegistrationRecord {
+                host_fingerprint: "deadbeef00000000".into(),
+                key_id,
+                grants: vec!["read_tail".into()],
+                denied: vec![],
+            });
+            app.host_fingerprint = Some("deadbeef00000000".into());
+            app.device_key = Some(key);
+            app.ledger = GrantLedger {
+                base: vec!["read_tail".into()],
+                denied: vec![],
+            };
+
+            // The visible, selected agent.
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)].into_iter().collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+
+            // Frame 1: initial hydration (daemon still at source_rev 4).
+            let visible = board::visible_agent_ids(&app.fleet, StateFilter::All, "");
+            let resolved =
+                board::resolve_selection(&app.fleet, &visible).map(str::to_string);
+            app.hydrate_recent_output(resolved.as_deref());
+            assert_eq!(
+                sending_read_tail_drives(&app.fleet, "herdr:g314"),
+                1,
+                "initial hydration dispatches one read_tail"
+            );
+
+            async fn pump_until(
+                app: &mut CorralApp,
+                cond: impl Fn(&CorralApp) -> bool,
+            ) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if cond(app) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!(
+                    "#314 condition not met before the deadline; drives={:?} source_revs={:?} tails={:?}",
+                    app.fleet.recent_drives.get("herdr:g314"),
+                    app.fleet.tail_source_revs.get("herdr:g314"),
+                    app.fleet.tails.get("herdr:g314"),
+                );
+            }
+
+            pump_until(&mut app, |app| {
+                app.fleet.tails.contains_key("herdr:g314")
+                    && app.fleet.tail_source_revs.get("herdr:g314") == Some(&4)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["first window A1".to_string()]
+            );
+
+            let drives_after_first = drives.lock().await.len();
+            assert_eq!(drives_after_first, 1);
+            let first = drives.lock().await[0].clone();
+            assert_eq!(first["capability"], "read_tail");
+            assert_eq!(first["target"], "herdr:g314");
+            assert_eq!(first["payload"]["kind"], "read_tail");
+            assert_eq!(
+                first["payload"]["lines"], 50,
+                "the initial hydration is the bounded default 50-line page"
+            );
+            assert!(
+                first["payload"].get("since_rev").is_none(),
+                "the initial hydration has no cached source revision yet"
+            );
+
+            // The source advances to source_rev 5 with new output.
+            *canned_rev.lock().await = 5;
+            *canned_lines.lock().await =
+                vec!["newer window B1".to_string(), "newer window B2".to_string()];
+
+            // The first request is fully settled: the newest read_tail drive
+            // entry is its Ok (the Sending→Ok swap already folded in).
+            pump_until(&mut app, |app| {
+                matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                )
+            })
+            .await;
+
+            // Frame 2: the next eligible visible-agent refresh (cooldown
+            // already elapsed by construction — the gate is reset, exactly
+            // what the frame cadence does once the pacing window passes).
+            app.recent_output_last_refresh = None;
+            let visible = board::visible_agent_ids(&app.fleet, StateFilter::All, "");
+            let resolved =
+                board::resolve_selection(&app.fleet, &visible).map(str::to_string);
+            app.refresh_recent_output(resolved.as_deref());
+
+            // The second request is async; wait for it to land on the wire.
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "#314: a cached tail with a cached source_rev must still refresh \
+                 for the visible agent (the one-shot cache never sent this)"
+            );
+            let second = drives.lock().await[1].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the refresh must carry the CACHED source_rev"
+            );
+            assert_eq!(
+                second["payload"]["lines"], 50,
+                "the automatic refresh stays the bounded 50-line page"
+            );
+
+            // The result at source_rev B replaces the bounded cache.
+            pump_until(&mut app, |app| {
+                app.fleet.tail_source_revs.get("herdr:g314") == Some(&5)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["newer window B1".to_string(), "newer window B2".to_string()],
+                "the refreshed window replaces the cached tail"
+            );
+        });
+    }
+
+    /// Structural guard for the highest seam: the production `Tab::Board`
+    /// arm in `workspace()` must keep the exact ordered wiring
+    /// `dispatch_drive_intents` -> `hydrate_recent_output` ->
+    /// `refresh_recent_output`, all fed the SAME `resolved_selection`. The
+    /// slice is comment-stripped per line, so commenting any call out (or
+    /// deleting it) breaks the match; uniqueness means a duplicate call
+    /// elsewhere in the arm cannot satisfy it either. This complements —
+    /// never replaces — the behavioral frame test below.
+    #[test]
+    fn board_arm_keeps_the_ordered_hydration_then_refresh_wiring() {
+        let source = include_str!("app.rs");
+        let board_arm = source
+            .split("Tab::Board => {")
+            .nth(1)
+            .expect("a Tab::Board arm exists in workspace()")
+            .split("Tab::Issues => {")
+            .next()
+            .expect("the Board arm is bounded by the Issues arm")
+            .to_string();
+        let strip_comments = |line: &str| -> String {
+            let code = match line.find("//") {
+                Some(idx) => &line[..idx],
+                None => line,
+            };
+            code.trim().to_string()
+        };
+        let code_lines: Vec<String> = board_arm
+            .lines()
+            .map(strip_comments)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let count_matches = |needle: &str| {
+            code_lines
+                .iter()
+                .filter(|line| line.contains(needle))
+                .count()
+        };
+        let hydrate = "app.hydrate_recent_output(resolved_selection.as_deref())";
+        let refresh = "app.refresh_recent_output(resolved_selection.as_deref())";
+        let dispatch = "app.dispatch_drive_intents(pending)";
+        assert_eq!(
+            count_matches(dispatch),
+            1,
+            "exactly one dispatch_drive_intents in the Board arm"
+        );
+        assert_eq!(
+            count_matches(hydrate),
+            1,
+            "exactly one initial hydration call in the Board arm"
+        );
+        assert_eq!(
+            count_matches(refresh),
+            1,
+            "exactly one (live, uncommented) #314 refresh call in the Board arm"
+        );
+        let hydrate_idx = code_lines
+            .iter()
+            .position(|line| line.contains(hydrate))
+            .expect("hydration call present");
+        let refresh_idx = code_lines
+            .iter()
+            .position(|line| line.contains(refresh))
+            .expect("refresh call present");
+        assert!(
+            hydrate_idx < refresh_idx,
+            "initial hydration must precede the revision-aware refresh"
+        );
+    }
+
+    /// The highest-seam #314 guard: the REAL production Board-frame path
+    /// (`workspace()`'s `Tab::Board` arm, driven headless through an actual
+    /// egui pass) must itself emit the revision-aware refresh. Removing the
+    /// single production call `app.refresh_recent_output(..)` from that arm
+    /// REDs this test — the direct-method tests cannot catch that.
+    #[test]
+    fn board_frame_drives_the_revision_aware_recent_output_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+
+        // Same canned signed-drive plane as the direct-method test: records
+        // every POST /drive envelope, answers with the canned lines/rev.
+        let drives = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned_rev = std::sync::Arc::new(Mutex::new(4u64));
+        let canned_lines = std::sync::Arc::new(Mutex::new(vec!["first window A1".to_string()]));
+        let router_drives = drives.clone();
+        let router_canned_rev = canned_rev.clone();
+        let router_canned_lines = canned_lines.clone();
+        let router = Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = router_drives.clone();
+            let canned_rev = router_canned_rev.clone();
+            let canned_lines = router_canned_lines.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope);
+                    let rev = *canned_rev.lock().await;
+                    let lines = canned_lines.lock().await.clone();
+                    let response = serde_json::json!({
+                        "request_id": signed["envelope"]["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }));
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            app.config.host_url = format!("http://{address}");
+
+            let key = fresh_device_key(17);
+            let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+            app.registration = Some(RegistrationRecord {
+                host_fingerprint: "deadbeef00000000".into(),
+                key_id,
+                grants: vec!["read_tail".into()],
+                denied: vec![],
+            });
+            app.host_fingerprint = Some("deadbeef00000000".into());
+            app.device_key = Some(key);
+            app.ledger = GrantLedger {
+                base: vec!["read_tail".into()],
+                denied: vec![],
+            };
+
+            // The visible, selected agent with no cached tail yet.
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)].into_iter().collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            // The production Board arm is the seam under test.
+            app.tab = Tab::Board;
+
+            // One REAL egui pass through the production frame path. The
+            // test is a logic harness, not a renderer: the pass output
+            // (with its texture deltas) is dropped without a painter, as
+            // egui's own docs do for headless callers.
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+
+            async fn pump_drive_results(
+                app: &mut CorralApp,
+                cond: impl Fn(&CorralApp) -> bool,
+            ) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if cond(app) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!(
+                    "#314 frame condition not met before the deadline; drives={:?} source_revs={:?}",
+                    app.fleet.recent_drives.get("herdr:g314"),
+                    app.fleet.tail_source_revs.get("herdr:g314"),
+                );
+            }
+
+            // Frame 1 through the REAL Board arm: pending intents dispatch +
+            // initial hydration (the refresh call is single-flight blocked).
+            board_frame(&mut app, &ctx);
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tails.contains_key("herdr:g314")
+                    && app.fleet.tail_source_revs.get("herdr:g314") == Some(&4)
+            })
+            .await;
+            assert_eq!(
+                drives.lock().await.len(),
+                1,
+                "the Board frame's hydration produced exactly one request"
+            );
+            assert!(
+                drives.lock().await[0]["payload"]
+                    .get("since_rev")
+                    .is_none(),
+                "the frame's initial hydration has no cached source revision yet"
+            );
+
+            // The source advances; the NEXT production Board frame must send
+            // the revision-aware refresh entirely on its own (no direct
+            // method call from this test).
+            *canned_rev.lock().await = 5;
+            *canned_lines.lock().await =
+                vec!["newer window B1".to_string(), "newer window B2".to_string()];
+            pump_drive_results(&mut app, |app| {
+                matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                )
+            })
+            .await;
+
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "#314: the production Board frame itself must drive the \
+                 revision-aware refresh for the visible agent (removing the \
+                 single refresh call in the Tab::Board arm REDs here)"
+            );
+            let second = drives.lock().await[1].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the frame-driven refresh must carry the CACHED source_rev"
+            );
+            assert_eq!(
+                second["payload"]["lines"], 50,
+                "the frame-driven refresh stays the bounded 50-line page"
+            );
+
+            // The result at source_rev B replaces the bounded cache.
+            pump_drive_results(&mut app, |app| {
+                app.fleet.tail_source_revs.get("herdr:g314") == Some(&5)
+            })
+            .await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"],
+                ["newer window B1".to_string(), "newer window B2".to_string()],
+                "the frame-refreshed window replaces the cached tail"
+            );
+
+            // A further real frame with an unchanged source_rev must settle
+            // with no additional request (no immediate loop through the
+            // production cadence either).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                2,
+                "an unchanged source_rev settles through the real frame path \
+                 without an immediate request loop"
+            );
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // #314 R3: the per-agent REQUESTED tail-window limit survives
+    // automatic refreshes (explicit Load earlier expands the window;
+    // a partial 200-line response must still re-request 200).
+    // ------------------------------------------------------------------
+
+    /// Canned read_tail responses keyed by request shape: the default
+    /// 50-line hydration, an explicit 200-line page (the canned
+    /// `expanded_lines` may hold fewer than 200 entries to model a partial
+    /// response), and any revision-aware refresh. Expanded/refresh
+    /// responses are truncated to the REQUESTED line count, modelling the
+    /// daemon: a since_rev window requested at 50 really does come back
+    /// with ~50 lines even when more output exists.
+    struct R3Canned {
+        hydrate_lines: Vec<String>,
+        expanded_lines: Vec<String>,
+    }
+
+    fn r3_router(
+        drives: std::sync::Arc<Mutex<Vec<serde_json::Value>>>,
+        canned: std::sync::Arc<Mutex<R3Canned>>,
+    ) -> Router {
+        Router::new().fallback(any(move |request: Request<Body>| {
+            let drives = drives.clone();
+            let canned = canned.clone();
+            async move {
+                if request.uri().path() == "/drive" {
+                    let body = axum::body::to_bytes(request.into_body(), 1 << 20)
+                        .await
+                        .expect("drive body");
+                    let signed: serde_json::Value =
+                        serde_json::from_slice(&body).expect("signed drive body");
+                    let envelope = signed["envelope"].clone();
+                    drives.lock().await.push(envelope.clone());
+                    let payload = &envelope["payload"];
+                    let requested_lines = payload["lines"].as_u64().unwrap_or(50);
+                    let canned = canned.lock().await;
+                    let window = |source: &[String]| {
+                        source
+                            .iter()
+                            .take(requested_lines as usize)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    // The expanded page returns the window at the CACHED
+                    // source_rev 4 (the source has not advanced); a
+                    // revision-aware refresh advances it to 5.
+                    let (rev, lines) = if payload.get("since_rev").is_some() {
+                        (5u64, window(&canned.expanded_lines))
+                    } else if requested_lines >= 200 {
+                        (4u64, window(&canned.expanded_lines))
+                    } else {
+                        (4u64, window(&canned.hydrate_lines))
+                    };
+                    let response = serde_json::json!({
+                        "request_id": envelope["request_id"],
+                        "ok": true,
+                        "rev": rev,
+                        "result": { "lines": lines, "source_rev": rev },
+                    });
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&response).unwrap()))
+                        .unwrap();
+                }
+                Response::new(Body::from(r#"{"ok":true}"#))
+            }
+        }))
+    }
+
+    /// Registered device + read_tail grant against the canned plane.
+    fn r3_ready_app(app: &mut CorralApp, address: std::net::SocketAddr) {
+        app.config.host_url = format!("http://{address}");
+        let key = fresh_device_key(19);
+        let key_id = crate::keys::device_key_id(&key.signing.verifying_key().to_bytes());
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id,
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+    }
+
+    /// Count recorded drive envelopes for one target agent.
+    fn r3_count_for(drives: &[serde_json::Value], target: &str) -> usize {
+        drives
+            .iter()
+            .filter(|d| d["target"] == serde_json::json!(target))
+            .count()
+    }
+
+    /// R3 blocker regression through the REAL production Board frame: the
+    /// operator's explicit Load earlier expands the window to 200, and the
+    /// NEXT automatic revision-aware refresh must request the REMEMBERED
+    /// 200 — not literal 50, which would replace the expanded history with
+    /// a narrow one.
+    #[test]
+    fn load_earlier_window_survives_the_next_automatic_board_refresh() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+            app.tab = Tab::Board;
+            let ctx = egui::Context::default();
+            let board_frame = |app: &mut CorralApp, ctx: &egui::Context| {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    workspace(ui, app, ctx);
+                })
+                .drop_without_applying_deltas();
+            };
+            async fn pump_tail_cache(app: &mut CorralApp, rev: u64) {
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    while let Ok(msg) = app.rx_drive.try_recv() {
+                        app.on_drive(msg);
+                    }
+                    if app.fleet.tail_source_revs.get("herdr:g314") == Some(&rev) {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                panic!("R3: tail cache never reached rev {rev}");
+            }
+
+            // Frame 1: the bounded default hydration through the arm.
+            board_frame(&mut app, &ctx);
+            pump_tail_cache(&mut app, 4).await;
+            assert_eq!(drives.lock().await.len(), 1);
+            assert_eq!(
+                drives.lock().await[0]["payload"]["lines"],
+                50,
+                "the initial hydration is the default 50-line page"
+            );
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 1);
+
+            // The operator's explicit Load earlier (the board's production
+            // dispatch shape, through the real funnel).
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await[1]["payload"]["lines"],
+                200,
+                "the explicit Load earlier requests the 200-line page"
+            );
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the expanded 200-line window loads into the cache"
+            );
+
+            // Cooldown elapsed: the NEXT REAL Board frame alone must
+            // refresh at the remembered 200-line window.
+            app.recent_output_last_refresh = None;
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let third = drives.lock().await[2].clone();
+            assert_eq!(third["target"], "herdr:g314");
+            assert_eq!(
+                third["payload"]["lines"], 200,
+                "R3: the automatic refresh must request the REMEMBERED \
+                 200-line window, not literal 50"
+            );
+            assert_eq!(
+                third["payload"]["since_rev"],
+                serde_json::json!(4),
+                "the refresh carries the cached source_rev"
+            );
+            pump_tail_cache(&mut app, 5).await;
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                200,
+                "the refreshed window preserves the expanded history"
+            );
+
+            // An unchanged source_rev settles with no IMMEDIATE loop: the
+            // next real frame runs inside the cooldown window and must not
+            // re-request (a poll after a full cooldown is the intended
+            // pacing, not an immediate loop).
+            board_frame(&mut app, &ctx);
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles through the real frame \
+                 without an immediate request loop"
+            );
+        });
+    }
+
+    /// A 200-line request may legitimately return FEWER lines today; the
+    /// remembered limit is what was REQUESTED, so future automatic
+    /// refreshes keep asking for 200 and the window can grow as output
+    /// arrives (never shrinking to tails.len() or literal 50).
+    #[test]
+    fn partial_expanded_window_still_refreshes_at_the_requested_200() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window A1".to_string()],
+            expanded_lines: (0..75).map(|i| format!("partial line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let mut selected = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+            selected.seq = 3;
+            app.fleet = Fleet {
+                agents: [(selected.agent_id.clone(), selected)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314".into()),
+                ..Default::default()
+            };
+
+            // Initial hydration at the default 50.
+            app.hydrate_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+
+            // The operator expands to the 200-line page; the daemon can
+            // only serve 75 lines for it right now.
+            let load = DriveIntent::read_tail_page("herdr:g314", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                app.fleet.tails["herdr:g314"].len(),
+                75,
+                "the 200-line request returned a partial 75-line window"
+            );
+
+            // The next automatic refresh must still REQUEST 200.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while drives.lock().await.len() < 3 && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let second = drives.lock().await[2].clone();
+            assert_eq!(second["target"], "herdr:g314");
+            assert_eq!(
+                second["payload"]["lines"], 200,
+                "R3: a partial 200 response must not shrink the requested \
+                 limit — refreshes keep requesting 200 (not 75, not 50)"
+            );
+            assert_eq!(second["payload"]["since_rev"], serde_json::json!(4));
+            // The refresh advances the source; the cache folds at 75 lines.
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314") == Some(&5) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314"].len(), 75);
+
+            // Unchanged rev: no IMMEDIATE request loop (the call runs
+            // inside the cooldown window; a poll after a full cooldown is
+            // the intended pacing).
+            app.refresh_recent_output(Some("herdr:g314"));
+            let deadline = Instant::now() + std::time::Duration::from_millis(150);
+            while Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                drives.lock().await.len(),
+                3,
+                "an unchanged source_rev settles without an immediate loop"
+            );
+        });
+    }
+
+    /// Per-agent isolation: the expanded agent's window must not leak into
+    /// other agents — a global remembered limit would over-expand the
+    /// non-selected agent's refreshes.
+    #[test]
+    fn expanded_agent_refreshes_at_200_while_other_agent_stays_50() {
+        let (runtime, mut app) = read_model_test_app();
+        let drives = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let canned = Arc::new(Mutex::new(R3Canned {
+            hydrate_lines: vec!["first window".to_string()],
+            expanded_lines: (0..200).map(|i| format!("expanded line {i:03}")).collect(),
+        }));
+        let router = r3_router(drives.clone(), canned.clone());
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback");
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            r3_ready_app(&mut app, address);
+            let a = agent("herdr:g314-a", AgentState::Working, &["read_tail"]);
+            let mut b = agent("herdr:g314-b", AgentState::Working, &["read_tail"]);
+            b.seq = 4;
+            app.fleet = Fleet {
+                agents: [(a.agent_id.clone(), a), (b.agent_id.clone(), b)]
+                    .into_iter()
+                    .collect(),
+                rev: Some(7),
+                selected_agent: Some("herdr:g314-a".into()),
+                ..Default::default()
+            };
+
+            // Hydrate and expand the selected agent A.
+            app.hydrate_recent_output(Some("herdr:g314-a"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-a") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let load = DriveIntent::read_tail_page("herdr:g314-a", 200, app.fleet.rev);
+            app.dispatch_drive_intents(vec![load]);
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if matches!(
+                    newest_read_tail_drive(&app.fleet, "herdr:g314-a"),
+                    Some(DriveState::Ok { .. })
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(app.fleet.tails["herdr:g314-a"].len(), 200);
+
+            // The operator switches the visible selection to B.
+            app.hydrate_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                while let Ok(msg) = app.rx_drive.try_recv() {
+                    app.on_drive(msg);
+                }
+                if app.fleet.tail_source_revs.get("herdr:g314-b") == Some(&4) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-a"), 2);
+            assert_eq!(r3_count_for(&drives.lock().await, "herdr:g314-b"), 1);
+
+            // B's automatic refresh stays the default 50-line page: A's
+            // expanded window must not leak into other agents.
+            app.recent_output_last_refresh = None;
+            app.refresh_recent_output(Some("herdr:g314-b"));
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while r3_count_for(&drives.lock().await, "herdr:g314-b") < 2
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let b_refresh = drives
+                .lock()
+                .await
+                .iter()
+                .rev()
+                .find(|d| d["target"] == serde_json::json!("herdr:g314-b"))
+                .cloned()
+                .expect("B's refresh landed on the wire");
+            assert_eq!(
+                b_refresh["payload"]["lines"], 50,
+                "R3: the non-expanded agent's refresh stays the default \
+                 50-line page (a global window would leak A's 200)"
+            );
+            assert_eq!(b_refresh["payload"]["since_rev"], serde_json::json!(4));
+            // No prefetch: A sees no further automatic request.
+            assert_eq!(
+                r3_count_for(&drives.lock().await, "herdr:g314-a"),
+                2,
+                "the hidden (non-selected) agent is never auto-refreshed"
+            );
+        });
+    }
+
+    /// Only the visible/selected agent is eligible for automatic refresh.
+    /// A previously-viewed agent keeps its stale cache and never sees an
+    /// automatic read_tail request.
+    #[test]
+    fn hidden_agents_are_never_auto_refreshed_even_when_cached_and_stale() {
+        let (_runtime, mut app) = read_model_test_app();
+        let key = fresh_device_key(13);
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id: "dev_x".into(),
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+
+        let visible = agent("herdr:g314-a", AgentState::Working, &["read_tail"]);
+        let hidden = agent("herdr:g314-b", AgentState::Working, &["read_tail"]);
+        app.fleet = Fleet {
+            agents: [
+                (visible.agent_id.clone(), visible),
+                (hidden.agent_id.clone(), hidden),
+            ]
+            .into_iter()
+            .collect(),
+            rev: Some(9),
+            selected_agent: Some("herdr:g314-a".into()),
+            ..Default::default()
+        };
+        app.fleet
+            .remember_tail_with_rev("herdr:g314-a", vec!["a1".into()], Some(4));
+        app.fleet
+            .remember_tail_with_rev("herdr:g314-b", vec!["stale-b".into()], Some(2));
+
+        let resolved = board::resolve_selection(
+            &app.fleet,
+            &board::visible_agent_ids(&app.fleet, StateFilter::All, ""),
+        );
+        assert_eq!(resolved, Some("herdr:g314-a"));
+        let resolved = resolved.map(str::to_string);
+        app.refresh_recent_output(resolved.as_deref());
+
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314-a"),
+            1,
+            "the visible agent is refreshed"
+        );
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314-b"),
+            0,
+            "the non-selected agent is never prefetched"
+        );
+        assert_eq!(app.fleet.tails["herdr:g314-b"], ["stale-b".to_string()]);
+        assert_eq!(app.fleet.tail_source_revs["herdr:g314-b"], 2);
+    }
+
+    /// One request in flight suppresses duplicates, and an unchanged
+    /// source_rev settles: after the (unchanged) result folds in through the
+    /// real `on_drive` path, subsequent immediate frames dispatch nothing —
+    /// the cooldown holds — until the pacing window elapses.
+    #[test]
+    fn unchanged_tail_settles_without_immediate_request_loop_and_single_flight_holds() {
+        let (_runtime, mut app) = read_model_test_app();
+        let key = fresh_device_key(17);
+        app.registration = Some(RegistrationRecord {
+            host_fingerprint: "deadbeef00000000".into(),
+            key_id: "dev_x".into(),
+            grants: vec!["read_tail".into()],
+            denied: vec![],
+        });
+        app.host_fingerprint = Some("deadbeef00000000".into());
+        app.device_key = Some(key);
+        app.ledger = GrantLedger {
+            base: vec!["read_tail".into()],
+            denied: vec![],
+        };
+        let working = agent("herdr:g314", AgentState::Working, &["read_tail"]);
+        app.fleet = Fleet {
+            agents: [(working.agent_id.clone(), working)].into_iter().collect(),
+            rev: Some(7),
+            selected_agent: Some("herdr:g314".into()),
+            ..Default::default()
+        };
+        // A cached tail @ source_rev 4 whose round-trip already completed
+        // (the Ok drive folded) — the steady state after initial hydration.
+        app.fleet
+            .remember_tail_with_rev("herdr:g314", vec!["window".into()], Some(4));
+        app.fleet.remember_drive(
+            "herdr:g314",
+            DriveState::Ok {
+                rev: 4,
+                capability: "read_tail".into(),
+            },
+        );
+
+        // Eligible + due: the refresh dispatches.
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(sending_read_tail_drives(&app.fleet, "herdr:g314"), 1);
+
+        // While it is in flight, further frames must NOT duplicate it.
+        app.refresh_recent_output(Some("herdr:g314"));
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            1,
+            "single-flight: an in-flight refresh suppresses duplicates"
+        );
+
+        // The unchanged result folds in through the real drive path.
+        app.on_drive(DriveMsg {
+            agent_id: "herdr:g314".into(),
+            capability: "read_tail".into(),
+            outcome: DriveOutcome::Ok {
+                rev: 4,
+                result: Some(serde_json::json!({
+                    "lines": ["window"],
+                    "source_rev": 4
+                })),
+            },
+            identity_generation: 0,
+        });
+        assert_eq!(app.fleet.tail_source_revs["herdr:g314"], 4);
+        assert_eq!(app.fleet.tails["herdr:g314"], ["window".to_string()]);
+
+        // Settled: immediate frames after an unchanged revision dispatch
+        // nothing — no request loop.
+        for _ in 0..3 {
+            app.refresh_recent_output(Some("herdr:g314"));
+        }
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            1,
+            "an unchanged source_rev must settle without an immediate request loop"
+        );
+
+        // Once the pacing window elapses the paced refresh resumes.
+        app.recent_output_last_refresh = Some(
+            Instant::now() - RECENT_OUTPUT_REFRESH_COOLDOWN - std::time::Duration::from_millis(1),
+        );
+        app.refresh_recent_output(Some("herdr:g314"));
+        assert_eq!(
+            sending_read_tail_drives(&app.fleet, "herdr:g314"),
+            2,
+            "the paced refresh resumes after the cooldown"
         );
     }
 

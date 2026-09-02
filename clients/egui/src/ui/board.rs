@@ -109,6 +109,22 @@ const PAUSED_LABEL: &str = "paused";
 const EARLIER_OUTPUT_LABEL: &str = "Earlier output";
 const LOAD_EARLIER_LABEL: &str = "Load earlier";
 const USER_BLOCK_INSET: f32 = 24.0;
+/// Speaker-rail column width shared by every conversation block row.
+const RAIL_WIDTH: f32 = 52.0;
+
+/// #316 V3 Context split: the detail pane's conversation/utility boundary.
+/// Below this width the deterministic stacked fallback replaces the
+/// two-column composition (same regions, same read order — nothing is
+/// clipped or hidden).
+const CONTEXT_SPLIT_MIN_WIDTH: f32 = 640.0;
+const UTILITY_COLUMN_WIDTH: f32 = 260.0;
+const UTILITY_COLUMN_GAP: f32 = 8.0;
+const HARNESS_OPEN_ID: &str = "corral-ui-harness-activity-open";
+/// #316 V3: narrow viewports bound the conversation viewport to this height
+/// (matching the 200-line page bound) so the conversation stays a
+/// fixed-size window INSIDE one containing scroll; Session status, Harness
+/// activity, and the composer below it stay reachable without clipping.
+const NARROW_CONVERSATION_MAX_HEIGHT: f32 = 200.0;
 
 /// Cards or the exact nine-column internal conformance table. Only Cards is
 /// reachable from the native workspace; the table variant exists so the
@@ -199,6 +215,7 @@ pub struct BoardActions<'a> {
 pub fn show(
     ui: &mut Ui,
     fleet: &mut Fleet,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -217,7 +234,7 @@ pub fn show(
     // state migration or a test harness restores an older value.
     let mut view = BoardView::Cards;
     let mut flat = false;
-    show_cards(ui, fleet, &mut view, &mut flat, allowed, actions)
+    show_cards(ui, fleet, &mut view, &mut flat, completed, allowed, actions)
 }
 
 /// Persistent sidebar state helpers are intentionally tiny; every query
@@ -498,6 +515,7 @@ fn show_cards(
     fleet: &mut Fleet,
     view: &mut BoardView,
     flat: &mut bool,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -506,7 +524,7 @@ fn show_cards(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_size(egui::vec2(MIN_CARDS_WIDTH, MIN_CARDS_HEIGHT));
-            show_cards_surface(ui, fleet, view, flat, allowed, actions)
+            show_cards_surface(ui, fleet, view, flat, completed, allowed, actions)
         })
         .inner
 }
@@ -516,6 +534,7 @@ fn show_cards_surface(
     fleet: &mut Fleet,
     view: &mut BoardView,
     flat: &mut bool,
+    completed: crate::state::CompletedMode,
     allowed: &dyn Fn(&str) -> bool,
     actions: &mut BoardActions,
 ) -> Option<String> {
@@ -563,7 +582,9 @@ fn show_cards_surface(
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: Hide removes completed agents from selection/detail here too.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let mut clicked = None;
     if visible.is_empty() {
         empty_pane_message(&mut left_ui, &query);
@@ -573,6 +594,7 @@ fn show_cards_surface(
             fleet,
             &visible,
             *flat,
+            completed,
             selected.as_deref(),
             now_millis(),
         );
@@ -605,7 +627,7 @@ pub fn show_master(
     ui: &mut Ui,
     fleet: &mut Fleet,
     group_by_repo: bool,
-    show_idle_collapsed: bool,
+    completed: crate::state::CompletedMode,
 ) -> Option<String> {
     let mut query = search_query(ui.ctx());
     let mut filter = state_filter(ui.ctx());
@@ -613,18 +635,16 @@ pub fn show_master(
     let mut grouped = false;
     toolbar(ui, fleet, &mut cards, &mut grouped, &mut query, &mut filter);
     ui.add_space(2.0);
-    ui.ctx().memory_mut(|memory| {
-        memory.data.insert_temp(
-            egui::Id::new("corral-ui-show-idle-collapsed"),
-            show_idle_collapsed,
-        );
-    });
     let visible_ids: Vec<String> = visible_agent_ids(fleet, filter, &query)
         .into_iter()
         .map(str::to_owned)
         .collect();
     let visible: Vec<&str> = visible_ids.iter().map(String::as_str).collect();
-    let selected = resolve_selection(fleet, &visible).map(str::to_owned);
+    // #310: selection resolution must respect Completed mode — Hide removes
+    // completed agents from selection/detail entirely, so a hidden
+    // completed agent can never drive the detail pane.
+    let selectable: Vec<&str> = selectable_agent_ids(fleet, &visible, completed);
+    let selected = resolve_selection(fleet, &selectable).map(str::to_owned);
     let clicked = if visible.is_empty() {
         empty_pane_message(ui, &query);
         None
@@ -634,6 +654,7 @@ pub fn show_master(
             fleet,
             &visible,
             !group_by_repo,
+            completed,
             selected.as_deref(),
             now_millis(),
         )
@@ -642,6 +663,26 @@ pub fn show_master(
         fleet.select_agent(id);
     }
     clicked.or(selected)
+}
+
+/// #310: agent IDs that remain selectable under the Completed mode. Hide
+/// removes completed agents from selection/detail entirely; Collapsed and
+/// Show keep them (Collapsed renders them folded inside their group, so a
+/// completed agent is reachable through its group's folded section).
+fn selectable_agent_ids<'a>(
+    fleet: &Fleet,
+    visible: &[&'a str],
+    completed: crate::state::CompletedMode,
+) -> Vec<&'a str> {
+    if completed == crate::state::CompletedMode::Hide {
+        visible
+            .iter()
+            .copied()
+            .filter(|id| !is_completed_agent(fleet, id))
+            .collect()
+    } else {
+        visible.to_vec()
+    }
 }
 
 pub fn show_board_detail_with_options(
@@ -691,6 +732,7 @@ fn master_list(
     fleet: &Fleet,
     visible: &[&str],
     flat: bool,
+    completed: crate::state::CompletedMode,
     selected: Option<&str>,
     now_ms: u64,
 ) -> Option<String> {
@@ -702,28 +744,52 @@ fn master_list(
             let width = ui.available_width();
             master_column_header(ui, width);
             if flat {
-                for section in state_sections(visible, fleet) {
-                    if section.state == crate::theme::AgentStateLike::Blocked {
-                        // A blocked section is only emitted when it has rows;
-                        // this is the zero-state rule's important boundary.
-                        state_section_header(ui, section.state, section.agent_ids.len());
+                if completed == crate::state::CompletedMode::Collapsed {
+                    // #310 r3: flat-list Collapsed keeps BOTH the Idle and
+                    // the distinct Done sections out of the expanded inline
+                    // list and exposes a single approved "Idle / done (N)"
+                    // collapsed affordance. Blocked/Working render inline.
+                    let mut completed_ids: Vec<&str> = Vec::new();
+                    for section in state_sections(visible, fleet) {
+                        match section.state {
+                            crate::theme::AgentStateLike::Idle
+                            | crate::theme::AgentStateLike::Done => {
+                                completed_ids.extend(section.agent_ids.iter().copied());
+                            }
+                            _ => {
+                                if section.state == crate::theme::AgentStateLike::Blocked {
+                                    // A blocked section is only emitted when
+                                    // it has rows; this is the zero-state
+                                    // rule's important boundary.
+                                    state_section_header(
+                                        ui,
+                                        section.state,
+                                        section.agent_ids.len(),
+                                    );
+                                }
+                                for id in &section.agent_ids {
+                                    if let Some(id) =
+                                        master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                    {
+                                        clicked = Some(id);
+                                    }
+                                }
+                            }
+                        }
                     }
-                    if section.state == crate::theme::AgentStateLike::Idle {
-                        let count = section.agent_ids.len();
+                    if !completed_ids.is_empty() {
                         CollapsingHeader::new(
-                            RichText::new(format!("Idle / done ({count}) — expandable"))
-                                .small()
-                                .color(theme::ui::TEXT_MUTED),
+                            RichText::new(format!(
+                                "Idle / done ({}) — expandable",
+                                completed_ids.len()
+                            ))
+                            .small()
+                            .color(theme::ui::TEXT_MUTED),
                         )
-                        .id_salt("corral-ui-idle-done")
-                        .default_open(!ui.ctx().memory(|memory| {
-                            memory
-                                .data
-                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
-                                .unwrap_or(true)
-                        }))
+                        .id_salt(("corral-ui-idle-done", completed.label()))
+                        .default_open(false)
                         .show_unindented(ui, |ui| {
-                            for id in &section.agent_ids {
+                            for id in &completed_ids {
                                 if let Some(id) =
                                     master_card(ui, fleet, id, selected == Some(id), now_ms)
                                 {
@@ -731,11 +797,42 @@ fn master_list(
                                 }
                             }
                         });
-                        continue;
                     }
-                    for id in &section.agent_ids {
-                        if let Some(id) = master_card(ui, fleet, id, selected == Some(id), now_ms) {
-                            clicked = Some(id);
+                } else {
+                    for section in state_sections(visible, fleet) {
+                        if completed == crate::state::CompletedMode::Hide
+                            && matches!(
+                                section.state,
+                                crate::theme::AgentStateLike::Idle
+                                    | crate::theme::AgentStateLike::Done
+                            )
+                        {
+                            // #310 Hide: completed agents vanish entirely.
+                            continue;
+                        }
+                        if section.state == crate::theme::AgentStateLike::Blocked {
+                            // A blocked section is only emitted when it has rows;
+                            // this is the zero-state rule's important boundary.
+                            state_section_header(ui, section.state, section.agent_ids.len());
+                        }
+                        if section.state == crate::theme::AgentStateLike::Idle {
+                            // #310 Show (Hide already skipped): completed
+                            // rows render inline like any other row.
+                            for id in &section.agent_ids {
+                                if let Some(id) =
+                                    master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                {
+                                    clicked = Some(id);
+                                }
+                            }
+                            continue;
+                        }
+                        for id in &section.agent_ids {
+                            if let Some(id) =
+                                master_card(ui, fleet, id, selected == Some(id), now_ms)
+                            {
+                                clicked = Some(id);
+                            }
                         }
                     }
                 }
@@ -746,43 +843,100 @@ fn master_list(
                         continue;
                     }
                     let title = group.repo.unwrap_or(NO_REPO_LABEL);
-                    let idle_only = group.agent_ids.iter().all(|id| {
-                        matches!(
-                            fleet.agents.get(*id).map(|agent| agent.state.into()),
-                            Some(crate::theme::AgentStateLike::Idle)
-                                | Some(crate::theme::AgentStateLike::Unknown)
-                                | Some(crate::theme::AgentStateLike::Done)
-                        )
-                    });
-                    CollapsingHeader::new(
-                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
-                            .monospace()
-                            .color(theme::ui::TEXT_STRONG),
-                    )
-                    .id_salt(("corral-ui-repo-group", title))
-                    .default_open(if idle_only {
-                        !ui.ctx().memory(|memory| {
-                            memory
-                                .data
-                                .get_temp::<bool>(egui::Id::new("corral-ui-show-idle-collapsed"))
-                                .unwrap_or(true)
-                        })
-                    } else {
-                        true
-                    })
-                    .show_unindented(ui, |ui| {
-                        for id in &group.agent_ids {
+                    // #310: split each group into active and completed so a
+                    // repo with one working agent never floods with done rows.
+                    let (active, done): (Vec<&str>, Vec<&str>) = group
+                        .agent_ids
+                        .iter()
+                        .partition(|id| !is_completed_agent(fleet, id));
+                    if completed == crate::state::CompletedMode::Hide {
+                        if active.is_empty() {
+                            continue;
+                        }
+                        for id in &active {
                             if let Some(id) =
                                 master_card(ui, fleet, id, selected == Some(id), now_ms)
                             {
                                 clicked = Some(id);
                             }
                         }
+                        continue;
+                    }
+                    if completed == crate::state::CompletedMode::Show {
+                        CollapsingHeader::new(
+                            RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                                .monospace()
+                                .color(theme::ui::TEXT_STRONG),
+                        )
+                        .id_salt(("corral-ui-repo-group", title, completed.label()))
+                        .default_open(true)
+                        .show_unindented(ui, |ui| {
+                            for id in &group.agent_ids {
+                                if let Some(id) =
+                                    master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                {
+                                    clicked = Some(id);
+                                }
+                            }
+                        });
+                        continue;
+                    }
+                    // Collapsed: fold completed rows; keep working rows open.
+                    CollapsingHeader::new(
+                        RichText::new(format!("{title}  ({})", group.agent_ids.len()))
+                            .monospace()
+                            .color(theme::ui::TEXT_STRONG),
+                    )
+                    .id_salt(("corral-ui-repo-group", title, completed.label()))
+                    // Open whenever a working row exists; only an
+                    // all-completed group starts folded.
+                    .default_open(!active.is_empty())
+                    .show_unindented(ui, |ui| {
+                        for id in &active {
+                            if let Some(id) =
+                                master_card(ui, fleet, id, selected == Some(id), now_ms)
+                            {
+                                clicked = Some(id);
+                            }
+                        }
+                        if !done.is_empty() {
+                            CollapsingHeader::new(
+                                RichText::new(format!("Done ({})", done.len()))
+                                    .small()
+                                    .color(theme::ui::TEXT_MUTED),
+                            )
+                            .id_salt(("corral-ui-repo-done", title, completed.label()))
+                            .default_open(false)
+                            .show_unindented(ui, |ui| {
+                                for id in &done {
+                                    if let Some(id) =
+                                        master_card(ui, fleet, id, selected == Some(id), now_ms)
+                                    {
+                                        clicked = Some(id);
+                                    }
+                                }
+                            });
+                        }
                     });
                 }
             }
         });
     clicked
+}
+
+/// #310: a completed agent is one in the Idle / Done / Unknown states
+/// (the same classification the flat `state_sections` folds under Idle).
+fn is_completed_agent(fleet: &Fleet, id: &str) -> bool {
+    let Some(agent) = fleet.agents.get(id) else {
+        return false;
+    };
+    let state: crate::theme::AgentStateLike = agent.state.into();
+    matches!(
+        state,
+        crate::theme::AgentStateLike::Idle
+            | crate::theme::AgentStateLike::Done
+            | crate::theme::AgentStateLike::Unknown
+    )
 }
 
 fn master_column_header(ui: &mut Ui, width: f32) {
@@ -1299,185 +1453,473 @@ fn recent_output_surface(
         drive_control_state(&agent.capabilities, "prompt", allowed("prompt"))
     };
 
+    // #316 V3 Context split: one canonical stream, two regions. The pure
+    // partition (daemon kinds only) decides what stays in Conversation and
+    // what renders under Harness activity; Session status is built ONLY from
+    // structured read-model values.
+    let empty_blocks: Vec<crate::drive::CanonicalBlock> = Vec::new();
+    let canonical = fleet.tail_blocks.get(id).unwrap_or(&empty_blocks);
+    let partition = partition_canonical_positions(canonical);
     let mut metadata_texts: Vec<&str> = Vec::new();
     if let Some(lines) = fleet.tails.get(id) {
         metadata_texts.extend(lines.iter().map(String::as_str));
     }
     let metadata = recent_metadata_from_texts(&metadata_texts);
+    let session = recent_session_status(
+        agent,
+        metadata.model.as_deref(),
+        metadata.effort.as_deref(),
+        metadata
+            .worktree
+            .as_deref()
+            .or(agent.workspace.worktree_path.as_deref()),
+    );
+    let harness_entries: Vec<HarnessEntry> = partition
+        .harness_entries
+        .iter()
+        .map(|(_, entry)| entry.clone())
+        .collect();
+    let show_utility_live =
+        show_live && recent_should_show_live(read_tail_state, has_visible_output);
 
     egui::Frame::NONE
         .fill(theme::ui::PANEL2)
         .stroke(Stroke::new(1.0, theme::ui::LINE))
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                live_indicator(ui, show_live);
-                recent_metadata_chip(
-                    ui,
-                    metadata.model.as_deref().unwrap_or(&agent.tool),
-                    theme::ui::ACCENT,
-                );
-                if let Some(effort) = metadata.effort.as_deref() {
-                    recent_metadata_chip(ui, effort, theme::ui::INK);
-                }
-                if let Some(worktree) = metadata
-                    .worktree
-                    .as_deref()
-                    .or(agent.workspace.worktree_path.as_deref())
-                {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(worktree)
-                                .monospace()
-                                .small()
-                                .color(theme::ui::MUTED),
-                        )
-                        .truncate(),
+            let available_width = ui.available_width();
+            // #316 V3: at desktop width Conversation gets its own column and
+            // the utility regions (Session status + collapsible Harness
+            // activity) render in a separate labeled column. At a genuinely
+            // narrow detail width the SAME regions stack in the SAME read
+            // order — deterministic fallback, nothing clipped or hidden.
+            if available_width >= CONTEXT_SPLIT_MIN_WIDTH {
+                let conversation_width =
+                    (available_width - UTILITY_COLUMN_WIDTH - UTILITY_COLUMN_GAP).max(120.0);
+                // R3: the pane height measured here drives the conversation
+                // scroll bound; allocate_ui_with_layout children report a
+                // content-sized height, so the region takes this bound
+                // BEFORE the horizontal split.
+                let pane_height = ui.available_height();
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(conversation_width, pane_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            recent_conversation_region(
+                                ui,
+                                fleet,
+                                id,
+                                canonical,
+                                &partition,
+                                stick_to_bottom,
+                                read_tail_state,
+                                read_tail_control,
+                                actions,
+                                false,
+                                Some(pane_height),
+                            );
+                        },
                     );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "stick-to-bottom: {}",
-                            if stick_to_bottom { "on" } else { "off" }
-                        ))
-                        .small()
-                        .color(theme::ui::MUTED),
+                    ui.add_space(UTILITY_COLUMN_GAP);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(UTILITY_COLUMN_WIDTH, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            recent_utility_region(
+                                ui,
+                                agent,
+                                &session,
+                                &harness_entries,
+                                show_utility_live,
+                            );
+                        },
                     );
                 });
-            });
+            } else {
+                // #316 V3 narrow fallback: one containing scroll keeps the
+                // locked read order (Conversation → Session status → Harness
+                // activity → composer) reachable at any height — the
+                // conversation is a bounded window, not a clip.
+                ScrollArea::vertical()
+                    .id_salt(("corral-ui-narrow-context", id))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        recent_conversation_region(
+                            ui,
+                            fleet,
+                            id,
+                            canonical,
+                            &partition,
+                            stick_to_bottom,
+                            read_tail_state,
+                            read_tail_control,
+                            actions,
+                            true,
+                            None,
+                        );
+                        ui.add_space(8.0);
+                        recent_utility_region(
+                            ui,
+                            agent,
+                            &session,
+                            &harness_entries,
+                            show_utility_live,
+                        );
+                    });
+            }
 
-            // This is deliberately outside the scroll area. It remains the
-            // first history affordance while the tail reflows below it.
-            let load_clicked = ui
-                .horizontal(|ui| {
-                    ui.add_space(2.0);
-                    painted_dot(ui, theme::ui::MUTED, 2.0);
+            // #316: the composer is input chrome — it stays OUTSIDE the
+            // conversation read region, pinned below every read region.
+            recent_prompt_composer(ui, agent, fleet.rev, prompt_control, actions.drive);
+        });
+}
+
+/// #316 V3: the Conversation region — canonical User/Agent/Tool only, with
+/// the history affordance above the bounded scroll area and the live /
+/// stick-to-bottom state in its header. Composer and utility regions live
+/// outside this region.
+#[allow(clippy::too_many_arguments)]
+fn recent_conversation_region(
+    ui: &mut Ui,
+    fleet: &Fleet,
+    id: &str,
+    canonical: &[crate::drive::CanonicalBlock],
+    partition: &ConversationPartition,
+    stick_to_bottom: bool,
+    read_tail_state: Option<&DriveState>,
+    read_tail_control: DriveControlState,
+    actions: &mut BoardActions,
+    narrow: bool,
+    pane_height: Option<f32>,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Conversation")
+                .strong()
+                .size(12.0)
+                .color(theme::ui::INK),
+        );
+        live_indicator(
+            ui,
+            recent_should_show_live(read_tail_state, {
+                fleet
+                    .tails
+                    .get(id)
+                    .map(|lines| {
+                        !recent_visible_indices(lines.iter().map(String::as_str)).is_empty()
+                    })
+                    .unwrap_or(false)
+            }),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "stick-to-bottom: {}",
+                    if stick_to_bottom { "on" } else { "off" }
+                ))
+                .small()
+                .color(theme::ui::MUTED),
+            );
+        });
+    });
+
+    // This is deliberately outside the scroll area. It remains the
+    // first history affordance while the tail reflows below it.
+    let load_clicked = ui
+        .horizontal(|ui| {
+            ui.add_space(2.0);
+            painted_dot(ui, theme::ui::MUTED, 2.0);
+            ui.label(
+                RichText::new(EARLIER_OUTPUT_LABEL)
+                    .small()
+                    .color(theme::ui::MUTED),
+            );
+            if read_tail_control == DriveControlState::Ready {
+                ui.add(
+                    egui::Button::new(
+                        RichText::new(LOAD_EARLIER_LABEL)
+                            .small()
+                            .strong()
+                            .color(theme::ui::ACCENT),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            } else {
+                disabled_drive_button(ui, LOAD_EARLIER_LABEL, "read_tail", read_tail_control);
+                false
+            }
+        })
+        .inner;
+    if load_clicked {
+        (actions.drive)(DriveIntent::read_tail_page(id, 200, fleet.rev));
+    }
+
+    ui.add_space(2.0);
+    let available_height = ui.available_height();
+    // #316 V3: in the stacked narrow fallback the conversation is a BOUNDED
+    // fixed-height window inside the containing scroll, so Session status,
+    // Harness activity, and the composer below always remain reachable
+    // through that one scroll (the stack may exceed the fold). In the wide
+    // layout the conversation scroll FILLS the remaining pane height
+    // (measurements inside the horizontal split are content-sized and
+    // unusable, so the caller passes the real pane height down).
+    let max_height = if narrow {
+        NARROW_CONVERSATION_MAX_HEIGHT
+    } else if let Some(pane) = pane_height {
+        (pane - 150.0).max(200.0)
+    } else if available_height.is_finite() && available_height > 300.0 {
+        (available_height - 86.0).max(120.0)
+    } else {
+        420.0
+    };
+    ScrollArea::vertical()
+        .id_salt(("corral-ui-recent-output", id))
+        .auto_shrink([false, false])
+        .stick_to_bottom(stick_to_bottom)
+        .max_height(max_height)
+        .show(ui, |ui| {
+            // #315: the daemon's canonical semantic blocks are THE render
+            // source — kinds and order come from the daemon (provenance-
+            // backed), never re-derived from raw lines. #316 V3: only the
+            // canonical User/Agent/Tool positions render here; System and
+            // Unknown live in Harness activity (still rendered, never
+            // dropped). Legacy plain-text fallback: daemons old enough to
+            // predate the canonical stream serve no `blocks`; their lines
+            // render as an undecorated read-only text surface (no guesses).
+            if partition.total == 0 {
+                let empty_lines = fleet.tails.get(id).is_some_and(|lines| lines.is_empty());
+                if !empty_lines && read_tail_state.is_none() && !fleet.tails.contains_key(id) {
                     ui.label(
-                        RichText::new(EARLIER_OUTPUT_LABEL)
+                        RichText::new("No recent output fetched yet — use the history control")
+                            .small()
+                            .color(theme::ui::INK),
+                    );
+                } else if empty_lines {
+                    ui.label(
+                        RichText::new("No readable recent output.")
                             .small()
                             .color(theme::ui::MUTED),
                     );
-                    if read_tail_control == DriveControlState::Ready {
+                } else {
+                    let text = fleet
+                        .tails
+                        .get(id)
+                        .map(|lines| lines.join("\n"))
+                        .unwrap_or_default();
+                    if text.is_empty() {
+                        recent_no_output_feedback(ui, read_tail_state);
+                    } else {
                         ui.add(
-                            egui::Button::new(
-                                RichText::new(LOAD_EARLIER_LABEL)
+                            egui::Label::new(
+                                RichText::new(text)
+                                    .monospace()
                                     .small()
-                                    .strong()
-                                    .color(theme::ui::ACCENT),
+                                    .color(theme::ui::INK),
                             )
-                            .frame(false),
-                        )
-                        .clicked()
-                    } else {
-                        disabled_drive_button(
-                            ui,
-                            LOAD_EARLIER_LABEL,
-                            "read_tail",
-                            read_tail_control,
+                            .wrap(),
                         );
-                        false
                     }
-                })
-                .inner;
-            if load_clicked {
-                (actions.drive)(DriveIntent::read_tail_page(&agent.agent_id, 200, fleet.rev));
-            }
-
-            ui.add_space(2.0);
-            let available_height = ui.available_height();
-            let max_height = if available_height.is_finite() {
-                (available_height - 86.0).max(120.0)
+                }
+            } else if partition.conversation_positions.is_empty() {
+                ui.label(
+                    RichText::new("No conversation events.")
+                        .small()
+                        .color(theme::ui::MUTED),
+                );
             } else {
-                260.0
-            };
-            ScrollArea::vertical()
-                .id_salt(("corral-ui-recent-output", id))
-                .auto_shrink([false, false])
-                .stick_to_bottom(stick_to_bottom)
-                .max_height(max_height)
-                .show(ui, |ui| {
-                    if let Some(lines) = fleet.tails.get(id) {
-                        let visible_indices =
-                            recent_visible_indices(lines.iter().map(String::as_str));
-                        if visible_indices.is_empty() {
-                            ui.label(
-                                RichText::new("No readable recent output.")
-                                    .small()
-                                    .color(theme::ui::MUTED),
-                            );
-                        } else {
-                            let mut previous = None;
-                            let mut tool_run: Option<(usize, String)> = None;
-                            for position in
-                                recent_output_indices(visible_indices.len(), stick_to_bottom)
-                            {
-                                let source_index = visible_indices[position];
-                                let kind = classify_tail_line(&lines[source_index]);
-                                if kind == RecentBlockKind::Tool {
-                                    if let Some((_, text)) = &mut tool_run {
-                                        text.push('\n');
-                                        text.push_str(&lines[source_index]);
-                                    } else {
-                                        tool_run =
-                                            Some((source_index, lines[source_index].clone()));
-                                    }
-                                    continue;
-                                }
-                                if let Some((tool_position, text)) = tool_run.take() {
-                                    recent_tail_entry(
-                                        ui,
-                                        &text,
-                                        tool_position,
-                                        previous != Some(RecentBlockKind::Tool),
-                                    );
-                                    previous = Some(RecentBlockKind::Tool);
-                                }
-                                let show_label = previous != Some(kind);
-                                recent_tail_entry(
-                                    ui,
-                                    &lines[source_index],
-                                    source_index,
-                                    show_label,
-                                );
-                                previous = Some(kind);
-                            }
-                            if let Some((tool_position, text)) = tool_run {
-                                recent_tail_entry(
-                                    ui,
-                                    &text,
-                                    tool_position,
-                                    previous != Some(RecentBlockKind::Tool),
-                                );
-                            }
-                        }
-                    } else if let Some(state) = read_tail_state {
-                        let feedback = match state {
-                            DriveState::Sending { .. } => "Fetching recent output…".to_string(),
-                            DriveState::Ok { .. } => {
-                                "read_tail returned no output — use the history control to retry"
-                                    .to_string()
-                            }
-                            DriveState::Failed { .. } => {
-                                format!("Recent output unavailable: {}", drive_state_text(state))
-                            }
-                        };
-                        ui.label(
-                            RichText::new(feedback)
-                                .small()
-                                .color(drive_state_color(state)),
-                        );
+                let mut previous: Option<RecentBlockKind> = None;
+                for position in partition.ordered_conversation(stick_to_bottom) {
+                    let block = &canonical[position];
+                    let kind = recent_block_kind(block.kind);
+                    let show_label = previous != Some(kind);
+                    recent_canonical_entry(ui, block, kind, position, show_label);
+                    previous = Some(kind);
+                }
+            }
+        });
+}
+
+/// Read-state feedback for a legacy (no-blocks) pane whose lines are absent.
+fn recent_no_output_feedback(ui: &mut Ui, read_tail_state: Option<&DriveState>) {
+    if let Some(state) = read_tail_state {
+        let feedback = match state {
+            DriveState::Sending { .. } => "Fetching recent output…".to_string(),
+            DriveState::Ok { .. } => {
+                "read_tail returned no output — use the history control to retry".to_string()
+            }
+            DriveState::Failed { .. } => {
+                format!("Recent output unavailable: {}", drive_state_text(state))
+            }
+        };
+        ui.label(
+            RichText::new(feedback)
+                .small()
+                .color(drive_state_color(state)),
+        );
+    } else {
+        ui.label(
+            RichText::new("No recent output fetched yet — use the history control")
+                .small()
+                .color(theme::ui::INK),
+        );
+    }
+}
+
+/// #316 V3: the utility column — Session status plus collapsible Harness
+/// activity. Both are OUTSIDE the conversation, in their own labeled region.
+fn recent_utility_region(
+    ui: &mut Ui,
+    agent: &Agent,
+    session: &RecentSessionStatus,
+    harness_entries: &[HarnessEntry],
+    show_live: bool,
+) {
+    ui.label(
+        RichText::new("Session utilities")
+            .strong()
+            .size(12.0)
+            .color(theme::ui::TEXT_MUTED),
+    );
+    ui.add_space(4.0);
+    recent_session_status_panel(ui, agent, session, show_live);
+    ui.add_space(8.0);
+    recent_harness_activity_panel(ui, agent, harness_entries);
+}
+
+/// #316: Session status renders ONLY already-authoritative structured
+/// values (agent state, session identity, tool, and the exact canonical
+/// `model effort · path` metadata contract). Unavailable runtime/context
+/// values are omitted — never manufactured from terminal prose.
+fn recent_session_status_panel(
+    ui: &mut Ui,
+    agent: &Agent,
+    session: &RecentSessionStatus,
+    show_live: bool,
+) {
+    egui::Frame::NONE
+        .fill(theme::ui::PANEL)
+        .stroke(Stroke::new(1.0, theme::ui::LINE))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Session status")
+                        .strong()
+                        .size(11.0)
+                        .color(theme::ui::INK),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let color = if show_live {
+                        theme::ui::ACCENT
                     } else {
+                        theme::ui::MUTED
+                    };
+                    painted_dot(ui, color, 2.0);
+                    ui.label(
+                        RichText::new(if show_live { LIVE_LABEL } else { PAUSED_LABEL })
+                            .small()
+                            .color(theme::ui::MUTED),
+                    );
+                });
+            });
+            egui::Grid::new(("corral-ui-session-status", &agent.agent_id))
+                .num_columns(2)
+                .spacing([8.0, 2.0])
+                .show(ui, |ui| {
+                    for (label, value) in &session.fields {
+                        ui.label(RichText::new(*label).small().color(theme::ui::MUTED));
                         ui.label(
-                            RichText::new("No recent output fetched yet — use the history control")
+                            RichText::new(value.clone())
+                                .monospace()
                                 .small()
                                 .color(theme::ui::INK),
                         );
+                        ui.end_row();
                     }
                 });
-
-            recent_prompt_composer(ui, agent, fleet.rev, prompt_control, actions.drive);
         });
+}
+
+/// #316: collapsible Harness activity. Canonical System and Unknown events
+/// render here with explicit `Diagnostic` / `Unknown activity` identity —
+/// retained in relative order, never silently dropped, never counted as
+/// conversation rows. #328: divider-only blocks are presentation separators:
+/// they do not inflate the activity count, render as thin rules instead of
+/// Diagnostic cards, and a divider-only payload hides the section entirely.
+fn recent_harness_activity_panel(ui: &mut Ui, agent: &Agent, entries: &[HarnessEntry]) {
+    let event_count = entries.iter().filter(|entry| !entry.is_divider).count();
+    if event_count == 0 && !entries.is_empty() {
+        // #328 AC2: divider-only payload — the section is empty of events.
+        return;
+    }
+    let header = format!("Harness activity · {event_count} outside conversation");
+    CollapsingHeader::new(
+        RichText::new(header)
+            .small()
+            .strong()
+            .color(theme::ui::MUTED),
+    )
+    .id_salt((HARNESS_OPEN_ID, &agent.agent_id))
+    .default_open(false)
+    .show(ui, |ui| {
+        if event_count == 0 {
+            ui.label(
+                RichText::new("No harness activity.")
+                    .small()
+                    .color(theme::ui::MUTED),
+            );
+        }
+        for entry in entries {
+            if entry.is_divider {
+                ui.separator();
+            } else {
+                recent_harness_row(ui, entry);
+            }
+        }
+    });
+}
+
+fn recent_harness_row(ui: &mut Ui, entry: &HarnessEntry) {
+    let marker = match entry.kind {
+        RecentBlockKind::System => "△",
+        _ => "◇",
+    };
+    egui::Frame::NONE
+        .fill(theme::ui::PANEL2)
+        .stroke(Stroke::new(1.0, theme::ui::LINE))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(marker)
+                        .small()
+                        .strong()
+                        .color(theme::ui::MUTED),
+                );
+                ui.label(
+                    RichText::new(entry.visible_label())
+                        .small()
+                        .strong()
+                        .color(theme::ui::MUTED),
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&entry.text)
+                            .monospace()
+                            .small()
+                            .color(theme::ui::MUTED),
+                    )
+                    .wrap(),
+                );
+            });
+        });
+    ui.add_space(4.0);
 }
 
 /// Recent output lines are newest-first in the tail result. Stick-to-bottom
@@ -1518,17 +1960,6 @@ struct RecentMetadata {
     model: Option<String>,
     effort: Option<String>,
     worktree: Option<String>,
-}
-
-fn recent_metadata_chip(ui: &mut Ui, text: &str, color: Color32) {
-    egui::Frame::NONE
-        .fill(theme::ui::PANEL3)
-        .stroke(Stroke::new(1.0, theme::ui::LINE))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(7, 3))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).monospace().small().color(color));
-        });
 }
 
 fn recent_metadata_from_texts(texts: &[&str]) -> RecentMetadata {
@@ -1717,11 +2148,195 @@ fn recent_message_lines(ui: &mut Ui, text: &str, font: FontId) {
     }
 }
 
+/// The user bubble's content column (prose or numbered code lines).
+fn recent_user_content(ui: &mut Ui, text: &str) {
+    if recent_block_is_code_or_diff(RecentBlockKind::User, text) {
+        for (number, line) in text.split('\n').enumerate() {
+            recent_code_line(ui, line, number + 1);
+        }
+    } else {
+        recent_message_lines(ui, text, FontId::proportional(12.0));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecentBlockKind {
     User,
     Tool,
     Agent,
+    System,
+    Unknown,
+}
+
+impl RecentBlockKind {
+    /// #316 V3: which surface owns this daemon kind. Conversation holds the
+    /// canonical User/Agent/Tool events; System diagnostics and Unknown
+    /// activity render in the collapsible Harness activity region — outside
+    /// conversation, never reclassified, never dropped. This is a PURE
+    /// partition of daemon-decided kinds (a STYLE/OWNERSHIP lookup, the same
+    /// discipline as [`recent_block_kind`]); it never inspects text.
+    fn context(self) -> ConversationContext {
+        match self {
+            RecentBlockKind::User | RecentBlockKind::Agent | RecentBlockKind::Tool => {
+                ConversationContext::Conversation
+            }
+            RecentBlockKind::System | RecentBlockKind::Unknown => ConversationContext::Harness,
+        }
+    }
+
+    /// #316 V3 accessible name. Visible labels shrink to semantic
+    /// transitions; these roles stay explicit on every event for assistive
+    /// tech. User is always `You` — never `System`.
+    fn accessible_role(self) -> &'static str {
+        match self {
+            RecentBlockKind::User => "You said",
+            RecentBlockKind::Agent => "Assistant",
+            RecentBlockKind::Tool => "Tool",
+            RecentBlockKind::System => "Diagnostic",
+            RecentBlockKind::Unknown => "Unknown activity",
+        }
+    }
+}
+
+/// #316 V3: the two read surfaces of the Context split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversationContext {
+    Conversation,
+    Harness,
+}
+
+/// #316 V3: one Harness-activity row (canonical System/Unknown content),
+/// carried verbatim from the daemon stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HarnessEntry {
+    kind: RecentBlockKind,
+    text: String,
+    /// #328: a divider-only block (residual TUI furniture) is a PRESENTATION
+    /// separator, not a Harness event — it never counts toward the activity
+    /// count and renders as a thin rule, never a Diagnostic card.
+    is_divider: bool,
+}
+
+impl HarnessEntry {
+    /// Explicit identity: `Diagnostic` for canonical System chrome,
+    /// `Unknown activity` for unprovenanced terminal material. This is the
+    /// same accessible name — harness rows show their identity textually
+    /// because role meaning must not be color-only.
+    fn visible_label(&self) -> &'static str {
+        self.kind.accessible_role()
+    }
+}
+
+/// #316 V3: the pure Context-split projection over ONE canonical daemon
+/// stream. Conversation and Harness activity keep their own relative order
+/// (stable partition by daemon kind); nothing is dropped or reclassified.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ConversationPartition {
+    /// Canonical User/Agent/Tool positions, in stream order.
+    conversation_positions: Vec<usize>,
+    /// Canonical System/Unknown entries with their stream positions,
+    /// in stream order.
+    harness_entries: Vec<(usize, HarnessEntry)>,
+    /// Total canonical positions examined (0 = no canonical stream).
+    total: usize,
+}
+
+impl ConversationPartition {
+    /// Render order for the conversation region, honoring stick-to-bottom.
+    fn ordered_conversation(&self, stick_to_bottom: bool) -> Vec<usize> {
+        recent_output_indices(self.conversation_positions.len(), stick_to_bottom)
+            .into_iter()
+            .map(|index| self.conversation_positions[index])
+            .collect()
+    }
+}
+
+/// #316 V3: partition the canonical stream WITHOUT touching it. Kinds come
+/// from the daemon; this only routes each position to its V3 surface.
+/// #328: divider-only System/Unknown blocks are PRESENTATION separators —
+/// they stay in the harness region (order preserved) but are flagged so the
+/// count excludes them and they render as thin rules, never dash cards.
+fn partition_canonical_positions(blocks: &[crate::drive::CanonicalBlock]) -> ConversationPartition {
+    let mut partition = ConversationPartition {
+        total: blocks.len(),
+        ..ConversationPartition::default()
+    };
+    for (position, block) in blocks.iter().enumerate() {
+        let kind = recent_block_kind(block.kind);
+        if block.text.trim().is_empty() {
+            continue;
+        }
+        match kind.context() {
+            ConversationContext::Conversation => partition.conversation_positions.push(position),
+            ConversationContext::Harness => partition.harness_entries.push((
+                position,
+                HarnessEntry {
+                    kind,
+                    text: block.text.clone(),
+                    is_divider: recent_is_divider_run(&block.text),
+                },
+            )),
+        }
+    }
+    partition
+}
+
+/// #328: the shared divider-vs-content classification seam (mirrors the iOS
+/// `RecentOutputRender.isDividerRun`): every non-empty line's non-whitespace
+/// characters must be box-drawing/block glyphs (U+2500–U+259F). Content
+/// lines that merely contain a run (`let sep = "────";`) stay content.
+fn recent_is_divider_run(text: &str) -> bool {
+    let mut saw_run = false;
+    for line in text.split('\n') {
+        let scalars: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if scalars.is_empty() {
+            continue;
+        }
+        if scalars.len() < 2 || !scalars.iter().all(|c| is_divider_scalar(*c)) {
+            return false;
+        }
+        saw_run = true;
+    }
+    saw_run
+}
+
+fn is_divider_scalar(c: char) -> bool {
+    (0x2500..=0x259F).contains(&(c as u32))
+}
+
+/// #316 V3: Session status fields from ALREADY-AUTHORITATIVE structured
+/// read-model values only (agent state, session identity, tool, and the
+/// exact canonical `model effort · path` metadata contract). Unavailable
+/// runtime/context values are omitted — never manufactured from terminal
+/// prose, and never derived from provider/model names beyond the existing
+/// supported metadata contract.
+fn recent_session_status(
+    agent: &Agent,
+    model: Option<&str>,
+    effort: Option<&str>,
+    worktree: Option<&str>,
+) -> RecentSessionStatus {
+    let state: crate::theme::AgentStateLike = agent.state.into();
+    let mut fields: Vec<(&'static str, String)> = vec![
+        ("State", state.label().to_string()),
+        ("Session", agent.agent_id.clone()),
+        ("Tool", agent.tool.clone()),
+    ];
+    if let Some(model) = model {
+        fields.push(("Model", model.to_string()));
+    }
+    if let Some(effort) = effort {
+        fields.push(("Effort", effort.to_string()));
+    }
+    if let Some(worktree) = worktree {
+        fields.push(("Worktree", worktree.to_string()));
+    }
+    RecentSessionStatus { fields }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RecentSessionStatus {
+    fields: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1731,30 +2346,16 @@ struct RecentBlockStyle {
     monospace: bool,
 }
 
-/// Recover user/tool/assistant semantics from the terminal-shaped read_tail
-/// fallback.
-fn classify_tail_line(line: &str) -> RecentBlockKind {
-    let trimmed = line.trim_start();
-    let lower = trimmed.to_ascii_lowercase();
-    let typed_prompt = trimmed.strip_prefix('›').map(str::trim).filter(|payload| {
-        !payload.is_empty() && !payload.eq_ignore_ascii_case("ask codex to do anything")
-    });
-    let typed_role_line = ["user:", "you:", "prompt:"]
-        .into_iter()
-        .find_map(|prefix| lower.strip_prefix(prefix).map(str::trim))
-        .filter(|payload| !payload.is_empty());
-    if typed_prompt.is_some() || typed_role_line.is_some() {
-        RecentBlockKind::User
-    } else if trimmed.starts_with('•')
-        || trimmed.starts_with('●')
-        || trimmed.starts_with('⏺')
-        || lower.starts_with("tool:")
-        || lower.starts_with("command:")
-        || lower.starts_with("$ ")
-    {
-        RecentBlockKind::Tool
-    } else {
-        RecentBlockKind::Agent
+/// Map a daemon canonical kind onto the render style. #315: this is a
+/// STYLE lookup, not classification — the semantic kind was decided by the
+/// daemon (from recorded Prompt provenance), and this board never guesses.
+fn recent_block_kind(kind: crate::drive::CanonicalBlockKind) -> RecentBlockKind {
+    match kind {
+        crate::drive::CanonicalBlockKind::User => RecentBlockKind::User,
+        crate::drive::CanonicalBlockKind::Tool => RecentBlockKind::Tool,
+        crate::drive::CanonicalBlockKind::Agent => RecentBlockKind::Agent,
+        crate::drive::CanonicalBlockKind::System => RecentBlockKind::System,
+        crate::drive::CanonicalBlockKind::Unknown => RecentBlockKind::Unknown,
     }
 }
 
@@ -1775,6 +2376,18 @@ fn recent_block_style(kind: RecentBlockKind) -> RecentBlockStyle {
             inset: 0.0,
             monospace: false,
         },
+        // Diagnostics chrome: dim mono, like the tool panel but quieter.
+        RecentBlockKind::System => RecentBlockStyle {
+            fill: theme::ui::PANEL2,
+            inset: 0.0,
+            monospace: true,
+        },
+        // Unprovenanced terminal content: visible, attributed to nobody.
+        RecentBlockKind::Unknown => RecentBlockStyle {
+            fill: Color32::TRANSPARENT,
+            inset: 0.0,
+            monospace: true,
+        },
     }
 }
 
@@ -1786,6 +2399,8 @@ fn recent_speaker_rail_label(kind: RecentBlockKind, show_label: bool) -> Option<
         RecentBlockKind::User => "you",
         RecentBlockKind::Tool => "tool",
         RecentBlockKind::Agent => "assistant",
+        RecentBlockKind::System => "system",
+        RecentBlockKind::Unknown => "unknown",
     })
 }
 
@@ -1794,9 +2409,11 @@ fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
         RecentBlockKind::User => ("●", theme::ui::USER_BLUE),
         RecentBlockKind::Tool => ("▸", theme::ui::ACCENT),
         RecentBlockKind::Agent => ("●", theme::ui::INK),
+        RecentBlockKind::System => ("·", theme::ui::MUTED),
+        RecentBlockKind::Unknown => ("·", theme::ui::MUTED),
     };
     ui.vertical(|ui| {
-        ui.set_width(52.0);
+        ui.set_width(RAIL_WIDTH);
         ui.label(RichText::new(marker).small().strong().color(color));
         if let Some(label) = recent_speaker_rail_label(kind, show_label) {
             ui.label(RichText::new(label).small().strong().color(color));
@@ -1804,11 +2421,19 @@ fn recent_speaker_rail(ui: &mut Ui, kind: RecentBlockKind, show_label: bool) {
     });
 }
 
-fn recent_tail_entry(ui: &mut Ui, line: &str, position: usize, show_label: bool) {
-    let Some(text) = recent_visible_text(line) else {
+/// #315: render ONE canonical daemon block. The kind came from the daemon;
+/// this function only picks the visual treatment.
+fn recent_canonical_entry(
+    ui: &mut Ui,
+    block: &crate::drive::CanonicalBlock,
+    kind: RecentBlockKind,
+    position: usize,
+    show_label: bool,
+) {
+    if block.text.trim().is_empty() {
         return;
-    };
-    recent_chat_block(ui, classify_tail_line(line), &text, position, show_label);
+    }
+    recent_chat_block(ui, kind, &block.text, position, show_label);
 }
 
 fn recent_tool_summary(text: &str) -> String {
@@ -1842,78 +2467,77 @@ fn recent_chat_block(
     if style.inset > 0.0 {
         // In right-to-left layout the frame is anchored to the right edge;
         // limiting its width leaves the prototype's 24px left inset.
+        // R3 fix: allocate a FINITE desired size (0 height = take what the
+        // content needs). The previous infinite-height allocation in this
+        // RTL horizontal parent justified the child into a collapsed-width
+        // column, wrapping labels one glyph per line.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let width = (ui.available_width() - style.inset).max(0.0);
             ui.set_width(width);
             frame.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width() - RAIL_WIDTH, 0.0),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        recent_speaker_rail(ui, RecentBlockKind::User, show_label);
+                        recent_user_content(ui, text);
+                    },
+                );
+            });
+        });
+    } else {
+        frame.show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 0.0),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    recent_speaker_rail(ui, kind, show_label);
                     let content_width = ui.available_width();
                     ui.allocate_ui_with_layout(
-                        egui::vec2(content_width, ui.available_height()),
+                        egui::vec2(content_width, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            if recent_block_is_code_or_diff(RecentBlockKind::User, text) {
-                                for (number, line) in text.split('\n').enumerate() {
-                                    recent_code_line(ui, line, number + 1);
-                                }
+                            if recent_block_is_code_or_diff(kind, text) {
+                                CollapsingHeader::new(
+                                    RichText::new(format!("tool  {}", recent_tool_summary(text)))
+                                        .small()
+                                        .strong()
+                                        .color(theme::ui::ACCENT),
+                                )
+                                .id_salt(recent_tool_disclosure_id(position))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.set_max_width((block_width - 40.0).max(40.0));
+                                    egui::Frame::NONE
+                                        .fill(theme::ui::BG)
+                                        .stroke(Stroke::new(1.0, recent_code_line_color()))
+                                        .corner_radius(CornerRadius::same(6))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            for (number, line) in text.split('\n').enumerate() {
+                                                recent_code_line(ui, line, number + 1);
+                                            }
+                                        });
+                                });
+                            } else if style.monospace {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(text)
+                                                .monospace()
+                                                .small()
+                                                .color(theme::ui::MUTED),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
                             } else {
                                 recent_message_lines(ui, text, FontId::proportional(12.0));
                             }
                         },
                     );
-                });
-            });
-        });
-    } else {
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                recent_speaker_rail(ui, kind, show_label);
-                let content_width = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(content_width, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        if recent_block_is_code_or_diff(kind, text) {
-                            CollapsingHeader::new(
-                                RichText::new(format!("tool  {}", recent_tool_summary(text)))
-                                    .small()
-                                    .strong()
-                                    .color(theme::ui::ACCENT),
-                            )
-                            .id_salt(recent_tool_disclosure_id(position))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                ui.set_max_width((block_width - 40.0).max(40.0));
-                                egui::Frame::NONE
-                                    .fill(theme::ui::BG)
-                                    .stroke(Stroke::new(1.0, recent_code_line_color()))
-                                    .corner_radius(CornerRadius::same(6))
-                                    .inner_margin(egui::Margin::symmetric(8, 6))
-                                    .show(ui, |ui| {
-                                        for (number, line) in text.split('\n').enumerate() {
-                                            recent_code_line(ui, line, number + 1);
-                                        }
-                                    });
-                            });
-                        } else if style.monospace {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text)
-                                            .monospace()
-                                            .small()
-                                            .color(theme::ui::MUTED),
-                                    )
-                                    .wrap(),
-                                );
-                            });
-                        } else {
-                            recent_message_lines(ui, text, FontId::proportional(12.0));
-                        }
-                    },
-                );
-            });
+                },
+            );
         });
     }
     ui.add_space(4.0);
@@ -2966,8 +3590,17 @@ fn detail(
                                     .id_salt("corral-ui-recent-output")
                                     .max_height(200.0)
                                     .show(ui, |ui| {
+                                        // #315: the legacy table renderer is a
+                                        // conformance helper only — it shows the
+                                        // plain text surface without role guesses.
                                         for (position, line) in tail.iter().enumerate() {
-                                            recent_tail_entry(ui, line, position, true);
+                                            ui.label(
+                                                RichText::new(line)
+                                                    .monospace()
+                                                    .small()
+                                                    .color(theme::ui::INK),
+                                            );
+                                            let _ = position;
                                         }
                                     });
                             }
@@ -3627,6 +4260,7 @@ mod tests {
                     &fleet,
                     &[agent.agent_id.as_str()],
                     true,
+                    crate::state::CompletedMode::Collapsed,
                     None,
                     now + elapsed_ms,
                     input,
@@ -3735,6 +4369,7 @@ mod tests {
             &fleet,
             &visible,
             true,
+            crate::state::CompletedMode::Collapsed,
             None,
             now_millis(),
             row_test_input(vec![]),
@@ -3750,31 +4385,304 @@ mod tests {
         clear_textures(&mut output);
     }
 
+    /// Build a mixed repo group: one working agent + one done agent in the
+    /// same repo, both visible (the #310 flood scenario).
+    fn mixed_repo_fleet() -> (egui::Context, Fleet, Vec<&'static str>) {
+        let ctx = row_test_context();
+        let mut working = agent_in_repo("herdr:working", Some("corral"));
+        working.state = crate::model::AgentState::Working;
+        working.display_name = Some("working card".into());
+        let mut done = agent_in_repo("herdr:done", Some("corral"));
+        done.state = crate::model::AgentState::Done;
+        done.display_name = Some("done card".into());
+        let mut fleet = Fleet::default();
+        fleet
+            .agents
+            .insert(working.agent_id.clone(), working.clone());
+        fleet.agents.insert(done.agent_id.clone(), done.clone());
+        (ctx, fleet, vec!["herdr:working", "herdr:done"])
+    }
+
+    fn rendered_master_text(
+        ctx: &egui::Context,
+        fleet: &Fleet,
+        visible: &[&str],
+        completed: crate::state::CompletedMode,
+    ) -> String {
+        let (_, mut output) = master_list_frame(
+            ctx,
+            fleet,
+            visible,
+            false,
+            completed,
+            None,
+            now_millis(),
+            row_test_input(vec![]),
+        );
+        fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(shape) => {
+                    text.push_str(shape.galley.text());
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut text);
+        }
+        clear_textures(&mut output);
+        text
+    }
+
+    /// #310 Hide: done agents vanish entirely from a mixed repo group —
+    /// one active agent never has to scroll past done rows.
     #[test]
-    fn recent_tail_classifies_terminal_semantics_into_chat_styles() {
-        assert_eq!(classify_tail_line("› fix the board"), RecentBlockKind::User);
+    fn completed_hide_omits_done_agents_in_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(text.contains("working card"));
+        assert!(!text.contains("done card"));
+        assert!(!text.contains("Done ("));
+    }
+
+    /// #310 Collapsed: the working row stays open while done rows fold into
+    /// one collapsed "Done (N)" sub-header inside the mixed repo group.
+    #[test]
+    fn completed_collapsed_folds_done_rows_inside_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(text.contains("working card"));
+        assert!(text.contains("Done (1)"), "folded sub-header renders");
+        assert!(
+            !text.contains("done card"),
+            "the folded rows must not render while collapsed"
+        );
+    }
+
+    /// #310 Show: completed rows render inline like any other row.
+    #[test]
+    fn completed_show_renders_done_rows_inline_in_mixed_repo_group() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let text = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(text.contains("working card"));
+        assert!(text.contains("done card"));
+        assert!(!text.contains("Done ("), "Show mode has no fold header");
+    }
+
+    /// #310: the tri-state applies immediately — switching the mode on the
+    /// same context flips the grouped rendering on the very next frame (the
+    /// mode-keyed header salts prevent stale remembered open/closed state).
+    #[test]
+    fn completed_mode_applies_immediately_in_grouped_mode() {
+        let (ctx, fleet, visible) = mixed_repo_fleet();
+        let collapsed = rendered_master_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(collapsed.contains("working card"));
+        assert!(!collapsed.contains("done card"));
+        let shown = rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(
+            shown.contains("done card"),
+            "mode switch to Show must unfold on the next frame"
+        );
+        let hidden =
+            rendered_master_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(
+            !hidden.contains("done card"),
+            "mode switch to Hide must drop the completed row on the next frame"
+        );
+    }
+
+    /// Run the PRODUCTION selection path (show_master, not master_list):
+    /// returns the resolved detail-pane selection for the given mode.
+    fn show_master_selection(
+        ctx: &egui::Context,
+        fleet: &mut Fleet,
+        completed: crate::state::CompletedMode,
+    ) -> Option<String> {
+        let mut selection = None;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            selection = show_master(ui, fleet, true, completed);
+        });
+        output.textures_delta.clear();
+        selection
+    }
+
+    /// #310 (blocker): Hide removes completed agents from selection/detail
+    /// resolution — a previously selected done agent must fall back to the
+    /// active agent instead of driving the detail pane from a hidden row.
+    #[test]
+    fn completed_hide_removes_hidden_completed_agent_from_selection_resolution() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Hide);
         assert_eq!(
-            classify_tail_line("› Ask Codex to do anything"),
-            RecentBlockKind::Agent,
-            "the empty Codex prompt is not a human message"
+            selected.as_deref(),
+            Some("herdr:working"),
+            "Hide must not keep a hidden completed agent as the detail selection"
+        );
+    }
+
+    /// #310 (blocker): Collapsed keeps completed agents selectable through
+    /// their group, and Show keeps them selectable inline.
+    #[test]
+    fn completed_collapsed_and_show_keep_completed_agents_selectable() {
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected =
+            show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Collapsed);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Collapsed renders the done agent folded inside its group, so it stays selectable"
+        );
+
+        let (ctx, mut fleet, _) = mixed_repo_fleet();
+        fleet.select_agent("herdr:done");
+        let selected = show_master_selection(&ctx, &mut fleet, crate::state::CompletedMode::Show);
+        assert_eq!(
+            selected.as_deref(),
+            Some("herdr:done"),
+            "Show renders completed agents inline, so they stay selectable"
+        );
+    }
+
+    /// #310 r3 (blocker 2): flat-list Collapsed must keep DONE rows out of
+    /// the expanded inline list — a distinct Done section may not fall
+    /// through to inline rendering. The approved collapsed affordance
+    /// carries the combined Idle/Done count.
+    #[test]
+    fn completed_collapsed_folds_done_rows_in_flat_mode() {
+        fn flat_text(
+            ctx: &egui::Context,
+            fleet: &Fleet,
+            visible: &[&str],
+            completed: crate::state::CompletedMode,
+        ) -> String {
+            let (_, mut output) = master_list_frame(
+                ctx,
+                fleet,
+                visible,
+                true,
+                completed,
+                None,
+                now_millis(),
+                row_test_input(vec![]),
+            );
+            fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+                match shape {
+                    egui::epaint::Shape::Text(shape) => {
+                        text.push_str(shape.galley.text());
+                        text.push('\n');
+                    }
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = String::new();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut text);
+            }
+            output.textures_delta.clear();
+            text
+        }
+
+        let ctx = row_test_context();
+        let mut working = agent_in_repo("herdr:working", None);
+        working.state = crate::model::AgentState::Working;
+        working.display_name = Some("working card".into());
+        let mut done = agent_in_repo("herdr:done", None);
+        done.state = crate::model::AgentState::Done;
+        done.display_name = Some("done card".into());
+        let mut fleet = Fleet::default();
+        fleet
+            .agents
+            .insert(working.agent_id.clone(), working.clone());
+        fleet.agents.insert(done.agent_id.clone(), done.clone());
+        let visible = ["herdr:working", "herdr:done"];
+
+        // Collapsed: the done card must NOT render inline; the combined
+        // collapsed affordance and the active card do.
+        let collapsed = flat_text(
+            &ctx,
+            &fleet,
+            &visible,
+            crate::state::CompletedMode::Collapsed,
+        );
+        assert!(collapsed.contains("working card"));
+        assert!(
+            collapsed.contains("Idle / done (1) — expandable"),
+            "the approved collapsed affordance must carry the done count: {collapsed}"
+        );
+        assert!(
+            !collapsed.contains("done card"),
+            "flat Collapsed must not render done rows inline: {collapsed}"
+        );
+
+        // Show: done renders inline and no collapsed affordance exists.
+        let shown = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Show);
+        assert!(shown.contains("done card"));
+        assert!(!shown.contains("Idle / done ("));
+
+        // Hide: done vanishes entirely.
+        let hidden = flat_text(&ctx, &fleet, &visible, crate::state::CompletedMode::Hide);
+        assert!(!hidden.contains("done card"));
+        assert!(!hidden.contains("Idle / done ("));
+    }
+
+    #[test]
+    fn recent_tail_maps_daemon_kinds_onto_chat_styles() {
+        // #315: the board NO LONGER classifies raw lines — every assert
+        // below is a pure STYLE mapping of a daemon-decided kind. The
+        // removed `classify_tail_line` heuristics (`›` = user, `$` = tool,
+        // fallthrough = agent) used to attribute an unprovenanced `›` line
+        // to the operator and unknown output to the assistant; those
+        // guesses are gone.
+        assert_eq!(
+            recent_block_kind(crate::drive::CanonicalBlockKind::User),
+            RecentBlockKind::User
         );
         assert_eq!(
-            classify_tail_line("• Working (5m43s • esc to interrupt)"),
+            recent_block_kind(crate::drive::CanonicalBlockKind::Tool),
             RecentBlockKind::Tool
         );
         assert_eq!(
-            classify_tail_line("Here is the assistant response."),
+            recent_block_kind(crate::drive::CanonicalBlockKind::Agent),
             RecentBlockKind::Agent
         );
         assert_eq!(
-            classify_tail_line("The tool_call concept is explained here."),
-            RecentBlockKind::Agent,
-            "ordinary prose containing tool_call stays agent text"
+            recent_block_kind(crate::drive::CanonicalBlockKind::System),
+            RecentBlockKind::System
         );
         assert_eq!(
-            classify_tail_line("This tool-use phrase is prose."),
-            RecentBlockKind::Agent,
-            "ordinary prose containing tool-use stays agent text"
+            recent_block_kind(crate::drive::CanonicalBlockKind::Unknown),
+            RecentBlockKind::Unknown
+        );
+        // The wire decode never re-attributes: an unrecognized future kind
+        // lands on Unknown, never on user/agent.
+        assert_eq!(
+            crate::drive::CanonicalBlockKind::from_wire("mystery"),
+            crate::drive::CanonicalBlockKind::Unknown
         );
 
         let user = recent_block_style(RecentBlockKind::User);
@@ -4185,7 +5093,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(text_rect(&output, "All").is_some());
         assert!(
@@ -4217,7 +5131,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(text_rect(&output, "All").is_some());
         assert!(text_rect(&output, "Recent output").is_some());
@@ -4247,7 +5167,13 @@ mod tests {
         };
         let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
             row_test_style(ui);
-            show(ui, &mut fleet, &|_| true, &mut actions);
+            show(
+                ui,
+                &mut fleet,
+                crate::state::CompletedMode::Collapsed,
+                &|_| true,
+                &mut actions,
+            );
         });
         assert!(
             text_rect(&output, "Recent output").is_some(),
@@ -5074,11 +6000,13 @@ mod tests {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn master_list_frame(
         ctx: &egui::Context,
         fleet: &Fleet,
         visible: &[&str],
         flat: bool,
+        completed: crate::state::CompletedMode,
         selected: Option<&str>,
         now_ms: u64,
         input: egui::RawInput,
@@ -5088,7 +6016,7 @@ mod tests {
         let output = ctx.run_ui(input, |ui| {
             row_test_style(ui);
             ui.set_max_width(width);
-            clicked = master_list(ui, fleet, visible, flat, selected, now_ms);
+            clicked = master_list(ui, fleet, visible, flat, completed, selected, now_ms);
         });
         (clicked, output)
     }
@@ -5611,5 +6539,663 @@ mod tests {
             ),
             DriveState::Failed { .. }
         ));
+    }
+
+    // MARK: - #316 V3 Context split (approved design gate)
+
+    fn canonical_block(
+        kind: crate::drive::CanonicalBlockKind,
+        text: &str,
+    ) -> crate::drive::CanonicalBlock {
+        crate::drive::CanonicalBlock {
+            kind,
+            text: text.into(),
+            prompt_request_id: None,
+        }
+    }
+
+    fn v3_stream() -> Vec<crate::drive::CanonicalBlock> {
+        // Mirrors the daemon golden-fixture SHAPE (system + unknown are
+        // interleaved mid-stream, user carries provenance) with added
+        // user/agent/tool runs.
+        vec![
+            canonical_block(crate::drive::CanonicalBlockKind::Tool, "$ cargo build"),
+            canonical_block(crate::drive::CanonicalBlockKind::User, "ship it"),
+            canonical_block(crate::drive::CanonicalBlockKind::System, "esc to interrupt"),
+            canonical_block(crate::drive::CanonicalBlockKind::Agent, "done"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "typed by hand"),
+            canonical_block(crate::drive::CanonicalBlockKind::User, "again"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "more noise"),
+        ]
+    }
+
+    #[test]
+    fn v3_context_split_routes_system_and_unknown_into_harness_activity() {
+        let partition = partition_canonical_positions(&v3_stream());
+        let conversation: Vec<RecentBlockKind> = partition
+            .conversation_positions
+            .iter()
+            .map(|&position| recent_block_kind(v3_stream()[position].kind))
+            .collect();
+        assert_eq!(
+            conversation,
+            vec![
+                RecentBlockKind::Tool,
+                RecentBlockKind::User,
+                RecentBlockKind::Agent,
+                RecentBlockKind::User,
+            ],
+            "canonical User/Agent/Tool stay in Conversation"
+        );
+        let harness: Vec<RecentBlockKind> = partition
+            .harness_entries
+            .iter()
+            .map(|(position, _)| recent_block_kind(v3_stream()[*position].kind))
+            .collect();
+        assert_eq!(
+            harness,
+            vec![
+                RecentBlockKind::System,
+                RecentBlockKind::Unknown,
+                RecentBlockKind::Unknown
+            ],
+            "canonical System/Unknown move to Harness activity"
+        );
+        assert_eq!(partition.total, 7, "the whole stream is accounted for");
+    }
+
+    #[test]
+    fn v3_partition_preserves_relative_order_in_each_surface() {
+        let stream = v3_stream();
+        let partition = partition_canonical_positions(&stream);
+        let conversation = partition.ordered_conversation(false);
+        let texts: Vec<&str> = conversation
+            .iter()
+            .map(|&position| stream[position].text.as_str())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["$ cargo build", "ship it", "done", "again"],
+            "stick-to-bottom off renders the conversation stream in stream order (oldest first)"
+        );
+        let harness_texts: Vec<&str> = partition
+            .harness_entries
+            .iter()
+            .map(|(_, entry)| entry.text.as_str())
+            .collect();
+        assert_eq!(
+            harness_texts,
+            vec!["esc to interrupt", "typed by hand", "more noise"],
+            "harness rows keep the daemon's relative order"
+        );
+        let flipped = partition.ordered_conversation(true);
+        assert_eq!(
+            flipped[flipped.len() - 1],
+            partition.conversation_positions[0],
+            "stick-to-bottom on renders the newest conversation block last (bottom)"
+        );
+    }
+
+    #[test]
+    fn v3_harness_divider_only_blocks_are_presentation_separators_not_events() {
+        // #328: divider-only System/Unknown blocks are flagged as
+        // presentation separators — they must not inflate the Harness
+        // activity count, and a divider-only payload leaves zero events.
+        let stream = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::System, "──────"),
+            canonical_block(
+                crate::drive::CanonicalBlockKind::System,
+                "Missing env var: OPENROUTER_API_KEY",
+            ),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "raw pane line"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "──────"),
+        ];
+        let partition = partition_canonical_positions(&stream);
+        let entries: Vec<&HarnessEntry> = partition
+            .harness_entries
+            .iter()
+            .map(|(_, entry)| entry)
+            .collect();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.is_divider)
+                .collect::<Vec<_>>(),
+            vec![true, false, false, true],
+            "divider-only blocks are flagged by the shared seam"
+        );
+        let event_count = entries.iter().filter(|entry| !entry.is_divider).count();
+        assert_eq!(event_count, 2, "the count equals meaningful events only");
+        assert_eq!(
+            entries[1].text, "Missing env var: OPENROUTER_API_KEY",
+            "real diagnostic content is never dropped"
+        );
+
+        // AC2: divider-only payload — zero events, the section hides.
+        let only_dividers = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::System, "──────"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "┄┄┄┄┄┄"),
+        ];
+        let partition = partition_canonical_positions(&only_dividers);
+        let events = partition
+            .harness_entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_divider)
+            .count();
+        assert_eq!(events, 0, "divider-only payload has no harness events");
+    }
+
+    #[test]
+    fn v3_live_session_golden_fixture_decodes_identically_across_clients() {
+        // #330 AC4/AC6: the SAME committed live-session golden fixture the
+        // daemon emits and iOS bundles decodes into the identical canonical
+        // kinds/order here, and the V3 partition matches iOS's
+        // Conversation (User/Agent/Tool) / Harness (System/Unknown) split.
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/live_session_exchange_golden.json"
+        ))
+        .expect("live-session golden fixture is committed and readable");
+        let daemon_result = serde_json::json!({
+            "lines": ["x"],
+            "blocks": serde_json::from_str::<serde_json::Value>(&fixture)
+                .expect("golden fixture parses as JSON blocks"),
+        });
+        let blocks = crate::drive::parse_tail_blocks(&daemon_result);
+        let kinds: Vec<crate::drive::CanonicalBlockKind> = blocks.iter().map(|b| b.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::Agent,
+                crate::drive::CanonicalBlockKind::Tool,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "identical kind sequence on every client"
+        );
+        let partition = partition_canonical_positions(&blocks);
+        let conversation: Vec<crate::drive::CanonicalBlockKind> = partition
+            .conversation_positions
+            .iter()
+            .map(|&position| blocks[position].kind)
+            .collect();
+        assert_eq!(
+            conversation,
+            vec![
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Agent,
+                crate::drive::CanonicalBlockKind::Tool,
+            ],
+            "Conversation keeps the canonical User/Agent/Tool run"
+        );
+        let harness: Vec<crate::drive::CanonicalBlockKind> = partition
+            .harness_entries
+            .iter()
+            .map(|(position, _)| blocks[*position].kind)
+            .collect();
+        assert_eq!(
+            harness,
+            vec![
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "Harness keeps the System/Unknown run, dividers flagged separately"
+        );
+        assert_eq!(
+            partition
+                .harness_entries
+                .iter()
+                .filter(|(_, entry)| entry.is_divider)
+                .count(),
+            1,
+            "the leading chrome rail is flagged as a presentation divider"
+        );
+    }
+
+    #[test]
+    fn v3_session_status_and_composer_are_structurally_outside_the_conversation() {
+        let agent = agent_with_caps(&["read_tail", "prompt"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            selected_agent: Some("herdr:a".into()),
+            ..Default::default()
+        };
+        let blocks = v3_stream();
+        let lines: Vec<String> = vec!["status: working".into()];
+        fleet.remember_tail_full("herdr:a", lines, blocks, Some(3));
+        let ctx = row_test_context();
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
+        let mut view = BoardView::Cards;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        let conversation = text_rect(&output, "Conversation").expect("Conversation region header");
+        let utilities = text_rect(&output, "Session utilities")
+            .expect("the separate utility column header renders");
+        let status = text_rect(&output, "Session status").expect("Session status panel");
+        let harness =
+            text_rect(&output, "Harness activity").expect("collapsible Harness activity header");
+        let composer =
+            text_rect(&output, "Reply to agent…").expect("composer hint outside the pane");
+        assert!(
+            utilities.left() > conversation.right() - 1.0,
+            "utility column starts beside the conversation column, not inside it"
+        );
+        assert!(
+            utilities.top() <= conversation.top() + 1.0,
+            "the utility column spans the conversation column's full height"
+        );
+        assert!(
+            status.left() >= utilities.left(),
+            "Session status renders inside the utility column"
+        );
+        assert!(
+            status.top() < harness.top(),
+            "Session status renders above Harness activity in the utility column"
+        );
+        assert!(
+            composer.top() > conversation.top(),
+            "composer renders below the conversation region top"
+        );
+        assert!(
+            composer.top() > harness.top(),
+            "composer renders below every read region (pinned last)"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn v3_narrow_detail_width_stacks_the_same_regions_deterministically() {
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            selected_agent: Some("herdr:a".into()),
+            ..Default::default()
+        };
+        fleet.remember_tail_full("herdr:a", vec!["x".into()], v3_stream(), Some(3));
+        let ctx = row_test_context();
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
+        let mut view = BoardView::Cards;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(360.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        // Every region must actually paint at a common phone/narrow-height
+        // viewport: the containing narrow scroll plus the bounded
+        // conversation window keep them all on screen (no clipping).
+        let conversation = text_rect(&output, "Conversation").expect("Conversation header");
+        let status = text_rect(&output, "Session status").expect("Session status panel");
+        let composer = text_rect(&output, "Reply to agent…").expect("composer");
+        assert!(
+            status.top() > conversation.top() && status.left() < conversation.left() + 24.0,
+            "narrow width stacks Session status BELOW the conversation region"
+        );
+        // The harness header carries its count suffix; find it with a
+        // recursive walk over the painted shapes.
+        let harness = {
+            let mut found = None;
+            fn walk(shape: &egui::epaint::Shape, found: &mut Option<egui::Rect>) {
+                match shape {
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for s in shapes {
+                            walk(s, found);
+                        }
+                    }
+                    egui::epaint::Shape::Text(t)
+                        if t.galley.job.text.contains("Harness activity") && found.is_none() =>
+                    {
+                        *found = Some(t.visual_bounding_rect());
+                    }
+                    _ => {}
+                }
+            }
+            for clipped in &output.shapes {
+                walk(&clipped.shape, &mut found);
+            }
+            found.expect("narrow width still renders the Harness activity header")
+        };
+        assert!(
+            harness.top() > status.top(),
+            "narrow width stacks Harness activity after Session status"
+        );
+        // Reachability on narrow widths comes from the ONE containing scroll
+        // (R2 correction), not from everything fitting above the fold: the
+        // conversation is a bounded 200px window, so the stack may extend
+        // past the viewport bottom and still be fully reachable by
+        // scrolling. Assert the painted-order + bounded-window contract.
+        let conversation_window = harness.top() - status.bottom();
+        assert!(
+            status.bottom() < harness.top(),
+            "regions are painted in deterministic order"
+        );
+        assert!(
+            conversation_window <= NARROW_CONVERSATION_MAX_HEIGHT + 40.0,
+            "the conversation stays a bounded window (gap={conversation_window})"
+        );
+        assert!(
+            conversation.height() <= NARROW_CONVERSATION_MAX_HEIGHT + 1.0,
+            "the narrow conversation is a bounded window, not a full-height clip"
+        );
+        assert!(
+            composer.bottom() > harness.bottom(),
+            "the composer stays structurally below the conversation stack on narrow widths"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn v3_harness_activity_is_collapsible_and_outside_conversation_counts() {
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            selected_agent: Some("herdr:a".into()),
+            ..Default::default()
+        };
+        let blocks = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::Agent, "hello"),
+            canonical_block(crate::drive::CanonicalBlockKind::System, "Missing env var"),
+            canonical_block(crate::drive::CanonicalBlockKind::Unknown, "raw input"),
+        ];
+        fleet.remember_tail_full("herdr:a", vec!["x".into()], blocks, Some(3));
+
+        // Collapsed by default: the harness CONTENT is not painted…
+        let ctx = row_test_context();
+        // Make disclosure state changes instant so the click asserts in the
+        // same test run (egui otherwise tweens openness over ~0.2 s).
+        ctx.all_styles_mut(|style| style.animation_time = 0.0);
+        let mut actions = BoardActions {
+            drive: &mut |_| {},
+            read_only: false,
+        };
+        let mut view = BoardView::Cards;
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert!(text_rect(&output, "Missing env var").is_none());
+        assert!(
+            text_rect(&output, "raw input").is_none(),
+            "harness rows stay inside the collapsed disclosure"
+        );
+        assert!(
+            text_rect(&output, "Harness activity").is_some(),
+            "the harness header renders"
+        );
+        assert!(
+            text_rect(&output, "hello").is_some(),
+            "conversation rows render regardless of the harness disclosure"
+        );
+        assert!(
+            text_rect(&output, "outside conversation").is_some(),
+            "the harness header names itself as outside the conversation"
+        );
+
+        // …and clicking the disclosure (down-frame + release-frame, as with
+        // every other pointer interaction) expands it, proving the retained
+        // content still exists. A follow-up frame lets the disclosure
+        // animation settle before asserting on the painted output.
+        let header_pos = text_rect(&output, "Harness activity")
+            .expect("harness header")
+            .center();
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_down_input(header_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(pointer_up_input(header_pos), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert!(
+            text_rect(&output, "Missing env var").is_some(),
+            "expanded Harness activity shows the retained Diagnostic content"
+        );
+        assert!(text_rect(&output, "Diagnostic").is_some());
+        clear_textures(&mut output);
+        let mut output = ctx.run_ui(row_test_input(vec![]), |ui| {
+            row_test_style(ui);
+            right_pane(
+                ui,
+                &fleet,
+                Some("herdr:a"),
+                &mut view,
+                false,
+                &|_| true,
+                &mut actions,
+            );
+        });
+        assert!(text_rect(&output, "Unknown activity").is_some());
+        assert!(
+            text_rect(&output, "raw input").is_some(),
+            "the retained Unknown activity text is painted once open"
+        );
+        clear_textures(&mut output);
+    }
+
+    #[test]
+    fn v3_tool_disclosure_and_paging_stay_reachable_inside_the_conversation() {
+        let agent = agent_with_caps(&["read_tail"]);
+        let mut fleet = Fleet {
+            agents: [(agent.agent_id.clone(), agent)].into_iter().collect(),
+            selected_agent: Some("herdr:a".into()),
+            rev: Some(42),
+            ..Default::default()
+        };
+        let blocks = vec![
+            canonical_block(crate::drive::CanonicalBlockKind::Tool, "$ cargo test"),
+            canonical_block(crate::drive::CanonicalBlockKind::User, "run it"),
+        ];
+        fleet.remember_tail_full("herdr:a", vec!["x".into()], blocks, Some(3));
+        let intents = std::cell::RefCell::new(Vec::new());
+        let ctx = row_test_context();
+        let render = |ctx: &egui::Context,
+                      intents: &std::cell::RefCell<Vec<DriveIntent>>,
+                      input: egui::RawInput|
+         -> egui::FullOutput {
+            let mut actions = BoardActions {
+                drive: &mut |intent| intents.borrow_mut().push(intent),
+                read_only: false,
+            };
+            let mut view = BoardView::Cards;
+            ctx.run_ui(input, |ui| {
+                row_test_style(ui);
+                right_pane(
+                    ui,
+                    &fleet,
+                    Some("herdr:a"),
+                    &mut view,
+                    false,
+                    &|_| true,
+                    &mut actions,
+                );
+            })
+        };
+
+        let mut output = render(&ctx, &intents, row_test_input(vec![]));
+        let tool_summary = text_rect(&output, "tool  cargo test")
+            .expect("the conversation tool block keeps its disclosure header");
+        assert_eq!(recent_tool_disclosure_id(0), recent_tool_disclosure_id(0));
+        let load_pos = text_rects(&output, LOAD_EARLIER_LABEL)
+            .last()
+            .expect("the history affordance renders above the conversation")
+            .center();
+        clear_textures(&mut output);
+
+        let _ = tool_summary;
+        let mut output = render(&ctx, &intents, pointer_down_input(load_pos));
+        clear_textures(&mut output);
+        let mut output = render(&ctx, &intents, pointer_up_input(load_pos));
+        clear_textures(&mut output);
+        assert_eq!(
+            intents.borrow().len(),
+            1,
+            "the V3 conversation history control dispatches one real drive"
+        );
+        assert_eq!(
+            intents.borrow()[0].capability,
+            crate::drive::Capability::ReadTail
+        );
+        assert_eq!(intents.borrow()[0].target, "herdr:a");
+        assert_eq!(intents.borrow()[0].rev, Some(42));
+    }
+
+    #[test]
+    fn v3_no_harness_provider_or_model_name_classification_exists() {
+        // The V3 surfaces branch ONLY on the daemon's kinds. There is no
+        // text- or name-based classification branch to mutate: assert the
+        // partition is byte-for-byte insensitive to provider/harness-style
+        // words in the CONTENT.
+        let with_branding = vec![
+            canonical_block(
+                crate::drive::CanonicalBlockKind::Unknown,
+                "claude gpt-7 opus gemini typed here",
+            ),
+            canonical_block(
+                crate::drive::CanonicalBlockKind::User,
+                "claude gpt-7 opus gemini",
+            ),
+        ];
+        let partition = partition_canonical_positions(&with_branding);
+        assert_eq!(partition.conversation_positions, vec![1]);
+        assert_eq!(partition.harness_entries.len(), 1);
+        assert_eq!(
+            recent_block_kind(crate::drive::CanonicalBlockKind::from_wire("system")),
+            RecentBlockKind::System
+        );
+        // The unknown wire kind stays unknown on the V3 surfaces too.
+        assert_eq!(
+            recent_block_kind(crate::drive::CanonicalBlockKind::from_wire("mystery")),
+            RecentBlockKind::Unknown
+        );
+        assert_eq!(
+            recent_block_kind(crate::drive::CanonicalBlockKind::from_wire("mystery")).context(),
+            ConversationContext::Harness
+        );
+    }
+
+    #[test]
+    fn v3_session_status_uses_only_structured_fields_and_omits_unknowns() {
+        let mut agent = agent_with_caps(&["read_tail"]);
+        agent.state = crate::model::AgentState::Working;
+        let status = recent_session_status(&agent, Some("demo-model"), None, Some("~/demo/wt"));
+        let labels: Vec<&str> = status.fields.iter().map(|(label, _)| *label).collect();
+        assert_eq!(
+            labels,
+            vec!["State", "Session", "Tool", "Model", "Worktree"],
+            "absent optional values are omitted, never fabricated"
+        );
+        let values: Vec<&str> = status
+            .fields
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["Working", "herdr:a", "claude", "demo-model", "~/demo/wt"]
+        );
+        let bare = recent_session_status(&agent, None, None, None);
+        assert_eq!(bare.fields.len(), 3, "no runtime/context values invented");
+        let unknown_agent = agent_with_state("herdr:u", crate::model::AgentState::Unknown);
+        let unknown_status = recent_session_status(&unknown_agent, None, None, None);
+        assert_eq!(unknown_status.fields[0].1, "Unknown");
+    }
+
+    #[test]
+    fn v3_accessible_roles_stay_explicit_on_every_event() {
+        assert_eq!(RecentBlockKind::User.accessible_role(), "You said");
+        assert_eq!(RecentBlockKind::Agent.accessible_role(), "Assistant");
+        assert_eq!(RecentBlockKind::Tool.accessible_role(), "Tool");
+        assert_eq!(RecentBlockKind::System.accessible_role(), "Diagnostic");
+        assert_eq!(
+            RecentBlockKind::Unknown.accessible_role(),
+            "Unknown activity"
+        );
+        // Harness rows carry their identity textually (role is never
+        // color-only).
+        let system = HarnessEntry {
+            kind: RecentBlockKind::System,
+            text: "esc to interrupt".into(),
+            is_divider: false,
+        };
+        let unknown = HarnessEntry {
+            kind: RecentBlockKind::Unknown,
+            text: "typed by hand".into(),
+            is_divider: false,
+        };
+        assert_eq!(system.visible_label(), "Diagnostic");
+        assert_eq!(unknown.visible_label(), "Unknown activity");
     }
 }

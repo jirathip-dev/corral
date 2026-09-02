@@ -56,12 +56,30 @@ ROOT = Path(__file__).resolve().parent.parent
 # CanonicalJSON; diff cache in FleetStore/AppModel; the pin follows.
 # #289 retired the fleet-health strip and its demo/model wiring; the pin
 # follows the remaining Release source set.
-# #267: read-only issue browser — Capability.readIssues, GhIssueRef
-# body/labels/comment window, IssuesBrowserWire + pane, demo seedIssues,
-# IssuesBrowserView (chips + inline detail).
+# #308: native agent action toolbar, visible capability reasons, and recovery route.
+# #315: canonical transcript provenance — Models (unknown kind + prompt_request_id),
+# RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
-    # #215/#282: sanitized fictional web and iOS demo identities.
-    "ac9bbe6f684ca07b337d191c25ed0031ba184f9465bf9ed04756a595ac34ce1e"
+    # #315: re-pinned after the canonical provenance read-model change.
+    # #316 V3 context split: canonical-kind partition, structured session
+    # status, and locked accessibility roles updated RecentOutputModel,
+    # FleetViews, and the demo seed; the pin follows the new source set.
+    # #316 R3: demo seed neutralized (featured session id, tool names, repos,
+    # worktree fallback, titles) — digest re-pinned to the R3 source set.
+    # #316 R4: demo seed omits unavailable worktree metadata entirely (no
+    # manufactured `model effort · path` line, no path-like fallback) and the
+    # demo diff is compacted so the Conversation heading stays in viewport —
+    # digest re-pinned to the R4 source set.
+    # #328/#329/#330: shared divider-vs-content seam + harness event count +
+    # honest empty-Conversation state (RecentOutputModel/FleetViews), bounded
+    # harness scroll (FleetViews layout constant), demo seed long diagnostics
+    # + divider-only block + harness-only evidence session (DemoFleet), and
+    # the demo evidence launch args (FleetNotifierApp).
+    # #333: DiffPane/DiffFileWire terminal-state reliability in Models.swift
+    # and AppModel, with bounded/cancellable read_diff.
+    # #331: terminal attach errors, handshake lifecycle, and cleanup states;
+    # the digest covers the merged #328/#329/#330, #333, and #331 source set.
+    "d86a471570a0ad08277b435f5056b82e9dc8290fac87316ff9df977dede0156c"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

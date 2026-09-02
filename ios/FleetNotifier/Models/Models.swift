@@ -668,27 +668,33 @@ enum Claim {
     }
 }
 
-/// One daemon block (D7). `kind` is the client's only vocabulary;
+/// One daemon block (D7 + #315). `kind` is the client's only vocabulary;
 /// `truncatedBefore` is the count lifted from a `... +N lines` marker that
-/// preceded this block (absent = no marker).
+/// preceded this block (absent = no marker); `promptRequestId` (#315) is the
+/// signed request id of the recorded Prompt dispatch behind a `user` block
+/// (absent = no provenance).
 struct TranscriptBlock: Codable, Equatable, Sendable {
     var kind: TranscriptBlockKind
     var text: String
     /// Epoch millis at block boundary (absent = not labelled).
     var at: UInt64?
     var truncatedBefore: UInt32?
+    /// #315 provenance: the dispatch that vouches for a `user` block.
+    var promptRequestId: String?
 
     enum CodingKeys: String, CodingKey {
         case kind, text, at
         case truncatedBefore = "truncated_before"
+        case promptRequestId = "prompt_request_id"
     }
 
     init(kind: TranscriptBlockKind, text: String, at: UInt64? = nil,
-         truncatedBefore: UInt32? = nil) {
+         truncatedBefore: UInt32? = nil, promptRequestId: String? = nil) {
         self.kind = kind
         self.text = text
         self.at = at
         self.truncatedBefore = truncatedBefore
+        self.promptRequestId = promptRequestId
     }
 
     init(from decoder: Decoder) throws {
@@ -697,12 +703,14 @@ struct TranscriptBlock: Codable, Equatable, Sendable {
         text = try c.decode(String.self, forKey: .text)
         at = try c.decodeIfPresent(UInt64.self, forKey: .at)
         truncatedBefore = try c.decodeIfPresent(UInt32.self, forKey: .truncatedBefore)
+        promptRequestId = try c.decodeIfPresent(String.self, forKey: .promptRequestId)
     }
 }
 
-/// The four block kinds (D7).
+/// The block kinds (D7 + #315). `unknown` is terminal content the daemon
+/// could not provenance — preserved, never falsely attributed.
 enum TranscriptBlockKind: String, Codable, Equatable, Sendable {
-    case user, agent, tool, system
+    case user, agent, tool, system, unknown
 }
 
 /// One typed drive-refusal result used by the Recent-output tail state.
@@ -766,13 +774,20 @@ struct DiffPane: Equatable, Sendable {
     var hasMore = false
     var nextOffset: Int?
     var isLoading = false
+    var hasLoaded = false
     var error: String?
+    var errorKind: String?
+    var errorStatus: Int?
 
-    var isEmpty: Bool { lines.isEmpty && files.isEmpty && !isLoading && error == nil }
+    var isEmpty: Bool {
+        hasLoaded && lines.isEmpty && files.isEmpty && !isLoading && error == nil
+    }
 
     mutating func beginFetch() {
         isLoading = true
         error = nil
+        errorKind = nil
+        errorStatus = nil
     }
 
     /// Fold one daemon page. Offset 0 seeds the pane; later pages append at
@@ -780,7 +795,10 @@ struct DiffPane: Equatable, Sendable {
     /// a gap reseeds from the new page instead of interleaving stale lines).
     mutating func apply(_ page: DiffPageWire) {
         isLoading = false
+        hasLoaded = true
         error = nil
+        errorKind = nil
+        errorStatus = nil
         repo = page.repo ?? repo
         branch = page.branch ?? branch
         head = page.head ?? head
@@ -790,7 +808,7 @@ struct DiffPane: Equatable, Sendable {
         total = page.total
         hasMore = page.hasMore
         nextOffset = page.nextOffset
-        if page.offset == 0 && lines.isEmpty {
+        if page.offset == 0 {
             lines = page.lines
         } else if page.offset <= lines.count {
             // Page window may overlap already-known lines (a re-fetch of the
@@ -805,9 +823,12 @@ struct DiffPane: Equatable, Sendable {
         }
     }
 
-    mutating func apply(_ failure: String) {
+    mutating func apply(_ failure: String, kind: String = "dispatch_refused",
+                        status: Int? = nil) {
         isLoading = false
         error = failure
+        errorKind = kind
+        errorStatus = status
     }
 }
 

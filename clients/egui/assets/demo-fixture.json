@@ -7,7 +7,7 @@
       "demo:p01:impl": {
         "agent_id": "demo:p01:impl",
         "source": "herdr",
-        "tool": "claude",
+        "tool": "tool-one",
         "state": "working",
         "reason": null,
         "seq": 7,
@@ -22,9 +22,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "atlas-board",
-          "branch": "demo/atlas-web",
-          "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
+          "repo": "demo-alpha",
+          "branch": "alpha-web",
+          "worktree_path": null,
           "pr_number": 9001,
           "ci_status": "success",
           "dirty": false,
@@ -35,11 +35,11 @@
           "kind": "pane",
           "ref": "demo:p01:impl"
         },
-        "display_name": "demo/atlas-web",
+        "display_name": "alpha-web",
         "title": "egui web: read-only board",
         "issues": [
           {
-            "repo": "demo.example.invalid/atlas-board",
+            "repo": "demo.example.invalid/demo-alpha",
             "number": 9001,
             "state": "OPEN",
             "title": "Demo sample issue: web-board",
@@ -53,14 +53,14 @@
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/9001"
+            "url": "https://demo.example.invalid/demo-alpha/issues/9001"
           }
         ]
       },
       "demo:p02:impl": {
         "agent_id": "demo:p02:impl",
         "source": "herdr",
-        "tool": "claude",
+        "tool": "tool-one",
         "state": "blocked",
         "reason": "waiting for approval",
         "seq": 12,
@@ -84,9 +84,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "atlas-board",
-          "branch": "demo/cors-check",
-          "worktree_path": "/demo/worktrees/atlas-board/w209",
+          "repo": "demo-alpha",
+          "branch": "alpha-cors",
+          "worktree_path": null,
           "pr_number": 9002,
           "ci_status": "pending",
           "dirty": true,
@@ -97,11 +97,11 @@
           "kind": "pane",
           "ref": "demo:p02:impl"
         },
-        "display_name": "demo/cors-check",
+        "display_name": "alpha-cors",
         "title": "daemon CORS allowlist",
         "issues": [
           {
-            "repo": "demo.example.invalid/atlas-board",
+            "repo": "demo.example.invalid/demo-alpha",
             "number": 9002,
             "state": "OPEN",
             "title": "Demo sample issue: device-grants",
@@ -111,14 +111,14 @@
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/9002"
+            "url": "https://demo.example.invalid/demo-alpha/issues/9002"
           }
         ]
       },
       "demo:p03:rev": {
         "agent_id": "demo:p03:rev",
         "source": "herdr",
-        "tool": "opencode",
+        "tool": "tool-two",
         "state": "idle",
         "reason": null,
         "seq": 3,
@@ -131,9 +131,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "pixel-garden",
-          "branch": "demo/partner-sprout",
-          "worktree_path": "/demo/worktrees/synergy/partner-acme",
+          "repo": "demo-charlie",
+          "branch": "charlie-partner",
+          "worktree_path": null,
           "pr_number": 9005,
           "ci_status": "success",
           "dirty": false,
@@ -144,11 +144,11 @@
           "kind": "pane",
           "ref": "demo:p03:rev"
         },
-        "display_name": "demo/partner-sprout",
+        "display_name": "charlie-partner",
         "title": "Partner page: Acme",
         "issues": [
           {
-            "repo": "demo.example.invalid/pixel-garden",
+            "repo": "demo.example.invalid/demo-charlie",
             "number": 9005,
             "state": "OPEN",
             "title": "Demo sample issue: partner-collaboration",
@@ -158,14 +158,14 @@
                 "color": "d4c5f9"
               }
             ],
-            "url": "https://demo.example.invalid/pixel-garden/issues/9005"
+            "url": "https://demo.example.invalid/demo-charlie/issues/9005"
           }
         ]
       },
       "demo:p04:fleet": {
         "agent_id": "demo:p04:fleet",
         "source": "herdr",
-        "tool": "claude",
+        "tool": "tool-one",
         "state": "working",
         "reason": null,
         "seq": 9,
@@ -180,9 +180,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "atlas-board",
-          "branch": "demo/route-check",
-          "worktree_path": "/demo/worktrees/atlas-board/g216-fleet-gate",
+          "repo": "demo-alpha",
+          "branch": "alpha-route",
+          "worktree_path": null,
           "pr_number": 9003,
           "ci_status": "pending",
           "dirty": true,
@@ -193,11 +193,11 @@
           "kind": "pane",
           "ref": "demo:p04:fleet"
         },
-        "display_name": "demo/route-check",
+        "display_name": "alpha-route",
         "title": "fleet gate run",
         "issues": [
           {
-            "repo": "demo.example.invalid/atlas-board",
+            "repo": "demo.example.invalid/demo-alpha",
             "number": 9003,
             "state": "OPEN",
             "title": "Demo sample issue: wasm-gate",
@@ -207,14 +207,14 @@
                 "color": "a2eeef"
               }
             ],
-            "url": "https://demo.example.invalid/atlas-board/issues/9003"
+            "url": "https://demo.example.invalid/demo-alpha/issues/9003"
           }
         ]
       },
       "demo:p05:orch": {
         "agent_id": "demo:p05:orch",
         "source": "herdr",
-        "tool": "claude",
+        "tool": "tool-one",
         "state": "done",
         "reason": null,
         "seq": 21,
@@ -229,9 +229,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "orbit-console",
-          "branch": "demo/read-loop",
-          "worktree_path": "/demo/worktrees/orbit-console/w41",
+          "repo": "demo-bravo",
+          "branch": "bravo-read",
+          "worktree_path": null,
           "pr_number": 9006,
           "ci_status": "success",
           "dirty": false,
@@ -242,11 +242,11 @@
           "kind": "pane",
           "ref": "demo:p05:orch"
         },
-        "display_name": "demo/read-loop",
+        "display_name": "bravo-read",
         "title": "SSE resume after reconnect",
         "issues": [
           {
-            "repo": "demo.example.invalid/orbit-console",
+            "repo": "demo.example.invalid/demo-bravo",
             "number": 9006,
             "state": "OPEN",
             "title": "Demo sample issue: reconnect-loop",
@@ -256,14 +256,14 @@
                 "color": "d73a4a"
               }
             ],
-            "url": "https://demo.example.invalid/orbit-console/issues/9006"
+            "url": "https://demo.example.invalid/demo-bravo/issues/9006"
           }
         ]
       },
       "demo:p06:rs": {
         "agent_id": "demo:p06:rs",
         "source": "herdr",
-        "tool": "opencode",
+        "tool": "tool-two",
         "state": "working",
         "reason": null,
         "seq": 5,
@@ -282,9 +282,9 @@
         "parent_id": null,
         "host": "demo-host",
         "workspace": {
-          "repo": "route-lab",
-          "branch": "demo/router-slices",
-          "worktree_path": "/demo/worktrees/route-lab/route-slices",
+          "repo": "demo-delta",
+          "branch": "delta-router",
+          "worktree_path": null,
           "pr_number": 9004,
           "ci_status": "pending",
           "dirty": false,
@@ -295,11 +295,11 @@
           "kind": "pane",
           "ref": "demo:p06:rs"
         },
-        "display_name": "demo/router-slices",
+        "display_name": "delta-router",
         "title": "router slices S2–S6",
         "issues": [
           {
-            "repo": "demo.example.invalid/route-lab",
+            "repo": "demo.example.invalid/demo-delta",
             "number": 9004,
             "state": "OPEN",
             "title": "Demo sample issue: routing-slices",
@@ -309,7 +309,7 @@
                 "color": "0e8a16"
               }
             ],
-            "url": "https://demo.example.invalid/route-lab/issues/9004"
+            "url": "https://demo.example.invalid/demo-delta/issues/9004"
           }
         ]
       }
@@ -322,7 +322,7 @@
         {
           "agent_id": "demo:p02:impl",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "working",
           "reason": null,
           "seq": 13,
@@ -337,9 +337,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
-            "branch": "demo/cors-check",
-            "worktree_path": "/demo/worktrees/atlas-board/w209",
+            "repo": "demo-alpha",
+            "branch": "alpha-cors",
+            "worktree_path": null,
             "pr_number": 9002,
             "ci_status": "pending",
             "dirty": true,
@@ -350,7 +350,7 @@
             "kind": "pane",
             "ref": "demo:p02:impl"
           },
-          "display_name": "demo/cors-check",
+          "display_name": "alpha-cors",
           "title": "daemon CORS allowlist",
           "issues": []
         }
@@ -363,7 +363,7 @@
         {
           "agent_id": "demo:p06:rs",
           "source": "herdr",
-          "tool": "opencode",
+          "tool": "tool-two",
           "state": "blocked",
           "reason": "waiting for an answer",
           "seq": 6,
@@ -382,9 +382,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "route-lab",
-            "branch": "demo/router-slices",
-            "worktree_path": "/demo/worktrees/route-lab/route-slices",
+            "repo": "demo-delta",
+            "branch": "delta-router",
+            "worktree_path": null,
             "pr_number": 9004,
             "ci_status": "pending",
             "dirty": false,
@@ -395,7 +395,7 @@
             "kind": "pane",
             "ref": "demo:p06:rs"
           },
-          "display_name": "demo/router-slices",
+          "display_name": "delta-router",
           "title": "router slices S2–S6",
           "issues": []
         }
@@ -408,7 +408,7 @@
         {
           "agent_id": "demo:p03:rev",
           "source": "herdr",
-          "tool": "opencode",
+          "tool": "tool-two",
           "state": "working",
           "reason": null,
           "seq": 4,
@@ -421,9 +421,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "pixel-garden",
-            "branch": "demo/partner-sprout",
-            "worktree_path": "/demo/worktrees/synergy/partner-acme",
+            "repo": "demo-charlie",
+            "branch": "charlie-partner",
+            "worktree_path": null,
             "pr_number": 9005,
             "ci_status": "success",
             "dirty": false,
@@ -434,14 +434,14 @@
             "kind": "pane",
             "ref": "demo:p03:rev"
           },
-          "display_name": "demo/partner-sprout",
+          "display_name": "charlie-partner",
           "title": "Partner page: Acme",
           "issues": []
         },
         {
           "agent_id": "demo:p01:impl",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "blocked",
           "reason": "waiting for approval",
           "seq": 8,
@@ -465,9 +465,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
-            "branch": "demo/atlas-web",
-            "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
+            "repo": "demo-alpha",
+            "branch": "alpha-web",
+            "worktree_path": null,
             "pr_number": 9001,
             "ci_status": "success",
             "dirty": false,
@@ -478,7 +478,7 @@
             "kind": "pane",
             "ref": "demo:p01:impl"
           },
-          "display_name": "demo/atlas-web",
+          "display_name": "alpha-web",
           "title": "egui web: read-only board",
           "issues": []
         }
@@ -491,7 +491,7 @@
         {
           "agent_id": "demo:p05:orch",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "working",
           "reason": null,
           "seq": 22,
@@ -506,9 +506,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "orbit-console",
-            "branch": "demo/read-loop",
-            "worktree_path": "/demo/worktrees/orbit-console/w41",
+            "repo": "demo-bravo",
+            "branch": "bravo-read",
+            "worktree_path": null,
             "pr_number": 9006,
             "ci_status": "failure",
             "dirty": true,
@@ -519,7 +519,7 @@
             "kind": "pane",
             "ref": "demo:p05:orch"
           },
-          "display_name": "demo/read-loop",
+          "display_name": "bravo-read",
           "title": "SSE resume after reconnect",
           "issues": []
         }
@@ -532,7 +532,7 @@
         {
           "agent_id": "demo:p01:impl",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "working",
           "reason": null,
           "seq": 9,
@@ -547,9 +547,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
-            "branch": "demo/atlas-web",
-            "worktree_path": "/demo/worktrees/atlas-board/g215-egui-wasm",
+            "repo": "demo-alpha",
+            "branch": "alpha-web",
+            "worktree_path": null,
             "pr_number": 9001,
             "ci_status": "success",
             "dirty": false,
@@ -560,7 +560,7 @@
             "kind": "pane",
             "ref": "demo:p01:impl"
           },
-          "display_name": "demo/atlas-web",
+          "display_name": "alpha-web",
           "title": "egui web: read-only board",
           "issues": []
         }
@@ -573,7 +573,7 @@
         {
           "agent_id": "demo:p02:impl",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "idle",
           "reason": null,
           "seq": 14,
@@ -588,9 +588,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
-            "branch": "demo/cors-check",
-            "worktree_path": "/demo/worktrees/atlas-board/w209",
+            "repo": "demo-alpha",
+            "branch": "alpha-cors",
+            "worktree_path": null,
             "pr_number": 9002,
             "ci_status": "success",
             "dirty": false,
@@ -601,7 +601,7 @@
             "kind": "pane",
             "ref": "demo:p02:impl"
           },
-          "display_name": "demo/cors-check",
+          "display_name": "alpha-cors",
           "title": "daemon CORS allowlist",
           "issues": []
         }
@@ -616,7 +616,7 @@
         {
           "agent_id": "demo:p07:impl",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "working",
           "reason": null,
           "seq": 2,
@@ -631,9 +631,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
+            "repo": "demo-alpha",
             "branch": "demo/pixel-ios",
-            "worktree_path": "/demo/worktrees/atlas-board/g217-ios-demo",
+            "worktree_path": null,
             "pr_number": 9007,
             "ci_status": "pending",
             "dirty": false,
@@ -648,7 +648,7 @@
           "title": "iOS demo wiring",
           "issues": [
             {
-              "repo": "demo.example.invalid/atlas-board",
+              "repo": "demo.example.invalid/demo-alpha",
               "number": 9007,
               "state": "OPEN",
               "title": "Demo sample issue: ios-board",
@@ -658,7 +658,7 @@
                   "color": "5319e7"
                 }
               ],
-              "url": "https://demo.example.invalid/atlas-board/issues/9007"
+              "url": "https://demo.example.invalid/demo-alpha/issues/9007"
             }
           ]
         }
@@ -671,7 +671,7 @@
         {
           "agent_id": "demo:p04:fleet",
           "source": "herdr",
-          "tool": "claude",
+          "tool": "tool-one",
           "state": "blocked",
           "reason": "waiting for approval",
           "seq": 10,
@@ -695,9 +695,9 @@
           "parent_id": null,
           "host": "demo-host",
           "workspace": {
-            "repo": "atlas-board",
-            "branch": "demo/route-check",
-            "worktree_path": "/demo/worktrees/atlas-board/g216-fleet-gate",
+            "repo": "demo-alpha",
+            "branch": "alpha-route",
+            "worktree_path": null,
             "pr_number": 9003,
             "ci_status": "pending",
             "dirty": true,
@@ -708,7 +708,7 @@
             "kind": "pane",
             "ref": "demo:p04:fleet"
           },
-          "display_name": "demo/route-check",
+          "display_name": "alpha-route",
           "title": "fleet gate run",
           "issues": []
         }
@@ -717,9 +717,9 @@
     }
   ],
   "issues": {
-    "atlas-board": [
+    "demo-alpha": [
       {
-        "repo": "demo.example.invalid/atlas-board",
+        "repo": "demo.example.invalid/demo-alpha",
         "number": 9001,
         "state": "OPEN",
         "title": "Demo sample issue: web-board",
@@ -733,11 +733,11 @@
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/9001",
+        "url": "https://demo.example.invalid/demo-alpha/issues/9001",
         "body": "Read-only issue browser demo data.\n\nSelect a repository in the rail, then expand an issue row to read its body and metadata."
       },
       {
-        "repo": "demo.example.invalid/atlas-board",
+        "repo": "demo.example.invalid/demo-alpha",
         "number": 9002,
         "state": "OPEN",
         "title": "Demo sample issue: device-grants",
@@ -747,10 +747,10 @@
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/9002"
+        "url": "https://demo.example.invalid/demo-alpha/issues/9002"
       },
       {
-        "repo": "demo.example.invalid/atlas-board",
+        "repo": "demo.example.invalid/demo-alpha",
         "number": 9003,
         "state": "OPEN",
         "title": "Demo sample issue: wasm-gate",
@@ -760,12 +760,12 @@
             "color": "a2eeef"
           }
         ],
-        "url": "https://demo.example.invalid/atlas-board/issues/9003"
+        "url": "https://demo.example.invalid/demo-alpha/issues/9003"
       }
     ],
-    "route-lab": [
+    "demo-delta": [
       {
-        "repo": "demo.example.invalid/route-lab",
+        "repo": "demo.example.invalid/demo-delta",
         "number": 9004,
         "state": "OPEN",
         "title": "Demo sample issue: routing-slices",
@@ -775,12 +775,12 @@
             "color": "0e8a16"
           }
         ],
-        "url": "https://demo.example.invalid/route-lab/issues/9004"
+        "url": "https://demo.example.invalid/demo-delta/issues/9004"
       }
     ],
-    "pixel-garden": [
+    "demo-charlie": [
       {
-        "repo": "demo.example.invalid/pixel-garden",
+        "repo": "demo.example.invalid/demo-charlie",
         "number": 9005,
         "state": "OPEN",
         "title": "Demo sample issue: partner-collaboration",
@@ -790,12 +790,12 @@
             "color": "d4c5f9"
           }
         ],
-        "url": "https://demo.example.invalid/pixel-garden/issues/9005"
+        "url": "https://demo.example.invalid/demo-charlie/issues/9005"
       }
     ],
-    "orbit-console": [
+    "demo-bravo": [
       {
-        "repo": "demo.example.invalid/orbit-console",
+        "repo": "demo.example.invalid/demo-bravo",
         "number": 9006,
         "state": "OPEN",
         "title": "Demo sample issue: reconnect-loop",
@@ -805,7 +805,7 @@
             "color": "d73a4a"
           }
         ],
-        "url": "https://demo.example.invalid/orbit-console/issues/9006"
+        "url": "https://demo.example.invalid/demo-bravo/issues/9006"
       }
     ]
   },
@@ -815,5 +815,28 @@
     "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")",
     "git diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run",
     "▸ tool status: ok [icon] ⚠️"
+  ],
+  "recent_output_blocks": [
+    {
+      "kind": "user",
+      "text": "ship the canonical transcript stream",
+      "prompt_request_id": "req-prompt"
+    },
+    {
+      "kind": "agent",
+      "text": "the fictional snapshot is consistent ✅"
+    },
+    {
+      "kind": "tool",
+      "text": "$ python3 verify_demo.py --sample\nprint(\"ready ✅\")\ngit diff -- src/board_view.rs\n@@ -1,2 +1,3 @@\n-old label\n+speaker rail\n+compact tool run\nrun status: ok [icon] ⚠️"
+    },
+    {
+      "kind": "system",
+      "text": "read_tail page truncated to the newest 200 lines."
+    },
+    {
+      "kind": "unknown",
+      "text": "raw pane line without provenance"
+    }
   ]
 }

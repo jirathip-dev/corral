@@ -1,0 +1,23 @@
+[
+  {
+    "kind": "tool",
+    "text": "$ cargo build\nCompiling corrald v0.1.0"
+  },
+  {
+    "kind": "user",
+    "text": "ship the canonical transcript stream",
+    "prompt_request_id": "req-prompt"
+  },
+  {
+    "kind": "unknown",
+    "text": "Canonical stream wired end to end."
+  },
+  {
+    "kind": "system",
+    "text": "model context 42% · tokens in flight\nstatus: working · esc to interrupt"
+  },
+  {
+    "kind": "unknown",
+    "text": "fix the flaky test by hand"
+  }
+]

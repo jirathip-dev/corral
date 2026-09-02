@@ -10,7 +10,12 @@ enum DemoFleet {
     /// The opt-in detail route used by the reproducible #9005 evidence gate.
     /// Keeping the target in the fixture makes the route deterministic without
     /// changing normal fleet selection behavior.
-    static let featuredAgentID = "herdr:demo-output"
+    static let featuredAgentID = "demo-session:recent-output"
+
+    /// #330 AC5 evidence route: a session whose recent window carries ONLY
+    /// unprovenanced terminal chrome — the honest empty-Conversation state
+    /// (with Harness activity still reachable) renders here.
+    static let harnessOnlyAgentID = "demo-session:harness-only"
 
     /// #9007: seeded read-only issue browser (mirrors the approved V3 mock's
     /// shape: repos → issues with body + newest-first comment window).
@@ -48,7 +53,7 @@ enum DemoFleet {
             return window
         }
         let atlasBoard267 = issue(
-            "atlas-board", 9007, "open", "iOS issue browser: read-only issue list + detail",
+            "demo-atlas", 9007, "open", "iOS issue browser: read-only issue list + detail",
             labels: [openLabel, IssueLabel(name: "ios", color: "FD8C73")],
             body: "Read-only issues browser (list + detail) for FleetNotifier, modeled on read_tail / read_diff: same read-only grant gating, default-empty, no GitHub mutations from the device.",
             comments: commentWindow(
@@ -58,32 +63,32 @@ enum DemoFleet {
                 ]),
             commentTotal: 38)
         let signalGrove722 = issue(
-            "signal-grove", 9012, "open", "Offline-first read cache for the watch session",
+            "demo-grove", 9012, "open", "Offline-first read cache for the watch session",
             labels: [openLabel], body: "Cache the latest session summary on-device so the watch opens instantly.", commentTotal: 2)
         let paperOrchard108 = issue(
-            "paper-orchard", 9013, "open", "Production chains: re-check gauntlet rollout",
+            "demo-orchard", 9013, "open", "Production chains: re-check gauntlet rollout",
             labels: [IssueLabel(name: "ops", color: "1D76DB")], commentTotal: 0)
         let atlasBoard239 = issue(
-            "atlas-board", 9014, "open", "plugin engine: sidecar plugin API for agent rows",
+            "demo-atlas", 9014, "open", "plugin engine: sidecar plugin API for agent rows",
             labels: [openLabel], commentTotal: 4)
         let atlasBoard232 = issue(
-            "atlas-board", 9015, "open", "Agent worktree diff view (board + iOS)",
+            "demo-atlas", 9015, "open", "Agent worktree diff view (board + iOS)",
             labels: [IssueLabel(name: "docs", color: "0E8A16")], commentTotal: 12)
 
         let atlasBoard164 = issue(
-            "atlas-board", 9016, "open", "UX redesign umbrella (tracker)",
+            "demo-atlas", 9016, "open", "UX redesign umbrella (tracker)",
             labels: [openLabel], commentTotal: 9)
         let atlasBoard843 = issue(
-            "atlas-board", 9017, "open", "native: Send Conditions card tap does nothing",
+            "demo-atlas", 9017, "open", "native: Send Conditions card tap does nothing",
             labels: [bugLabel], commentTotal: 3)
         let atlasBoard168 = issue(
-            "atlas-board", 9018, "closed", "Rate-limit the gh poller on 401 storms",
+            "demo-atlas", 9018, "closed", "Rate-limit the gh poller on 401 storms",
             labels: [bugLabel, infraLabel], commentTotal: 5)
 
         return IssuesBrowserWire(repos: [
-            "atlas-board": [atlasBoard267, atlasBoard239, atlasBoard232, atlasBoard164, atlasBoard843, atlasBoard168],
-            "signal-grove": [signalGrove722],
-            "paper-orchard": [paperOrchard108],
+            "demo-atlas": [atlasBoard267, atlasBoard239, atlasBoard232, atlasBoard164, atlasBoard843, atlasBoard168],
+            "demo-grove": [signalGrove722],
+            "demo-orchard": [paperOrchard108],
         ])
     }
 
@@ -117,103 +122,115 @@ enum DemoFleet {
         }
 
         // Blocked on an approve-tool prompt with a menu (the classic flow).
-        let approvePrompt = "Approve this change to push 2 commits to demo/catalog-v2?"
-        agents["herdr:demo-approve"] = agent("herdr:demo-approve", tool: "codex", state: .blocked,
+        let approvePrompt = "Approve this change to push 2 commits to demo-catalog-v2?"
+        agents["herdr:demo-approve"] = agent("herdr:demo-approve", tool: "tool-one", state: .blocked,
             reason: "waiting for approval",
             waiting: WaitingOn(kind: .approveTool, prompt: approvePrompt,
                                promptHash: hash(approvePrompt),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-approve", promptHash: hash(approvePrompt)),
                                choices: ["y", "n"]),
             capabilities: tail("approve"),
-            displayName: "demo-approve", title: "Push plush catalog v2",
+            displayName: "demo-approve", title: "Push catalog v2",
             // Authoritative closing-issue ref (G23) on the WORKSPACE — the
             // wire location the daemon emits — so the demo `⑂ #N` chip goes
             // through the same read path as live data. The other demo agents
             // exercise the inferred `~#N?` / no-chip paths.
-            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-v2",
-                                 worktreePath: "/demo/worktrees/crystal-garden/feat-plush-v2",
+            workspace: Workspace(repo: "demo-garden", branch: "demo-catalog",
+                                 worktreePath: nil,
                                  prNumber: 9026, ciStatus: .pending, dirty: true, ahead: 3, behind: 0,
-                                 issues: [GhIssueRef(repo: "crystal-garden", number: 9027,
-                                                     state: "open", title: "Plush catalog v2")]),
+                                 issues: [GhIssueRef(repo: "demo-garden", number: 9027,
+                                                     state: "open", title: "Demo sample issue: catalog-v2")]),
             seq: 5, tsOffset: 30)
 
         // Blocked on a menu with explicit choices.
         let menuPrompt = "Select an option:\n1) Ship now\n2) Hold for review\n3) Abort"
-        agents["herdr:demo-menu"] = agent("herdr:demo-menu", tool: "opencode", state: .blocked,
+        agents["herdr:demo-menu"] = agent("herdr:demo-menu", tool: "tool-two", state: .blocked,
             reason: "menu prompt",
             waiting: WaitingOn(kind: .menu, prompt: menuPrompt, promptHash: hash(menuPrompt),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-menu", promptHash: hash(menuPrompt)),
                                choices: ["1", "2", "3"]),
             capabilities: tail("approve"),
             displayName: "demo-menu", title: "Ship or hold the migration",
-            workspace: Workspace(repo: "ledger-lantern", branch: "demo/migration-check",
-                                 worktreePath: "/demo/worktrees/ledger-lantern/fix-migration",
+            workspace: Workspace(repo: "demo-ledger", branch: "demo-migration",
+                                 worktreePath: nil,
                                  prNumber: 9021, ciStatus: .failure, dirty: false, ahead: 8, behind: 2),
             seq: 4, tsOffset: 90)
 
         // Blocked on a free-form question.
         let question = "What should the new branch be named?"
-        agents["herdr:demo-question"] = agent("herdr:demo-question", tool: "claude", state: .blocked,
+        agents["herdr:demo-question"] = agent("herdr:demo-question", tool: "tool-one", state: .blocked,
             reason: "asked a question",
             waiting: WaitingOn(kind: .answerQuestion, prompt: question, promptHash: hash(question),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-question", promptHash: hash(question)),
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-question", title: "Rename tracking branch",
-            workspace: Workspace(repo: "signal-grove", branch: "demo/device-check",
-                                 worktreePath: "/demo/worktrees/signal-grove/native-637",
+            workspace: Workspace(repo: "demo-grove", branch: "demo-device",
+                                 worktreePath: nil,
                                  prNumber: 9022, ciStatus: .success, dirty: true, ahead: 1, behind: 0),
             seq: 3, tsOffset: 240)
 
         // Crash kind: never approvable.
-        agents["herdr:demo-crash"] = agent("herdr:demo-crash", tool: "gemini", state: .blocked,
+        agents["herdr:demo-crash"] = agent("herdr:demo-crash", tool: "tool-two", state: .blocked,
             reason: "agent crashed",
             waiting: WaitingOn(kind: .crash, prompt: "Agent crashed (exit 139).", promptHash: hash("Agent crashed"),
                                approvalId: Claim.approvalId(agentId: "herdr:demo-crash", promptHash: hash("Agent crashed")),
                                choices: []),
             capabilities: tail("approve"),
             displayName: "demo-crash", title: "Parallel docs sweep",
-            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
-                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-ios",
+                                 worktreePath: nil,
                                  prNumber: 9025, ciStatus: .unknown, dirty: true, ahead: 4, behind: 1),
             seq: 2, tsOffset: 600)
 
         // Working, idle, done.
-        agents["herdr:demo-working"] = agent("herdr:demo-working", tool: "opencode", state: .working,
+        agents["herdr:demo-working"] = agent("herdr:demo-working", tool: "tool-two", state: .working,
             reason: "running the test suite",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-working", title: "Wire canonical bytes unit tests",
-            workspace: Workspace(repo: "orbit-console", branch: "demo/ios-notifier",
-                                 worktreePath: "/demo/worktrees/orbit-console/atlas-board-p4-w3",
+            workspace: Workspace(repo: "demo-orbit", branch: "demo-ios",
+                                 worktreePath: nil,
                                  prNumber: 9025, ciStatus: .pending, dirty: true, ahead: 4, behind: 1),
             seq: 9, tsOffset: 20)
 
         // Dedicated recent-output fixture: no approval card consumes the
         // viewport, so the design gate can show assistant/user bubbles, the
         // expanded diff, and the enabled pinned Send control together.
-        agents[featuredAgentID] = agent(featuredAgentID, tool: "codex", state: .working,
+        agents[featuredAgentID] = agent(featuredAgentID, tool: "tool-one", state: .working,
             reason: "streaming a segmented recent output",
             waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
             displayName: "demo-output", title: "Review recent output",
-            workspace: Workspace(repo: "atlas-board", branch: "demo/recent-output",
-                                 worktreePath: "/demo/worktrees/atlas-board/g205-ios-recent-output",
+            workspace: Workspace(repo: "demo-atlas", branch: "demo-recent",
+                                 worktreePath: nil,
                                  prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
             seq: 10, tsOffset: 12)
 
-        agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "claude", state: .idle,
+        // #330 AC5 evidence: a session whose recent window has NO attributed
+        // conversation events (all System/Unknown) — the honest empty
+        // Conversation state renders here while Harness stays reachable.
+        agents[harnessOnlyAgentID] = agent(harnessOnlyAgentID, tool: "tool-one", state: .working,
+            reason: "terminal chrome only in this window",
+            waiting: nil, capabilities: ["read_tail", "interrupt", "prompt"],
+            displayName: "demo-harness-only", title: "Unattributed window",
+            workspace: Workspace(repo: "demo-atlas", branch: "demo-recent",
+                                 worktreePath: nil,
+                                 prNumber: 9005, ciStatus: .pending, dirty: true, ahead: 1, behind: 0),
+            seq: 11, tsOffset: 6)
+
+        agents["herdr:demo-idle"] = agent("herdr:demo-idle", tool: "tool-one", state: .idle,
             reason: nil, waiting: nil, capabilities: ["read_tail", "prompt"],
-            displayName: "demo-idle", title: "Investigate SSO migration",
-            workspace: Workspace(repo: "ledger-lantern", branch: "demo/embed-sample",
-                                 worktreePath: "/demo/worktrees/ledger-lantern/issue-431",
+            displayName: "demo-idle", title: "Investigate sign-on migration",
+            workspace: Workspace(repo: "demo-ledger", branch: "demo-embed",
+                                 worktreePath: nil,
                                  prNumber: 9023, ciStatus: .success, dirty: false, ahead: 0, behind: 0),
             seq: 8, tsOffset: 1800)
 
-        agents["herdr:demo-done"] = agent("herdr:demo-done", tool: "codex", state: .done,
+        agents["herdr:demo-done"] = agent("herdr:demo-done", tool: "tool-one", state: .done,
             reason: "task complete",
             waiting: nil, capabilities: ["read_tail"],
-            displayName: "demo-done", title: "Update plush catalog",
-            workspace: Workspace(repo: "crystal-garden", branch: "demo/catalog-sweep",
-                                 worktreePath: "/demo/worktrees/crystal-garden/gauntlet-54",
+            displayName: "demo-done", title: "Update catalog",
+            workspace: Workspace(repo: "demo-garden", branch: "demo-sweep",
+                                 worktreePath: nil,
                                  prNumber: 9024, ciStatus: .success, dirty: false, ahead: 2, behind: 0),
             seq: 7, tsOffset: 3600)
 
@@ -256,50 +273,41 @@ enum DemoFleet {
         }
     }
 
-    /// The demo's metadata is derived from the source tool and agent identity,
-    /// rather than copied from one shared sample. That makes each seeded agent
-    /// useful for testing badges and keeps the capture route representative.
-    static func model(for agent: Agent) -> String {
-        let slug = agent.agentId.split(separator: ":", maxSplits: 1).last
-            .map(String.init)
-            ?? "demo"
-        let normalized = slug.replacingOccurrences(of: "_", with: "-")
-        switch agent.tool.lowercased() {
-        case "codex": return "demo-codex-\(normalized)"
-        case "claude": return "demo-claude-\(normalized)"
-        case "gemini": return "demo-gemini-\(normalized)"
-        case "opencode": return "demo-opencode-\(normalized)"
-        default: return "demo-\(agent.tool)-\(normalized)"
-        }
-    }
-
-    static func worktree(for agent: Agent) -> String {
-        if let worktree = agent.workspace.worktreePath, !worktree.isEmpty {
-            return worktree
-        }
-        let repo = agent.workspace.repo ?? "demo"
-        let branch = agent.workspace.branch ?? agent.agentId.replacingOccurrences(of: ":", with: "-")
-        return "/demo/worktrees/\(repo)/\(branch)"
-    }
-
-    static func effort(for agent: Agent) -> String {
-        switch agent.state {
-        case .blocked: return "max"
-        case .working: return "high"
-        case .done: return "medium"
-        case .idle, .unknown: return "low"
-        }
-    }
-
+    /// R4: the demo seed carries NO manufactured metadata line. All seeded
+    /// agents have `workspace.worktreePath == nil`, and the canonical
+    /// `model effort · path` contract only exists when a worktree genuinely
+    /// does — Session status therefore omits Model/Effort/Worktree and the
+    /// Tool chip falls back to the agent's structured tool field.
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        let metadata = "\(model(for: agent)) \(effort(for: agent)) · \(worktree(for: agent))"
-        let file = agent.workspace.repo.map { "src/\($0.replacingOccurrences(of: "-", with: "_"))_view.rs" }
-            ?? "src/recent_output.rs"
+        if agent.agentId == harnessOnlyAgentID {
+            // #330 AC5 evidence: no attributed conversation events — every
+            // block is System/Unknown (terminal chrome + unprovenanced
+            // prose), so the Conversation region must show the honest empty
+            // state while Harness activity stays reachable.
+            return [
+                RecentBlock(kind: .system,
+                            text: "──────────────────────────────────────",
+                            truncatedBefore: nil),
+                RecentBlock(kind: .unknown,
+                            text: "status: working · esc to interrupt",
+                            truncatedBefore: nil),
+                RecentBlock(
+                    kind: .system,
+                    text: "read_tail page truncated to the newest 200 lines.",
+                    truncatedBefore: nil),
+                RecentBlock(kind: .unknown,
+                            text: "raw pane line without provenance",
+                            truncatedBefore: nil),
+            ]
+        }
+        // R4 evidence contract: the demo diff references a neutral synthetic
+        // file, never a repo-derived filename.
+        let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [
             RecentBlock(
                 kind: .agent,
-                text: "(demo) Snapshot read model is consistent.\n\(metadata)",
+                text: "(demo) Snapshot read model is consistent.",
                 truncatedBefore: omitted),
             RecentBlock(kind: .user,
                         text: "Please verify the diff too.",
@@ -308,9 +316,68 @@ enum DemoFleet {
                 kind: .agent,
                 text: "def deploy():\n    print(\"ready ✅\")\n    return True",
                 truncatedBefore: nil),
+            // #316 V3: canonical System/Unknown demo blocks so the Harness
+            // activity section, its count, and the Diagnostic / Unknown
+            // activity identity are exercised in demo evidence.
+            // #329: the diagnostic payload is deliberately LONG (multi-screen
+            // at 390x844) so the expanded harness region's bounded scroll is
+            // observable in evidence; the collapse control stays reachable
+            // above it.
+            RecentBlock(
+                kind: .system,
+                text: """
+                read_tail page truncated to the newest 200 lines.
+                The full pane tail was longer than the bounded window, so the
+                daemon served the most recent lines only. This diagnostic
+                block exists to show that a long system payload scrolls
+                inside the harness region instead of overflowing the panel.
+                It continues across several lines so the expanded content
+                exceeds the bounded viewport and the vertical scroll owner
+                becomes visible: first line of the long diagnostic, second
+                line of the long diagnostic, third line of the long
+                diagnostic, fourth line of the long diagnostic, fifth line
+                of the long diagnostic, sixth line of the long diagnostic,
+                seventh line of the long diagnostic, eighth line of the long
+                diagnostic, ninth line of the long diagnostic, and finally
+                the tenth line of the long diagnostic payload.
+                """,
+                truncatedBefore: nil),
+            // #328 evidence: divider-only TUI furniture — a presentation
+            // separator, never a Diagnostic card and never counted.
+            RecentBlock(
+                kind: .system,
+                text: "──────────────────────────────────────",
+                truncatedBefore: nil),
+            RecentBlock(kind: .unknown,
+                        text: "raw pane line without provenance",
+                        truncatedBefore: nil),
+            RecentBlock(
+                kind: .unknown,
+                text: """
+                Unprovenanced terminal material that no structured event can
+                vouch for: a human typed some of this straight into the
+                pane, and part of it is machine output that the daemon could
+                not attribute. It therefore stays honestly Unknown and lives
+                under Harness activity rather than pretending to be a
+                conversation message. Like the diagnostic above, this block
+                is long on purpose so the expanded harness scroll is
+                observable: second line of the long unknown payload, third
+                line of the long unknown payload, fourth line of the long
+                unknown payload, fifth line of the long unknown payload,
+                sixth line of the long unknown payload, seventh line of the
+                long unknown payload, eighth line of the long unknown
+                payload, ninth line of the long unknown payload, and the
+                tenth line of the long unknown payload.
+                """,
+                truncatedBefore: nil),
+            // R4 evidence contract: the demo diff is compact enough that the
+            // whole conversation (heading + user + assistant + expanded diff)
+            // fits the 320pt conversation viewport, so the deterministic
+            // bottom-scroll position shows the complete Conversation heading
+            // unclipped. It still exercises +/-/@@ gutter rendering.
             RecentBlock(
                 kind: .tool,
-                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}\nrun status: ok [icon] ⚠️",
+                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> bool {\n+    true\n+}",
                 truncatedBefore: nil)
         ]
     }

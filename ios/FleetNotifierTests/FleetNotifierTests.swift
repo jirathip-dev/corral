@@ -1,4 +1,5 @@
 import CryptoKit
+import Combine
 import XCTest
 @testable import FleetNotifier
 
@@ -1135,22 +1136,33 @@ private final class DeterministicDriveScript: @unchecked Sendable {
     let defaultResponse: Data
     let responses: [String: Data]
     let gates: [String: DriveRequestGate]
+    let statuses: [String: Int]
+    let cancelOnStop: Bool
 
-    init(response: Data, gate: DriveRequestGate? = nil) {
+    init(response: Data, gate: DriveRequestGate? = nil, cancelOnStop: Bool = true) {
         self.defaultResponse = response
         self.responses = [:]
         self.gates = gate.map { ["/drive": $0] } ?? [:]
+        self.statuses = [:]
+        self.cancelOnStop = cancelOnStop
     }
 
     init(responses: [String: Data], gates: [String: DriveRequestGate] = [:],
-         defaultResponse: Data = Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8)) {
+         defaultResponse: Data = Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8),
+         statuses: [String: Int] = [:], cancelOnStop: Bool = true) {
         self.defaultResponse = defaultResponse
         self.responses = responses
         self.gates = gates
+        self.statuses = statuses
+        self.cancelOnStop = cancelOnStop
     }
 
     func response(for path: String) -> Data {
         responses[path] ?? defaultResponse
+    }
+
+    func status(for path: String) -> Int {
+        statuses[path] ?? 200
     }
 
     func gate(for path: String) -> DriveRequestGate? {
@@ -1318,7 +1330,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
             }
             deliveryQueue.async {
                 if canRespond, !self.stopWasRecorded {
-                    let response = HTTPURLResponse(url: url, statusCode: 200,
+                    let response = HTTPURLResponse(url: url, statusCode: script.status(for: url.path),
                                                    httpVersion: "HTTP/1.1",
                                                    headerFields: nil)!
                     self.client?.urlProtocol(self, didReceive: response,
@@ -1338,9 +1350,10 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
         let script = activeScript
         let path = request.url?.path
         deliveryQueue.async {
+            guard let script, script.cancelOnStop else { return }
             guard !self.stopWasRecorded else { return }
             self.stopWasRecorded = true
-            guard let script, let path,
+            guard let path,
                   let gate = script.gate(for: path) else { return }
             script.log.cancelled.increment()
             gate.cancel()
@@ -2420,6 +2433,44 @@ final class RowActionTests: XCTestCase {
                          capabilities: Capability.allCases.map(\.rawValue)),
             grants: Set(Capability.allCases))
         XCTAssertEqual(actions, [.tail, .diff, .prompt, .interrupt, .kill, .attach, .approveDeny])
+    }
+
+    func testTerminalAvailabilityCoversEveryGateCombination() {
+        let path = Workspace(worktreePath: "/tmp/worktree")
+        var cases = 0
+        for hasGrant in [false, true] {
+            for advertisesAttach in [false, true] {
+                for hasPath in [false, true] {
+                    for isRegistered in [false, true] {
+                        let agent = Agent(agentId: "herdr:terminal", state: .working,
+                                          capabilities: advertisesAttach ? ["attach"] : [],
+                                          workspace: hasPath ? path : Workspace())
+                        let item = BoardModel.terminalAvailability(
+                            agent: agent,
+                            grants: hasGrant ? [.attach] : [],
+                            isRegistered: isRegistered)
+                        XCTAssertEqual(item.isEnabled,
+                                       hasGrant && advertisesAttach && hasPath && isRegistered,
+                                       "unexpected terminal state for grant=\(hasGrant), advertised=\(advertisesAttach), path=\(hasPath), registered=\(isRegistered)")
+                        cases += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases, 16)
+
+        let noAdvertisement = Agent(agentId: "herdr:terminal", state: .working,
+                                    capabilities: [], workspace: path)
+        let unavailable = BoardModel.terminalAvailability(agent: noAdvertisement,
+                                                           grants: [.attach],
+                                                           isRegistered: true)
+        XCTAssertEqual(unavailable.disabledReason,
+                       "Terminal unavailable: attach is not available for this agent.")
+
+        let valid = Agent(agentId: "herdr:terminal", state: .working,
+                          capabilities: ["attach"], workspace: path)
+        XCTAssertTrue(BoardModel.terminalAvailability(agent: valid, grants: [.attach],
+                                                       isRegistered: true).isEnabled)
     }
 
     /// Both the agent capability and the device grant must hold. The detail
@@ -3800,10 +3851,12 @@ final class RecentOutputModelTests: XCTestCase {
         pane.lines = ["first line", "second line", "third line"]
         let render = RecentOutputModel.render(tail: pane)
 
+        // #315: legacy daemon tail lines carry NO provenance, so they render
+        // as separate `unknown` rows — the old `agent` guess is removed.
         XCTAssertEqual(render.rows, [
-            .block(block(.agent, "first line")),
-            .block(block(.agent, "second line")),
-            .block(block(.agent, "third line")),
+            .block(block(.unknown, "first line")),
+            .block(block(.unknown, "second line")),
+            .block(block(.unknown, "third line")),
         ])
     }
 
@@ -3965,9 +4018,9 @@ final class RecentOutputModelTests: XCTestCase {
         let user = block(.user, "user message")
         let agent = block(.agent, "agent message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(user),
-                       "You: user message")
+                       "You said: user message")
         XCTAssertEqual(RecentOutputRender.accessibilityLabel(agent),
-                       "Agent: agent message")
+                       "Assistant: agent message")
 
         let tool = block(.tool, "$ cargo test")
         XCTAssertEqual(RecentOutputRender.disclosureAccessibilityLabel(tool),
@@ -4072,8 +4125,8 @@ final class RecentOutputModelTests: XCTestCase {
     }
 
     func testRecentOutputMetadataAccessibilityLabelsKeepRolesDistinct() {
-        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-codex-demo"),
-                       "Model: demo-codex-demo")
+        XCTAssertEqual(RecentOutputAccessibility.modelLabel("demo-model-demo"),
+                       "Model: demo-model-demo")
         XCTAssertEqual(RecentOutputAccessibility.effortLabel("high"),
                        "Effort: high")
         XCTAssertEqual(RecentOutputAccessibility.worktreeLabel("~/worktrees/corral/demo"),
@@ -4113,6 +4166,84 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertTrue(RecentOutputRender.isDividerRun(visible.text))
     }
 
+    // MARK: - #315 canonical transcript provenance (cross-client)
+
+    /// The EXACT canonical stream the daemon emits for the generic terminal
+    /// snapshot + recorded Prompt provenance (see the daemon counterpart in
+    /// corral tests/provenance.rs and the egui counterpart in
+    /// Fleet::cross_client_generic_snapshot_decodes_identically…). One
+    /// fixture, three layers, identical kinds/order.
+    private func canonicalDaemonJSON() throws -> String {
+        // #315 R2: the EXACT canonical stream is the daemon-emitted golden
+        // fixture (corral tests/fixtures/canonical_stream_golden.json),
+        // bundled into the test bundle from the committed repo file — a
+        // hand-written copy could silently drift from daemon segmentation.
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "canonical_stream_golden", withExtension: "json"),
+            "the daemon golden fixture must be bundled with the tests")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// The fixture holds the daemon's blocks ARRAY; the read_tail envelope
+    /// (lines + blocks) is wrapped around those exact bytes so the decoded
+    /// blocks are byte-identical to the committed golden fixture.
+    private func canonicalDaemonEnvelopeData() throws -> Data {
+        let fixture = try canonicalDaemonJSON()
+        return Data("{\"lines\":[\"x\"],\"blocks\":\(fixture)}".utf8)
+    }
+
+    func testCrossClientGenericSnapshotRendersIdenticalKindsAndOrder() throws {
+        // AC5 (discriminating): same snapshot + provenance → identical block
+        // kinds and order on iOS as on the daemon and egui. User renders
+        // exactly once, carrying its provenance request id.
+        let data = try canonicalDaemonEnvelopeData()
+        let value = try JSONDecoder().decode(CodableValue.self, from: data)
+        let blocks = try XCTUnwrap(value.tailBlocks)
+
+        XCTAssertEqual(blocks.map(\.kind), [
+            .tool, .user, .unknown, .system, .unknown,
+        ], "identical kind sequence on every client")
+        let userBlocks = blocks.filter { $0.kind == .user }
+        XCTAssertEqual(userBlocks.count, 1, "exactly-once user rendering")
+        XCTAssertEqual(userBlocks.first?.promptRequestId, "req-prompt")
+        XCTAssertEqual(userBlocks.first?.text, "ship the canonical transcript stream")
+    }
+
+    func testUnknownKindSurvivesTheReadModelWithoutRoleAttribution() {
+        // AC2/AC7: a block the daemon marks unknown (direct terminal input,
+        // no provenance) reaches the view layer as unknown — never
+        // re-bucketed into user/agent/tool/system by this client.
+        let render = RecentOutputModel.render(
+            tail: tail([block(.unknown, "typed straight into the pane")]))
+        XCTAssertEqual(render.phase, .loaded)
+        guard case .block(let visible) = render.rows[0] else {
+            return XCTFail("unknown block remains a block row")
+        }
+        XCTAssertEqual(visible.kind, .unknown)
+        // The accessibility label names it honestly instead of guessing
+        // (#316 V3 locked naming: `Unknown activity`).
+        XCTAssertTrue(
+            RecentOutputRender.accessibilityLabel(visible).hasPrefix("Unknown activity:"),
+            "unknown content is labelled as unknown activity, not a role")
+    }
+
+    func testLegacyLineFallbackNoLongerGuessesRoles() {
+        // The daemon-less fallback that reclassified raw tail LINES is
+        // gone: legacy lines render as unknown blocks, never as guessed
+        // user/agent content. The `› fix it` shape (previously classified
+        // `user` here) can only become user via daemon provenance.
+        var pane = TailPane()
+        pane.lines = ["› fix it from a bare terminal", "$ status"]
+        pane.blocks = []
+        let render = RecentOutputModel.render(tail: pane)
+        let blockRows = render.rows.compactMap { row -> TranscriptBlock? in
+            if case .block(let b) = row { return b }
+            return nil
+        }
+        XCTAssertEqual(blockRows.map(\.kind), [.unknown, .unknown])
+    }
+
 #if DEBUG
     func testDebugDemoLaunchIsOptInAndSelectsTheDetailPresentation() {
         XCTAssertNil(CorralDemoLaunch.presentation(arguments: ["FleetNotifier"]))
@@ -4122,13 +4253,12 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(
             CorralDemoLaunch.presentation(arguments: ["FleetNotifier", "-corralDemoBefore"]),
             .before)
-        XCTAssertEqual(DemoFleet.featuredAgentID, "herdr:demo-output")
+        XCTAssertEqual(DemoFleet.featuredAgentID, "demo-session:recent-output")
     }
 
-    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsPerAgent() throws {
+    func testDemoRecentLinesAreDerivedFromTheSameBlocksAndMetadataIsOmitted() throws {
         let agents = DemoFleet.seed()
         let first = try XCTUnwrap(agents[DemoFleet.featuredAgentID])
-        let second = try XCTUnwrap(agents["herdr:demo-working"])
         let response = DemoFleet.respond(to: .readTail, payload: .null, agent: first, rev: 1)
         guard case .dispatched(let dispatched) = response,
               let result = dispatched.result,
@@ -4139,8 +4269,17 @@ final class RecentOutputModelTests: XCTestCase {
         XCTAssertEqual(storedLines,
                        storedBlocks.flatMap { $0.text.components(separatedBy: .newlines) },
                        "stored legacy lines must be the exact flattening of stored semantic blocks")
-        XCTAssertNotEqual(DemoFleet.model(for: first), DemoFleet.model(for: second))
-        XCTAssertNotEqual(DemoFleet.worktree(for: first), DemoFleet.worktree(for: second))
+        // R4: the demo seed carries NO manufactured `model effort · path`
+        // metadata (every seeded agent has worktreePath == nil), so Session
+        // status omits Model/Effort/Worktree and the Tool chip falls back to
+        // the agent's structured tool field. Unavailable fields are omitted,
+        // never replaced with a path-like fallback.
+        XCTAssertEqual(RecentOutputMetadata.extract(from: storedBlocks),
+                       RecentOutputMetadata(),
+                       "demo blocks must not fabricate model/effort/worktree metadata")
+        XCTAssertTrue(storedBlocks.allSatisfy {
+            !$0.text.contains("·")
+        }, "demo blocks must not contain any metadata-separator line")
         XCTAssertTrue(DemoFleet.monotoneOutput(for: first).contains("Please verify the diff too."))
     }
 #endif
@@ -4745,6 +4884,321 @@ final class ReadPaneOfflineParityTests: XCTestCase {
     }
 }
 
+// MARK: - #333 diff terminal-state reliability
+
+@MainActor
+final class DiffReliabilityTests: XCTestCase {
+    private func session(for script: DeterministicDriveScript) -> URLSession {
+        DeterministicDriveURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func makeModel(session: URLSession) throws -> (AppModel, Agent) {
+        let model = AppModel(session: session)
+        model.mode = .live
+        model.keyId = "k"
+        model.signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.grants = ["read_diff"]
+        model.hostURL = try XCTUnwrap(URL(string: "http://daemon"))
+        let agent = Agent(agentId: "herdr:diff", state: .working,
+                          capabilities: ["read_diff"], displayName: "herdr:diff")
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 3, rev: 1, generatedAt: 1,
+                                             agents: [agent.agentId: agent])))
+        return (model, agent)
+    }
+
+    private func client(session: URLSession) throws -> DriveClient {
+        DriveClient(host: try XCTUnwrap(URL(string: "http://daemon")), session: session)
+    }
+
+    private func terminalExpectation(model: AppModel, agentId: String) -> (XCTestExpectation, AnyCancellable) {
+        let landed = expectation(description: "diff pane reaches a terminal state")
+        landed.assertForOverFulfill = false
+        let cancellable = model.fleet.$diffs.sink { diffs in
+            guard let pane = diffs[agentId], !pane.isLoading else { return }
+            if pane.error != nil || pane.isEmpty || !pane.lines.isEmpty || !pane.files.isEmpty {
+                landed.fulfill()
+            }
+        }
+        return (landed, cancellable)
+    }
+
+    func testOffsetZeroRetryReplacesPreviouslyLoadedLines() {
+        var pane = DiffPane()
+        pane.apply(DiffPageWire(
+            repo: "corral", branch: "main", head: "old",
+            stats: DiffStatsWire(files: 1, adds: 1, dels: 0), files: [],
+            filesTruncated: false, offset: 0, lines: ["old"], total: 1,
+            hasMore: false, nextOffset: nil))
+        pane.beginFetch()
+        pane.apply(DiffPageWire(
+            repo: "corral", branch: "main", head: "new",
+            stats: DiffStatsWire(files: 0, adds: 0, dels: 0), files: [],
+            filesTruncated: false, offset: 0, lines: [], total: 0,
+            hasMore: false, nextOffset: nil))
+
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertTrue(pane.isEmpty)
+        XCTAssertEqual(pane.head, "new")
+    }
+
+    func testSuccessfulDiffPageFoldsIntoLoadedPane() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral","branch":"g333-diff-reliability","head":"abc1234","stats":{"files":1,"adds":2,"dels":1},"files":[{"path":"README.md","adds":2,"dels":1}],"files_truncated":false,"offset":0,"lines":["diff --git a/README.md b/README.md","+new","-old"],"total":3,"has_more":false,"next_offset":null}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertNil(pane.error)
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertEqual(pane.lines, ["diff --git a/README.md b/README.md", "+new", "-old"])
+    }
+
+    func testValidEmptyDiffPageLeavesLoadingAndShowsEmptyPane() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral","branch":"g333-diff-reliability","head":"abc1234","stats":{"files":0,"adds":0,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":[],"total":0,"has_more":false,"next_offset":null}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertNil(pane.error)
+        XCTAssertTrue(pane.hasLoaded)
+        XCTAssertTrue(pane.isEmpty)
+    }
+
+    func testOkTrueMissingDiffResultFoldsContractError() async throws {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":2}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "contract_error")
+        XCTAssertNotNil(pane.error)
+    }
+
+    func testOkTrueMalformedDiffPageFoldsDecodeError() async throws {
+        let response = Data(#"{"request_id":"r","ok":true,"rev":2,"result":{"repo":"corral"}}"#.utf8)
+        let script = DeterministicDriveScript(response: response)
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "decode_error")
+        XCTAssertNotNil(pane.error)
+    }
+
+    func testTypedHTTPRefusalFoldsIntoDiffPane() async throws {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"not_granted","message":"read_diff denied"}"#.utf8)],
+            statuses: ["/drive": 403])
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.error, "read_diff denied")
+        XCTAssertEqual(pane.errorKind, "not_granted")
+        XCTAssertEqual(pane.errorStatus, 403)
+    }
+
+    func testLocalReadDiffGrantRefusalFoldsIntoDiffPane() async throws {
+        let script = DeterministicDriveScript(response: Data(#"{}"#.utf8))
+        let session = session(for: script)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        model.grants = []
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "not_granted")
+        XCTAssertTrue(script.log.requests.isEmpty)
+    }
+
+    func testRetryStartsFreshDiffRequestAfterFailure() async throws {
+        let failedScript = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"temporary","message":"try again"}"#.utf8)],
+            statuses: ["/drive": 503])
+        let session = session(for: failedScript)
+        defer {
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        await fulfillment(of: [landed], timeout: 2)
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.error, "try again")
+
+        let successScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"retry","ok":true,"rev":3,"result":{"repo":"corral","branch":"retry","head":"retry","stats":{"files":0,"adds":0,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":["retried response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8))
+        DeterministicDriveURLProtocol.setScript(successScript)
+        let retryLanded = expectation(description: "retry folds a fresh diff page")
+        let retryCancellable = model.fleet.$diffs.sink { diffs in
+            guard let pane = diffs[agent.agentId], !pane.isLoading,
+                  pane.error == nil, pane.lines == ["retried response"] else { return }
+            retryLanded.fulfill()
+        }
+        defer { retryCancellable.cancel() }
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        let freshObserved = await successScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshObserved)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+        await fulfillment(of: [retryLanded], timeout: 2)
+        let retried = await successScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(retried)
+
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["retried response"])
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
+        XCTAssertEqual(model.inFlightDriveCount, 0)
+    }
+
+    func testNeverReturningDiffTransportTimesOutIntoPaneError() async throws {
+        let gate = DriveRequestGate()
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"late","ok":true,"rev":2}"#.utf8),
+            gate: gate,
+            cancelOnStop: false)
+        let session = session(for: script)
+        defer {
+            gate.release()
+            session.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: session)
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: session))
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed)
+        await fulfillment(of: [landed], timeout: 15)
+
+        let pane = try XCTUnwrap(model.fleet.diffs[agent.agentId])
+        XCTAssertFalse(pane.isLoading)
+        XCTAssertEqual(pane.errorKind, "timeout")
+        XCTAssertEqual(pane.error, "Diff timed out.")
+    }
+
+    func testDismissAndReopenCancelsOldDiffAndSuppressesLateResponse() async throws {
+        let oldGate = DriveRequestGate()
+        let oldScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"old","ok":true,"rev":2,"result":{"repo":"old","branch":"old","head":"old","stats":{"files":1,"adds":1,"dels":0},"files":[],"files_truncated":false,"offset":0,"lines":["old response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8),
+            gate: oldGate,
+            cancelOnStop: false)
+        let oldSession = session(for: oldScript)
+        defer {
+            oldGate.release()
+            oldSession.invalidateAndCancel()
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        let (model, agent) = try makeModel(session: oldSession)
+        let oldClient = try client(session: oldSession)
+
+        model.driveReadDiff(agent: agent, driveClient: oldClient)
+        let oldObserved = await oldScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(oldObserved)
+        XCTAssertTrue(model.fleet.diffs[agent.agentId]?.isLoading ?? false)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+
+        model.cancelReadDiff(agentId: agent.agentId)
+        XCTAssertFalse(model.fleet.diffs[agent.agentId]?.isLoading ?? true)
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
+        XCTAssertEqual(model.inFlightDriveCount, 0)
+
+        let freshGate = DriveRequestGate()
+        let freshScript = DeterministicDriveScript(
+            response: Data(#"{"request_id":"fresh","ok":true,"rev":3,"result":{"repo":"fresh","branch":"fresh","head":"fresh","stats":{"files":1,"adds":0,"dels":1},"files":[],"files_truncated":false,"offset":0,"lines":["fresh response"],"total":1,"has_more":false,"next_offset":null}}"#.utf8),
+            gate: freshGate,
+            cancelOnStop: false)
+        let freshSession = session(for: freshScript)
+        defer {
+            freshGate.release()
+            freshSession.invalidateAndCancel()
+        }
+        let (landed, cancellable) = terminalExpectation(model: model, agentId: agent.agentId)
+        defer { cancellable.cancel() }
+
+        model.driveReadDiff(agent: agent, driveClient: try client(session: freshSession))
+        let freshObserved = await freshScript.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshObserved)
+        XCTAssertEqual(model.inFlightDriveCount, 1)
+        freshGate.release()
+        let freshCompleted = await freshScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(freshCompleted)
+        await fulfillment(of: [landed], timeout: 2)
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["fresh response"])
+
+        oldGate.release()
+        let oldCompleted = await oldScript.log.completed.waitFor(atLeast: 1)
+        XCTAssertTrue(oldCompleted)
+        await Task.yield()
+        XCTAssertEqual(model.fleet.diffs[agent.agentId]?.lines, ["fresh response"])
+        XCTAssertNil(model.fleet.diffs[agent.agentId]?.error)
+    }
+}
+
 // MARK: - #267 read-only issue browser (V3: chips + inline detail)
 
 @MainActor
@@ -4876,7 +5330,7 @@ final class IssueBrowserTests: XCTestCase {
     func testDemoIssuesSeedMirrorsApprovedRows() throws {
         let seeded = DemoFleet.seedIssues()
         // Open #267 with a body + comment window + authoritative total.
-        let atlas = try XCTUnwrap(seeded.repos["atlas-board"])
+        let atlas = try XCTUnwrap(seeded.repos["demo-atlas"])
         let issue9007 = try XCTUnwrap(atlas.first { $0.number == 9007 })
         XCTAssertEqual(issue9007.state, "open")
         XCTAssertNotNil(issue9007.body)
@@ -4885,7 +5339,7 @@ final class IssueBrowserTests: XCTestCase {
         // Closed bucket exists (proves the closed filter).
         XCTAssertTrue(atlas.contains { $0.state == "closed" })
         // Repos are the tracked fleets.
-        XCTAssertEqual(Set(seeded.repos.keys), ["atlas-board", "signal-grove", "paper-orchard"])
+        XCTAssertEqual(Set(seeded.repos.keys), ["demo-atlas", "demo-grove", "demo-orchard"])
     }
 
     /// #280: the demo seed must mirror the live wire contract — the daemon
@@ -4895,12 +5349,669 @@ final class IssueBrowserTests: XCTestCase {
     /// same ordering the daemon's CREATED_AT sort produces.
     func testDemoCommentWindowIsNewestFirst() throws {
         let seeded = DemoFleet.seedIssues()
-        let issue9007 = try XCTUnwrap(seeded.repos["atlas-board"]?.first { $0.number == 9007 })
+        let issue9007 = try XCTUnwrap(seeded.repos["demo-atlas"]?.first { $0.number == 9007 })
         let stamps = issue9007.comments.map(\.createdAt)
         XCTAssertFalse(stamps.isEmpty, "the demo comment window is non-empty")
         let rendered = stamps.map { $0 ?? "" }
         XCTAssertEqual(rendered, rendered.sorted(by: >),
                        "demo comments must render newest-first like the live wire")
         XCTAssertEqual(rendered.first, "2026-08-28T15:10:00Z")
+    }
+}
+
+// MARK: - #331 Terminal attach lifecycle
+
+private final class ScriptedTerminalSession: @unchecked Sendable, TerminalAttachSession {
+    enum Behavior: Sendable {
+        case failure(TerminalAttachError)
+        case frameAndWait(TerminalFrame)
+    }
+
+    private let lock = NSLock()
+    private var behaviors: [Behavior]
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var closed = false
+    private var closeCountStorage = 0
+    let started = AsyncCount()
+
+    init(_ behaviors: [Behavior]) {
+        self.behaviors = behaviors
+    }
+
+    var closeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return closeCountStorage
+    }
+
+    private func nextBehavior() -> Behavior {
+        lock.lock()
+        defer { lock.unlock() }
+        closed = false
+        return behaviors.isEmpty ? .failure(.network) : behaviors.removeFirst()
+    }
+
+    func connect(worktree _: CorralWorktree,
+                 onFrame: @escaping @Sendable (TerminalFrame) -> Void) async throws {
+        started.increment()
+        let behavior = nextBehavior()
+        switch behavior {
+        case .failure(let error):
+            throw error
+        case .frameAndWait(let frame):
+            onFrame(frame)
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if closed {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+        }
+    }
+
+    func close() {
+        lock.lock()
+        closeCountStorage += 1
+        closed = true
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume()
+    }
+}
+
+@MainActor
+final class TerminalAttachLifecycleRegressionTests: XCTestCase {
+    private func worktree() -> CorralWorktree {
+        CorralWorktree(repo: "corral", branch: "test", path: "/tmp/corral",
+                       workspaceId: "herdr:test", paneId: nil, isPrunable: false,
+                       dirty: false, agentAttached: true, currentFocus: true)
+    }
+
+    func testUnavailableWorktreeIsRejectedBeforeOpeningTheSocket() async {
+        guard let host = URL(string: "http://127.0.0.1:1") else {
+            return XCTFail("test URL must be valid")
+        }
+        let client = TerminalAttachClient(
+            host: host,
+            session: URLSession(configuration: .ephemeral),
+            keyId: "test-key",
+            signer: DeviceSigner(key: Curve25519.Signing.PrivateKey()))
+        let unavailable = CorralWorktree(
+            repo: "corral",
+            branch: "test",
+            path: "",
+            workspaceId: "",
+            paneId: nil,
+            isPrunable: false,
+            dirty: false,
+            agentAttached: false,
+            currentFocus: false)
+
+        do {
+            try await client.connect(worktree: unavailable) { _ in }
+            XCTFail("an unavailable worktree must not start a terminal")
+        } catch let error as LocalizedError {
+            XCTAssertEqual(error.errorDescription, "Terminal worktree is unavailable.")
+        } catch {
+            XCTFail("unexpected terminal error: \(error)")
+        }
+    }
+
+    func testWebSocketURLUsesTheTransportSchemeWithoutChangingTheHost() {
+        guard let http = URL(string: "http://daemon.example:8474/base") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertEqual(TerminalAttachClient.websocketURL(for: http)?.absoluteString,
+                       "ws://daemon.example:8474/base/v1/terminal")
+        guard let https = URL(string: "https://daemon.example/base") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertEqual(TerminalAttachClient.websocketURL(for: https)?.absoluteString,
+                       "wss://daemon.example/base/v1/terminal")
+        guard let file = URL(string: "file:///tmp/daemon") else {
+            return XCTFail("test URL must be valid")
+        }
+        XCTAssertNil(TerminalAttachClient.websocketURL(for: file))
+    }
+
+    func testConnectUsesTheNormalizedWebSocketScheme() async {
+        guard let host = URL(string: "http://127.0.0.1:1") else {
+            return XCTFail("test URL must be valid")
+        }
+        let client = TerminalAttachClient(
+            host: host,
+            session: URLSession(configuration: .ephemeral),
+            keyId: "test-key",
+            signer: DeviceSigner(key: Curve25519.Signing.PrivateKey()))
+        do {
+            try await client.connect(worktree: worktree()) { _ in }
+            XCTFail("a refused WebSocket must not report success")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .network)
+        } catch {
+            XCTFail("unexpected terminal error: \(error)")
+        }
+    }
+
+    func testMalformedAndOutOfOrderMessagesAreReportedAtTheClientBoundary() {
+        do {
+            _ = try TerminalAttachClient.parseMessage("not json", afterOpen: false)
+            XCTFail("malformed terminal data must be rejected")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .protocolError("Terminal sent a malformed frame."))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        do {
+            _ = try TerminalAttachClient.parseMessage(
+                #"{"type":"frame","ansi":"screen","cursor_x":1,"cursor_y":2}"#,
+                afterOpen: false)
+            XCTFail("a frame before opened must be rejected")
+        } catch let error as TerminalAttachError {
+            XCTAssertEqual(error, .protocolError("Terminal frame arrived before handshake."))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(try? TerminalAttachClient.parseMessage(#"{"type":"opened"}"#, afterOpen: false),
+                       .opened)
+    }
+
+    func testProductionTerminalLifecycleSurfacesFailureThenStreamsAndCleansUp() async {
+        let frame = TerminalFrame(type: "frame", ansi: "screen", cursorX: 8, cursorY: 4)
+        let fake = ScriptedTerminalSession([
+            .failure(.server(kind: "terminal_unavailable", message: "Terminal worktree is unavailable.")),
+            .frameAndWait(frame)
+        ])
+        let model = TerminalAttachSessionModel(client: fake, worktree: worktree())
+
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal worktree is unavailable."))
+
+        model.retry()
+        let run = Task { @MainActor in await model.start() }
+        let didStart = await fake.started.waitFor(atLeast: 2)
+        XCTAssertTrue(didStart)
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(model.state, .connected)
+        XCTAssertEqual(model.output, "screen")
+        XCTAssertEqual(model.cursor.0, 8)
+        XCTAssertEqual(model.cursor.1, 4)
+
+        model.stop()
+        await run.value
+        XCTAssertGreaterThanOrEqual(fake.closeCount, 2,
+                                    "retry and dismissal both close the terminal")
+        XCTAssertNotEqual(model.state, .failed("Terminal connection closed."))
+    }
+
+    func testHandshakeFailureIsPresentedAsARecoverableError() async {
+        let fake = ScriptedTerminalSession([.failure(.handshakeTimedOut)])
+        let model = TerminalAttachSessionModel(client: fake, worktree: worktree())
+
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal handshake timed out."))
+        model.stop()
+        XCTAssertEqual(fake.closeCount, 1)
+    }
+
+    func testMissingProductionTerminalInputsBecomeAnInSheetFailureState() async {
+        let model = TerminalAttachSessionModel(client: nil, worktree: nil)
+        await model.start()
+        XCTAssertEqual(model.state, .failed("Terminal worktree is unavailable."))
+    }
+}
+
+final class ContextSplitV3Tests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String,
+                       at: UInt64? = nil) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text, at: at, truncatedBefore: nil)
+    }
+
+    private func agent(_ id: String, state: AgentState, tool: String = "codex") -> Agent {
+        Agent(agentId: id, source: "herdr", tool: tool, state: state,
+              seq: 1, ts: 1, capabilities: ["read_tail"],
+              waitingOn: nil, workspace: Workspace(),
+              displayName: id, title: nil)
+    }
+
+    /// Locked V3 partition: Conversation keeps canonical User/Agent/Tool;
+    /// System/Unknown move to Harness activity; nothing is lost or
+    /// reclassified, and relative order is preserved in each partition.
+    func testV3PartitionRoutesKindsWithoutLossOrReordering() {
+        let stream = [
+            block(.system, "s1"),
+            block(.user, "u1"),
+            block(.agent, "a1"),
+            block(.unknown, "k1"),
+            block(.tool, "t1"),
+            block(.system, "s2"),
+            block(.unknown, "k2"),
+        ]
+        let sections = RecentOutputSections.partition(stream)
+        XCTAssertEqual(sections.conversation.map(\.text), ["u1", "a1", "t1"])
+        XCTAssertEqual(sections.harness.map(\.text), ["s1", "k1", "s2", "k2"])
+        XCTAssertEqual(sections.total, stream.count,
+                       "the partition drops nothing")
+    }
+
+    /// Every event keeps an explicit accessibility role with the locked V3
+    /// naming; the surface never decides identity by text inspection.
+    func testV3AccessibleRolesAreExplicitAndLocked() {
+        let sections = RecentOutputSections.partition([
+            block(.user, "u"), block(.agent, "a"), block(.tool, "t"),
+            block(.system, "s"), block(.unknown, "k"),
+        ])
+        XCTAssertEqual(sections.context(for: block(.user, "u"))
+            .accessibilityRole(block(.user, "u")), "You said")
+        XCTAssertEqual(sections.context(for: block(.agent, "a"))
+            .accessibilityRole(block(.agent, "a")), "Assistant")
+        XCTAssertEqual(sections.context(for: block(.tool, "t"))
+            .accessibilityRole(block(.tool, "t")), "Tool")
+        XCTAssertEqual(sections.context(for: block(.system, "s"))
+            .accessibilityRole(block(.system, "s")), "Diagnostic")
+        XCTAssertEqual(sections.context(for: block(.unknown, "k"))
+            .accessibilityRole(block(.unknown, "k")), "Unknown activity")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.system, "boom")),
+                       "Diagnostic: boom")
+        XCTAssertEqual(RecentOutputRender.accessibilityLabel(block(.unknown, "raw")),
+                       "Unknown activity: raw")
+    }
+
+    /// Session status is built ONLY from already-authoritative structured
+    /// values; unavailable values are omitted, never invented from prose.
+    func testV3SessionStatusUsesOnlyStructuredFieldsAndOmitsUnknowns() {
+        let metadata = RecentOutputMetadata(model: "demo-model", effort: "high",
+                                            worktree: nil)
+        let status = RecentSessionStatusModel.status(
+            agent: agent("herdr:x", state: .working),
+            tail: nil, fresh: true, metadata: metadata)
+        XCTAssertEqual(status.state, "Working · live")
+        XCTAssertEqual(status.session, "herdr:x")
+        XCTAssertEqual(status.tool, "demo-model",
+                       "the canonical metadata model wins over the source tool")
+        XCTAssertEqual(status.effort, "high")
+        XCTAssertNil(status.worktree, "no worktree value -> omitted, not guessed")
+
+        let plain = RecentSessionStatusModel.status(
+            agent: agent("herdr:y", state: .idle, tool: "claude"),
+            tail: nil, fresh: false, metadata: RecentOutputMetadata())
+        XCTAssertEqual(plain.state, "Idle")
+        XCTAssertEqual(plain.tool, "claude",
+                       "the structured source tool is already authoritative")
+        XCTAssertNil(plain.effort)
+        XCTAssertNil(plain.worktree)
+    }
+
+    /// The seeded demo fixture exercises the V3 split: canonical System and
+    /// Unknown blocks land in Harness activity, and the conversation keeps
+    /// the user/agent/tool run, deterministically. #328: the divider-only
+    /// system block is a presentation separator — it stays in the harness
+    /// partition (never dropped) but never counts as an event.
+    func testV3DemoSeedCarriesHarnessAndConversationBlocks() throws {
+        let seeded = DemoFleet.seed(rev: 1)
+        let featured = try XCTUnwrap(seeded[DemoFleet.featuredAgentID])
+        let demoBlocks = DemoFleet.recentBlocks(for: featured).map {
+            TranscriptBlock(kind: $0.kind, text: $0.text,
+                            at: nil, truncatedBefore: $0.truncatedBefore)
+        }
+        let sections = RecentOutputSections.partition(demoBlocks)
+        XCTAssertEqual(sections.harness.map(\.kind),
+                       [.system, .system, .unknown, .unknown],
+                       "demo harness activity carries two Diagnostics + two Unknown activities")
+        XCTAssertEqual(sections.conversation.map(\.kind),
+                       [.agent, .user, .agent, .tool])
+        XCTAssertFalse(sections.harness.isEmpty)
+        XCTAssertEqual(sections.harnessEventCount, 3,
+                       "the divider-only demo block never inflates the count")
+    }
+
+    /// #330 AC5 evidence: the harness-only demo session has zero attributed
+    /// conversation events — the honest empty state must render — while its
+    /// Harness activity stays fully reachable.
+    func testV3HarnessOnlyDemoSeedFlagsHonestEmptyConversation() throws {
+        let seeded = DemoFleet.seed(rev: 1)
+        let harnessOnly = try XCTUnwrap(seeded[DemoFleet.harnessOnlyAgentID])
+        let blocks = DemoFleet.recentBlocks(for: harnessOnly).map {
+            TranscriptBlock(kind: $0.kind, text: $0.text,
+                            at: nil, truncatedBefore: $0.truncatedBefore)
+        }
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertTrue(sections.conversation.isEmpty)
+        XCTAssertTrue(sections.hasNoAttributedConversation,
+                      "the harness-only window must flag the honest empty state")
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown, .system, .unknown])
+        XCTAssertFalse(sections.harness.isEmpty,
+                       "Harness activity stays reachable alongside the empty state")
+    }
+
+    /// Real production wiring: the Recent-output view derives its sections
+    /// through `RecentOutputSections.displaySections(from:)` — the exact read
+    /// path the body calls. If the surface ever renders the unpartitioned
+    /// stream (every block in Conversation), the harness blocks reappear in
+    /// the conversation partition and this fails.
+    func testV3ProductionReadPathPartitionsSnapshotRows() {
+        let visibleRows: [RecentOutputRow] = [
+            .block(block(.agent, "a1")),
+            .block(block(.system, "s1")),
+            .block(block(.user, "u1")),
+            .block(block(.unknown, "k1")),
+            .block(block(.tool, "t1")),
+        ]
+        let sections = RecentOutputSections.displaySections(from: visibleRows)
+        XCTAssertEqual(sections.conversation.map(\.kind), [.agent, .user, .tool])
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown])
+        XCTAssertEqual(sections.total, visibleRows.count,
+                       "the production read path drops nothing")
+        XCTAssertTrue(sections.conversation.allSatisfy { block in
+            sections.context(for: block) == .conversation
+        }, "every conversation block still routes as conversation on the read path")
+    }
+
+    /// R5+R6: the REAL production wiring seam, structurally scoped. The
+    /// model helper test above guards `displaySections` itself, but nothing
+    /// previously bound FleetViews to that helper — a compile-capable
+    /// bypass of the view call site (every block in Conversation, harness
+    /// empty) shipped green. This test reads the bundled production source
+    /// (ios/project.yml preBuildScript → FleetViews.swift.txt, byte-identical
+    /// to the compiled file) and scopes EVERY assertion to the actual
+    /// `RecentOutputView.content(snapshot:)` `.loaded` branch — a decoy
+    /// helper elsewhere in the file carrying the same assignment string
+    /// must not satisfy it. All marker lookups fail closed: unique start,
+    /// unique `case .loaded:`, ordered boundaries, non-empty slices.
+    func testV3ProductionViewWiringBindsFleetViewsToDisplaySections() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "FleetViews.swift", withExtension: "txt"),
+            "FleetViews.swift.txt must be bundled with the tests (project.yml preBuildScript)")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let lines = source.components(separatedBy: .newlines)
+
+        // 1. Uniquely locate the owning function.
+        let contentMarker = "private func content(snapshot: RecentOutputSnapshot) -> some View {"
+        let contentStarts = lines.indices.filter { lines[$0].contains(contentMarker) }
+        XCTAssertEqual(contentStarts.count, 1, "content(snapshot:) marker must be unique")
+        let contentStart = try XCTUnwrap(contentStarts.first)
+
+        // 2. Uniquely locate `case .loaded:` inside that function, and the
+        //    production loaded-branch boundary: the branch's final consumer
+        //    is the `harnessActivity(sections: sections)` call, and the next
+        //    function boundary is `private func harnessActivity`.
+        let loadedMarker = "case .loaded:"
+        let loadedStarts = lines[contentStart...].indices.filter {
+            lines[$0].contains(loadedMarker)
+        }
+        XCTAssertEqual(loadedStarts.count, 1, "case .loaded: must be unique inside content(snapshot:)")
+        let loadedStart = try XCTUnwrap(loadedStarts.first)
+
+        let harnessCallMarker = "harnessActivity(sections: sections)"
+        let harnessCalls = lines[loadedStart...].indices.filter {
+            lines[$0].contains(harnessCallMarker)
+        }
+        XCTAssertEqual(harnessCalls.count, 1,
+                       "harnessActivity(sections: sections) must be unique inside the loaded branch")
+        let harnessCall = try XCTUnwrap(harnessCalls.first)
+
+        let harnessFuncMarker = "private func harnessActivity"
+        let harnessFunc = try XCTUnwrap(
+            lines[harnessCall...].firstIndex(where: { $0.contains(harnessFuncMarker) }),
+            "private func harnessActivity must follow the loaded branch")
+        XCTAssertTrue(harnessFunc > harnessCall,
+                      "function boundary must be ordered after the loaded branch")
+
+        // 3. The loaded-branch prelude (case line through the ScrollViewReader
+        //    opening): exactly one `let sections = ...` assignment, exactly
+        //    through displaySections, and NO direct RecentOutputSections(...)
+        //    constructor/bypass.
+        let scrollReader = try XCTUnwrap(
+            lines[loadedStart...harnessCall].firstIndex(where: {
+                $0.contains("ScrollViewReader { proxy in")
+            }),
+            "loaded branch must open its ScrollViewReader")
+        let prelude = lines[loadedStart...scrollReader]
+
+        let sectionAssignments = prelude.filter { $0.contains("let sections =") }
+        XCTAssertEqual(sectionAssignments.count, 1,
+                       "the loaded-branch prelude must contain exactly one sections assignment")
+        let assignment = try XCTUnwrap(sectionAssignments.first)
+        XCTAssertTrue(
+            assignment.contains(
+                "RecentOutputSections.displaySections(from: snapshot.visibleRows)"),
+            "the loaded-branch assignment must be exactly displaySections(from: snapshot.visibleRows)")
+        XCTAssertFalse(
+            prelude.contains { $0.contains("RecentOutputSections(") },
+            "the loaded-branch prelude must not contain a direct RecentOutputSections( constructor/bypass")
+
+        // 4. The paired render consumers must live in the SAME loaded-branch
+        //    slice (case .loaded: … harnessActivity(sections: sections)),
+        //    not elsewhere in the file.
+        let loadedSlice = lines[loadedStart...harnessCall]
+        XCTAssertFalse(loadedSlice.isEmpty, "the loaded-branch slice must be non-empty")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains("identifiedConversationRows(sections)") },
+            "Conversation must render identifiedConversationRows(sections) inside the loaded branch")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains("previousBlock(in: sections.conversation, at: index)") },
+            "Conversation rows must page against sections.conversation inside the loaded branch")
+        XCTAssertTrue(
+            loadedSlice.contains { $0.contains(harnessCallMarker) },
+            "Harness activity must consume the same sections object inside the loaded branch")
+    }
+
+    // MARK: - #328 divider-only Harness cards
+
+    /// Divider-only System/Unknown blocks are presentation separators: they
+    /// never count toward the Harness activity label (AC1) and a divider-only
+    /// payload leaves the section with zero events (AC2).
+    func testHarnessEventCountExcludesDividerOnlyBlocks() {
+        let sections = RecentOutputSections.partition([
+            block(.system, "────────────────"),
+            block(.system, "Missing env var: OPENROUTER_API_KEY"),
+            block(.unknown, "raw pane line"),
+            block(.unknown, "──────"),
+        ])
+        XCTAssertEqual(sections.harness.count, 4, "the partition itself drops nothing")
+        XCTAssertEqual(sections.harnessEventCount, 2,
+                       "divider-only blocks never inflate the outside-conversation count")
+        XCTAssertTrue(sections.hasNoAttributedConversation,
+                      "a harness-only window legitimately flags the honest empty state")
+    }
+
+    func testDividerOnlyHarnessPayloadHasZeroEvents() {
+        let sections = RecentOutputSections.partition([
+            block(.system, "────────────────"),
+            block(.unknown, "┄┄┄┄┄┄"),
+        ])
+        XCTAssertEqual(sections.harnessEventCount, 0,
+                       "AC2: a divider-only payload has no harness events — the section hides")
+    }
+
+    /// The shared seam: the same classifier the conversation path uses
+    /// (isDividerRun) is exposed as the block-level seam both paths consult.
+    func testSharedDividerSeamClassifiesBlocks() {
+        XCTAssertTrue(RecentOutputRender.isDividerBlock(block(.system, "───")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.system, "let sep = \"────\";")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.unknown, "─── 40% done ───")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.unknown, "raw text")))
+    }
+
+    // MARK: - #330 honest empty Conversation state
+
+    func testNoAttributedConversationStateIsExplicitAndHonest() {
+        // AC5: a window with fetched content but zero attributed conversation
+        // events flags the explicit empty state; conversation-only or mixed
+        // windows never do.
+        XCTAssertTrue(RecentOutputSections.partition([
+            block(.system, "s"), block(.unknown, "k"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([
+            block(.agent, "a"), block(.system, "s"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([
+            block(.agent, "a"),
+        ]).hasNoAttributedConversation)
+        XCTAssertFalse(RecentOutputSections.partition([]).hasNoAttributedConversation)
+        XCTAssertEqual(RecentOutputRender.noAttributedConversationMessage,
+                       "No attributed conversation in this window")
+    }
+
+    // MARK: - #330 live-session golden fixture (cross-client kinds/order)
+
+    /// AC6: the daemon-emitted live-session golden fixture (the same file
+    /// egui consumes) decodes into the identical kinds/order on iOS, and the
+    /// V3 partition yields a NON-EMPTY Conversation plus preserved Harness.
+    func testLiveSessionGoldenFixtureRendersIdenticalKindsAndOrder() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "live_session_exchange_golden", withExtension: "json"),
+            "the daemon live-session golden fixture must be bundled with the tests")
+        let fixture = try String(contentsOf: url, encoding: .utf8)
+        let data = Data("{\"lines\":[\"x\"],\"blocks\":\(fixture)}".utf8)
+        let value = try JSONDecoder().decode(CodableValue.self, from: data)
+        let blocks = try XCTUnwrap(value.tailBlocks)
+
+        XCTAssertEqual(blocks.map(\.kind), [
+            .system, .user, .unknown, .agent, .tool, .system, .unknown,
+        ], "identical kind sequence on every client")
+        let userBlocks = blocks.filter { $0.kind == .user }
+        XCTAssertEqual(userBlocks.count, 1, "the operator prompt is exactly-once user")
+        XCTAssertEqual(userBlocks.first?.promptRequestId, "req-prompt")
+        XCTAssertEqual(userBlocks.first?.text, "ship the canonical transcript stream")
+
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertEqual(sections.conversation.map(\.kind), [.user, .agent, .tool],
+                       "a supported live session renders a NON-EMPTY Conversation")
+        XCTAssertEqual(sections.harness.map(\.kind), [.system, .unknown, .system, .unknown],
+                       "Harness content is preserved outside the conversation")
+        XCTAssertEqual(sections.harnessEventCount, 3,
+                       "the leading chrome rail is a presentation divider, not an event")
+        XCTAssertFalse(sections.hasNoAttributedConversation)
+    }
+
+    /// AC7 RED baseline: the SAME fixture reverted to all Unknown must fail
+    /// the non-empty-Conversation contract (asserted here so the mutation
+    /// proof has an in-suite anchor).
+    func testLiveSessionFixtureRevertedToAllUnknownBreaksConversation() {
+        let blocks: [TranscriptBlock] = [
+            block(.unknown, "──────────────────────────────────────"),
+            block(.unknown, "orch-session ❯ ship the canonical transcript stream"),
+            block(.unknown, "Canonical stream wired end to end."),
+            block(.unknown, "Should I proceed with the destructive migration?"),
+            block(.unknown, "$ cargo build"),
+            block(.unknown, "status: working · esc to interrupt"),
+        ]
+        let sections = RecentOutputSections.partition(blocks)
+        XCTAssertTrue(sections.conversation.isEmpty,
+                      "all-Unknown fixture must empty the conversation (the RED state the production seam fixes)")
+        XCTAssertTrue(sections.hasNoAttributedConversation)
+    }
+}
+
+// MARK: - #328 / #329 / #330 production-wiring regression (decoy-resistant)
+
+/// The view-layer wiring for the three Recent-output defect boundaries,
+/// pinned against the REAL bundled production source (the same
+/// FleetViews.swift.txt the R6 wiring test reads — byte-identical to the
+/// compiled file). Every assertion is scoped to the owning function's slice
+/// and fails closed on missing/duplicated markers, so a compile-capable
+/// bypass of the production call sites (with or without a decoy helper
+/// carrying the same strings elsewhere) turns these tests RED.
+final class RecentOutputDefectWiringTests: XCTestCase {
+
+    private func bundledLines() throws -> [String] {
+        let url = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(
+                forResource: "FleetViews.swift", withExtension: "txt"),
+            "FleetViews.swift.txt must be bundled with the tests (project.yml preBuildScript)")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        return source.components(separatedBy: .newlines)
+    }
+
+    /// Slice from the first line containing `start` to the first line
+    /// containing `end` AFTER it; both markers must exist and be ordered.
+    private func slice(_ lines: [String], start: String, end: String) throws -> [String] {
+        let startIdx = try XCTUnwrap(
+            lines.firstIndex(where: { $0.contains(start) }),
+            "missing start marker: \(start)")
+        let endIdx = try XCTUnwrap(
+            lines[startIdx...].firstIndex(where: { $0.contains(end) }),
+            "missing end marker after start: \(end)")
+        XCTAssertTrue(endIdx > startIdx, "end marker must follow start marker")
+        return Array(lines[startIdx...endIdx])
+    }
+
+    /// #328 AC4/AC5: Harness activity consumes the SHARED divider seam and
+    /// counts only meaningful events — the exact production call sites a
+    /// bypass would have to skip.
+    func testHarnessActivityUsesSharedDividerSeamAndEventCount() throws {
+        let lines = try bundledLines()
+        let harness = try slice(lines,
+                                start: "private func harnessActivity",
+                                end: "private func identifiedConversationRows")
+
+        // The count is the MEANINGFUL event count, not the raw partition.
+        XCTAssertTrue(harness.contains { $0.contains("sections.harnessEventCount") },
+                      "harnessActivity must compute the meaningful event count")
+        XCTAssertTrue(harness.contains { $0.contains("\\(eventCount) outside conversation") },
+                      "the activity label must render the event count, not the raw harness count")
+        XCTAssertFalse(harness.contains { $0.contains("sections.harness.count) outside conversation") },
+                       "the raw harness count must never reach the label")
+
+        // Divider-only blocks render through the shared seam as separators.
+        XCTAssertTrue(harness.contains { $0.contains("RecentOutputRender.isDividerBlock(block)") },
+                      "harness rows must consult the shared divider seam")
+        let dividerBranches = harness.filter { $0.contains("RecentOutputRender.isDividerBlock(block)") }
+        XCTAssertEqual(dividerBranches.count, 1,
+                       "exactly one seam consult inside the harness row loop")
+
+        // The whole file shares ONE seam: the conversation path uses the
+        // same classifier (two consult sites total: harness + conversation).
+        let seamSites = lines.filter { $0.contains("RecentOutputRender.isDividerBlock(block)") }
+        XCTAssertEqual(seamSites.count, 2,
+                       "conversation and harness must both consult the same seam")
+    }
+
+    /// #329 AC6: the expanded Harness payload owns a BOUNDED vertical scroll
+    /// inside the DisclosureGroup — removing the owning scroll/container
+    /// constraint must fail this test.
+    func testHarnessExpandedPayloadOwnsBoundedVerticalScroll() throws {
+        let lines = try bundledLines()
+        let harness = try slice(lines,
+                                start: "private func harnessActivity",
+                                end: "private func identifiedConversationRows")
+
+        XCTAssertTrue(harness.contains { $0.contains("DisclosureGroup(isExpanded: $harnessExpanded)") },
+                      "the harness payload must stay inside the DisclosureGroup")
+        XCTAssertTrue(harness.contains { $0.contains("ScrollView(.vertical)") },
+                      "the expanded payload must own a vertical scroll")
+        XCTAssertTrue(harness.contains { $0.contains("RecentOutputLayout.harnessViewportHeight") },
+                      "the payload scroll must be bounded by the layout constant")
+        XCTAssertEqual(
+            harness.filter { $0.contains("ScrollView(.vertical)") }.count, 1,
+            "the harness payload must own exactly one scroll")
+    }
+
+    /// #330 AC5: the loaded branch renders the explicit honest empty state
+    /// exactly when the window has no attributed conversation events.
+    func testLoadedBranchRendersHonestEmptyConversationState() throws {
+        let lines = try bundledLines()
+        let loaded = try slice(lines,
+                               start: "case .loaded:",
+                               end: "private func harnessActivity")
+
+        XCTAssertTrue(loaded.contains { $0.contains("sections.hasNoAttributedConversation") },
+                      "the loaded branch must gate on the honest empty-state condition")
+        XCTAssertTrue(loaded.contains { $0.contains("RecentOutputRender.noAttributedConversationMessage") },
+                      "the loaded branch must render the explicit message")
+        XCTAssertEqual(
+            loaded.filter { $0.contains("hasNoAttributedConversation") }.count, 1,
+            "the condition must be consulted exactly once inside the loaded branch")
     }
 }

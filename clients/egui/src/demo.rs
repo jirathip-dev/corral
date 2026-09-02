@@ -23,6 +23,13 @@ pub struct DemoData {
     pub issues: BTreeMap<String, Vec<GhIssueRef>>,
     /// Sanitized transcript lines served through the normal read-tail cache.
     pub recent_output: Vec<String>,
+    /// #316 V3: canonical semantic blocks (same wire shape as the daemon's
+    /// read_tail `blocks`). Present = the demo Recent-output surface renders
+    /// the real Conversation / Harness activity context split; absent = the
+    /// legacy lines-only fallback. Stored as raw wire entries and parsed by
+    /// the SAME tolerant `parse_tail_blocks` path as live results.
+    #[serde(default)]
+    pub recent_output_blocks: Vec<serde_json::Value>,
 }
 
 const FIXTURE: &str = include_str!("../assets/demo-fixture.json");
@@ -43,6 +50,20 @@ pub fn recent_tail() -> Vec<String> {
         .into_iter()
         .map(|line| scrub_demo_icons(&line))
         .collect()
+}
+
+/// #316 V3: fixture-backed canonical blocks, parsed by the same tolerant
+/// wire path as live read_tail results (missing/malformed entries skipped).
+pub fn recent_tail_blocks() -> Vec<crate::drive::CanonicalBlock> {
+    let mut blocks = {
+        crate::drive::parse_tail_blocks(
+            &serde_json::json!({ "blocks": load().recent_output_blocks }),
+        )
+    };
+    for block in &mut blocks {
+        block.text = scrub_demo_icons(&block.text);
+    }
+    blocks
 }
 
 fn scrub_demo_icons(line: &str) -> String {

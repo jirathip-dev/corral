@@ -398,21 +398,17 @@ enum RecentOutputModel {
 
     private static func tailBlocks(from pane: TailPane) -> [TranscriptBlock] {
         if !pane.blocks.isEmpty {
+            // #315: the daemon's canonical blocks are the ONLY semantic
+            // source — kinds and order pass through untouched.
             return pane.blocks
         }
+        // #315: legacy daemon fallback (raw tail lines, no canonical
+        // stream). The old client-side role reclassification
+        // (`›`/`user:`/`$` shape guesses) is REMOVED — lines without
+        // provenance render as unknown terminal content, attributed to
+        // nobody.
         return pane.lines.map { line in
-            TranscriptBlock(kind: kind(for: line), text: line)
-        }
-    }
-
-    private static func kind(for role: String) -> TranscriptBlockKind {
-        switch role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "user", "you", "prompt":
-            return .user
-        case "tool", "system", "command":
-            return .tool
-        default:
-            return .agent
+            TranscriptBlock(kind: .unknown, text: line)
         }
     }
 
@@ -463,6 +459,147 @@ struct RecentOutputSnapshot: Equatable, Sendable {
     let identifiedRows: [RecentOutputIdentifiedRow]
 }
 
+// MARK: - #316 V3 Context split (pure canonical-kind partition)
+//
+// One canonical daemon stream, two surfaces. Conversation = canonical
+// User/Agent/Tool; Harness activity = canonical System/Unknown, order
+// preserved within each partition, nothing dropped. No text, provider,
+// harness, or model-name inspection exists anywhere in this file — the
+// daemon's kind is the only input.
+
+/// #316 V3: the accessible role of one canonical event. Every event keeps an
+/// explicit role; visible speaker text only appears at semantic transitions.
+enum RecentBlockContext: Equatable, Sendable {
+    case conversation
+    case harness
+
+    /// VoiceOver label role for a canonical event (V3 locked naming).
+    func accessibilityRole(_ block: TranscriptBlock) -> String {
+        switch self {
+        case .conversation:
+            switch block.kind {
+            case .user: return "You said"
+            case .agent: return "Assistant"
+            case .tool: return "Tool"
+            case .system, .unknown: return "Unknown activity"
+            }
+        case .harness:
+            switch block.kind {
+            case .system: return "Diagnostic"
+            default: return "Unknown activity"
+            }
+        }
+    }
+}
+
+/// One partition of the canonical stream. `conversation` keeps User/Agent/Tool
+/// blocks, `harness` keeps System/Unknown; both preserve relative order and
+/// neither drops content. Total is preserved: harness.count ==
+/// total - conversation.count by construction.
+struct RecentOutputSections: Equatable, Sendable {
+    let conversation: [TranscriptBlock]
+    let harness: [TranscriptBlock]
+
+    /// Canonical-kind partition of the daemon's ordered blocks.
+    static func partition(_ blocks: [TranscriptBlock]) -> RecentOutputSections {
+        var conversation: [TranscriptBlock] = []
+        var harness: [TranscriptBlock] = []
+        for block in blocks {
+            switch block.kind {
+            case .user, .agent, .tool:
+                conversation.append(block)
+            case .system, .unknown:
+                harness.append(block)
+            }
+        }
+        return RecentOutputSections(conversation: conversation, harness: harness)
+    }
+
+    /// The production read path: the sections the Recent-output surface
+    /// renders, derived from the snapshot's visible block rows. The view must
+    /// call THIS — bypassing it (e.g. rendering every block as conversation)
+    /// is a V3 wiring regression caught by ContextSplitV3Tests.
+    static func displaySections(from visibleRows: [RecentOutputRow]) -> RecentOutputSections {
+        partition(visibleRows.compactMap { row -> TranscriptBlock? in
+            if case .block(let block) = row { return block }
+            return nil
+        })
+    }
+
+    var total: Int { conversation.count + harness.count }
+
+    /// #328: Harness activity events are the MEANINGFUL (non-divider) blocks.
+    /// Divider-only blocks are presentation separators — they never count
+    /// toward the `outside conversation` count and never render as cards.
+    var harnessEventCount: Int {
+        harness.filter { !RecentOutputRender.isDividerBlock($0) }.count
+    }
+
+    /// #330 AC5: a loaded window with no attributed conversation events
+    /// (only System/Unknown) gets an explicit honest empty state instead of
+    /// an unexplained blank Conversation region — Harness stays reachable.
+    var hasNoAttributedConversation: Bool {
+        conversation.isEmpty && !harness.isEmpty
+    }
+
+    func context(for block: TranscriptBlock) -> RecentBlockContext {
+        switch block.kind {
+        case .user, .agent, .tool: return .conversation
+        case .system, .unknown: return .harness
+        }
+    }
+}
+
+// MARK: - #316 V3 structured Session status
+//
+// Session status renders ONLY already-authoritative structured read-model
+// values. Unavailable values are omitted, never inferred from terminal prose
+// or fabricated.
+
+struct RecentSessionStatus: Equatable, Sendable {
+    let state: String
+    let session: String?
+    let tool: String?
+    let effort: String?
+    let worktree: String?
+}
+
+enum RecentSessionStatusModel {
+    /// Project the structured session status for one agent. `fresh` is the
+    /// already-computed live/paused freshness used by the header indicator.
+    static func status(agent: Agent,
+                       tail: TailPane?,
+                       fresh: Bool,
+                       metadata: RecentOutputMetadata) -> RecentSessionStatus {
+        RecentSessionStatus(
+            state: SessionStatusText.stateLabel(agent: agent, fresh: fresh),
+            session: SessionStatusText.sessionLabel(agent: agent),
+            tool: SessionStatusText.toolLabel(agent: agent, metadata: metadata),
+            effort: metadata.effort,
+            worktree: metadata.worktree ?? agent.workspace.worktreePath)
+    }
+}
+
+/// Shared human-facing text for the structured session-status values (pure so
+/// both the view and tests assert the same strings).
+enum SessionStatusText {
+    static func stateLabel(agent: Agent, fresh: Bool) -> String {
+        let state = agent.state.displayName
+        return fresh ? "\(state) · live" : state
+    }
+
+    static func sessionLabel(agent: Agent) -> String? {
+        let id = agent.agentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return id.isEmpty ? nil : id
+    }
+
+    static func toolLabel(agent: Agent, metadata: RecentOutputMetadata) -> String? {
+        if let model = metadata.model { return model }
+        let tool = agent.tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tool.isEmpty ? nil : tool
+    }
+}
+
 // MARK: - Pure block and code helpers
 
 extension RecentOutputRender {
@@ -504,17 +641,28 @@ extension RecentOutputRender {
         return String(command.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
     }
 
+    /// #316 V3: accessible role naming is locked (`You said…`, `Assistant`,
+    /// `Tool`, `Diagnostic`, `Unknown activity`); every event keeps an
+    /// explicit role regardless of surface.
     static func accessibilityLabel(_ block: TranscriptBlock) -> String {
         switch block.kind {
-        case .user: return "You: \(block.text)"
-        case .agent: return "Agent: \(block.text)"
+        case .user: return "You said: \(block.text)"
+        case .agent: return "Assistant: \(block.text)"
         case .tool: return "Tool: \(block.text)"
-        case .system: return "System: \(block.text)"
+        case .system: return "Diagnostic: \(block.text)"
+        // #315: unprovenanced terminal content is named honestly, never
+        // assigned a conversation role.
+        case .unknown: return "Unknown activity: \(block.text)"
         }
     }
 
     static func disclosureAccessibilityLabel(_ block: TranscriptBlock) -> String {
-        let role = block.kind == .system ? "System" : "Tool"
+        let role: String
+        switch block.kind {
+        case .system: role = "Diagnostic"
+        case .unknown: role = "Unknown activity"
+        default: role = "Tool"
+        }
         return "\(role): \(toolSummary(block.text))"
     }
 
@@ -674,6 +822,18 @@ extension RecentOutputRender {
         }
         return sawRun
     }
+
+    /// #328: the ONE divider-vs-content classification seam shared by the
+    /// Conversation and Harness render paths — a divider-only block is a
+    /// presentation separator, never an event card. Both paths consult this
+    /// so they cannot drift again.
+    static func isDividerBlock(_ block: TranscriptBlock) -> Bool {
+        isDividerRun(block.text)
+    }
+
+    /// #330 AC5: the explicit honest empty state for a loaded window with no
+    /// attributed conversation events (Harness activity stays reachable).
+    static let noAttributedConversationMessage = "No attributed conversation in this window"
 
     private static func isDividerScalar(_ scalar: UnicodeScalar) -> Bool {
         (0x2500...0x259F).contains(scalar.value)

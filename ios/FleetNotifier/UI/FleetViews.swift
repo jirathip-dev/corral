@@ -495,6 +495,7 @@ private struct AgentDetailContent: View {
     /// #232: the worktree-diff sheet (lazy paged, grant/capability-gated).
     @State private var diffPresented = false
     @State private var terminalPresented = false
+    @State private var devicesGrantsPresented = false
     @FocusState private var focusPrompt: Bool
 
     private var grants: Set<Capability> { model.actionGrants }
@@ -505,8 +506,29 @@ private struct AgentDetailContent: View {
         model.makeDriveClient()
     }
 
+    private var terminalAvailability: AgentActionAvailability {
+#if DEBUG
+        let demoRegistered = model.mode == .demo
+#else
+        let demoRegistered = false
+#endif
+        return BoardModel.terminalAvailability(
+            agent: agent,
+            grants: grants,
+            isRegistered: demoRegistered ||
+                (model.hostURL != nil && model.keyId != nil && model.signer != nil))
+    }
+
+    private var terminalClient: TerminalAttachClient? {
+        guard let signer = model.signer,
+              let keyId = model.keyId,
+              let host = model.hostURL else { return nil }
+        return TerminalAttachClient(host: host, keyId: keyId, signer: signer)
+    }
+
     private var terminalWorktree: CorralWorktree? {
-        guard let path = agent.workspace.worktreePath, !path.isEmpty,
+        guard agent.capabilities.contains(Capability.attach.rawValue),
+              let path = agent.workspace.worktreePath, !path.isEmpty,
               model.hostURL != nil, model.keyId != nil, model.signer != nil,
               grants.contains(.attach) else { return nil }
         return CorralWorktree(repo: agent.workspace.repo ?? "—",
@@ -531,6 +553,28 @@ private struct AgentDetailContent: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+                if let diff = availability.first(where: { $0.action == .diff }),
+                   !diff.isEnabled {
+                    Text(diff.disabledReason ?? "Diff unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(diff.disabledReason ?? "Diff unavailable")
+                }
+
+                if !terminalAvailability.isEnabled,
+                   let reason = terminalAvailability.disabledReason {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(reason, systemImage: "terminal")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(reason)
+                        Button("Open Devices & Grants", systemImage: "lock.shield") {
+                            devicesGrantsPresented = true
+                        }
+                        .font(.caption.weight(.semibold))
+                        .accessibilityHint("Navigation only; grants are not changed")
+                    }
                 }
 
                 if let waiting = agent.waitingOn, agent.isBlocked,
@@ -564,7 +608,7 @@ private struct AgentDetailContent: View {
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
                     onSend: dispatchPrompt,
-                    toolbar: AnyView(actionToolbar))
+                    toolbar: nil)
                     .frame(minHeight: 260, maxHeight: .infinity)
             } else {
                 RecentOutputView(
@@ -573,7 +617,7 @@ private struct AgentDetailContent: View {
                     drafts: drafts,
                     focusPrompt: $focusPrompt,
                     onSend: dispatchPrompt,
-                    toolbar: AnyView(actionToolbar))
+                    toolbar: nil)
                     .frame(minHeight: 260, maxHeight: .infinity)
             }
 #else
@@ -583,7 +627,7 @@ private struct AgentDetailContent: View {
                 drafts: drafts,
                 focusPrompt: $focusPrompt,
                 onSend: dispatchPrompt,
-                toolbar: AnyView(actionToolbar))
+                toolbar: nil)
                 .frame(minHeight: 260, maxHeight: .infinity)
 #endif
         }
@@ -602,41 +646,29 @@ private struct AgentDetailContent: View {
             AgentDiffSheet(agent: agent, model: model)
         }
         .sheet(isPresented: $terminalPresented) {
-            if let worktree = terminalWorktree,
-               let signer = model.signer,
-               let keyId = model.keyId,
-               let host = model.hostURL {
-                TerminalAttachView(
-                    client: TerminalAttachClient(host: host, keyId: keyId, signer: signer),
-                    worktree: worktree)
-            } else {
-                Text("Terminal unavailable")
-                    .padding()
+            TerminalAttachView(client: terminalClient, worktree: terminalWorktree)
+        }
+        .sheet(isPresented: $devicesGrantsPresented) {
+            DevicesGrantsView(model: model)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                toolbarPrimaryControl
+                toolbarDiffButton
+                overflowMenu
             }
         }
     }
 
-    /// #246 Variant 2 (approved): compact thin toolbar pinned directly
-    /// above the reply field — state-dependent primary (■ Interrupt /
-    /// Answer / Attach), ± Diff (#232 placeholder), ⋯ More overflow, and the
-    /// kill-grant note demoted to one tiny ⓘ line (full sentence in More).
+    /// #308 V1: compact trailing top action group. Interrupt is destructive;
+    /// Diff is evidence/review; More contains secondary actions and recovery.
     private var actionToolbar: some View {
         HStack(spacing: 8) {
             toolbarPrimaryControl
             toolbarDiffButton
             overflowMenu
-            Spacer(minLength: 8)
-            if let killItem = availability.first(where: { $0.action == .kill }),
-               !killItem.isEnabled {
-                Label("no kill grant", systemImage: "info.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Why Kill is disabled: \(killItem.disabledReason ?? "no kill grant")")
-            }
         }
-        .frame(minHeight: 28)
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
+        .frame(minHeight: 44)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent actions")
     }
@@ -690,6 +722,8 @@ private struct AgentDetailContent: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .tint(title == "Interrupt" ? .red : .accentColor)
+        .frame(minWidth: 44, minHeight: 44)
         .disabled(disabled)
         .accessibilityLabel(disabled
                             ? "\(title) unavailable — \(item?.disabledReason ?? "action in progress")"
@@ -707,12 +741,13 @@ private struct AgentDetailContent: View {
         return Button {
             diffPresented = true
         } label: {
-            Text("± Diff")
+            Label("Diff", systemImage: "doc.text.magnifyingglass")
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .frame(minWidth: 44, minHeight: 44)
         .disabled(disabled)
         .accessibilityLabel(disabled
                             ? "Diff unavailable — \(item?.disabledReason ?? "diff fetch in progress")"
@@ -754,13 +789,27 @@ private struct AgentDetailContent: View {
                 }
                 .disabled(!item.isEnabled)
             }
-            if terminalWorktree != nil {
+            let terminal = terminalAvailability
+            Button {
+                terminalPresented = true
+            } label: {
+                Label("Terminal", systemImage: "terminal")
+            }
+            .disabled(!terminal.isEnabled)
+            .accessibilityLabel(terminal.isEnabled ? "Terminal" : "Terminal unavailable")
+            .accessibilityHint(terminal.disabledReason ?? "Open the attached worktree terminal")
+            if let reason = terminal.disabledReason {
                 Button {
-                    terminalPresented = true
+                    // Read-only recovery route; it never changes grants.
+                    devicesGrantsPresented = true
                 } label: {
-                    Label("Terminal", systemImage: "terminal")
+                    Text(reason)
                 }
-                .accessibilityHint("Open the attached worktree terminal")
+                .disabled(true)
+                Button("Open Devices & Grants", systemImage: "lock.shield") {
+                    devicesGrantsPresented = true
+                }
+                .accessibilityHint("Navigation only; grants are not changed")
             }
             if let item = availability.first(where: { $0.action == .kill }) {
                 Button(role: .destructive) {
@@ -784,6 +833,7 @@ private struct AgentDetailContent: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel("More actions")
     }
 
@@ -1008,6 +1058,19 @@ enum RecentOutputAccessibility {
     static func worktreeLabel(_ value: String) -> String { "Worktree: \(value)" }
 }
 
+/// #316 V3 layout constants for the stacked iOS Recent-output surface.
+enum RecentOutputLayout {
+    /// The conversation viewport is height-capped so Session status, Harness
+    /// activity, and the pinned composer below always stay reachable — the
+    /// stacked mirror of the egui narrow-layout bound.
+    static let conversationViewportHeight: CGFloat = 320
+    /// #329: the expanded Harness payload's own vertical scroll owner. The
+    /// bounded viewport keeps the payload inside the Recent-output panel and
+    /// above the pinned composer, and the DisclosureGroup label (the
+    /// collapse control) stays reachable outside the inner scroll.
+    static let harnessViewportHeight: CGFloat = 280
+}
+
 enum RecentOutputPalette {
     static let panelCornerRadius: CGFloat = 8
     /// The approved prototype is a dark-only surface. Explicitly injecting
@@ -1060,6 +1123,19 @@ private struct RecentOutputView: View {
     /// (built by AgentDetailContent, which owns availability + dispatch).
     let toolbar: AnyView?
     @State private var paginationAnchor: String?
+    /// #316 V3: Harness activity is collapsed by default; its content stays
+    /// outside the conversation viewport whether expanded or not.
+    /// #329 evidence: the DEBUG-only launch arg pre-expands it for simulator
+    /// capture (simctl cannot inject the tap); production always collapses.
+    @State private var harnessExpanded = RecentOutputView.demoHarnessExpandedDefault
+
+    private static var demoHarnessExpandedDefault: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(CorralDemoLaunch.harnessExpandedArgument)
+#else
+        false
+#endif
+    }
 
     private var driveClient: DriveClient {
         model.makeDriveClient()
@@ -1085,7 +1161,7 @@ private struct RecentOutputView: View {
                     .padding(.vertical, 8)
                     .accessibilityLabel(availability.disabledReason ?? "Recent output unavailable")
             } else {
-                metadataBar(snapshot: snapshot)
+                sessionStatus(snapshot: snapshot)
                 historyBar(snapshot: snapshot)
                 content(snapshot: snapshot)
             }
@@ -1141,34 +1217,61 @@ private struct RecentOutputView: View {
         .padding(.bottom, 4)
     }
 
+    /// #316 V3 "Session status": OUTSIDE the conversation, structured
+    /// read-model values only (state/freshness, session identity, tool or
+    /// model metadata, effort, worktree). Unavailable values are omitted —
+    /// nothing is inferred from output prose.
     @ViewBuilder
-    private func metadataBar(snapshot: RecentOutputSnapshot) -> some View {
-        HStack(spacing: 6) {
-            let model = snapshot.render.metadata.model ?? agent.tool
-            metadataChip(model, color: RecentOutputPalette.accent)
-                .accessibilityLabel(RecentOutputAccessibility.modelLabel(model))
-            if let effort = snapshot.render.metadata.effort {
-                metadataChip(effort)
-                    .accessibilityLabel(RecentOutputAccessibility.effortLabel(effort))
-            }
-            if let worktree = snapshot.render.metadata.worktree
-                ?? agent.workspace.worktreePath {
-                Text(worktree)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(RecentOutputPalette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(RecentOutputPalette.panel3,
-                                in: Capsule())
-                    .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
-                    .accessibilityLabel(RecentOutputAccessibility.worktreeLabel(worktree))
+    private func sessionStatus(snapshot: RecentOutputSnapshot) -> some View {
+        let fresh = RecentOutputModel.hasFreshNonErrorTail(tail)
+        let status = RecentSessionStatusModel.status(
+            agent: agent, tail: tail, fresh: fresh,
+            metadata: snapshot.render.metadata)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Session status")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(RecentOutputPalette.muted)
+            // Keep the metadata chips (the already-supported canonical
+            // `model effort · path` extraction) as the value carriers so the
+            // #205/#315 contract is preserved; state/session are new
+            // structured rows.
+            HStack(spacing: 6) {
+                Text(status.state)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(RecentOutputPalette.ink)
+                    .accessibilityLabel("State: \(status.state)")
+                if let session = status.session {
+                    metadataChip(session)
+                        .accessibilityLabel("Session: \(session)")
+                }
+                if let tool = status.tool {
+                    metadataChip(tool, color: RecentOutputPalette.accent)
+                        .accessibilityLabel(RecentOutputAccessibility.modelLabel(tool))
+                }
+                if let effort = status.effort {
+                    metadataChip(effort)
+                        .accessibilityLabel(RecentOutputAccessibility.effortLabel(effort))
+                }
+                if let worktree = status.worktree {
+                    Text(worktree)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(RecentOutputPalette.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(RecentOutputPalette.panel3,
+                                    in: Capsule())
+                        .overlay(Capsule().stroke(RecentOutputPalette.line, lineWidth: 1))
+                        .accessibilityLabel(RecentOutputAccessibility.worktreeLabel(worktree))
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Session status")
     }
 
     private func metadataChip(_ text: String, color: Color = RecentOutputPalette.ink) -> some View {
@@ -1219,16 +1322,41 @@ private struct RecentOutputView: View {
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case .loaded:
+            // #316 V3: the canonical stream is partitioned once through the
+            // production read path; Conversation is a bounded viewport (height
+            // cap) so Harness activity and the pinned composer below always
+            // stay reachable, and the conversation rows/counts come from the
+            // Conversation partition only.
+            let sections = RecentOutputSections.displaySections(from: snapshot.visibleRows)
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(snapshot.identifiedRows.enumerated()), id: \.element.id) {
-                            index, identified in
-                            RecentOutputRowView(
-                                row: identified.row,
-                                model: model,
-                                agent: agent,
-                                previousBlock: previousBlock(in: snapshot.visibleRows, at: index))
+                        Text("Conversation")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(RecentOutputPalette.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("Conversation")
+                        if sections.hasNoAttributedConversation {
+                            // #330 AC5: a window with fetched content but no
+                            // attributed conversation events shows an explicit
+                            // honest empty state — never an unexplained blank
+                            // region — while Harness activity stays reachable
+                            // below (outside this scroll).
+                            Text(RecentOutputRender.noAttributedConversationMessage)
+                                .font(.caption)
+                                .foregroundStyle(RecentOutputPalette.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
+                                .accessibilityLabel(RecentOutputRender.noAttributedConversationMessage)
+                        } else {
+                            ForEach(Array(identifiedConversationRows(sections).enumerated()), id: \.element.id) {
+                                index, identified in
+                                RecentOutputRowView(
+                                    row: identified.row,
+                                    model: model,
+                                    agent: agent,
+                                    previousBlock: previousBlock(in: sections.conversation, at: index))
+                            }
                         }
                         Color.clear
                             .frame(height: 1)
@@ -1237,7 +1365,7 @@ private struct RecentOutputView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: RecentOutputLayout.conversationViewportHeight)
                 .onAppear {
                     paginationAnchor = nil
                     scrollToBottom(proxy, animated: false)
@@ -1262,7 +1390,69 @@ private struct RecentOutputView: View {
                     }
                 }
             }
+            harnessActivity(sections: sections)
         }
+    }
+
+    /// #316 V3 "Harness activity": canonical System/Unknown blocks, outside
+    /// the conversation viewport, collapsible, order preserved, content
+    /// complete (Diagnostic / Unknown activity identity), never dropped.
+    /// #328: divider-only blocks are presentation separators — rendered as
+    /// thin rules through the shared seam, never Diagnostic cards, and never
+    /// counted toward the `outside conversation` label; a divider-only
+    /// payload hides the section entirely.
+    /// #329: the expanded payload owns a bounded vertical scroll, so a
+    /// multi-screen Diagnostic/Unknown payload stays inside the panel, above
+    /// the pinned composer, and the collapse control stays reachable.
+    @ViewBuilder
+    private func harnessActivity(sections: RecentOutputSections) -> some View {
+        let eventCount = sections.harnessEventCount
+        // #328 AC2: a divider-only payload has no events — the section is
+        // hidden rather than showing dash-only cards.
+        if eventCount > 0 {
+            VStack(alignment: .leading, spacing: 0) {
+                DisclosureGroup(isExpanded: $harnessExpanded) {
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(RecentOutputModel.identifiedRows(
+                                for: sections.harness.map(RecentOutputRow.block))
+                                .enumerated()), id: \.element.id) { index, identified in
+                                if case .block(let block) = identified.row {
+                                    if RecentOutputRender.isDividerBlock(block) {
+                                        // #328: presentation separator — a
+                                        // thin rule, never a card, never an
+                                        // event.
+                                        Divider()
+                                            .overlay(RecentOutputPalette.line)
+                                            .padding(.vertical, 2)
+                                            .accessibilityHidden(true)
+                                    } else {
+                                        RecentBlockRow(
+                                            block: block,
+                                            showSpeaker: true,
+                                            showTimestamp: true)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    }
+                    .frame(maxHeight: RecentOutputLayout.harnessViewportHeight)
+                } label: {
+                    Text("Harness activity · \(eventCount) outside conversation")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(RecentOutputPalette.muted)
+                }
+                .accessibilityLabel("Harness activity · \(eventCount) outside conversation")
+            }
+        }
+    }
+
+    private func identifiedConversationRows(
+        _ sections: RecentOutputSections
+    ) -> [RecentOutputIdentifiedRow] {
+        RecentOutputModel.identifiedRows(for: sections.conversation.map(RecentOutputRow.block))
     }
 
     @ViewBuilder
@@ -1306,14 +1496,9 @@ private struct RecentOutputView: View {
         }
     }
 
-    private func previousBlock(in rows: [RecentOutputRow], at index: Int) -> TranscriptBlock? {
+    private func previousBlock(in rows: [TranscriptBlock], at index: Int) -> TranscriptBlock? {
         guard index > 0 else { return nil }
-        for position in stride(from: index - 1, through: 0, by: -1) {
-            if case .block(let block) = rows[position] {
-                return block
-            }
-        }
-        return nil
+        return rows[index - 1]
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -1330,7 +1515,15 @@ private struct RecentOutputView: View {
 
     private func loadEarlier(snapshot: RecentOutputSnapshot) {
         guard snapshot.render.canLoadOlder else { return }
-        let anchor = snapshot.identifiedRows.first?.id
+        // Anchor on the first CONVERSATION block row: a history prepend is
+        // measured against the same identified sequence the conversation
+        // renders (the anchor never points into the harness partition).
+        let anchor = RecentOutputModel.identifiedRows(
+            for: RecentOutputSections.partition(snapshot.visibleRows.compactMap { row -> TranscriptBlock? in
+                if case .block(let block) = row { return block }
+                return nil
+            }).conversation.map(RecentOutputRow.block))
+            .first?.id
         guard model.loadEarlierOutput(agentId: agent.agentId) else {
             paginationAnchor = nil
             return
@@ -1420,9 +1613,10 @@ private struct RecentOutputRowView: View {
     var body: some View {
         switch row {
         case .block(let block):
-            if RecentOutputRender.isDividerRun(block.text) {
+            if RecentOutputRender.isDividerBlock(block) {
                 // #253 fallback: residual TUI furniture renders as a real
-                // divider (a thin rule), not as dash-run text.
+                // divider (a thin rule), not as dash-run text. #328: this is
+                // the SAME seam the Harness path consults.
                 Divider()
                     .overlay(RecentOutputPalette.line)
                     .padding(.vertical, 2)
@@ -1497,7 +1691,7 @@ private struct RecentBlockRow: View {
                         agentMessage
                             .accessibilityElement(children: .combine)
                             .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                    case .tool, .system:
+                    case .tool, .system, .unknown:
                         toolMessage
                     }
                 }
@@ -1636,7 +1830,8 @@ private struct RecentBlockRow: View {
         case .user: return "you"
         case .agent: return "assistant"
         case .tool: return "tool"
-        case .system: return "system"
+        case .system: return "diagnostic"
+        case .unknown: return "unknown activity"
         }
     }
 
@@ -1646,6 +1841,7 @@ private struct RecentBlockRow: View {
         case .agent: return RecentOutputPalette.ink
         case .tool: return RecentOutputPalette.accent
         case .system: return RecentOutputPalette.muted
+        case .unknown: return RecentOutputPalette.muted
         }
     }
 }
@@ -2686,6 +2882,22 @@ struct SettingsView: View {
 /// DEVICES (other machines), per-capability toggles that apply immediately,
 /// and Revoke/Re-grant for remote devices — mirroring the approved #250
 /// mockup's grouping and labels. Same host ledger as the board.
+/// Navigation-only wrapper for the recovery destination. Mutations remain
+/// inside the existing admin surface and are never triggered by this route.
+struct DevicesGrantsView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                DeviceAccessSection(model: model)
+            }
+            .navigationTitle("Devices & Grants")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 struct DeviceAccessSection: View {
     @ObservedObject var model: AppModel
     @State private var adminTokenInput = ""
@@ -2873,11 +3085,17 @@ struct AgentDiffSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        model.cancelReadDiff(agentId: agent.agentId)
+                        dismiss()
+                    }
                 }
             }
         }
         .presentationDetents([.large])
+        .onDisappear {
+            model.cancelReadDiff(agentId: agent.agentId)
+        }
     }
 
     @ViewBuilder
@@ -2919,10 +3137,18 @@ struct AgentDiffSheet: View {
             }
             Section("Diff") {
                 if let error = pane.error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .accessibilityLabel("Diff failed: \(error)")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(diffErrorText(error: error, kind: pane.errorKind,
+                                           status: pane.errorStatus))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Diff failed: \(error)")
+                        Button("Retry") {
+                            model.driveReadDiff(agent: agent,
+                                                driveClient: model.makeDriveClient())
+                        }
+                        .font(.footnote.weight(.semibold))
+                    }
                 }
                 if pane.lines.isEmpty && pane.error == nil {
                     Text("No changes in this worktree.")
@@ -2962,6 +3188,13 @@ struct AgentDiffSheet: View {
         "+\(stats.adds)/−\(stats.dels) · \(stats.files) files"
     }
 
+    private func diffErrorText(error: String, kind: String?, status: Int?) -> String {
+        var text = kind.map { "\($0): " } ?? ""
+        text += error
+        if let status { text += " (HTTP \(status))" }
+        return text
+    }
+
     private func diffColor(_ line: String) -> Color {
         if line.hasPrefix("+") {
             return .green
@@ -2980,7 +3213,7 @@ private extension DiffPane {
     /// failure) should render immediately instead of refetching on every
     /// appear.
     var hasLoadedContent: Bool {
-        !lines.isEmpty || !files.isEmpty || error != nil
+        hasLoaded || !lines.isEmpty || !files.isEmpty || error != nil
     }
 }
 

@@ -2176,7 +2176,23 @@ impl HerdrAdapter {
             .and_then(|r| r.text.clone())
             .unwrap_or_default();
         let waiting_on = classify_waiting_on(&matched, &text);
+        let exchange_text = matched.clone();
         let agent_id_for_claim = agent_id.clone();
+        // #330: the structured exchange ledger homed on the shared store —
+        // the agent's blocked question is recorded with its authoritative
+        // role so the read_tail canonical stream can attribute it. Crash
+        // questions are never conversation events.
+        let exchange_role = match waiting_on.kind {
+            crate::core::model::WaitingOnKind::ApproveTool => {
+                Some(crate::core::provenance::ExchangeRole::Tool)
+            }
+            crate::core::model::WaitingOnKind::Menu
+            | crate::core::model::WaitingOnKind::AnswerQuestion => {
+                Some(crate::core::provenance::ExchangeRole::Assistant)
+            }
+            crate::core::model::WaitingOnKind::Crash => None,
+        };
+        let exchange = store.exchange();
         self.update_record(store, &agent_id, &ev.pane_id, move |agent| {
             if agent.state == AgentState::Blocked {
                 let mut waiting_on = waiting_on.clone();
@@ -2186,6 +2202,15 @@ impl HerdrAdapter {
                 // re-derives it and never trusts this stored copy.
                 waiting_on.approval_id =
                     crate::approve::approval_id_for(&agent_id_for_claim, &waiting_on.prompt_hash);
+                if let Some(role) = exchange_role {
+                    exchange.record(crate::core::provenance::ExchangeEvent::new(
+                        &waiting_on.approval_id,
+                        &agent_id_for_claim,
+                        role,
+                        &exchange_text,
+                        now_millis(),
+                    ));
+                }
                 agent.waiting_on = Some(waiting_on);
             }
         })
@@ -3366,6 +3391,194 @@ mod tests {
             .unwrap();
         assert_eq!(cleared.state, AgentState::Working);
         assert!(cleared.waiting_on.is_none());
+    }
+
+    #[tokio::test]
+    async fn blocked_question_is_recorded_into_the_structured_exchange_ledger() {
+        // #330: the agent's STRUCTURED blocked question (pane.output_matched
+        // → waiting_on) is recorded into the store's exchange ledger with
+        // its authoritative role, so the read_tail canonical stream can
+        // attribute it. Leaving blocked clears waiting_on but never the
+        // ledger (the question already happened).
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let agent: AgentInfoWire = serde_json::from_value(fixture_claude()).unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+        let agent_id = "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784";
+        let pane_id = "wQ:p1";
+
+        let status = serde_json::from_value::<StatusChangedWire>(json!({
+            "pane_id": pane_id,
+            "agent_status": "blocked",
+            "agent": "claude",
+            "title": "Fix Blender acceptance gate and run tests",
+            "state_labels": {"waiting_for_input": ""}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&status, &store).await;
+
+        let matched = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": pane_id,
+            "matched_line": "  Do you want to proceed?",
+            "read": {
+                "pane_id": pane_id,
+                "revision": 60,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "truncated": false,
+                "text": "1. Continue\n2. Abort\n"
+            }
+        }))
+        .unwrap();
+        adapter.handle_output_matched(&matched, &store).await;
+
+        assert!(
+            store.exchange().has_events_for(agent_id),
+            "the blocked question must be recorded in the exchange ledger"
+        );
+
+        // The real read path trims the window candidate before binding. The
+        // producer fixture deliberately carries the indented matched_line;
+        // the canonical stream must still attribute that question as Agent.
+        let blocks = crate::core::blocks::canonical_blocks_with_exchange(
+            &["Do you want to proceed?".to_string()],
+            &crate::core::provenance::PromptProvenance::new(),
+            &store.exchange(),
+            agent_id,
+            None,
+        );
+        assert_eq!(
+            blocks.iter().map(|block| block.kind).collect::<Vec<_>>(),
+            vec![crate::core::blocks::TranscriptBlockKind::Agent],
+            "the Herdr matched_line must bind through the canonical read path: {blocks:#?}"
+        );
+
+        let bound = store.exchange().bind_events(
+            agent_id,
+            &[Some("  Do you want to proceed?".to_string())],
+            8,
+        );
+        assert_eq!(
+            bound[0].as_ref().map(|e| e.role),
+            Some(crate::core::provenance::ExchangeRole::Assistant),
+            "an answer-question records the Assistant role"
+        );
+
+        // Leaving blocked clears waiting_on but the ledger entry survives.
+        let working = serde_json::from_value::<StatusChangedWire>(json!({
+            "pane_id": pane_id,
+            "agent_status": "working",
+            "agent": "claude",
+            "title": "Fix Blender acceptance gate and run tests",
+            "state_labels": {}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&working, &store).await;
+        assert!(
+            store.exchange().has_events_for(agent_id),
+            "the structured event outlives the transient waiting_on"
+        );
+
+        // An approve-tool question records the Tool role.
+        let approve = serde_json::from_value::<OutputMatchedWire>(json!({
+            "pane_id": pane_id,
+            "matched_line": "Approve this change?",
+            "read": {
+                "pane_id": pane_id,
+                "revision": 61,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "truncated": false,
+                "text": ""
+            }
+        }))
+        .unwrap();
+        let status = serde_json::from_value::<StatusChangedWire>(json!({
+            "pane_id": pane_id,
+            "agent_status": "blocked",
+            "agent": "claude",
+            "title": "Fix Blender acceptance gate and run tests",
+            "state_labels": {"waiting_for_input": ""}
+        }))
+        .unwrap();
+        adapter.handle_status_changed(&status, &store).await;
+        adapter.handle_output_matched(&approve, &store).await;
+        let bound =
+            store
+                .exchange()
+                .bind_events(agent_id, &[Some("Approve this change?".to_string())], 8);
+        assert_eq!(
+            bound[0].as_ref().map(|e| e.role),
+            Some(crate::core::provenance::ExchangeRole::Tool),
+            "an approve-tool question records the Tool role"
+        );
+    }
+
+    async fn real_adapter_exchange_blocks(
+        matched_line: &str,
+        read_text: &str,
+    ) -> Vec<crate::core::blocks::TranscriptBlock> {
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let agent: AgentInfoWire = serde_json::from_value(fixture_claude()).unwrap();
+        adapter.apply_agent_info(&agent, &store).await;
+        let agent_id = "herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784";
+        let pane_id = "wQ:p1";
+        let status = StatusChangedWire {
+            pane_id: pane_id.to_string(),
+            agent_status: Some("blocked".to_string()),
+            agent: Some("claude".to_string()),
+            title: Some("Fix Blender acceptance gate and run tests".to_string()),
+            state_labels: HashMap::from([(String::from("waiting_for_input"), String::new())]),
+            state_change_seq: None,
+        };
+        adapter.handle_status_changed(&status, &store).await;
+        let matched = OutputMatchedWire {
+            pane_id: pane_id.to_string(),
+            matched_line: Some(matched_line.to_string()),
+            read: Some(OutputReadWire {
+                text: Some(read_text.to_string()),
+            }),
+        };
+        adapter.handle_output_matched(&matched, &store).await;
+        let lines = bounded_redacted_tail(read_text, 200);
+        crate::core::blocks::canonical_blocks_with_exchange(
+            &lines,
+            &crate::core::provenance::PromptProvenance::new(),
+            &store.exchange(),
+            agent_id,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn exchange_identity_matches_real_read_tail_transforms() {
+        let question = "Should I proceed with the migration?";
+        let rail = format!("│{} {} {}│", "─".repeat(40), question, "─".repeat(40));
+        let redacted = "Should I use sk-ant-r2-fixture?";
+        let cases = vec![
+            ("literal", format!("  {question}"), question.to_string()),
+            ("rail", rail.clone(), rail),
+            (
+                "unsupported-icon",
+                format!("\u{e000} {question}"),
+                format!("\u{e000} {question}"),
+            ),
+            (
+                "whitespace",
+                "Should\tI proceed with the migration?  ".to_string(),
+                "Should    I proceed with the migration?\n".to_string(),
+            ),
+            ("redaction", redacted.to_string(), redacted.to_string()),
+        ];
+        for (name, matched, read) in cases {
+            let blocks = real_adapter_exchange_blocks(&matched, &read).await;
+            assert_eq!(
+                blocks.iter().map(|block| block.kind).collect::<Vec<_>>(),
+                vec![crate::core::blocks::TranscriptBlockKind::Agent],
+                "real adapter exchange identity case {name}: {blocks:#?}"
+            );
+        }
     }
 
     #[test]

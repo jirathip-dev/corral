@@ -348,6 +348,81 @@ pub fn parse_tail_lines(result: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// #315: one CANONICAL semantic block from the daemon's read_tail result.
+/// The daemon owns block boundaries AND kinds (including provenance-backed
+/// `user` attribution and `unknown` for unprovenanced terminal text); the
+/// client renders these verbatim and never re-classifies raw lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalBlock {
+    pub kind: CanonicalBlockKind,
+    pub text: String,
+    /// The signed request id of the recorded Prompt dispatch behind a
+    /// `user` block (provenance audit trail; absent otherwise).
+    pub prompt_request_id: Option<String>,
+}
+
+/// #315: the canonical block kinds (mirrors the daemon's wire vocabulary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalBlockKind {
+    User,
+    Agent,
+    Tool,
+    System,
+    Unknown,
+}
+
+impl CanonicalBlockKind {
+    /// Decode the daemon's snake_case wire string. An unrecognized kind
+    /// decodes to `Unknown` (forward compatible: a future daemon kind must
+    /// not crash the board or get mis-rendered as a known role).
+    pub fn from_wire(kind: &str) -> Self {
+        match kind {
+            "user" => Self::User,
+            "agent" => Self::Agent,
+            "tool" => Self::Tool,
+            "system" => Self::System,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn wire(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Tool => "tool",
+            Self::System => "system",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Parse the additive `blocks` array from a read_tail result. Tolerant:
+/// missing/malformed entries are skipped; an absent array yields an empty
+/// vec (the caller falls back to the legacy `lines` surface for old
+/// daemons — the wire change is backward compatible).
+pub fn parse_tail_blocks(result: &serde_json::Value) -> Vec<CanonicalBlock> {
+    result
+        .get("blocks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let kind = entry.get("kind")?.as_str()?;
+                    let text = entry.get("text")?.as_str()?;
+                    Some(CanonicalBlock {
+                        kind: CanonicalBlockKind::from_wire(kind),
+                        text: text.to_string(),
+                        prompt_request_id: entry
+                            .get("prompt_request_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn parse_tail_source_rev(result: &serde_json::Value) -> Option<u64> {
     result.get("source_rev").and_then(serde_json::Value::as_u64)
 }
@@ -1264,6 +1339,32 @@ mod tests {
             parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn parse_tail_blocks_preserves_daemon_kinds_order_and_provenance() {
+        // #315: the canonical blocks decode VERBATIM — kinds, order, and
+        // the provenance request id are the daemon's, never re-derived.
+        let result = serde_json::json!({
+            "blocks": [
+                { "kind": "tool", "text": "$ cargo build\nCompiling" },
+                { "kind": "user", "text": "ship it", "prompt_request_id": "req-7" },
+                { "kind": "unknown", "text": "typed straight into the pane" },
+                { "kind": "system", "text": "status: working" }
+            ]
+        });
+        let blocks = parse_tail_blocks(&result);
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(blocks[0].kind, CanonicalBlockKind::Tool);
+        assert_eq!(blocks[1].kind, CanonicalBlockKind::User);
+        assert_eq!(blocks[1].prompt_request_id.as_deref(), Some("req-7"));
+        assert_eq!(blocks[2].kind, CanonicalBlockKind::Unknown);
+        assert_eq!(blocks[2].prompt_request_id, None);
+        assert_eq!(blocks[3].kind, CanonicalBlockKind::System);
+        // Tolerant decoding: absent/malformed arrays degrade to empty (the
+        // legacy lines fallback), not an error.
+        assert!(parse_tail_blocks(&serde_json::Value::Null).is_empty());
+        assert!(parse_tail_blocks(&serde_json::json!({ "blocks": "junk" })).is_empty());
     }
 
     #[test]

@@ -33,12 +33,59 @@ pub struct PersistedConfig {
     pub auto_reconnect: Option<bool>,
     #[serde(default)]
     pub group_by_repo: Option<bool>,
+    /// Legacy (pre-#310): `true` = CompletedMode::Collapsed, `false` =
+    /// CompletedMode::Show. Kept for forward-compatible migration; new
+    /// writes set it alongside `completed_mode`.
     #[serde(default)]
     pub show_idle_collapsed: Option<bool>,
+    /// #310 tri-state Completed agents mode. Supersedes
+    /// `show_idle_collapsed`.
+    #[serde(default)]
+    pub completed_mode: Option<CompletedMode>,
     #[serde(default)]
     pub stick_to_bottom: Option<bool>,
     #[serde(default)]
     pub theme: Option<String>,
+}
+
+/// How the board treats completed (idle / done / unknown) agents (#310).
+/// Persisted as lowercase JSON (`"hide"` / `"collapsed"` / `"show"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletedMode {
+    /// Hide completed agents entirely.
+    Hide,
+    /// Fold completed agents into one collapsed section.
+    #[default]
+    Collapsed,
+    /// Show completed agents inline like any other row.
+    Show,
+}
+
+impl CompletedMode {
+    /// Human label for the Settings segmented control and header salts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hide => "Hide",
+            Self::Collapsed => "Collapsed",
+            Self::Show => "Show",
+        }
+    }
+
+    /// Legacy boolean mapping (pre-#310 `show_idle_collapsed`).
+    pub fn from_legacy_show_idle_collapsed(collapsed: bool) -> Self {
+        if collapsed {
+            Self::Collapsed
+        } else {
+            Self::Show
+        }
+    }
+
+    /// Legacy boolean for older readers: Hide and Collapsed both fold
+    /// completed rows, so both map to `true`.
+    pub fn legacy_show_idle_collapsed(self) -> bool {
+        !matches!(self, Self::Show)
+    }
 }
 
 /// One drive action in flight (UI-side bookkeeping only — the actual
@@ -132,6 +179,20 @@ pub struct Fleet {
     /// reloadable from its explicit control).
     pub tails: HashMap<String, Vec<String>>,
     pub tail_source_revs: HashMap<String, u64>,
+    /// #314 R3: the tail-window limit the CLIENT last requested for the
+    /// agent (default 50; an explicit Load earlier remembers 200 for that
+    /// agent). Automatic revision-aware refreshes re-request this limit so
+    /// the operator's expanded window survives — including when a 200-line
+    /// request currently returns fewer lines (the REQUESTED limit is
+    /// tracked, never `tails[agent].len()`). Values are clamped to the
+    /// daemon's existing 1..=200 page bound; cleared wherever the tails
+    /// themselves are.
+    pub tail_requested_lines: HashMap<String, u32>,
+    /// #315: the daemon's CANONICAL semantic blocks for the read window,
+    /// cached alongside the legacy `tails` lines. When present the Recent
+    /// output view renders these verbatim — the client never re-derives
+    /// block kinds from raw lines.
+    pub tail_blocks: HashMap<String, Vec<crate::drive::CanonicalBlock>>,
     /// #232: per-agent read_diff cache (changed-files list + paged unified
     /// diff + diffstat). Paged: each fetch appends at `next_offset`.
     pub diffs: HashMap<String, DiffCache>,
@@ -170,6 +231,9 @@ impl Fleet {
         // read_tail cache follows the same removal rule.
         let agents = &self.agents;
         self.tails.retain(|id, _| agents.contains_key(id));
+        self.tail_blocks.retain(|id, _| agents.contains_key(id));
+        self.tail_requested_lines
+            .retain(|id, _| agents.contains_key(id));
         self.expanded.retain(|id| agents.contains_key(id));
         if self
             .selected_agent
@@ -202,6 +266,8 @@ impl Fleet {
     pub fn remove_agent(&mut self, agent_id: &str) {
         self.agents.remove(agent_id);
         self.tails.remove(agent_id);
+        self.tail_blocks.remove(agent_id);
+        self.tail_requested_lines.remove(agent_id);
         self.diffs.remove(agent_id);
         self.recent_drives.remove(agent_id);
         self.expanded.retain(|id| id != agent_id);
@@ -257,6 +323,43 @@ impl Fleet {
         true
     }
 
+    /// #314: the cached `source_rev` a visible agent's automatic
+    /// Recent-output refresh must carry, if a refresh is eligible right now.
+    /// Eligible = a cached tail exists (so this is a refresh, not the first
+    /// hydration), its cached source revision is known, and no read_tail
+    /// request for the agent is currently in flight. Single-flight is judged
+    /// on the NEWEST read_tail drive entry (newest-first deque, same
+    /// semantics as the board's `latest_read_tail_state`): an older
+    /// `Sending` entry is that request's own history, not an in-flight
+    /// blocker. Hidden agents never reach this: the caller passes only the
+    /// resolved visible selection.
+    pub fn recent_output_refresh_candidate(&self, agent_id: &str) -> Option<u64> {
+        let source_rev = *self.tail_source_revs.get(agent_id)?;
+        if !self.tails.contains_key(agent_id) {
+            return None;
+        }
+        let newest_read_tail_in_flight = self.recent_drives.get(agent_id).is_some_and(|drives| {
+            drives
+                .iter()
+                .find(|state| {
+                    matches!(
+                        state,
+                        DriveState::Sending { capability, .. }
+                            | DriveState::Ok { capability, .. }
+                            | DriveState::Failed { capability, .. }
+                            if capability == "read_tail"
+                    )
+                })
+                .is_some_and(|state| {
+                    matches!(state, DriveState::Sending { capability, .. } if capability == "read_tail")
+                })
+        });
+        if newest_read_tail_in_flight {
+            return None;
+        }
+        Some(source_rev)
+    }
+
     pub fn toggle_expanded(&mut self, agent_id: &str) {
         if self.is_expanded(agent_id) {
             self.expanded.retain(|e| e != agent_id);
@@ -282,13 +385,28 @@ impl Fleet {
         tail: Vec<String>,
         source_rev: Option<u64>,
     ) {
+        self.remember_tail_full(agent_id, tail, Vec::new(), source_rev);
+    }
+
+    /// #315: fold a full read_tail result (lines + canonical blocks) into
+    /// the caches. `blocks` empty = an old daemon without the canonical
+    /// stream; the Recent output view falls back to the legacy lines.
+    pub fn remember_tail_full(
+        &mut self,
+        agent_id: &str,
+        tail: Vec<String>,
+        blocks: Vec<crate::drive::CanonicalBlock>,
+        source_rev: Option<u64>,
+    ) {
         if self.tails.len() >= 64
             && !self.tails.contains_key(agent_id)
             && let Some(oldest) = self.tails.keys().next().cloned()
         {
             self.tails.remove(&oldest);
+            self.tail_blocks.remove(&oldest);
         }
         self.tails.insert(agent_id.to_string(), tail);
+        self.tail_blocks.insert(agent_id.to_string(), blocks);
         if let Some(source_rev) = source_rev {
             self.tail_source_revs
                 .insert(agent_id.to_string(), source_rev);
@@ -396,6 +514,10 @@ pub struct DriveMsg {
     pub agent_id: String,
     pub capability: String,
     pub outcome: DriveOutcome,
+    /// Identity epoch at dispatch time (#310 r3): a drive initiated before
+    /// the current key/registration generation must never set or clear
+    /// current recovery state when its result arrives late.
+    pub identity_generation: u64,
 }
 
 impl DriveMsg {
@@ -672,6 +794,72 @@ mod tests {
     }
 
     #[test]
+    fn canonical_blocks_are_cached_and_evicted_with_their_agent() {
+        // #315: the canonical block cache mirrors the tails cache — same
+        // agent keys, same bounded eviction, same removal rules.
+        let mut fleet = Fleet::default();
+        let blocks = vec![crate::drive::CanonicalBlock {
+            kind: crate::drive::CanonicalBlockKind::User,
+            text: "ship it".into(),
+            prompt_request_id: Some("req-1".into()),
+        }];
+        fleet.remember_tail_full("herdr:a", vec!["ship it".into()], blocks.clone(), Some(3));
+        assert_eq!(fleet.tail_blocks.get("herdr:a"), Some(&blocks));
+        fleet.remove_agent("herdr:a");
+        assert!(!fleet.tail_blocks.contains_key("herdr:a"));
+        // Old-daemon result (no blocks) caches an EMPTY canonical stream so
+        // the view falls back to legacy lines.
+        fleet.remember_tail_full("herdr:b", vec!["legacy".into()], Vec::new(), None);
+        assert!(fleet.tail_blocks.get("herdr:b").is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn cross_client_generic_snapshot_decodes_identically_through_the_view_model() {
+        // AC5 (discriminating), view-model half: the SAME generic terminal
+        // snapshot + recorded Prompt provenance decodes into the identical
+        // canonical sequence on egui (the UI half lives in
+        // ui::board::tests::recent_canonical_blocks_render_identically_across_clients;
+        // the daemon-side emitter lives in tests/provenance.rs). Identical
+        // kinds, identical order, user exactly once.
+        // #315 R2: the blocks array is NOT hand-written here — it is loaded
+        // from the daemon-emitted golden fixture
+        // (tests/fixtures/canonical_stream_golden.json, byte-asserted
+        // against `canonical_blocks` output by the daemon tests), so daemon
+        // segmentation drift fails BOTH client contracts.
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/canonical_stream_golden.json"
+        ))
+        .expect("daemon golden fixture is committed and readable");
+        let daemon_result = serde_json::json!({
+            "lines": ["x"],
+            "blocks": serde_json::from_str::<serde_json::Value>(&fixture)
+                .expect("golden fixture parses as JSON blocks"),
+        });
+        let blocks = crate::drive::parse_tail_blocks(&daemon_result);
+        let kinds: Vec<crate::drive::CanonicalBlockKind> = blocks.iter().map(|b| b.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::drive::CanonicalBlockKind::Tool,
+                crate::drive::CanonicalBlockKind::User,
+                crate::drive::CanonicalBlockKind::Unknown,
+                crate::drive::CanonicalBlockKind::System,
+                crate::drive::CanonicalBlockKind::Unknown,
+            ],
+            "identical kind sequence on every client"
+        );
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|b| b.kind == crate::drive::CanonicalBlockKind::User)
+                .count(),
+            1,
+            "exactly-once user rendering"
+        );
+    }
+
+    #[test]
     fn empty_read_tail_result_is_a_clean_empty_state() {
         // No output: the daemon returns `{"lines": []}`; the cache holds an
         // empty tail and the detail view renders the empty-state copy —
@@ -759,5 +947,70 @@ mod tests {
         // Cache dies with the agent (stale-drive removal path).
         fleet.remove_agent("a");
         assert!(!fleet.diffs.contains_key("a"));
+    }
+
+    // ------------------------------------------------------------------
+    // #314: refresh-eligibility bookkeeping (unit seam).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn refresh_candidate_requires_cache_rev_and_no_in_flight_request() {
+        let mut fleet = Fleet::default();
+
+        // No cache at all: not a refresh (the hydration path owns it).
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Cache without a known source revision (old daemon): not eligible.
+        fleet.remember_tail("a", vec!["line".into()]);
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Cache + cached source_rev + nothing in flight: eligible, and the
+        // carried revision is the CACHED one.
+        fleet.remember_tail_with_rev("a", vec!["line".into()], Some(4));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // A read_tail request currently in flight blocks the refresh.
+        fleet.remember_drive(
+            "a",
+            DriveState::Sending {
+                request_id: "req-1".into(),
+                capability: "read_tail".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
+
+        // Once the newest entry is the Ok, the historical Sending entry no
+        // longer blocks (newest-first single-flight semantics).
+        fleet.remember_drive(
+            "a",
+            DriveState::Ok {
+                rev: 4,
+                capability: "read_tail".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // A completed drive for a DIFFERENT capability does not block.
+        fleet.remember_drive(
+            "a",
+            DriveState::Sending {
+                request_id: "req-2".into(),
+                capability: "prompt".into(),
+            },
+        );
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+
+        // An updated revision replaces the cached one.
+        fleet.remember_tail_with_rev("a", vec!["newer".into()], Some(5));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(5));
+    }
+
+    #[test]
+    fn removed_agent_drops_the_refresh_candidate() {
+        let mut fleet = Fleet::default();
+        fleet.remember_tail_with_rev("a", vec!["line".into()], Some(4));
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), Some(4));
+        fleet.remove_agent("a");
+        assert_eq!(fleet.recent_output_refresh_candidate("a"), None);
     }
 }

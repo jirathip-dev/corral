@@ -236,8 +236,29 @@ impl WebCorralApp {
                     .iter()
                     .any(|capability| capability == "read_tail")
                 {
-                    self.fleet
-                        .remember_tail(&agent.agent_id, demo::recent_tail());
+                    // #316 V3: the demo feeds the canonical blocks (when the
+                    // fixture carries them) through the exact same cache as
+                    // live results, so the Recent-output surface renders the
+                    // real Conversation / Harness activity split.
+                    self.fleet.remember_tail_full(
+                        &agent.agent_id,
+                        demo::recent_tail(),
+                        demo::recent_tail_blocks(),
+                        Some(data.snapshot.rev),
+                    );
+                }
+            }
+            // Select the fixture's first read_tail agent so the demo board
+            // opens straight onto the V3 Recent-output detail (deterministic:
+            // fixture order, not insertion order).
+            if self.fleet.selected_agent.is_none() {
+                if let Some(first) = data
+                    .snapshot
+                    .agents
+                    .values()
+                    .find(|agent| agent.capabilities.iter().any(|c| c == "read_tail"))
+                {
+                    self.fleet.select_agent(&first.agent_id);
                 }
             }
         }
@@ -515,7 +536,13 @@ impl WebCorralApp {
                     },
                     read_only: true,
                 };
-                board::show(ui, &mut self.fleet, &allowed, &mut actions);
+                board::show(
+                    ui,
+                    &mut self.fleet,
+                    crate::state::CompletedMode::Collapsed,
+                    &allowed,
+                    &mut actions,
+                );
             }
             Tab::Issues => {
                 let mut refresh_requested = false;

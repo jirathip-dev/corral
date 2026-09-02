@@ -59,6 +59,7 @@ use tracing::info;
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
 use crate::core::model::Resume;
+use crate::core::provenance;
 use crate::core::store::Store;
 use crate::core::util::now_millis;
 use crate::drive::AuditLog;
@@ -91,6 +92,12 @@ pub struct AppState {
     /// read this; nothing here mutates GitHub.
     pub issues: Arc<issues::IssuesCache>,
 
+    /// #315: the bounded ledger of successfully dispatched signed Prompts.
+    /// The drive handler records an event per dispatch; the read_tail path
+    /// joins the events with the terminal snapshot to emit the canonical
+    /// semantic blocks. Corral-owned provenance, no harness metadata.
+    pub provenance: Arc<provenance::PromptProvenance>,
+
     /// #215: exact-origin allowlist for the read plane's CORS headers
     /// (`--cors-origin` / `CORRALD_CORS_ORIGIN`). Empty (the default) =
     /// no CORS headers at all — the daemon behaves exactly as before.
@@ -116,6 +123,7 @@ impl Default for AppState {
             adapter: Arc::new(NoopAdapter),
             replay: Arc::new(ReplayTable::default()),
             issues: Arc::new(issues::IssuesCache::default()),
+            provenance: Arc::new(provenance::PromptProvenance::new()),
 
             cors_origins: Vec::new(),
         }
@@ -259,17 +267,33 @@ async fn terminal_ws(
 }
 
 async fn terminal_session(mut socket: WebSocket, state: Arc<AppState>) {
-    let Some(Ok(Message::Text(text))) = socket.recv().await else {
-        return;
+    let first = socket.recv().await;
+    let text = match first {
+        Some(Ok(Message::Text(text))) => text,
+        Some(Ok(Message::Close(_))) => return,
+        Some(Ok(_)) | Some(Err(_)) => {
+            send_terminal_error(&mut socket, "malformed_open").await;
+            return;
+        }
+        None => return,
     };
-    let Ok(open) = serde_json::from_str::<TerminalOpen>(&text) else {
-        return;
+    let open = match serde_json::from_str::<TerminalOpen>(&text) {
+        Ok(open) => open,
+        Err(_) => {
+            send_terminal_error(&mut socket, "malformed_open").await;
+            return;
+        }
     };
     if open.auth.envelope.capability != crate::drive::Capability::Attach {
+        send_terminal_error(&mut socket, "forbidden").await;
         return;
     }
-    let Ok(authorized) = state.auth.authorizer.verify(&open.auth) else {
-        return;
+    let authorized = match state.auth.authorizer.verify(&open.auth) {
+        Ok(authorized) => authorized,
+        Err(_) => {
+            send_terminal_error(&mut socket, "unauthorized").await;
+            return;
+        }
     };
     let expected_payload = serde_json::json!({
         "cwd": open.cwd,
@@ -280,34 +304,121 @@ async fn terminal_session(mut socket: WebSocket, state: Arc<AppState>) {
     if open.auth.envelope.payload != expected_payload
         || !state.replay.claim_once(&authorized.envelope.request_id)
     {
+        send_terminal_error(&mut socket, "invalid_open").await;
         return;
     }
-    let Ok(session) = transport()
+    let session = match transport()
         .open(&authorized.envelope.target, Path::new(&open.cwd))
         .await
-    else {
-        return;
+    {
+        Ok(session) => session,
+        Err(_) => {
+            send_terminal_error(&mut socket, "unavailable").await;
+            return;
+        }
     };
     audit_terminal(&state, &authorized, "attach", &session.id);
-    let _ = socket.send(Message::Text(serde_json::json!({"type":"opened", "session_id":session.id, "workspace_id":session.workspace_id}).to_string().into())).await;
+    let opened = serde_json::json!({
+        "type": "opened",
+        "session_id": session.id,
+        "workspace_id": session.workspace_id,
+    });
+    if socket
+        .send(Message::Text(opened.to_string().into()))
+        .await
+        .is_err()
+    {
+        let _ = transport().close(&session.id).await;
+        return;
+    }
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let mut session_closed = false;
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                let Ok(frame) = transport().capture(&session.id).await else { break };
+                let frame = match transport().capture(&session.id).await {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        send_terminal_error(&mut socket, "unavailable").await;
+                        break;
+                    }
+                };
                 let value = serde_json::json!({"type":"frame", "ansi":frame.ansi,"cursor_x":frame.cursor_x,"cursor_y":frame.cursor_y});
                 if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
             }
             message = socket.recv() => {
-                let Some(Ok(Message::Text(text))) = message else { break };
-                let Ok(command) = serde_json::from_str::<TerminalCommand>(&text) else { continue };
+                let message = match message {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) | Some(Err(_)) => {
+                        send_terminal_error(&mut socket, "protocol_error").await;
+                        break;
+                    }
+                    None => break,
+                };
+                let command = match serde_json::from_str::<TerminalCommand>(&message) {
+                    Ok(command) => command,
+                    Err(_) => {
+                        send_terminal_error(&mut socket, "malformed_command").await;
+                        break;
+                    }
+                };
                 match command {
-                    TerminalCommand::Input { text } => { if transport().send_input(&session.id, &text).await.is_ok() { audit_terminal(&state, &authorized, "input", &session.id); } }
-                    TerminalCommand::Resize { cols, rows } => { if transport().resize(&session.id, cols, rows).await.is_ok() { audit_terminal(&state, &authorized, "resize", &session.id); } }
-                    TerminalCommand::Close => { if transport().close(&session.id).await.is_ok() { audit_terminal(&state, &authorized, "kill", &session.id); } break; }
+                    TerminalCommand::Input { text } => {
+                        if transport().send_input(&session.id, &text).await.is_ok() {
+                            audit_terminal(&state, &authorized, "input", &session.id);
+                        } else {
+                            send_terminal_error(&mut socket, "terminal_command_failed").await;
+                            break;
+                        }
+                    }
+                    TerminalCommand::Resize { cols, rows } => {
+                        if transport().resize(&session.id, cols, rows).await.is_ok() {
+                            audit_terminal(&state, &authorized, "resize", &session.id);
+                        } else {
+                            send_terminal_error(&mut socket, "terminal_command_failed").await;
+                            break;
+                        }
+                    }
+                    TerminalCommand::Close => {
+                        let close_succeeded = transport().close(&session.id).await.is_ok();
+                        if close_succeeded {
+                            audit_terminal(&state, &authorized, "kill", &session.id);
+                        } else {
+                            send_terminal_error(&mut socket, "terminal_command_failed").await;
+                        }
+                        session_closed = close_succeeded;
+                        break;
+                    }
                 }
             }
         }
+    }
+    if !session_closed {
+        let _ = transport().close(&session.id).await;
+    }
+}
+
+async fn send_terminal_error(socket: &mut WebSocket, kind: &str) {
+    let value = serde_json::json!({
+        "type": "error",
+        "kind": kind,
+        "message": terminal_error_message(kind),
+    });
+    let _ = socket.send(Message::Text(value.to_string().into())).await;
+}
+
+fn terminal_error_message(kind: &str) -> &'static str {
+    match kind {
+        "malformed_open" => "The terminal request was malformed.",
+        "forbidden" => "Terminal access is not granted.",
+        "unauthorized" => "Terminal authorization failed.",
+        "invalid_open" => "The terminal request could not be verified.",
+        "unavailable" => "The terminal is unavailable.",
+        "malformed_command" => "The terminal command was malformed.",
+        "terminal_command_failed" => "The terminal command failed.",
+        "protocol_error" => "The terminal protocol message was invalid.",
+        _ => "The terminal session failed.",
     }
 }
 

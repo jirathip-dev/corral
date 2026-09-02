@@ -359,6 +359,7 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
         adapter,
         replay: Arc::new(ReplayTable::default()),
         issues: issues_cache.clone(),
+        provenance: Arc::new(corrald::core::provenance::PromptProvenance::new()),
 
         cors_origins,
     });

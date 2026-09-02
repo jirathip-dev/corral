@@ -1,9 +1,8 @@
-//! Shared UI widgets: badge rendering, connection pill, banner/toast area.
+//! Shared UI widgets: badge rendering, connection pill, banner/toast area,
+//! the read-only v2 board + recents v1 drill-in, and the connection-only
+//! registration/settings surface.
 
-pub mod audit;
 pub mod board;
-pub mod issues;
-
 #[cfg(not(target_arch = "wasm32"))]
 pub mod register;
 
@@ -11,8 +10,7 @@ use eframe::egui::{Color32, CornerRadius, FontId, RichText, Sense, Stroke, Ui};
 
 use crate::state::{ConnState, Level};
 
-/// Render a small colored pill with `text` (used for state, waiting-on
-/// kinds, CI verdicts).
+/// Render a small colored pill with `text`.
 pub fn badge(ui: &mut Ui, text: &str, color: Color32) {
     let font = FontId::monospace(11.0);
     let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_string(), font, color));
@@ -82,17 +80,6 @@ pub fn toast_area(
                 ui.add_space(4.0);
             }
         });
-}
-
-/// Helper for a disabled-with-reason capability button.
-pub fn disabled_button_with_reason(ui: &mut Ui, label: &str, reason: &str) {
-    let response = ui.add_enabled_ui(false, |ui| ui.button(label)).inner;
-    ui.interact(
-        response.rect,
-        ui.auto_id_with(("disabled-button-blocker", label)),
-        egui::Sense::click(),
-    )
-    .on_hover_text(reason);
 }
 
 #[cfg(test)]

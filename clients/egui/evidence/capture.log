@@ -1,0 +1,59 @@
+capture log — #354 L3 read-only egui/WASM cut (synthetic evidence)
+==================================================================
+
+Synthetic-only captures of the v2 read-only fleet board (raw herdr state
+tokens, repo groups + blocked pinned, recents v1 wiring in code tests; no
+live daemon, no real identities). Per #304 the mobile layout is 390x844.
+
+Build (wasm demo):
+  cd clients/egui
+  RUSTFLAGS="--remap-path-prefix=/Users/jirathip=/build" \
+    wasm-pack build --target web --out-dir pkg --out-name corral-web
+    -> Done in 21.43s (first pass; incremental rebuilds after pane-ref fix)
+  cp web/index.html pkg/
+  -> pkg/ = deployable static site (index.html, corral-web.js,
+     corral-web_bg.wasm); pkg is generated and NOT committed.
+
+Privacy gate (fixture + pkg):
+  python3 scripts/check-demo-privacy.py clients/egui/assets/demo-fixture.json \
+      clients/egui/pkg
+    -> "privacy scan: 0 forbidden matches"  (exit 0)
+  python3 scripts/check-demo-privacy.py --self-test \
+      clients/egui/assets/demo-fixture.json
+    -> all identity mutations rejected, positive controls accepted (exit 0)
+
+Serving + capture:
+  python3 -m http.server 8740   (cwd = clients/egui/pkg)
+  curl http://127.0.0.1:8740/ -> 200
+  chrome-headless-shell (ms-playwright cache, mac-arm64), one shot per viewport:
+    --screenshot=evidence/board-demo-390x844.png --window-size=390,844 \
+      --hide-scrollbars --virtual-time-budget=15000 \
+      http://127.0.0.1:8740/capture.html
+    --screenshot=evidence/board-demo-desktop-1280x800.png --window-size=1280,800 \
+      --hide-scrollbars --virtual-time-budget=15000 \
+      http://127.0.0.1:8740/capture.html
+  (capture.html is a temp same-origin page that seeds localStorage
+  {mode: demo, base_url: http://127.0.0.1:8474} then redirects to index.html,
+  so the first-open setup panel is pre-answered; deleted with pkg/)
+
+Results:
+  board-demo-390x844.png       PNG 390x844   sha256 3bca3e9a2ebad3bd5ca01bfbfe78b2b5e98e1eb7f731bfbbe085a93e566169ec
+  board-demo-desktop-1280x800.png  PNG 1280x800  sha256 45f24af1cd290a8138b1f28be8af7c209ef56ebd704f387d0a17dabfec2a8d12
+
+Vision self-review (both PNGs):
+  - No setup modal (demo mode pre-seeded); top bar: "corral fleet" +
+    read-only + demo data chips; banner states the read-plane boundary.
+  - Board: "fleet board", 9 agents, live dot; sections blocked (1) ->
+    demo-alpha (3) -> demo-bravo (2) -> demo-charlie (2) -> demo-delta (1)
+    -> no repo (1); blocked agent cross-listed in its repo group (v2 pinned
+    design, same as the iOS board).
+  - Rows: name / time-in-state / raw token chip (! blocked / O working /
+    □ idle / ? unknown) / repo · branch / pane ref. No clipped or
+    half-truncated pane refs (pane_reference keeps the full final two
+    segments, mirroring iOS; regression covered in model tests).
+  - No overflow, no blank middle rows; desktop capture shows the same board
+    full-width at 1280x800.
+
+Drill-in (recents v1) and the first-open setup panel are exercised by the
+crate's unit tests (board_frame hydration/refresh wiring + register/settings
+surface probes) and were not re-shot here (headless shell cannot click).

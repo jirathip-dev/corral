@@ -1,18 +1,21 @@
-//! Corral P4 client (`corrald-ui`): a dark-dashboard fleet board
+//! Corral P4 client (`corrald-ui`): a dark-dashboard read-only fleet board
 //! speaking corrald's read plane (snapshot/SSE with Last-Event-ID resume)
-//! and — on desktop — its signed drive plane (device-keypair writes,
-//! claim-based approvals, idempotent retries, transparent step-up).
+//! and, on desktop, its signed read drive (device-keypair read_tail).
 //!
 //! ## Targets
 //!
-//! - **Native** (`macOS` / `Linux`): the full board — read plane +
-//!   signed drive plane, device keyring, registration, evidence capture.
+//! - **Native** (`macOS` / `Linux`): the read-only board + recents v1 —
+//!   read plane + signed read_tail drive, device keyring, registration.
 //! - **Wasm** (`wasm32-unknown-unknown`, #215): the READ-ONLY web build.
 //!   The board renders `/snapshot` + `/events` SSE (and demo data out of
-//!   the box); there is NO `/drive`, NO `/host-key`/`/step-up`, NO
-//!   `keyring`, NO registration — writes stay desktop. The native-only
-//!   modules (`app`, `keys`, `ui::register`) are cfg-gated out.
+//!   the box); there is NO `/drive` from the browser, NO `keyring`, NO
+//!   registration — reads stay daemon-signed on the desktop. The
+//!   native-only modules (`app`, `keys`, `ui::register`) are cfg-gated out.
 //!   [`web`] is the wasm-only app.
+//!
+//! #354 L3 cut: the Issues browser, all action controls, the diff/terminal
+//! surfaces and the recents Conversation/Harness partition were removed —
+//! this client only ever READS (board + recents live tail).
 //!
 //! The daemon's HTTP surface is the contract (`docs/corral/P4-conformance.md`).
 //! The binary lives in `main.rs`; this lib exposes the wire/protocol/drive
@@ -22,7 +25,6 @@
 pub mod app;
 pub mod demo;
 pub mod drive;
-pub mod infer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod keys;
 pub mod model;

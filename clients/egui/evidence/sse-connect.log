@@ -1,9 +1,0 @@
-== corrald-ui app log (SSE connect + screenshot capture) ==
-2026-08-16T08:17:59.563639Z  INFO corrald_ui::protocol: SSE connected to corrald /events base_url=http://127.0.0.1:8574
-2026-08-16T08:18:05.620208Z  INFO corrald_ui::app: requesting viewport screenshot path=/Users/jirathip/.herdr/worktrees/herdr-board/corral-p4-w2/clients/egui/evidence/fleet-live.png
-2026-08-16T08:18:05.685566Z  INFO corrald_ui::app: screenshot saved — exiting path=/Users/jirathip/.herdr/worktrees/herdr-board/corral-p4-w2/clients/egui/evidence/fleet-live.png
-
-== corrald daemon log (SSE client joined with full snapshot) ==
-2026-08-16T08:16:57.527735Z  INFO corrald::api: SSE client joined with full snapshot rev=51
-2026-08-16T08:17:59.562301Z  INFO corrald::api: SSE client joined with full snapshot rev=52
-2026-08-16T08:19:18.650535Z  INFO corrald::api: SSE client joined with full snapshot rev=52

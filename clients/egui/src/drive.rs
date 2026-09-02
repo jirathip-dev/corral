@@ -1,68 +1,42 @@
-//! Signed-drive client (P3 contract, P4-conformance normative): builds the
-//! canonical envelope, signs it with the device Ed25519 key, POSTs to
-//! `/drive`, and owns the retry policy:
+//! Signed-read drive client (P3 contract, P4-conformance normative): builds
+//! the canonical envelope for the RETAINED read capability (`read_tail`),
+//! signs it with the device Ed25519 key, POSTs to `/drive`, and owns the
+//! retry policy:
 //!
 //! - **Idempotent retries**: one `request_id` per LOGICAL action (created
 //!   once at tap time, reused for every retry of that action). The daemon's
 //!   replay table dedupes: a transport/5xx/409 retry with the same id can
 //!   never double-dispatch.
-//! - **Step-up**: when `/drive` answers `403 step_up_required` the flow
-//!   mints a single-use token via signed `POST /step-up` and retries the
-//!   SAME envelope with `X-Step-Up-Token` (the daemon is the authority on
-//!   destructive-pattern detection — we never block on client-side guesses,
-//!   only reflect them as UI hints).
 //! - **Typed refusals** surface as [`DriveFailure`] so the UI can render a
-//!   typed error banner (`not_granted`, `stale_approval`, `hash_mismatch`,
-//!   `step_up_failed`, ...).
+//!   typed error banner (`not_granted`, `bad_signature`, `unknown_agent`…).
+//!
+//! #354 read-only cut: every mutating capability (prompt / interrupt /
+//! approve / kill / attach / start_worktree) and the step-up flow were
+//! removed with their surfaces. The closed read set mirrors the iOS client:
+//! `read_tail` is dispatched; `read_diff` remains only as a wire-decode case
+//! (a transitional daemon's capability strings must never fail to decode).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
-use crate::model::WaitingOn;
-
-/// The canonical drive capabilities (mirrors corrald `Capability`).
+/// The canonical read capabilities (mirrors corrald `Capability` after the
+/// #354 daemon cut). Only `read_tail` is ever dispatched by this client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
-    Prompt,
-    Interrupt,
-    Approve,
     ReadTail,
-    /// #232: read the agent worktree diff (changed-files list + paged
-    /// unified diff + diffstat). Read-only; every grant/drive rule mirrors
-    /// `read_tail`.
+    /// Retained as a wire-decode case only (the daemon still knows it); no
+    /// egui surface reads a diff after the cut.
     ReadDiff,
-    Kill,
-    Attach,
-    /// #113: start an issue-linked or issue-free worktree. Fleet-level (not
-    /// an agent drive) — the Issues tab is the only caller.
-    StartWorktree,
 }
-
-/// Canonical rendering order (board buttons).
-pub const CAPABILITIES_ORDER: [&str; 7] = [
-    "prompt",
-    "interrupt",
-    "read_tail",
-    "read_diff",
-    "approve",
-    "kill",
-    "attach",
-];
 
 impl Capability {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Prompt => "prompt",
-            Self::Interrupt => "interrupt",
-            Self::Approve => "approve",
             Self::ReadTail => "read_tail",
             Self::ReadDiff => "read_diff",
-            Self::Kill => "kill",
-            Self::Attach => "attach",
-            Self::StartWorktree => "start_worktree",
         }
     }
 }
@@ -99,21 +73,7 @@ pub struct SignedDrive {
     pub envelope: DriveEnvelope,
 }
 
-/// Signed step-up request (mirrors corrald's `StepUpRequest`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StepUpRequest {
-    pub key_id: String,
-    pub purpose: String,
-    pub nonce: String,
-    pub ts: u64,
-}
-
-/// Mirrors `corrald::auth::step_up::canonical_step_up_bytes`.
-pub fn canonical_step_up_bytes(request: &StepUpRequest) -> Vec<u8> {
-    serde_json::to_vec(request).expect("step-up request serializes")
-}
-
-/// 200 body of a drive write (mirrors `DriveResponse`).
+/// 200 body of a drive dispatch (mirrors `DriveResponse`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriveResponse {
     pub request_id: String,
@@ -127,7 +87,7 @@ pub struct DriveResponse {
     pub result: Option<serde_json::Value>,
 }
 
-/// Typed pre-dispatch refusal body (`{kind, message, request_id?}`).
+/// Typed refusal body (`{kind, message, request_id?}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Refusal {
     pub kind: String,
@@ -136,18 +96,7 @@ pub struct Refusal {
     pub request_id: Option<String>,
 }
 
-/// 200 body of `POST /step-up`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StepUpResponse {
-    pub token: String,
-    pub key_id: String,
-    #[serde(default)]
-    pub ttl_secs: Option<u64>,
-    #[serde(default)]
-    pub expires_ts: Option<u64>,
-}
-
-/// A logical drive action as issued by the UI. `request_id` is generated
+/// A logical read action as issued by the UI. `request_id` is generated
 /// once per logical action and is STABLE across all retries of it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DriveIntent {
@@ -158,162 +107,29 @@ pub struct DriveIntent {
     pub rev: Option<u64>,
 }
 
+/// The bounded read_tail window the recents v1 drill-in requests. The
+/// daemon caps responses at 200 lines / 32 KiB; the v1 tail is LIVE TAIL
+/// ONLY (no load-earlier paging after the cut).
+pub const READ_TAIL_LINES: u32 = 200;
+
 impl DriveIntent {
-    /// Prompt with free-form text. Destructive-looking text is NOT gated
-    /// here — the daemon's 403 step_up_required drives the flow.
-    pub fn prompt(agent_id: &str, text: String, rev: Option<u64>) -> Self {
-        Self {
-            request_id: new_request_id("prompt"),
-            capability: Capability::Prompt,
-            target: agent_id.to_string(),
-            payload: serde_json::json!({ "kind": "prompt", "text": text }),
-            rev,
-        }
-    }
-
-    pub fn interrupt(agent_id: &str, rev: Option<u64>) -> Self {
-        Self {
-            request_id: new_request_id("interrupt"),
-            capability: Capability::Interrupt,
-            target: agent_id.to_string(),
-            payload: serde_json::Value::Null,
-            rev,
-        }
-    }
-
-    /// Bounded read_tail: default 50 lines, clamped by the daemon to
-    /// `1..=200`. The Cards app may use this for the one-shot hydration of
-    /// its already-resolved visible selection; every other fetch remains
-    /// explicit and callers must not enumerate agents or prefetch panes.
+    /// Bounded read_tail for the recents v1 drill-in.
     pub fn read_tail(agent_id: &str, rev: Option<u64>) -> Self {
-        Self::read_tail_page(agent_id, 50, rev)
-    }
-
-    /// Explicit tail page used by the Recent Output "load more" action.
-    pub fn read_tail_page(agent_id: &str, lines: u32, rev: Option<u64>) -> Self {
         Self {
             request_id: new_request_id("tail"),
             capability: Capability::ReadTail,
             target: agent_id.to_string(),
-            payload: serde_json::json!({ "kind": "read_tail", "lines": lines }),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": READ_TAIL_LINES }),
             rev,
         }
     }
 
-    /// Refresh a cached tail from a source revision. The daemon forwards this
-    /// cursor to herdr, which may return only lines newer than it.
-    pub fn read_tail_since(agent_id: &str, lines: u32, since_rev: u64, rev: Option<u64>) -> Self {
-        let mut intent = Self::read_tail_page(agent_id, lines, rev);
+    /// Refresh a cached tail from a source revision. The daemon forwards
+    /// this cursor to herdr, which may return only lines newer than it.
+    pub fn read_tail_since(agent_id: &str, since_rev: u64, rev: Option<u64>) -> Self {
+        let mut intent = Self::read_tail(agent_id, rev);
         intent.payload["since_rev"] = serde_json::json!(since_rev);
         intent
-    }
-
-    /// #232: bounded worktree diff. `files` caps the changed-files list,
-    /// `offset`/`lines` page the unified diff (aggregate line offset). The
-    /// daemon clamps (`1..=128` files, `0..` offset, `1..=400` lines) and
-    /// redacts every line before it leaves the machine.
-    pub fn read_diff(
-        agent_id: &str,
-        files: u32,
-        offset: u32,
-        lines: u32,
-        rev: Option<u64>,
-    ) -> Self {
-        Self {
-            request_id: new_request_id("diff"),
-            capability: Capability::ReadDiff,
-            target: agent_id.to_string(),
-            payload: serde_json::json!({
-                "kind": "read_diff",
-                "files": files,
-                "offset": offset,
-                "lines": lines,
-            }),
-            rev,
-        }
-    }
-
-    /// Claim-based approval: `approval_id` + `prompt_hash` echoed verbatim
-    /// from the snapshot's `waiting_on` (byte-for-byte claim).
-    pub fn approve(agent: &crate::model::Agent, choice: String, rev: Option<u64>) -> Self {
-        let w = agent
-            .waiting_on
-            .as_ref()
-            .expect("approve requires waiting_on");
-        Self {
-            request_id: new_request_id("approve"),
-            capability: Capability::Approve,
-            target: agent.agent_id.clone(),
-            payload: serde_json::json!({
-                "kind": "approve",
-                "approval_id": w.approval_id,
-                "prompt_hash": w.prompt_hash,
-                "choice": choice,
-            }),
-            rev,
-        }
-    }
-
-    pub fn kill(agent_id: &str, rev: Option<u64>) -> Self {
-        Self {
-            request_id: new_request_id("kill"),
-            capability: Capability::Kill,
-            target: agent_id.to_string(),
-            payload: serde_json::Value::Null,
-            rev,
-        }
-    }
-
-    pub fn attach(agent_id: &str, rev: Option<u64>) -> Self {
-        Self {
-            request_id: new_request_id("attach"),
-            capability: Capability::Attach,
-            target: agent_id.to_string(),
-            payload: serde_json::Value::Null,
-            rev,
-        }
-    }
-
-    /// #113: start a worktree from a selected, fetched GitHub issue. The
-    /// `target` is the fleet/repo name (not an agent id). The daemon refuses
-    /// a stale/closed issue and NEVER falls through to the free path.
-    pub fn start_worktree_issue(
-        repo: &str,
-        number: u64,
-        issue_url: &str,
-        rev: Option<u64>,
-    ) -> Self {
-        Self {
-            request_id: new_request_id("wt-issue"),
-            capability: Capability::StartWorktree,
-            target: repo.to_string(),
-            payload: serde_json::json!({
-                "kind": "start_worktree",
-                "mode": "issue",
-                "repo": repo,
-                "number": number,
-                "issue_url": issue_url,
-            }),
-            rev,
-        }
-    }
-
-    /// #113: start an explicitly issue-free worktree. `name` is the
-    /// user-chosen label; the daemon prefixes it with `w2/free-` so it can
-    /// never read as an issue-linked branch.
-    pub fn start_worktree_free(repo: &str, name: &str, rev: Option<u64>) -> Self {
-        Self {
-            request_id: new_request_id("wt-free"),
-            capability: Capability::StartWorktree,
-            target: repo.to_string(),
-            payload: serde_json::json!({
-                "kind": "start_worktree",
-                "mode": "free",
-                "repo": repo,
-                "name": name,
-            }),
-            rev,
-        }
     }
 }
 
@@ -427,117 +243,11 @@ pub fn parse_tail_source_rev(result: &serde_json::Value) -> Option<u64> {
     result.get("source_rev").and_then(serde_json::Value::as_u64)
 }
 
-/// #232: one `read_diff` page as served by the daemon (mirrors
-/// `corrald::drive::ReadDiffResult`; serde mapping only — the daemon owns
-/// bounds/redaction, the client only renders).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DiffStats {
-    pub files: u32,
-    pub adds: u32,
-    pub dels: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DiffFileStat {
-    pub path: String,
-    pub adds: u32,
-    pub dels: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DiffPage {
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub head: Option<String>,
-    pub stats: DiffStats,
-    pub files: Vec<DiffFileStat>,
-    pub files_truncated: bool,
-    pub offset: u32,
-    pub lines: Vec<String>,
-    pub total: u32,
-    pub has_more: bool,
-    pub next_offset: Option<u32>,
-}
-
-/// Parse `DriveResponse.result` for `read_diff`. Tolerant: a malformed or
-/// missing result yields `None` (surface an error, never crash the board).
-pub fn parse_diff_page(result: &serde_json::Value) -> Option<DiffPage> {
-    let wire: WireDiffPage = serde_json::from_value(result.clone()).ok()?;
-    Some(DiffPage {
-        repo: wire.repo,
-        branch: wire.branch,
-        head: wire.head,
-        stats: DiffStats {
-            files: wire.stats.files,
-            adds: wire.stats.adds,
-            dels: wire.stats.dels,
-        },
-        files: wire
-            .files
-            .into_iter()
-            .map(|f| DiffFileStat {
-                path: f.path,
-                adds: f.adds,
-                dels: f.dels,
-            })
-            .collect(),
-        files_truncated: wire.files_truncated,
-        offset: wire.offset,
-        lines: wire.lines,
-        total: wire.total,
-        has_more: wire.has_more,
-        next_offset: wire.next_offset,
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct WireDiffPage {
-    #[serde(default)]
-    repo: Option<String>,
-    #[serde(default)]
-    branch: Option<String>,
-    #[serde(default)]
-    head: Option<String>,
-    #[serde(default)]
-    stats: WireDiffStats,
-    #[serde(default)]
-    files: Vec<WireDiffFileStat>,
-    #[serde(default)]
-    files_truncated: bool,
-    #[serde(default)]
-    offset: u32,
-    #[serde(default)]
-    lines: Vec<String>,
-    #[serde(default)]
-    total: u32,
-    #[serde(default)]
-    has_more: bool,
-    #[serde(default)]
-    next_offset: Option<u32>,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct WireDiffStats {
-    #[serde(default)]
-    files: u32,
-    #[serde(default)]
-    adds: u32,
-    #[serde(default)]
-    dels: u32,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct WireDiffFileStat {
-    #[serde(default)]
-    path: String,
-    #[serde(default)]
-    adds: u32,
-    #[serde(default)]
-    dels: u32,
-}
-
 /// Typed refusal space, mirroring the conformance error table:
-/// 400/401/404/403/409/422 + dispatch-level `ok:false` outcomes.
+/// 400/401/404/403/409/422 + dispatch-level `ok:false` outcomes. The
+/// approval/step-up rows are retained because the daemon's refusal table
+/// still knows them (a transitional daemon may answer any read with any
+/// row); no egui surface acts on them anymore.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriveFailure {
     BadRequest(String),
@@ -559,8 +269,7 @@ pub enum DriveFailure {
     HashMismatch,
     ChoiceNotInMenu,
     CannotApproveKind,
-    /// Dispatch-level refusal (`ok:false` + error, e.g. kill/attach
-    /// not implemented by the source adapter).
+    /// Dispatch-level refusal (`ok:false` + error).
     Refused(String),
     /// Dispatch-level transport failure (`ok:false` + error).
     Failed(String),
@@ -678,12 +387,6 @@ pub fn sign_envelope(signing: &SigningKey, envelope: &DriveEnvelope) -> String {
     base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
 }
 
-pub fn sign_step_up(signing: &SigningKey, request: &StepUpRequest) -> String {
-    use base64::Engine;
-    let sig: Signature = signing.sign(&canonical_step_up_bytes(request));
-    base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
-}
-
 /// Fresh `request_id` for a logical action: stable per action, unique per
 /// tap. Retries reuse it; the daemon dedupes on it.
 pub fn new_request_id(what: &str) -> String {
@@ -697,8 +400,8 @@ pub fn new_request_id(what: &str) -> String {
     format!("corrald-ui:{what}:{now}:{hex}")
 }
 
-/// Execute a logical action end-to-end: sign → POST → retry policy →
-/// step-up mint-and-retry. Retries always reuse `intent.request_id`.
+/// Execute a logical READ action end-to-end: sign → POST → retry policy.
+/// Retries always reuse `intent.request_id` (idempotent by contract).
 pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> DriveOutcome {
     let envelope = DriveEnvelope {
         request_id: intent.request_id.clone(),
@@ -716,7 +419,7 @@ pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> Dr
     let mut attempt = 0u32;
     let mut backoff = RETRY_BASE_MS;
     loop {
-        match drive_once(endpoint, &signed, None).await {
+        match drive_once(endpoint, &signed).await {
             Ok(outcome) => {
                 if outcome.ok {
                     return DriveOutcome::Ok {
@@ -724,9 +427,9 @@ pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> Dr
                         result: outcome.result,
                     };
                 }
-                // Dispatch-level `ok:false` (kill/attach not implemented,
-                // unknown agent at dispatch, transport failure): typed, no
-                // retry (the daemon already stored it in the replay table).
+                // Dispatch-level `ok:false` (unknown agent at dispatch,
+                // transport failure): typed, no retry (the daemon already
+                // stored it in the replay table).
                 let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
                 let failure = if outcome.error_kind.as_deref() == Some("stale_agent") {
                     DriveFailure::StaleAgent(message)
@@ -743,33 +446,9 @@ pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> Dr
                 return DriveOutcome::Refused(failure);
             }
             Err(attempt_failure) => match &attempt_failure {
-                DriveFailure::StepUpRequired => {
-                    // Transparent step-up: mint once, retry with header.
-                    match mint_step_up(endpoint).await {
-                        Ok(token) => {
-                            return retry_loop(endpoint, &signed, token.as_str()).await;
-                        }
-                        Err(mint_err) => {
-                            return DriveOutcome::Refused(DriveFailure::StepUpFailed(format!(
-                                "could not mint step-up token: {mint_err}"
-                            )));
-                        }
-                    }
-                }
-                DriveFailure::InFlight(_) => {
-                    // A concurrent duplicate owns the request; the replay
-                    // table will serve the stored response. Retry with the
-                    // SAME request_id (idempotent by contract).
-                    if attempt < MAX_TRANSPORT_ATTEMPTS {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
-                        backoff = (backoff * 2).min(5_000);
-                        attempt += 1;
-                        continue;
-                    }
-                    return DriveOutcome::Refused(attempt_failure);
-                }
-                DriveFailure::Transport(_) => {
-                    // Network failure: retry the same request_id — the
+                DriveFailure::InFlight(_) | DriveFailure::Transport(_) => {
+                    // A concurrent duplicate owns the request (or the
+                    // network failed): retry with the SAME request_id — the
                     // daemon's replay table makes re-delivery a no-op.
                     if attempt < MAX_TRANSPORT_ATTEMPTS {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
@@ -777,53 +456,9 @@ pub async fn execute_drive(endpoint: &DriveEndpoint, intent: &DriveIntent) -> Dr
                         attempt += 1;
                         continue;
                     }
-                    return DriveOutcome::Refused(attempt_failure);
+                    return DriveOutcome::Refused(attempt_failure.clone());
                 }
                 other => return DriveOutcome::Refused(other.clone()),
-            },
-        }
-    }
-}
-
-/// Retry loop once a step-up token is in hand (same request_id).
-async fn retry_loop(endpoint: &DriveEndpoint, signed: &SignedDrive, token: &str) -> DriveOutcome {
-    let mut attempt = 0u32;
-    let mut backoff = RETRY_BASE_MS;
-    loop {
-        match drive_once(endpoint, signed, Some(token)).await {
-            Ok(outcome) => {
-                if outcome.ok {
-                    return DriveOutcome::Ok {
-                        rev: outcome.rev,
-                        result: outcome.result,
-                    };
-                }
-                let message = outcome.error.unwrap_or_else(|| "unknown".to_string());
-                let failure = if outcome.error_kind.as_deref() == Some("stale_agent") {
-                    DriveFailure::StaleAgent(message)
-                } else if outcome.error_kind.as_deref() == Some("unknown_agent") {
-                    DriveFailure::UnknownAgent(message)
-                } else if message.contains("transport")
-                    || message.contains("rpc")
-                    || message.contains("failed")
-                {
-                    DriveFailure::Failed(message)
-                } else {
-                    DriveFailure::Refused(message)
-                };
-                return DriveOutcome::Refused(failure);
-            }
-            Err(failure) => match failure {
-                DriveFailure::Transport(_) | DriveFailure::InFlight(_) => {
-                    if attempt < MAX_TRANSPORT_ATTEMPTS {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
-                        backoff = (backoff * 2).min(5_000);
-                        attempt += 1;
-                        continue;
-                    }
-                    return DriveOutcome::Refused(failure);
-                }
-                other => return DriveOutcome::Refused(other),
             },
         }
     }
@@ -834,18 +469,16 @@ async fn retry_loop(endpoint: &DriveEndpoint, signed: &SignedDrive, token: &str)
 async fn drive_once(
     endpoint: &DriveEndpoint,
     signed: &SignedDrive,
-    step_up_token: Option<&str>,
 ) -> Result<DriveResponse, DriveFailure> {
     let url = format!("{}/drive", endpoint.base_url.trim_end_matches('/'));
-    let mut builder = endpoint
+    let response = match endpoint
         .client
         .post(&url)
         .json(signed)
-        .timeout(DRIVE_TIMEOUT);
-    if let Some(token) = step_up_token {
-        builder = builder.header("X-Step-Up-Token", token);
-    }
-    let response = match builder.send().await {
+        .timeout(DRIVE_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return Err(DriveFailure::Transport(e.to_string())),
     };
@@ -895,523 +528,110 @@ pub fn classify_refusal(status: u16, kind: &str, message: &str) -> DriveFailure 
     }
 }
 
-/// Mint a single-use step-up token for destructive payloads: sign the
-/// `StepUpRequest` (fresh nonce + ts, purpose "destructive"), POST
-/// `/step-up`, return the token.
-pub async fn mint_step_up(endpoint: &DriveEndpoint) -> Result<String, String> {
-    let request = StepUpRequest {
-        key_id: endpoint.key_id.clone(),
-        purpose: "destructive".to_string(),
-        nonce: new_request_id("step-up").replace([':', '{', '}'], ""),
-        ts: now_secs(),
-    };
-    let signature = sign_step_up(&endpoint.signing, &request);
-    let url = format!("{}/step-up", endpoint.base_url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "key_id": request.key_id,
-        "signature": signature,
-        "request": serde_json::to_value(&request).map_err(|e| e.to_string())?,
-    });
-    let response = endpoint
-        .client
-        .post(&url)
-        .json(&body)
-        .timeout(DRIVE_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("step-up transport: {e}"))?;
-    let status = response.status();
-    let text: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("step-up body: {e}"))?;
-    if !status.is_success() {
-        let error = text
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown step-up error");
-        return Err(format!("{status} {error}"));
-    }
-    let parsed: StepUpResponse =
-        serde_json::from_value(text).map_err(|e| format!("unexpected step-up shape: {e}"))?;
-    Ok(parsed.token)
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
-}
-
-/// Client-side hint: mirror the daemon's destructive-pattern detection
-/// (F1 canonicalization: lowercase, whitespace collapse, `$HOME` → `~`,
-/// quote normalization) so the UI can WARN before dispatch. The daemon's
-/// 403 `step_up_required` remains the authority — this never blocks.
-pub fn suggests_step_up(prompt: &str) -> bool {
-    let canon = canonicalize(prompt);
-    if DESTRUCTIVE_NEEDLES
-        .iter()
-        .any(|needle| canon.contains(needle))
-    {
-        return true;
-    }
-    // Pair pattern mirror: `dd if=… of=…` (read + write block device).
-    canon.contains("dd if=") && canon.contains("of=")
-}
-
-fn canonicalize(text: &str) -> String {
-    let lowered = text.to_lowercase();
-    let tilded = lowered.replace("$home", "~");
-    let quoted = tilded.replace('\'', "\"");
-    quoted.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Substring needles mirroring the daemon's pattern table (deterrent hint
-/// only; the daemon is the boundary).
-const DESTRUCTIVE_NEEDLES: &[&str] = &[
-    "rm -rf",
-    "rm -fr",
-    "rm -r -f",
-    "rm --recursive --force",
-    "rm --force --recursive",
-    "push --force",
-    "push --force-with-lease",
-    "push -f",
-    "| sh",
-    "|sh",
-    "| bash",
-    "|bash",
-    "| zsh",
-    "|zsh",
-    "-c \"$(curl",
-    "-c \"$(wget",
-    "-c \"$(fetch",
-    "eval \"$(curl",
-    "eval \"$(wget",
-    "eval \"$(fetch",
-    "<(curl",
-    "<(wget",
-    "<(fetch",
-    "~/.aws",
-    ".aws/credentials",
-    "~/.ssh",
-    ".env",
-    "dd of=",
-];
-
-/// Build the approve claim payload, verifying the client-side computed
-/// hash against the snapshot's stored `prompt_hash` (conformance:
-/// byte-for-byte hash of the exact prompt string; the snapshot field is
-/// the daemon's own derivation and must agree).
-pub fn approval_claim(waiting: &WaitingOn, choice: &str) -> (String, String, String) {
-    let computed = WaitingOn::prompt_hash_of(&waiting.prompt);
-    let prompt_hash = if computed == waiting.prompt_hash {
-        waiting.prompt_hash.clone()
-    } else {
-        // Never trust the computed value over the snapshot field; surface
-        // the anomaly via the prompt_hash that the daemon will compare.
-        tracing::warn!(
-            computed = %computed,
-            stored = %waiting.prompt_hash,
-            "snapshot prompt_hash disagrees with client-side hash"
-        );
-        waiting.prompt_hash.clone()
-    };
-    (waiting.approval_id.clone(), prompt_hash, choice.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Agent, AgentState, Workspace};
 
+    /// #354 RED/GREEN probe — the retained capability surface is the closed
+    /// READ set. Reintroducing a mutating capability (prompt/approve/kill/
+    /// attach/start_worktree…) must fail this test AND the app-level
+    /// dispatch probe before any UI could reach it.
     #[test]
-    fn envelope_canonical_bytes_are_fixed_order() {
-        let e = DriveEnvelope {
-            request_id: "req-1".into(),
-            capability: Capability::Prompt,
-            target: "herdr:abc".into(),
-            payload: serde_json::json!({ "kind": "prompt", "text": "continue" }),
-            rev: Some(7),
-        };
-        // Field order must be request_id, capability, target, payload, rev.
-        let bytes = canonical_envelope_bytes(&e);
-        let text = String::from_utf8(bytes).unwrap();
-        assert!(text.starts_with("{\"request_id\":\"req-1\",\"capability\":\"prompt\","));
-        // Serialization round-trips to the same bytes (parse → re-serialize).
-        let parsed: DriveEnvelope = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            canonical_envelope_bytes(&parsed),
-            canonical_envelope_bytes(&e)
-        );
-        // rev: None is omitted entirely.
-        let no_rev = DriveEnvelope { rev: None, ..e };
-        let text = String::from_utf8(canonical_envelope_bytes(&no_rev)).unwrap();
-        assert!(!text.contains("rev"));
+    fn retained_capabilities_are_the_closed_read_set() {
+        let names: Vec<&str> = [Capability::ReadTail, Capability::ReadDiff]
+            .into_iter()
+            .map(Capability::as_str)
+            .collect();
+        assert_eq!(names, ["read_tail", "read_diff"]);
+        assert_eq!(Capability::ReadTail.as_str(), "read_tail");
+        assert_eq!(Capability::ReadDiff.as_str(), "read_diff");
+    }
+
+    /// The only dispatchable intent this client can build is a bounded
+    /// read_tail (v1: 200-line live tail, no load-earlier).
+    #[test]
+    fn read_tail_intent_is_bounded_and_since_cursor_carries_the_revision() {
+        let intent = DriveIntent::read_tail("herdr:agent-a", Some(5));
+        assert_eq!(intent.capability, Capability::ReadTail);
+        assert_eq!(intent.target, "herdr:agent-a");
+        assert_eq!(intent.payload["lines"], serde_json::json!(200));
+
+        let since = DriveIntent::read_tail_since("herdr:agent-a", 42, Some(6));
+        assert_eq!(since.payload["since_rev"], serde_json::json!(42));
+        assert_eq!(since.rev, Some(6));
     }
 
     #[test]
-    fn envelope_signs_and_verifies_against_canonical_bytes() {
-        let signing = SigningKey::from_bytes(&[3u8; 32]);
-        let e = DriveEnvelope {
-            request_id: "r".into(),
-            capability: Capability::Interrupt,
-            target: "herdr:x".into(),
-            payload: serde_json::Value::Null,
+    fn tail_parsers_are_tolerant_and_keep_source_rev() {
+        let value = serde_json::json!({
+            "lines": ["a", "b"],
+            "blocks": [
+                {"kind": "agent", "text": "a\nb"},
+                {"kind": "tool", "text": "tool line"},
+                {"kind": "mystery", "text": "x"},
+                {"text": "no kind"}
+            ],
+            "source_rev": 7
+        });
+        assert_eq!(
+            parse_tail_lines(&value),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        let blocks = parse_tail_blocks(&value);
+        assert_eq!(blocks.len(), 3, "kind-less entries are skipped");
+        assert_eq!(blocks[0].kind, CanonicalBlockKind::Agent);
+        assert_eq!(
+            blocks[2].kind,
+            CanonicalBlockKind::Unknown,
+            "unknown kinds stay unknown"
+        );
+        assert_eq!(parse_tail_source_rev(&value), Some(7));
+        assert_eq!(
+            parse_tail_lines(&serde_json::json!({})),
+            Vec::<String>::new()
+        );
+        assert_eq!(parse_tail_blocks(&serde_json::json!({})), Vec::new());
+        assert_eq!(parse_tail_source_rev(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn canonical_envelope_serializes_in_fixed_order() {
+        let envelope = DriveEnvelope {
+            request_id: "req-1".into(),
+            capability: Capability::ReadTail,
+            target: "herdr:agent-a".into(),
+            payload: serde_json::json!({ "kind": "read_tail", "lines": 200 }),
             rev: None,
         };
-        let sig = sign_envelope(&signing, &e);
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(sig)
-            .unwrap();
-        let arr: [u8; 64] = bytes.try_into().unwrap();
-        let sig: Signature = Signature::from_bytes(&arr);
-        signing
-            .verifying_key()
-            .verify_strict(&canonical_envelope_bytes(&e), &sig)
-            .unwrap();
-        // A tampered envelope must fail verification.
-        let tampered = DriveEnvelope {
-            target: "herdr:y".into(),
-            ..e.clone()
-        };
-        assert!(
-            signing
-                .verifying_key()
-                .verify_strict(&canonical_envelope_bytes(&tampered), &sig)
-                .is_err()
-        );
+        let bytes = canonical_envelope_bytes(&envelope);
+        let text = String::from_utf8(bytes).unwrap();
+        let first = text.find("request_id").unwrap();
+        let capability = text.find("capability").unwrap();
+        let target = text.find("target").unwrap();
+        let payload = text.find("payload").unwrap();
+        assert!(first < capability && capability < target && target < payload);
+        assert!(!text.contains("\"rev\""));
     }
 
     #[test]
-    fn step_up_request_signs_over_fixed_order_bytes() {
-        let signing = SigningKey::from_bytes(&[9u8; 32]);
-        let req = StepUpRequest {
-            key_id: "dev_x".into(),
-            purpose: "destructive".into(),
-            nonce: "n".into(),
-            ts: 123,
-        };
-        let text = String::from_utf8(canonical_step_up_bytes(&req)).unwrap();
-        assert!(text.starts_with("{\"key_id\":\"dev_x\",\"purpose\":\"destructive\","));
-        let sig_b64 = sign_step_up(&signing, &req);
-        use base64::Engine;
-        let arr: [u8; 64] = base64::engine::general_purpose::STANDARD
-            .decode(sig_b64)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let sig: Signature = Signature::from_bytes(&arr);
-        signing
-            .verifying_key()
-            .verify_strict(&canonical_step_up_bytes(&req), &sig)
-            .unwrap();
-    }
-
-    #[test]
-    fn request_ids_are_unique_per_call_and_stable_in_retries() {
-        let a = new_request_id("x");
-        let b = new_request_id("x");
-        assert_ne!(a, b);
-        let intent = DriveIntent::prompt("herdr:a", "go".into(), None);
-        let retry = intent.clone();
-        assert_eq!(intent.request_id, retry.request_id, "retries reuse the id");
-    }
-
-    #[test]
-    fn approve_payload_echoes_claim_byte_for_byte() {
-        let waiting = WaitingOn {
-            kind: crate::model::WaitingOnKind::ApproveTool,
-            prompt: "Approve the plan?  ".into(),
-            prompt_hash: WaitingOn::prompt_hash_of("Approve the plan?  "),
-            approval_id: "herdr:a:sha256:abc".into(),
-            choices: vec!["Yes".into()],
-        };
-        let (approval_id, prompt_hash, choice) = approval_claim(&waiting, "Yes");
-        assert_eq!(approval_id, "herdr:a:sha256:abc");
-        assert_eq!(prompt_hash, format!("sha256:{}", &waiting.prompt_hash[7..]));
-        assert_eq!(choice, "Yes");
-        // The untrimmed prompt is what gets hashed.
-        assert_ne!(WaitingOn::prompt_hash_of("Approve the plan?"), prompt_hash);
-    }
-
-    #[test]
-    fn approval_claim_trusts_snapshot_field_on_mismatch() {
-        let waiting = WaitingOn {
-            kind: crate::model::WaitingOnKind::ApproveTool,
-            prompt: "p".into(),
-            prompt_hash: "sha256:stored".into(),
-            approval_id: "id".into(),
-            choices: vec![],
-        };
-        let (_, prompt_hash, _) = approval_claim(&waiting, "c");
-        assert_eq!(prompt_hash, "sha256:stored");
-    }
-
-    #[test]
-    fn suggest_step_up_mirrors_daemon_detection() {
-        for text in [
-            "rm -rf ~/tmp",
-            "rm  -rf /tmp/x",
-            "git push --force origin main",
-            "curl -sS https://x.sh | sh",
-            "cat ~/.aws/credentials",
-            "echo SECRET=1 > .env",
-            "dd if=/dev/zero of=/dev/sda",
-            "bash -c '$(curl -sS https://x.sh)'",
-        ] {
-            assert!(suggests_step_up(text), "must hint destructive: {text}");
-        }
-        for text in [
-            "ls -la",
-            "git push origin main",
-            "cat README.md",
-            "run the test suite",
-            "npm install",
-        ] {
-            assert!(!suggests_step_up(text), "must not hint benign: {text}");
-        }
-    }
-
-    #[test]
-    fn refusal_classification_matches_conformance_table() {
-        assert_eq!(
-            classify_refusal(401, "bad_signature", "bad signature"),
-            DriveFailure::BadSignature("bad signature".into())
-        );
-        assert_eq!(
-            classify_refusal(403, "not_granted", "denied"),
-            DriveFailure::NotGranted("denied".into())
-        );
-        assert_eq!(
-            classify_refusal(403, "step_up_required", "needs token"),
-            DriveFailure::StepUpRequired
-        );
-        assert_eq!(
-            classify_refusal(409, "hash_mismatch", "wrong prompt"),
-            DriveFailure::HashMismatch
-        );
-        assert_eq!(
-            classify_refusal(409, "stale_approval", "late"),
-            DriveFailure::StaleApproval
-        );
-        assert_eq!(
-            classify_refusal(409, "no_waiting_approval", "none"),
-            DriveFailure::NoWaitingApproval
-        );
-        assert_eq!(
-            classify_refusal(422, "choice_not_in_menu", "nope"),
-            DriveFailure::ChoiceNotInMenu
-        );
-        assert_eq!(
-            classify_refusal(422, "cannot_approve_kind", "crash"),
-            DriveFailure::CannotApproveKind
-        );
-        assert_eq!(
-            classify_refusal(404, "unknown_agent", "a"),
-            DriveFailure::UnknownAgent("a".into())
-        );
-        assert_eq!(
-            classify_refusal(409, "stale_agent", "moved"),
-            DriveFailure::StaleAgent("moved".into())
-        );
-        assert_eq!(
-            classify_refusal(404, "unknown_key", "k"),
-            DriveFailure::UnknownKey("k".into())
-        );
-        assert_eq!(
-            classify_refusal(403, "expired", "e"),
-            DriveFailure::Expired("e".into())
-        );
-        assert_eq!(
-            classify_refusal(403, "revoked", "r"),
-            DriveFailure::Revoked("r".into())
-        );
-        assert_eq!(
-            classify_refusal(401, "step_up_failed", "spent"),
-            DriveFailure::StepUpFailed("spent".into())
-        );
-        assert_eq!(
-            classify_refusal(409, "in_flight", "busy"),
-            DriveFailure::InFlight("busy".into())
-        );
-        assert_eq!(
-            classify_refusal(500, "oops", "boom"),
-            DriveFailure::Transport("server error 500: boom".into())
-        );
-        // Dispatch-level refusals ride ok:false in a 200 body — classified
-        // by the caller from the message; here we check the fallback path.
+    fn classify_refusal_covers_the_kept_read_error_table() {
         assert!(matches!(
-            classify_refusal(200, "unreachable", ""),
+            classify_refusal(403, "not_granted", "capability not granted: read_tail"),
+            DriveFailure::NotGranted(_)
+        ));
+        assert!(matches!(
+            classify_refusal(401, "bad_signature", "sig"),
+            DriveFailure::BadSignature(_)
+        ));
+        assert!(matches!(
+            classify_refusal(404, "unknown_agent", "agent"),
+            DriveFailure::UnknownAgent(_)
+        ));
+        assert!(matches!(
+            classify_refusal(500, "", "boom"),
             DriveFailure::Transport(_)
         ));
-    }
-
-    #[test]
-    fn refused_drive_outcomes_classify_by_message() {
-        // kill/attach not implemented => Refused; rpc failure => Failed.
-        let ok_false = |error: &str| DriveResponse {
-            request_id: "r".into(),
-            ok: false,
-            error: Some(error.into()),
-            error_kind: None,
-            rev: 1,
-            result: None,
-        };
-        // (classification happens in execute_drive; here we assert the
-        // message-keyed policy by running the two branches' predicate)
-        assert!(!ok_false("kill not implemented").ok);
-        assert!(!ok_false("rpc call failed").ok);
-    }
-
-    #[test]
-    fn approve_intent_builds_claim_payload() {
-        let agent = Agent {
-            agent_id: "herdr:a".into(),
-            source: "herdr".into(),
-            tool: "claude".into(),
-            state: AgentState::Blocked,
-            reason: None,
-            seq: 1,
-            ts: 0,
-            capabilities: vec![],
-            waiting_on: Some(WaitingOn {
-                kind: crate::model::WaitingOnKind::Menu,
-                prompt: "choose".into(),
-                prompt_hash: "sha256:x".into(),
-                approval_id: "herdr:a:sha256:x".into(),
-                choices: vec!["a".into(), "b".into()],
-            }),
-            parent_id: None,
-            host: None,
-            workspace: Workspace::default(),
-            attachment: None,
-            display_name: None,
-            title: None,
-            issues: vec![],
-        };
-        let intent = DriveIntent::approve(&agent, "b".into(), Some(9));
-        assert_eq!(intent.capability, Capability::Approve);
-        assert_eq!(intent.target, "herdr:a");
-        assert_eq!(intent.rev, Some(9));
-        let payload = intent.payload.as_object().unwrap();
-        assert_eq!(payload["kind"], "approve");
-        assert_eq!(payload["approval_id"], "herdr:a:sha256:x");
-        assert_eq!(payload["prompt_hash"], "sha256:x");
-        assert_eq!(payload["choice"], "b");
-        let text = serde_json::to_string(&intent.payload).unwrap();
-        assert!(text.contains("\"approval_id\":\"herdr:a:sha256:x\""));
-    }
-
-    #[test]
-    fn read_tail_since_carries_the_source_cursor() {
-        let intent = DriveIntent::read_tail_since("herdr:a", 50, 7, Some(9));
-        assert_eq!(intent.payload["since_rev"], 7);
-        assert_eq!(intent.rev, Some(9));
-    }
-
-    #[test]
-    fn read_tail_is_bounded_to_50_lines_on_tap() {
-        let intent = DriveIntent::read_tail("herdr:a", None);
-        assert_eq!(intent.capability, Capability::ReadTail);
-        assert_eq!(intent.payload["lines"], 50);
-    }
-
-    #[test]
-    fn parse_tail_lines_handles_the_daemon_result_shape() {
-        // The daemon's read_tail result (P4 W2.1): redacted, bounded lines.
-        let result = serde_json::json!({
-            "lines": ["  line one", "deploy token [REDACTED]", "", "  tail end"]
-        });
-        assert_eq!(
-            parse_tail_lines(&result),
-            vec!["  line one", "deploy token [REDACTED]", "", "  tail end"],
-            "empty lines survive (they are part of the pane output)"
-        );
-        // Missing / wrong-shaped result: tolerant empty, never an error.
-        assert!(parse_tail_lines(&serde_json::Value::Null).is_empty());
-        assert!(parse_tail_lines(&serde_json::json!({})).is_empty());
-        assert!(parse_tail_lines(&serde_json::json!({ "lines": "not-an-array" })).is_empty());
-        // Non-string entries are skipped, string ones kept.
-        assert_eq!(
-            parse_tail_lines(&serde_json::json!({ "lines": ["a", 7, null, "b"] })),
-            vec!["a", "b"]
-        );
-    }
-
-    #[test]
-    fn parse_tail_blocks_preserves_daemon_kinds_order_and_provenance() {
-        // #315: the canonical blocks decode VERBATIM — kinds, order, and
-        // the provenance request id are the daemon's, never re-derived.
-        let result = serde_json::json!({
-            "blocks": [
-                { "kind": "tool", "text": "$ cargo build\nCompiling" },
-                { "kind": "user", "text": "ship it", "prompt_request_id": "req-7" },
-                { "kind": "unknown", "text": "typed straight into the pane" },
-                { "kind": "system", "text": "status: working" }
-            ]
-        });
-        let blocks = parse_tail_blocks(&result);
-        assert_eq!(blocks.len(), 4);
-        assert_eq!(blocks[0].kind, CanonicalBlockKind::Tool);
-        assert_eq!(blocks[1].kind, CanonicalBlockKind::User);
-        assert_eq!(blocks[1].prompt_request_id.as_deref(), Some("req-7"));
-        assert_eq!(blocks[2].kind, CanonicalBlockKind::Unknown);
-        assert_eq!(blocks[2].prompt_request_id, None);
-        assert_eq!(blocks[3].kind, CanonicalBlockKind::System);
-        // Tolerant decoding: absent/malformed arrays degrade to empty (the
-        // legacy lines fallback), not an error.
-        assert!(parse_tail_blocks(&serde_json::Value::Null).is_empty());
-        assert!(parse_tail_blocks(&serde_json::json!({ "blocks": "junk" })).is_empty());
-    }
-
-    #[test]
-    fn read_diff_intent_and_parse_round_trip_daemon_shape() {
-        // Intent payload mirrors the daemon's ReadDiff query fields.
-        let intent = DriveIntent::read_diff("herdr:a", 128, 200, 400, Some(7));
-        assert_eq!(intent.capability, Capability::ReadDiff);
-        assert_eq!(intent.target, "herdr:a");
-        assert_eq!(intent.rev, Some(7));
-        assert_eq!(
-            intent.payload,
-            serde_json::json!({ "kind": "read_diff", "files": 128, "offset": 200, "lines": 400 })
-        );
-        assert!(intent.request_id.starts_with("corrald-ui:diff:"));
-
-        // The daemon's ReadDiffResult parses into the client page shape.
-        let result = serde_json::json!({
-            "repo": "corral",
-            "branch": "g232/read-diff",
-            "head": "abc1234",
-            "stats": { "files": 3, "adds": 12, "dels": 5 },
-            "files": [
-                { "path": "src/drive/mod.rs", "adds": 10, "dels": 4 },
-                { "path": "src/core/diff.rs", "adds": 2, "dels": 1 }
-            ],
-            "files_truncated": true,
-            "offset": 0,
-            "lines": ["diff --git a/src/drive/mod.rs b/src/drive/mod.rs", " one", "-two", "+two!!"],
-            "total": 8,
-            "has_more": true,
-            "next_offset": 4
-        });
-        let page = parse_diff_page(&result).expect("page parses");
-        assert_eq!(page.repo.as_deref(), Some("corral"));
-        assert_eq!(page.branch.as_deref(), Some("g232/read-diff"));
-        assert_eq!(page.stats.adds, 12);
-        assert_eq!(page.stats.dels, 5);
-        assert_eq!(page.files.len(), 2);
-        assert_eq!(page.files[0].path, "src/drive/mod.rs");
-        assert!(page.files_truncated);
-        assert_eq!(page.lines.len(), 4);
-        assert_eq!(page.total, 8);
-        assert!(page.has_more);
-        assert_eq!(page.next_offset, Some(4));
-
-        // Malformed / missing result: tolerant None, never a crash.
-        assert!(parse_diff_page(&serde_json::Value::Null).is_none());
-        assert!(parse_diff_page(&serde_json::json!({ "lines": "nope" })).is_none());
+        assert!(DriveFailure::NotGranted("x".into()).revokes_local_grant());
+        assert!(DriveFailure::BadSignature("x".into()).suggests_re_registration());
     }
 }

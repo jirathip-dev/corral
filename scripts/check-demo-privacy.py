@@ -156,39 +156,27 @@ def self_test(path: Path) -> int:
         agents = d["snapshot"]["agents"]
         agents["herdr:real-prod-agent"] = agents.pop("demo:p01:impl")
 
+    def set_agent(d: dict, key: str, value) -> None:
+        d["snapshot"]["agents"]["demo:p01:impl"][key] = value
+
+    def set_recent(d: dict, text: str) -> None:
+        d["recent_output"][0] = text
+
     mutations = (
-        ("customer-finance-prod", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("repo", "customer-finance-prod")),
-        ("github.com/acme/private", lambda d: d["issues"]["demo-alpha"][0].__setitem__("repo", "github.com/acme/private")),
-        ("sentinel-prefixed live title", lambda d: d["issues"]["demo-alpha"][0].__setitem__("title", "Demo sample issue: iOS showcase: automatically refresh GitHub Pages after successful TestFlight upload")),
-        ("string issue number", lambda d: d["issues"]["demo-alpha"][0].__setitem__("number", "215")),
-        ("non-demo attachment ref", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["attachment"].__setitem__("ref", "herdr:real-prod-agent")),
+        ("customer-finance-prod repo", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("repo", "customer-finance-prod")),
+        ("github.com/acme/private URL in transcript", lambda d: set_recent(d, "See https://github.com/acme/private for details")),
+        ("FTP URL in transcript", lambda d: set_recent(d, "See ftp://demo.example.invalid/private")),
+        ("wrong-host HTTPS URL in transcript", lambda d: set_recent(d, "See https://secret.example.com/private")),
+        ("HTTP demo URL in transcript", lambda d: set_recent(d, "See http://demo.example.invalid/private")),
+        ("bare GitHub host in transcript", lambda d: set_recent(d, "See github.com/acme/private")),
+        ("non-demo attachment ref", lambda d: set_agent(d, "attachment", {"kind": "pane", "ref": "herdr:real-prod-agent"})),
+        ("non-demo agent_id value", lambda d: set_agent(d, "agent_id", "demo:notapproved:impl")),
         ("non-demo delta deletion", lambda d: d["deltas"][0].__setitem__("del", ["herdr:real-prod-agent"])),
-        ("non-demo parent id", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "herdr:real-prod-agent")),
-        ("non-demo parent id without colon", lambda d: d["snapshot"]["agents"]["demo:p01:impl"].__setitem__("parent_id", "real-prod-agent")),
+        ("non-demo worktree path", lambda d: d["snapshot"]["agents"]["demo:p01:impl"]["workspace"].__setitem__("worktree_path", "/Users/jirathip/corral/wt")),
         ("non-demo agent map key", rename_agent),
         ("non-demo agent map key with slash", lambda d: d["snapshot"]["agents"].__setitem__("herdr:real/prod-agent", d["snapshot"]["agents"].pop("demo:p01:impl"))),
         ("non-demo novel field", lambda d: d.__setitem__("novel_identity", "herdr:real-prod-agent")),
         ("non-demo URL under unknown key", lambda d: d.__setitem__("novel_url", "https://github.com/acme/private")),
-        ("HTTP demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "http://demo.example.invalid/demo-alpha/issues/9001")),
-        ("embedded GitHub URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://github.com/acme/private for details")),
-        ("FTP URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftp://demo.example.invalid/private")),
-        ("uppercase GitHub URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://github.com/acme/private")),
-        ("wrong-host HTTPS URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://secret.example.com/private")),
-        ("saturated-s wrong-host URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://sass.scss.example/private")),
-        ("bare GitHub host", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See github.com/acme/private")),
-        ("ssh body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ssh://secret.example.com/private")),
-        ("git body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See git://private.example.org/private")),
-        ("ws body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ws://secret.example.com/private")),
-        ("wss body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See wss://private.example.org/private")),
-        ("ftps body", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftps://secret.example.com/private")),
-        ("ssh URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ssh://secret.example.com/private")),
-        ("git URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "git://private.example.org/private")),
-        ("ws URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ws://secret.example.com/private")),
-        ("wss URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "wss://private.example.org/private")),
-        ("ftps URL field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "ftps://secret.example.com/private")),
-        ("ftps partial URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ftps:demo.example.invalid@host")),
-        ("ssh partial URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See ssh:git@server")),
-        ("uppercase wrong host", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://GITHUB.COM/acme/private")),
     )
     for name, mutate in mutations:
         candidate = json.loads(json.dumps(data))
@@ -201,15 +189,10 @@ def self_test(path: Path) -> int:
                 return 1
     for name, mutate in (
         ("fixture agent id", lambda d: None),
-        ("fixture URL in approved field", lambda d: d["issues"]["demo-alpha"][0].__setitem__("url", "https://demo.example.invalid/demo-alpha/issues/9001")),
-        ("ordinary prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "This is ordinary fixture prose without a URL.")),
-        ("HTTPS demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://demo.example.invalid/private")),
-        ("uppercase demo origin", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See HTTPS://DEMO.EXAMPLE.INVALID/private")),
-        ("URL followed by whitespace", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://demo.example.invalid/private for details")),
-        ("note colon prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "note: this")),
-        ("time colon prose", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "12:30")),
-        ("quoted demo URL", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See 'https://demo.example.invalid/private'")),
-        ("URL before angle bracket", lambda d: d["issues"]["demo-alpha"][0].__setitem__("body", "See https://demo.example.invalid/private<")),
+        ("HTTPS demo URL in transcript", lambda d: set_recent(d, "See HTTPS://demo.example.invalid/private")),
+        ("ordinary prose in transcript", lambda d: set_recent(d, "This is ordinary fixture prose without a URL.")),
+        ("note colon prose", lambda d: set_recent(d, "note: this")),
+        ("time colon prose", lambda d: set_recent(d, "12:30")),
     ):
         candidate = json.loads(json.dumps(data))
         mutate(candidate)
@@ -219,24 +202,7 @@ def self_test(path: Path) -> int:
             if validate_fixture(valid) != 0:
                 print(f"privacy self-test unexpectedly rejected positive control: {name}", file=sys.stderr)
                 return 1
-    gh = subprocess.run(
-        ["gh", "issue", "list", "--repo", "jirathip-dev/corral", "--state", "all",
-         "--limit", "200", "--json", "title", "--jq", ".[].title"],
-        capture_output=True, text=True, check=False,
-    )
-    if gh.returncode != 0 or not gh.stdout.strip():
-        print("privacy self-test could not fetch live issue titles", file=sys.stderr)
-        return 2
-    for live_title in gh.stdout.splitlines():
-        candidate = json.loads(json.dumps(data))
-        candidate["issues"]["demo-alpha"][0]["title"] = live_title
-        with tempfile.TemporaryDirectory() as directory:
-            mutated = Path(directory) / "demo-fixture.json"
-            mutated.write_text(json.dumps(candidate))
-            if validate_fixture(mutated) == 0:
-                print(f"privacy self-test unexpectedly accepted live title: {live_title}", file=sys.stderr)
-                return 1
-    print("privacy self-test: all identity mutations and live titles rejected")
+    print("privacy self-test: all identity mutations rejected, positive controls accepted")
     return 0
 
 

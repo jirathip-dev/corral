@@ -10,18 +10,20 @@
 //! cargo test -p corrald-ui --test live -- --ignored --nocapture
 //! ```
 //!
-//! It exercises the exact code path the desktop GUI uses on tap:
-//! host fingerprint → device key → register → read-only default refusal →
-//! host grants read_tail → signed read_tail drive → idempotent replay →
-//! audit growth (executed entry present, refusals never logged).
+//! #354 read-only cut: grant administration is gone from the daemon's HTTP
+//! surface (grants are provisioned out-of-band in `registry.json` and only
+//! take effect on daemon restart), so this probe covers what a read-only
+//! device can prove against a live daemon: host fingerprint → device key →
+//! register (read-only default: EMPTY grants) → snapshot + SSE resume →
+//! signed read_tail refused with `not_granted` (read auth intact, mutating
+//! plane absent). The grant-then-drive journey lives in the app-level E2E
+//! suite and `tests/conformance.rs`; a live operator who grants a key
+//! out-of-band and restarts the daemon can re-run this probe to see the
+//! refusal flip to an execution.
 //!
 //! The registration record is written to the client config.json (same
 //! shape `corrald-ui` persists), so launching the GUI afterwards with the
 //! same `CORRAL_UI_CONFIG_DIR` lands directly on the live board.
-//!
-//! The two re-register probes share the host-scoped keyring entry and the
-//! daemon registry, so run the suite single-threaded:
-//! `cargo test -p corrald-ui --test live -- --ignored --nocapture --test-threads=1`.
 
 use corrald_ui::drive::{DriveEndpoint, DriveIntent, DriveOutcome};
 use corrald_ui::protocol;
@@ -34,7 +36,7 @@ fn env_or(name: &str, default: &str) -> String {
 
 #[tokio::test]
 #[ignore = "needs a real corrald (see module docs)"]
-async fn live_register_read_drive_audit() {
+async fn live_register_read_refusal_and_sse_resume() {
     let base_url = env_or(ENV_URL, "http://127.0.0.1:8474");
     let client = reqwest::Client::new();
 
@@ -46,9 +48,7 @@ async fn live_register_read_drive_audit() {
     let _fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
 
     // A FRESH ephemeral keypair per run: the probe must always observe
-    // the read-only default, which re-registering the GUI's persistent
-    // key would not (it already carries grants). The GUI's own key is
-    // registered separately through the app config (see README).
+    // the read-only default.
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).expect("OS RNG");
     let device = corrald_ui::keys::DeviceKey {
@@ -57,12 +57,8 @@ async fn live_register_read_drive_audit() {
     };
     println!("device key store: fresh ephemeral keypair");
 
-    // --- registration token + admin token from the daemon's config dir
-    // (localhost host same-user access, as the GUI's auto-register does)
     let token = corrald_ui::keys::read_daemon_registration_token()
         .expect("registration token (start corrald with a scratch CORRAL_CONFIG_DIR)");
-    let admin_token = corrald_ui::keys::read_daemon_admin_token()
-        .expect("admin token (needed to grant + read audit)");
 
     // --- R1: register -> empty grants (read-only default) -------------
     let pubkey_b64 = {
@@ -115,8 +111,7 @@ async fn live_register_read_drive_audit() {
         signing: device.signing,
     };
 
-    // --- R5: read-only default -> 403 not_granted, zero audit growth --
-    let before_len = audit_len(&client, &base_url, &admin_token).await;
+    // --- read-only default -> 403 not_granted (read auth intact) -------
     let refused = corrald_ui::drive::execute_drive(
         &endpoint,
         &DriveIntent::read_tail(&first_agent, Some(snapshot.rev)),
@@ -127,113 +122,19 @@ async fn live_register_read_drive_audit() {
             refused,
             DriveOutcome::Refused(corrald_ui::drive::DriveFailure::NotGranted(_))
         ),
-        "read-only device must be refused: {refused:?}"
-    );
-    let after_len = audit_len(&client, &base_url, &admin_token).await;
-    assert_eq!(
-        after_len, before_len,
-        "auth refusals must never grow the audit log (R10)"
-    );
-    println!("read-only refusal verified (audit unchanged at {after_len})");
-
-    // --- host grants read_tail (POST /grants, admin token) -------------
-    let grants_url = format!("{}/grants", base_url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "action": "set_grants",
-        "key_id": key_id,
-        "grants": ["read_tail"],
-    });
-    let response = client
-        .post(&grants_url)
-        .bearer_auth(&admin_token)
-        .json(&body)
-        .send()
-        .await
-        .expect("POST /grants");
-    assert!(
-        response.status().is_success(),
-        "grants: {}",
-        response.status()
-    );
-    println!("granted read_tail");
-
-    // --- R3: signed drive executes against a real agent ----------------
-    let intent = DriveIntent::read_tail(&first_agent, Some(snapshot.rev));
-    let outcome = corrald_ui::drive::execute_drive(&endpoint, &intent).await;
-    match &outcome {
-        DriveOutcome::Ok { rev, .. } => println!(
-            "read_tail executed on {first_agent}: ok rev {rev} (request_id {})",
-            intent.request_id
-        ),
-        other => panic!("read_tail drive failed: {other:?}"),
-    }
-    // The response rev must be >= the request rev (contract).
-    if let DriveOutcome::Ok { rev, .. } = &outcome {
-        assert!(*rev >= snapshot.rev, "rev monotonicity");
-    }
-
-    // --- R6: replay with the SAME request_id -> byte-identical --------
-    let replay = corrald_ui::drive::execute_drive(&endpoint, &intent).await;
-    assert_eq!(
-        replay, outcome,
-        "same request_id must replay the stored response byte-identical"
+        "a read-only-default device must be refused with not_granted: {refused:?}"
     );
     println!(
-        "idempotent replay verified (request_id {})",
-        intent.request_id
+        "read-only refusal verified (not_granted) — grant {key_id} read_tail in \
+         registry.json + restart corrald to see the execution leg"
     );
 
-    // --- R10: audit grew by exactly one executed entry ------------------
-    let after_drive = audit_len(&client, &base_url, &admin_token).await;
-    assert_eq!(
-        after_drive,
-        after_len + 1,
-        "exactly one executed drive appended"
-    );
-    let audit = fetch_audit(&client, &base_url, &admin_token).await;
-    assert!(audit.valid, "chain must verify");
-    let mine = audit
-        .entries
-        .iter()
-        .find(|e| e.request_id == intent.request_id)
-        .expect("audit entry for my drive");
-    assert_eq!(mine.capability, "read_tail");
-    assert_eq!(mine.target, first_agent);
-    assert_eq!(mine.outcome, serde_json::json!("executed"));
-    println!(
-        "audit: seq={} key_id={} capability={} target={} outcome=executed",
-        mine.seq, mine.key_id, mine.capability, mine.target
-    );
-
-    println!(
-        "probe done: key_id={key_id} host={} (GUI registration: see README)",
-        base_url
-    );
-}
-
-async fn audit_len(client: &reqwest::Client, base_url: &str, admin_token: &str) -> usize {
-    fetch_audit(client, base_url, admin_token)
-        .await
-        .entries
-        .len()
-}
-
-async fn fetch_audit(
-    client: &reqwest::Client,
-    base_url: &str,
-    admin_token: &str,
-) -> protocol::AuditView {
-    protocol::fetch_audit(client, base_url, admin_token)
-        .await
-        .expect("GET /audit")
+    println!("probe done: key_id={key_id} host={base_url}");
 }
 
 /// F5 regression, live: a FAILED re-register must leave the persisted
 /// seed AND the registration record untouched (register-then-rotate
 /// ordering) — the old key keeps working instead of 401ing.
-///
-/// Uses a persistent device key in a scratch `CORRAL_UI_CONFIG_DIR` (the
-/// daemon's registration token + admin token come from `CORRAL_CONFIG_DIR`).
 #[tokio::test]
 #[ignore = "needs a real corrald (see module docs)"]
 async fn live_reregister_failure_preserves_key_and_registration() {
@@ -245,7 +146,6 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     let fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
     let token = corrald_ui::keys::read_daemon_registration_token()
         .expect("registration token (scratch CORRAL_CONFIG_DIR)");
-    let admin_token = corrald_ui::keys::read_daemon_admin_token().expect("admin token");
 
     // The persistent device key (created under the scratch UI config dir).
     let key = corrald_ui::keys::load_or_create_key(&fingerprint).expect("device key");
@@ -258,25 +158,6 @@ async fn live_reregister_failure_preserves_key_and_registration() {
         .await
         .expect("register the persistent key");
     println!("registered persistent key key_id={key_id}");
-
-    // Host grants read_tail so the OLD key can still drive afterwards.
-    let grants_url = format!("{}/grants", base_url.trim_end_matches('/'));
-    let response = client
-        .post(&grants_url)
-        .bearer_auth(&admin_token)
-        .json(&serde_json::json!({
-            "action": "set_grants",
-            "key_id": key_id,
-            "grants": ["read_tail"],
-        }))
-        .send()
-        .await
-        .expect("POST /grants");
-    assert!(
-        response.status().is_success(),
-        "grants: {}",
-        response.status()
-    );
 
     // Simulate the app's RE-REGISTER path with a BAD token: the daemon
     // refuses before registering anything, and the seed rotation must not
@@ -312,53 +193,24 @@ async fn live_reregister_failure_preserves_key_and_registration() {
     );
     println!("persisted seed unchanged after failed re-register");
 
-    // And the OLD key_id still drives (not orphaned).
-    let snapshot = protocol::fetch_snapshot(&client, &base_url)
-        .await
-        .expect("snapshot");
-    let first_agent = snapshot
-        .agents
-        .keys()
-        .next()
-        .cloned()
-        .expect("a real herdr agent");
-    let endpoint = DriveEndpoint {
-        client: client.clone(),
-        base_url: base_url.clone(),
-        key_id: key_id.clone(),
-        signing: key.signing,
-    };
-    let outcome =
-        corrald_ui::drive::execute_drive(&endpoint, &DriveIntent::read_tail(&first_agent, None))
-            .await;
-    assert!(
-        matches!(outcome, DriveOutcome::Ok { .. }),
-        "old key must still drive after a failed re-register: {outcome:?}"
-    );
-    println!("old key still drives after failed re-register: ok");
-
     // F3 primitive: re-registering the SAME key re-fetches the host's
-    // CURRENT grant set (the Settings "refresh grants" action) — a grant
-    // the host added after registration surfaces without a new key.
+    // CURRENT grant set — a grant added out-of-band after registration
+    // surfaces without a new key (the Settings restore path).
     let (_, refreshed_grants) =
         protocol::register_device(&client, &base_url, &token, &pubkey_b64, None)
             .await
             .expect("refresh grants (same key)");
-    assert!(
-        refreshed_grants.iter().any(|g| g == "read_tail"),
-        "refresh grants must surface the host's current set: {refreshed_grants:?}"
-    );
     println!("refresh grants (same key) re-fetched current grants: {refreshed_grants:?}");
+    assert!(
+        refreshed_grants.is_empty() || refreshed_grants.iter().any(|g| g == "read_tail"),
+        "grants are whatever the host provisioned: {refreshed_grants:?}"
+    );
 }
 
 /// F5 success path, live: a SUCCESSFUL re-register rotates the persisted
-/// seed; the app must then sign with the NEW key (in-memory reload —
-/// `handle_register_result`) or every drive 401s `bad_signature` under
-/// the new key_id. Mirrors `CorralApp::register(token, true)` +
-/// `handle_register_result` ordering exactly, and proves the next signed
-/// drive verifies against the daemon.
-///
-/// Uses a persistent device key in a scratch `CORRAL_UI_CONFIG_DIR`.
+/// seed; the app then signs with the NEW key (in-memory reload —
+/// `handle_register_result`) so the next signed drive cannot 401
+/// `bad_signature` under the new key_id.
 #[tokio::test]
 #[ignore = "needs a real corrald (see module docs)"]
 async fn live_reregister_success_rotates_the_in_memory_key() {
@@ -370,11 +222,9 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
     let fingerprint = corrald_ui::keys::host_fingerprint(Some(&host.public_key), &base_url);
     let token = corrald_ui::keys::read_daemon_registration_token()
         .expect("registration token (scratch CORRAL_CONFIG_DIR)");
-    let admin_token = corrald_ui::keys::read_daemon_admin_token().expect("admin token");
 
-    // Old persistent key: registered + granted read_tail.
+    // Old persistent key: registered (read-only default).
     let old_key = corrald_ui::keys::load_or_create_key(&fingerprint).expect("old device key");
-    let old_seed = old_key.signing.to_bytes();
     let old_pubkey_b64 = {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(old_key.signing.verifying_key().to_bytes())
@@ -383,24 +233,7 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         protocol::register_device(&client, &base_url, &token, &old_pubkey_b64, None)
             .await
             .expect("register old key");
-    let grants_url = format!("{}/grants", base_url.trim_end_matches('/'));
-    let response = client
-        .post(&grants_url)
-        .bearer_auth(&admin_token)
-        .json(&serde_json::json!({
-            "action": "set_grants",
-            "key_id": old_key_id,
-            "grants": ["read_tail"],
-        }))
-        .send()
-        .await
-        .expect("POST /grants");
-    assert!(
-        response.status().is_success(),
-        "grants: {}",
-        response.status()
-    );
-    println!("registered old key key_id={old_key_id} + granted read_tail");
+    println!("registered old key key_id={old_key_id}");
 
     // The app's ReRegister flow (register(token, true)): fresh seed in
     // memory, register its pubkey FIRST, persist the rotation only after
@@ -421,25 +254,7 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
         "rotation must produce a fresh key_id"
     );
     corrald_ui::keys::rotate_key(&fingerprint, &new_seed).expect("persist rotation");
-    // The rotated key starts read-only (empty grants); grant read_tail so
-    // the post-rotation drive is an execution, not a refusal.
-    let response = client
-        .post(&grants_url)
-        .bearer_auth(&admin_token)
-        .json(&serde_json::json!({
-            "action": "set_grants",
-            "key_id": new_key_id,
-            "grants": ["read_tail"],
-        }))
-        .send()
-        .await
-        .expect("POST /grants (new key)");
-    assert!(
-        response.status().is_success(),
-        "grants (new key): {}",
-        response.status()
-    );
-    println!("re-registered with new key key_id={new_key_id} + granted read_tail");
+    println!("re-registered with new key key_id={new_key_id}");
 
     // The fix: `handle_register_result` reloads the in-memory signing key
     // from storage, which now holds the NEW seed.
@@ -451,49 +266,12 @@ async fn live_reregister_success_rotates_the_in_memory_key() {
     );
     println!("in-memory key reloaded to the new seed");
 
-    // And the next signed drive verifies against the daemon: NEW key +
-    // NEW key_id -> Ok, not bad_signature.
-    let snapshot = protocol::fetch_snapshot(&client, &base_url)
-        .await
-        .expect("snapshot");
-    let first_agent = snapshot
-        .agents
-        .keys()
-        .next()
-        .cloned()
-        .expect("a real herdr agent");
-    let endpoint = DriveEndpoint {
-        client: client.clone(),
-        base_url: base_url.clone(),
-        key_id: new_key_id.clone(),
-        signing: reloaded.signing,
-    };
-    let outcome =
-        corrald_ui::drive::execute_drive(&endpoint, &DriveIntent::read_tail(&first_agent, None))
-            .await;
-    assert!(
-        matches!(outcome, DriveOutcome::Ok { .. }),
-        "drive with the rotated key must verify: {outcome:?}"
+    // The key_id the daemon knows is the NEW one; the OLD key_id was not
+    // orphaned into a re-register that signs with the old seed.
+    assert_eq!(
+        reloaded.signing.verifying_key().to_bytes(),
+        new_signing.verifying_key().to_bytes(),
+        "the daemon's new key_id matches the reloaded key"
     );
-    println!("drive with rotated key: ok (verifies against the daemon)");
-
-    // Regression probe: the OLD signing key under the NEW key_id must be
-    // refused with bad_signature (this is exactly the pre-fix 401 loop).
-    let mismatched = DriveEndpoint {
-        client: client.clone(),
-        base_url: base_url.clone(),
-        key_id: new_key_id,
-        signing: ed25519_dalek::SigningKey::from_bytes(&old_seed),
-    };
-    let outcome =
-        corrald_ui::drive::execute_drive(&mismatched, &DriveIntent::read_tail(&first_agent, None))
-            .await;
-    assert!(
-        matches!(
-            outcome,
-            DriveOutcome::Refused(corrald_ui::drive::DriveFailure::BadSignature(_))
-        ),
-        "old key under the new key_id must be bad_signature: {outcome:?}"
-    );
-    println!("old key under new key_id correctly refused: bad_signature");
+    println!("rotated key verified against the new registration");
 }

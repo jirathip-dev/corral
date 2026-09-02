@@ -2925,46 +2925,72 @@ fn configure_fonts(ctx: &egui::Context) {
 mod font_tests {
     use super::*;
 
-    #[test]
-    fn transcript_fixture_has_glyph_coverage() {
-        let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
-        let ctx = egui::Context::default();
-        configure_fonts(&ctx);
+    fn assert_fixture_coverage(
+        ctx: &egui::Context,
+        fixture: &str,
+        family_name: &str,
+        font_id: &egui::FontId,
+    ) {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|fonts| {
                 let mut job = egui::text::LayoutJob::simple(
                     fixture.into(),
-                    egui::FontId::proportional(12.0),
+                    font_id.clone(),
                     egui::Color32::WHITE,
                     f32::INFINITY,
                 );
                 job.wrap.max_width = f32::INFINITY;
                 let galley = fonts.layout_job(job);
-                for glyph in ['t', 'o', 'l', '✓', '✗', '✅', '⚠', '▸', '●', '⏺', '░']
+                for glyph in fixture
+                    .chars()
+                    .filter(|c| !c.is_ascii_whitespace() && *c != '\u{fe0f}')
                 {
                     let rendered = galley
                         .rows
                         .iter()
                         .flat_map(|row| row.glyphs.iter())
                         .find(|candidate| candidate.chr == glyph)
-                        .unwrap_or_else(|| panic!("missing visible glyph {glyph}"));
+                        .unwrap_or_else(|| panic!("missing visible {family_name} glyph {glyph}"));
                     assert!(
                         !rendered.uv_rect.is_nothing() && rendered.advance_width > 0.0,
-                        "visible glyph {glyph} has no usable rendered coverage"
+                        "visible {family_name} glyph {glyph} has no usable rendered coverage"
                     );
-                }
-                for glyph in fixture
-                    .chars()
-                    .filter(|c| !c.is_ascii_whitespace() && *c != '\u{fe0f}')
-                {
                     assert!(
-                        fonts.has_glyph(&egui::FontId::proportional(12.0), glyph),
-                        "missing configured glyph {glyph}"
+                        fonts.has_glyph(font_id, glyph),
+                        "missing configured {family_name} glyph {glyph}"
                     );
                 }
             });
         });
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn transcript_fixture_has_glyph_coverage() {
+        let fixture = "tool ✓ ✗ ✅ ⚠️ ▸ ● ⏺ ░";
+        let ctx = egui::Context::default();
+        configure_fonts(&ctx);
+
+        // epaint's built-in Hack face is also the monospace replacement face.
+        // Mirror the configured proportional chain for this test-only family
+        // check so both FontIds exercise the transcript fallback faces.
+        let mut definitions = transcript_font_definitions();
+        let proportional_family = definitions
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .cloned()
+            .expect("configured proportional family");
+        definitions
+            .families
+            .insert(egui::FontFamily::Monospace, proportional_family);
+        ctx.set_fonts(definitions);
+
+        for (family_name, font_id) in [
+            ("proportional", egui::FontId::proportional(12.0)),
+            ("monospace", egui::FontId::monospace(12.0)),
+        ] {
+            assert_fixture_coverage(&ctx, fixture, family_name, &font_id);
+        }
     }
 }
 

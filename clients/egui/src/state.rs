@@ -738,6 +738,105 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_disappearance_clears_the_remembered_tail_window() {
+        // #314: `tail_requested_lines` (the window the client last requested
+        // per agent) follows the same removal rule as the tails caches: a
+        // reconnect snapshot that dropped an agent clears its remembered
+        // expansion, and a later snapshot re-adding the SAME identity starts
+        // at the default — never the stale 200.
+        let mut fleet = Fleet::default();
+        let mut snap = crate::model::Snapshot {
+            schema_version: 5,
+            rev: 1,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        snap.agents.insert("a".into(), agent("a"));
+        snap.agents.insert("b".into(), agent("b"));
+        fleet.apply_snapshot(&snap);
+        fleet.tail_requested_lines.insert("a".into(), 200);
+        fleet.tail_requested_lines.insert("b".into(), 200);
+
+        // Full-snapshot disappearance: "b" is gone from the reconnect view.
+        let mut reconnect = crate::model::Snapshot {
+            schema_version: 5,
+            rev: 2,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        reconnect.agents.insert("a".into(), agent("a"));
+        fleet.apply_snapshot(&reconnect);
+        assert_eq!(
+            fleet.tail_requested_lines.get("a"),
+            Some(&200),
+            "a live agent keeps its remembered window"
+        );
+        assert!(
+            !fleet.tail_requested_lines.contains_key("b"),
+            "a snapshot-dropped agent loses its remembered 200-line window"
+        );
+
+        // Re-adding the same identity starts at the default 50 again.
+        let mut readded = crate::model::Snapshot {
+            schema_version: 5,
+            rev: 3,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        readded.agents.insert("a".into(), agent("a"));
+        readded.agents.insert("b".into(), agent("b"));
+        fleet.apply_snapshot(&readded);
+        assert!(
+            !fleet.tail_requested_lines.contains_key("b"),
+            "a re-added agent starts WITHOUT the stale 200-line expansion"
+        );
+    }
+
+    #[test]
+    fn delta_removal_clears_the_remembered_tail_window() {
+        // #314: the delta `del` path routes through `remove_agent`, which
+        // must clear the remembered expansion too — otherwise the same
+        // agent identity reappearing in a later delta refreshes at the
+        // stale 200 instead of the default 50.
+        let mut fleet = Fleet::default();
+        let mut snap = crate::model::Snapshot {
+            schema_version: 5,
+            rev: 1,
+            generated_at: 0,
+            agents: BTreeMap::new(),
+        };
+        snap.agents.insert("a".into(), agent("a"));
+        fleet.apply_snapshot(&snap);
+        fleet.tail_requested_lines.insert("a".into(), 200);
+        assert_eq!(
+            fleet.tail_requested_lines.get("a"),
+            Some(&200),
+            "the remembered window starts at 200"
+        );
+
+        fleet.apply_delta(&Delta {
+            rev: 2,
+            upd: vec![],
+            del: vec!["a".into()],
+        });
+        assert!(
+            !fleet.tail_requested_lines.contains_key("a"),
+            "delta removal clears the remembered 200-line window"
+        );
+
+        // Re-adding the same identity starts at the default 50 again.
+        fleet.apply_delta(&Delta {
+            rev: 3,
+            upd: vec![agent("a")],
+            del: vec![],
+        });
+        assert!(
+            !fleet.tail_requested_lines.contains_key("a"),
+            "a re-added agent starts WITHOUT the stale 200-line expansion"
+        );
+    }
+
+    #[test]
     fn grant_ledger_gates_and_demotes() {
         let mut ledger = GrantLedger {
             base: vec!["prompt".into(), "interrupt".into()],

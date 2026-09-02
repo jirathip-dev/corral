@@ -528,10 +528,10 @@ Corral is **configless**: it does not own, read, or write `fleets.json`.
 The fleet registry is fleet-ops' opinionated config (per-role models,
 admit, paused) and lives in `~/.config/fleet-operations/fleets.json`,
 managed with the fleet-ops CLI `herdr-fleet` (`list|add|remove|check|
-pause|resume|models|switch|doctor`). The only `corrald fleet` subcommand is
-`switch`, which delegates the auth-gated orchestrator re-arm to
-`herdr-fleet switch <name>` — the fleet-ops CLI is lanes-aware and
-validates the fleet identity itself (hermes-lane profiles included).
+pause|resume|models|switch|doctor`). `corrald` carries no fleet CLI of its
+own: registry writes and the orchestrator re-arm are the fleet-ops CLI's
+job — `herdr-fleet switch <name>` is lanes-aware and validates the fleet
+identity itself (hermes-lane profiles included).
 
 ```sh
 herdr-fleet list                     # one greppable line per fleet
@@ -540,10 +540,10 @@ herdr-fleet add <name> --gh <o/r>    # insert a fleet (fleet-ops owns writes)
 herdr-fleet remove <name>            # drop a fleet (fleet-ops owns writes)
 herdr-fleet pause <name>             # set paused (fleet-ops owns writes)
 herdr-fleet models <name> --impl m   # update per-role models
-corrald fleet switch <name>          # re-arm via the fleet-ops CLI (exit code passthrough)
+herdr-fleet switch <name>            # re-arm the fleet's orchestrator
 ```
 
-`corrald fleet switch` exits 0 when the fleet-ops CLI switch succeeded and
+`herdr-fleet switch` exits 0 when the re-arm succeeded and
 1 on any refusal/failure; its diagnostics stream through unchanged. The
 legacy #35 registry surface (`list/check/add/remove/pause/resume/models/
 watch/reap/prune` with `--registry`) is superseded — those commands were
@@ -551,8 +551,9 @@ the corral-owned read/write path that configless removes. Pane/worktree
 cleanup uses `herdr` directly (`herdr pane close`, `herdr worktree
 remove`, `git worktree prune`) and `fleet-watch` remains the fleet-ops
 watcher. The core board exposes only the `Board`, `Issues`, and `Settings`
-tabs; it has no Fleets tab. Fleet-ops surfaces live in the private sidecar
-plugin described in #239, not in corrald's core UI.
+tabs; it has no Fleets tab. Fleet-ops surfaces (registry views, watch,
+re-arm) live in the fleet-ops tooling itself — the `herdr-fleet` CLI and
+`fleet-watch` — never in corrald's daemon or core UI.
 
 ## Workspace/repo attribution
 
@@ -566,8 +567,9 @@ actionable identities. The linked-worktree root is `CORRAL_WORKTREES_ROOT`
 (default `~/.herdr/worktrees`) and keeps the established
 `<worktree_dir>/<label>` layout; the directory component is an addressable
 location, not repo identity. The GitHub facts plane folds PR/CI facts on the
-same repo basename the agent carries, and issue grouping keys are the
-fleet-ops CLI validated fleet names (`GET /issues` + `GET /fleets`).
+same repo basename the agent carries, and `GET /issues` groups by those same
+live Herdr `workspace.repo` categories — no fleet-ops CLI catalog
+participates and no `/fleets` route exists.
 
 The git plane supplies branch facts for each recognized root/worktree. On a
 supervised plane restart, the old branch cache and stored branch fields for
@@ -608,17 +610,20 @@ while scans never overlap and the event stream is not reset.
 ## Issue-linked worktrees (#113, slice 1)
 
 The desktop UI's Issues tab renders the daemon's read-only
-`GET /issues` view (keyed by repo/fleet name) and can start an issue-linked
-worktree from a selected open issue. Repository aliases are folded into one
-display category, while each action targets the exact registered fleet name;
-live-only categories and ambiguous aliases remain visible but are not
-startable. An Issues refresh also retries a failed `GET /fleets` identity fetch.
+`GET /issues` view — keyed by repo, scoped to the current Herdr-owned
+workspace repositories (#332) — and can start an issue-linked worktree from
+a selected open issue. The gh poller's specs rebuild from those same live
+workspaces, and topology changes prune stale categories, so every visible
+category is current; the worktree action targets that category key, which
+the daemon re-validates against its live workspace set and cached issues.
+An Issues refresh re-reads this last-known projection — there is no
+fleet-identity fetch to retry.
 The action is gated by confirmation in the UI and the `start_worktree` grant
 on the host:
 
 - **Issue-linked**: from a selected, open issue. The daemon validates the
   issue against the SAME fetched set the browser renders, creates exactly one
-  branch/worktree under `<home>/.herdr/worktrees/<fleet.worktree_dir>`, and
+  branch/worktree under `<home>/.herdr/worktrees/<repo>`, and
   carries the issue number in the branch (`issue-<N>-…`). A closed or missing
   issue is a typed refusal (`issue_closed` / `issue_not_found`) — it never
   falls through to another action. The current top-level Issues surface does
@@ -640,11 +645,12 @@ capability (read-only default denies it):
 scripts/corrald-grant.sh --key <key_id> --caps start_worktree
 ```
 
-The start-worktree slice consumes the fleet-ops CLI validated identity
-(`GET /fleets` / `herdr-fleet list`; no corral-owned registry fields — the
-superseded #35 registry surface is documented in
-`docs/corral/G35-registry.md`); READ-ONLY GitHub access is unchanged —
-this slice never issues a GitHub write.
+The start-worktree slice is repo-native: the request's `repo` category is
+accepted only when it is a live Herdr workspace repo or a cached issue
+category, and the daemon derives the checkout and worktree facts itself —
+no fleet-ops CLI catalog or identity fetch participates (the superseded #35
+registry surface is documented in `docs/corral/G35-registry.md`). READ-ONLY
+GitHub access is unchanged — this slice never issues a GitHub write.
 
 ## Security model summary
 

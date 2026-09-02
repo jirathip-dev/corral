@@ -1,6 +1,6 @@
 {
-  "commit_sha": "89ce44f58928657d7f8d72d7c969761ab95637e4",
-  "captured_at_utc": "2026-09-02T03:59:39Z",
+  "commit_sha": "3fec59481fd0eb52909ad0ba7de9e6d88156ff40",
+  "captured_at_utc": "2026-09-02T22:01:14Z",
   "testflight_build": "File Doesn't Exist, Will Create: build/ios/Payload/FleetNotifier.app/Info.plist",
   "route_ownership": {
     "board": "DemoFleet.board",

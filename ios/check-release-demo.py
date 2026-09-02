@@ -27,6 +27,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from release_source_manifest import (
@@ -37,6 +38,7 @@ from release_source_manifest import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 
 # This binds an inspected executable to the exact Release app source set used
 # for the approved build.  The declared build phase generates the marker from
@@ -78,7 +80,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # Release source set while retaining the #332 workspace-derived scope and
     # AC8 parity boundaries. The bounded grant-test seam keeps production's
     # Keychain default and is included in this source digest.
+    # #332 R4: the grant fixture now clears stored admin credentials before
+    # each test; FleetNotifierTests.swift is test-only and is not a Release
+    # source input, so the production-source digest remains stable.
     "321220fc4e90f3df7920c43aa2f3849c8536d27379bace4173415a27deef1827"
+)
+APPROVED_TEST_SOURCE_DIGEST = (
+    # #332 R4: pin the focused grant fixture independently from the Release
+    # app source manifest so a test-source mutation cannot be green-on-green.
+    "a47a139364412c7670afb12b0b60dba874435ccbbd1f9c6efbf6db1a77cf13bc"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -706,6 +716,22 @@ def _check_release_source_digest(root: Path = ROOT) -> None:
         raise CheckFailure(
             "Release build source digest differs from the expected checkout "
             f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
+        )
+
+
+def _test_source_digest(root: Path = ROOT) -> str:
+    try:
+        return sha256((root / TEST_SOURCE_FILE).read_bytes()).hexdigest()
+    except OSError as error:
+        raise CheckFailure(str(error)) from error
+
+
+def _check_test_source_digest(root: Path = ROOT) -> None:
+    actual_digest = _test_source_digest(root)
+    if actual_digest != APPROVED_TEST_SOURCE_DIGEST:
+        raise CheckFailure(
+            "Grant test source digest differs from the expected checkout "
+            f"(expected {APPROVED_TEST_SOURCE_DIGEST}, got {actual_digest})"
         )
 
 
@@ -1486,6 +1512,7 @@ def main() -> int:
             _self_test()
         _check_release_build_phase_configuration()
         _check_release_source_digest()
+        _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

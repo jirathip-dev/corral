@@ -4707,7 +4707,9 @@ final class GrantAdminToggleRevertTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        DeviceKeyStore.saveAdminToken("admin-tok-256")
+        DeviceKeyStore.clearAdminToken()
+        XCTAssertNil(DeviceKeyStore.adminToken(),
+                     "#332 R4: grant fixtures must start without stored admin credentials")
         GrantAdminStubURLProtocol.reset()
     }
 

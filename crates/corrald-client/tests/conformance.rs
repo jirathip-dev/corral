@@ -36,7 +36,55 @@ use corrald_client::{
 use futures::StreamExt as _;
 use serde_json::json;
 
-use corrald::adapters::gh_plane::TRACKED_REPOS;
+#[derive(Clone, Copy)]
+struct TestTrackedRepo {
+    name: &'static str,
+    owner: &'static str,
+    repo: &'static str,
+}
+
+const TEST_TRACKED_REPOS: &[TestTrackedRepo] = &[
+    TestTrackedRepo {
+        name: "sendmeter",
+        owner: "sendmeter",
+        repo: "sendmeter",
+    },
+    TestTrackedRepo {
+        name: "project-hearthwild",
+        owner: "jirathip-k",
+        repo: "project-hearthwild",
+    },
+    TestTrackedRepo {
+        name: "synergy-apps",
+        owner: "synergy-services-cooling-tower",
+        repo: "synergy-apps",
+    },
+    TestTrackedRepo {
+        name: "dotfiles",
+        owner: "jirathip-k",
+        repo: "dotfiles",
+    },
+    TestTrackedRepo {
+        name: "agent-ops",
+        owner: "jirathip-k",
+        repo: "agent-ops",
+    },
+    TestTrackedRepo {
+        name: "herdr-board",
+        owner: "jirathip-k",
+        repo: "herdr-board",
+    },
+    TestTrackedRepo {
+        name: "office-ops",
+        owner: "jirathip-k",
+        repo: "office-ops",
+    },
+    TestTrackedRepo {
+        name: "synergy-services-website",
+        owner: "synergy-services",
+        repo: "synergy-services-website",
+    },
+];
 
 const TIME_BUDGET: Duration = Duration::from_secs(20);
 /// R11 waits on the REAL gh API + the git plane: one poll round-trip plus
@@ -1126,7 +1174,7 @@ async fn sse_resume_edge_cases() {
 /// One open PR on a tracked repo, as the live API sees it — the exact
 /// surfaces the daemon's gh plane polls.
 struct LivePrCandidate {
-    tracked: &'static corrald::adapters::gh_plane::TrackedRepo,
+    tracked: &'static TestTrackedRepo,
     pr_number: u64,
     head_branch: String,
     /// PR head sha (`headRefOid`) — the "pushed" state the clone starts at.
@@ -1157,7 +1205,7 @@ fn gh_auth_available() -> bool {
 /// the authoritative-empty leg). `None` -> "no suitable live repo exists".
 async fn find_live_pr_candidate() -> Option<LivePrCandidate> {
     let mut aliases = String::new();
-    for (i, tracked) in TRACKED_REPOS.iter().enumerate() {
+    for (i, tracked) in TEST_TRACKED_REPOS.iter().enumerate() {
         // Alias prefix `q` is required: GraphQL aliases cannot start with a
         // digit (the gh plane uses the same q0..q7 convention).
         aliases.push_str(&format!(
@@ -1190,7 +1238,7 @@ async fn find_live_pr_candidate() -> Option<LivePrCandidate> {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let data = value.get("data")?;
     let mut fallback: Option<LivePrCandidate> = None;
-    for (i, tracked) in TRACKED_REPOS.iter().enumerate() {
+    for (i, tracked) in TEST_TRACKED_REPOS.iter().enumerate() {
         let alias = data.get(format!("q{i}"))?;
         let recent_issues: Vec<(u64, String)> = alias["issues"]["nodes"]
             .as_array()

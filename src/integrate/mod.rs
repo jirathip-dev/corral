@@ -86,6 +86,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::api::issues::IssuesCache;
+use crate::api::repo::live_workspace_repos;
 use crate::core::events::{GhIssueRef, GhRepoState, GitEvent, GitStatus, PlaneEvent};
 use crate::core::model::{CiStatus, Workspace};
 use crate::core::redact::redact;
@@ -343,6 +344,8 @@ impl Integrator {
                 },
             )
             .await;
+        let live_repos = live_workspace_repos(&self.store).await;
+        self.issues.prune_to(&live_repos);
     }
 
     /// Merge the FULL cached fact set for one worktree path into every agent
@@ -963,10 +966,11 @@ mod tests {
     #[tokio::test]
     async fn issues_cache_is_keyed_by_native_repo_identity() {
         let store = Store::new();
+        store.apply(Change::upsert(agent_on("/plush-meadow"))).await;
         let issues = Arc::new(IssuesCache::default());
         let integrator = Integrator::with_issues(
             store.clone(),
-            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            WorkspaceAttribution::new(PathBuf::from("/plush-meadow"), PathBuf::from("/wts")),
             issues.clone(),
         );
         // A native gh fact: the cache key is the repo identity carried by the
@@ -1001,10 +1005,11 @@ mod tests {
     #[tokio::test]
     async fn tracked_non_fleet_gh_fact_publishes_issues() {
         let store = Store::new();
+        store.apply(Change::upsert(agent_on("/herdr-board"))).await;
         let issues = Arc::new(IssuesCache::default());
         let integrator = Integrator::with_issues(
             store.clone(),
-            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            WorkspaceAttribution::new(PathBuf::from("/herdr-board"), PathBuf::from("/wts")),
             issues.clone(),
         );
         let state = GhRepoState {
@@ -1027,6 +1032,39 @@ mod tests {
         assert!(
             issues.get("herdr-board", 7).is_some(),
             "native tracked repo issues are hydrated regardless of fleet status"
+        );
+    }
+
+    #[tokio::test]
+    async fn issues_cache_prunes_when_live_herdr_membership_changes() {
+        let store = Store::new();
+        store.apply(Change::upsert(agent_on("/repo"))).await;
+        let issues = Arc::new(IssuesCache::default());
+        let integrator = Integrator::with_issues(
+            store.clone(),
+            WorkspaceAttribution::new(PathBuf::from("/repo"), PathBuf::from("/wts")),
+            issues.clone(),
+        );
+
+        integrator
+            .handle_gh(GhRepoState {
+                repo: "repo".to_string(),
+                issues: vec![issue(5, "OPEN", "live")],
+                ..Default::default()
+            })
+            .await;
+        assert!(issues.get("repo", 5).is_some());
+
+        let cache_before = issues.snapshot().len();
+        store.apply(Change::Remove("herdr:a".to_string())).await;
+        integrator.converge().await;
+        let cache_after = issues.snapshot().len();
+        println!(
+            "fixture_scope_measurement cache_categories_before={cache_before} cache_categories_after={cache_after}"
+        );
+        assert!(
+            issues.get("repo", 5).is_none(),
+            "removed Herdr workspace must prune its cached issue category"
         );
     }
 }

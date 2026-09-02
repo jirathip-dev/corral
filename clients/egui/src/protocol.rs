@@ -190,7 +190,8 @@ pub async fn fetch_issues(
 
 /// Decode the complete `/issues` envelope in one place before it crosses the
 /// async boundary. Keeping the grouped map intact is important: the daemon
-/// includes configured repos with zero issues alongside repos with a full
+/// includes current daemon-scoped workspace repos with zero issues alongside
+/// repos with a full
 /// snapshot, and the UI must not accidentally project this into one repo or
 /// one issue per group.
 fn decode_issues(body: serde_json::Value) -> Result<BTreeMap<String, Vec<GhIssueRef>>, String> {

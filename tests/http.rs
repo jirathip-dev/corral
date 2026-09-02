@@ -2,7 +2,8 @@
 //! Last-Event-ID (fresh cursor -> deltas; stale cursor -> full snapshot).
 
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
@@ -177,6 +178,55 @@ async fn native_issues_use_live_repos_only() {
     assert_eq!(
         object_keys(&issues["repos"]),
         BTreeSet::from(["herdr-only".to_string(), "primary-repo".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn issues_endpoint_returns_exactly_current_herdr_workspace_repos() {
+    let store = Store::new();
+    let in_scope = [
+        "fixture-alpha",
+        "fixture-bravo",
+        "fixture-charlie",
+        "fixture-delta",
+        "fixture-echo",
+    ];
+    for (index, repo) in in_scope.iter().enumerate() {
+        let mut live = agent(&format!("live-{index}"), AgentState::Working);
+        live.workspace.repo = Some((*repo).to_string());
+        store.apply(Change::upsert(live)).await;
+    }
+    let mut unrelated = agent("unrelated-local", AgentState::Working);
+    unrelated.source = "local-checkout".to_string();
+    unrelated.workspace.repo = Some("unrelated-local".to_string());
+    store.apply(Change::upsert(unrelated)).await;
+
+    let issues = Arc::new(corrald::api::issues::IssuesCache::default());
+    for repo in in_scope
+        .iter()
+        .copied()
+        .chain(["static-only", "unrelated-local"])
+    {
+        issues.update(repo, Vec::new());
+    }
+    let cache_before = issues.snapshot().len();
+    let started = Instant::now();
+    let app = router(AppState {
+        store,
+        issues: issues.clone(),
+        ..Default::default()
+    });
+    let response = get_json(&app, "/issues").await;
+    let first_open_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let cache_after = issues.snapshot().len();
+    println!(
+        "fixture_scope_measurement cache_categories_before={cache_before} cache_categories_after={cache_after} public_categories={} first_open_ms={first_open_ms:.3}",
+        object_keys(&response["repos"]).len()
+    );
+    assert_eq!(
+        object_keys(&response["repos"]),
+        BTreeSet::from_iter(in_scope.iter().map(|repo| (*repo).to_string())),
+        "the public projection must exclude static and non-Herdr checkout categories"
     );
 }
 
@@ -392,6 +442,9 @@ async fn resume_semantics_are_exposed_by_store() {
 #[tokio::test]
 async fn issues_endpoint_serves_last_known_repo_issues() {
     let state = AppState::default();
+    let mut live = agent("herdr-board-agent", AgentState::Working);
+    live.workspace.repo = Some("herdr-board".to_string());
+    state.store.apply(Change::upsert(live)).await;
     state.issues.update(
         "herdr-board",
         vec![corrald::core::events::GhIssueRef {

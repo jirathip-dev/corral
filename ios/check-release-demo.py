@@ -27,6 +27,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from release_source_manifest import (
@@ -37,6 +38,7 @@ from release_source_manifest import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 
 # This binds an inspected executable to the exact Release app source set used
 # for the approved build.  The declared build phase generates the marker from
@@ -84,13 +86,27 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #327 reconcile: digest re-pinned after merging origin/integration
     # (promoted #331/#333/#337 batch) into the #327 branch.
     # #331: terminal attach errors, handshake lifecycle, and cleanup states.
+    # #332 R3: post-integration reconciliation retained the workspace-derived
+    # scope and AC8 parity boundaries while preserving the production Keychain
+    # default and bounded grant-test seam.
+    # #332 R4: the grant fixture clears stored admin credentials before each
+    # test; FleetNotifierTests.swift is pinned separately because it is not a
+    # Release source input.
     # #328/#329/#330: recent-output attribution, divider-vs-content handling,
     # bounded harness presentation, and empty-Conversation evidence.
     # #319/#320 grouped R2: ordered status presentation, structured
     # supervision evidence, and Finished wording updated the board sources.
-    # #327 R5 reconcile: union of both attributions; digest re-pinned from
-    # the merged #327 + #331/#333/#337 + #319/#320 source set.
-    "c88b5189bdf45938336e8c99c3775ef95d065690da9671fee8464a2bf767c065"
+    # #327 R8 reconcile: union of both attributions; digest re-pinned from
+    # the merged #327 + #331/#333/#337 + #319/#320 + #332 source set.
+    "70854db83dcbfa665c54a6987bf606d4567f1ad68f36499a36443018a46ccf95"
+)
+APPROVED_TEST_SOURCE_DIGEST = (
+    # #332 R4: pin the focused grant fixture independently from the Release
+    # app source manifest so a test-source mutation cannot be green-on-green.
+    # #327 R8 reconcile: the merged FleetNotifierTests.swift includes the
+    # #327 compatibility and lifecycle tests; the pin follows the merged
+    # focused grant test source.
+    "7a6325fb04baf9fd7294e9ec1291da8903327239bf5fdf473369abd668f8812f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -718,6 +734,22 @@ def _check_release_source_digest(root: Path = ROOT) -> None:
         raise CheckFailure(
             "Release build source digest differs from the expected checkout "
             f"(expected {APPROVED_RELEASE_SOURCE_DIGEST}, got {actual_digest})"
+        )
+
+
+def _test_source_digest(root: Path = ROOT) -> str:
+    try:
+        return sha256((root / TEST_SOURCE_FILE).read_bytes()).hexdigest()
+    except OSError as error:
+        raise CheckFailure(str(error)) from error
+
+
+def _check_test_source_digest(root: Path = ROOT) -> None:
+    actual_digest = _test_source_digest(root)
+    if actual_digest != APPROVED_TEST_SOURCE_DIGEST:
+        raise CheckFailure(
+            "Grant test source digest differs from the expected checkout "
+            f"(expected {APPROVED_TEST_SOURCE_DIGEST}, got {actual_digest})"
         )
 
 
@@ -1498,6 +1530,7 @@ def main() -> int:
             _self_test()
         _check_release_build_phase_configuration()
         _check_release_source_digest()
+        _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():
             _check_required_source(ROOT / relative, SOURCE_REQUIRED[relative])
             _check_source(ROOT / relative, markers)

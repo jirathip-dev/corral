@@ -1,12 +1,12 @@
 //! gh plane: GitHub GraphQL poller (WS2).
 //!
-//! Polls the 8 tracked repos with ONE aliased GraphQL query (one HTTP
-//! round-trip per poll; measured ~1.4s live against the real API — the
-//! brief's 531ms estimate predates the 2026 schema's rollup `contexts`
-//! pagination, so treat <2s as the budget target) and emits [`GhRepoState`]
-//! facts into the [`PlaneSink`]: open PRs (state, mergeability, head oid,
-//! head branch name, closing-issue refs, CI status collapsed from
-//! `statusCheckRollup`), recent issue refs, default branch.
+//! Polls the repositories represented by current Herdr workspaces with ONE
+//! aliased GraphQL query (one HTTP round-trip per poll; measured ~1.4s live
+//! against the real API — the brief's 531ms estimate predates the 2026
+//! schema's rollup `contexts` pagination, so treat <2s as the budget target)
+//! and emits [`GhRepoState`] facts into the [`PlaneSink`]: open PRs (state,
+//! mergeability, head oid, head branch name, closing-issue refs, CI status
+//! collapsed from `statusCheckRollup`), recent issue refs, default branch.
 //!
 //! Cadence rule (acceptance criterion 2):
 //! - **Zero polling** until at least one SSE client has EVER connected this
@@ -65,9 +65,10 @@
 //! never-connected state above.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,6 +82,8 @@ use crate::core::events::{
     GhIssueComment, GhIssueLabel, GhIssueRef, GhPrState, GhRepoState, Plane, PlaneEvent, PlaneSink,
 };
 use crate::core::store::Store;
+use crate::core::util::canonicalize_existing_prefix;
+use crate::core::workspace::WorkspaceAttribution;
 
 /// GitHub GraphQL endpoint (read-only query).
 pub const GRAPHQL_ENDPOINT: &str = "https://api.github.com/graphql";
@@ -112,68 +115,9 @@ const CLOSING_ISSUES_LIMIT: usize = 10;
 /// Rollup context items (check runs + commit statuses) per PR per poll.
 const CONTEXTS_LIMIT: usize = 50;
 
-/// One tracked repo: canonical attribution name (the `GhRepoState.repo` and
-/// `workspace.repo` key) plus the actual GitHub owner/repo pair. Owners
-/// verified against the live API: three repos live under orgs, not
-/// `jirathip-k`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TrackedRepo {
-    /// Canonical name used in the contract events; must match the registry
-    /// `gh_repo` basename for every configured fleet.
-    pub name: &'static str,
-    /// GitHub owner (user or org).
-    pub owner: &'static str,
-    /// GitHub repository name.
-    pub repo: &'static str,
-}
-
-/// The 8 tracked repos, in a fixed order (aliases `q0..q7` in one query).
-pub const TRACKED_REPOS: &[TrackedRepo] = &[
-    TrackedRepo {
-        name: "sendmeter",
-        owner: "sendmeter",
-        repo: "sendmeter",
-    },
-    TrackedRepo {
-        name: "project-hearthwild",
-        owner: "jirathip-k",
-        repo: "project-hearthwild",
-    },
-    TrackedRepo {
-        name: "synergy-apps",
-        owner: "synergy-services-cooling-tower",
-        repo: "synergy-apps",
-    },
-    TrackedRepo {
-        name: "dotfiles",
-        owner: "jirathip-k",
-        repo: "dotfiles",
-    },
-    TrackedRepo {
-        name: "agent-ops",
-        owner: "jirathip-k",
-        repo: "agent-ops",
-    },
-    TrackedRepo {
-        name: "herdr-board",
-        owner: "jirathip-k",
-        repo: "herdr-board",
-    },
-    TrackedRepo {
-        name: "office-ops",
-        owner: "jirathip-k",
-        repo: "office-ops",
-    },
-    TrackedRepo {
-        name: "synergy-services-website",
-        owner: "synergy-services",
-        repo: "synergy-services-website",
-    },
-];
-
 /// One GitHub repo the gh plane polls, plus the keys the polled facts fold
-/// onto. A single query aliases every spec (`q0..qN`), so the fleet registry
-/// can join the poll without a second round-trip.
+/// onto. A single query aliases every spec (`q0..qN`), so one canonical
+/// origin is fetched once even when multiple native workspaces point at it.
 ///
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhRepoSpec {
@@ -181,9 +125,8 @@ pub struct GhRepoSpec {
     /// GitHub repository name.
     pub name: String,
     /// The `GhRepoState.repo` key the PR read model folds onto
-    /// (`workspace.repo`). For a tracked repo it is [`TrackedRepo::name`];
-    /// for a configured fleet it is the `gh_repo` basename so PR attribution
-    /// matches the fleet's checkout/worktree path repo.
+    /// `workspace.repo`). For a live workspace it is the attribution key for
+    /// the owned checkout/worktree path.
     pub key: String,
     /// Native checkout identities that share this GitHub query.
     pub aliases: Vec<String>,
@@ -198,17 +141,69 @@ impl GhRepoSpec {
     }
 }
 
-/// The compile-time tracked repo set expressed as [`GhRepoSpec`]s.
-pub fn tracked_specs() -> Vec<GhRepoSpec> {
-    TRACKED_REPOS
-        .iter()
-        .map(|r| GhRepoSpec {
-            owner: r.owner.to_string(),
-            name: r.repo.to_string(),
-            key: r.name.to_string(),
-            aliases: vec![r.name.to_string()],
+/// Resolve the current production GitHub poll set from Herdr's live agent
+/// workspaces. Every origin is read from an owned checkout/worktree fact; no
+/// static repo list or broad local-checkout scan can add a repository here.
+pub async fn herdr_workspace_specs(
+    store: &Store,
+    attribution: &WorkspaceAttribution,
+) -> Vec<GhRepoSpec> {
+    let agents = store
+        .matching(|agent| agent.source == "herdr" && agent.workspace.worktree_path.is_some())
+        .await;
+    let mut candidates: Vec<(PathBuf, String, String, String)> = agents
+        .into_iter()
+        .filter_map(|agent| {
+            let raw_path = agent.workspace.worktree_path?;
+            let path = canonicalize_existing_prefix(Path::new(&raw_path));
+            let key = attribution.repo_for(&path)?;
+            let (owner, name) = github_origin(&path)?;
+            Some((path, key, owner, name))
         })
-        .collect()
+        .collect();
+    candidates.sort();
+
+    let mut specs = Vec::new();
+    let mut claimed_keys = BTreeSet::new();
+    for (_, key, owner, name) in candidates {
+        if !claimed_keys.insert(key.clone()) {
+            continue;
+        }
+        let Some(existing) = specs
+            .iter_mut()
+            .find(|spec: &&mut GhRepoSpec| spec.owner == owner && spec.name == name)
+        else {
+            specs.push(GhRepoSpec {
+                owner,
+                name,
+                key: key.clone(),
+                aliases: vec![key],
+            });
+            continue;
+        };
+        if !existing.aliases.contains(&key) {
+            existing.aliases.push(key);
+        }
+    }
+    specs
+}
+
+/// Read the canonical GitHub owner/repository from a checkout's `origin`
+/// remote. Callers must establish ownership before using this fact.
+pub fn github_origin(root: &Path) -> Option<(String, String)> {
+    let repo = git2::Repository::open(root).ok()?;
+    let url = repo.find_remote("origin").ok()?.url().ok()?.to_string();
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let mut parts = path
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .split('/');
+    let owner = parts.next()?.to_string();
+    let name = parts.next()?.to_string();
+    (parts.next().is_none() && !owner.is_empty() && !name.is_empty()).then_some((owner, name))
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +448,8 @@ pub struct GhPlane {
     transport: Arc<dyn GhTransport>,
     token: Option<String>,
     config: GhPlaneConfig,
-    specs: Vec<GhRepoSpec>,
+    specs: std::sync::RwLock<Vec<GhRepoSpec>>,
+    herdr_scope: Option<WorkspaceAttribution>,
 }
 
 impl fmt::Debug for GhPlane {
@@ -474,26 +470,41 @@ impl GhPlane {
             transport: Arc::new(ReqwestTransport::new()),
             token: None,
             config: GhPlaneConfig::default(),
-            specs: tracked_specs(),
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: None,
         }
     }
 
-    /// Production constructor with an explicit repo-spec set (the fleet
-    /// registry drives the polled set); real transport, token resolved
-    /// lazily. Used by the daemon supervisor so every configured fleet's
-    /// issues are fetched and grouped by fleet name (#113).
+    /// Explicit-spec constructor for embedders with their own already-resolved
+    /// scope; production Corral uses [`Self::with_herdr_scope`].
     pub fn with_specs(store: Arc<Store>, specs: Vec<GhRepoSpec>) -> Self {
         Self {
             store,
             transport: Arc::new(ReqwestTransport::new()),
             token: None,
             config: GhPlaneConfig::default(),
-            specs,
+            specs: std::sync::RwLock::new(specs),
+            herdr_scope: None,
+        }
+    }
+
+    /// Production constructor whose poll scope follows current Herdr agent
+    /// workspaces. The poll loop refreshes this scope before each fetch and
+    /// while sleeping between fetches.
+    pub fn with_herdr_scope(store: Arc<Store>, attribution: WorkspaceAttribution) -> Self {
+        Self {
+            store,
+            transport: Arc::new(ReqwestTransport::new()),
+            token: None,
+            config: GhPlaneConfig::default(),
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: Some(attribution),
         }
     }
 
     /// Test/embedding constructor: injected transport, explicit token, custom
-    /// cadence. Never issues network calls against the real API.
+    /// cadence, and no default scope. Never issues network calls against the
+    /// real API.
     pub fn with_config(
         store: Arc<Store>,
         transport: Arc<dyn GhTransport>,
@@ -505,12 +516,36 @@ impl GhPlane {
             transport,
             token,
             config,
-            specs: tracked_specs(),
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: None,
+        }
+    }
+
+    /// Test/embedding constructor with production Herdr-scope semantics,
+    /// injected transport, custom cadence, and empty initial specs.
+    ///
+    /// Kept out of ordinary production builds: the daemon uses
+    /// [`Self::with_herdr_scope`] with the real transport and cadence.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_config_and_herdr_scope(
+        store: Arc<Store>,
+        transport: Arc<dyn GhTransport>,
+        token: Option<String>,
+        config: GhPlaneConfig,
+        attribution: WorkspaceAttribution,
+    ) -> Self {
+        Self {
+            store,
+            transport,
+            token,
+            config,
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: Some(attribution),
         }
     }
 
     /// Test/embedding constructor with both a custom cadence AND an explicit
-    /// spec set (for registry-driven hermetic tests).
+    /// spec set (for hermetic explicit-scope tests).
     pub fn with_config_and_specs(
         store: Arc<Store>,
         transport: Arc<dyn GhTransport>,
@@ -523,22 +558,52 @@ impl GhPlane {
             transport,
             token,
             config,
-            specs,
+            specs: std::sync::RwLock::new(specs),
+            herdr_scope: None,
         }
     }
 
     /// Constructor with an explicit token: skips `GITHUB_TOKEN`/`gh auth
-    /// token` resolution entirely (no subprocess spawn). Used by the live
-    /// harness so the measured round-trip excludes token resolution, and by
-    /// embedders that already hold a token.
+    /// token` resolution entirely (no subprocess spawn).
     pub fn with_token(store: Arc<Store>, token: String) -> Self {
         Self {
             store,
             transport: Arc::new(ReqwestTransport::new()),
             token: Some(token),
             config: GhPlaneConfig::default(),
-            specs: tracked_specs(),
+            specs: std::sync::RwLock::new(Vec::new()),
+            herdr_scope: None,
         }
+    }
+
+    /// Test/embedding constructor for a real transport with an explicit scope.
+    /// Production scope must still come from [`Self::with_herdr_scope`].
+    pub fn with_token_and_specs(store: Arc<Store>, token: String, specs: Vec<GhRepoSpec>) -> Self {
+        Self {
+            store,
+            transport: Arc::new(ReqwestTransport::new()),
+            token: Some(token),
+            config: GhPlaneConfig::default(),
+            specs: std::sync::RwLock::new(specs),
+            herdr_scope: None,
+        }
+    }
+
+    fn current_specs(&self) -> Vec<GhRepoSpec> {
+        self.specs.read().unwrap().clone()
+    }
+
+    async fn refresh_specs(&self) -> bool {
+        let Some(attribution) = &self.herdr_scope else {
+            return false;
+        };
+        let next = herdr_workspace_specs(&self.store, attribution).await;
+        let mut current = self.specs.write().unwrap();
+        if *current == next {
+            return false;
+        }
+        *current = next;
+        true
     }
 
     async fn run_forever(self: Arc<Self>, sink: PlaneSink) {
@@ -552,7 +617,8 @@ impl GhPlane {
                 }
             },
         };
-        let query = build_query(&self.specs);
+        self.refresh_specs().await;
+        let mut query = build_query(&self.current_specs());
         let mut last: BTreeMap<String, GhRepoState> = BTreeMap::new();
         let mut ever_connected = false;
         let mut prev_subscribers = 0usize;
@@ -584,11 +650,27 @@ impl GhPlane {
                     // (re)joining mid-sleep — including a reconnect during a
                     // 300s background sleep — triggers the immediate SWR
                     // fetch instead of waiting out the stale deadline (F2).
+                    if self.refresh_specs().await {
+                        last.clear();
+                        query = build_query(&self.current_specs());
+                    }
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     tokio::time::sleep(remaining.min(self.config.wake)).await;
                 }
                 CadenceAction::Poll { next } => {
-                    match self.poll_once(&token, &query, &mut last, &sink).await {
+                    if self.refresh_specs().await {
+                        last.clear();
+                        query = build_query(&self.current_specs());
+                    }
+                    let specs = self.current_specs();
+                    if specs.is_empty() {
+                        next_poll = Some(Instant::now() + next);
+                        continue;
+                    }
+                    match self
+                        .poll_once(&token, &query, &specs, &mut last, &sink)
+                        .await
+                    {
                         Ok(()) => {
                             backoff = self.config.failure_backoff;
                             next_poll = Some(Instant::now() + next);
@@ -630,6 +712,7 @@ impl GhPlane {
         &self,
         token: &str,
         query: &str,
+        specs: &[GhRepoSpec],
         last: &mut BTreeMap<String, GhRepoState>,
         sink: &PlaneSink,
     ) -> Result<(), GhError> {
@@ -656,7 +739,7 @@ impl GhPlane {
 
         let (new_last, changed) =
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                process_response(data, last, &self.specs)
+                process_response(data, last, specs)
             })) {
                 Ok(result) => result,
                 Err(payload) => return Err(GhError::Panic(panic_message(&payload))),
@@ -669,7 +752,7 @@ impl GhPlane {
         }
         info!(
             latency_ms,
-            repos = self.specs.len(),
+            repos = specs.len(),
             changed = changed.len(),
             "gh plane round-trip complete"
         );
@@ -691,7 +774,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 /// Synchronous decode/map/dedupe stage of a poll, run under `catch_unwind`
 /// (F4). `last` is borrowed immutably and cloned so a panic can never leave
 /// the dedupe state half-updated. Returns the new last-known state and the
-/// states that changed (sorted, in `TRACKED_REPOS` order).
+/// states that changed, in the supplied spec order.
 fn process_response(
     data: &serde_json::Map<String, Value>,
     last: &BTreeMap<String, GhRepoState>,
@@ -1161,6 +1244,118 @@ fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
 mod tests {
     use super::*;
 
+    fn fixture_specs() -> Vec<GhRepoSpec> {
+        [
+            ("sendmeter", "sendmeter"),
+            ("project-hearthwild", "jirathip-k"),
+            ("synergy-apps", "synergy-services-cooling-tower"),
+            ("dotfiles", "jirathip-k"),
+            ("agent-ops", "jirathip-k"),
+            ("herdr-board", "jirathip-k"),
+            ("office-ops", "jirathip-k"),
+            ("synergy-services-website", "synergy-services"),
+        ]
+        .into_iter()
+        .map(|(name, owner)| GhRepoSpec {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            key: name.to_string(),
+            aliases: vec![name.to_string()],
+        })
+        .collect()
+    }
+
+    #[test]
+    fn default_constructor_waits_for_workspace_scope() {
+        let plane = GhPlane::new(Arc::new(Store::new()));
+        assert_eq!(
+            build_query(&plane.specs.read().unwrap())
+                .matches("repository(owner:")
+                .count(),
+            0,
+            "the production default must wait for current Herdr workspaces"
+        );
+    }
+
+    fn scope_agent(id: &str, path: &Path) -> crate::core::model::Agent {
+        crate::core::model::Agent {
+            agent_id: id.to_string(),
+            source: "herdr".to_string(),
+            tool: "fixture".to_string(),
+            state: crate::core::model::AgentState::Idle,
+            reason: None,
+            seq: 1,
+            ts: 0,
+            capabilities: Vec::new(),
+            waiting_on: None,
+            parent_id: None,
+            host: None,
+            workspace: crate::core::model::Workspace {
+                worktree_path: Some(path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            attachment: None,
+            display_name: None,
+            title: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn herdr_scope_refreshes_after_workspace_topology_changes() {
+        let root = std::env::temp_dir().join(format!("corral-g332-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        git2::Repository::init(&first)
+            .unwrap()
+            .remote("origin", "https://github.com/fixture-owner/one.git")
+            .unwrap();
+        git2::Repository::init(&second)
+            .unwrap()
+            .remote("origin", "https://github.com/fixture-owner/two.git")
+            .unwrap();
+
+        let store = Store::new();
+        store
+            .apply(crate::core::model::Change::upsert(scope_agent(
+                "first", &first,
+            )))
+            .await;
+        let attribution = crate::core::workspace::WorkspaceAttribution::from_roots(
+            [
+                crate::core::workspace::RepoRoot {
+                    path: first.clone(),
+                    repo: "first".to_string(),
+                },
+                crate::core::workspace::RepoRoot {
+                    path: second.clone(),
+                    repo: "second".to_string(),
+                },
+            ],
+            root.join("worktrees"),
+        );
+        let plane = GhPlane::with_herdr_scope(Arc::new(store.clone()), attribution);
+        assert!(plane.refresh_specs().await);
+        assert_eq!(plane.current_specs().len(), 1);
+
+        store
+            .apply(crate::core::model::Change::upsert(scope_agent(
+                "second", &second,
+            )))
+            .await;
+        assert!(plane.refresh_specs().await);
+        assert_eq!(plane.current_specs().len(), 2);
+
+        store
+            .apply(crate::core::model::Change::Remove("second".to_string()))
+            .await;
+        assert!(plane.refresh_specs().await);
+        assert_eq!(plane.current_specs().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn one_query_fans_out_issue_state_to_native_aliases() {
         let spec = GhRepoSpec {
@@ -1188,7 +1383,7 @@ mod tests {
 
     #[test]
     fn query_covers_all_repos_once() {
-        let specs = tracked_specs();
+        let specs = fixture_specs();
         let query = build_query(&specs);
         for (i, spec) in specs.iter().enumerate() {
             assert!(
@@ -1201,6 +1396,12 @@ mod tests {
             );
         }
         assert_eq!(query.matches("repository(owner:").count(), specs.len());
+        let scoped_query = build_query(&specs[..5]);
+        println!(
+            "fixture_scope_measurement poll_payload_repo_clauses_before={} poll_payload_repo_clauses_after={}",
+            query.matches("repository(owner:").count(),
+            scoped_query.matches("repository(owner:").count()
+        );
         assert!(query.contains("fragment GhPlaneRepo on Repository"));
         // #22/#23: the branch-fallback and issue-linkage surfaces ride the
         // SAME fragment — one extra field each, never an extra request.
@@ -1424,7 +1625,7 @@ mod tests {
             ]}
         }))
         .unwrap();
-        let spec = tracked_specs()
+        let spec = fixture_specs()
             .into_iter()
             .find(|s| s.key == "herdr-board")
             .expect("tracked");
@@ -1533,7 +1734,7 @@ mod tests {
             "issues": null
         }))
         .unwrap();
-        let spec = tracked_specs()
+        let spec = fixture_specs()
             .into_iter()
             .find(|s| s.key == "dotfiles")
             .expect("tracked");

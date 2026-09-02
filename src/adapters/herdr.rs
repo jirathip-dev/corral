@@ -41,8 +41,25 @@
 //! by construction. Paths and pane ids are identity, never redacted. Repo
 //! identity comes from explicit Corral/Herdr roots and branch identity comes
 //! from cached git facts; display names and pane labels are never used. The
-//! `read_tail` result path applies the same `redact` to the fetched tail
+//! The `read_tail` result path applies the same `redact` to the fetched tail
 //! text before it leaves the machine ([`Adapter::read_tail`]).
+//!
+//! ## Provider read-tail revision contract (#324)
+//!
+//! `agent.read` responses carry a per-agent/output-source revision, NOT the
+//! fleet snapshot revision: `read.revision` is a monotonic counter over the
+//! agent's `recent_unwrapped` output window. `revision` `0` (or an absent
+//! field) means the provider predates revision support; the adapter keeps
+//! the bounded full-page fallback and exposes no provider revision. When a
+//! request carries `rev` equal to the provider's current `revision`, the
+//! window is UNCHANGED: the provider returns an empty `text` (no page
+//! transferred) and the adapter returns an explicit empty result carrying
+//! the same revision. Any other revision — first read, advanced output, or
+//! a provider wrap/restart that resets the counter below the cached value —
+//! returns the bounded window plus the provider's current revision. The
+//! live herdr 0.8.2 provider always reports `revision: 0` regardless of
+//! `rev` (#324), so the incremental path only activates against providers
+//! that honor the contract.
 //!
 //! ## Drive policy for `unknown` state
 //!
@@ -69,7 +86,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
-use crate::adapters::{Adapter, DriveCommand, DriveError};
+use crate::adapters::{Adapter, DriveCommand, DriveError, ReadTailResult};
 use crate::core::blocks::{scrub_tui_furniture, scrub_unsupported_glyphs};
 use crate::core::model::{
     Agent, AgentState, Attachment, CAPABILITIES, WaitingOn, WaitingOnKind, Workspace,
@@ -2645,38 +2662,11 @@ impl Adapter for HerdrAdapter {
         agent_id: &'a str,
         lines: u32,
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
-        let (target, generation) = match self.drive_target_with_generation(agent_id) {
-            Ok(t) => t,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
-        // Same source the output_matched subscription uses (D5: only the
-        // requested window, never a prefetch).
-        let params = json!({
-            "target": target.clone(),
-            "source": "recent_unwrapped",
-            "lines": lines.clamp(1, READ_TAIL_MAX_LINES),
-        });
-        let socket = self.socket_path.clone();
         let agent_id = agent_id.to_string();
-        let failed_target = target;
         Box::pin(async move {
-            let response = match rpc_call(&socket, "agent.read", params).await {
-                Ok(response) => response,
-                Err(error) => {
-                    let mapped = map_drive_rpc_error(&agent_id, "agent.read", error);
-                    if matches!(mapped, DriveError::StaleAgent(_)) {
-                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
-                            .await;
-                    }
-                    return Err(mapped);
-                }
-            };
-            let text = response
-                .get("read")
-                .and_then(|read| read.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or_default();
-            Ok(bounded_redacted_tail(text, lines))
+            self.read_tail_rpc(&agent_id, lines, None)
+                .await
+                .map(|(lines, _)| lines)
         })
     }
 
@@ -2686,40 +2676,22 @@ impl Adapter for HerdrAdapter {
         lines: u32,
         since_rev: Option<u64>,
     ) -> futures::future::BoxFuture<'a, Result<Vec<String>, DriveError>> {
-        let (target, generation) = match self.drive_target_with_generation(agent_id) {
-            Ok(t) => t,
-            Err(e) => return Box::pin(async move { Err(e) }),
-        };
-        let mut params = json!({
-            "target": target.clone(),
-            "source": "recent_unwrapped",
-            "lines": lines.clamp(1, READ_TAIL_MAX_LINES),
-        });
-        if let Some(rev) = since_rev {
-            params["rev"] = json!(rev);
-        }
-        let socket = self.socket_path.clone();
         let agent_id = agent_id.to_string();
-        let failed_target = target;
         Box::pin(async move {
-            let response = match rpc_call(&socket, "agent.read", params).await {
-                Ok(response) => response,
-                Err(error) => {
-                    let mapped = map_drive_rpc_error(&agent_id, "agent.read", error);
-                    if matches!(mapped, DriveError::StaleAgent(_)) {
-                        self.retire_rpc_mapping(&agent_id, &failed_target, generation)
-                            .await;
-                    }
-                    return Err(mapped);
-                }
-            };
-            let text = response
-                .get("read")
-                .and_then(|read| read.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or_default();
-            Ok(bounded_redacted_tail(text, lines))
+            self.read_tail_rpc(&agent_id, lines, since_rev)
+                .await
+                .map(|(lines, _)| lines)
         })
+    }
+
+    fn read_tail_since_with_rev<'a>(
+        &'a self,
+        agent_id: &'a str,
+        lines: u32,
+        since_rev: Option<u64>,
+    ) -> futures::future::BoxFuture<'a, Result<ReadTailResult, DriveError>> {
+        let agent_id = agent_id.to_string();
+        Box::pin(async move { self.read_tail_rpc(&agent_id, lines, since_rev).await })
     }
 
     fn read_diff<'a>(
@@ -2803,6 +2775,48 @@ impl Adapter for HerdrAdapter {
 /// current pane mapping is classified as stale when it was previously known,
 /// otherwise it is the typed [`DriveError::UnknownAgent`].
 impl HerdrAdapter {
+    /// #324: the shared `agent.read` round trip behind every read_tail seam.
+    /// Forwards the cached `rev` when present, parses the provider's
+    /// `read.revision`, and classifies the response with [`contract_tail`]
+    /// (provider revision contract documented in the module docs). The
+    /// provider revision is returned as-is; the fleet snapshot revision is
+    /// never substituted for it.
+    async fn read_tail_rpc(
+        &self,
+        agent_id: &str,
+        lines: u32,
+        since_rev: Option<u64>,
+    ) -> Result<(Vec<String>, Option<u64>), DriveError> {
+        let (target, generation) = self.drive_target_with_generation(agent_id)?;
+        let mut params = json!({
+            "target": target.clone(),
+            "source": "recent_unwrapped",
+            "lines": lines.clamp(1, READ_TAIL_MAX_LINES),
+        });
+        if let Some(rev) = since_rev {
+            params["rev"] = json!(rev);
+        }
+        let response = match rpc_call(&self.socket_path, "agent.read", params).await {
+            Ok(response) => response,
+            Err(error) => {
+                let mapped = map_drive_rpc_error(agent_id, "agent.read", error);
+                if matches!(mapped, DriveError::StaleAgent(_)) {
+                    self.retire_rpc_mapping(agent_id, &target, generation).await;
+                }
+                return Err(mapped);
+            }
+        };
+        let read = response.get("read");
+        let text = read
+            .and_then(|read| read.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        let provider_rev = read
+            .and_then(|read| read.get("revision"))
+            .and_then(Value::as_u64);
+        Ok(contract_tail(text, lines, since_rev, provider_rev))
+    }
+
     /// #232: canonicalize the agent-record worktree path and return it ONLY
     /// Resolve a herdr-attributed path to a diffable repo root. Herdr owns
     /// BOTH its linked worktrees (paths under the configured worktrees
@@ -2953,6 +2967,28 @@ fn bounded_redacted_tail(text: &str, max_lines: u32) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// #324: classify one `agent.read` response under the provider read-tail
+/// revision contract (defined in the module docs). `provider_rev` is the
+/// `read.revision` field, `0`/absent for legacy providers.
+fn contract_tail(
+    text: &str,
+    max_lines: u32,
+    since_rev: Option<u64>,
+    provider_rev: Option<u64>,
+) -> (Vec<String>, Option<u64>) {
+    match provider_rev {
+        // Legacy provider: bounded full-page fallback, no provider revision
+        // to expose (the live herdr 0.8.2 behavior).
+        None | Some(0) => (bounded_redacted_tail(text, max_lines), None),
+        // Unchanged: the provider's current revision equals the cached one —
+        // an explicit empty result without re-transferring the page.
+        Some(rev) if Some(rev) == since_rev => (Vec::new(), Some(rev)),
+        // First read, changed output, or provider wrap/restart (revision
+        // reset below the cache): bounded window + the current revision.
+        Some(rev) => (bounded_redacted_tail(text, max_lines), Some(rev)),
+    }
 }
 
 #[cfg(test)]
@@ -4068,6 +4104,15 @@ mod tests {
         listener: tokio::net::UnixListener,
         reply_text: Value,
     ) -> (Value, Value) {
+        mock_socket_serve_read(listener, json!({ "text": reply_text })).await
+    }
+
+    /// One JSON-RPC exchange answering `agent.read` with a caller-supplied
+    /// full `read` object (`text` plus an optional `revision`).
+    async fn mock_socket_serve_read(
+        listener: tokio::net::UnixListener,
+        read: Value,
+    ) -> (Value, Value) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut line = String::new();
@@ -4076,12 +4121,78 @@ mod tests {
         let req: Value = serde_json::from_str(&line).unwrap();
         let resp = json!({
             "id": req["id"],
-            "result": { "read": { "text": reply_text } }
+            "result": { "read": read }
         });
         let mut out = resp.to_string();
         out.push('\n');
         stream.write_all(out.as_bytes()).await.unwrap();
         (req, resp)
+    }
+
+    /// One #324-contract-aware `agent.read` exchange: when the request
+    /// carries `rev` equal to `current`, the window is unchanged and the
+    /// provider returns an empty `text` with the same `revision` (no page
+    /// transferred); otherwise it returns the full fixture text with
+    /// `current`.
+    async fn mock_socket_serve_rev_contract(
+        listener: tokio::net::UnixListener,
+        current: u64,
+        full_text: String,
+    ) -> (Value, Value) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut line = String::new();
+        let mut reader = BufReader::new(&mut stream);
+        reader.read_line(&mut line).await.unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        let text = if req["params"]["rev"].as_u64() == Some(current) {
+            String::new()
+        } else {
+            full_text
+        };
+        let resp = json!({
+            "id": req["id"],
+            "result": { "read": { "text": text, "revision": current } }
+        });
+        let mut out = resp.to_string();
+        out.push('\n');
+        stream.write_all(out.as_bytes()).await.unwrap();
+        (req, resp)
+    }
+
+    /// Serve the three #324-probe `agent.read` exchanges against one mock
+    /// provider: first (no `rev` → full window + rev A), unchanged
+    /// (`rev` A → empty text + rev A), changed (`rev` A → full window +
+    /// rev B). Returns the raw wire byte count of each request/response
+    /// pair, including the trailing newline each side writes.
+    async fn mock_socket_serve_probe(
+        listener: tokio::net::UnixListener,
+        full_text: String,
+        rev_a: u64,
+        rev_b: u64,
+    ) -> Vec<(usize, usize)> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut sizes = Vec::new();
+        for (text, revision) in [
+            (full_text.clone(), rev_a),
+            (String::new(), rev_a),
+            (full_text.clone(), rev_b),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut line = String::new();
+            let mut reader = BufReader::new(&mut stream);
+            reader.read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let resp = json!({
+                "id": req["id"],
+                "result": { "read": { "text": text, "revision": revision } }
+            });
+            let mut out = resp.to_string();
+            out.push('\n');
+            stream.write_all(out.as_bytes()).await.unwrap();
+            sizes.push((line.len(), out.len()));
+        }
+        sizes
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4468,6 +4579,325 @@ mod tests {
             .expect("read_tail");
         server.await.unwrap();
         assert!(tail.is_empty(), "no output -> clean empty lines");
+    }
+
+    #[test]
+    fn contract_tail_legacy_providers_fall_back_to_bounded_full_page() {
+        // No revision field: bounded page, no provider revision.
+        assert_eq!(
+            contract_tail("one\ntwo\n", 200, Some(7), None),
+            (vec!["one".to_string(), "two".to_string()], None)
+        );
+        // revision 0 (the live herdr 0.8.2 behavior) with a cached rev:
+        // still the full page and no provider revision, never an
+        // unchanged/empty result.
+        assert_eq!(
+            contract_tail("one\ntwo\n", 200, Some(7), Some(0)),
+            (vec!["one".to_string(), "two".to_string()], None)
+        );
+        // An equal cached revision must NOT read as unchanged when the
+        // provider does not track revisions.
+        assert_eq!(
+            contract_tail("one\n", 200, Some(0), Some(0)),
+            (vec!["one".to_string()], None)
+        );
+    }
+
+    #[test]
+    fn contract_tail_unchanged_only_for_equal_nonzero_provider_revision() {
+        // Unchanged: cached revision equals the provider's current one.
+        assert_eq!(
+            contract_tail("one\n", 200, Some(59), Some(59)),
+            (Vec::<String>::new(), Some(59)),
+            "equal revision -> explicit empty result"
+        );
+        // No cached revision: first read returns the page plus the
+        // provider revision.
+        assert_eq!(
+            contract_tail("one\n", 200, None, Some(59)),
+            (vec!["one".to_string()], Some(59))
+        );
+        // Different cached revision: changed window plus the current
+        // revision.
+        assert_eq!(
+            contract_tail("one\n", 200, Some(58), Some(59)),
+            (vec!["one".to_string()], Some(59))
+        );
+        // A zero cached revision is never the unchanged signal.
+        assert_eq!(
+            contract_tail("one\n", 200, Some(0), Some(59)),
+            (vec!["one".to_string()], Some(59))
+        );
+    }
+
+    #[test]
+    fn contract_tail_wrap_restart_is_changed_not_unchanged() {
+        // Provider restarted and reset its revision BELOW the cached value:
+        // the client re-syncs with the bounded window plus the new revision.
+        assert_eq!(
+            contract_tail("one\n", 200, Some(60), Some(59)),
+            (vec!["one".to_string()], Some(59)),
+            "lower revision after wrap/restart is changed, not unchanged"
+        );
+    }
+
+    #[test]
+    fn contract_tail_keeps_redaction_and_bounds() {
+        let text = "deploy token ghp_Ab...7890 now\n";
+        let (lines, rev) = contract_tail(text, 1, Some(59), Some(60));
+        assert_eq!(lines.len(), 1, "line clamp still applies");
+        assert!(!lines[0].contains("ghp_"), "redaction still applies");
+        assert_eq!(rev, Some(60));
+    }
+
+    #[tokio::test]
+    async fn read_tail_since_with_rev_first_read_returns_window_and_provider_rev() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve_read(
+            listener,
+            json!({ "text": "line one\nline two\n", "revision": 59 }),
+        ));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, None)
+            .await
+            .expect("read_tail_since_with_rev");
+        let (req, _) = server.await.unwrap();
+
+        assert_eq!(lines, vec!["line one", "line two"]);
+        assert_eq!(source_rev, Some(59), "provider revision is propagated");
+        assert!(
+            req["params"].get("rev").is_none(),
+            "no cached revision -> no rev param"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_tail_since_with_rev_unchanged_returns_explicit_empty_without_page() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve_rev_contract(
+            listener,
+            59,
+            "line one\nline two\n".to_string(),
+        ));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(59))
+            .await
+            .expect("read_tail_since_with_rev");
+        let (req, resp) = server.await.unwrap();
+
+        assert_eq!(req["params"]["rev"], 59, "cached revision is forwarded");
+        assert_eq!(
+            resp["result"]["read"]["text"], "",
+            "the contract-honoring provider transfers no page"
+        );
+        assert_eq!(
+            lines,
+            Vec::<String>::new(),
+            "unchanged -> explicit empty result"
+        );
+        assert_eq!(source_rev, Some(59), "provider revision still returned");
+    }
+
+    #[tokio::test]
+    async fn read_tail_since_with_rev_changed_returns_new_window_and_newer_rev() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve_rev_contract(
+            listener,
+            60,
+            "new output\n".to_string(),
+        ));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(59))
+            .await
+            .expect("read_tail_since_with_rev");
+        let (req, _) = server.await.unwrap();
+
+        assert_eq!(req["params"]["rev"], 59, "cached revision is forwarded");
+        assert_eq!(lines, vec!["new output"]);
+        assert_eq!(
+            source_rev,
+            Some(60),
+            "changed read returns a strictly newer provider revision"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_tail_since_with_rev_legacy_provider_falls_back_to_bounded_full_page() {
+        // No `revision` field at all: bounded page, no provider revision.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve(
+            listener,
+            "legacy one\nlegacy two\n".into(),
+        ));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(7))
+            .await
+            .expect("read_tail_since_with_rev");
+        let (req, _) = server.await.unwrap();
+
+        assert_eq!(lines, vec!["legacy one", "legacy two"]);
+        assert_eq!(source_rev, None, "legacy provider exposes no revision");
+        assert_eq!(
+            req["params"]["rev"], 7,
+            "cached rev is still forwarded harmlessly"
+        );
+
+        // `revision: 0` (the live herdr 0.8.2 response): same fallback.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve_read(
+            listener,
+            json!({ "text": "live herdr page\n", "revision": 0 }),
+        ));
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path);
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(7))
+            .await
+            .expect("read_tail_since_with_rev");
+        server.await.unwrap();
+        assert_eq!(lines, vec!["live herdr page"]);
+        assert_eq!(source_rev, None, "revision 0 is the legacy fallback");
+    }
+
+    #[tokio::test]
+    async fn read_tail_since_with_rev_wrap_restart_is_changed_not_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(mock_socket_serve_rev_contract(
+            listener,
+            59,
+            "post-restart output\n".to_string(),
+        ));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (lines, source_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(60))
+            .await
+            .expect("read_tail_since_with_rev");
+        server.await.unwrap();
+
+        assert_eq!(
+            lines,
+            vec!["post-restart output"],
+            "a provider restart that resets the revision re-syncs the window"
+        );
+        assert_eq!(
+            source_rev,
+            Some(59),
+            "new (lower) provider revision returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_read_tail_bytes_first_unchanged_changed() {
+        // #324 measured long-running-pane probe against a simulated
+        // contract-honoring provider (the live herdr 0.8.2 provider returns
+        // `revision: 0` regardless of `rev` and cannot be probed this way).
+        // The fixture tail is a full bounded window (~18 KiB), so the
+        // unchanged read's byte saving is real.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("herdr.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let full_text = (0..200)
+            .map(|i| format!("line {i:03} {}", "x".repeat(90)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let server = tokio::spawn(mock_socket_serve_probe(listener, full_text, 59, 60));
+
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(socket_path.clone());
+        adapter
+            .register_agent_pane("p1", "opencode", AgentState::Working, &store)
+            .await;
+        let (first, first_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, None)
+            .await
+            .expect("first read");
+        let (unchanged, un_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(59))
+            .await
+            .expect("unchanged read");
+        let (changed, changed_rev) = adapter
+            .read_tail_since_with_rev("herdr:pane:p1", 200, Some(59))
+            .await
+            .expect("changed read");
+        let sizes = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("probe server")
+            .expect("server task");
+
+        assert_eq!(first.len(), 200);
+        assert_eq!(first_rev, Some(59));
+        assert!(unchanged.is_empty(), "unchanged read transfers no page");
+        assert_eq!(un_rev, Some(59));
+        assert_eq!(changed.len(), 200);
+        assert_eq!(changed_rev, Some(60));
+
+        let (first_req, first_resp) = sizes[0];
+        let (un_req, un_resp) = sizes[1];
+        let (ch_req, ch_resp) = sizes[2];
+        println!(
+            "PROBE first     request_bytes={first_req} response_bytes={first_resp} lines={} source_rev=59",
+            first.len()
+        );
+        println!(
+            "PROBE unchanged request_bytes={un_req} response_bytes={un_resp} lines={} source_rev=59",
+            unchanged.len()
+        );
+        println!(
+            "PROBE changed   request_bytes={ch_req} response_bytes={ch_resp} lines={} source_rev=60",
+            changed.len()
+        );
+        assert!(
+            un_resp < first_resp,
+            "unchanged response must be smaller than the full first page"
+        );
+        assert!(
+            un_resp < ch_resp,
+            "unchanged response must be smaller than the changed page"
+        );
     }
 
     /// Three bounded control operations against one current migrated target.

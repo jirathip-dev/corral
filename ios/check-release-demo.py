@@ -116,7 +116,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (BoardModel status buckets + FleetViews status-section renderer +
     # demo seed trimmed to one evidence row per status) — re-pinned over
     # the new Release source set.
-    "06a7842f7384e31b045cbb018567d33ee134293d6198b98417ee133a9e094d5b"
+    # 2026-09-03 (#364 source set): board/recents UX — pressed-state style
+    # + haptics seam, repo filter chip projections (BoardModel), and the
+    # model-owned recents-request lifecycle (AppModel/FleetViews) updated
+    # the Release sources; digest re-pinned to the #364 head source set.
+    "dd0c1cbaf36e501283b19a89d9ddf496cda508ac1494591aaf32de26f3b9172f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -134,7 +138,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # the spine primitive spans the whole stack) — re-pinned.
     # #362: BoardModelReadOnlyTests rewritten to the discriminating raw
     # status-bucket semantics + the status-section wiring test — re-pinned.
-    "6dd85c1d0144c2250ceada6d2fdbcc544781d3e061d5018d872e595ae22f7235"
+    # 2026-09-03 (#364 source set): RepoFilterChipProjectionTests and
+    # RecentsSheetLifecycleTests added (chip filter/counts, sheet-reopen
+    # first-tap lifecycle, haptics wiring) and the source-wiring tests
+    # updated to the model-owned recents request — re-pinned.
+    "0326ce10d7029de89c11d7f7d511dc3d87a72ce151f41a1e5c924d000f90aa02"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -200,7 +208,11 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",
-        "model.recentsAgentId",
+        # 2026-09-03 (#364 source set): row taps open recents through the
+        # model-owned request funnel (requestRecents replaced the old
+        # recentsAgentId assignment); the marker follows the new
+        # release-active call spelling.
+        "model.requestRecents(for: agent.agentId",
         "RecentOutputSheet",
     ),
 }

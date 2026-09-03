@@ -502,9 +502,13 @@ final class DemoSeedTests: XCTestCase {
         XCTAssertFalse(isForbidden("https://demo.example.invalid/atlas-board/issues/9007"))
     }
 
-    /// Recents v1 fixture: the featured agent's tail is a live-tail-only
-    /// block stream (no partition scaffolding) that derives non-empty lines.
-    func testFeaturedRecentsFixtureIsALiveTailStream() throws {
+    /// Recents #373 fixture: the featured agent's tail exercises the
+    /// block-per-run evidence shape — it opens with quiet Status material,
+    /// alternates roles (so every canonical block is a distinct display
+    /// block), carries one >20-line tool run (cap + Show all) and a diff
+    /// run (+ / - / @@ for the ANSI-remap proof), and ends on a call-only
+    /// tool run (the muted waiting line). Content stays fully fictional.
+    func testFeaturedRecentsFixtureExercisesBlockPerRunTreatments() throws {
         let seed = DemoFleet.seed()
         guard let agent = seed[DemoFleet.featuredAgentID] else {
             return XCTFail("featured demo agent missing from the seed")
@@ -512,13 +516,37 @@ final class DemoSeedTests: XCTestCase {
         let blocks = DemoFleet.recentBlocks(for: agent)
         XCTAssertFalse(blocks.isEmpty)
         XCTAssertFalse(DemoFleet.recentLines(from: blocks).isEmpty)
-        XCTAssertTrue(blocks.contains { $0.kind == .user && $0.text.contains("verify the diff") })
-        // The fixture deliberately keeps a divider-only row so rail
-        // evidence proves #361 divider rows are dropped, not hidden.
-        XCTAssertTrue(blocks.contains { block in
-            RecentOutputRender.isDividerBlock(
-                TranscriptBlock(kind: block.kind, text: block.text))
-        }, "the recents fixture must keep its divider-only row for rail-drop evidence")
+        XCTAssertEqual(blocks.first?.kind, .system,
+                       "the fixture opens with quiet Status material")
+        XCTAssertEqual(blocks.last?.kind, .tool,
+                       "the fixture ends on a tool run for the waiting line")
+        // Role-run shape: adjacent blocks always change role, so the
+        // block-per-run evidence shows one display block per canonical
+        // block (nothing silently merges the fixture's runs together).
+        let kinds = blocks.map(\.kind)
+        let distinctRuns = kinds.reduce(into: [TranscriptBlockKind]()) { partial, kind in
+            if partial.last != kind { partial.append(kind) }
+        }
+        XCTAssertEqual(kinds, distinctRuns,
+                       "the fixture must alternate roles so display blocks stay distinct")
+        XCTAssertEqual(kinds, [.system, .user, .agent, .tool, .agent,
+                               .tool, .agent, .tool, .agent, .tool],
+                       "the fixture must cover Status / You / Assistant / Tool runs")
+        // One tool run exceeds the 20-line cap (Show-all evidence).
+        let long = try XCTUnwrap(blocks.first { $0.kind == .tool &&
+            $0.text.components(separatedBy: .newlines).count > RecentOutputModel.lineCap })
+        XCTAssertTrue(long.text.hasPrefix("$ pnpm"), "the giant run is the vitest block")
+        // A diff run carries the +/-/@@ syntax marks the theme remaps.
+        let diff = try XCTUnwrap(blocks.first { $0.kind == .tool && $0.text.contains("git diff") })
+        XCTAssertTrue(diff.text.contains("@@"))
+        XCTAssertTrue(diff.text.contains("\n-"))
+        XCTAssertTrue(diff.text.contains("\n+"))
+        // The FINAL tool run has one invocation and no output yet.
+        let last = blocks[blocks.count - 1]
+        XCTAssertTrue(last.text.hasPrefix("$ rg -n withRetry src/"))
+        XCTAssertEqual(last.text.components(separatedBy: .newlines).count, 1)
+        XCTAssertLessThanOrEqual(DemoFleet.recentLines(from: blocks).count, 200,
+                                 "the demo tail must respect the daemon's 200-line cap")
     }
 }
 
@@ -2736,46 +2764,246 @@ final class RecentsSheetLifecycleTests: XCTestCase {
     }
 }
 
-// MARK: - Recents v1 tail model (#354 L2)
+// MARK: - Recents v1 tail model (#354 L2 → #373 block-per-run)
 
-final class RecentOutputTailModelTests: XCTestCase {
+/// Focused regressions for the #373 BLOCK-PER-RUN model. These bite: the
+/// display model must start a block at every role change, merge consecutive
+/// same-role runs (so same-tool calls share ONE block with a compact line
+/// per call and a growing live tail appends INTO the open block), split a
+/// tool run into invocations + inline output, drop divider-only material,
+/// cap giant blocks at 20 lines, and add the muted waiting line only to a
+/// TRAILING call-only tool run. A change that re-introduces per-call
+/// blocks, divider rows, or loses the append-into-open-block behavior fails
+/// here before any view code is involved.
+final class RecentBlockModelTests: XCTestCase {
     private func block(_ kind: TranscriptBlockKind, _ text: String) -> TranscriptBlock {
         TranscriptBlock(kind: kind, text: text)
     }
 
-    func testTailRowsUseCanonicalBlocksWhenPresent() {
-        let pane = TailPane()
-        var populated = pane
-        populated.apply([block(.user, "hi"), block(.agent, "hello")],
-                        lines: ["hi", "hello"])
-        let rows = RecentOutputModel.tailRows(from: populated)
-        XCTAssertEqual(rows.map(\.kind), [.user, .agent])
+    private func pane(_ blocks: [TranscriptBlock]) -> TailPane {
+        var pane = TailPane()
+        pane.apply(blocks, lines: [])
+        return pane
     }
 
-    func testLegacyLinesFallBackToHonestUnknownBlocks() {
-        let pane = TailPane()
-        var legacy = pane
+    func testRoleBoundaryStartsANewBlock() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.user, "u1"),
+            block(.agent, "a1"),
+            block(.user, "u2"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.user, .agent, .user],
+                       "a role change starts a new block")
+        XCTAssertEqual(blocks.map(\.id), ["rb-0", "rb-1", "rb-2"])
+    }
+
+    func testConsecutiveSameRoleBlocksMergeIntoOneRun() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.agent, "first paragraph"),
+            block(.agent, "second paragraph"),
+            block(.user, "u1"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.agent, .user])
+        XCTAssertEqual(blocks[0].rows.map(\.text),
+                       ["first paragraph", "second paragraph"],
+                       "same-role adjacency stays ONE block with one row per line")
+        XCTAssertEqual(blocks[0].rows.map(\.kind),
+                       [.prose, .prose])
+    }
+
+    func testConsecutiveSameToolCallsShareOneBlockWithCompactLines() {
+        // Two adjacent tool runs (same tool family) merge into ONE block
+        // with one compact call line per invocation — the #373 grouping.
+        // A trailing user block keeps the merged run off the tail so the
+        // waiting line cannot attach (that behavior has its own tests).
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ git status --short"),
+            block(.tool, "$ git log --oneline -3"),
+            block(.user, "thanks"),
+        ]))
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].kind, .tool)
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.call, .call],
+                       "consecutive same-tool calls share ONE block")
+        XCTAssertEqual(blocks[0].rows.map(\.text),
+                       ["$ git status --short", "$ git log --oneline -3"],
+                       "each invocation stays a compact single line")
+        XCTAssertFalse(blocks[0].rows.contains { $0.kind == .waiting })
+    }
+
+    func testRoleChangesBetweenToolRunsKeepSeparateBlocks() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ git status --short"),
+            block(.agent, "prose between runs"),
+            block(.tool, "$ cargo test"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.tool, .agent, .tool],
+                       "a role change between tool runs starts a new block")
+    }
+
+    func testToolRowsSplitShellEchoesFromOutput() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ git status --short\n M src/retry.ts"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.call, .output])
+        XCTAssertEqual(blocks[0].rows.map(\.text),
+                       ["$ git status --short", " M src/retry.ts"])
+        XCTAssertEqual(blocks[0].tool, .terminal)
+    }
+
+    func testMultipleCallsWithInterleavedOutputKeepOneCompactLinePerCall() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ pnpm vitest run\n ✓ 9 passed\n$ pnpm lint"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.call, .output, .call])
+    }
+
+    func testBareFirstLineToolCallIsClassifiedAsCallWithDocIcon() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "read_file src/retry.ts  lines 1-18\n  1  export function withRetry(fn) {"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.first?.kind, .call,
+                       "a bare tool-invocation first line is a call, not output")
+        XCTAssertEqual(blocks[0].rows.first?.text,
+                       "read_file src/retry.ts  lines 1-18")
+        XCTAssertEqual(blocks[0].rows.dropFirst().first?.kind, .output)
+        XCTAssertEqual(blocks[0].tool, .doc)
+    }
+
+    func testUnrecognizedFirstLineIsOutputNotCall() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "Compiling corrald v0.1.0\nBuild finished"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.output, .output],
+                       "an unclassified first line is never mislabeled as a call")
+        XCTAssertEqual(blocks[0].tool, .generic,
+                       "a run with no recognizable invocation falls back to the generic icon")
+    }
+
+    func testToolIconVocabularyIsLockedPerCommandWord() {
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "$ git status"), .terminal)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "$ pnpm vitest run"), .terminal)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "$ rg -n withRetry src/"), .search)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "$ grep -rn withRetry src/"), .search)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "read_file src/retry.ts"), .doc)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "write_file src/retry.ts"), .doc)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "edit src/retry.ts"), .code)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "apply_patch src/retry.ts"), .code)
+        XCTAssertEqual(RecentOutputModel.toolKind(forCallLine: "$"), .generic)
+    }
+
+    func testInteriorBlankOutputLinesAreKeptForSpacing() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ pnpm test\n RUN\n\n PASS"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.map(\.text), ["$ pnpm test", " RUN", "", " PASS"],
+                       "blank lines inside output stay as spacing rows")
+        let trimmed = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "\n\n$ pnpm test\n PASS\n\n"),
+        ]))
+        XCTAssertEqual(trimmed[0].rows.map(\.text), ["$ pnpm test", " PASS"],
+                       "leading/trailing blanks never render")
+    }
+
+    func testLegacyLinesBecomeOneUnknownBlock() {
+        var legacy = TailPane()
         legacy.lines = ["raw line one", "raw line two"]
-        let rows = RecentOutputModel.tailRows(from: legacy)
-        XCTAssertEqual(rows.map(\.kind), [.unknown, .unknown])
-        XCTAssertEqual(rows.map(\.text), ["raw line one", "raw line two"])
+        let blocks = RecentOutputModel.displayBlocks(from: legacy)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].kind, .unknown)
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.output, .output])
+        XCTAssertEqual(blocks[0].rows.map(\.text), ["raw line one", "raw line two"])
     }
 
-    func testAdjacentToolAndSystemBlocksMerge() {
-        let pane = TailPane()
-        var populated = pane
-        populated.apply([block(.tool, "one"), block(.tool, "two"),
-                         block(.agent, "three"), block(.system, "four"), block(.system, "five")],
-                        lines: [])
-        let rows = RecentOutputModel.tailRows(from: populated)
-        XCTAssertEqual(rows.map(\.kind), [.tool, .agent, .system])
-        XCTAssertEqual(rows[0].text, "one\ntwo")
-        XCTAssertEqual(rows[2].text, "four\nfive")
+    func testDividerOnlyRowsDropEntirelyAndNeverBreakRuns() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.agent, "a"),
+            block(.system, "────────────────────────────────"),
+            block(.agent, "b"),
+            block(.tool, "──"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.agent])
+        XCTAssertEqual(blocks[0].rows.map(\.text), ["a", "b"],
+                       "dropped dividers never split or ride inside a role run")
     }
 
-    func testDividerOnlyBlockIsClassifiedAsDivider() {
-        XCTAssertTrue(RecentOutputRender.isDividerBlock(block(.system, "──────")))
-        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.system, "let sep = \"────\";")))
+    func testWaitingLineAppendsToTrailingCallOnlyToolRun() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.user, "u"),
+            block(.tool, "$ rg -n withRetry src/"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.user, .tool])
+        XCTAssertEqual(blocks[1].rows.map(\.kind), [.call, .waiting])
+        XCTAssertEqual(blocks[1].rows.last?.text, RecentOutputModel.waitingRowText)
+    }
+
+    func testWaitingLineNeverAppearsWhenOutputExists() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ rg -n withRetry src/\nsrc/retry.ts:12:withRetry(post)"),
+        ]))
+        XCTAssertEqual(blocks[0].rows.map(\.kind), [.call, .output],
+                       "a run with output never shows the waiting line")
+    }
+
+    func testWaitingLineOnlyOnTheTrailingRun() {
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ pnpm lint"),
+            block(.agent, "prose after the quiet run"),
+        ]))
+        XCTAssertEqual(blocks.map(\.kind), [.tool, .agent])
+        XCTAssertFalse(blocks[0].rows.contains { $0.kind == .waiting },
+                       "a mid-stream call-only run is not 'waiting' — it is history")
+    }
+
+    func testLineCapHidesRowsBeyondTwentyWithShowAllCount() {
+        let text = "$ pnpm vitest run\n" + (1...23).map { "out \($0)" }.joined(separator: "\n")
+        let blocks = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, text),
+        ]))
+        XCTAssertEqual(RecentOutputModel.lineCap, 20)
+        XCTAssertEqual(blocks[0].rows.count, 24)
+        XCTAssertEqual(blocks[0].cappedLineCount, 4,
+                       "the block must report exactly the hidden-by-cap line count")
+        let short = RecentOutputModel.displayBlocks(from: pane([
+            block(.tool, "$ pnpm vitest run\n" + (1...18).map { "out \($0)" }.joined(separator: "\n")),
+        ]))
+        XCTAssertEqual(short[0].cappedLineCount, 0)
+    }
+
+    func testLiveAppendGrowsTheOpenBlockNotANewOne() {
+        // A live tail grows between fetches and the daemon can re-segment
+        // the run (a blank line splits canonical tool blocks), so the new
+        // content can arrive as a SEPARATE same-kind canonical block. The
+        // display model must merge it into the CURRENT semantic block
+        // (stable id, appended rows) instead of stacking a duplicate.
+        let before = RecentOutputModel.displayBlocks(from: pane([
+            block(.user, "u"),
+            block(.tool, "$ pnpm vitest run\n RUN v2.1.4"),
+        ]))
+        XCTAssertEqual(before.count, 2)
+        let after = RecentOutputModel.displayBlocks(from: pane([
+            block(.user, "u"),
+            block(.tool, "$ pnpm vitest run\n RUN v2.1.4"),
+            block(.tool, " ✓ 9 passed"),
+        ]))
+        XCTAssertEqual(after.count, 2, "growth appends INTO the current semantic block")
+        XCTAssertEqual(before[1].id, after[1].id,
+                       "the open block's identity must stay stable across appends")
+        XCTAssertEqual(before[1].rows.count, 2)
+        XCTAssertEqual(after[1].rows.count, 3)
+        XCTAssertEqual(after[1].rows.last?.text, " ✓ 9 passed")
+    }
+
+    func testNewRoleAfterGrowthStartsANewBlockWithoutRenumbering() {
+        let grown = RecentOutputModel.displayBlocks(from: pane([
+            block(.user, "u"),
+            block(.tool, "$ pnpm vitest run\n RUN v2.1.4"),
+            block(.tool, " ✓ 9 passed"),
+            block(.agent, "done — pushing."),
+        ]))
+        XCTAssertEqual(grown.map(\.id), ["rb-0", "rb-1", "rb-2"])
+        XCTAssertEqual(grown[1].rows.count, 3)
+        XCTAssertEqual(grown[2].rows.map(\.text), ["done — pushing."])
     }
 
     func testPhaseDerivation() {
@@ -2795,10 +3023,9 @@ final class RecentOutputTailModelTests: XCTestCase {
         XCTAssertEqual(failure.kind, "not_granted")
     }
 
-    func testIdentifiedBlocksNeverCollide() {
-        let rows = RecentOutputModel.identifiedBlocks([block(.agent, "same"), block(.agent, "same")])
-        XCTAssertEqual(rows.count, 2)
-        XCTAssertNotEqual(rows[0].id, rows[1].id)
+    func testDividerClassificationStillClassifies() {
+        XCTAssertTrue(RecentOutputRender.isDividerBlock(block(.system, "──────")))
+        XCTAssertFalse(RecentOutputRender.isDividerBlock(block(.system, "let sep = \"────\";")))
     }
 
     func testTranscriptErrorTextNamesTheMissingGrant() {
@@ -2806,143 +3033,59 @@ final class RecentOutputTailModelTests: XCTestCase {
             TranscriptFailure(kind: "not_granted", message: "capability not granted: read_tail", candidates: []))
         XCTAssertTrue(text.contains("read_tail grant"), text)
     }
-}
 
-// MARK: - #361 continuous rail model
-
-/// Focused regressions for the #361 continuous rail. These bite: the row
-/// model must render ZERO divider-only rows, mark role ONLY as a shape at
-/// semantic transitions (never per row, never as role text), and keep the
-/// full stream in daemon chronological order. A change that re-introduces
-/// divider rows, per-row markers, or reordering fails here before any view
-/// code is involved.
-final class RecentRailModelTests: XCTestCase {
-    private func block(_ kind: TranscriptBlockKind, _ text: String) -> TranscriptBlock {
-        TranscriptBlock(kind: kind, text: text)
-    }
-
-    private func pane(_ blocks: [TranscriptBlock]) -> TailPane {
-        var pane = TailPane()
-        pane.apply(blocks, lines: [])
-        return pane
-    }
-
-    func testRailRowsDropDividerOnlyRowsEntirely() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.user, "hi"),
-            block(.system, "────────────────────────────────"),
-            block(.agent, "hello"),
-            block(.tool, "──"),
-            block(.agent, "again")
-        ]))
-        XCTAssertEqual(rows.map(\.block.kind), [.user, .agent, .agent])
-        XCTAssertEqual(rows.map(\.block.text), ["hi", "hello", "again"],
-                       "dropping a divider must never drop or reorder content")
-        XCTAssertTrue(rows.allSatisfy { !RecentOutputRender.isDividerBlock($0.block) },
-                      "the rail must render ZERO divider-only rows")
-        let plain = RecentOutputModel.tailRows(from: pane([
-            block(.system, "────────────────────────────────"),
-            block(.agent, "hello")
-        ]))
-        XCTAssertTrue(plain.allSatisfy { !RecentOutputRender.isDividerBlock($0) },
-                      "the tail row model itself must contain ZERO divider-only rows")
-    }
-
-    func testRailRowsDropLegacyDividerLines() {
-        var legacy = TailPane()
-        legacy.lines = ["raw one", "────────────────────────────────"]
-        let rows = RecentOutputModel.railRows(from: legacy)
-        XCTAssertEqual(rows.map(\.block.kind), [.unknown])
-        XCTAssertEqual(rows.map(\.block.text), ["raw one"],
-                       "a legacy divider line is raw furniture and must not render")
-    }
-
-    func testRailPreservesFullChronologicalOrder() {
-        let fixture = [
-            block(.agent, "first agent"),
-            block(.system, "────────────────────────────────"),
-            block(.user, "user input"),
-            block(.tool, "tool output"),
-            block(.agent, "second agent"),
-            block(.system, "diagnostic"),
-            block(.unknown, "raw pane line")
-        ]
-        let rows = RecentOutputModel.railRows(from: pane(fixture))
-        XCTAssertEqual(rows.map(\.block.text),
-                       ["first agent", "user input", "tool output",
-                        "second agent", "diagnostic", "raw pane line"],
-                       "the rail is ONE continuous stream in full chronological order")
-    }
-
-    func testTransitionMarkerOnlyAtRoleChanges() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.agent, "a1"),
-            block(.agent, "a2"),
-            block(.user, "u1"),
-            block(.user, "u2"),
-            block(.tool, "t1"),
-            block(.agent, "a3")
-        ]))
-        XCTAssertEqual(rows.map(\.showsTransitionMarker),
-                       [true, false, true, false, true, true],
-                       "markers appear ONLY at semantic role transitions, never per row")
-    }
-
-    func testContinuationAfterDroppedDividerCarriesNoMarker() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.agent, "a"),
-            block(.system, "──────"),
-            block(.agent, "b")
-        ]))
-        XCTAssertEqual(rows.map(\.block.kind), [.agent, .agent])
-        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false],
-                       "the divider drops out of the sequence, so b continues the same role run")
-    }
-
-    func testDividerNeverRidesInsideMergedContentRow() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.system, "read_tail page truncated to the newest 200 lines."),
-            block(.system, "────────────────────────────────"),
-            block(.agent, "hello")
-        ]))
-        XCTAssertEqual(rows.map(\.block.kind), [.system, .agent])
-        XCTAssertEqual(rows[0].block.text,
-                       "read_tail page truncated to the newest 200 lines.",
-                       "a divider-only row must drop BEFORE merging so it never rides inside a content row")
-        XCTAssertFalse(rows[0].block.text.contains("─"),
-                       "no divider furniture may survive inside a merged content row")
-    }
-
-    func testSystemAndUnknownRowsNeverCarryMarkers() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.agent, "a"),
-            block(.system, "diagnostic"),
-            block(.agent, "b"),
-            block(.unknown, "raw pane line"),
-            block(.agent, "c")
-        ]))
-        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false, true, false, true],
-                       "system/unknown rows are raw output, never role markers")
-    }
-
-    func testRoleMarkersAreLockedPerRole() {
-        XCTAssertEqual(RecentOutputModel.marker(for: .user), .diamond)
-        XCTAssertEqual(RecentOutputModel.marker(for: .agent), .circle)
-        XCTAssertEqual(RecentOutputModel.marker(for: .tool), .square)
-        XCTAssertNil(RecentOutputModel.marker(for: .system))
-        XCTAssertNil(RecentOutputModel.marker(for: .unknown))
-    }
-
-    func testRailRowIdentitiesNeverCollide() {
-        let rows = RecentOutputModel.railRows(from: pane([
-            block(.agent, "same"),
-            block(.agent, "same")
-        ]))
-        XCTAssertEqual(rows.count, 2)
-        XCTAssertNotEqual(rows[0].id, rows[1].id)
+    func testAccessibilityLabelsRemainAttributable() {
+        XCTAssertEqual(RecentBlockStyle.roleName(for: .user), "You")
+        XCTAssertEqual(RecentBlockStyle.roleName(for: .agent), "Assistant")
+        XCTAssertEqual(RecentBlockStyle.roleName(for: .tool), "Tool run")
+        XCTAssertEqual(RecentBlockStyle.roleName(for: .system), "Status")
+        XCTAssertEqual(RecentBlockStyle.roleName(for: .unknown), "Unknown activity")
     }
 }
 
+// MARK: - #373 block-per-run session state (default-expanded + toggle)
+
+/// The sheet-session collapse/reveal contract: fresh sessions are ALL
+/// EXPANDED, toggling is per-block, "Show all" reveals once, and reset
+/// (dismissal) clears everything — nothing outlives the sheet session.
+@MainActor
+final class RecentsBlockSessionTests: XCTestCase {
+    func testSessionDefaultsToEverythingExpanded() {
+        let session = RecentsSheetSession()
+        XCTAssertTrue(session.collapsed.isEmpty,
+                      "every block DEFAULTS EXPANDED — a fresh session collapses nothing")
+        XCTAssertTrue(session.revealed.isEmpty)
+    }
+
+    func testToggleCollapsesAndExpandsPerBlock() {
+        let session = RecentsSheetSession()
+        session.toggleCollapsed("rb-0")
+        XCTAssertEqual(session.collapsed, ["rb-0"])
+        session.toggleCollapsed("rb-1")
+        XCTAssertEqual(session.collapsed, ["rb-0", "rb-1"])
+        session.toggleCollapsed("rb-0")
+        XCTAssertEqual(session.collapsed, ["rb-1"],
+                       "toggling the same block again expands it (per-block, independent)")
+    }
+
+    func testRevealIsOneShotPerSession() {
+        let session = RecentsSheetSession()
+        session.reveal("rb-3")
+        XCTAssertEqual(session.revealed, ["rb-3"])
+        session.reveal("rb-3")
+        XCTAssertEqual(session.revealed, ["rb-3"], "reveal is idempotent")
+    }
+
+    func testResetClearsCollapseAndRevealOnDismissal() {
+        let session = RecentsSheetSession()
+        session.toggleCollapsed("rb-0")
+        session.reveal("rb-3")
+        session.reset()
+        XCTAssertTrue(session.collapsed.isEmpty)
+        XCTAssertTrue(session.revealed.isEmpty,
+                      "the next sheet session must start fully expanded again")
+    }
+}
 // MARK: - Read-only surface wiring (FleetViews source bundle)
 
 /// Decoy-resistant source-wiring regression: the recents sheet must be fed
@@ -2970,22 +3113,23 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         guard let sheetStart = source.range(of: sheetMarker) else {
             return XCTFail("RecentOutputSheet declaration not found")
         }
-        let nextDecl = source.range(of: "\n// MARK: - Rail row renderer")
-            ?? source.range(of: "\nprivate struct RecentRailRowView")
+        let nextDecl = source.range(of: "\n// MARK: - Recents block renderer")
         let sliceEnd = try XCTUnwrap(nextDecl?.lowerBound,
-                                     "the recents rail renderer declaration must exist in the sheet source")
+                                     "the recents block renderer MARK must follow the sheet source")
         let slice = String(source[sheetStart.lowerBound..<sliceEnd])
         XCTAssertTrue(slice.contains("model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)"),
                       "the recents sheet must auto-refresh through the live read_tail drive")
         XCTAssertTrue(slice.contains("RecentOutputModel.phase(for: tail)"),
                       "the recents sheet must render the tail pane's four-state machine")
-        XCTAssertTrue(slice.contains("RecentOutputModel.railRows(from: tail)"),
-                      "the recents sheet must render the continuous rail row model")
-        XCTAssertTrue(slice.contains("RecentRailSpine()"),
-                      "the recents sheet must ride ONE continuous spine behind the rail rows (#361 R1)")
-        // The rail renders ZERO divider rules, cards, and role labels: the
-        // V3-era chrome vocabulary must not exist inside the sheet (a decoy
-        // elsewhere in FleetViews cannot satisfy a slice-scoped assertion).
+        XCTAssertTrue(slice.contains("RecentOutputModel.displayBlocks(from: tail)"),
+                      "the recents sheet must render the #373 block-per-run display model")
+        XCTAssertTrue(slice.contains("RecentRunBlockView(block: block)"),
+                      "the sheet must feed each display block to the block renderer")
+        XCTAssertTrue(slice.contains("@StateObject private var session = RecentsSheetSession()"),
+                      "the sheet must own its per-session collapse/reveal state")
+        // The sheet renders ZERO role/card chrome vocabulary from the
+        // rejected rail era (a decoy elsewhere in FleetViews cannot satisfy
+        // a slice-scoped assertion).
         for chrome in ["speakerRail", "roleLabel", "showSpeaker",
                        "DisclosureGroup", "RecentBlockRow", "userTint"] {
             XCTAssertFalse(slice.contains(chrome),
@@ -2993,47 +3137,48 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         }
     }
 
-    func testRailSpineIsOneContinuousSpan() throws {
+    /// #373 block renderer wiring pins (decoy-resistant over the bundled
+    /// FleetViews source): the block header is the WHOLE-width collapse
+    /// toggle, a collapsed block hides its body and rotates the chevron, a
+    /// giant block (> lineCap) offers the inline "Show all" reveal, and the
+    /// output rows render inside the theme's output-panel token. A
+    /// compile-capable bypass of any of those call sites goes RED here.
+    func testRecentsBlocksRenderThroughTheBlockModel() throws {
         let source = try bundledSource()
-        let start = source.range(of: "\nprivate struct RecentRailSpine")
-        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let start = source.range(of: "\nprivate struct RecentRunBlockView: View {")
+        let end = source.range(of: "\nprivate struct RecentOutputLineView")
         let startIndex = try XCTUnwrap(start?.lowerBound,
-                                       "the continuous spine primitive must exist")
+                                       "the block renderer declaration must exist")
         let endIndex = try XCTUnwrap(end?.lowerBound,
-                                     "the code line view declaration must exist")
+                                     "the output line view declaration must exist")
         let slice = String(source[startIndex..<endIndex])
-        XCTAssertTrue(slice.contains("Rectangle()"),
-                      "the spine must be a single drawn line, not per-row segments")
-        XCTAssertTrue(slice.contains(".frame(width: 1.5)"),
-                      "the spine must be one thin vertical line")
-        XCTAssertTrue(slice.contains("maxHeight: .infinity"),
-                      "the spine must span the whole rail stack continuously")
-        XCTAssertTrue(slice.contains("theme.tailLine"),
-                      "the spine must use the #372 themed rail-line token (accent at low opacity)")
-    }
-
-    func testRecentsRailRendererUsesTransitionMarkersOnly() throws {
-        let source = try bundledSource()
-        let start = source.range(of: "\nprivate struct RecentRailRowView: View {")
-        let end = source.range(of: "\nprivate struct RecentCodeLineView")
-        let startIndex = try XCTUnwrap(start?.lowerBound,
-                                       "the rail renderer declaration must exist")
-        let endIndex = try XCTUnwrap(end?.lowerBound,
-                                     "the code line view declaration must exist")
-        let slice = String(source[startIndex..<endIndex])
-        XCTAssertTrue(slice.contains("row.showsTransitionMarker"),
-                      "the rail renderer must gate its gutter marker on the model transition flag")
-        XCTAssertTrue(slice.contains("RecentOutputModel.marker(for: block.kind)"),
-                      "the rail renderer must draw the locked role marker")
-        XCTAssertTrue(slice.contains("theme.roleColor(for: block.kind)"),
-                      "the rail marker colors must resolve through the #372 theme (role token map)")
-        XCTAssertTrue(slice.contains("theme.tailInk"),
-                      "the rail prose must use the themed tail ink token")
-        // Zero role text / cards / per-row chrome inside the renderer.
+        // The WHOLE header is the collapse toggle (no separate chevron tap).
+        XCTAssertTrue(slice.contains("session.toggleCollapsed(block.id)"),
+                      "tapping the block header must toggle that block's collapse")
+        XCTAssertTrue(slice.contains("if !isCollapsed {"),
+                      "a collapsed block must hide its body")
+        XCTAssertTrue(slice.contains("rotationEffect(.degrees(isCollapsed ? -90 : 0))"),
+                      "the chevron must rotate when the block collapses")
+        XCTAssertTrue(slice.contains("if isCollapsed {\n                    previewLine"),
+                      "a collapsed block must reveal its one-line preview")
+        XCTAssertTrue(slice.contains(".frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)"),
+                      "the header hit target must keep its min-height guard")
+        // Per-block 20-line cap + inline Show all.
+        XCTAssertTrue(slice.contains("RecentOutputModel.lineCap"),
+                      "the block body must respect the locked 20-line cap")
+        XCTAssertTrue(slice.contains("block.cappedLineCount > 0"),
+                      "the Show all control must exist only for capped blocks")
+        XCTAssertTrue(slice.contains("session.reveal(block.id)"),
+                      "Show all must reveal the capped tail inline")
+        // Output rows ride the theme's output-panel token (the recess rule).
+        XCTAssertTrue(slice.contains("theme.tailBackground"),
+                      "output rows must render on the themed output panel")
+        // Zero role words / rejected rail chrome inside the renderer.
         for chrome in ["roleLabel", "speakerRail", "DisclosureGroup",
-                       "userTint", "toolSummary", "role text"] {
+                       "userTint", "toolSummary", "RecentRailSpine",
+                       "showsTransitionMarker", "RecentDiamond"] {
             XCTAssertFalse(slice.contains(chrome),
-                           "chrome \(chrome) must not be in the rail renderer")
+                           "chrome \(chrome) must not be in the block renderer")
         }
     }
 
@@ -3131,7 +3276,12 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
                         "AnswerPromptSheet", "TerminalAttachView", "PromptDrafts",
                         "RecentOutputSections", "filterChipRow", "FleetSearchable",
                         "swipeActions", "CannedButtons", "ClaimCard",
-                        "RecentBlockRow", "speakerRail", "roleLabel"] {
+                        "RecentBlockRow", "speakerRail", "roleLabel",
+                        // #373: the REJECTED #361 continuous-rail vocabulary
+                        // is gone from FleetViews entirely.
+                        "RecentRailRowView", "RecentRailSpine", "RecentDiamond",
+                        "RecentCodeLineView", "railRows", "RailMarker",
+                        "showsTransitionMarker", "RecentOutputModel.RailRow"] {
             XCTAssertFalse(source.contains(removed),
                            "removed surface \(removed) must not be wired in FleetViews")
         }
@@ -3734,11 +3884,11 @@ final class ThemeWiringTests: XCTestCase {
                               + "in the Settings Appearance section only (placement lock)")
             }
         }
-        let sheetStart = try XCTUnwrap(source.range(of: "\nstruct RecentOutputSheet: View {"))
-        let sheetEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Rail row renderer"))
-        let sheetSlice = String(source[sheetStart.lowerBound..<sheetEnd.lowerBound])
-        XCTAssertFalse(sheetSlice.contains("theme.setFlavor"),
-                       "no theme control may live in the recents sheet header")
+        // The recents sheet carries NO release-active theme control: the
+        // #373 evidence driver flips the flavor from inside #if DEBUG, so
+        // those lines are debug-active and the placement-lock loop above
+        // already exempts them — nothing release-active may live outside
+        // the Settings Appearance section.
     }
 
     /// 1-based line numbers of every `#if DEBUG`-active line (same depth
@@ -3792,12 +3942,40 @@ final class ThemeWiringTests: XCTestCase {
     func testRecentsSheetGatesAutoScrollOnReduceMotion() throws {
         let source = try bundledSource()
         let sheetStart = try XCTUnwrap(source.range(of: "\nstruct RecentOutputSheet: View {"))
-        let sheetEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Rail row renderer"))
+        let sheetEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Recents block renderer"))
         let slice = String(source[sheetStart.lowerBound..<sheetEnd.lowerBound])
         XCTAssertTrue(slice.contains("theme.reduceMotion"),
                       "the recents auto-scroll must respect the theme's Reduce Motion state")
         XCTAssertTrue(slice.contains("withAnimation"),
                       "animated scroll must still exist for the default motion path")
+    }
+
+    /// #373: the block renderer consumes theme tokens for EVERY surface —
+    /// block chrome (surface0, quiet status recess), the output panel
+    /// (tailBackground — the accepted recess token: base on Latte so ANSI
+    /// hues keep contrast), preview/quiet tiers, and the ANSI-slot segment
+    /// colors. No legacy GitHub-dark hexes can satisfy these pins.
+    func testRecentsBlocksConsumeThemeTokens() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "\n// MARK: - Recents block renderer"),
+                                  "the block renderer MARK must exist")
+        let slice = String(source[start.lowerBound...])
+        XCTAssertTrue(slice.contains("theme.surface0"),
+                      "block chrome must be the active flavor's surface0")
+        XCTAssertTrue(slice.contains("theme.mixed(.surface0, at: 0.55, over: .base)"),
+                      "Status/unknown blocks must recess quietly toward base")
+        XCTAssertTrue(slice.contains("theme.tailBackground"),
+                      "tool output must sit on the themed output panel (Latte: base)")
+        XCTAssertTrue(slice.contains("theme.overlay1"),
+                      "the collapsed preview must use the theme's overlay tier")
+        XCTAssertTrue(slice.contains("theme.tailQuiet"),
+                      "quiet tiers (waiting line, +N lines) must be token-backed")
+        XCTAssertTrue(slice.contains("theme.segmentColor(for: kind)"),
+                      "syntax marks must resolve through the ANSI-slot segment colors")
+        XCTAssertTrue(slice.contains("theme.tailMuted"),
+                      "plain output lines must use the muted output tier")
+        XCTAssertTrue(slice.contains("theme.color(RecentBlockStyle.accentToken(for: block.kind))"),
+                      "role accents must resolve through the palette tokens")
     }
 
     func testNoLegacyHexesOrPaletteResidueInTheBoardSource() throws {

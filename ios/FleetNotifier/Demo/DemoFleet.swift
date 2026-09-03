@@ -145,42 +145,96 @@ enum DemoFleet {
         }
     }
 
-    /// Live-tail fixture: one stream of canonical blocks (user / agent /
-    /// tool / system / unknown) in daemon order — recents renders the
-    /// bounded tail as ONE continuous chronological rail (#361).
+    /// Live-tail fixture (#373 block-per-run): one canonical block stream
+    /// whose role-run shape exercises every block treatment the recents
+    /// sheet must prove — quiet Status material first, user/assistant
+    /// prose runs, a >20-line tool run (per-block 20-line cap + inline
+    /// "Show all"), a BARE tool call (doc icon — no shell echo), a diff
+    /// run (ANSI-remap proof: `+` / `-` / `@@` syntax marks resolve
+    /// through the ACTIVE flavor's ANSI slots), and a FINAL call-only tool
+    /// run (the muted inline "waiting for output…" line — never its own
+    /// block). Same-tool invocations ride inside ONE tool run (compact
+    /// line per call). Content is fully fictional.
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        // The divider-only system block below stays ON PURPOSE: the rail
-        // row model drops divider-only rows, so simulator evidence proves
-        // ZERO divider rows render.
-        let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [
             RecentBlock(
-                kind: .agent,
-                text: "(demo) Snapshot read model is consistent.",
-                truncatedBefore: omitted),
-            RecentBlock(kind: .user,
-                        text: "Please verify the diff too.",
-                        truncatedBefore: nil),
-            RecentBlock(
-                kind: .agent,
-                text: "def deploy():\n    print(\"ready ✅\")\n    return True",
-                truncatedBefore: nil),
-            RecentBlock(
                 kind: .system,
                 text: "read_tail page truncated to the newest 200 lines.",
+                truncatedBefore: omitted),
+            RecentBlock(
+                kind: .user,
+                text: "The retry wrapper double-applies on the demo endpoint — find where it wraps twice and add a regression test that bites.",
                 truncatedBefore: nil),
             RecentBlock(
-                kind: .system,
-                text: "──────────────────────────────────────",
+                kind: .agent,
+                text: "Starting from the request path: the wrapper probably wraps both the call site and its caller. Running the baseline first.",
                 truncatedBefore: nil),
-            RecentBlock(kind: .unknown,
-                        text: "raw pane line without provenance",
-                        truncatedBefore: nil),
             RecentBlock(
                 kind: .tool,
-                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> Bool {\n+    true\n+}",
-                truncatedBefore: nil)
+                text: "read_file src/retry.ts  lines 1-18\n"
+                    + "  1  export function withRetry(fn, attempts = 3) {\n"
+                    + "  2    return async (...args) => {\n"
+                    + "  3      for (let attempt = 1; attempt <= attempts; attempt++) {\n"
+                    + "  4        try { return await fn(...args) }\n"
+                    + "  5        catch (error) {\n"
+                    + "  6          if (attempt === attempts) throw error\n"
+                    + "  7        }\n"
+                    + "  8      }\n"
+                    + "  9    }\n"
+                    + " 10  }",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "Found it — the caller wraps the post a second time, so 409s retry twice. Removing the outer wrapper and the redundant predicate range.",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ pnpm vitest run src/retry.test.ts\n"
+                    + " RUN  v2.1.4  demo-atlas\n"
+                    + "\n"
+                    + " ✓ src/retry.test.ts (9 tests) 142ms\n"
+                    + "   ✓ wraps the post exactly once\n"
+                    + "   ✓ retries 503 up to the attempt budget\n"
+                    + "   ✓ retries 429 and honours Retry-After\n"
+                    + "   ✓ does not retry 409 Conflict\n"
+                    + "   ✓ does not retry 400 Bad Request\n"
+                    + "   ✓ does not retry 404 Not Found\n"
+                    + "   ✓ propagates the original error body\n"
+                    + "   ✓ clears its timer on success\n"
+                    + "   ✓ is a no-op when attempts = 1\n"
+                    + "   ✓ reports the attempt count in telemetry\n"
+                    + "\n"
+                    + " Test Files  1 passed (1)\n"
+                    + "      Tests  9 passed (9)\n"
+                    + "   Duration  1.42s (transform 210ms, collect 380ms)\n"
+                    + "\n"
+                    + " PASS  Waiting for file changes...\n"
+                    + "   ✓ 9/9 checks green — done\n"
+                    + "  demo-atlas: retry suite baseline green\n"
+                    + "\n"
+                    + " — press q to exit —",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "9/9 green — here is the exact change that keeps 409 out of the retry path:",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ git diff -- src/retry.ts\n"
+                    + "@@ -18,2 +18,4 @@\n"
+                    + "-const retryable = (s) => s >= 408\n"
+                    + "+const RETRYABLE = new Set([408, 425, 429, 500])\n"
+                    + "+const retryable = (s) => RETRYABLE.has(s)",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "The explicit set keeps 409 out of the retry path. Double-checking for any other retry sites before I push.",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ rg -n withRetry src/",
+                truncatedBefore: nil),
         ]
     }
 

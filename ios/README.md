@@ -1,16 +1,20 @@
 # Corral — iOS app for the corral control plane (read-only fleet monitor).
 
-> **#354 L2 state (2026-09-02):** the client is READ-ONLY. The board shows
-> repo groups with raw herdr state chips (working / idle / blocked /
-> unknown), tapping a row opens the live recent-output tail, and Settings
-> holds connection + notification pairing only. Issues browsing, Terminal,
-> Diff, every action control (answer/prompt/interrupt/kill/attach/
-> start-worktree), and the device/grant admin UI were REMOVED. Sections of
-> this README that still describe those pre-cut surfaces are historical.
+> **#354 L2 state (2026-09-02):** the client is READ-ONLY. The board groups
+> agents into raw herdr STATUS sections — Blocked → Working → Idle → Unknown
+> (a Done section renders only when herdr reports done; repo is row
+> metadata, never a grouping key), tapping a row opens the live recent-output
+> tail, and Settings holds connection + notification pairing only. Issues
+> browsing, Terminal, Diff, every action control (answer/prompt/interrupt/
+> kill/attach/start-worktree), and the device/grant admin UI were REMOVED.
+> Sections of this README that still describe those pre-cut surfaces are
+> historical.
 
-The iOS client for corrald: a read-only fleet dashboard that shows what
-every agent is doing (state, repo, branch, time-in-state, pane), streams
-the bounded recent-output tail, and notifies on state changes
+The iOS client for corrald: a read-only fleet dashboard grouped into raw
+herdr status sections (Blocked → Working → Idle → Unknown; Done only when
+herdr reports it) where every row shows what an agent is doing (state,
+repo, branch, time-in-state, pane), streams the bounded recent-output tail,
+and notifies on state changes
 (start / blocked / done) — all Swift, no third-party SDKs (URLSession +
 Codable + CryptoKit). Every read is signed with the device key (D10/D13).
 
@@ -280,12 +284,16 @@ material is added to the repository.
 
 ## Read-only board (home)
 
-Repo groups with raw status chips; blocked agents pinned on top. Each row:
-agent name, repo, state (raw herdr token: working / idle / blocked /
-unknown), time-in-state, branch, and a small pane reference (debug aid).
-Order inside a repo is the attention order blocked → working → idle →
-unknown, and an idle (finished-fallback) agent STAYS in its repo until a
-newer agent replaces it (last-done-per-repo retention). There is no search
+Status sections in the locked attention order: Blocked → Working → Idle →
+Unknown, each headed by the raw status name + count; a Done section renders
+only when herdr reports done (wire-done ranks with idle; herdr 0.8.2
+finished panes fall back to idle). Blocked agents lead the board visually —
+their section is first; repo is ROW METADATA only (a small label on each
+row), never a grouping key, and an agent appears in exactly one section.
+Each row: agent name, repo, state (raw herdr token: working / idle /
+blocked / unknown), time-in-state, branch, and a small pane reference
+(debug aid). Rows inside a status sort by recency (ts desc, then agent id
+for determinism), and there is no search
 and no repo filter chip. Live SSE + pull-to-refresh keep the board fresh;
 when the daemon is unreachable the board keeps the last-known fleet under a
 "daemon offline" banner.
@@ -336,9 +344,10 @@ this repository still makes no physical-device or TestFlight claim. See
 ## Demo mode (Debug only)
 
 Debug builds retain the Settings/registration → "Demo fleet" harness: a
-seeded READ-ONLY board over fictional repos (working / idle / blocked /
-unknown agents, idle rows kept per repo, an orphan row, attachment pane
-refs) with the featured agent's live-tail fixture behind its recents sheet.
+seeded READ-ONLY board with every raw status section populated (blocked /
+working / idle / unknown agents across fictional repos — incl. an orphan
+row with repo = nil — plus attachment pane refs) with the featured agent's
+live-tail fixture behind its recents sheet.
 `-demoMode`, the Demo mode/Exit demo controls, the fake fleet, and the
 local demo read_tail responder are all compiled only under `#if DEBUG`.
 Release ignores `-demoMode` and presents only the real registration, SSE,

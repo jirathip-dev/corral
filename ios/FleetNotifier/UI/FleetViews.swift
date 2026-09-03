@@ -4,9 +4,11 @@ import Combine
 // MARK: - #354 L2 read-only FleetNotifier
 //
 // Surfaces after the client cut:
-// - Board (home): repo groups with raw herdr state chips; blocked agents
-//   pinned on top; row = agent name · repo · state · time-in-state · branch
-//   + small pane ref. NO search, NO repo filter chips, NO actions.
+// - Board (home): raw-herdr-status sections in the locked attention order
+//   (blocked → working → idle → unknown; done only when herdr reports it);
+//   repo is row metadata, never a grouping key. Row = agent name · state ·
+//   time-in-state · repo · branch + small pane ref. NO search, NO filters,
+//   NO actions.
 // - Recents: tap a row → bottom sheet with the LIVE tail (auto-scroll,
 //   ≤200-line daemon cap). No load-earlier, no Conversation/Harness
 //   partition, no composer.
@@ -442,33 +444,23 @@ struct FleetView: View {
 #endif
     }
 
-    /// The #354 L2 board: repo groups with raw status chips; blocked agents
-    /// pinned on top (a promotion — the same agents also sit first in their
-    /// repo section); every agent of a repo listed in attention order so an
-    /// idle (finished-fallback) agent stays until replaced.
+    /// The #362 board: one section per raw herdr status in the locked
+    /// attention order (blocked → working → idle → unknown; a done section
+    /// renders only when herdr reports it). Blocked agents are first overall
+    /// because their section is first — no cross-repo promotion, no repo
+    /// grouping (repo is row metadata). Every agent of a status appears in
+    /// exactly that one section.
     @ViewBuilder
     private func boardSections(sections: BoardModel.Sections) -> some View {
-        if !sections.blocked.isEmpty {
+        ForEach(sections.statuses) { status in
             Section {
-                ForEach(sections.blocked) { agent in
+                ForEach(status.agents) { agent in
                     agentRow(agent)
                 }
             } header: {
                 PinnedHeader {
-                    Text("blocked (\(sections.blocked.count))")
-                        .accessibilityLabel("blocked (\(sections.blocked.count))")
-                }
-            }
-        }
-        ForEach(sections.repos) { repo in
-            Section {
-                ForEach(repo.agents) { agent in
-                    agentRow(agent)
-                }
-            } header: {
-                PinnedHeader {
-                    Text(repo.header)
-                        .accessibilityLabel(repo.header)
+                    Text(status.header)
+                        .accessibilityLabel(status.header)
                 }
             }
         }

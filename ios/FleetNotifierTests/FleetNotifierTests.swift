@@ -472,17 +472,23 @@ final class DemoSeedTests: XCTestCase {
         }
     }
 
-    func testSeedCoversPerRepoIdleRetentionRows() {
+    func testSeedCoversEveryStatusSection() {
         let seed = DemoFleet.seed()
-        let repos = Set(seed.values.compactMap(\.workspace.repo))
-        for repo in repos {
-            // Every repo keeps at least one row; demo-ledger/demo-orbit/
-            // demo-atlas additionally carry an idle (finished-fallback)
-            // agent so retention is observable in evidence.
-            XCTAssertTrue(seed.values.contains { $0.workspace.repo == repo })
+        // The evidence board must be able to show EVERY locked status
+        // section with rows, projected through the real model — no repo
+        // grouping anywhere.
+        let sections = BoardModel.sections(Array(seed.values))
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.blocked, .working, .idle, .unknown],
+                       "the fixture must populate every locked status section")
+        for status in sections.statuses {
+            XCTAssertFalse(status.agents.isEmpty,
+                           "section \(status.header) must be non-empty for evidence")
         }
+        // The orphan (repo = nil) row stays in the fixture and lands in its
+        // status bucket — repo is row metadata, not a grouping key.
         XCTAssertTrue(seed.values.contains { $0.workspace.repo == nil },
-                      "the orphan bucket (no repo) must be exercised")
+                      "the orphan (no-repo) row must be exercised")
     }
 
     func testSeedPrivacyGateRejectsForbiddenThrowawayValue() {
@@ -2183,7 +2189,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     }
 }
 
-// MARK: - #354 L2 read-only board projections
+// MARK: - #362 status-grouped board projections
 
 final class BoardModelReadOnlyTests: XCTestCase {
     private func agent(_ id: String, state: AgentState, repo: String?, branch: String? = nil,
@@ -2194,73 +2200,121 @@ final class BoardModelReadOnlyTests: XCTestCase {
               displayName: displayName ?? id)
     }
 
-    func testSectionsGroupByRepoAndPromoteBlocked() {
+    func testSectionsBucketByRawStatusInLockedOrder() {
         let sections = BoardModel.sections([
             agent("b1", state: .blocked, repo: "corral"),
-            agent("w1", state: .working, repo: "corral"),
+            agent("w1", state: .working, repo: "other"),
             agent("i1", state: .idle, repo: "corral"),
-            agent("u1", state: .unknown, repo: "other"),
+            agent("u1", state: .unknown, repo: nil),
         ])
-        XCTAssertEqual(sections.blocked.map(\.agentId), ["b1"])
-        XCTAssertEqual(sections.repos.map(\.repo), ["corral", "other"])
-        // Every repo agent is present in its repo section (retention: an
-        // idle finished agent stays until replaced).
-        let corral = sections.repos[0]
-        XCTAssertEqual(corral.agents.map(\.agentId), ["b1", "w1", "i1"])
+        // Locked order: Blocked → Working → Idle → Unknown. Repo is never
+        // a grouping key, so four agents across three repos still yield
+        // exactly four one-row status buckets.
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.blocked, .working, .idle, .unknown])
+        XCTAssertEqual(sections.statuses.map(\.header),
+                       ["blocked (1)", "working (1)", "idle (1)", "unknown (1)"])
+        XCTAssertEqual(sections.statuses.map { $0.agents.map(\.agentId) },
+                       [["b1"], ["w1"], ["i1"], ["u1"]])
     }
 
-    func testRepoAttentionOrderIsBlockedWorkingIdleUnknown() {
+    func testRepoIsRowMetadataNeverTheGroupingKey() {
+        // Same status across DIFFERENT repos — including the orphan
+        // (repo = nil) — collapses into ONE working bucket; there is no
+        // repo section, no "no repo" orphan bucket.
         let sections = BoardModel.sections([
+            agent("in-corral", state: .working, repo: "corral", ts: 200),
+            agent("in-other", state: .working, repo: "other", ts: 150),
+            agent("orphan", state: .working, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(sections.statuses.count, 1)
+        XCTAssertEqual(sections.statuses[0].state, .working)
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["in-corral", "in-other", "orphan"],
+                       "repo must not partition a status bucket")
+        XCTAssertEqual(sections.statuses[0].header, "working (3)")
+    }
+
+    func testBlockedAgentsLeadTheBoardExactlyOnce() {
+        // Blocked is the FIRST section (attention-first); the old
+        // cross-repo promotion is gone — no agent is duplicated into a
+        // second bucket, blocked orphan or not.
+        let sections = BoardModel.sections([
+            agent("idle", state: .idle, repo: "corral", ts: 300),
+            agent("blocked-with-repo", state: .blocked, repo: "corral", ts: 200),
+            agent("blocked-orphan", state: .blocked, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(sections.statuses.map(\.state), [.blocked, .idle])
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["blocked-with-repo", "blocked-orphan"])
+        let allRows = sections.statuses.flatMap { $0.agents.map(\.agentId) }
+        XCTAssertEqual(allRows.count, Set(allRows).count,
+                       "every agent must appear in exactly one section")
+        XCTAssertEqual(Set(allRows), Set(["idle", "blocked-with-repo", "blocked-orphan"]))
+    }
+
+    func testDoneGetsItsOwnSectionOnlyWhenHerdrReportsIt() {
+        // herdr 0.8.2 finished panes fall back to idle: a done-less fleet
+        // (the live-board norm) has NO done section.
+        let noDone = BoardModel.sections([
+            agent("working", state: .working, repo: "r"),
             agent("idle", state: .idle, repo: "r"),
-            agent("working", state: .working, repo: "r"),
-            agent("unknown", state: .unknown, repo: "r"),
-            agent("blocked", state: .blocked, repo: "r"),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId),
-                       ["blocked", "working", "idle", "unknown"])
-    }
+        XCTAssertEqual(noDone.statuses.map(\.state), [.working, .idle])
 
-    func testWireDoneRanksWithIdleInRepoSections() {
-        let sections = BoardModel.sections([
+        // When the daemon reports done, a "done (N)" section renders after
+        // idle (wire-done ranks WITH idle — state-token rank 2).
+        let withDone = BoardModel.sections([
             agent("working", state: .working, repo: "r"),
-            agent("done", state: .done, repo: "r", ts: 100),
             agent("idle", state: .idle, repo: "r", ts: 300),
+            agent("done", state: .done, repo: "r", ts: 100),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["working", "idle", "done"],
-                       "idle and done share the v2 rank; ts desc breaks the tie")
+        XCTAssertEqual(withDone.statuses.map(\.state),
+                       [.working, .idle, .done])
+        XCTAssertEqual(withDone.statuses[2].header, "done (1)")
+        XCTAssertEqual(withDone.statuses[2].agents.map(\.agentId), ["done"])
     }
 
-    func testWithinRankOrderingIsTsDescThenAgentId() {
+    func testDoneSectionPositionIsRankTieNotTimestampDriven() {
+        // Ordering determinism: done shares idle's rank (2), so its section
+        // sits AFTER the idle section even when the done agent is newer —
+        // section order must never re-sort by ts across buckets.
+        let sections = BoardModel.sections([
+            agent("older-idle", state: .idle, repo: "r", ts: 100),
+            agent("newer-done", state: .done, repo: "r", ts: 900),
+            agent("unknown", state: .unknown, repo: "r"),
+        ])
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.idle, .done, .unknown])
+    }
+
+    func testWithinStatusOrderingIsTsDescThenAgentId() {
         let sections = BoardModel.sections([
             agent("older", state: .working, repo: "r", ts: 100),
             agent("newer", state: .working, repo: "r", ts: 200),
+            agent("tie-a", state: .working, repo: "r", ts: 200),
+            agent("tie-b", state: .working, repo: "r", ts: 200),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["newer", "older"])
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["newer", "tie-a", "tie-b", "older"],
+                       "ts desc, then agent id for determinism")
     }
 
-    func testOrphanBucketSortsLast() {
-        let sections = BoardModel.sections([
-            agent("orphan", state: .working, repo: nil),
-            agent("normal", state: .working, repo: "aaa"),
-        ])
-        XCTAssertEqual(sections.repos.map(\.repo), ["aaa", nil])
-        XCTAssertEqual(sections.repos[1].header, "no repo (1)")
-    }
-
-    func testBlockedPromotionIsNotAFilter() {
-        // The blocked agent appears pinned on top AND first in its repo.
-        let sections = BoardModel.sections([
-            agent("blocked", state: .blocked, repo: "corral"),
-            agent("idle", state: .idle, repo: "corral"),
-        ])
-        XCTAssertEqual(sections.blocked.map(\.agentId), ["blocked"])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["blocked", "idle"])
+    func testSectionOrderIsDeterministicRegardlessOfInputOrder() {
+        let fleet = [
+            agent("idle", state: .idle, repo: "r", ts: 300),
+            agent("blocked", state: .blocked, repo: "r", ts: 200),
+            agent("unknown", state: .unknown, repo: "r", ts: 100),
+        ]
+        let forward = BoardModel.sections(fleet)
+        let shuffled = BoardModel.sections(fleet.reversed())
+        XCTAssertEqual(forward.statuses.map(\.state), [.blocked, .idle, .unknown])
+        XCTAssertEqual(forward.statuses, shuffled.statuses)
     }
 
     func testEmptyBoardHasNoSections() {
         let sections = BoardModel.sections([])
-        XCTAssertTrue(sections.blocked.isEmpty)
-        XCTAssertTrue(sections.repos.isEmpty)
+        XCTAssertTrue(sections.statuses.isEmpty)
     }
 }
 
@@ -2475,9 +2529,10 @@ final class RecentRailModelTests: XCTestCase {
 
 /// Decoy-resistant source-wiring regression: the recents sheet must be fed
 /// by the LIVE read_tail drive seam (not a cached/demo-only projection), and
-/// the board must project through `BoardModel.sections` (repo groups +
-/// blocked promo). Production source rides in the test bundle as
-/// `FleetViews.swift.txt` via the test target's preBuildScript.
+/// the board must project through `BoardModel.sections` (raw status sections
+/// — blocked first, repo never a grouping key). Production source rides in
+/// the test bundle as `FleetViews.swift.txt` via the test target's
+/// preBuildScript.
 final class ReadOnlySurfaceWiringTests: XCTestCase {
 
     private func bundledSource() throws -> String {
@@ -2560,13 +2615,34 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         }
     }
 
-    func testBoardProjectsThroughRepoSections() throws {
+    func testBoardProjectsThroughStatusSections() throws {
         let source = try bundledSource()
-        // The FleetView board must be the read-only repo-group projection
-        // (blocked pinned top + repos), not the old status hierarchy.
+        // The FleetView board must be the status-section projection
+        // (locked order, repo never a grouping key), not repo groups.
         XCTAssertTrue(source.contains("BoardModel.sections(agents)"), "board must project through BoardModel.sections")
-        XCTAssertTrue(source.contains("sections.blocked"), "blocked promotion section must render")
-        XCTAssertTrue(source.contains("ForEach(repo.agents)"), "repo sections must render every repo agent")
+        // Scope to the board renderer so an unrelated helper cannot satisfy
+        // the search (decoy-resistant: unique declaration marker).
+        let boardMarker = "private func boardSections(sections: BoardModel.Sections)"
+        XCTAssertEqual(source.components(separatedBy: boardMarker).count - 1, 1,
+                       "exactly one boardSections renderer must exist")
+        guard let boardStart = source.range(of: boardMarker) else {
+            return XCTFail("boardSections declaration not found")
+        }
+        let sliceEnd = try XCTUnwrap(source.range(of: "\n    @ViewBuilder\n    private func agentRow")?.lowerBound,
+                                     "agentRow declaration must follow boardSections")
+        let slice = String(source[boardStart.lowerBound..<sliceEnd])
+        // Renders one section per status bucket, header = status + count.
+        XCTAssertTrue(slice.contains("ForEach(sections.statuses)"),
+                      "the board must render the status-section projection")
+        XCTAssertTrue(slice.contains("ForEach(status.agents)"),
+                      "every agent of a status bucket must render")
+        XCTAssertTrue(slice.contains("status.header"),
+                      "section headers must show the raw status name + count")
+        // No repo grouping, no blocked promotion in the renderer.
+        for repoChrome in ["sections.repos", "sections.blocked", "repo.header", "ForEach(repo.agents)"] {
+            XCTAssertFalse(slice.contains(repoChrome),
+                           "repo chrome \(repoChrome) must not be wired into the status board")
+        }
         // Row taps open recents through the model-owned deep-link target.
         XCTAssertTrue(source.contains("model.recentsAgentId = agent.agentId"))
         XCTAssertTrue(source.contains("RecentOutputSheet(agentId: target.agentId, model: model)"))

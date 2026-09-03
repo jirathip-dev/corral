@@ -107,7 +107,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # divider fixture retained as rail-drop evidence (DemoFleet) — re-pinned.
     # #361 fix: divider-only rows drop BEFORE adjacent tool/system merging so
     # furniture never rides inside a merged content row — re-pinned.
-    "549891ef6f13a3780bf44ed2133e4c6b9fc3f2f8dcc51e33ca583e3e0db6cfa6"
+    # #361 R1: the continuous spine primitive (RecentRailSpine + railLine
+    # token) added to the recents renderer — re-pinned.
+    # #361 R1 fix: spine width anchored leading (no maxWidth expansion) and
+    # railLine derived from accent at low opacity (#271 V2 teal hairline) —
+    # re-pinned.
+    "46ab283f565f261802a9a9d4631a21ad7628c89b2dc5badd6285990ac4da5731"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -121,7 +126,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # rows, zero role text, chronological order, transition-only markers)
     # were added to the suite — re-pinned.
     # #361 fix: merged-content divider regression added — re-pinned.
-    "2acb75c64bd0d13dc47c0d18813d3c2c05f6d12ca01371d6bb2f59083950fcb7"
+    # #361 R1: continuous-spine source pins (sheet rides RecentRailSpine;
+    # the spine primitive spans the whole stack) — re-pinned.
+    "3cc5e83c4770017f2429e1c5460e8311e42e7616603058738beac15079017c3d"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

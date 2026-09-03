@@ -849,7 +849,9 @@ struct RecentOutputSheet: View {
     /// output (#361), auto-scrolled to the newest row. The row model
     /// already dropped divider-only rows and only marks semantic role
     /// transitions, so the stack renders plain rows — no divider rules, no
-    /// cards, no role text.
+    /// cards, no role text. A single continuous spine (RecentRailSpine)
+    /// runs behind ALL rows (#361 R1 / #271 V2): transition markers sit on
+    /// it and continuation rows ride it without a marker of their own.
     private var tailStream: some View {
         let rows = RecentOutputModel.railRows(from: tail)
         return ScrollViewReader { proxy in
@@ -861,6 +863,12 @@ struct RecentOutputSheet: View {
                     Color.clear
                         .frame(height: 1)
                         .id("recents-bottom")
+                }
+                .background(alignment: .topLeading) {
+                    // The one uninterrupted spine behind the row stack; the
+                    // 3.75 inset centers it under the 9pt gutter markers.
+                    RecentRailSpine()
+                        .padding(.leading, 3.75)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
@@ -922,6 +930,9 @@ private struct RecentRailRowView: View {
             if row.showsTransitionMarker {
                 transitionMarker
                     .frame(width: 9, height: 9)
+                    // Mask the continuous spine behind the hollow marker so
+                    // the rail appears to touch each node (#361 R1).
+                    .background(Circle().fill(RecentOutputPalette.bg))
             } else {
                 Color.clear
             }
@@ -1008,6 +1019,21 @@ private struct RecentDiamond: Shape {
     }
 }
 
+/// The rail's continuous vertical spine (#361 R1, #271 V2): ONE
+/// uninterrupted line behind every row of the recents sheet. Transition
+/// markers sit ON the spine; continuation rows ride it with no marker of
+/// their own. The max-height infinity span makes the rail continuous over
+/// the whole stack — never per-row segments. Width is fixed and leading,
+/// so the line stays in the gutter (no maxWidth expansion).
+private struct RecentRailSpine: View {
+    var body: some View {
+        Rectangle()
+            .fill(RecentOutputPalette.railLine)
+            .frame(width: 1.5)
+            .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
 private struct RecentCodeLineView: View {
     let line: RecentCodeLine
 
@@ -1060,6 +1086,10 @@ enum RecentOutputPalette {
     // markers — never repeated per row and never as role text.
     static let workingBlue = Color(red: 88 / 255, green: 166 / 255, blue: 255 / 255)
     static let toolGold = Color(red: 210 / 255, green: 153 / 255, blue: 34 / 255)
+    // #361 R1: the continuous spine line behind the rail rows — the #271 V2
+    // reference rail is a dark TEAL-tinted hairline, so this derives from
+    // the accent token at low opacity instead of a neutral gray.
+    static let railLine = RecentOutputPalette.accent.opacity(0.18)
     static let diffAdd = Color(red: 63 / 255, green: 185 / 255, blue: 80 / 255)
     static let diffDel = Color(red: 248 / 255, green: 81 / 255, blue: 73 / 255)
     static let string = Color(red: 165 / 255, green: 214 / 255, blue: 255 / 255)

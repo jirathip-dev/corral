@@ -2508,6 +2508,8 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
                       "the recents sheet must render the tail pane's four-state machine")
         XCTAssertTrue(slice.contains("RecentOutputModel.railRows(from: tail)"),
                       "the recents sheet must render the continuous rail row model")
+        XCTAssertTrue(slice.contains("RecentRailSpine()"),
+                      "the recents sheet must ride ONE continuous spine behind the rail rows (#361 R1)")
         // The rail renders ZERO divider rules, cards, and role labels: the
         // V3-era chrome vocabulary must not exist inside the sheet (a decoy
         // elsewhere in FleetViews cannot satisfy a slice-scoped assertion).
@@ -2516,6 +2518,25 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(chrome),
                            "role/card chrome \(chrome) must not be wired in the recents sheet")
         }
+    }
+
+    func testRailSpineIsOneContinuousSpan() throws {
+        let source = try bundledSource()
+        let start = source.range(of: "\nprivate struct RecentRailSpine")
+        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let startIndex = try XCTUnwrap(start?.lowerBound,
+                                       "the continuous spine primitive must exist")
+        let endIndex = try XCTUnwrap(end?.lowerBound,
+                                     "the code line view declaration must exist")
+        let slice = String(source[startIndex..<endIndex])
+        XCTAssertTrue(slice.contains("Rectangle()"),
+                      "the spine must be a single drawn line, not per-row segments")
+        XCTAssertTrue(slice.contains(".frame(width: 1.5)"),
+                      "the spine must be one thin vertical line")
+        XCTAssertTrue(slice.contains("maxHeight: .infinity"),
+                      "the spine must span the whole rail stack continuously")
+        XCTAssertTrue(slice.contains("RecentOutputPalette.railLine"),
+                      "the spine must use the locked rail-line token")
     }
 
     func testRecentsRailRendererUsesTransitionMarkersOnly() throws {

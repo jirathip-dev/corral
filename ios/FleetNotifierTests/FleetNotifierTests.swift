@@ -505,6 +505,12 @@ final class DemoSeedTests: XCTestCase {
         XCTAssertFalse(blocks.isEmpty)
         XCTAssertFalse(DemoFleet.recentLines(from: blocks).isEmpty)
         XCTAssertTrue(blocks.contains { $0.kind == .user && $0.text.contains("verify the diff") })
+        // The fixture deliberately keeps a divider-only row so rail
+        // evidence proves #361 divider rows are dropped, not hidden.
+        XCTAssertTrue(blocks.contains { block in
+            RecentOutputRender.isDividerBlock(
+                TranscriptBlock(kind: block.kind, text: block.text))
+        }, "the recents fixture must keep its divider-only row for rail-drop evidence")
     }
 }
 
@@ -2330,6 +2336,141 @@ final class RecentOutputTailModelTests: XCTestCase {
     }
 }
 
+// MARK: - #361 continuous rail model
+
+/// Focused regressions for the #361 continuous rail. These bite: the row
+/// model must render ZERO divider-only rows, mark role ONLY as a shape at
+/// semantic transitions (never per row, never as role text), and keep the
+/// full stream in daemon chronological order. A change that re-introduces
+/// divider rows, per-row markers, or reordering fails here before any view
+/// code is involved.
+final class RecentRailModelTests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text)
+    }
+
+    private func pane(_ blocks: [TranscriptBlock]) -> TailPane {
+        var pane = TailPane()
+        pane.apply(blocks, lines: [])
+        return pane
+    }
+
+    func testRailRowsDropDividerOnlyRowsEntirely() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.user, "hi"),
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello"),
+            block(.tool, "──"),
+            block(.agent, "again")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.user, .agent, .agent])
+        XCTAssertEqual(rows.map(\.block.text), ["hi", "hello", "again"],
+                       "dropping a divider must never drop or reorder content")
+        XCTAssertTrue(rows.allSatisfy { !RecentOutputRender.isDividerBlock($0.block) },
+                      "the rail must render ZERO divider-only rows")
+        let plain = RecentOutputModel.tailRows(from: pane([
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello")
+        ]))
+        XCTAssertTrue(plain.allSatisfy { !RecentOutputRender.isDividerBlock($0) },
+                      "the tail row model itself must contain ZERO divider-only rows")
+    }
+
+    func testRailRowsDropLegacyDividerLines() {
+        var legacy = TailPane()
+        legacy.lines = ["raw one", "────────────────────────────────"]
+        let rows = RecentOutputModel.railRows(from: legacy)
+        XCTAssertEqual(rows.map(\.block.kind), [.unknown])
+        XCTAssertEqual(rows.map(\.block.text), ["raw one"],
+                       "a legacy divider line is raw furniture and must not render")
+    }
+
+    func testRailPreservesFullChronologicalOrder() {
+        let fixture = [
+            block(.agent, "first agent"),
+            block(.system, "────────────────────────────────"),
+            block(.user, "user input"),
+            block(.tool, "tool output"),
+            block(.agent, "second agent"),
+            block(.system, "diagnostic"),
+            block(.unknown, "raw pane line")
+        ]
+        let rows = RecentOutputModel.railRows(from: pane(fixture))
+        XCTAssertEqual(rows.map(\.block.text),
+                       ["first agent", "user input", "tool output",
+                        "second agent", "diagnostic", "raw pane line"],
+                       "the rail is ONE continuous stream in full chronological order")
+    }
+
+    func testTransitionMarkerOnlyAtRoleChanges() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a1"),
+            block(.agent, "a2"),
+            block(.user, "u1"),
+            block(.user, "u2"),
+            block(.tool, "t1"),
+            block(.agent, "a3")
+        ]))
+        XCTAssertEqual(rows.map(\.showsTransitionMarker),
+                       [true, false, true, false, true, true],
+                       "markers appear ONLY at semantic role transitions, never per row")
+    }
+
+    func testContinuationAfterDroppedDividerCarriesNoMarker() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a"),
+            block(.system, "──────"),
+            block(.agent, "b")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.agent, .agent])
+        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false],
+                       "the divider drops out of the sequence, so b continues the same role run")
+    }
+
+    func testDividerNeverRidesInsideMergedContentRow() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.system, "read_tail page truncated to the newest 200 lines."),
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.system, .agent])
+        XCTAssertEqual(rows[0].block.text,
+                       "read_tail page truncated to the newest 200 lines.",
+                       "a divider-only row must drop BEFORE merging so it never rides inside a content row")
+        XCTAssertFalse(rows[0].block.text.contains("─"),
+                       "no divider furniture may survive inside a merged content row")
+    }
+
+    func testSystemAndUnknownRowsNeverCarryMarkers() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a"),
+            block(.system, "diagnostic"),
+            block(.agent, "b"),
+            block(.unknown, "raw pane line"),
+            block(.agent, "c")
+        ]))
+        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false, true, false, true],
+                       "system/unknown rows are raw output, never role markers")
+    }
+
+    func testRoleMarkersAreLockedPerRole() {
+        XCTAssertEqual(RecentOutputModel.marker(for: .user), .diamond)
+        XCTAssertEqual(RecentOutputModel.marker(for: .agent), .circle)
+        XCTAssertEqual(RecentOutputModel.marker(for: .tool), .square)
+        XCTAssertNil(RecentOutputModel.marker(for: .system))
+        XCTAssertNil(RecentOutputModel.marker(for: .unknown))
+    }
+
+    func testRailRowIdentitiesNeverCollide() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "same"),
+            block(.agent, "same")
+        ]))
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertNotEqual(rows[0].id, rows[1].id)
+    }
+}
+
 // MARK: - Read-only surface wiring (FleetViews source bundle)
 
 /// Decoy-resistant source-wiring regression: the recents sheet must be fed
@@ -2356,14 +2497,67 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         guard let sheetStart = source.range(of: sheetMarker) else {
             return XCTFail("RecentOutputSheet declaration not found")
         }
-        let nextDecl = source.range(of: "\n// MARK: - Block renderer")
-            ?? source.range(of: "\nprivate struct RecentBlockRow")
-            ?? source.endIndex..<source.endIndex
-        let slice = String(source[sheetStart.lowerBound..<nextDecl.lowerBound])
+        let nextDecl = source.range(of: "\n// MARK: - Rail row renderer")
+            ?? source.range(of: "\nprivate struct RecentRailRowView")
+        let sliceEnd = try XCTUnwrap(nextDecl?.lowerBound,
+                                     "the recents rail renderer declaration must exist in the sheet source")
+        let slice = String(source[sheetStart.lowerBound..<sliceEnd])
         XCTAssertTrue(slice.contains("model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)"),
                       "the recents sheet must auto-refresh through the live read_tail drive")
         XCTAssertTrue(slice.contains("RecentOutputModel.phase(for: tail)"),
                       "the recents sheet must render the tail pane's four-state machine")
+        XCTAssertTrue(slice.contains("RecentOutputModel.railRows(from: tail)"),
+                      "the recents sheet must render the continuous rail row model")
+        XCTAssertTrue(slice.contains("RecentRailSpine()"),
+                      "the recents sheet must ride ONE continuous spine behind the rail rows (#361 R1)")
+        // The rail renders ZERO divider rules, cards, and role labels: the
+        // V3-era chrome vocabulary must not exist inside the sheet (a decoy
+        // elsewhere in FleetViews cannot satisfy a slice-scoped assertion).
+        for chrome in ["speakerRail", "roleLabel", "showSpeaker",
+                       "DisclosureGroup", "RecentBlockRow", "userTint"] {
+            XCTAssertFalse(slice.contains(chrome),
+                           "role/card chrome \(chrome) must not be wired in the recents sheet")
+        }
+    }
+
+    func testRailSpineIsOneContinuousSpan() throws {
+        let source = try bundledSource()
+        let start = source.range(of: "\nprivate struct RecentRailSpine")
+        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let startIndex = try XCTUnwrap(start?.lowerBound,
+                                       "the continuous spine primitive must exist")
+        let endIndex = try XCTUnwrap(end?.lowerBound,
+                                     "the code line view declaration must exist")
+        let slice = String(source[startIndex..<endIndex])
+        XCTAssertTrue(slice.contains("Rectangle()"),
+                      "the spine must be a single drawn line, not per-row segments")
+        XCTAssertTrue(slice.contains(".frame(width: 1.5)"),
+                      "the spine must be one thin vertical line")
+        XCTAssertTrue(slice.contains("maxHeight: .infinity"),
+                      "the spine must span the whole rail stack continuously")
+        XCTAssertTrue(slice.contains("RecentOutputPalette.railLine"),
+                      "the spine must use the locked rail-line token")
+    }
+
+    func testRecentsRailRendererUsesTransitionMarkersOnly() throws {
+        let source = try bundledSource()
+        let start = source.range(of: "\nprivate struct RecentRailRowView: View {")
+        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let startIndex = try XCTUnwrap(start?.lowerBound,
+                                       "the rail renderer declaration must exist")
+        let endIndex = try XCTUnwrap(end?.lowerBound,
+                                     "the code line view declaration must exist")
+        let slice = String(source[startIndex..<endIndex])
+        XCTAssertTrue(slice.contains("row.showsTransitionMarker"),
+                      "the rail renderer must gate its gutter marker on the model transition flag")
+        XCTAssertTrue(slice.contains("RecentOutputModel.marker(for: block.kind)"),
+                      "the rail renderer must draw the locked role marker")
+        // Zero role text / cards / per-row chrome inside the renderer.
+        for chrome in ["roleLabel", "speakerRail", "DisclosureGroup",
+                       "userTint", "toolSummary", "role text"] {
+            XCTAssertFalse(slice.contains(chrome),
+                           "chrome \(chrome) must not be in the rail renderer")
+        }
     }
 
     func testBoardProjectsThroughRepoSections() throws {
@@ -2383,7 +2577,8 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         for removed in ["AgentDiffSheet", "IssuesBrowserView", "DevicesGrantsView",
                         "AnswerPromptSheet", "TerminalAttachView", "PromptDrafts",
                         "RecentOutputSections", "filterChipRow", "FleetSearchable",
-                        "swipeActions", "CannedButtons", "ClaimCard"] {
+                        "swipeActions", "CannedButtons", "ClaimCard",
+                        "RecentBlockRow", "speakerRail", "roleLabel"] {
             XCTAssertFalse(source.contains(removed),
                            "removed surface \(removed) must not be wired in FleetViews")
         }

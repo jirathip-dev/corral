@@ -699,8 +699,9 @@ struct SettingsView: View {
 
 /// Read-only recents: LIVE TAIL ONLY. The sheet auto-loads the agent's
 /// bounded tail (≤200 lines, daemon cap), auto-refreshes while open, and
-/// auto-scrolls to the newest block. No load-earlier paging, no
-/// Conversation/Harness partition, no composer.
+/// auto-scrolls to the newest row. Renders ONE continuous chronological
+/// rail of raw output (#361): no load-earlier paging, no partition, no
+/// composer, and no divider/card/role-label chrome.
 struct RecentOutputSheet: View {
     let agentId: String
     @ObservedObject var model: AppModel
@@ -844,32 +845,32 @@ struct RecentOutputSheet: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// The live tail: one unpartitioned stream of canonical blocks,
-    /// auto-scrolled to the newest.
+    /// The live tail: ONE continuous chronological rail of the agent's raw
+    /// output (#361), auto-scrolled to the newest row. The row model
+    /// already dropped divider-only rows and only marks semantic role
+    /// transitions, so the stack renders plain rows — no divider rules, no
+    /// cards, no role text. A single continuous spine (RecentRailSpine)
+    /// runs behind ALL rows (#361 R1 / #271 V2): transition markers sit on
+    /// it and continuation rows ride it without a marker of their own.
     private var tailStream: some View {
-        let rows = RecentOutputModel.identifiedBlocks(
-            RecentOutputModel.tailRows(from: tail))
+        let rows = RecentOutputModel.railRows(from: tail)
         return ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(rows) { identified in
-                        if RecentOutputRender.isDividerBlock(identified.block) {
-                            // Residual TUI furniture renders as a rule.
-                            Divider()
-                                .overlay(RecentOutputPalette.line)
-                                .padding(.vertical, 2)
-                                .accessibilityHidden(true)
-                        } else {
-                            RecentBlockRow(block: identified.block,
-                                           showSpeaker: true,
-                                           showTimestamp: true)
-                        }
+                    ForEach(rows) { row in
+                        RecentRailRowView(row: row)
                     }
                     Color.clear
                         .frame(height: 1)
                         .id("recents-bottom")
                 }
-                .padding(.horizontal, 12)
+                .background(alignment: .topLeading) {
+                    // The one uninterrupted spine behind the row stack; the
+                    // 3.75 inset centers it under the 9pt gutter markers.
+                    RecentRailSpine()
+                        .padding(.leading, 3.75)
+                }
+                .padding(.horizontal, 14)
                 .padding(.vertical, 6)
             }
             .onAppear {
@@ -901,146 +902,96 @@ struct RecentOutputSheet: View {
     }
 }
 
-// MARK: - Block renderer (recents sheet rows)
+// MARK: - Rail row renderer (recents sheet rows)
 
-private struct RecentBlockRow: View {
-    let block: TranscriptBlock
-    let showSpeaker: Bool
-    let showTimestamp: Bool
-    @State private var expanded: Bool
+/// One recents rail row (#361): raw output text in a continuous,
+/// chrome-free stream — no divider rules, no cards, no role labels. A role
+/// transition marker (circle / diamond / square in the role's locked token
+/// color) appears in the left gutter ONLY on the first row of a role run;
+/// continuation rows carry no marker and no label. Attributed content stays
+/// attributable via the row's accessibility label.
+private struct RecentRailRowView: View {
+    let row: RecentOutputModel.RailRow
 
-    init(block: TranscriptBlock, showSpeaker: Bool, showTimestamp: Bool) {
-        self.block = block
-        self.showSpeaker = showSpeaker
-        self.showTimestamp = showTimestamp
-        _expanded = State(initialValue: block.kind == .tool
-                          && RecentOutputRender.isCodeOrDiff(block.text))
-    }
+    private var block: TranscriptBlock { row.block }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            speakerRail
-                .frame(width: 58, alignment: .topLeading)
-            Group {
-                if rendersHighlighted {
-                    highlightedMessage
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                } else {
-                    switch block.kind {
-                    case .user:
-                        userMessage
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                    case .agent:
-                        agentMessage
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
-                    case .tool, .system, .unknown:
-                        toolMessage
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(alignment: .top, spacing: 10) {
+            markerGutter
+            content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
     }
 
-    private var speakerRail: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Circle()
-                .fill(roleColor)
-                .frame(width: 7, height: 7)
-                .padding(.top, 5)
-            if showSpeaker {
-                Text(block.kind == .tool ? "▸" : roleLabel)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(roleColor)
-                    .lineLimit(1)
+    private var markerGutter: some View {
+        Group {
+            if row.showsTransitionMarker {
+                transitionMarker
+                    .frame(width: 9, height: 9)
+                    // Mask the continuous spine behind the hollow marker so
+                    // the rail appears to touch each node (#361 R1).
+                    .background(Circle().fill(RecentOutputPalette.bg))
+            } else {
+                Color.clear
             }
         }
+        .frame(width: 18, alignment: .topLeading)
+        .padding(.top, 4)
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var transitionMarker: some View {
+        // `railRows` only marks rows whose kind has a locked marker, so the
+        // nil arm is unreachable in practice.
+        switch RecentOutputModel.marker(for: block.kind) {
+        case .circle: Circle().stroke(roleColor, lineWidth: 1.5)
+        case .diamond: RecentDiamond().stroke(roleColor, lineWidth: 1.5)
+        case .square: Rectangle().stroke(roleColor, lineWidth: 1.5)
+        case nil: Color.clear
+        }
+    }
+
+    private var roleColor: Color {
+        switch block.kind {
+        case .user: return RecentOutputPalette.workingBlue
+        case .agent: return RecentOutputPalette.accent
+        case .tool: return RecentOutputPalette.toolGold
+        case .system, .unknown: return RecentOutputPalette.muted
+        }
+    }
+
+    /// The block's raw output. Code/diff lines keep their inline syntax
+    /// colors and numbered gutters; the card container is gone (#361).
+    private var content: some View {
+        Group {
+            if rendersHighlighted {
+                codeContent
+            } else {
+                proseContent
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
     }
 
     private var rendersHighlighted: Bool {
         RecentOutputRender.codeLines(for: block).contains { $0.isHighlighted }
     }
 
-    private var highlightedMessage: some View {
+    private var codeContent: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(RecentOutputRender.codeLines(for: block).enumerated()),
                     id: \.offset) { item in
                 RecentCodeLineView(line: item.element)
             }
         }
-        .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RecentOutputPalette.codeBg,
-                    in: RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(RecentOutputPalette.codeLine, lineWidth: 1))
-        .textSelection(.enabled)
     }
 
-    private var userMessage: some View {
-        HStack {
-            Spacer(minLength: 24)
-            messageLines
-                .padding(10)
-                .background(RecentOutputPalette.userTint,
-                            in: RoundedRectangle(cornerRadius: 10))
-                .textSelection(.enabled)
-        }
-    }
-
-    private var agentMessage: some View {
-        messageLines
-            .textSelection(.enabled)
-    }
-
-    private var toolMessage: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(RecentOutputRender.codeLines(for: block).enumerated()),
-                        id: \.offset) { item in
-                    RecentCodeLineView(line: item.element)
-                }
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecentOutputPalette.codeBg,
-                        in: RoundedRectangle(cornerRadius: 6))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(RecentOutputPalette.codeLine, lineWidth: 1))
-            .textSelection(.enabled)
-        } label: {
-            HStack(spacing: 6) {
-                Text(RecentOutputRender.toolSummary(block.text))
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(RecentOutputPalette.ink)
-                    .lineLimit(1)
-                Spacer()
-                if showTimestamp, let at = block.at {
-                    Text(RecentOutputRender.timestamp(at))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(RecentOutputPalette.muted)
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-        .padding(8)
-        .background(RecentOutputPalette.panel2,
-                    in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(RecentOutputPalette.line, lineWidth: 1))
-        .accessibilityLabel(RecentOutputRender.disclosureAccessibilityLabel(block))
-        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-        .accessibilityHint(RecentOutputRender.disclosureAccessibilityHint)
-    }
-
-    private var messageLines: some View {
+    private var proseContent: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(RecentOutputRender.messageLines(block.text).enumerated()),
                     id: \.offset) { item in
@@ -1052,25 +1003,34 @@ private struct RecentBlockRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var roleLabel: String {
-        switch block.kind {
-        case .user: return "you"
-        case .agent: return "assistant"
-        case .tool: return "tool"
-        case .system: return "diagnostic"
-        case .unknown: return "unknown activity"
-        }
+/// Diamond outline: the You transition marker (#361). Drawn as a path so
+/// the stroke stays uniform.
+private struct RecentDiamond: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
     }
+}
 
-    private var roleColor: Color {
-        switch block.kind {
-        case .user: return RecentOutputPalette.userBlue
-        case .agent: return RecentOutputPalette.ink
-        case .tool: return RecentOutputPalette.accent
-        case .system: return RecentOutputPalette.muted
-        case .unknown: return RecentOutputPalette.muted
-        }
+/// The rail's continuous vertical spine (#361 R1, #271 V2): ONE
+/// uninterrupted line behind every row of the recents sheet. Transition
+/// markers sit ON the spine; continuation rows ride it with no marker of
+/// their own. The max-height infinity span makes the rail continuous over
+/// the whole stack — never per-row segments. Width is fixed and leading,
+/// so the line stays in the gutter (no maxWidth expansion).
+private struct RecentRailSpine: View {
+    var body: some View {
+        Rectangle()
+            .fill(RecentOutputPalette.railLine)
+            .frame(width: 1.5)
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -1118,15 +1078,18 @@ private struct RecentCodeLineView: View {
 enum RecentOutputPalette {
     static let panelCornerRadius: CGFloat = 8
     static let bg = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
-    static let panel2 = Color(red: 22 / 255, green: 27 / 255, blue: 34 / 255)
-    static let line = Color(red: 48 / 255, green: 54 / 255, blue: 61 / 255)
     static let ink = Color(red: 230 / 255, green: 237 / 255, blue: 243 / 255)
     static let muted = Color(red: 139 / 255, green: 148 / 255, blue: 158 / 255)
     static let accent = Color(red: 45 / 255, green: 212 / 255, blue: 191 / 255)
-    static let userBlue = Color(red: 110 / 255, green: 168 / 255, blue: 255 / 255)
-    static let userTint = Color(red: 18 / 255, green: 38 / 255, blue: 63 / 255)
-    static let codeBg = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
-    static let codeLine = Color(red: 33 / 255, green: 38 / 255, blue: 45 / 255)
+    // #361 DESIGN LOCK role tokens (the #316 evidence palette): Assistant =
+    // accent, You = working blue, Tool = gold. Used ONLY by the transition
+    // markers — never repeated per row and never as role text.
+    static let workingBlue = Color(red: 88 / 255, green: 166 / 255, blue: 255 / 255)
+    static let toolGold = Color(red: 210 / 255, green: 153 / 255, blue: 34 / 255)
+    // #361 R1: the continuous spine line behind the rail rows — the #271 V2
+    // reference rail is a dark TEAL-tinted hairline, so this derives from
+    // the accent token at low opacity instead of a neutral gray.
+    static let railLine = RecentOutputPalette.accent.opacity(0.18)
     static let diffAdd = Color(red: 63 / 255, green: 185 / 255, blue: 80 / 255)
     static let diffDel = Color(red: 248 / 255, green: 81 / 255, blue: 73 / 255)
     static let string = Color(red: 165 / 255, green: 214 / 255, blue: 255 / 255)

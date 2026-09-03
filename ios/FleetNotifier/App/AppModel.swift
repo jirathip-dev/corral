@@ -422,7 +422,16 @@ final class AppModel: ObservableObject {
             banner = .error("bad_host", "Host must be an http(s) URL or host:port")
             return
         }
+        // #365: an ALREADY-paired device re-pointing at a DIFFERENT host
+        // must drop the current host's SSE stream before the new pairing —
+        // FleetStore.connect() is a no-op while a stream runs, so without
+        // this the registration would claim the new host while the board
+        // kept streaming the old one forever.
+        let switchingHost = hostURL.map { $0.absoluteString != url.absoluteString } ?? false
         cancelLifecycleTasks()
+        if switchingHost {
+            stopLive()
+        }
         let baseContext = lifecycleContext()
         identityLifecycle.setCurrent(mode: .registering,
                                      hostURL: baseContext.hostURL,
@@ -497,6 +506,14 @@ final class AppModel: ObservableObject {
                         hostURL: baseContext.hostURL, keyId: baseContext.keyId,
                         signerPublicKeyB64: baseContext.signerPublicKeyB64)
                     self.banner = .error("register_failed", error.localizedDescription)
+                    // #365: a FAILED host switch must not leave a paired
+                    // board dead — mode and hostURL are still the
+                    // pre-registration values here, so restarting the OLD
+                    // host's stream (dropped above when the hosts differed)
+                    // keeps the last-known board live behind the banner.
+                    if baseContext.mode == .live {
+                        self.startLive()
+                    }
                 }
             }
             lifecycleTasks[taskId] = task
@@ -509,6 +526,11 @@ final class AppModel: ObservableObject {
                                          keyId: baseContext.keyId,
                                          signerPublicKeyB64: baseContext.signerPublicKeyB64)
             banner = .error("register_failed", error.localizedDescription)
+            // #365: same failure-restart contract as the request catch above
+            // (this path covers identity-loader failures).
+            if baseContext.mode == .live {
+                startLive()
+            }
         }
     }
 

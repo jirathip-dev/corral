@@ -16,6 +16,7 @@ struct FleetNotifierApp: App {
                         model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
                     } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -51,10 +52,13 @@ struct FleetNotifierApp: App {
 /// `-corralDemoUXEvidence` / `-corralDemoFilterEvidence` seed the plain
 /// demo fleet and drive the #364 recorded evidence sequences (markers in
 /// Documents/ux-evidence that the host screenshot script observes).
+/// `-corralDemoSettingsEvidence` (#365) drives the board + Settings-sheet
+/// sequence behind the always-visible gear.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
     static let filterEvidenceArgument = "-corralDemoFilterEvidence"
+    static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -70,6 +74,10 @@ enum CorralDemoLaunch {
 
     static func wantsFilterEvidence(arguments: [String]) -> Bool {
         arguments.contains(filterEvidenceArgument)
+    }
+
+    static func wantsSettingsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(settingsEvidenceArgument)
     }
 }
 #endif

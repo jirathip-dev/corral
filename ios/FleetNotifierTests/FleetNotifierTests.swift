@@ -2986,3 +2986,403 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         }
     }
 }
+
+// MARK: - #365 Settings gear (source wiring: always-visible top-bar control)
+
+/// #365: Settings must be an ALWAYS-VISIBLE top-bar gear Button (plain
+/// Button, system gear shape, >=44 pt, VoiceOver label) that opens the
+/// Settings sheet with the connection pairing surface — NOT a second-class
+/// entry hidden inside the DEBUG demo overflow menu. Pins the bundled
+/// FleetViews.swift.txt exactly like the #316/#364 wiring tests; a gear
+/// moved back into the menu, made DEBUG-only, or losing its label/target
+/// size goes RED here.
+final class SettingsAccessWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsAccessWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every line whose `#if DEBUG` nesting makes
+    /// it DEBUG-active. FleetViews uses flat, non-nested `#if DEBUG` /
+    /// `#endif` pairs (no `#else`), so a depth scan is exact.
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false)
+            .enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    func testSettingsGearIsAReleaseActiveTopBarButton() throws {
+        let source = try bundledSource()
+        let debug = debugActiveLines(source)
+
+        // The gear is a plain Button whose DIRECT action opens the sheet.
+        // (The DEBUG-only settings evidence driver may open the same sheet —
+        // release-active occurrences are what the board depends on.)
+        let allActionLines = lineNumbers(of: "showSettings = true", in: source)
+        let releaseActionLines = allActionLines.filter { !debug.contains($0) }
+        XCTAssertEqual(releaseActionLines.count, 1,
+                       "exactly one RELEASE-active settings-open action must exist")
+        let gearLines = lineNumbers(of: "gearshape", in: source)
+        XCTAssertEqual(gearLines.count, 1,
+                       "the board must have exactly one system gear shape")
+        XCTAssertGreaterThan(gearLines[0], releaseActionLines[0],
+                             "the gear must sit in the Button LABEL after its action "
+                             + "(a 'Button(\"Settings\", systemImage: \"gearshape\") { showSettings = true }' "
+                             + "menu-item spelling is the removed surface)")
+
+        // >=44 pt target + VoiceOver label on the gear.
+        XCTAssertEqual(lineNumbers(of: ".accessibilityLabel(\"Settings\")",
+                                   in: source).count, 1,
+                       "the gear must carry a VoiceOver label")
+        XCTAssertEqual(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)",
+                                   in: source).count, 1,
+                       "the gear must keep a >=44 pt hit target")
+
+        // RELEASE-active: a DEBUG-gated gear would leave Release builds with
+        // NO Settings access at all, so every gear line must sit OUTSIDE the
+        // debug-active regions.
+        for needle in ["gearshape",
+                       ".accessibilityLabel(\"Settings\")",
+                       ".frame(minWidth: 44, minHeight: 44)"] {
+            let lines = lineNumbers(of: needle, in: source)
+            XCTAssertEqual(lines.count, 1, "\(needle) must appear exactly once")
+            guard lines.count == 1 else { continue }
+            XCTAssertFalse(debug.contains(lines[0]),
+                           "\(needle) must be release-active (gear on the board in Release)")
+        }
+        // The sheet-open action: one release-active (the gear) + one
+        // DEBUG-active (the #365 evidence driver); both required, neither
+        // release-gated.
+        XCTAssertEqual(releaseActionLines.count, 1,
+                       "the gear must be the ONLY release-active settings opener")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 1,
+                       "the DEBUG settings evidence driver must be the only debug-gated opener")
+    }
+
+    func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
+        let source = try bundledSource()
+        let debug = debugActiveLines(source)
+
+        let toolbarStart = try XCTUnwrap(source.range(of: ".toolbar {"),
+                                         "the board toolbar must exist")
+        let sheetMarker = try XCTUnwrap(source.range(of: ".sheet(isPresented: $showSettings)"),
+                                        "the settings sheet must be bound right after the toolbar")
+        let toolbarSlice = String(source[toolbarStart.lowerBound..<sheetMarker.lowerBound])
+
+        // Exactly ONE Menu in the board toolbar: the DEBUG demo overflow.
+        XCTAssertEqual(toolbarSlice.components(separatedBy: "Menu {").count - 1, 1,
+                       "the board toolbar must keep exactly one Menu (demo overflow only)")
+        guard let menuStart = toolbarSlice.range(of: "Menu {"),
+              let menuClose = toolbarSlice.range(of: "} label:") else {
+            return XCTFail("the demo Menu must have a label")
+        }
+        let menuSlice = String(toolbarSlice[menuStart.lowerBound..<menuClose.lowerBound])
+        XCTAssertFalse(menuSlice.contains("showSettings"),
+                       "Settings must NOT hide inside the demo overflow menu (#365)")
+        XCTAssertTrue(menuSlice.contains("sparkles"),
+                      "the overflow menu's remaining entry is the DEBUG demo toggle")
+        XCTAssertTrue(menuSlice.contains("enterDemo") || menuSlice.contains("exitDemo"),
+                      "the overflow menu must carry the demo toggle")
+
+        // The overflow chrome + demo strings are DEBUG-only; the gear beside
+        // them is release-active (asserted in the sibling test).
+        let sliderLines = lineNumbers(of: "slider.horizontal.3", in: source)
+        XCTAssertEqual(sliderLines.count, 1,
+                       "the slider overflow icon must appear exactly once")
+        XCTAssertTrue(debug.contains(sliderLines[0]),
+                      "the overflow menu (slider icon) must be DEBUG-gated")
+        for demoNeedle in ["Demo mode", "Exit demo"] {
+            for line in lineNumbers(of: demoNeedle, in: source) {
+                XCTAssertTrue(debug.contains(line),
+                              "\(demoNeedle) must stay inside #if DEBUG")
+            }
+        }
+    }
+
+    func testBoardRendersInsideANavigationStackShell() throws {
+        let source = try bundledSource()
+        // #365: .toolbar only renders inside a navigation shell. The #354
+        // cut deleted the board's NavigationStack, orphaning
+        // .navigationTitle/.toolbar — the top bar (and with it Settings)
+        // never appeared on the board. FleetView must own a stack again.
+        let boardMarker = "\nstruct FleetView: View {"
+        let boardStart = try XCTUnwrap(source.range(of: boardMarker),
+                                       "FleetView declaration must exist")
+        let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                     "the banner section must follow FleetView")
+        let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
+        XCTAssertEqual(slice.components(separatedBy: "NavigationStack {").count - 1, 1,
+                       "FleetView must wrap its board in exactly one NavigationStack")
+
+        let stackLine = try XCTUnwrap(lineNumbers(of: "NavigationStack {", in: slice).first)
+        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"Fleet\")", in: slice).first)
+        let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
+        let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
+        XCTAssertLessThan(stackLine, titleLine,
+                          "the stack must open before the navigation chrome")
+        XCTAssertLessThan(titleLine, toolbarLine,
+                          "the toolbar must be configured inside the stack")
+        XCTAssertLessThan(toolbarLine, sheetLine,
+                          "the settings sheet binding must follow the toolbar")
+    }
+
+    func testSettingsSheetExposesConnectionPairingAndNotifications() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
+                                     "a section mark must follow SettingsView")
+        let slice = String(source[start.lowerBound..<nextMark.lowerBound])
+
+        // Connection pairing surface: host field + registration token +
+        // register action with the same enable rules as the connect section.
+        XCTAssertTrue(slice.contains("TextField(\"Host (Tailscale host or loopback)\""),
+                      "the Settings sheet must expose the connection host field (#365)")
+        XCTAssertTrue(slice.contains("SecureField(\"Registration token\""),
+                      "the Settings sheet must expose device pairing")
+        XCTAssertTrue(slice.contains("await model.register(host: host, token: token)"),
+                      "the Settings register action must route through the real registration flow")
+        XCTAssertTrue(slice.contains("host.isEmpty || token.isEmpty || registering"),
+                      "the Settings register action must disable on empty host/token")
+        XCTAssertTrue(slice.contains("model.hostURL?.absoluteString"),
+                      "the host field must pre-fill from the ACTIVE host on a paired device")
+        // Notifications pairing + reset (retained #354 surfaces).
+        XCTAssertTrue(slice.contains("Toggle(\"State-change notifications\""))
+        XCTAssertTrue(slice.contains("model.setNotificationsEnabled("))
+        XCTAssertTrue(slice.contains("Button(\"Reset device identity\""))
+        XCTAssertTrue(slice.contains("model.resetDevice()"))
+        // The sheet is a plain form — no overflow-menu / demo chrome inside.
+        XCTAssertEqual(slice.components(separatedBy: "NavigationStack {").count - 1, 1,
+                       "the sheet must own exactly one navigation shell")
+        for hidden in ["enterDemo", "exitDemo", "Demo mode", "Try demo fleet",
+                       "slider.horizontal.3", "Menu {"] {
+            XCTAssertFalse(slice.contains(hidden),
+                           "\(hidden) must not be wired into the Settings sheet")
+        }
+    }
+}
+
+// MARK: - #365 Settings host switch (register-while-live stream semantics)
+
+/// URL-keyed protocol for the #365 host-switch regressions. `/events`
+/// streams are served and then held OPEN (a live SSE connection); ordinary
+/// endpoints (e.g. `/register`) finish after their body. Every request URL
+/// is recorded so tests can prove which host the stream connected to.
+private final class HostSwitchURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var scriptStorage: [URL: (statusCode: Int, body: Data, holdOpen: Bool)] = [:]
+    private static var requestsStorage: [URLRequest] = []
+
+    static func setScript(_ script: [URL: (statusCode: Int, body: Data, holdOpen: Bool)]) {
+        lock.lock()
+        scriptStorage = script
+        requestsStorage = []
+        lock.unlock()
+    }
+
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestsStorage
+    }
+
+    static func clearScript() {
+        setScript([:])
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requestsStorage.append(request)
+        // SAFETY: URLProtocol requests always carry a URL.
+        let scripted = Self.scriptStorage[request.url!]
+        Self.lock.unlock()
+        guard let (statusCode, body, holdOpen) = scripted else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        // SAFETY: fixed valid HTTP response construction from a scripted URL.
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: statusCode, httpVersion: "HTTP/1.1",
+            headerFields: holdOpen
+                ? ["Content-Type": "text/event-stream"]
+                : ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !body.isEmpty {
+            client?.urlProtocol(self, didLoad: body)
+        }
+        if !holdOpen {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        // holdOpen: keep the connection alive like a real SSE stream — the
+        // stream task must be torn down by disconnect(), not by EOF.
+    }
+
+    override func stopLoading() {}
+}
+
+/// #365 host change: registration is the pairing path for re-pointing an
+/// already-paired device at a DIFFERENT host. `register()` must drop the
+/// current host's live SSE stream before the new pairing (FleetStore.connect
+/// no-ops while a stream runs — otherwise the board keeps streaming the OLD
+/// host forever) and must restart the old host's stream when the switch
+/// FAILS (otherwise the paired board dies behind the error banner).
+@MainActor
+final class SettingsHostSwitchTests: XCTestCase {
+
+    private var session: URLSession?
+    private var suiteName = ""
+    private var model: AppModel?
+
+    // SAFETY: fixed valid URL literals.
+    private let hostA = URL(string: "http://host-a")!
+    private let hostB = URL(string: "http://host-b")!
+    private let eventsA = URL(string: "http://host-a/events")!
+    private let eventsB = URL(string: "http://host-b/events")!
+    private let registerB = URL(string: "http://host-b/register")!
+
+    private func makeLiveFixture() -> AppModel {
+        suiteName = "corral.hostswitch.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let model = AppModel(session: session!,
+                             identityLifecycle: IdentityLifecycle(),
+                             defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {})
+        model.mode = .live
+        model.hostURL = hostA
+        return model
+    }
+
+    private func scriptedSession(script: [URL: (Int, Data, Bool)]) -> URLSession {
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func waitForRequest(to url: URL, atLeast count: Int = 1,
+                                within timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while HostSwitchURLProtocol.requests
+            .filter({ $0.url?.absoluteString == url.absoluteString }).count < count,
+              Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(
+            HostSwitchURLProtocol.requests
+                .filter({ $0.url?.absoluteString == url.absoluteString }).count,
+            count,
+            "expected >= \(count) request(s) to \(url.absoluteString) within \(timeout)s")
+    }
+
+    private func requestCount(to url: URL) -> Int {
+        HostSwitchURLProtocol.requests
+            .filter { $0.url?.absoluteString == url.absoluteString }.count
+    }
+
+    override func tearDown() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test above.
+            UserDefaults(suiteName: suiteName)!
+                .removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+        super.tearDown()
+    }
+
+    /// #365 AC3 the reconnect half: registering a DIFFERENT host while a
+    /// live stream runs must end the OLD host stream and start the NEW
+    /// host's stream. RED on the unfixed code: `register()` never drops the
+    /// old stream, FleetStore.connect() no-ops on its live streamTask, and
+    /// no /events request to the new host ever appears.
+    func testRegisteringADifferentHostWhileLiveReconnectsTheStreamToIt() async throws {
+        let session = scriptedSession(script: [
+            eventsA: (200, Data(), true),
+            eventsB: (200, Data(), true),
+            registerB: (200, Data(#"{"key_id":"dev_switched","grants":[],"expiry_ts":1800000000,"revoked":false}"#.utf8), false),
+        ])
+        self.session = session
+        let model = makeLiveFixture()
+        self.model = model
+
+        // A REAL running SSE task against the CURRENT host (FleetStore
+        // connect() is a no-op while one is alive).
+        model.fleet.connect(client: CorraldClient(host: hostA, session: session))
+        await waitForRequest(to: eventsA)
+
+        await model.register(host: "http://host-b", token: "pair-token")
+
+        XCTAssertEqual(model.hostURL?.absoluteString, "http://host-b",
+                       "the model must point at the newly registered host")
+        XCTAssertEqual(model.mode, .live)
+        await waitForRequest(to: registerB)
+        // The discriminator: the NEW host's SSE stream must start (only
+        // possible if the old stream was dropped first).
+        await waitForRequest(to: eventsB)
+        XCTAssertEqual(requestCount(to: eventsA), 1,
+                       "the OLD host stream must be disconnected exactly once, never re-requested")
+    }
+
+    /// #365 failure half: a host switch that FAILS (bad token / unreachable
+    /// host) must keep the paired board on the OLD host — the dropped old
+    /// stream is restarted behind the register_failed banner. RED on the
+    /// unfixed code: the old stream is never restarted, so the board dies
+    /// with no live connection and no way to recover.
+    func testFailedHostSwitchRestartsTheOldHostStream() async throws {
+        let session = scriptedSession(script: [
+            eventsA: (200, Data(), true),
+            registerB: (500, Data(#"{"kind":"register_failed","message":"token rejected"}"#.utf8), false),
+        ])
+        self.session = session
+        let model = makeLiveFixture()
+        self.model = model
+
+        model.fleet.connect(client: CorraldClient(host: hostA, session: session))
+        await waitForRequest(to: eventsA)
+
+        await model.register(host: "http://host-b", token: "wrong-token")
+
+        XCTAssertEqual(model.mode, .live,
+                       "a failed switch must not change the mode")
+        XCTAssertEqual(model.hostURL?.absoluteString, "http://host-a",
+                       "a failed switch must keep the OLD host")
+        XCTAssertEqual(model.banner?.kind, "register_failed",
+                       "the failure must surface in the board banner")
+        // The dropped old-host stream must be RESTARTED (a second /events
+        // request to the old host), or the paired board stays dead.
+        await waitForRequest(to: eventsA, atLeast: 2)
+    }
+}

@@ -137,7 +137,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # backgrounds), and tint/color-scheme moved into FleetView + the
     # presented sheets so a live flavor flip re-traits the sheet chrome;
     # digest re-pinned.
-    "417123f3b84363ffcf582ebbd277ef01179c20c1bb9e039f73496b6ad3f6c7f4"
+    # 2026-09-03 (#372 R1): state colors collapsed into ONE shared mapping
+    # (ThemeStore.stateToken(for:)) consumed by BOTH stateColor(for:) and
+    # stateHex(for:) — no parallel switch; digest re-pinned.
+    "e1e0eba879509e9b215f9445937bfb3476c59a5ca88cc2fbf257b84c134689e6"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release

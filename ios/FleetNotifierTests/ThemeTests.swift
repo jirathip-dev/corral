@@ -91,9 +91,13 @@ final class ThemePaletteTests: XCTestCase {
 
     func testAccentIsMauvePerFlavorAndNeverTeal() {
         for flavor in CatppuccinFlavor.allCases {
-            let palette = CatppuccinPalette.palette(for: flavor)
-            XCTAssertEqual(palette.hex(.mauve), palette.hex(.mauve))
-            XCTAssertNotEqual(palette.hex(.mauve), palette.hex(.teal),
+            // SAFETY: a fresh UUID-based suite name is always a valid suite.
+            let store = ThemeStore(defaults: UserDefaults(suiteName: "accent-\(flavor.rawValue)-\(UUID().uuidString)")!,
+                                   reduceMotionProvider: { false })
+            store.setFlavor(flavor)
+            XCTAssertEqual(store.accent.hexDescription, store.palette.hex(.mauve),
+                           "the UI accent must be the flavor's mauve token")
+            XCTAssertNotEqual(store.accent.hexDescription, store.palette.hex(.teal),
                               "the UI accent (mauve) must never be teal (teal = working state only)")
         }
     }

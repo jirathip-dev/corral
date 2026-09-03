@@ -8,10 +8,13 @@ import XCTest
 /// iOS client (the whole app now renders the ACTIVE flavor's palette; the
 /// egui mirror and the shared contract file are a later follow-up and were
 /// deliberately NOT touched by this lane). The per-flavor state→color
-/// mapping is locked in `ThemeStore.stateColor(for:)`/`stateHex(for:)` and
-/// pinned here against the approved palette hexes — every flavor, every
-/// state. Marks and ranks still mirror the shared contract (they drive the
-/// glyphs and the board ordering in both clients).
+/// mapping is LOCKED as ONE shared mapping inside `ThemeStore`
+/// (`stateToken(for:)`); both accessors — the production `stateColor(for:)`
+/// the views consume and the hex view `stateHex(for:)` — resolve through
+/// it, and this suite pins the mapping against the approved palette hexes
+/// THROUGH `stateColor(for:)` — every flavor, every state. Marks and ranks
+/// still mirror the shared contract (they drive the glyphs and the board
+/// ordering in both clients).
 private struct StateToken: Codable, Equatable {
     let state: String
     let rank: Int
@@ -70,10 +73,13 @@ final class StateStyleTests: XCTestCase {
         }
     }
 
-    /// #372: every state maps to the LOCKED palette token per flavor, with
-    /// the approved hex values (a state color that drifts back toward the
-    /// old light/dark contract hexes, or a palette swap that forgets a
-    /// flavor, goes RED here).
+    /// #372: every state resolves to the LOCKED palette token per flavor
+    /// with the approved hex values, pinned THROUGH THE PRODUCTION
+    /// ACCESSOR the views consume — `ThemeStore.stateColor(for:)` — not a
+    /// test-only hex helper (a `working→red` drift in the shared mapping
+    /// goes RED here; both accessors resolve through the ONE mapping,
+    /// `stateToken(for:)`). A palette swap that forgets a flavor also goes
+    /// RED.
     @MainActor
     func testStateColorsResolveThroughTheLockedPerFlavorMapping() {
         for flavor in CatppuccinFlavor.allCases {
@@ -82,9 +88,15 @@ final class StateStyleTests: XCTestCase {
                                    reduceMotionProvider: { false })
             theme.setFlavor(flavor)
             for state in AgentState.allCases {
+                let lockedHex = lockedStateTokenHex[flavor]?[state]
+                XCTAssertEqual(
+                    theme.stateColor(for: state).hexDescription,
+                    lockedHex,
+                    "state \(state) color drifted under \(flavor.rawValue) "
+                    + "(the accessor every view renders through)")
                 XCTAssertEqual(
                     theme.stateHex(for: state),
-                    lockedStateTokenHex[flavor]?[state],
+                    lockedHex,
                     "state \(state) hex drifted under \(flavor.rawValue)")
             }
         }

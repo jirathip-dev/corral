@@ -358,26 +358,32 @@ extension ThemeStore {
         palette.color(token)
     }
 
-    /// The state colors (locked mapping per palette): working=teal,
-    /// blocked=red, done=green, idle=subtext0, unknown=surface2.
-    func stateColor(for state: AgentState) -> Color {
+    /// The LOCKED state→palette-token mapping: working=teal, blocked=red,
+    /// done=green, idle=subtext0, unknown=surface2 (issue spec + the
+    /// approved design round). ONE shared mapping: both the `Color` the
+    /// views consume (`stateColor(for:)`) and the hex accessor
+    /// (`stateHex(for:)`) resolve through it, so the contract cannot
+    /// regress through a parallel hand-written switch.
+    private static func stateToken(for state: AgentState) -> CatppuccinToken {
         switch state {
-        case .blocked: return red
-        case .working: return teal
-        case .done: return green
-        case .idle: return subtext0
-        case .unknown: return surface2
+        case .blocked: return .red
+        case .working: return .teal
+        case .done: return .green
+        case .idle: return .subtext0
+        case .unknown: return .surface2
         }
     }
 
+    /// The state color the whole UI consumes (row dots, badges, sheet
+    /// headers) — resolved from the single shared state mapping.
+    func stateColor(for state: AgentState) -> Color {
+        color(Self.stateToken(for: state))
+    }
+
+    /// The hex view of the same shared mapping (used by tests and any
+    /// hex-literal consumer — never a parallel switch).
     func stateHex(for state: AgentState) -> String {
-        switch state {
-        case .blocked: return palette.hex(.red)
-        case .working: return palette.hex(.teal)
-        case .done: return palette.hex(.green)
-        case .idle: return palette.hex(.subtext0)
-        case .unknown: return palette.hex(.surface2)
-        }
+        palette.hex(Self.stateToken(for: state))
     }
 
     /// The accent-ring hue for one repo (`Other`/no-repo = surface2 gray).

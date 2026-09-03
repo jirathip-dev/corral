@@ -120,7 +120,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # + haptics seam, repo filter chip projections (BoardModel), and the
     # model-owned recents-request lifecycle (AppModel/FleetViews) updated
     # the Release sources; digest re-pinned to the #364 head source set.
-    "dd0c1cbaf36e501283b19a89d9ddf496cda508ac1494591aaf32de26f3b9172f"
+    # 2026-09-03 (#365): board chrome restored — NavigationStack shell back
+    # around the board (the #354 cut had orphaned .toolbar), always-visible
+    # Settings gear Button (demo moved to a DEBUG-only overflow menu), and
+    # the Settings Connection section (host + pairing) updated FleetViews;
+    # AppModel register() gained the host-switch stream semantics; digest
+    # re-pinned to the #365 head source set.
+    "a88f05b806e49132b7d869687b3ee03fd3d5cb2dc7488ff83164f525b5ebd982"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -142,7 +148,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsSheetLifecycleTests added (chip filter/counts, sheet-reopen
     # first-tap lifecycle, haptics wiring) and the source-wiring tests
     # updated to the model-owned recents request — re-pinned.
-    "0326ce10d7029de89c11d7f7d511dc3d87a72ce151f41a1e5c924d000f90aa02"
+    # 2026-09-03 (#365): SettingsAccessWiringTests (gear release-active
+    # top-bar Button, demo overflow menu DEBUG-only, NavigationStack shell,
+    # Settings Connection surface) and SettingsHostSwitchTests (register
+    # while live: host switch drops/restarts the SSE stream) added —
+    # re-pinned.
+    "b0cbecf3143f23709c978b36fff31fd1c076bd90649d5ba10c907efe8a5dcb25"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -383,100 +383,118 @@ struct FleetView: View {
         // bucket; sections keep their locked order over the filtered set.
         let sections = BoardModel.sections(
             BoardModel.agents(agents, in: activeRepoFilter))
-        return List {
-            // Issue #219: the board chrome is the FIRST section of the same
-            // physical scroll surface (a pinned header) instead of a
-            // `.safeAreaInset` outside the list. During the pull gesture
-            // the chrome, section headers, and rows translate as one unit.
-            if model.mode != .needsSetup {
-                Section {
-                    if model.fleet.agents.isEmpty {
-                        Color.clear
-                            .frame(height: 0)
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                    }
-                } header: {
-                    PinnedHeader(fillsInteractiveWidth: true) {
-                        boardChrome
-                    }
-                }
-                repoChipsRow(chips: chips,
-                             total: agents.count,
-                             selection: activeRepoFilter)
-            }
-            if let banner = model.banner {
-                BannerView(banner: banner) {
-                    model.banner = nil
-                }
-            }
-            switch model.mode {
-            case .needsSetup:
-                RegistrationView(model: model)
-#if DEBUG
-            case .demo:
-                boardSections(sections: sections)
-#endif
-            case .live:
-                boardSections(sections: sections)
-            }
-        }
-        .listStyle(.plain)
-        .listSectionSpacing(.compact)
-        // Issue #219: native pull-to-refresh on the one physical scroll
-        // surface. `refreshFleet` is coalesced and never touches the SSE
-        // stream task.
-        .refreshable {
-            await model.refreshFleet()
-        }
-        .navigationTitle("Fleet")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-#if DEBUG
-                    Button(model.mode == .demo ? "Exit demo" : "Demo mode",
-                           systemImage: "sparkles") {
-                        if model.mode == .demo {
-                            model.exitDemo()
-                        } else {
-                            model.enterDemo()
+        // #365: the top-bar chrome (.navigationTitle/.toolbar — the Settings
+        // gear) renders only inside a navigation shell. The #354 cut deleted
+        // the board's NavigationStack, orphaning those modifiers and leaving
+        // the board with NO visible way into Settings; restore the shell.
+        return NavigationStack {
+            List {
+                // Issue #219: the board chrome is the FIRST section of the same
+                // physical scroll surface (a pinned header) instead of a
+                // `.safeAreaInset` outside the list. During the pull gesture
+                // the chrome, section headers, and rows translate as one unit.
+                if model.mode != .needsSetup {
+                    Section {
+                        if model.fleet.agents.isEmpty {
+                            Color.clear
+                                .frame(height: 0)
+                                .listRowInsets(EdgeInsets())
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                        }
+                    } header: {
+                        PinnedHeader(fillsInteractiveWidth: true) {
+                            boardChrome
                         }
                     }
-#endif
-                    Button("Settings", systemImage: "gearshape") {
-                        showSettings = true
+                    repoChipsRow(chips: chips,
+                                 total: agents.count,
+                                 selection: activeRepoFilter)
+                }
+                if let banner = model.banner {
+                    BannerView(banner: banner) {
+                        model.banner = nil
                     }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
+                }
+                switch model.mode {
+                case .needsSetup:
+                    RegistrationView(model: model)
+#if DEBUG
+                case .demo:
+                    boardSections(sections: sections)
+#endif
+                case .live:
+                    boardSections(sections: sections)
                 }
             }
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(model: model)
-        }
-        // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
-        // request — row taps, notification deep links, and the demo route
-        // all funnel through `model.requestRecents`. Every request is a
-        // fresh value, and the dismissal reconciler (`onDismiss`) clears
-        // or re-arms it, so a first tap after ANY dismissal re-presents
-        // (the old view-latched target + equality-guarded onChange
-        // swallowed it).
-        .sheet(item: $model.recentsRequest,
-               onDismiss: { model.recentsSheetDismissed() }) { request in
-            RecentOutputSheet(agentId: request.agentId, model: model)
-        }
+            .listStyle(.plain)
+            .listSectionSpacing(.compact)
+            // Issue #219: native pull-to-refresh on the one physical scroll
+            // surface. `refreshFleet` is coalesced and never touches the SSE
+            // stream task.
+            .refreshable {
+                await model.refreshFleet()
+            }
+            .navigationTitle("Fleet")
+            // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
+            // gear Button (system gear shape, >=44 pt target, VoiceOver
+            // label) opening the Settings sheet. The DEBUG demo toggle is
+            // NOT on the main path: it lives in a secondary overflow menu
+            // that exists only in Debug builds (Release shows the gear
+            // alone).
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
 #if DEBUG
-        .onChange(of: model.mode) { _, _ in
-            applyDemoRouteIfNeeded()
-        }
-        .task {
-            applyDemoRouteIfNeeded()
-        }
-        .task(id: model.mode) {
-            await runDemoEvidenceIfNeeded()
-        }
+                    Menu {
+                        Button(model.mode == .demo ? "Exit demo" : "Demo mode",
+                               systemImage: "sparkles") {
+                            if model.mode == .demo {
+                                model.exitDemo()
+                            } else {
+                                model.enterDemo()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("Developer menu")
 #endif
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                    .accessibilityHint("Opens connection and notification settings")
+                    .frame(minWidth: 44, minHeight: 44)
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(model: model)
+            }
+            // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
+            // request — row taps, notification deep links, and the demo route
+            // all funnel through `model.requestRecents`. Every request is a
+            // fresh value, and the dismissal reconciler (`onDismiss`) clears
+            // or re-arms it, so a first tap after ANY dismissal re-presents
+            // (the old view-latched target + equality-guarded onChange
+            // swallowed it).
+            .sheet(item: $model.recentsRequest,
+                   onDismiss: { model.recentsSheetDismissed() }) { request in
+                RecentOutputSheet(agentId: request.agentId, model: model)
+            }
+#if DEBUG
+            .onChange(of: model.mode) { _, _ in
+                applyDemoRouteIfNeeded()
+            }
+            .task {
+                applyDemoRouteIfNeeded()
+            }
+            .task(id: model.mode) {
+                await runDemoEvidenceIfNeeded()
+            }
+#endif
+        }
     }
 
     /// #364 B: the horizontal repo filter chip row ('All' + one chip per
@@ -677,6 +695,8 @@ struct FleetView: View {
             await runReopenSequence()
         } else if CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments) {
             await runFilterSequence()
+        } else if CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments) {
+            await runSettingsSequence()
         }
     }
 
@@ -738,6 +758,24 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-3-back-to-all")
         try? await Task.sleep(for: .milliseconds(1500))
         EvidenceMarkers.write("phase-4-done")
+    }
+
+    /// #365 evidence: the board with the always-visible Settings gear, then
+    /// the Settings sheet open showing the connection host field. The
+    /// driver flips the same `showSettings` state the gear's Button sets —
+    /// simctl cannot inject the tap, so this is the synthetic stand-in.
+    private func runSettingsSequence() async {
+        guard model.mode == .demo else { return }
+        EvidenceMarkers.write("phase-1-board")
+        try? await Task.sleep(for: .milliseconds(1500))
+        showSettings = true
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-2-settings-host-field")
+        try? await Task.sleep(for: .milliseconds(1500))
+        showSettings = false
+        try? await Task.sleep(for: .milliseconds(800))
+        EvidenceMarkers.write("phase-3-done")
+        try? await Task.sleep(for: .milliseconds(1500))
     }
 #endif
 }
@@ -847,21 +885,65 @@ struct RegistrationView: View {
 
 // MARK: - Settings (connection + notification pairing)
 
+/// #365: the surface behind the board's always-visible gear. The first
+/// section is the CONNECTION pairing — host field + registration token —
+/// which serves BOTH a fresh board (pair through Settings) and an
+/// already-paired device re-pointing at a different host. Below it sit the
+/// retained #354 read-out (device identity), the global notification
+/// pairing toggle, and the destructive device reset.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
+    @State private var host: String
+    @State private var token = ""
+    @State private var registering = false
+
+    /// #365: the host field opens pre-filled with the ACTIVE host so a
+    /// paired device can re-point without retyping it; a fresh board falls
+    /// back to the documented loopback default (the same default the
+    /// RegistrationView connect section uses).
+    init(model: AppModel) {
+        self.model = model
+        _host = State(initialValue: model.hostURL?.absoluteString
+                                  ?? "127.0.0.1:8474")
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                Section("Connection") {
+                    TextField("Host (Tailscale host or loopback)", text: $host)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("Registration token", text: $token)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        registering = true
+                        Task {
+                            await model.register(host: host, token: token)
+                            registering = false
+                        }
+                    } label: {
+                        if registering {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Register device (read-only)")
+                        }
+                    }
+                    .disabled(host.isEmpty || token.isEmpty || registering)
+                    Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Device") {
                     LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
                     LabeledContent("Key storage", value: DeviceKeyStore.storageLocation == .keychain ? "Keychain" : "in-app store (⚠️ insecure)")
                     LabeledContent("Grants", value: model.grants.isEmpty ? "none (read-only)" : model.grants.joined(separator: ", "))
                     LabeledContent("Name", value: UIDevice.current.name)
-                    if let host = model.hostURL {
-                        LabeledContent("Host", value: host.absoluteString)
-                    }
+                    // #365: no read-only host row here — the Connection
+                    // section's editable host field is the one host surface.
                 }
                 Section("Notifications") {
                     Toggle("State-change notifications",

@@ -21,6 +21,47 @@ import Foundation
 /// determinism.
 enum BoardModel {
 
+    // MARK: - #364 B repo filter chips (pure projections)
+
+    /// One repo filter chip: a workspace repo present in the current
+    /// fleet plus the LIVE count of agents working in it. Orphan agents
+    /// (repo == nil) are deliberately absent — they surface under the
+    /// All chip only.
+    struct RepoFilterChip: Equatable, Sendable, Identifiable {
+        let repo: String
+        let count: Int
+        var id: String { repo }
+    }
+
+    /// The chip set for a fleet: one chip per distinct workspace repo,
+    /// alphabetical, with the live agent count. `workspace.repo` stays
+    /// ROW METADATA — chips filter which agents the status sections
+    /// bucket; they never group the board.
+    static func repoFilters(_ agents: [Agent]) -> [RepoFilterChip] {
+        let counts = agents.reduce(into: [String: Int]()) { counts, agent in
+            guard let repo = agent.workspace.repo else { return }
+            counts[repo, default: 0] += 1
+        }
+        return counts.keys.sorted()
+            .map { RepoFilterChip(repo: $0, count: counts[$0] ?? 0) }
+    }
+
+    /// The agent set a repo filter keeps: `nil` = All (no filtering); a
+    /// repo keeps exactly the agents whose workspace repo matches.
+    static func agents(_ agents: [Agent], in repo: String?) -> [Agent] {
+        guard let repo else { return agents }
+        return agents.filter { $0.workspace.repo == repo }
+    }
+
+    /// Reconcile the user's chosen filter against the CURRENT chip set:
+    /// keep it while the repo still exists, fall back to All (nil) when
+    /// it has vanished. Pure and nil-safe, so a render can never filter
+    /// against a repo the fleet no longer has.
+    static func reconcile(_ filter: String?, against chips: [RepoFilterChip]) -> String? {
+        guard let filter else { return nil }
+        return chips.contains { $0.repo == filter } ? filter : nil
+    }
+
     struct StatusSection: Equatable, Identifiable {
         let state: AgentState
         let agents: [Agent]

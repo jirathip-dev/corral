@@ -1,13 +1,15 @@
 import Foundation
 
-// MARK: - Recent output surface (#205 → #354 L2 recents v1)
+// MARK: - Recent output surface (#205 → #354 L2 recents v1 → #361 rail)
 //
-// Recents v1 is LIVE TAIL ONLY: the daemon's bounded read_tail result
-// (≤200 lines) renders as one unpartitioned stream of canonical blocks with
-// auto-scroll. The V3 Conversation/Harness partition, session-status
-// metadata, load-earlier paging, and the composer were removed with the cut;
-// this file keeps the display contract (block rendering helpers) rather than
-// SwiftUI, so the expensive pure work stays unit-testable.
+// Recents is LIVE TAIL ONLY: the daemon's bounded read_tail result
+// (≤200 lines) renders as ONE continuous chronological rail of raw output
+// with auto-scroll. #361 removed the V3-era grouping chrome — divider-only
+// rows, role-grouped card chrome, section headers, and per-row role labels —
+// so role appears ONLY as a transition marker (shape + role token color) at
+// semantic role changes. This file keeps the display contract (pure block /
+// rail helpers) rather than SwiftUI, so the expensive pure work stays
+// unit-testable.
 
 /// A bounded tail pane mapped to the row sequence the sheet renders.
 enum RecentOutputModel {
@@ -30,11 +32,15 @@ enum RecentOutputModel {
         isLiveMode && hasFreshNonErrorTail
     }
 
-    /// The canonical blocks the sheet renders from a pane: the daemon's
+    /// The canonical rows the sheet renders from a pane: the daemon's
     /// blocks when present, else legacy raw lines mapped to honest unknown
-    /// content (never reclassified). Empty/whitespace-only blocks and
-    /// adjacent tool/system blocks are merged exactly like the pre-cut
-    /// renderer, so the stream stays compact and stable across fetches.
+    /// content (never reclassified). Empty/whitespace-only blocks are
+    /// dropped, divider-only rows are dropped BEFORE adjacent tool/system
+    /// merging (#361: the rail renders ZERO divider rows — a divider is
+    /// never an event card and never rides inside a merged content row;
+    /// content that merely CONTAINS a run stays text), and adjacent
+    /// tool/system blocks are merged exactly like the pre-cut renderer, so
+    /// the stream stays compact and stable across fetches.
     static func tailRows(from pane: TailPane?) -> [TranscriptBlock] {
         let pane = pane ?? TailPane()
         let raw: [TranscriptBlock]
@@ -43,7 +49,7 @@ enum RecentOutputModel {
         } else {
             raw = pane.lines.map { TranscriptBlock(kind: .unknown, text: $0) }
         }
-        var grouped: [TranscriptBlock] = []
+        var rows: [TranscriptBlock] = []
         for block in raw {
             let lines = RecentOutputRender.messageLines(block.text)
             guard lines.contains(where: {
@@ -53,12 +59,18 @@ enum RecentOutputModel {
             }
             var visible = block
             visible.text = lines.joined(separator: "\n")
+            if !RecentOutputRender.isDividerBlock(visible) {
+                rows.append(visible)
+            }
+        }
+        var grouped: [TranscriptBlock] = []
+        for block in rows {
             if let last = grouped.last,
                (last.kind == .tool || last.kind == .system),
-               last.kind == visible.kind {
-                grouped[grouped.count - 1].text += "\n" + visible.text
+               last.kind == block.kind {
+                grouped[grouped.count - 1].text += "\n" + block.text
             } else {
-                grouped.append(visible)
+                grouped.append(block)
             }
         }
         return grouped
@@ -78,6 +90,53 @@ enum RecentOutputModel {
             let occurrence = occurrences[content, default: 0]
             occurrences[content] = occurrence + 1
             return IdentifiedBlock(id: "\(content)|occurrence:\(occurrence)", block: block)
+        }
+    }
+
+    /// The rail marker vocabulary (#361 DESIGN LOCK; #316 RATIONALE V1):
+    /// Assistant = circle, You = diamond, Tool = square. A marker appears
+    /// ONLY at a semantic role transition — never repeated per row, and
+    /// never as role text.
+    enum RailMarker: Equatable, Sendable {
+        case circle
+        case diamond
+        case square
+    }
+
+    /// The locked shape for one block kind. `system`/`unknown` rows are
+    /// raw output with no known role, so they never receive a marker.
+    static func marker(for kind: TranscriptBlockKind) -> RailMarker? {
+        switch kind {
+        case .user: return .diamond
+        case .agent: return .circle
+        case .tool: return .square
+        case .system, .unknown: return nil
+        }
+    }
+
+    /// One rendered rail row: a canonical block plus whether THIS row is
+    /// the first row of a role run (its kind differs from the previous
+    /// rendered row) and therefore shows the role transition marker.
+    /// Continuation rows carry no marker and no label.
+    struct RailRow: Equatable, Sendable, Identifiable {
+        let id: String
+        let block: TranscriptBlock
+        let showsTransitionMarker: Bool
+    }
+
+    /// The continuous chronological rail the sheet renders: `tailRows` in
+    /// daemon order with transition markers computed over the RENDERED
+    /// sequence (divider rows already dropped), so a marker appears exactly
+    /// where the visible role changes.
+    static func railRows(from pane: TailPane?) -> [RailRow] {
+        let identified = identifiedBlocks(tailRows(from: pane))
+        var previousKind: TranscriptBlockKind?
+        return identified.map { item in
+            let kind = item.block.kind
+            let showsMarker = marker(for: kind) != nil && kind != previousKind
+            previousKind = kind
+            return RailRow(id: item.id, block: item.block,
+                           showsTransitionMarker: showsMarker)
         }
     }
 
@@ -125,49 +184,17 @@ struct RecentCodeLine: Equatable, Sendable {
     let isHighlighted: Bool
 }
 
-/// Pure block-rendering helpers (row cards, code/diff highlighting,
-/// divider classification, timestamps, accessibility labels).
+/// Pure block-rendering helpers (code/diff highlighting, divider
+/// classification, accessibility labels). The rail drops divider-only rows
+/// and shows no timestamps or per-row chrome (#361).
 enum RecentOutputRender {
-    private static func makeTimestampFormatter(timeZone: TimeZone) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }
-
-    private static let localTimestampFormatter = makeTimestampFormatter(
-        timeZone: .autoupdatingCurrent)
-
-    static func timestamp(_ ms: UInt64, timeZone: TimeZone? = nil) -> String {
-        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        if let timeZone {
-            let formatter = localTimestampFormatter.copy() as! DateFormatter
-            formatter.timeZone = timeZone
-            return formatter.string(from: date)
-        }
-        return localTimestampFormatter.string(from: date)
-    }
-
     static func messageLines(_ text: String) -> [String] {
         text.components(separatedBy: .newlines)
     }
 
-    static func toolSummary(_ text: String) -> String {
-        let first = messageLines(text).first(where: {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }) ?? text
-        let cleaned = first
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = cleaned.hasPrefix("$ ")
-            ? String(cleaned.dropFirst(2))
-            : cleaned
-        return String(command.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
-    }
-
     /// Accessible role naming is locked (`You said…`, `Assistant`, `Tool`,
-    /// `Diagnostic`, `Unknown activity`).
+    /// `Diagnostic`, `Unknown activity`). Visible role text is banned on
+    /// the rail (#361); the accessible layer keeps the roles attributable.
     static func accessibilityLabel(_ block: TranscriptBlock) -> String {
         switch block.kind {
         case .user: return "You said: \(block.text)"
@@ -177,18 +204,6 @@ enum RecentOutputRender {
         case .unknown: return "Unknown activity: \(block.text)"
         }
     }
-
-    static func disclosureAccessibilityLabel(_ block: TranscriptBlock) -> String {
-        let role: String
-        switch block.kind {
-        case .system: role = "Diagnostic"
-        case .unknown: role = "Unknown activity"
-        default: role = "Tool"
-        }
-        return "\(role): \(toolSummary(block.text))"
-    }
-
-    static let disclosureAccessibilityHint = "Double tap to expand or collapse"
 
     static func isBoundary(previous: TranscriptBlock?, current: TranscriptBlock) -> Bool {
         previous?.kind != current.kind

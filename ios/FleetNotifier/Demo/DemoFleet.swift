@@ -132,12 +132,13 @@ enum DemoFleet {
         }
     }
 
-    /// Live-tail-only fixture: one stream of canonical blocks (user / agent
-    /// / tool / system / unknown), unpartitioned — recents v1 renders the
-    /// daemon's bounded tail as-is.
+    /// Live-tail fixture: one stream of canonical blocks (user / agent /
+    /// tool / system / unknown) in daemon order — recents renders the
+    /// bounded tail as ONE continuous chronological rail (#361).
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        // Divider + unprovenanced chrome blocks stay: the shared divider
-        // scrub renders them as rules/unknown activity.
+        // The divider-only system block below stays ON PURPOSE: the rail
+        // row model drops divider-only rows, so simulator evidence proves
+        // ZERO divider rows render.
         let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [

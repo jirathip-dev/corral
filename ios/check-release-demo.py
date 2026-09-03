@@ -101,7 +101,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # revisions (the single-value decoder prefers Int64) — re-pinned.
     # #354 L2 gate fix: demo route hooks fully DEBUG-gated in FleetViews —
     # re-pinned.
-    "0dd3d2485c5ffb8df3fc00541e615c26eba1fb628e936b2150b4976375d2b364"
+    # #361: recents became one continuous chronological rail — divider-only
+    # rows dropped from the row model (RecentOutputModel), V3-era card/role
+    # chrome removed and transition markers added (FleetViews), and the demo
+    # divider fixture retained as rail-drop evidence (DemoFleet) — re-pinned.
+    # #361 fix: divider-only rows drop BEFORE adjacent tool/system merging so
+    # furniture never rides inside a merged content row — re-pinned.
+    "549891ef6f13a3780bf44ed2133e4c6b9fc3f2f8dcc51e33ca583e3e0db6cfa6"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -111,7 +117,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #354 L2: the test suite was rebuilt for the read-only client
     # (removed action/issue/diff/terminal/admin classes; added board,
     # transition, payload, recents-tail, and wiring tests) — re-pinned.
-    "99b787553d9bfb2877a0069cf1889502f1c4975f4155bf57f380589810e9c302"
+    # #361: RecentRailModelTests + rail-wiring regressions (zero divider
+    # rows, zero role text, chronological order, transition-only markers)
+    # were added to the suite — re-pinned.
+    # #361 fix: merged-content divider regression added — re-pinned.
+    "2acb75c64bd0d13dc47c0d18813d3c2c05f6d12ca01371d6bb2f59083950fcb7"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

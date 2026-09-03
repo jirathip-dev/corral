@@ -292,8 +292,12 @@ when the daemon is unreachable the board keeps the last-known fleet under a
 
 Tapping a row opens the recents bottom sheet: LIVE TAIL ONLY (the daemon's
 bounded ≤200-line read_tail, auto-scrolled, refreshed while open; loading /
-empty / error+Retry states included). There is no load-earlier paging, no
-Conversation/Harness partition, and no composer.
+empty / error+Retry states included). Rows render as ONE continuous
+chronological rail of raw output (#361): no divider-only rows, no
+role-grouped cards, and no role labels — role appears only as a transition
+marker (Assistant=circle, You=diamond, Tool=square) at semantic role
+changes. There is no load-earlier paging, no Conversation/Harness
+partition, and no composer.
 
 Settings = connection pairing (host/key/grants display + reset) and
 notification pairing (global on/off). The Devices & Grants admin surface is

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hermetic regression test for the daemon launchd plist emitted by
-# setup-corrald.sh. It stubs launchd, curl, and the desktop installer, then
-# parses the generated plist to verify the shared PATH contract, XML escaping,
-# executable resolution, secret omission, and idempotence.
+# setup-corrald.sh. It stubs launchd and curl, then parses the generated
+# plist to verify the shared PATH contract, XML escaping, executable
+# resolution, secret omission, and idempotence.
 #
 # Run with one command:
 #   bash scripts/test-daemon-launchd-env.sh
@@ -72,17 +72,13 @@ cp "$SETUP" "$RELEASE_DIR/scripts/setup-corrald.sh"
 cp "$SCRIPT_DIR/lib-corral-update-path.sh" "$RELEASE_DIR/scripts/lib-corral-update-path.sh"
 cp "$SCRIPT_DIR/update-corral.sh" "$RELEASE_DIR/scripts/update-corral.sh"
 cp "$SCRIPT_DIR/rotate-corral-logs.sh" "$RELEASE_DIR/scripts/rotate-corral-logs.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$RELEASE_DIR/scripts/install-corral-ui.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$RELEASE_DIR/corrald"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$RELEASE_DIR/corrald-ui"
 chmod +x \
   "$RELEASE_DIR/scripts/setup-corrald.sh" \
   "$RELEASE_DIR/scripts/lib-corral-update-path.sh" \
   "$RELEASE_DIR/scripts/update-corral.sh" \
   "$RELEASE_DIR/scripts/rotate-corral-logs.sh" \
-  "$RELEASE_DIR/scripts/install-corral-ui.sh" \
-  "$RELEASE_DIR/corrald" \
-  "$RELEASE_DIR/corrald-ui"
+  "$RELEASE_DIR/corrald"
 
 PLIST="$HOME_DIR/Library/LaunchAgents/com.corral.corrald.plist"
 UPDATE_PLIST="$HOME_DIR/Library/LaunchAgents/com.corral.corrald-update.plist"

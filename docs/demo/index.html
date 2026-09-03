@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Corral board — static demo snapshot</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #1e1e2e;
+        color: #cdd6f4;
+        font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+          sans-serif;
+      }
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        font-size: 1.35rem;
+      }
+      p {
+        max-width: 72ch;
+        line-height: 1.5;
+      }
+      figure {
+        margin: 28px 0 0;
+        padding: 0;
+      }
+      img {
+        max-width: 100%;
+        height: auto;
+        border: 1px solid #45475a;
+        border-radius: 8px;
+        background: #11111b;
+      }
+      figcaption {
+        margin-top: 8px;
+        color: #a6adc8;
+        font-size: 0.9rem;
+      }
+      code {
+        background: #313244;
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Corral board — static demo snapshot</h1>
+      <p>
+        Corral is an iOS-only read-only fleet board for herdr agents. This
+        page is a static snapshot of the board rendered from bundled,
+        fully fictional sample data (no live daemon, no web toolchain) —
+        it is kept as a quick visual reference. The phone layout below is
+        390&times;844; the wide layout is 1280&times;800.
+      </p>
+      <figure>
+        <img
+          src="board-demo-390x844.png"
+          alt="Corral board, phone layout (390x844), synthetic sample data"
+          width="390"
+        />
+        <figcaption>Board, phone layout &mdash; synthetic sample data.</figcaption>
+      </figure>
+      <figure>
+        <img
+          src="board-demo-desktop-1280x800.png"
+          alt="Corral board, wide layout (1280x800), synthetic sample data"
+          width="960"
+        />
+        <figcaption>Board, wide layout &mdash; synthetic sample data.</figcaption>
+      </figure>
+    </main>
+  </body>
+</html>

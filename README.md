@@ -4,105 +4,63 @@
 
 **See every agent. Know what needs you.**
 
-Corral is a small app that runs on the same machine as your [herdr](https://github.com/herdrdev/herdr) fleet and gives you one place to watch it — from a desktop board or your phone.
+Corral is a read-only fleet board for [herdr](https://github.com/herdrdev/herdr) agents, on your iPhone. It shows everything your fleet is doing — every agent's state, repo, branch, and time-in-state, grouped by repo, with blocked agents pinned to the top — plus bounded recent output per agent and optional state-change notifications. Corral only watches: there are no drive controls (no prompt / approve / interrupt / kill), by design.
 
-If you run a fleet of coding agents (Claude Code, Codex, OpenCode, and others), herdr handles the spawning and supervising. Corral sits on top and answers the things you actually want to know:
-
-- **What's happening right now?** One live view of every agent: its raw state, repo, branch, time-in-state, and pane — grouped by repo, no terminal spelunking.
-- **What needs you?** Blocked agents are pinned to the top of the board, and every repo group lists its own blocked agents first.
-- **What did it just do?** Tap an agent for the bounded recent-output tail, live and auto-scrolled.
-- **Did something change?** The iOS app can notify on state changes (start, blocked, done).
-
-Corral is **read-only by design**: it monitors the fleet. There are no drive controls — no prompt, approve, interrupt, kill, attach, or worktree-starting surfaces, in the daemon or in any client.
+**iOS-only product.** Corral is the `FleetNotifier` iOS app plus `corrald`, a small Rust daemon that runs on the same machine as herdr and collapses the fleet into a live snapshot served over HTTP + SSE. `corrald` reads the herdr unix socket (`~/.config/herdr/herdr.sock`) and binds loopback by default (`127.0.0.1:8474`); public addresses are refused.
 
 ```
-herdr socket ─┐
-git watcher ──┤ → corrald (daemon) → ┬─ live fleet snapshot + events (SSE, loopback)
-              └                      └─ signed reads: register device · read_tail (recents)
+herdr socket ─→ corrald (daemon) ─→ iOS app: board · recents · notifications
 ```
 
-## Demo showcase
+## Setup
 
-**[Open the live web demo](https://jirathip-dev.github.io/corral/)** — the read-only board renders bundled fictional sample data by default; connecting to a live daemon is optional. The iOS showcase is a Simulator demo from the TestFlight source revision: [![iOS board](https://jirathip-dev.github.io/corral/ios/board.png)](https://jirathip-dev.github.io/corral/ios/).
+### 1. Daemon (macOS host)
 
-## Features
-
-- **One live view of the fleet** — every agent's state, repo/branch, time-in-state, and a small pane reference, grouped by repo with the raw herdr status vocabulary (working / idle / blocked / unknown, plus a wire `done` the board treats as finished — ranked and rendered with `idle`, so finished panes never read as active).
-- **Blocked agents surfaced first** — waiting agents are pinned to the top of the board and listed first inside their repo group, with the herdr state chip the fastest visual cue.
-- **Recent output** (`read_tail`) — tap any agent for its bounded live tail (≤200 lines, daemon-capped), segmented into blocks, auto-scrolled.
-- **Event history + daily digest** — every state change is recorded; query a window over HTTP or take a per-agent daily digest offline.
-- **State-change notifications (iOS)** — start, blocked, and done alerts; real APNs delivery awaits the host-side provisioning checkpoint (an APNs `.p8` auth key + `CORRAL_APNS_*` env); simulator/DEBUG builds use the local notification bridge.
-- **Signed and private by default** — binds to loopback, denies public addresses; the live snapshot/SSE plane is served only on loopback/private networks, and the per-agent read drives (`read_tail`) are Ed25519-signed. Fresh registrations are read-only (zero grants); the two signed read capabilities are provisioned out-of-band by the host.
-
-## Architecture
-
-The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
-
-- **`corrald`** — the daemon. Reads the fleet (herdr + a git watcher) into a live snapshot, serves it over HTTP + SSE, and serves signed read requests (`read_tail`).
-- **`corrald-ui`** — the desktop board (egui, also compiles to a read-only WASM demo).
-- **iOS notifier** — the phone app: board, recents, notifications.
-- **Layering** — model → harness → runtime → control plane. Everything is written down in the docs.
-
-## Install
-
-### iOS (not yet distributed)
-
-The iOS client is not on the App Store or TestFlight yet. Distribution requires an Apple Developer account and a signing/verification pass the repository does not claim today (see [ios/README.md](ios/README.md)); simulator builds are the supported path.
-
-### The desktop board + daemon (macOS)
-
-Grab a tagged release — no Rust toolchain needed. The installer downloads a checksummed bundle, verifies its SHA-256, installs the daemon under launchd, and stages the desktop board:
+From a checkout, build and run:
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
+cargo build --release -p corrald
+./target/release/corrald --socket ~/.config/herdr/herdr.sock
 ```
 
-From a checkout, the same script runs directly:
+Verify it is up:
 
 ```sh
-bash scripts/install-corral.sh
-bash scripts/install-corral.sh --release v0.1.0 --bind 127.0.0.1 --port 8474
+curl -s http://127.0.0.1:8474/healthz    # → ok
 ```
 
-Uninstall removes the launchd agents and the app, keeps your config and keys:
+To keep it running at login, install it under launchd — `scripts/setup-corrald.sh` builds, installs the `com.corral.corrald` agent (KeepAlive, port 8474), and is idempotent:
 
 ```sh
-bash scripts/install-corral.sh --uninstall
+bash scripts/setup-corrald.sh
 ```
 
-### Dependencies
+Prebuilt daemon-only releases (no Rust toolchain) install with `scripts/install-corral.sh`.
 
-- **herdr** — the runtime that spawns and supervises the agents. Install it first. (Corral reads the fleet from herdr's socket; without herdr it still serves the API but shows no agents.)
-- **macOS** for the release build and the iOS app. The daemon also builds on Linux.
+### 2. Connect iOS (TestFlight build)
 
-### Set up the daemon (herdr + launchd)
+1. Install the TestFlight build of FleetNotifier.
+2. Open the app → **Settings** (gear, top right) → **Host**: your Tailscale hostname (`https://<host>.<tailnet>.ts.net`) or `127.0.0.1:8474` for a same-LAN/dev setup.
+3. **Register / pair this device** with the daemon's registration token (in the daemon config dir or out-of-band). A fresh device is read-only: zero grants.
+4. **Enable Notifications** for state-change pushes (start / blocked / done). Simulator and DEBUG builds use the local notification bridge; real background APNs delivery awaits the host-side provisioning checkpoint (an APNs `.p8` auth key + `CORRAL_APNS_*` env).
+5. The host provisions the signed read grant (`read_tail` for recents) **out-of-band** — there is no grant UI or admin surface in the app or over HTTP.
 
-`corrald` runs as a launchd agent. From a checkout, `scripts/setup-corrald.sh` builds and installs it (idempotent — safe to re-run):
+Remote access note: the app talks plain HTTP only on loopback — point it at a Tailscale-hosted `https://` origin (Tailscale Serve fronting the loopback daemon), never at a tailnet IP bind. Details in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-```sh
-bash scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
-```
+## Demo
 
-Once it's up, register a device — registration is read-only by default (zero grants), and the host provisions the signed read grants (`read_tail` for recents) out-of-band on the registry. See the full walkthrough in [docs/QUICKSTART.md](docs/QUICKSTART.md).
+The iOS showcase is a Simulator demo from the TestFlight source revision:
 
-## Security posture
+[![iOS board](https://jirathip-dev.github.io/corral/ios/board.png)](https://jirathip-dev.github.io/corral/ios/)
 
-Corral is private by default:
-
-- **Loopback by default, public refused** — binds `127.0.0.1`; public IPs and `0.0.0.0` are hard refusals. Over a tailnet/private network, prefer a WireGuard device-authenticated tunnel.
-- **Signed reads, default deny** — every signed drive request carries an Ed25519 device signature; a registered device has zero grants until the host provisions capabilities out-of-band (there is no HTTP grant surface and no admin token on any device). The only capabilities that exist are signed reads (`read_tail`, plus the daemon-retained `read_diff` with no client UI).
-- **Redacted by default** — secrets are redacted at the adapter boundary before any bytes leave the machine; key material stays `0600` under a `0700` config dir.
+A static board snapshot (phone + wide layouts, fully fictional sample data) is kept in [docs/demo/](docs/demo/).
 
 ## Docs
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) — run the daemon, register a device, read the fleet
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) — run the daemon, register a device, grant `read_tail`, read the fleet
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, out-of-band grants, remote access from iOS (Tailscale Serve), troubleshooting
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the read model, signed read plane, security boundaries
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, out-of-band grants, remote access from iOS, keychain, audit log
-- [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, module map, quality gates
-
-## Status
-
-**Pre-1.0, macOS-first.** Daemon and desktop board run on macOS (daemon also Linux); the iOS client builds for the simulator, with no physical-device or TestFlight claim yet. Linux support is partial.
+- [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, quality gates
 
 ## License
 

@@ -642,13 +642,10 @@ CONTENT_IDENTITY_HELPER="$SCRIPT_DIR/design-gate-content-identity.py"
   || die "implementation identity helper is missing: $CONTENT_IDENTITY_HELPER"
 
 implementation_identity() {
-  if [[ "$ISSUE" == "205" ]]; then
-    "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR" --issue 205
-  else
-    # Preserve the historical #206 identity for the generic/test seams and
-    # other design-gate issue bundles.
-    "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR"
-  fi
+  # Single current-product scope (iOS client + capture generator) since the
+  # #376 egui removal deleted the egui client and the Cargo.lock renderer
+  # packages the old #205/#206 scopes fingerprinted.
+  "$PYTHON_BIN" "$CONTENT_IDENTITY_HELPER" "$REPO_DIR"
 }
 
 absolute_path() {
@@ -2929,11 +2926,7 @@ render_markdown_note \
   printf -- '- Implementation content digest: '
   markdown_safe_code_span "$IMPLEMENTATION_CONTENT_DIGEST"
   printf '\n'
-  if [[ "$ISSUE" == "205" ]]; then
-    printf -- '- Implementation identity scope: issue #205 iOS transcript implementation and tests, the applicable egui transcript mirror, release wiring/docs, capture generator, approved transcript prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; generated evidence is excluded.\n'
-  else
-    printf -- '- Implementation identity scope: egui client, native capture/probe/verifier tooling, approved prototype, and a narrow selected eframe/wgpu Cargo.lock package fingerprint; unrelated workspace/daemon files and generated evidence are excluded.\n'
-  fi
+  printf -- '- Implementation identity scope: the iOS FleetNotifier implementation and tests, release wiring/docs, and the capture generator; generated evidence is excluded.\n'
   printf -- '- Renderer executable: '
   markdown_safe_code_span "$RENDERER_PATH_LABEL"
   printf ' (private profile, one-shot screenshot without remote debugging, and owned cleanup)\n'

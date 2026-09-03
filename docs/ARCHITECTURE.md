@@ -6,20 +6,20 @@ tailnet/private interfaces allowlisted, never public) and exposes a
 signed, capability-gated READ plane (`POST /drive`, read-only since
 #354). Design authority: `docs/corral/DECISIONS.md` (D1–D14).
 
-Corral is a **read-only fleet monitor**: the daemon and every client
-(the iOS app, the egui desktop board, and the WASM demo) observe agents
-but cannot drive them. The mutating drive plane (prompt / approve /
-interrupt / kill / attach / start_worktree), the grant-admin HTTP
-surface, step-up, the terminal/attach transport, and the Issues browser
-UI were removed in the #354 cut (daemon L1, iOS L2, egui/WASM L3).
+Corral is a **read-only fleet monitor**: the daemon and the iOS client
+observe agents but cannot drive them. The mutating drive plane (prompt /
+approve / interrupt / kill / attach / start_worktree), the grant-admin
+HTTP surface, step-up, the terminal/attach transport, and the Issues
+browser UI were removed in the #354 cut (daemon L1, iOS L2, desktop L3).
+#376 then removed the desktop client entirely: Corral is an **iOS-only
+product** (daemon + iOS app).
 Boards show the **herdr RAW status vocabulary** — working / idle /
 blocked / unknown — plus a wire `done` the herdr 0.8.2 socket can carry
 (recorded in the #324 live probe). The board treats `done` as finished:
 it is ranked and rendered with `idle` (idle-equivalent), so finished
 panes never read as active/working. #319/#320's invented grouped wording
 (Working/Supervising/Finished) is gone. Recents are a **live-tail only**
-surface (recents v1), and egui has no push path (notifications exist
-only on iOS).
+surface (recents v1); state-change notifications exist only on iOS.
 
 ## Stack terminology (model → harness → runtime → control plane)
 
@@ -154,8 +154,9 @@ checkout/worktree facts, and topology changes prune stale issue
 categories. GitHub stays READ-ONLY: no issue create/edit/close surface
 exists (the signed `read_issues` drive arm and the `start_worktree` drive
 that consumed a selected issue were removed in #354). No bundled client
-renders an Issues UI after the #354 client cuts (iOS L2 removed the
-Issues browser, egui L3 removed the Issues tab) — the route remains a
+renders an Issues UI since the #354 client cuts removed it from every
+client (iOS L2, desktop L3; the desktop client itself was removed in
+#376) — the route remains a
 credential-free read endpoint for read-only clients and scripts.
 
 The host admin boundary is reduced to `GET /audit` since #354: the
@@ -241,8 +242,8 @@ signed envelope {key_id, signature,       POST /drive
   one state lock. A stable session moving panes evicts the old pane, and a
   disappeared or moved target leaves a stale-agent tombstone. Read dispatch
   observes that tombstone as `stale_agent` (HTTP 409 before replay claim when
-  possible; a typed refusal if the adapter loses the race). Desktop and iOS
-  clients remove the stale row immediately and refresh their snapshot; the
+  possible; a typed refusal if the adapter loses the race). The iOS client
+  removes the stale row immediately and refreshes its snapshot; the
   live SSE stream remains the authority for the replacement row.
 - Trusted catalog reconciliation is the second eviction rule: a stored herdr
   session absent from the fresh `agent.list` is evicted and tombstoned even
@@ -260,11 +261,10 @@ The #354 read-only cut closed the drive plane to two signed reads:
 list + paged unified diff, computed via libgit2, never a git subprocess,
 restricted to herdr-owned worktree paths) — the closed set in
 `src/drive/mod.rs`. `read_tail` is the capability every signed client uses
-for recents (the iOS app and the egui desktop board; the WASM demo renders
-the fixture's tail and never signs a drive). `read_diff` is retained
+for recents (the iOS app). `read_diff` is retained
 daemon-side for wire compatibility (its grant still parses) but no client
-dispatches it after the #354 client cuts: the iOS Diff page was removed in
-L2 and egui keeps `read_diff` only as a wire-decode case (L3). Every
+dispatches it: the iOS Diff page was removed in
+#354 L2 and the desktop client was removed in #376. Every
 mutating capability (`prompt`, `interrupt`, `approve`, `kill`, `attach`,
 `start_worktree`, `read_issues`) and the terminal/attach transport were
 removed; anything else is refused with a typed `400 unknown_capability`
@@ -334,25 +334,15 @@ Four places where data crosses a trust line, and what guards each:
 - `crates/corrald-client` — shared client layer: typed read model,
   reconnecting SSE with resume, signed read drive with idempotent
   retries. No GUI.
-- `clients/egui` (`corrald-ui`) — desktop fleet board (egui/wgpu), macOS +
-  Linux, plus the read-only WASM board. Two tabs only: **Board |
-  Settings**. Board: repo groups with raw herdr state chips (working /
-  idle / blocked / unknown), attention order blocked → working → idle →
-  unknown, last-known rows + offline banner, live SSE refresh. Settings is
-  connection-only (host URL, registration/identity recovery). Recents v1
-  is a live-tail bottom sheet from `read_tail` — no load-earlier, no
-  conversation/harness partition, no push path in egui. The WASM build
-  renders the same board from a bundled synthetic fixture (no signing, no
-  `/drive`, no keyring). Device keys in the OS keychain; auto-register on
-  localhost; a `not_granted` refusal surfaces as a typed banner. Issues /
-  audit / grants-admin / any mutating drive have no client code.
 - `ios/FleetNotifier` — SwiftUI iOS client: SSE read model, signed read
   drive (`read_tail` only), recents v1 live tail, state-change
   notifications (local now; real APNs pending the provisioning
   checkpoint), Settings = connection + notification pairing only. Issues,
   Terminal, Diff, every action control, and the device/grant admin UI
-  were retired with the #354 cut. See the README's Status section for
-  what is and is not verified on hardware.
+  were retired with the #354 cut; the desktop client was removed with
+  #376, so FleetNotifier is the only product client. iOS hardware and
+  TestFlight verification state is tracked in the release/showcase
+  pipeline (docs/ios-showcase.md).
 
 ## Layout on main
 
@@ -378,8 +368,6 @@ src/push/            APNs provider, payload build + redaction, transition
 crates/corrald-client/  shared client layer + live conformance suite
                         (R1/R2/R5/R10/R11 + read-only probes; approve/
                         step-up arms removed with #354)
-clients/egui/        corrald-ui desktop + WASM board (Board | Settings;
-                     recents v1; no Issues/audit/grant-admin)
 ios/FleetNotifier/   iOS client: SSE, signed reads (read_tail), recents v1,
                      state-change notifications
 tests/               integration tests per module (incl. the #354

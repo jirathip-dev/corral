@@ -90,25 +90,13 @@ jobs:
       - name: cargo audit --deny warnings
         run: cargo audit --deny warnings
 
-      # clients/egui (eframe 0.36, wgpu + wayland + x11) builds on Linux with
-      # the wayland/x11/GL system packages below. Keeping all three workspace
-      # members in this single 1x-billed Ubuntu job is far cheaper than a
-      # second 10x-billed macOS job just for the UI crate; the same crate also
-      # builds on macOS via the darwin runners used for the iOS job, so a Linux
-      # failure here is caught on the hosted runner, not in a local worktree.
       # libkeyutils-dev is needed by the keyring linux-keyutils store used by
-      # corrald and corrald-ui.
-      - name: Install Linux system deps for egui/wgpu (and keyring)
+      # corrald. (The #376 egui removal dropped the wgpu/wayland/x11/GL stack,
+      # so those system packages are no longer needed.)
+      - name: Install Linux system deps (keyring)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libgl1-mesa-dev \
             libkeyutils-dev
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -129,8 +117,9 @@ jobs:
       # dependencies, cache, and supply-chain gates above. The instrumented
       # build is necessarily separate from the ordinary test build, but the
       # report steps below reuse its profiles and do not compile or rerun tests.
-      # The scope is the pure-Rust daemon and client; egui/wgpu platform code
-      # remains outside this deterministic core gate (see docs/DEVELOPING.md).
+      # The scope is the pure-Rust daemon and client packages; the removed
+      # #376 GUI client had no deterministic core gate (see
+      # docs/DEVELOPING.md).
       - name: cargo llvm-cov core coverage gate
         id: coverage
         env:

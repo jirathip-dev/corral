@@ -44,14 +44,6 @@ confidence-threshold = 0.8
 include-dev = true
 unused-license-exception = "deny"
 exceptions = [
-    # option-ext is a small transitive directory utility. Its MPL-2.0
-    # file-level copyleft is accepted only for this reviewed crate, rather
-    # than globally.
-    { name = "option-ext", allow = ["MPL-2.0"] },
-    # epaint_default_fonts embeds font assets under OFL-1.1 and
-    # Ubuntu-font-1.0. Those font-specific terms are accepted only for the
-    # bundled asset crate.
-    { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
     # webpki-root-certs is rustls-platform-verifier's wasm32-only trust-anchor
     # fallback. cargo-deny's all-features graph evaluates every target triple;
     # its metadata and bundled LICENSE identify CDLA-Permissive-2.0. Pinning

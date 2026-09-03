@@ -2318,6 +2318,284 @@ final class BoardModelReadOnlyTests: XCTestCase {
     }
 }
 
+// MARK: - #364 B repo filter chip projections
+
+/// Focused regressions for the #364 repo filter chips. These bite: the
+/// chip set must be live per-repo counts (orphans never a chip), the
+/// filter must pick WHICH agents the #362 status sections bucket (never
+/// regroup them), and a vanished repo must reconcile back to All.
+final class RepoFilterChipProjectionTests: XCTestCase {
+    private func agent(_ id: String, repo: String?,
+                       state: AgentState = .working,
+                       ts: UInt64 = 100) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: ts,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: repo,
+                                   branch: repo.map { "b-" + $0 }),
+              displayName: id)
+    }
+
+    func testChipsCountAgentsPerRepoAlphabeticallyAndSkipOrphans() {
+        let chips = BoardModel.repoFilters([
+            agent("a1", repo: "corral"),
+            agent("a2", repo: "corral"),
+            agent("b1", repo: "fleet-operations"),
+            agent("orphan", repo: nil),
+        ])
+        XCTAssertEqual(chips.map(\.repo), ["corral", "fleet-operations"])
+        XCTAssertEqual(chips.map(\.count), [2, 1])
+        XCTAssertEqual(chips.map(\.id), ["corral", "fleet-operations"])
+    }
+
+    func testDemoSeedChipsMatchTheFixtureBoard() {
+        // 6 seeded agents across 4 repos + 1 orphan: the orphan counts
+        // under All only, never as its own chip.
+        let agents = Array(DemoFleet.seed().values)
+        let chips = BoardModel.repoFilters(agents)
+        XCTAssertEqual(chips.map(\.repo),
+                       ["demo-atlas", "demo-garden", "demo-ledger", "demo-orbit"])
+        XCTAssertEqual(chips.map(\.count), [2, 1, 1, 1])
+        XCTAssertFalse(chips.contains { $0.repo == "demo-orphan" })
+        XCTAssertEqual(BoardModel.agents(agents, in: nil).count, 6,
+                       "All must include every agent, orphans included")
+    }
+
+    func testEmptyFleetHasNoChips() {
+        XCTAssertTrue(BoardModel.repoFilters([]).isEmpty)
+    }
+
+    func testFilterKeepsOnlyMatchingRepoAgents() {
+        let agents = [
+            agent("in-corral", repo: "corral"),
+            agent("other", repo: "fleet-operations"),
+            agent("orphan", repo: nil),
+        ]
+        XCTAssertEqual(BoardModel.agents(agents, in: "corral").map(\.agentId),
+                       ["in-corral"])
+        XCTAssertEqual(BoardModel.agents(agents, in: "corral").count, 1)
+        let all = BoardModel.agents(agents, in: nil)
+        XCTAssertEqual(Set(all.map(\.agentId)), Set(agents.map(\.agentId)),
+                       "nil filter must be the identity — All shows every agent")
+    }
+
+    func testFilteredSectionsKeepLockedOrderOverTheFilteredSet() {
+        // Demo board filtered to demo-atlas: working (featured) and
+        // unknown (atlas-unknown) sections in the locked order — the
+        // blocked demo-garden row is filtered out, sections never regroup.
+        let agents = Array(DemoFleet.seed().values)
+        let filtered = BoardModel.agents(agents, in: "demo-atlas")
+        let sections = BoardModel.sections(filtered)
+        XCTAssertEqual(sections.statuses.map(\.state), [.working, .unknown])
+        XCTAssertEqual(sections.statuses[0].header, "working (1)")
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       [DemoFleet.featuredAgentID])
+        XCTAssertEqual(sections.statuses[1].agents.map(\.agentId),
+                       ["herdr:demo-atlas-unknown"])
+
+        // Filtering never groups: three working agents across repos under
+        // a repo filter stay in ONE working bucket with their locked
+        // within-section order (ts desc, then id).
+        let mixed = [
+            agent("in-corral", repo: "corral", ts: 200),
+            agent("in-other", repo: "other", ts: 150),
+            agent("blocked-corral", repo: "corral", state: .blocked, ts: 900),
+        ]
+        let corralSections = BoardModel.sections(
+            BoardModel.agents(mixed, in: "corral"))
+        XCTAssertEqual(corralSections.statuses.map(\.state), [.blocked, .working])
+        XCTAssertEqual(corralSections.statuses[1].agents.map(\.agentId),
+                       ["in-corral"])
+    }
+
+    func testReconcileKeepsALiveRepoAndDropsAVanishedOne() {
+        let chips = [BoardModel.RepoFilterChip(repo: "corral", count: 2)]
+        XCTAssertEqual(BoardModel.reconcile("corral", against: chips), "corral")
+        XCTAssertNil(BoardModel.reconcile("gone", against: chips),
+                     "a repo that left the fleet must render as All")
+        XCTAssertNil(BoardModel.reconcile(nil, against: chips),
+                     "All stays All")
+        XCTAssertNil(BoardModel.reconcile("corral", against: []))
+    }
+}
+
+// MARK: - #364 C recents sheet request lifecycle
+
+/// Focused discriminating regressions for the reliable recents-sheet
+/// reopen. The pre-#364 code latched a sticky `recentsAgentId` behind an
+/// equality-guarded onChange: after a dismissal the latch was never
+/// cleared, so a re-request of the same agent compared equal and the
+/// first tap was swallowed. These tests pin the replacement contract —
+/// every request is a fresh monotonic value, and dismissal completion
+/// clears (clean close) or re-arms (a tap landed mid-dismissal) the
+/// request — and bite if any half of it regresses.
+@MainActor
+final class RecentsSheetLifecycleTests: XCTestCase {
+
+    private final class TickCounter {
+        var count = 0
+    }
+
+    /// Fresh demo-mode harness per test: an AppModel with an injected
+    /// haptic tick counter and a seeded demo fleet. `exitDemo()` restores
+    /// the shared identity lifecycle the way the demo-mode tests expect.
+    private func makeHarness() -> (model: AppModel, ticks: TickCounter) {
+        let ticks = TickCounter()
+        let model = AppModel(haptics: { [weak ticks] in ticks?.count += 1 })
+        model.enterDemo()
+        return (model, ticks)
+    }
+
+    private func agent(_ id: String, repo: String? = "corral") -> Agent {
+        Agent(agentId: id, state: .working, seq: 1, ts: 100,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: repo, branch: repo.map { "b-" + $0 }),
+              displayName: id)
+    }
+
+    private func seedLive(_ model: AppModel, _ ids: [String]) {
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 10, generatedAt: 1,
+            agents: Dictionary(uniqueKeysWithValues: ids.map {
+                ($0, agent($0))
+            }))))
+    }
+
+    private func dismissalWrite(_ model: AppModel, _ request: RecentsRequest?) {
+        // What SwiftUI's `.sheet(item:)` binding does when a dismissal
+        // starts: it writes nil through the binding.
+        model.recentsRequest = nil
+        model.recentsSheetDismissed()
+    }
+
+    func testRowRequestAlwaysProducesAFreshMonotonicValue() throws {
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        model.requestRecents(for: a, haptic: false)
+        let first = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(first.agentId, a)
+        model.requestRecents(for: a, haptic: false)
+        let second = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(second.agentId, a)
+        XCTAssertGreaterThan(second.id, first.id,
+                             "a same-agent re-request must be a NEW value, not an equal one")
+    }
+
+    func testSameAgentReopenAfterDismissalWorksOnTheFirstRequest() throws {
+        // #364 C2: the exact reported failure — reopen the SAME agent's
+        // sheet after dismissing. Three full cycles must each produce a
+        // fresh request (nil → request) with a strictly growing id.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        var previousID: UInt64 = 0
+        for _ in 0..<3 {
+            model.requestRecents(for: a, haptic: false)
+            let request = try XCTUnwrap(model.recentsRequest)
+            XCTAssertEqual(request.agentId, a)
+            XCTAssertGreaterThan(request.id, previousID,
+                                 "every reopen must be a new presentation value")
+            previousID = request.id
+            dismissalWrite(model, request)
+            XCTAssertNil(model.recentsRequest,
+                         "a clean dismissal must fully clear the request")
+        }
+    }
+
+    func testCleanDismissalLeavesNothingPending() throws {
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        dismissalWrite(model, model.recentsRequest)
+        XCTAssertNil(model.recentsRequest)
+    }
+
+    func testRequestThatLandsDuringDismissalIsReArmed() throws {
+        // #364 C1: a tap that lands while the previous sheet is still
+        // dismissing is dropped by SwiftUI's presentation coordinator —
+        // the dismissal completion must re-arm it so the FIRST tap works.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        model.recentsRequest = nil          // dismissal starts
+        model.requestRecents(for: "herdr:demo-garden-blocked", haptic: false)
+        let pending = try XCTUnwrap(model.recentsRequest)
+        model.recentsSheetDismissed()       // dismissal completes
+        let rearmed = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(rearmed.agentId, "herdr:demo-garden-blocked",
+                       "the mid-dismissal request must survive dismissal completion")
+        XCTAssertGreaterThan(rearmed.id, pending.id,
+                             "the re-arm must be a fresh presentation value")
+    }
+
+    func testUnknownAgentRequestIsIgnoredWithoutHaptic() {
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: "herdr:ghost", haptic: true)
+        XCTAssertNil(model.recentsRequest)
+        XCTAssertEqual(ticks.count, 0)
+    }
+
+    func testRowTapHapticDeepLinkAndDoneWiring() {
+        // #364 A.2: row taps tick once; deep links and auto-demo opens do
+        // not; the Done close control ticks once.
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        model.requestRecents(for: a, haptic: true)
+        XCTAssertEqual(ticks.count, 1)
+        XCTAssertEqual(model.recentsRequest?.agentId, a)
+
+        model.recentsRequest = nil
+        model.recentsSheetDismissed()
+        model.requestRecents(for: "herdr:demo-garden-blocked", haptic: false)
+        XCTAssertEqual(ticks.count, 1, "programmatic opens must stay silent")
+
+        model.closeRecentsButtonTapped()
+        XCTAssertEqual(ticks.count, 2, "the Done close control ticks once")
+    }
+
+    func testDeepLinkIsLiveModeOnlyAndHapticFree() {
+        // openRecents (notification tap) keeps its live-mode + agent-exists
+        // guards and never plays a haptic (it is not a row tap).
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        model.openRecents(for: DemoFleet.featuredAgentID)
+        XCTAssertNil(model.recentsRequest, "demo mode must ignore deep links")
+        XCTAssertEqual(ticks.count, 0)
+
+        seedLive(model, ["a1", "a2"])
+        model.openRecents(for: "a2")
+        XCTAssertEqual(model.recentsRequest?.agentId, "a2")
+        XCTAssertEqual(ticks.count, 0, "deep links never tick")
+
+        model.openRecents(for: "ghost")
+        XCTAssertEqual(model.recentsRequest?.agentId, "a2",
+                       "a missing agent must not displace the open request")
+        XCTAssertNotNil(model.banner)
+    }
+
+    func testRepoFilterSurvivesAFleetRefresh() {
+        // #364 B3: the chip choice lives on the model, so a foreground
+        // refresh (which replaces the fleet through the store) never
+        // resets it. The pure reconcile handles a vanished repo.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        seedLive(model, ["a1", "a2"])
+        model.repoFilter = "corral"
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 11, generatedAt: 1,
+            agents: ["a3": agent("a3"), "a4": agent("a4")])))
+        XCTAssertEqual(model.repoFilter, "corral",
+                       "refresh must not clear the filter")
+        XCTAssertEqual(BoardModel.reconcile(model.repoFilter,
+                                            against: BoardModel.repoFilters(
+                                                Array(model.fleet.agents.values))),
+                       "corral")
+    }
+}
+
 // MARK: - Recents v1 tail model (#354 L2)
 
 final class RecentOutputTailModelTests: XCTestCase {
@@ -2618,8 +2896,17 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
     func testBoardProjectsThroughStatusSections() throws {
         let source = try bundledSource()
         // The FleetView board must be the status-section projection
-        // (locked order, repo never a grouping key), not repo groups.
-        XCTAssertTrue(source.contains("BoardModel.sections(agents)"), "board must project through BoardModel.sections")
+        // (locked order, repo never a grouping key), not repo groups. The
+        // #364 B chips filter WHICH agents the sections bucket through the
+        // pure BoardModel projections.
+        XCTAssertTrue(source.contains("let chips = BoardModel.repoFilters(agents)"),
+                      "board must project the #364 B chip set from the fleet")
+        XCTAssertTrue(source.contains("BoardModel.reconcile(model.repoFilter,"),
+                      "board must reconcile the chip choice against the live fleet")
+        XCTAssertTrue(source.contains("BoardModel.agents(agents, in: activeRepoFilter)"),
+                      "board must filter agents through the pure projection")
+        XCTAssertTrue(source.contains("BoardModel.sections(\n            BoardModel.agents"),
+                      "board must bucket the FILTERED agents into the locked status sections")
         // Scope to the board renderer so an unrelated helper cannot satisfy
         // the search (decoy-resistant: unique declaration marker).
         let boardMarker = "private func boardSections(sections: BoardModel.Sections)"
@@ -2643,9 +2930,48 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(repoChrome),
                            "repo chrome \(repoChrome) must not be wired into the status board")
         }
-        // Row taps open recents through the model-owned deep-link target.
-        XCTAssertTrue(source.contains("model.recentsAgentId = agent.agentId"))
-        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: target.agentId, model: model)"))
+        // Row taps open recents through the model-owned request (the same
+        // funnel deep links and the demo route use), and the sheet is fed
+        // straight from that request.
+        XCTAssertTrue(source.contains("model.requestRecents(for: agent.agentId, haptic: true)"))
+        XCTAssertTrue(source.contains(".sheet(item: $model.recentsRequest,"))
+        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: request.agentId, model: model)"))
+        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() })"),
+                      "dismissal must run the request-lifecycle reconciler")
+    }
+
+    /// #364 wiring pin: touch feedback, haptics, chips, and the reopen
+    /// lifecycle must all be wired in FleetViews (visual feel stays a
+    /// device-side claim; this pins the surface + call sites).
+    func test364BoardUXSurfacesAreWired() throws {
+        let source = try bundledSource()
+        // A.1 pressed-state style exists and rows/chips/banner use it.
+        XCTAssertEqual(source.components(separatedBy: "struct BoardPressStyle:").count - 1, 1,
+                       "exactly one press style must exist")
+        XCTAssertTrue(source.contains("configuration.isPressed"),
+                      "the press style must key off touch-down state")
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: ".buttonStyle(BoardPressStyle())").count - 1, 3,
+            "rows, chips, and the banner close must use the press style")
+        // A.2 haptic seam: one selection generator call site, discrete
+        // actions only (row tap + Done close).
+        XCTAssertEqual(source.components(separatedBy: "UISelectionFeedbackGenerator().selectionChanged()").count - 1, 1,
+                       "exactly one haptic call site must exist")
+        XCTAssertTrue(source.contains("model.closeRecentsButtonTapped()"),
+                      "the sheet Done control must tick on close")
+        // A.3: chip hit targets stay >= 44 pt.
+        XCTAssertTrue(source.contains(".frame(minHeight: 44)"),
+                      "chip hit targets must be >= 44 pt")
+        // B: chip row surfaces with the model-owned filter and selected
+        // state + VoiceOver selected trait.
+        XCTAssertTrue(source.contains("repoChipsRow(chips: chips,"))
+        XCTAssertTrue(source.contains("model.repoFilter = chip.repo"))
+        XCTAssertTrue(source.contains("accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        // C: dismissal reconciles the request (reopen lifecycle) — the
+        // reconciler itself lives on the model and is pinned by
+        // RecentsSheetLifecycleTests; here we pin the view call site.
+        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() })"),
+                      "the sheet dismissal must run the model reconciler")
     }
 
     func testRemovedSurfacesAreAbsentFromTheBoardSource() throws {

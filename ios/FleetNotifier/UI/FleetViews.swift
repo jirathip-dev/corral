@@ -304,6 +304,31 @@ struct WorkspaceLine: View {
     }
 }
 
+// MARK: - #364 A touch feedback + haptics
+
+/// Light selection haptics for discrete board actions (agent row tap,
+/// Done close). Deliberately NOT called from drag/scroll paths, so
+/// repeated drags never tick. Simulators play nothing audible; the
+/// on-device feel is a human verification.
+enum Haptics {
+    static func selection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+}
+
+/// Immediate pressed state (dim + slight shrink) for board controls whose
+/// plain buttons otherwise give no touch-down feedback: agent rows, repo
+/// chips, the banner close. `isPressed` is true from touch-down to
+/// up/cancel, so the feedback releases exactly when the touch ends.
+struct BoardPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.55 : 1)
+            .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Pinned section header (R2-A)
 
 /// The backing every pinned `.plain`-list section header gets. `.bar` is a
@@ -342,20 +367,22 @@ struct PinnedHeader<Content: View>: View {
 
 // MARK: - Fleet board (home)
 
-/// Identifiable carrier for the recents bottom sheet target.
-private struct RecentsTarget: Identifiable {
-    let agentId: String
-    var id: String { agentId }
-}
-
 struct FleetView: View {
     @ObservedObject var model: AppModel
     @State private var showSettings = false
-    @State private var recentsTarget: RecentsTarget?
 
     var body: some View {
         let agents = Array(model.fleet.agents.values)
-        let sections = BoardModel.sections(agents)
+        // #364 B: chip set + effective filter are pure projections of the
+        // CURRENT fleet — live counts, and a repo that vanished renders as
+        // All without losing the user's last choice on the model.
+        let chips = BoardModel.repoFilters(agents)
+        let activeRepoFilter = BoardModel.reconcile(model.repoFilter,
+                                                    against: chips)
+        // #364 B2: the chips choose WHICH agents the #362 status sections
+        // bucket; sections keep their locked order over the filtered set.
+        let sections = BoardModel.sections(
+            BoardModel.agents(agents, in: activeRepoFilter))
         return List {
             // Issue #219: the board chrome is the FIRST section of the same
             // physical scroll surface (a pinned header) instead of a
@@ -375,6 +402,9 @@ struct FleetView: View {
                         boardChrome
                     }
                 }
+                repoChipsRow(chips: chips,
+                             total: agents.count,
+                             selection: activeRepoFilter)
             }
             if let banner = model.banner {
                 BannerView(banner: banner) {
@@ -425,14 +455,16 @@ struct FleetView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model)
         }
-        // Recents bottom sheet: row taps AND notification deep links land
-        // here through the same model-owned target.
-        .sheet(item: $recentsTarget) { target in
-            RecentOutputSheet(agentId: target.agentId, model: model)
-        }
-        .onChange(of: model.recentsAgentId) { _, agentId in
-            guard let agentId, recentsTarget?.agentId != agentId else { return }
-            recentsTarget = RecentsTarget(agentId: agentId)
+        // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
+        // request — row taps, notification deep links, and the demo route
+        // all funnel through `model.requestRecents`. Every request is a
+        // fresh value, and the dismissal reconciler (`onDismiss`) clears
+        // or re-arms it, so a first tap after ANY dismissal re-presents
+        // (the old view-latched target + equality-guarded onChange
+        // swallowed it).
+        .sheet(item: $model.recentsRequest,
+               onDismiss: { model.recentsSheetDismissed() }) { request in
+            RecentOutputSheet(agentId: request.agentId, model: model)
         }
 #if DEBUG
         .onChange(of: model.mode) { _, _ in
@@ -441,7 +473,80 @@ struct FleetView: View {
         .task {
             applyDemoRouteIfNeeded()
         }
+        .task(id: model.mode) {
+            await runDemoEvidenceIfNeeded()
+        }
 #endif
+    }
+
+    /// #364 B: the horizontal repo filter chip row ('All' + one chip per
+    /// repo with the live agent count), rendered as the first board
+    /// content row under the pinned chrome. Selecting a chip filters the
+    /// agents the #362 status sections bucket; 'All' clears. Counts are
+    /// always over the WHOLE fleet — filtering never re-zeroes the other
+    /// chips.
+    @ViewBuilder
+    private func repoChipsRow(chips: [BoardModel.RepoFilterChip],
+                              total: Int,
+                              selection: String?) -> some View {
+        Section {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    repoChipButton(label: "All", count: total,
+                                   isSelected: selection == nil) {
+                        model.repoFilter = nil
+                    }
+                    ForEach(chips) { chip in
+                        repoChipButton(label: chip.repo, count: chip.count,
+                                       isSelected: selection == chip.repo) {
+                            model.repoFilter = chip.repo
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 4)
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// One filter chip: repo/All label + count badge, ≥44 pt hit target
+    /// (#364 A3), visible selected state, VoiceOver label/value/selected
+    /// trait. Press feedback comes from `BoardPressStyle`.
+    private func repoChipButton(label: String, count: Int,
+                                isSelected: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(label)
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(isSelected ? Color.white.opacity(0.25)
+                                           : Color.secondary.opacity(0.14),
+                                in: Capsule())
+                    .accessibilityHidden(true)
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isSelected ? Color.accentColor
+                                   : Color(.secondarySystemBackground),
+                        in: Capsule())
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(BoardPressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label == "All" ? "All agents"
+                                           : "Filter \\(label)")
+        .accessibilityValue(count == 1 ? "\\(count) agent"
+                                       : "\\(count) agents")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// The #362 board: one section per raw herdr status in the locked
@@ -449,7 +554,8 @@ struct FleetView: View {
     /// renders only when herdr reports it). Blocked agents are first overall
     /// because their section is first — no cross-repo promotion, no repo
     /// grouping (repo is row metadata). Every agent of a status appears in
-    /// exactly that one section.
+    /// exactly that one section. `sections` arrives ALREADY filtered by the
+    /// #364 B chip selection.
     @ViewBuilder
     private func boardSections(sections: BoardModel.Sections) -> some View {
         ForEach(sections.statuses) { status in
@@ -469,19 +575,21 @@ struct FleetView: View {
     @ViewBuilder
     private func agentRow(_ agent: Agent) -> some View {
         Button {
-            model.recentsAgentId = agent.agentId
+            // #364 A.2: a real row tap is a discrete action — one light
+            // selection tick (drags that cancel never reach the action).
+            model.requestRecents(for: agent.agentId, haptic: true)
         } label: {
             AgentRow(agent: agent,
                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BoardPressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(rowSummary(agent))
         .accessibilityHint("Double tap to open recent output")
     }
 
     /// Board chrome: connection status (live) + the pull-to-refresh hint.
-    /// No search field, no filter chips, no manual refresh button.
+    /// No search field; #364 B repo chips live in their own row below.
     @ViewBuilder
     private var boardChrome: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -552,16 +660,104 @@ struct FleetView: View {
         guard model.mode == .demo,
               let agentId = model.demoDetailAgentId,
               model.fleet.agent(agentId) != nil,
-              recentsTarget?.agentId != agentId else { return }
+              model.recentsRequest?.agentId != agentId else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             guard model.mode == .demo,
                   model.fleet.agent(agentId) != nil else { return }
-            model.recentsAgentId = agentId
+            model.requestRecents(for: agentId, haptic: false)
         }
+    }
+
+    /// #364 evidence drivers (launch-arg gated; never run otherwise). Each
+    /// phase writes a marker file that the host-side screenshot script
+    /// observes, so the recorded sequence is deterministic.
+    private func runDemoEvidenceIfNeeded() async {
+        if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments) {
+            await runReopenSequence()
+        } else if CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments) {
+            await runFilterSequence()
+        }
+    }
+
+    /// #364 C: open A → dismiss → open B → dismiss → open A in one
+    /// recorded sequence. The driver calls the same model request path a
+    /// row tap takes and clears the request the way a swipe/Done dismissal
+    /// does — simctl cannot inject touches, so this is the synthetic
+    /// stand-in for tap evidence (Guy: simulator evidence synthetic-only).
+    /// Each phase settles (presentation/dismissal animation) before its
+    /// marker, then holds so the host screenshot script has a stable frame.
+    private func runReopenSequence() async {
+        guard model.mode == .demo else { return }
+        let agentA = DemoFleet.featuredAgentID
+        let agentB = "herdr:demo-garden-blocked"
+        guard model.fleet.agent(agentA) != nil,
+              model.fleet.agent(agentB) != nil else { return }
+        EvidenceMarkers.write("phase-1-board")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.requestRecents(for: agentA, haptic: false)
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-2-sheet-a")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.recentsRequest = nil
+        try? await Task.sleep(for: .milliseconds(800))
+        EvidenceMarkers.write("phase-3-board-after-a")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.requestRecents(for: agentB, haptic: false)
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-4-sheet-b")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.recentsRequest = nil
+        try? await Task.sleep(for: .milliseconds(800))
+        EvidenceMarkers.write("phase-5-board-after-b")
+        try? await Task.sleep(for: .milliseconds(1500))
+        // Same-agent reopen: the dismissal reconciler cleared the latch,
+        // so this request is a fresh nil → request transition.
+        model.requestRecents(for: agentA, haptic: false)
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-6-sheet-a-reopen")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.recentsRequest = nil
+        try? await Task.sleep(for: .milliseconds(800))
+        EvidenceMarkers.write("phase-7-done")
+    }
+
+    /// #364 B: chip evidence — All board, then the demo-atlas filter
+    /// selected (chip highlighted, only demo-atlas agents across their
+    /// status sections), then All again.
+    private func runFilterSequence() async {
+        guard model.mode == .demo else { return }
+        EvidenceMarkers.write("phase-1-all")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.repoFilter = "demo-atlas"
+        try? await Task.sleep(for: .milliseconds(700))
+        EvidenceMarkers.write("phase-2-filtered-atlas")
+        try? await Task.sleep(for: .milliseconds(1500))
+        model.repoFilter = nil
+        try? await Task.sleep(for: .milliseconds(700))
+        EvidenceMarkers.write("phase-3-back-to-all")
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-4-done")
     }
 #endif
 }
+
+#if DEBUG
+/// #364 evidence: marker files the host screenshot script polls. Written
+/// into the app's Documents/ux-evidence — never into the worktree.
+enum EvidenceMarkers {
+    static func write(_ name: String) {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory,
+                                 in: .userDomainMask).first else { return }
+        let dir = docs.appendingPathComponent("ux-evidence",
+                                              isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? (name + "\n").write(to: dir.appendingPathComponent(name + ".marker"),
+                                 atomically: true, encoding: .utf8)
+    }
+}
+#endif
 
 // MARK: - Banner
 
@@ -580,8 +776,9 @@ struct BannerView: View {
             Button { dismiss() } label: {
                 Image(systemName: "xmark.circle.fill")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BoardPressStyle())
             .foregroundStyle(.secondary)
+            .accessibilityLabel("Dismiss banner")
         }
         .padding(8)
         .background(banner.isError ? Color.red.opacity(0.12) : Color.blue.opacity(0.12),
@@ -714,7 +911,13 @@ struct RecentOutputSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        // #364 A.2: explicit close control — one light
+                        // tick; the swipe-down path deliberately stays
+                        // silent (drag gestures never tick).
+                        model.closeRecentsButtonTapped()
+                        dismiss()
+                    }
                 }
             }
             .task {

@@ -5,40 +5,40 @@ import Foundation
 /// The v2 board shape, computed as a pure function of the agent set so it is
 /// unit-testable and stable across renders:
 ///
-/// - `blocked` — every blocked agent, cross-repo, pinned to the TOP of the
-///   board (attention first). A PROMOTION, not a filter: the same agents
-///   also appear inside their repo section.
-/// - `repos` — one section per `workspace.repo` (named repos sorted by
-///   name), holding EVERY agent of that repo — working, idle, blocked,
-///   unknown — in attention order. The orphan bucket (repo = nil) sorts
-///   last. A finished (idle-fallback) agent therefore STAYS in its repo
-///   section until the daemon replaces/deletes it: the last-done-per-repo
-///   retention rule. There is no collapsed cross-repo bucket anymore; the
-///   status chip on each row carries the state.
+/// - `statuses` — one section per raw herdr state, in the LOCKED board order
+///   Blocked → Working → Idle → Unknown. `workspace.repo` is ROW METADATA
+///   only — never a grouping key, so there is no repo section, no orphan
+///   bucket, and no cross-repo blocked promotion: a blocked agent appears
+///   exactly once, first overall because its section is first.
+/// - A Done section renders ONLY when the daemon actually reports `done`
+///   (a bucket exists only when it has agents). herdr 0.8.2 finished panes
+///   fall back to idle, so live boards normally show no Done section; a
+///   wire-`done` still RANKS with idle (state-token rank 2) and its section
+///   is emitted directly after Idle, before Unknown.
 ///
 /// Within every section the ordering is the v2 attention rank — blocked >
 /// working > idle/done > unknown — then ts desc, then agent id for
 /// determinism.
 enum BoardModel {
 
-    struct RepoSection: Equatable, Identifiable {
-        /// `nil` = the orphan bucket (agents without `workspace.repo`).
-        let repo: String?
+    struct StatusSection: Equatable, Identifiable {
+        let state: AgentState
         let agents: [Agent]
 
-        var id: String { repo ?? "\u{FFFC}no-repo" }
+        var id: String { state.rawValue }
 
-        /// Header label: the repo name (data — never transformed) or the
-        /// orphan bucket marker, with the visible agent count.
+        /// Header label: the raw status name (data — never transformed)
+        /// with the visible agent count.
         var header: String {
-            "\(repo ?? "no repo") (\(agents.count))"
+            "\(state.displayName) (\(agents.count))"
         }
     }
 
     struct Sections: Equatable {
-        /// Cross-repo blocked promotion, pinned above the repo sections.
-        let blocked: [Agent]
-        let repos: [RepoSection]
+        /// Status-grouped buckets in the locked order. A bucket exists only
+        /// when it has agents, so the done bucket renders only when herdr
+        /// reports done.
+        let statuses: [StatusSection]
     }
 
     /// The canonical board ordering: v2 rank, then ts desc, then agent id.
@@ -60,25 +60,18 @@ enum BoardModel {
         StateStyle.style(for: state).rank
     }
 
+    /// Status-grouped buckets in the locked order: blocked → working →
+    /// idle → unknown, with a done bucket emitted only when herdr reports
+    /// done (wire-`done` ranks with idle — its section sits after Idle,
+    /// before Unknown). Repo is never a grouping key; an agent appears in
+    /// exactly one section.
     static func sections(_ agents: [Agent]) -> Sections {
-        let blocked = ordered(agents.filter(\.isBlocked))
-        let orderedAgents = ordered(agents)
-
-        var byRepo: [String?: [Agent]] = [:]
-        for agent in orderedAgents {
-            byRepo[agent.workspace.repo, default: []].append(agent)
+        let lockedOrder: [AgentState] = [.blocked, .working, .idle, .done, .unknown]
+        let statuses = lockedOrder.compactMap { state -> StatusSection? in
+            let members = ordered(agents.filter { $0.state == state })
+            return members.isEmpty ? nil : StatusSection(state: state, agents: members)
         }
-        let repos = byRepo
-            .map { RepoSection(repo: $0.key, agents: $0.value) }
-            .sorted { a, b in
-                switch (a.repo, b.repo) {
-                case (let x?, let y?): return x < y
-                case (.some, .none): return true
-                case (.none, .some): return false
-                case (.none, .none): return false
-                }
-            }
-        return Sections(blocked: blocked, repos: repos)
+        return Sections(statuses: statuses)
     }
 
     // MARK: - Persistent connection indicator (#166 review F1)

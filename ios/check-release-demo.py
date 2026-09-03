@@ -112,7 +112,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #361 R1 fix: spine width anchored leading (no maxWidth expansion) and
     # railLine derived from accent at low opacity (#271 V2 teal hairline) —
     # re-pinned.
-    "46ab283f565f261802a9a9d4631a21ad7628c89b2dc5badd6285990ac4da5731"
+    # #362: the board flipped from repo groups to raw status sections
+    # (BoardModel status buckets + FleetViews status-section renderer +
+    # demo seed trimmed to one evidence row per status) — re-pinned over
+    # the new Release source set.
+    "06a7842f7384e31b045cbb018567d33ee134293d6198b98417ee133a9e094d5b"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -128,7 +132,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #361 fix: merged-content divider regression added — re-pinned.
     # #361 R1: continuous-spine source pins (sheet rides RecentRailSpine;
     # the spine primitive spans the whole stack) — re-pinned.
-    "3cc5e83c4770017f2429e1c5460e8311e42e7616603058738beac15079017c3d"
+    # #362: BoardModelReadOnlyTests rewritten to the discriminating raw
+    # status-bucket semantics + the status-section wiring test — re-pinned.
+    "6dd85c1d0144c2250ceada6d2fdbcc544781d3e061d5018d872e595ae22f7235"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

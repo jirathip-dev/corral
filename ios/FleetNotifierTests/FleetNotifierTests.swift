@@ -2868,8 +2868,8 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
                       "the spine must be one thin vertical line")
         XCTAssertTrue(slice.contains("maxHeight: .infinity"),
                       "the spine must span the whole rail stack continuously")
-        XCTAssertTrue(slice.contains("RecentOutputPalette.railLine"),
-                      "the spine must use the locked rail-line token")
+        XCTAssertTrue(slice.contains("theme.tailLine"),
+                      "the spine must use the #372 themed rail-line token (accent at low opacity)")
     }
 
     func testRecentsRailRendererUsesTransitionMarkersOnly() throws {
@@ -2885,6 +2885,10 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
                       "the rail renderer must gate its gutter marker on the model transition flag")
         XCTAssertTrue(slice.contains("RecentOutputModel.marker(for: block.kind)"),
                       "the rail renderer must draw the locked role marker")
+        XCTAssertTrue(slice.contains("theme.roleColor(for: block.kind)"),
+                      "the rail marker colors must resolve through the #372 theme (role token map)")
+        XCTAssertTrue(slice.contains("theme.tailInk"),
+                      "the rail prose must use the themed tail ink token")
         // Zero role text / cards / per-row chrome inside the renderer.
         for chrome in ["roleLabel", "speakerRail", "DisclosureGroup",
                        "userTint", "toolSummary", "role text"] {
@@ -3071,13 +3075,14 @@ final class SettingsAccessWiringTests: XCTestCase {
             XCTAssertFalse(debug.contains(lines[0]),
                            "\(needle) must be release-active (gear on the board in Release)")
         }
-        // The sheet-open action: one release-active (the gear) + one
-        // DEBUG-active (the #365 evidence driver); both required, neither
-        // release-gated.
+        // The sheet-open action: one release-active (the gear) + the
+        // DEBUG-only recorded-evidence drivers (#365 settings sequence and
+        // the #372 theme sequence both open the same sheet); all required,
+        // none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 1,
-                       "the DEBUG settings evidence driver must be the only debug-gated opener")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 2,
+                       "the #365 and #372 DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -3384,5 +3389,219 @@ final class SettingsHostSwitchTests: XCTestCase {
         // The dropped old-host stream must be RESTARTED (a second /events
         // request to the old host), or the paired board stays dead.
         await waitForRequest(to: eventsA, atLeast: 2)
+    }
+}
+
+// MARK: - #372 theme wiring (source pins over the bundled FleetViews)
+
+/// #372 wiring: the Appearance picker, the token chrome, and the Reduce
+/// Motion gate must all be wired in FleetViews (bundled FleetViews.swift.txt
+/// — the same decoy-resistant mechanism as the #316/#364/#365 wiring
+/// tests). A picker moved out of Settings, a chip reverting to a system
+/// accent, or an un-gated auto-scroll goes RED here.
+final class ThemeWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: ThemeWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testAppearancePickerLivesOnlyInTheSettingsForm() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
+                                     "a section mark must follow SettingsView")
+        let slice = String(source[start.lowerBound..<nextMark.lowerBound])
+
+        // The Appearance section is the FIRST form section and is the only
+        // theme control surface (placement lock).
+        XCTAssertTrue(slice.contains("appearanceSection"),
+                      "SettingsView must own an Appearance section")
+        let appearanceLine = try XCTUnwrap(
+            slice.lineNumber(of: "appearanceSection"),
+            "the appearance section must be invoked in the form")
+        let connectionLine = try XCTUnwrap(
+            slice.lineNumber(of: "Section(\"Connection\")"),
+            "the Connection section must still exist")
+        XCTAssertLessThan(appearanceLine, connectionLine,
+                          "Appearance must be the FIRST Settings section")
+        XCTAssertTrue(slice.contains("CatppuccinFlavor.allCases"),
+                      "the picker must offer all four locked flavors")
+        XCTAssertTrue(slice.contains("theme.setFlavor(flavor)"),
+                      "picking a flavor must route through the ThemeStore")
+        XCTAssertTrue(slice.contains("FlavorSwatchStrip(flavor: flavor)"),
+                      "each flavor row must preview its palette swatches")
+        XCTAssertTrue(slice.contains("Applies to the whole app"),
+                      "the Appearance footer must state the app-wide scope")
+
+        // Placement lock: the ONLY theme control is the Settings Appearance
+        // section. Every other "theme.setFlavor" call site must sit inside
+        // #if DEBUG (the #372 recorded-evidence driver flips flavors for
+        // screenshots) — the board chrome, the chips row, and the recents
+        // sheet carry NO release-active theme control.
+        let debug = debugActiveLines(source)
+        let flavorLines = lineNumbers(of: "theme.setFlavor", in: source)
+        XCTAssertGreaterThanOrEqual(flavorLines.count, 1,
+                                    "the Appearance picker must persist a flavor choice")
+        let settingsStartLine = lineNumbers(of: "struct SettingsView: View {",
+                                            in: source).first ?? 0
+        let settingsEndLine = lineNumbers(of: "// MARK: - Recents",
+                                          in: source).first ?? Int.max
+        for line in flavorLines {
+            let isRelease = !debug.contains(line)
+            if isRelease {
+                XCTAssertTrue(line > settingsStartLine && line < settingsEndLine,
+                              "release-active flavor control on line \(line) must live "
+                              + "in the Settings Appearance section only (placement lock)")
+            }
+        }
+        let sheetStart = try XCTUnwrap(source.range(of: "\nstruct RecentOutputSheet: View {"))
+        let sheetEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Rail row renderer"))
+        let sheetSlice = String(source[sheetStart.lowerBound..<sheetEnd.lowerBound])
+        XCTAssertFalse(sheetSlice.contains("theme.setFlavor"),
+                       "no theme control may live in the recents sheet header")
+    }
+
+    /// 1-based line numbers of every `#if DEBUG`-active line (same depth
+    /// scan as the #365 settings-access wiring tests).
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false)
+            .enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+
+    func testBoardChromeConsumesThemeTokens() throws {
+        let source = try bundledSource()
+        let boardStart = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                       "FleetView declaration must exist")
+        let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                     "the banner section must follow FleetView")
+        let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
+        XCTAssertTrue(slice.contains("theme.repoHueColor(for: repo, among: repos)"),
+                      "repo chips must carry the deterministic palette hue dot")
+        XCTAssertTrue(slice.contains("isSelected ? theme.accent : theme.base"),
+                      "a selected chip fills with the palette accent (mauve, never teal)")
+        XCTAssertTrue(slice.contains("isSelected ? theme.crust : theme.subtext1"),
+                      "chip ink follows the crust/subtext tokens")
+        XCTAssertTrue(slice.contains(".scrollContentBackground(.hidden)"),
+                      "the board surface must be token-backed")
+        XCTAssertTrue(slice.contains(".background(theme.base)"),
+                      "the board background must be the active flavor's base")
+        XCTAssertFalse(slice.contains("Color.accentColor"),
+                       "no system accent color may remain on the board")
+    }
+
+    func testRecentsSheetGatesAutoScrollOnReduceMotion() throws {
+        let source = try bundledSource()
+        let sheetStart = try XCTUnwrap(source.range(of: "\nstruct RecentOutputSheet: View {"))
+        let sheetEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Rail row renderer"))
+        let slice = String(source[sheetStart.lowerBound..<sheetEnd.lowerBound])
+        XCTAssertTrue(slice.contains("theme.reduceMotion"),
+                      "the recents auto-scroll must respect the theme's Reduce Motion state")
+        XCTAssertTrue(slice.contains("withAnimation"),
+                      "animated scroll must still exist for the default motion path")
+    }
+
+    func testNoLegacyHexesOrPaletteResidueInTheBoardSource() throws {
+        let source = try bundledSource()
+        XCTAssertFalse(source.contains("RecentOutputPalette"),
+                       "the legacy GitHub-dark palette enum must be gone")
+        for hex in ["#0d1117", "#e6edf3", "#8b949e", "#2dd4bf", "#58a6ff",
+                    "#d29922", "#3fb950", "#f85149", "#a5d6ff", "#ff7b72",
+                    "#cf222e", "#0969da", "#6e7781", "#9a6700", "#6e7681",
+                    "#8c959f"] {
+            XCTAssertFalse(source.contains(hex),
+                           "legacy GitHub-dark literal " + hex + " must not exist in FleetViews")
+        }
+        XCTAssertFalse(source.contains("Color(red:"),
+                       "no raw RGB component literals may remain in FleetViews")
+    }
+}
+
+// MARK: - #372 legacy-hex audit (real files, real greps)
+
+/// The AUDIT GATE as a unit test: greps the actual UI-layer sources on disk
+/// (same files the report's shell greps cover) for legacy GitHub-dark hex
+/// literals and the old RGB-triplet palette form — zero hits allowed. RED if
+/// a future lane reintroduces a legacy literal.
+final class LegacyHexAuditTests: XCTestCase {
+
+    private func uiSourceFiles() throws -> [URL] {
+        // Test file lives at ios/FleetNotifierTests/ — one level up is ios/.
+        let uiDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../FleetNotifier/UI", isDirectory: true)
+            .standardizedFileURL
+        let files = try FileManager.default.contentsOfDirectory(
+            at: uiDir, includingPropertiesForKeys: nil)
+        return files.filter { $0.pathExtension == "swift" }
+    }
+
+    func testUILayerHasZeroLegacyGithubDarkHexLiterals() throws {
+        // The exact legacy set the pre-#372 UI carried (the state-token
+        // contract light/dark hexes + the GitHub-dark recents palette).
+        let legacy = ["#0d1117", "#e6edf3", "#8b949e", "#2dd4bf", "#58a6ff",
+                      "#d29922", "#3fb950", "#f85149", "#a5d6ff", "#ff7b72",
+                      "#cf222e", "#0969da", "#6e7781", "#9a6700", "#6e7681",
+                      "#8c959f", "#10151c", "#161b22", "#1c2128", "#30363d",
+                      "#010409", "#24292f", "#21262d", "#c9d1d9", "#f0f6fc",
+                      "#afb8c1", "#484f58", "#79c0ff", "#d2a8ff", "#ffdfb6",
+                      "#f0883e", "#bc8cff", "#7ee787", "#ffa198", "#ff7b72",
+                      "#a5d6ff"]
+        let files = try uiSourceFiles()
+        XCTAssertGreaterThanOrEqual(files.count, 5,
+                                    "the audit must cover the real UI sources")
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+                .lowercased()
+            for hex in legacy {
+                XCTAssertFalse(source.contains(hex),
+                               "\(file.lastPathComponent) carries legacy literal " + hex)
+            }
+        }
+    }
+
+    func testUILayerHasNoRawRGBTripletColorLiterals() throws {
+        // The old RecentOutputPalette spelled colors Color(red: x/255, ...);
+        // the token system spells them via UIColor(catppuccinHex:).
+        for file in try uiSourceFiles() {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(source.contains("Color(red:"),
+                           "\(file.lastPathComponent) must not build colors from raw RGB triplets")
+        }
+    }
+}
+
+extension StringProtocol {
+    /// First 1-based line number containing `needle` (source-wiring helper).
+    fileprivate func lineNumber(of needle: String) -> Int? {
+        for (index, line) in split(separator: "\n",
+                                   omittingEmptySubsequences: false)
+            .enumerated() where line.contains(needle) {
+            return index + 1
+        }
+        return nil
     }
 }

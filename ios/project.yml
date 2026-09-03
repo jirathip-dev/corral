@@ -43,6 +43,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/Notifications/AppDelegate.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/LocalNotifier.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/PushPayload.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/AppTheme.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"

@@ -126,7 +126,21 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the Settings Connection section (host + pairing) updated FleetViews;
     # AppModel register() gained the host-switch stream semantics; digest
     # re-pinned to the #365 head source set.
-    "a88f05b806e49132b7d869687b3ee03fd3d5cb2dc7488ff83164f525b5ebd982"
+    # 2026-09-03 (#372): Catppuccin theming foundation — AppTheme.swift
+    # added to the Release source set (palette tables, ANSI remap, repo-hue
+    # fnv port, ThemeStore), StateStyle reduced to vocabulary-only, and
+    # FleetViews/FleetNotifierApp consume theme tokens (no legacy hexes);
+    # digest re-pinned to the #372 head source set.
+    # 2026-09-03 (#372 evidence gate): the recorded-theme-evidence driver
+    # gained cancellation-abort pacing + 5 s phase holds, the board rows
+    # opted into the base token (iOS 26 plain lists ignore List-level row
+    # backgrounds), and tint/color-scheme moved into FleetView + the
+    # presented sheets so a live flavor flip re-traits the sheet chrome;
+    # digest re-pinned.
+    # 2026-09-03 (#372 R1): state colors collapsed into ONE shared mapping
+    # (ThemeStore.stateToken(for:)) consumed by BOTH stateColor(for:) and
+    # stateHex(for:) — no parallel switch; digest re-pinned.
+    "e1e0eba879509e9b215f9445937bfb3476c59a5ca88cc2fbf257b84c134689e6"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -153,7 +167,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # Settings Connection surface) and SettingsHostSwitchTests (register
     # while live: host switch drops/restarts the SSE stream) added —
     # re-pinned.
-    "b0cbecf3143f23709c978b36fff31fd1c076bd90649d5ba10c907efe8a5dcb25"
+    # 2026-09-03 (#372): the wiring tests moved off RecentOutputPalette onto
+    # theme tokens, ThemeWiringTests + LegacyHexAuditTests were added (in
+    # FleetNotifierTests.swift), and the #372 theme-evidence driver added a
+    # second DEBUG-gated settings opener — re-pinned.
+    "551970b04889dd65c3dc195ea3fa6c5fdf7e38e2eccbf868e0ac39355eaf843b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
